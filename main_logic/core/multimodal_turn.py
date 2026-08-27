@@ -58,6 +58,10 @@ class _CoreMultimodalTurnRecord:
     started_at: float
     first_frame: _IndependentVisualFrame | None = None
     last_frame: _IndependentVisualFrame | None = None
+    # 语义端点时刻（monotonic 秒）。None = 这段发声还没结束。拍摄时间晚于它的帧
+    # 不属于本回合——用"当下的 lifecycle 状态"代替这个截止值是不对的：说话期间
+    # 拍到、端点之后才校验完的帧会被误杀。
+    endpoint_at: float | None = None
     middle_candidates: list[_IndependentVisualFrame] = field(default_factory=list)
     candidate_stride: int = 1
     observed_frames: int = 0
@@ -97,7 +101,13 @@ class _CoreMultimodalTurnRecord:
 
         middle = None
         if self.middle_candidates:
-            middle = self.middle_candidates[len(self.middle_candidates) // 2]
+            # 候选是按落地顺序 append 的，并发校验下这和拍摄顺序不是一回事；
+            # 取"时间上的中间那张"必须先按 captured_at 排。
+            by_capture = sorted(
+                self.middle_candidates,
+                key=lambda item: (item.captured_at, item.generation),
+            )
+            middle = by_capture[len(by_capture) // 2]
         ordered: list[_IndependentVisualFrame] = []
         seen: set[int] = set()
         for frame in (self.first_frame, middle, self.last_frame):
@@ -109,6 +119,17 @@ class _CoreMultimodalTurnRecord:
         # 谁先落地，乱序到达时它和真实时间顺序不是一回事。
         ordered.sort(key=lambda item: (item.captured_at, item.generation))
         return tuple(ordered)
+
+    def accepts(self, frame: _IndependentVisualFrame) -> bool:
+        """Report whether ``frame`` was captured inside this utterance."""
+
+        return (
+            frame.session_epoch == self.session_epoch
+            and frame.route_generation == self.route_generation
+            and frame.generation > self.start_image_generation
+            and frame.captured_at >= self.started_at
+            and (self.endpoint_at is None or frame.captured_at <= self.endpoint_at)
+        )
 
     def adopt_single_frame(self, frame: _IndependentVisualFrame) -> None:
         """Seed the sample with one late-discovered frame."""

@@ -553,9 +553,14 @@ class _StreamingMixin:
         # （拖图 / 聊天贴图）随时可能在 staging 与本次消费之间挤进来，被这一轮
         # 连带吞掉，用户那张图就配错了发言。invocation-local 才没有这个窗口。
         own_images = [image for image in (turn_images or []) if image]
+        # 一个自带帧的回合（独立 ASR）绝不消费共享附件队列。那条队列是 session 级
+        # 的「下一个消费者拿走」：本轮 await（switch_model / provider 请求）期间到达
+        # 的附件会被顺手清掉，既配错了发言，也不再能给它自己的追问用。附件在
+        # submit 入口已经按快照取走过一次，这里只负责不再碰活的队列。
+        attachment_images = [] if own_images else list(self._pending_images)
         if not text or not text.strip():
             # If only images without text, use a default prompt
-            if self._pending_images or prefix_images or own_images:
+            if attachment_images or prefix_images or own_images:
                 text = "请分析这些图片。"
             else:
                 return
@@ -602,7 +607,7 @@ class _StreamingMixin:
             proactive_image
             or prefix_images
             or own_images
-            or self._pending_images
+            or attachment_images
         )
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
@@ -643,7 +648,7 @@ class _StreamingMixin:
                         "url": f"data:image/jpeg;base64,{img_b64}"
                     }
                 })
-            for img_b64 in self._pending_images:
+            for img_b64 in attachment_images:
                 content.append({
                     "type": "image_url",
                     "image_url": {
@@ -666,7 +671,7 @@ class _StreamingMixin:
 
             user_message = HumanMessage(content=content)
             _img_count = (
-                len(self._pending_images)
+                len(attachment_images)
                 + len(prefix_images)
                 + len(own_images)
                 + (1 if proactive_image else 0)
@@ -679,7 +684,9 @@ class _StreamingMixin:
             # Clear pending images after using them (content already holds the
             # data urls). The proactive screenshot is one-shot: consumed by this
             # reply, then cleared so it never re-injects into later turns.
-            self._pending_images.clear()
+            if attachment_images:
+                # 只删掉本次真正拼进消息的那一段，await 期间新到的附件留给下一轮。
+                del self._pending_images[:len(attachment_images)]
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0

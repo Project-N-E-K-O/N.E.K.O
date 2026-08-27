@@ -72,8 +72,8 @@ async def test_offline_multimodal_failure_leaves_the_attachment_queue_alone() ->
             turn_id="turn-1",
         )
 
-    # 本轮帧从没进过共享队列，所以既不需要回滚，也不可能误删一张字节相同的
-    # 用户附件。
+    # 本轮帧从没进过共享队列；取走的那段用户附件在失败后原样放回，不会因为
+    # 字节相同被误删。
     assert client._pending_images == [prior_equal_image]
 
 

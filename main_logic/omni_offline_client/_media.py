@@ -123,6 +123,15 @@ class _MediaMixin:
             self._multimodal_submit_lock = lock
 
         async with lock:
+            # 用户在这一轮之前已经投递的一次性附件（拖图 / 聊天贴图）确实属于这次
+            # 发言，按快照一次取走并随本轮一起送；快照之后新到的附件留给下一轮，
+            # 不会被本轮的 await 窗口顺手吞掉。
+            pending = getattr(self, "_pending_images", None)
+            attachments: tuple[str, ...] = ()
+            if isinstance(pending, list) and pending:
+                attachments = tuple(pending)
+                del pending[:len(attachments)]
+                staged_images = attachments + staged_images
             # 这一轮的帧作为 invocation-local 数据直接交给 stream_text，不进
             # _pending_images。那条队列是 session 级的"下一个消费者拿走"：一次性
             # 附件（拖图 / 聊天贴图）不拿 _multimodal_submit_lock，完全可能在这里
@@ -134,8 +143,15 @@ class _MediaMixin:
                     text,
                     turn_images=staged_images,
                 )
-            except self._ExternalVoiceSubmitCancelled:
-                return False
+            except BaseException as exc:
+                # 本轮帧是 invocation-local 的，失败即消失；但取走的那段用户附件
+                # 是共享状态，必须放回队头，否则一次失败的 ASR 回合会把用户明确
+                # 投递的图吃掉。
+                if attachments and isinstance(pending, list):
+                    pending[0:0] = attachments
+                if isinstance(exc, self._ExternalVoiceSubmitCancelled):
+                    return False
+                raise
             return True
 
     async def submit_external_voice_turn(

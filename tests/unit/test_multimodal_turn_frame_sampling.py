@@ -145,8 +145,8 @@ async def test_offline_submit_still_accepts_a_bare_string():
     assert client.stream_text.await_args.kwargs["turn_images"] == ("single-frame",)
 
 
-async def test_asr_frames_never_enter_the_shared_attachment_queue():
-    """An attachment can land between staging and consumption, so keep them apart."""
+async def test_asr_turn_takes_a_snapshot_and_leaves_later_attachments_alone():
+    """Attachments already queued ride this turn; ones arriving mid-turn do not."""
     client = OmniOfflineClient.__new__(OmniOfflineClient)
     client._pending_images = ["earlier-attachment"]
 
@@ -162,9 +162,31 @@ async def test_asr_frames_never_enter_the_shared_attachment_queue():
         turn_id="turn-1",
     ) is True
 
-    assert client.stream_text.await_args.kwargs["turn_images"] == ("a", "b", "c")
-    # 队列里只有附件，一张本轮帧都没有。
-    assert client._pending_images == ["earlier-attachment", "late-attachment"]
+    # 用户开口之前投递的附件属于这次发言，跟本轮帧一起送。
+    assert client.stream_text.await_args.kwargs["turn_images"] == (
+        "earlier-attachment",
+        "a",
+        "b",
+        "c",
+    )
+    # 本轮进行中到达的那张留给下一轮，不被这一轮吞掉；本轮帧一张都没进队列。
+    assert client._pending_images == ["late-attachment"]
+
+
+async def test_failed_asr_turn_returns_the_attachment_to_the_queue():
+    """A failed turn must not eat an image the user deliberately sent."""
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = ["user-attachment"]
+    client.stream_text = AsyncMock(side_effect=RuntimeError("vlm down"))
+
+    with pytest.raises(RuntimeError, match="vlm down"):
+        await client.submit_multimodal_turn(
+            "look",
+            ("a",),
+            turn_id="turn-1",
+        )
+
+    assert client._pending_images == ["user-attachment"]
 
 
 def test_realtime_submit_holds_the_per_turn_cap():
@@ -213,3 +235,164 @@ def test_out_of_order_arrival_keeps_the_earliest_capture_as_first():
     sampled = [frame.image_b64 for frame in record.sampled_frames()]
     assert sampled[0] == "earlier"
     assert sampled[-1] == "later"
+
+
+def _jpeg_b64(width: int, height: int) -> str:
+    import base64 as _b64
+    from io import BytesIO
+
+    from PIL import Image as PILImage
+
+    # 噪声图，避免被 JPEG 压到极小而测不到超限路径。
+    img = PILImage.frombytes(
+        "RGB",
+        (width, height),
+        bytes((i * 37 + i // 7) % 256 for i in range(width * height * 3)),
+    )
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return _b64.b64encode(buf.getvalue()).decode()
+
+
+def _multi_image_item(images):
+    return {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [
+                *(
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/jpeg;base64," + image,
+                    }
+                    for image in images
+                ),
+                {"type": "input_text", "text": "这是什么？"},
+            ],
+        },
+    }
+
+
+def test_oversized_multi_image_item_is_shrunk_not_dropped():
+    import json
+
+    from main_logic.omni_realtime_client._transport import _TransportMixin
+
+    images = [_jpeg_b64(600, 600) for _ in range(MAX_MULTIMODAL_TURN_IMAGES)]
+    event = _multi_image_item(images)
+    payload = json.dumps(event)
+    assert len(payload) > _TransportMixin._WS_FRAME_LIMIT
+
+    shrunk = _TransportMixin._try_shrink_image_payload(event, payload)
+
+    # 关键：整条 item 不能被丢掉——那会让本轮既没有图也没有 transcript 进历史，
+    # 而 arbiter 仍然会发 response.create。
+    assert shrunk is not None
+    assert len(shrunk) <= _TransportMixin._WS_FRAME_LIMIT
+    rebuilt = json.loads(shrunk)
+    assert rebuilt["item"]["content"][-1]["text"] == "这是什么？"
+    kept = [
+        part for part in rebuilt["item"]["content"]
+        if part["type"] == "input_image"
+    ]
+    assert 1 <= len(kept) <= MAX_MULTIMODAL_TURN_IMAGES
+
+
+def test_single_image_item_still_shrinks_through_the_same_path():
+    import json
+
+    from main_logic.omni_realtime_client._transport import _TransportMixin
+
+    event = _multi_image_item([_jpeg_b64(900, 900)])
+    payload = json.dumps(event)
+    assert len(payload) > _TransportMixin._WS_FRAME_LIMIT
+
+    shrunk = _TransportMixin._try_shrink_image_payload(event, payload)
+
+    assert shrunk is not None
+    assert len(shrunk) <= _TransportMixin._WS_FRAME_LIMIT
+
+
+def test_middle_is_picked_by_capture_time_not_staging_order():
+    record = _record()
+    # 并发校验：落地顺序 0,4,1,3,2，但拍摄顺序是 0..4。
+    for generation, captured_at in enumerate([0.0, 4.0, 1.0, 3.0, 2.0]):
+        record.observe(
+            _IndependentVisualFrame(
+                image_b64=f"t{captured_at:.0f}",
+                session_epoch=1,
+                route_generation=1,
+                generation=generation,
+                captured_at=captured_at,
+                source="screen",
+                request_id=None,
+            )
+        )
+
+    sampled = [frame.image_b64 for frame in record.sampled_frames()]
+
+    # 按落地顺序取正中间会拿到 t1；按拍摄时间才是 t2。
+    assert sampled == ["t0", "t2", "t4"]
+
+
+class _StopBeforeLLM(Exception):
+    """Escape stream_text right after the user message is assembled."""
+
+
+def _stream_text_client():
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = []
+    client._conversation_history = []
+    client._proactive_image_to_inject = None
+    client._proactive_image_staged_at = 0.0
+    client._proactive_image_history_len = 0
+    client.vision_model = None
+    client.model = "test-model"
+    client.on_response_discarded = None
+    client.on_input_transcript = None
+    client._begin_reasoning_stream = lambda: None
+    return client
+
+
+async def _assemble_user_message(client, text="hello", **kwargs):
+    async def _boom(_text):
+        raise _StopBeforeLLM()
+
+    with pytest.raises(_StopBeforeLLM):
+        await OmniOfflineClient.stream_text(
+            client, text, input_transcript_callback=_boom, **kwargs
+        )
+    return client._conversation_history[-1]
+
+
+async def test_stream_text_with_turn_images_does_not_drain_the_queue():
+    client = _stream_text_client()
+    # 本轮 await 期间到达的附件：绝不能被这一轮消费掉。
+    client._pending_images = ["late-attachment"]
+
+    message = await _assemble_user_message(client, turn_images=("a", "b"))
+
+    urls = [
+        part["image_url"]["url"].rsplit(",", 1)[-1]
+        for part in message.content
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    ]
+    assert urls == ["a", "b"]
+    assert client._pending_images == ["late-attachment"]
+
+
+async def test_stream_text_without_turn_images_still_consumes_attachments():
+    """An ordinary text turn keeps its contract: attachments ride and dequeue."""
+    client = _stream_text_client()
+    client._pending_images = ["attachment"]
+
+    message = await _assemble_user_message(client)
+
+    urls = [
+        part["image_url"]["url"].rsplit(",", 1)[-1]
+        for part in message.content
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    ]
+    assert urls == ["attachment"]
+    assert client._pending_images == []

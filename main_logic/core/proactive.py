@@ -1285,6 +1285,10 @@ class ProactiveMixin:
                         "[%s] trigger_agent_callbacks: voice proactive inject failed: %s; keeping cbs for retry (native prefix committed=%s)",
                         self.lanlan_name, exc, native_media_prefix_committed,
                     )
+                    # 失败的注入没有产生 response，也就不会有 response.done 来重新
+                    # 驱动队列；退休会话之后更没有后续事件。与上面媒体失败那条路
+                    # 同款：自己补一次延迟重试，否则 cb 要等一个不相关的用户回合。
+                    self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
                     return False
                 finally:
                     self._clear_voice_delivery_committed(voice_commit_snapshot)

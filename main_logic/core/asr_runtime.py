@@ -457,35 +457,36 @@ class AsrRuntimeMixin:
         if supersedes_latest_cache:
             self._latest_independent_visual_frame = frame
         # 语义端点之后（lifecycle 进 DRAINING）到 provider final 派发之间，周期性
-        # 的截图任务还会继续落地。那些画面已经不是这段发声了，收进来会让 final
-        # transcript 配上「用户说完之后」的屏幕状态。
-        sealed = self._independent_asr_utterance_sealed()
+        # 的截图任务还会继续落地。那些画面已经不是这段发声了。判据必须是回合自己
+        # 的端点截止时间而不是"当下的 lifecycle 状态"——校验任务并发跑，说话期间
+        # 拍到、端点之后才校验完的帧按状态判会被误杀。
+        self._mark_independent_asr_endpoint_if_sealed()
         observed = False
         for record in tuple(self._core_multimodal_turns.values()):
-            if (
-                not sealed
-                and record.session_epoch == frame.session_epoch
-                and record.route_generation == frame.route_generation
-                and frame.generation > record.start_image_generation
-                and frame.captured_at >= record.started_at
-            ):
+            if record.accepts(frame):
                 record.observe(frame)
                 observed = True
         return supersedes_latest_cache or observed
 
-    def _independent_asr_utterance_sealed(self) -> bool:
-        """Report whether the active utterance already reached its endpoint.
+    def _mark_independent_asr_endpoint_if_sealed(self) -> None:
+        """Stamp the endpoint cutoff on the active turn once ASR seals it.
 
-        Reads the ASR lifecycle rather than a Core-side flag so a provider that
-        seals the turn early is respected without a second source of truth.
-        A runtime that exposes no lifecycle keeps the previous behaviour: the
-        frame is still admitted rather than silently dropped.
+        Reads the ASR lifecycle rather than keeping a second Core-side source
+        of truth. Sampled at every frame staging and again at the final freeze,
+        so the cutoff lands within about one frame interval of the real
+        endpoint. A runtime that exposes no lifecycle leaves the cutoff unset
+        and keeps the previous admit-everything behaviour.
         """
 
         runtime = getattr(self, "_asr_runtime", None)
         lifecycle = getattr(runtime, "_asr_lifecycle", None)
         state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
-        return state is VoiceLifecycleState.DRAINING
+        if state is not VoiceLifecycleState.DRAINING:
+            return
+        sealed_at = time.monotonic()
+        for record in self._core_multimodal_turns.values():
+            if record.endpoint_at is None:
+                record.endpoint_at = sealed_at
 
     def _track_independent_visual_validation_task(
         self,
@@ -616,14 +617,17 @@ class AsrRuntimeMixin:
         record = self._core_multimodal_turns.get(turn_id)
         if record is None:
             return None
+        # 冻结前再采一次端点：staging 只在有帧落地时跑，最后一帧之后到 final 之间
+        # 的封口要在这里补上，否则截止值会漏。
+        self._mark_independent_asr_endpoint_if_sealed()
         snapshot_at = time.monotonic()
         if record.last_frame is None:
             latest = self._latest_independent_visual_frame
             if (
                 latest is not None
-                and latest.session_epoch == record.session_epoch
-                and latest.route_generation == record.route_generation
-                and latest.generation > record.start_image_generation
+                # 走 record.accepts 而不是自己再抄一遍条件：兜底路径同样要受端点
+                # 截止约束，否则端点之后拍的那张会从缓存溜进本回合。
+                and record.accepts(latest)
                 and snapshot_at - latest.captured_at
                 <= self._independent_visual_frame_ttl_s
             ):
@@ -643,11 +647,7 @@ class AsrRuntimeMixin:
         ):
             return None
         frames = tuple(
-            frame
-            for frame in record.sampled_frames()
-            if frame.session_epoch == record.session_epoch
-            and frame.route_generation == record.route_generation
-            and frame.captured_at >= record.started_at
+            frame for frame in record.sampled_frames() if record.accepts(frame)
         )
         if not frames:
             return None

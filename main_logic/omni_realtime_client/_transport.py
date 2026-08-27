@@ -438,14 +438,25 @@ class _TransportMixin:
             # input_audio_buffer.append_video_frame  →  event["video_frame"]
             b64_data = event.get("video_frame")
         elif etype == "conversation.item.create":
-            # GPT path: content[0].image_url = "data:image/jpeg;base64,<b64>"
+            # GPT path: content[i].image_url = "data:image/jpeg;base64,<b64>".
+            # A multimodal ASR turn carries the sampled first/middle/last frames
+            # in ONE item, so every image part has to be recompressed against
+            # the same aggregate budget — shrinking only content[0] leaves the
+            # item over the limit and the whole turn gets dropped.
+            image_parts = []
             try:
-                url = event["item"]["content"][0]["image_url"]
-                if isinstance(url, str) and url.startswith("data:image/"):
-                    prefix, b64_data = url.split(",", 1)
-                    prefix += ","
-            except (KeyError, IndexError, TypeError, ValueError):
-                pass
+                for part in event["item"]["content"]:
+                    url = part.get("image_url") if isinstance(part, dict) else None
+                    if isinstance(url, str) and url.startswith("data:image/"):
+                        image_parts.append(part)
+            except (KeyError, TypeError):
+                image_parts = []
+            if image_parts:
+                return _TransportMixin._shrink_multi_image_item(
+                    event,
+                    payload,
+                    image_parts,
+                )
 
         if not b64_data:
             logger.warning(
@@ -489,6 +500,73 @@ class _TransportMixin:
         except Exception as e:
             logger.warning("⚠️ 图片重压缩失败 type=%s: %s — 丢弃帧", etype, e)
             return None
+
+    @staticmethod
+    def _shrink_multi_image_item(
+        event: dict,
+        payload: str,
+        image_parts: list,
+    ) -> Optional[str]:
+        """Recompress every image part of one item against the shared budget."""
+
+        from io import BytesIO
+        from PIL import Image as PILImage
+
+        limit = _TransportMixin._WS_FRAME_LIMIT
+        decoded = []
+        for part in image_parts:
+            prefix, b64_data = part["image_url"].split(",", 1)
+            try:
+                img = PILImage.open(BytesIO(base64.b64decode(b64_data)))
+                if img.mode in ("RGBA", "LA", "P"):
+                    img = img.convert("RGB")
+            except Exception as exc:
+                logger.warning("⚠️ 多图 item 解码失败，丢弃帧: %s", exc)
+                return None
+            decoded.append((part, prefix + ",", img))
+
+        new_payload = payload
+        for quality in (50, 35, 20):
+            for part, prefix, img in decoded:
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=quality, optimize=True)
+                part["image_url"] = prefix + base64.b64encode(
+                    buf.getvalue()
+                ).decode()
+            new_payload = json.dumps(event)
+            if len(new_payload) <= limit:
+                logger.info(
+                    "🗜️ 多图 item 重压缩成功 q=%d images=%d: %d → %d bytes",
+                    quality,
+                    len(decoded),
+                    len(payload),
+                    len(new_payload),
+                )
+                return new_payload
+
+        # 压到底仍然超限：与其整条 item 被丢掉（那会让本轮既没有图也没有
+        # transcript 进 provider 历史），不如按"多余丢弃"逐张摘掉最旧的那些。
+        # 最新那张必须留 —— 回合身份和 TTL 都以它为准。
+        content = event["item"]["content"]
+        while len(decoded) > 1:
+            dropped_part, _prefix, _img = decoded.pop(0)
+            try:
+                content.remove(dropped_part)
+            except ValueError:
+                break
+            new_payload = json.dumps(event)
+            logger.warning(
+                "⚠️ 多图 item 仍超限，丢弃最旧的一帧（剩 %d 张）",
+                len(decoded),
+            )
+            if len(new_payload) <= limit:
+                return new_payload
+        logger.warning(
+            "⚠️ 丢弃超大 item：单张图 q=20 仍 %d bytes > %d 上限",
+            len(new_payload),
+            limit,
+        )
+        return None
 
     async def send_event(
         self,

@@ -9785,9 +9785,15 @@ async def test_out_of_order_frame_still_joins_the_turn_sample() -> None:
     assert turn.images == ("earlier-frame", "later-frame")
 
 
+def _seal_utterance(runtime) -> None:
+    runtime._asr_lifecycle = SimpleNamespace(
+        snapshot=SimpleNamespace(state=VoiceLifecycleState.DRAINING)
+    )
+
+
 @pytest.mark.unit
-async def test_frames_after_the_utterance_is_sealed_are_not_folded_in() -> None:
-    """DRAINING means the user stopped talking; later screen state is not this turn."""
+async def test_frames_captured_after_the_endpoint_are_not_folded_in() -> None:
+    """Screen state from after the user stopped talking is not this turn."""
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
     token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=92)
@@ -9799,20 +9805,72 @@ async def test_frames_after_the_utterance_is_sealed_are_not_folded_in() -> None:
         "spoken-frame",
         source="screen",
         request_id="screen-spoken",
-        captured_at=record.started_at + 0.1,
+        captured_at=record.started_at,
     )
 
-    runtime._asr_lifecycle = SimpleNamespace(
-        snapshot=SimpleNamespace(state=VoiceLifecycleState.DRAINING)
-    )
+    _seal_utterance(runtime)
+    runtime._mark_independent_asr_endpoint_if_sealed()
+    assert record.endpoint_at is not None
     runtime._stage_independent_visual_frame(
         "post-endpoint-frame",
         source="screen",
         request_id="screen-post",
-        captured_at=record.started_at + 0.2,
+        captured_at=record.endpoint_at + 0.5,
     )
 
     turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
 
     assert turn is not None
     assert turn.images == ("spoken-frame",)
+
+
+@pytest.mark.unit
+async def test_frame_captured_before_the_endpoint_survives_late_validation() -> None:
+    """Validation finishing after DRAINING must not discard a spoken-window frame."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=93)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    captured_while_speaking = record.started_at
+
+    # 端点先到，这帧的校验任务才跑完 —— 拍摄时它还在说话，必须留下。
+    _seal_utterance(runtime)
+    runtime._mark_independent_asr_endpoint_if_sealed()
+    assert runtime._stage_independent_visual_frame(
+        "late-validated-frame",
+        source="screen",
+        request_id="screen-late",
+        captured_at=captured_while_speaking,
+    )
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("late-validated-frame",)
+
+
+@pytest.mark.unit
+async def test_post_endpoint_cache_frame_cannot_seed_an_empty_turn() -> None:
+    """The empty-record fallback must respect the endpoint cutoff too."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=94)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    _seal_utterance(runtime)
+    runtime._mark_independent_asr_endpoint_if_sealed()
+    runtime._stage_independent_visual_frame(
+        "post-endpoint-frame",
+        source="screen",
+        request_id="screen-post",
+        captured_at=record.endpoint_at + 0.5,
+    )
+    # 缓存里有这一帧（主动搭话观察还要用），但本回合一帧都没收到。
+    assert runtime._latest_independent_visual_frame.image_b64 == "post-endpoint-frame"
+    assert record.last_frame is None
+
+    assert runtime._snapshot_core_multimodal_turn(turn_id, "what is that") is None

@@ -3564,5 +3564,9 @@ async def test_inject_failure_after_native_media_retires_the_session():
     assert sess._fatal_error_occurred is True
     sess.close.assert_awaited_once_with()
     mgr.end_session.assert_awaited_once_with(by_server=True, expected_session=sess)
-    # 回调留在队列里等重试，但重试会落在一条新会话上。
+    # 回调留在队列里等重试，但重试会落在一条新会话上——而且必须自己排重试：
+    # 失败的注入没有产生 response，不会有 response.done 来重新驱动队列。
     assert mgr.pending_agent_callbacks == [cb]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
