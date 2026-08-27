@@ -162,7 +162,8 @@ def _ui_context_provider_budget(requested: object) -> float:
     """
     try:
         budget = float(requested)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is neither: an int past the float range raises it.
         budget = _UI_CONTEXT_DEFAULT_BUDGET
     # nan slips past every comparison and inf survives the subtraction, so
     # neither may reach asyncio.wait_for as a deadline.

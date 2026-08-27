@@ -93,7 +93,7 @@ def test_provider_budget_is_always_shorter_than_the_caller_budget(budget: float)
 
 @pytest.mark.parametrize(
     "requested",
-    [None, "not-a-number", 0, -1.0, float("nan"), float("inf"), float("-inf")],
+    [None, "not-a-number", 0, -1.0, float("nan"), float("inf"), float("-inf"), 10 ** 309],
 )
 def test_provider_budget_falls_back_below_the_default(requested: object) -> None:
     """拿不到调用方预算时回落到默认值，且同样要留出回程余量。"""
