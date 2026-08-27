@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import re
 import threading
 from collections import deque
 
@@ -391,3 +392,62 @@ async def test_concurrent_local_interactions_share_resource_verification_cooldow
 
     assert {result["reason"] for result in results} == {"voice_session_active", "cooldown"}
     assert strict_reads == 1
+
+
+# 契约（不从被测模块导入，改了常量表这里必须跟着改）：intensity 和 touch_zone
+# 是 wire 枚举，任何 locale 的提示词 / memory note 里都不允许出现它们的字面量。
+_WIRE_INTENSITIES = ("normal", "rapid")
+_WIRE_TOUCH_ZONES = ("ear", "head", "face", "body")
+_PROMPT_LOCALES = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+# 干净的探针记录：名称和含义不带拉丁字母，避免用户数据本身混进泄漏断言。
+_LEAK_PROBE_RECORD = {"name": "小羽毛", "meaning": "轻轻挠一下"}
+
+
+@pytest.mark.unit
+def test_every_locale_table_covers_the_full_wire_enum_and_locale_set():
+    from config.prompts.prompts_avatar_interaction import (
+        _LOCAL_AVATAR_TOOL_INTENSITY_FACTS,
+        _LOCAL_AVATAR_TOOL_MEMORY_INTENSITY_LABELS,
+        _LOCAL_AVATAR_TOOL_MEMORY_TEMPLATES,
+        _LOCAL_AVATAR_TOOL_MEMORY_TOUCH_ZONE_LABELS,
+        _LOCAL_AVATAR_TOOL_PROMPT_TEMPLATES,
+    )
+
+    assert set(_LOCAL_AVATAR_TOOL_PROMPT_TEMPLATES) == set(_PROMPT_LOCALES)
+    assert set(_LOCAL_AVATAR_TOOL_MEMORY_TEMPLATES) == set(_PROMPT_LOCALES)
+    for table, keys in (
+        (_LOCAL_AVATAR_TOOL_INTENSITY_FACTS, _WIRE_INTENSITIES),
+        (_LOCAL_AVATAR_TOOL_MEMORY_INTENSITY_LABELS, _WIRE_INTENSITIES),
+        (_LOCAL_AVATAR_TOOL_MEMORY_TOUCH_ZONE_LABELS, _WIRE_TOUCH_ZONES),
+    ):
+        assert set(table) == set(_PROMPT_LOCALES)
+        for locale in _PROMPT_LOCALES:
+            assert set(table[locale]) == set(keys)
+            assert all(str(value).strip() for value in table[locale].values())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("locale", _PROMPT_LOCALES)
+@pytest.mark.parametrize("intensity", _WIRE_INTENSITIES)
+@pytest.mark.parametrize("touch_zone", _WIRE_TOUCH_ZONES)
+def test_local_prompt_and_memory_never_leak_the_raw_wire_enum(locale, intensity, touch_zone):
+    normalized = normalize_avatar_interaction_payload(_payload(
+        intensity=intensity,
+        touchZone=touch_zone,
+    ))
+    assert normalized is not None
+
+    instruction = _build_avatar_interaction_instruction(locale, "兰兰", "小明", normalized, _LEAK_PROBE_RECORD)
+    memory_note = _build_avatar_interaction_memory_meta(locale, normalized, "小明", _LEAK_PROBE_RECORD)["memory_note"]
+
+    # "head"/"face"/"body" are ordinary English words the en copy may legitimately
+    # use, so only the intensity enum is checked there; every other locale must be
+    # free of all six wire values.
+    forbidden = _WIRE_INTENSITIES if locale == "en" else _WIRE_INTENSITIES + _WIRE_TOUCH_ZONES
+    for label, text in (("instruction", instruction), ("memory_note", memory_note)):
+        assert text.strip(), f"{locale} {label} is empty"
+        assert "{" not in text and "}" not in text, f"{locale} {label} kept a placeholder: {text}"
+        for value in forbidden:
+            assert not re.search(rf"(?<![A-Za-z]){re.escape(value)}(?![A-Za-z])", text), (
+                f"{locale} {label} leaked the wire value {value!r}: {text}"
+            )
