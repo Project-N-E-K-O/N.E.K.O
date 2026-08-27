@@ -247,6 +247,12 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self._instructions = ""
         self._stream_task = None
         self._pending_images = []  # Store pending images to send with next text
+        # 插件 read 图片的独立暂存位。刻意不与 _pending_images 共用：两者共用时
+        # 任何淘汰策略都会伤到用户——丢最旧会丢掉用户刚暂存的帧，拒新会让插件占
+        # 满后挡住用户自己的图（两种都在 review 中试过并被正确驳回）。分开计额后
+        # 谁也花不了对方的预算，超额时裁的永远是自己那一侧最旧的一张。
+        # 与 _proactive_image_to_inject 同为「独立拥有的视觉暂存」模式。
+        self._pending_plugin_images = []
         # 主动搭话以「屏幕」为素材投递后遗留的那张截图，待下一条用户 text 回复
         # 时作为前导视觉背景注入（让对话模型「看到」刚才搭话评论的屏幕）。刻意
         # 与 _pending_images（用户自己的下一帧）隔离：共用会偷走用户的待发帧，

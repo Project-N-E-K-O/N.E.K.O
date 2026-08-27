@@ -269,6 +269,7 @@ async def test_plugin_image_url_is_fetched_asynchronously_for_model_context(monk
         base64.b64encode(image_bytes).decode("ascii"),
         bypass_rate_limit=True,
         cache_latest=False,
+        source="plugin",
     )
 
 
@@ -309,6 +310,7 @@ async def test_native_realtime_read_uses_current_session_image_path(
         encoded,
         bypass_rate_limit=True,
         cache_latest=False,
+        source="plugin",
     )
     manager.enqueue_agent_callback.assert_called_once()
     callback = manager.enqueue_agent_callback.call_args.args[0]
@@ -429,6 +431,7 @@ async def test_non_native_realtime_read_uses_current_session_image_path(
         encoded,
         bypass_rate_limit=True,
         cache_latest=False,
+        source="plugin",
     )
     manager.enqueue_agent_callback.assert_called_once()
     callback = manager.enqueue_agent_callback.call_args.args[0]
@@ -467,6 +470,7 @@ async def test_read_image_stream_failure_is_not_queued(monkeypatch) -> None:
         encoded,
         bypass_rate_limit=True,
         cache_latest=False,
+        source="plugin",
     )
     manager.enqueue_agent_callback.assert_not_called()
 
@@ -893,6 +897,7 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
             encoded,
             bypass_rate_limit=True,
             cache_latest=False,
+            source="plugin",
         )
     else:
         manager.session.stream_image.assert_not_awaited()
@@ -1726,3 +1731,126 @@ def test_chat_blocks_url_images_cost_no_inline_budget() -> None:
     blocks = _build_ordered_plugin_chat_blocks(parts)
 
     assert len(blocks) == 8
+
+
+# ---------------------------------------------------------------------------
+# Per-source staged-image quotas (user 5 / plugin 3)
+#
+# The maintainer's requirement is mutual non-interference: a plugin burst must
+# never cost the user a frame, and the reverse must hold too. A single shared
+# cap cannot express that -- both eviction policies available under one cap let
+# one source damage the other, which is why both were rejected during review.
+# ---------------------------------------------------------------------------
+
+
+def _fresh_offline_client():
+    from main_logic.omni_offline_client._client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = []
+    client._pending_plugin_images = []
+    return client
+
+
+def test_quota_numbers_are_the_agreed_ones():
+    """Pin the numbers themselves, not just the behavior derived from them.
+
+    Every other test here reads the constants, so raising a cap would silently
+    move the goalposts and keep passing. This is the one assertion that fails
+    if the agreed 5 / 3 changes.
+    """
+    from main_logic import proactive_delivery as pd
+
+    assert pd.USER_PENDING_IMAGE_MAX_COUNT == 5
+    assert pd.PLUGIN_PENDING_IMAGE_MAX_COUNT == 3
+
+
+@pytest.mark.asyncio
+async def test_plugin_burst_never_evicts_user_frames():
+    from main_logic import proactive_delivery as pd
+
+    client = _fresh_offline_client()
+    for name in ("user-a", "user-b"):
+        await client.stream_image(name)
+
+    for i in range(pd.PLUGIN_PENDING_IMAGE_MAX_COUNT * 4):
+        await client.stream_image(f"plugin-{i}", source="plugin")
+
+    # The user's frames are untouched — not merely present, but exactly as
+    # staged and in order.
+    assert client._pending_images == ["user-a", "user-b"]
+    # The plugin kept only its own newest, inside its own quota.
+    assert client._pending_plugin_images == ["plugin-9", "plugin-10", "plugin-11"]
+
+
+@pytest.mark.asyncio
+async def test_user_burst_never_evicts_plugin_frames():
+    """The dual. A quota that only protects one direction is not isolation."""
+    from main_logic import proactive_delivery as pd
+
+    client = _fresh_offline_client()
+    for i in range(pd.PLUGIN_PENDING_IMAGE_MAX_COUNT):
+        await client.stream_image(f"plugin-{i}", source="plugin")
+    staged_by_plugin = list(client._pending_plugin_images)
+
+    for i in range(pd.USER_PENDING_IMAGE_MAX_COUNT * 3):
+        await client.stream_image(f"user-{i}")
+
+    assert client._pending_plugin_images == staged_by_plugin
+    assert len(client._pending_images) == pd.USER_PENDING_IMAGE_MAX_COUNT
+    # Trimming took the user's own oldest, keeping the newest run.
+    assert client._pending_images[-1] == "user-14"
+
+
+@pytest.mark.asyncio
+async def test_staged_images_keep_the_list_identity():
+    """turn.py holds a reference and clears in place, so rebinding would leak.
+
+    A quota implemented as `self._pending_images = queue[-cap:]` would pass
+    every count assertion above and still break the magic-command choke point,
+    which would go on clearing a list nobody reads any more.
+    """
+    client = _fresh_offline_client()
+    user_list = client._pending_images
+    plugin_list = client._pending_plugin_images
+
+    for i in range(12):
+        await client.stream_image(f"user-{i}")
+        await client.stream_image(f"plugin-{i}", source="plugin")
+
+    assert client._pending_images is user_list
+    assert client._pending_plugin_images is plugin_list
+
+
+@pytest.mark.asyncio
+async def test_unknown_source_is_charged_to_the_user_quota():
+    """Anything that is not explicitly "plugin" is the user's own frame.
+
+    Fail-safe direction: an unrecognised label must not silently create a
+    third, unbounded queue.
+    """
+    from main_logic import proactive_delivery as pd
+
+    client = _fresh_offline_client()
+    for i in range(pd.USER_PENDING_IMAGE_MAX_COUNT * 2):
+        await client.stream_image(f"x-{i}", source="something-else")
+
+    assert len(client._pending_images) == pd.USER_PENDING_IMAGE_MAX_COUNT
+    assert client._pending_plugin_images == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_queue_is_created_on_instances_built_without_init():
+    """Tests and legacy callers build the client via __new__.
+
+    The proactive slot is read defensively for the same reason; the plugin
+    queue must not become the one attribute that raises there.
+    """
+    from main_logic.omni_offline_client._client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = []
+    assert not hasattr(client, "_pending_plugin_images")
+
+    await client.stream_image("late", source="plugin")
+    assert client._pending_plugin_images == ["late"]

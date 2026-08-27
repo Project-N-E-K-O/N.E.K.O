@@ -78,6 +78,22 @@ SWAP_PRIME_DELIVERY_CLAIM_KEY = "_swap_prime_delivery_claimed"
 CALLBACK_IMAGE_MAX_COUNT = 8
 CALLBACK_IMAGE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
 
+# Staged-image quotas for the text path, counted PER SOURCE.
+#
+# The user's own screen/camera frames and plugin `read` images are attached to
+# the same turn. A single shared cap makes them fight, and every policy
+# available under one cap harms the user: evicting the oldest lets a background
+# plugin discard the frame the user just staged, and refusing the newest lets a
+# plugin block the user's own image once the queue is full. Both were tried
+# during review and both were correctly rejected.
+#
+# Separate quotas remove the conflict instead of picking a winner. Neither
+# source can spend the other's budget, so trimming is always the offending
+# source's own oldest frame. The user gets the larger share: they stage
+# deliberately, one frame at a time, and can see what they staged.
+USER_PENDING_IMAGE_MAX_COUNT = 5
+PLUGIN_PENDING_IMAGE_MAX_COUNT = 3
+
 
 def approx_base64_decoded_bytes(encoded: str) -> int:
     """Decoded size of a base64 payload, without materializing the bytes."""

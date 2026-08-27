@@ -1100,6 +1100,8 @@ async def _handle_agent_event(event: dict):
                             # as a screenshot -- after it was already inserted
                             # into the conversation (Codex P2).
                             cache_latest=False,
+                            # Charged to the plugin quota, never the user's.
+                            source="plugin",
                         )
                         logger.debug(
                             "[EventBus] image media_part injected (base64 len=%d, mime=%s)",

@@ -13,6 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from main_logic.proactive_delivery import (
+    PLUGIN_PENDING_IMAGE_MAX_COUNT,
+    USER_PENDING_IMAGE_MAX_COUNT,
+)
+
 from ._shared import (
     HumanMessage,
     logger,
@@ -30,6 +35,7 @@ class _MediaMixin:
         *,
         bypass_rate_limit: bool = False,
         cache_latest: bool = True,
+        source: str = "user",
     ) -> None:
         """
         Add an image to pending images queue.
@@ -43,25 +49,45 @@ class _MediaMixin:
         ambient frame cache, so there is nothing here for it to opt out of —
         but callers must be able to say "this is deliberate input, not an
         ambient screenshot" without first knowing which client they hold.
+
+        ``source`` selects which per-source quota the frame is charged to.
+        Anything other than ``"plugin"`` is the user's own frame.
         """
         if not image_b64:
             return
 
-        # NOT bounded here, deliberately. This list is shared with the user's
-        # own screen/camera frames, which arrive through this same method with
-        # nothing marking them apart, so every policy available inside this
-        # method harms the user path: evicting the oldest lets background
-        # plugin reads discard the frame the user just staged, and refusing the
-        # newest lets plugin reads block the user's own image once the queue is
-        # full. Both were tried during review and both were correctly rejected.
-        #
-        # The right fix is a separately budgeted queue for plugin-owned reads,
-        # which changes how the offline path attaches images and is out of
-        # scope here. Recorded as a follow-up: unbounded accumulation only
-        # matters once a plugin actually calls ctx.images.upload(), and none
-        # ships today.
-        self._pending_images.append(image_b64)
-        logger.info(f"Added image to pending queue (total: {len(self._pending_images)})")
+        # Bounded per SOURCE, not in aggregate. A shared cap has no correct
+        # eviction policy here -- both candidates were tried during review and
+        # both let one source damage the other. Separate queues mean an
+        # over-quota push only ever drops its OWN oldest frame.
+        if source == "plugin":
+            queue = getattr(self, "_pending_plugin_images", None)
+            if queue is None:
+                # Instances built via __new__ (tests, legacy callers) never ran
+                # __init__; mirror how the proactive slot is read defensively.
+                queue = []
+                self._pending_plugin_images = queue
+            cap = PLUGIN_PENDING_IMAGE_MAX_COUNT
+        else:
+            queue = self._pending_images
+            cap = USER_PENDING_IMAGE_MAX_COUNT
+
+        queue.append(image_b64)
+        dropped = 0
+        while len(queue) > cap:
+            # pop(0), not a rebind: turn.py holds a reference to this exact
+            # list object and clears it in place, so the identity is load-bearing.
+            queue.pop(0)
+            dropped += 1
+        if dropped:
+            logger.info(
+                f"Dropped {dropped} oldest {source} image(s) over the "
+                f"{cap}-image quota"
+            )
+        logger.info(
+            f"Added image to pending queue "
+            f"(source={source}, {source} total: {len(queue)})"
+        )
 
     def has_pending_images(self) -> bool:
         """Check if there are pending images waiting to be sent."""

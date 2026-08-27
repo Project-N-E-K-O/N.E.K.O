@@ -1094,6 +1094,10 @@ class TurnMixin:
         pending_images = getattr(self.session, "_pending_images", None)
         if hasattr(pending_images, "clear"):
             pending_images.clear()
+        # 插件 read 图片的独立暂存位同为「待发视觉上下文」，走同一个失效判据。
+        pending_plugin_images = getattr(self.session, "_pending_plugin_images", None)
+        if hasattr(pending_plugin_images, "clear"):
+            pending_plugin_images.clear()
         # 走 magic-command 等绕过 stream_text 的 text 输入时，主动搭话暂存的屏幕
         # 截图也不再是"下一条回复的背景"——这些路径不经 stream_text 消费它，残留
         # 会被注进后续不相关消息。一并清掉（与 _pending_images 同为"用户做了别的

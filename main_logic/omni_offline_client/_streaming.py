@@ -540,7 +540,7 @@ class _StreamingMixin:
         """  # noqa: DOCSTRING_CJK
         if not text or not text.strip():
             # If only images without text, use a default prompt
-            if self._pending_images:
+            if self._pending_images or getattr(self, "_pending_plugin_images", None):
                 text = "请分析这些图片。"
             else:
                 return
@@ -583,7 +583,15 @@ class _StreamingMixin:
                 self._proactive_image_staged_at = 0.0
                 self._proactive_image_history_len = 0
                 proactive_image = None
-        has_images = bool(proactive_image) or len(self._pending_images) > 0
+        # Plugin `read` frames sit in their own quota-bounded list. Instances
+        # built via __new__ (tests, legacy callers) never ran __init__, so read
+        # it the same defensive way the proactive slot is read above.
+        plugin_images = list(getattr(self, "_pending_plugin_images", None) or [])
+        has_images = (
+            bool(proactive_image)
+            or len(self._pending_images) > 0
+            or len(plugin_images) > 0
+        )
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
         # 落 history，跟 voice mode user-role 注入对偶。
@@ -615,6 +623,17 @@ class _StreamingMixin:
                         "url": f"data:image/jpeg;base64,{proactive_image}"
                     }
                 })
+            # Ordering: the proactive screen leads (it is what the screen
+            # showed BEFORE the user spoke), then plugin-supplied context, then
+            # the user's own frames last so they sit closest to the text they
+            # belong to.
+            for img_b64 in plugin_images:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{img_b64}"
+                    }
+                })
             for img_b64 in self._pending_images:
                 content.append({
                     "type": "image_url",
@@ -630,7 +649,11 @@ class _StreamingMixin:
             })
 
             user_message = HumanMessage(content=content)
-            _img_count = len(self._pending_images) + (1 if proactive_image else 0)
+            _img_count = (
+                len(self._pending_images)
+                + len(plugin_images)
+                + (1 if proactive_image else 0)
+            )
             logger.info(
                 f"Sending multi-modal message with {_img_count} image(s)"
                 f"{' (incl. proactive screen)' if proactive_image else ''}"
@@ -640,6 +663,13 @@ class _StreamingMixin:
             # data urls). The proactive screenshot is one-shot: consumed by this
             # reply, then cleared so it never re-injects into later turns.
             self._pending_images.clear()
+            # Cleared wholesale, exactly like the user's list above: both are
+            # consumed by this turn. Anything a plugin appends during the model
+            # call is lost the same way a user frame would be -- one shared
+            # window, not a new asymmetry between the two sources.
+            _plugin_pending = getattr(self, "_pending_plugin_images", None)
+            if _plugin_pending is not None:
+                _plugin_pending.clear()
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0
