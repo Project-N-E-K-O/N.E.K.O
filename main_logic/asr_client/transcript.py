@@ -303,6 +303,12 @@ class TranscriptDispatcher:
                     ):
                         self._active = None
                         self._set_idle_if_empty()
+                if self._worker is not worker_task:
+                    # invalidate_all() 已经把我们从 _worker 上摘掉了（而且刻意没有
+                    # 取消调用者自己）。跑完手头这条 envelope 就必须退出 —— 再回去
+                    # await self._queue.get() 会变成一个和新 worker 并存的僵尸，
+                    # 两个消费者抢同一个队列。
+                    return
         except asyncio.CancelledError:
             return
 

@@ -63,6 +63,9 @@ class _CoreMultimodalTurnRecord:
     route_generation: int
     start_image_generation: int
     started_at: float
+    # record 真正建立的时刻。started_at 可能被回拨到语音起点（overlap 的后继发声
+    # 甚至早于上一轮封口），所以"这个封口属于本轮吗"不能拿 started_at 判。
+    registered_at: float = 0.0
     first_frame: _IndependentVisualFrame | None = None
     last_frame: _IndependentVisualFrame | None = None
     # 语义端点时刻（monotonic 秒）。None = 这段发声还没结束。拍摄时间晚于它的帧

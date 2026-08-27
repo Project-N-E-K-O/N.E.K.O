@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -548,7 +548,9 @@ class IndependentAsrRuntime:
         # 「开口之后」，后继发声在重放前拍的帧就全被排除了。
         self._asr_overlap_onset_at: float | None = None
         self._asr_overlap_completed_token: VoiceIngressToken | None = None
-        self._asr_overlap_completed_at: float | None = None
+        # 每张 credit 一个开口时刻：多个 onset+pause 周期可以在同一条延迟 final
+        # 后面排队，用单个槽位会让所有重放共用最后那个时刻。
+        self._asr_overlap_completed_onsets: deque[float] = deque()
         self._asr_overlap_completed_turns = 0
         self._asr_sealed_turn_token: VoiceTransportToken | None = None
         self._asr_provider_candidate_fence: ProviderCandidateFence | None = None
@@ -629,8 +631,8 @@ class IndependentAsrRuntime:
             self._asr_overlap_onset_token = None
         if not hasattr(self, "_asr_overlap_onset_at"):
             self._asr_overlap_onset_at = None
-        if not hasattr(self, "_asr_overlap_completed_at"):
-            self._asr_overlap_completed_at = None
+        if not hasattr(self, "_asr_overlap_completed_onsets"):
+            self._asr_overlap_completed_onsets = deque()
         if not hasattr(self, "_asr_partial_turn_token"):
             self._asr_partial_turn_token = None
         if not hasattr(self, "_asr_overlap_completed_token"):
@@ -2342,7 +2344,7 @@ class IndependentAsrRuntime:
         self._asr_overlap_onset_token = None
         self._asr_overlap_onset_at = None
         self._asr_overlap_completed_token = None
-        self._asr_overlap_completed_at = None
+        self._asr_overlap_completed_onsets.clear()
         self._asr_overlap_completed_turns = 0
         self._asr_audio_sequence = 0
         self._asr_current_ingress_token = None
@@ -3323,14 +3325,20 @@ class IndependentAsrRuntime:
                 self._asr_overlap_onset_token = None
                 self._asr_overlap_onset_at = None
                 if onset_token is not None:
-                    if onset_at is not None:
-                        self._asr_overlap_completed_at = onset_at
+                    # 一张 credit 配一个时刻，按兑付顺序排队。
+                    self._asr_overlap_completed_onsets.append(
+                        onset_at if onset_at is not None else detected_at
+                    )
                     if onset_token == self._asr_overlap_completed_token:
                         # Each additional onset+pause cycle observed while the
                         # first turn stays ACTIVE queues one more provider
                         # endpoint/final pair, so count credits per cycle.
                         self._asr_overlap_completed_turns += 1
                     else:
+                        # 换了 ingress 身份：旧队列作废，只留这一张。
+                        last = self._asr_overlap_completed_onsets.pop()
+                        self._asr_overlap_completed_onsets.clear()
+                        self._asr_overlap_completed_onsets.append(last)
                         self._asr_overlap_completed_token = onset_token
                         self._asr_overlap_completed_turns = 1
             return
@@ -3446,10 +3454,14 @@ class IndependentAsrRuntime:
             # then fall through to seal immediately, letting the queued final
             # right behind this endpoint find a DRAINING turn.
             self._asr_overlap_completed_turns -= 1
-            replay_onset_at = self._asr_overlap_completed_at
+            replay_onset_at = (
+                self._asr_overlap_completed_onsets.popleft()
+                if self._asr_overlap_completed_onsets
+                else None
+            )
             if self._asr_overlap_completed_turns == 0:
                 self._asr_overlap_completed_token = None
-                self._asr_overlap_completed_at = None
+                self._asr_overlap_completed_onsets.clear()
             # 把真实开口时刻交给重放：直接确认分支会优先取 pending onset，于是
             # SPEECH_CONFIRMED 打上的是用户当初开口的时刻，而不是这次重放的时刻。
             if (

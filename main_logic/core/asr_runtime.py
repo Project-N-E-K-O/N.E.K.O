@@ -8,6 +8,7 @@ delivery concerns. Provider sessions and endpointing remain encapsulated by
 from __future__ import annotations
 
 import asyncio
+import bisect
 import json
 import struct
 import time
@@ -496,7 +497,14 @@ class AsrRuntimeMixin:
         """Keep one already-validated frame until the onset-owned record exists."""
 
         frames = self._prerecord_visual_frames
-        frames.append(frame)
+        # 按拍摄时间维护，不按落地顺序 —— 并发校验下两者不是一回事（这条判据在
+        # middle_candidates 上已经栽过一次，这里是同一个坑）。否则下面按"相邻跨度"
+        # 抽稀时，列表两端根本不是时间上的首尾，还可能删掉真正最早/最晚的那帧。
+        bisect.insort(
+            frames,
+            frame,
+            key=lambda item: (item.captured_at, item.generation),
+        )
         # 有界。超限时**不能丢队头** —— 队头正是这段发声的开头（用户开口时指的东
         # 西），丢掉它就等于把 record 建立前那段窗口的起点抹掉。改成丢掉"最冗余"
         # 的内点（左右邻居跨度最小），两端保留；与 middle_candidates 的抽稀同一
@@ -527,7 +535,10 @@ class AsrRuntimeMixin:
 
         runtime = getattr(self, "_asr_runtime", None)
         endpointed_at = getattr(runtime, "_asr_turn_endpointed_at", None)
-        if not isinstance(endpointed_at, (int, float)):
+        # live 字段在 PROVIDER_FINAL 时被清，所以它只可能描述**在飞的那一轮**，
+        # 用 started_at 当下界就够。保留副本则是跨轮存活的，必须更严 —— 见下。
+        live_endpoint = isinstance(endpointed_at, (int, float))
+        if not live_endpoint:
             # PROVIDER_FINAL 会把上面那个清掉，而 Core 要到 transcript 派发之后
             # 才冻结这一轮 —— 冻结时读到的必然是 None。所以再读一个不随 final
             # 清除的副本；上一轮的残值由下面 started_at 的比较排掉。
@@ -544,9 +555,17 @@ class AsrRuntimeMixin:
             endpointed_at = time.monotonic()
         sealed_at = float(endpointed_at)
         for record in self._core_multimodal_turns.values():
-            # 上一轮遗留的时间戳一定早于本轮的 started_at（record 在语音确认时
-            # 建立，晚于上一轮端点），所以这个比较同时充当「这个封口属于本轮吗」。
-            if record.endpoint_at is None and sealed_at >= record.started_at:
+            if record.endpoint_at is not None:
+                continue
+            # ⚠️ 判据不能用 started_at：overlap 的后继发声其起点**早于**上一轮封口
+            # （onset 是在上一轮还 ACTIVE 时记下的），拿 started_at 比会把上一轮的
+            # 封口绑成本轮的截止点，本轮之后拍的每一帧都被拒 —— 整轮退化成纯文本。
+            #
+            # 保留副本跨轮存活，所以要求它晚于 record **注册**的时刻：上一轮的封口
+            # 必然发生在本轮 record 建立之前。live 字段只描述在飞那一轮，仍用
+            # started_at，免得极短发声里 seal 抢在注册之前时反而绑不上。
+            floor = record.started_at if live_endpoint else record.registered_at
+            if sealed_at >= floor:
                 record.endpoint_at = sealed_at
 
     def _track_independent_visual_validation_task(
@@ -732,6 +751,7 @@ class AsrRuntimeMixin:
             route_generation=self._voice_input_transition_generation,
             start_image_generation=self._independent_visual_generation,
             started_at=started_at,
+            registered_at=registered_at,
         )
         self._core_multimodal_turns[turn_id] = record
         self._attach_prerecord_visual_validation_tasks(record)

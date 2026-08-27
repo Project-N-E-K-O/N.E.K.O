@@ -176,9 +176,11 @@ async def test_invalidate_all_from_inside_dispatch_does_not_cancel_its_caller() 
     cleanup and the frontend "session ended" notification never happen.
     """
     steps: list[str] = []
+    captured: dict[str, asyncio.Task] = {}
 
     async def dispatch(_envelope: TranscriptEnvelope) -> None:
         steps.append("start")
+        captured["worker"] = asyncio.current_task()
         dispatcher.invalidate_all()
         # 收口路径在 invalidate_all 之后还有若干 await —— 它们必须照常跑完。
         await asyncio.sleep(0)
@@ -197,6 +199,16 @@ async def test_invalidate_all_from_inside_dispatch_does_not_cancel_its_caller() 
         await asyncio.sleep(0.01)
 
     assert steps == ["start", "after-await", "cleanup-done"]
+
+    # 跑完手头这条之后必须**退出**：再回去 await queue.get() 就成了和新 worker
+    # 并存的僵尸，两个消费者抢同一个队列。
+    worker = captured["worker"]
+    for _ in range(50):
+        if worker.done():
+            break
+        await asyncio.sleep(0.01)
+    assert worker.done(), "the self-invalidated worker must exit after its envelope"
+    assert not worker.cancelled()
 
 
 async def test_invalidate_all_still_cancels_a_worker_from_outside() -> None:

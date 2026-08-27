@@ -10307,8 +10307,15 @@ async def test_pending_turn_does_not_inherit_the_previous_turn_endpoint() -> Non
 
 
 @pytest.mark.unit
-async def test_stale_onset_from_a_previous_turn_would_bind_the_old_seal() -> None:
-    """Pin the failure mode itself, so the onset stamp cannot silently regress."""
+async def test_retained_seal_predating_registration_is_not_this_turn_cutoff() -> None:
+    """Second line of defence behind the onset stamp.
+
+    A retained seal survives across turns, so "is it >= started_at" cannot tell
+    whether it belongs to this turn — an overlapping successor's onset is even
+    recorded BEFORE the predecessor sealed. The floor for the retained copy is
+    therefore the moment the record was registered: the previous turn's seal
+    necessarily happened before that.
+    """
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
 
@@ -10324,15 +10331,19 @@ async def test_stale_onset_from_a_previous_turn_would_bind_the_old_seal() -> Non
     runtime._begin_core_multimodal_turn(turn_id, token)
     record = runtime._core_multimodal_turns[turn_id]
 
-    runtime._stage_independent_visual_frame(
+    assert runtime._stage_independent_visual_frame(
         "post-seal-frame",
         source="screen",
         request_id="screen-post",
         captured_at=previous_seal + 0.5,
     )
-    # 这就是 bug 的形状：截止点被钉在一个已经过去的时刻，本轮的帧全被拒。
-    assert record.endpoint_at == previous_seal
-    assert runtime._snapshot_core_multimodal_turn(turn_id, "lost") is None
+    # 即使 onset 是上一轮的残值（第一道防线失效），上一轮的封口也不能成为本轮的
+    # 截止点 —— 它发生在本 record 注册之前。
+    assert record.endpoint_at is None
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "survives")
+
+    assert turn is not None
+    assert turn.images == ("post-seal-frame",)
 
 
 @pytest.mark.unit
@@ -10470,7 +10481,108 @@ def test_overlap_replay_carries_the_real_onset_not_the_replay_instant() -> None:
     assert replay, "overlap replay not found"
     for index in replay:
         window = chr(10).join(source[max(0, index - 30) : index])
+        # 每张 credit 配一个时刻，按兑付顺序出队 —— 单槽会让排在同一条延迟 final
+        # 后面的多个重放共用最后那个时刻。
+        assert "self._asr_overlap_completed_onsets.popleft()" in window, (
+            f"line {index + 1}: the replay must dequeue its own onset, "
+            f"got: {window!r}"
+        )
         assert "self._asr_pending_speech_onset_at = replay_onset_at" in window, (
             f"line {index + 1}: the replay must hand the recorded onset to the "
             f"confirmation path, got: {window!r}"
         )
+
+
+@pytest.mark.unit
+async def test_overlapping_successor_is_not_sealed_by_its_predecessor() -> None:
+    """The successor's onset predates the predecessor's seal — by design.
+
+    A provider-VAD successor utterance begins while the previous turn is still
+    ACTIVE, so its recorded onset is EARLIER than the previous turn's endpoint.
+    Comparing the retained seal against ``started_at`` would therefore bind the
+    predecessor's endpoint to the successor and reject every frame it captures.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    successor_onset = time.monotonic() - 1.0
+    predecessor_seal = successor_onset + 0.3
+    runtime._asr_turn_onset_at = successor_onset
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = predecessor_seal
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=105)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert record.started_at < predecessor_seal
+
+    assert runtime._stage_independent_visual_frame(
+        "successor-frame",
+        source="screen",
+        request_id="screen-successor",
+        captured_at=predecessor_seal + 0.4,
+    )
+    assert record.endpoint_at is None
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "and this?")
+
+    assert turn is not None
+    assert turn.images == ("successor-frame",)
+
+
+@pytest.mark.unit
+async def test_live_endpoint_still_seals_its_own_turn() -> None:
+    """The live field only ever describes the in-flight turn, so keep it loose."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=106)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert runtime._stage_independent_visual_frame(
+        "spoken-frame",
+        source="screen",
+        request_id="screen-spoken",
+        captured_at=record.started_at,
+    )
+    # 极短发声：封口甚至可能早于 record 注册那一刻。live 字段仍然必须绑上。
+    sealed_at = record.started_at
+    runtime._asr_turn_endpointed_at = sealed_at
+    runtime._mark_independent_asr_endpoint_if_sealed()
+
+    assert record.endpoint_at == sealed_at
+
+
+@pytest.mark.unit
+async def test_prerecord_buffer_trims_in_capture_order_not_arrival_order() -> None:
+    """Concurrent validation means arrival order is not capture order.
+
+    The cap evicts the most redundant INTERIOR point and keeps both ends. If the
+    buffer is held in arrival order, those "ends" are not the temporal first and
+    last, so the eviction can drop the actual start of the utterance — the same
+    trap already fixed once for the middle-frame candidates.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+
+    # 落地顺序把两端交替喂进来：0, 19, 1, 18, 2, 17, ...
+    capture_order = [i if i % 2 == 0 else 19 - i for i in range(20)]
+    for generation, index in enumerate(capture_order):
+        runtime._stage_independent_visual_frame(
+            f"f{index}",
+            source="screen",
+            request_id=f"screen-{generation}",
+            captured_at=onset + 0.001 * (index + 1),
+        )
+
+    kept = [frame.image_b64 for frame in runtime._prerecord_visual_frames]
+    assert len(kept) <= 8
+    # 时间上的首尾必须活着，而不是"最先/最后落地的那两帧"。
+    assert kept[0] == "f0"
+    assert kept[-1] == f"f{max(capture_order)}"
+    captured = [frame.captured_at for frame in runtime._prerecord_visual_frames]
+    assert captured == sorted(captured)
