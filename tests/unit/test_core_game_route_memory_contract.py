@@ -836,8 +836,11 @@ async def test_voice_session_hands_one_shot_user_images_to_offline_vision(
     mgr.session_ready = True
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
 
-    async def _end_session(*, reset_starting_count=True):
+    async def _end_session(*, reset_starting_count=True, preserve_pending_input=False):
         assert reset_starting_count is False
+        # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
+        # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
+        assert preserve_pending_input is True
         mgr.session = None
         mgr.is_active = False
 
@@ -865,7 +868,7 @@ async def test_voice_session_hands_one_shot_user_images_to_offline_vision(
     realtime_session.stream_image.assert_not_awaited()
     validate.assert_awaited_once_with("raw-image")
     offline_session.stream_image.assert_awaited_once_with("img-b64")
-    mgr.end_session.assert_awaited_once_with(reset_starting_count=False)
+    mgr.end_session.assert_awaited_once_with(reset_starting_count=False, preserve_pending_input=True)
     mgr.start_session.assert_awaited_once_with(
         mgr.websocket,
         new=False,
@@ -966,8 +969,11 @@ async def test_attachment_stages_before_inputs_cached_during_offline_handoff(
     mgr.pending_agent_callbacks = []
     mgr._fire_task = Mock()
 
-    async def _end_session(*, reset_starting_count=True):
+    async def _end_session(*, reset_starting_count=True, preserve_pending_input=False):
         assert reset_starting_count is False
+        # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
+        # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
+        assert preserve_pending_input is True
         mgr.session = None
         mgr.is_active = False
 
@@ -1362,8 +1368,11 @@ async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
     ]
     mgr.last_user_engagement_time = None
 
-    async def _end_session(*, reset_starting_count=True):
+    async def _end_session(*, reset_starting_count=True, preserve_pending_input=False):
         assert reset_starting_count is False
+        # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
+        # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
+        assert preserve_pending_input is True
         mgr.session = None
         mgr.is_active = False
 
@@ -1402,7 +1411,7 @@ async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
             "_user_input_ingress_time": FIXED_TS + 1,
         }
     )
-    mgr.end_session.assert_awaited_once_with(reset_starting_count=False)
+    mgr.end_session.assert_awaited_once_with(reset_starting_count=False, preserve_pending_input=True)
     mgr.start_session.assert_awaited_once_with(
         mgr.websocket,
         new=False,
@@ -2923,3 +2932,4 @@ async def test_recovery_losing_ownership_mid_tts_leaves_no_tracker_text_for_b():
 
     assert mgr._current_ai_turn_text == ""
     mgr._emit_turn_end.assert_not_awaited()
+

@@ -10102,9 +10102,45 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
     """
     import inspect
 
+    from main_logic.asr_client import lifecycle as asr_lifecycle_module
     from main_logic.asr_client import runtime as asr_runtime_module
 
     source = inspect.getsource(asr_runtime_module).splitlines()
+
+    # ⚠️ 这个守卫的第一版只扫 runtime.py 里的字面量
+    # `lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)`，因此完全看不见
+    # lifecycle.py 自己的 `self.transition(...)`（begin_pending_turn 里那一处）——
+    # 第五个迁移点就是这么漏掉的，还给了"五处都打点了"的假绿。清单式守卫必须自己
+    # 证明清单是全的：先跨模块把所有迁移点数出来，再逐个查。
+    lifecycle_source = inspect.getsource(asr_lifecycle_module).splitlines()
+    lifecycle_sites = [
+        index
+        for index, line in enumerate(lifecycle_source)
+        if "transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)" in line
+    ]
+    # lifecycle 侧的迁移点没有 runtime 字段可写，只能要求它的**调用方**补打点。
+    for index in lifecycle_sites:
+        owner = None
+        for back in range(index, -1, -1):
+            stripped = lifecycle_source[back].strip()
+            if stripped.startswith("def "):
+                owner = stripped[4:].split("(")[0]
+                break
+        assert owner is not None
+        callers = [
+            i for i, line in enumerate(source) if f"lifecycle.{owner}()" in line
+        ]
+        assert callers, (
+            f"lifecycle.{owner}() performs a SPEECH_CONFIRMED transition but no "
+            f"runtime call site was found to stamp the onset"
+        )
+        for caller in callers:
+            window = chr(10).join(source[caller : caller + 12])
+            assert "self._asr_turn_onset_at" in window, (
+                f"runtime line {caller + 1}: lifecycle.{owner}() transitions to "
+                f"SPEECH_CONFIRMED, so its caller must stamp the onset; got: "
+                f"{window!r}"
+            )
     transition = "lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)"
     stamp = "self._asr_turn_onset_at ="
     sites = [i for i, line in enumerate(source) if transition in line]
@@ -10191,3 +10227,75 @@ async def test_reconnect_listener_join_is_bounded() -> None:
 
     stuck_release.set()
     await asyncio.gather(listener, return_exceptions=True)
+
+
+@pytest.mark.unit
+async def test_pending_turn_does_not_inherit_the_previous_turn_endpoint() -> None:
+    """A turn started while the previous one drained must not be sealed by it.
+
+    ``_asr_turn_onset_at`` survives a normal turn end (only close/abort/error
+    clear it), and ``_asr_last_turn_endpointed_at`` is never cleared. If the
+    pending-turn activation forgets to re-stamp the onset, Core takes the
+    PREVIOUS turn's onset as this record's ``started_at``, the previous seal
+    then satisfies ``sealed_at >= started_at``, and every frame captured for
+    the new utterance is rejected as post-endpoint — a silent text-only turn.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    previous_onset = time.monotonic() - 2.0
+    previous_seal = previous_onset + 1.0
+    runtime._asr_turn_onset_at = previous_onset          # 上一轮遗留，没人清
+    runtime._asr_turn_endpointed_at = None               # PROVIDER_FINAL 已清
+    runtime._asr_last_turn_endpointed_at = previous_seal  # 永不清
+    # pending turn 在上一轮排空期间被标记，之后才激活。
+    runtime._asr_turn_onset_at = previous_seal + 0.2
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=101)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 截止点是在第一次 staging（或 final 冻结）时才认领的，所以要先喂一帧再判。
+    assert runtime._stage_independent_visual_frame(
+        "new-utterance-frame",
+        source="screen",
+        request_id="screen-new",
+        captured_at=record.started_at + 0.1,
+    )
+    assert record.endpoint_at is None, (
+        "the previous turn's seal must not become this turn's cutoff"
+    )
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "and this one?")
+
+    assert turn is not None
+    assert turn.images == ("new-utterance-frame",)
+
+
+@pytest.mark.unit
+async def test_stale_onset_from_a_previous_turn_would_bind_the_old_seal() -> None:
+    """Pin the failure mode itself, so the onset stamp cannot silently regress."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    previous_onset = time.monotonic() - 1.0
+    previous_seal = previous_onset + 0.5
+    # 模拟"激活 pending turn 时忘了补 onset"：留着上一轮的 onset。
+    runtime._asr_turn_onset_at = previous_onset
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = previous_seal
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=102)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    runtime._stage_independent_visual_frame(
+        "post-seal-frame",
+        source="screen",
+        request_id="screen-post",
+        captured_at=previous_seal + 0.5,
+    )
+    # 这就是 bug 的形状：截止点被钉在一个已经过去的时刻，本轮的帧全被拒。
+    assert record.endpoint_at == previous_seal
+    assert runtime._snapshot_core_multimodal_turn(turn_id, "lost") is None

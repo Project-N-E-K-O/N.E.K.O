@@ -586,6 +586,10 @@ class IndependentAsrRuntime:
         # 当"用户开口时刻"会把整段重连等待算进去，重连期间拍的帧全被判成不属于
         # 这段发声。
         self._asr_pending_speech_onset_at: float | None = None
+        # 上一回合还在排空（DRAINING）时用户就接着说了：pending turn 的真实开口时刻
+        # 是 mark_pending_turn_speech() 那一刻，不是后面 begin_pending_turn() 激活的
+        # 时刻。lifecycle 硬要求 DRAINING 才能标记，所以这个值必然晚于上一轮封口。
+        self._asr_pending_turn_onset_at: float | None = None
         self._asr_turn_endpointed_at: float | None = None
         # 与上面那个一样在封口时刻打点，但**不在 PROVIDER_FINAL 时清掉**。Core 要
         # 到 transcript 派发之后才冻结多模态回合，那时上面那个已经是 None 了；
@@ -955,6 +959,8 @@ class IndependentAsrRuntime:
         if state is VoiceLifecycleState.DRAINING:
             if event.kind == "continuous":
                 lifecycle.mark_pending_turn_speech()
+                if self._asr_pending_turn_onset_at is None:
+                    self._asr_pending_turn_onset_at = time.monotonic()
                 self._asr_pending_detector_candidate = event.candidate
             return
         if state in {
@@ -1130,6 +1136,8 @@ class IndependentAsrRuntime:
         state = lifecycle.snapshot.state
         if state is VoiceLifecycleState.DRAINING:
             lifecycle.mark_pending_turn_speech()
+            if self._asr_pending_turn_onset_at is None:
+                self._asr_pending_turn_onset_at = time.monotonic()
             return wake_is_current()
         if state in {
             VoiceLifecycleState.LOCAL_LISTEN,
@@ -1348,6 +1356,7 @@ class IndependentAsrRuntime:
                     return
                 state = lifecycle.snapshot.state
                 lifecycle.discard_pending_turn()
+                self._asr_pending_turn_onset_at = None
                 self._asr_pending_speech_confirmed = False
                 self._asr_pending_speech_onset_at = None
                 self._asr_pending_detector_candidate = None
@@ -1420,6 +1429,7 @@ class IndependentAsrRuntime:
                 await self._asr_transcript_dispatcher.wait_idle()
         if state is VoiceLifecycleState.DRAINING:
             lifecycle.discard_pending_turn()
+            self._asr_pending_turn_onset_at = None
             self._asr_pending_speech_confirmed = False
             self._asr_pending_speech_onset_at = None
             self._asr_pending_detector_candidate = None
@@ -2305,6 +2315,7 @@ class IndependentAsrRuntime:
         self._asr_turn_endpointed_at = None
         self._asr_turn_audio_started_at = None
         self._asr_turn_onset_at = None
+        self._asr_pending_turn_onset_at = None
         self._asr_first_partial_recorded = False
         watchdog = self._asr_rejection_watchdog_task
         self._asr_rejection_watchdog_task = None
@@ -3166,6 +3177,8 @@ class IndependentAsrRuntime:
             }
         ):
             lifecycle.mark_pending_turn_speech()
+            if self._asr_pending_turn_onset_at is None:
+                self._asr_pending_turn_onset_at = time.monotonic()
             return
         if (
             lifecycle is not None
@@ -3492,9 +3505,22 @@ class IndependentAsrRuntime:
             return
         if lifecycle.snapshot.state is not VoiceLifecycleState.WARM_IDLE:
             lifecycle.discard_pending_turn()
+            self._asr_pending_turn_onset_at = None
             self._asr_pending_detector_candidate = None
             return
         payload = lifecycle.begin_pending_turn()
+        # begin_pending_turn() 内部完成 SPEECH_CONFIRMED 迁移（lifecycle.py），是第
+        # 五个迁移点 —— 之前给另外四处补 onset 打点时漏了它，因为守卫只扫本模块的
+        # 字面量。不补的话 _asr_turn_onset_at 还留着**上一轮**的值（它只在
+        # close/abort/error 才清），Core 会拿上一轮的 onset 当本回合 started_at，于是
+        # 上一轮保留的封口时刻反过来成了本回合的截止点，本回合之后拍的每一帧都被
+        # accepts() 拒掉 —— 整轮退化成纯文本。
+        self._asr_turn_onset_at = (
+            self._asr_pending_turn_onset_at
+            if self._asr_pending_turn_onset_at is not None
+            else time.monotonic()
+        )
+        self._asr_pending_turn_onset_at = None
         if not payload:
             return
         turn_token = self._capture_turn_token(lifecycle)

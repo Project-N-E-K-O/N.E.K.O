@@ -3604,6 +3604,7 @@ class LifecycleMixin:
         reset_starting_count=True,
         after_memory_settlement=None,
         memory_settlement_timeout=15.0,
+        preserve_pending_input=False,
     ):  # 与Core API断开连接
         # 「用户/前端主动结束启动」信号：只有前端发来的 end_session / pause_session
         # （by_server=False 且 reset_starting_count=True，见 websocket_router）才计。
@@ -3785,7 +3786,8 @@ class LifecycleMixin:
         # 重置输入缓存状态
         async with self.input_cache_lock:
             self.session_ready = False
-            self.pending_input_data.clear()
+            if not preserve_pending_input:
+                self.pending_input_data.clear()
             self._clear_pending_context_appends()
 
         self.last_time = None

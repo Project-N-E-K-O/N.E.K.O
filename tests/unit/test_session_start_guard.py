@@ -1,7 +1,7 @@
 import asyncio
 import time
 from queue import Queue
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -36,6 +36,28 @@ def _make_inactive_manager(*, starting_count=1):
     mgr._teardown_tts_runtime = _teardown_tts_runtime
     return mgr
 
+
+def _make_active_manager():
+    """A manager that actually reaches the main teardown (not inactive-early).
+
+    The inactive-early branch has its own pending_input_data clear (already gated
+    on reset_starting_count), so a test that takes that path passes for an
+    unrelated reason. This one must go through the active teardown.
+    """
+    mgr = _make_inactive_manager(starting_count=0)
+    mgr.is_active = True
+    mgr.session = AsyncMock()
+    mgr.pending_session = None
+    mgr.final_swap_task = None
+    mgr.background_preparation_task = None
+    mgr.state = MagicMock()
+    mgr.state.reset = AsyncMock()
+    mgr.sync_message_queue = MagicMock()
+    mgr.message_handler_task = None
+    mgr._activity_tracker = MagicMock()
+    mgr._master_emotion = MagicMock()
+    mgr._focus_scorer = MagicMock()
+    return mgr
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -605,3 +627,39 @@ async def test_cross_mode_start_skips_restart_when_websocket_replaced_during_wai
     await start_task
 
     restart_mock.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_active_end_session_preserves_pending_input_for_an_in_place_swap():
+    """An in-place swap to the offline session must not drop cached input.
+
+    ``_ensure_offline_session_for_text_input`` flips ``session_ready`` off and
+    then awaits ``end_session``; every concurrent text/attachment task caches
+    into ``pending_input_data`` during that window, and clearing it there loses
+    those inputs silently.
+    """
+    mgr = _make_active_manager()
+    cached = [{"input_type": "text", "data": "typed mid-handoff"}]
+    mgr.pending_input_data = list(cached)
+
+    await LLMSessionManager.end_session(
+        mgr,
+        by_server=True,
+        reset_starting_count=False,
+        preserve_pending_input=True,
+    )
+
+    assert mgr.pending_input_data == cached
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_active_end_session_still_clears_pending_input_by_default():
+    """A genuine session end still clears: stale cache must not survive."""
+    mgr = _make_active_manager()
+    mgr.pending_input_data = [{"input_type": "text", "data": "typed mid-handoff"}]
+
+    await LLMSessionManager.end_session(mgr, by_server=True)
+
+    assert mgr.pending_input_data == []

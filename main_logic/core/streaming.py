@@ -313,7 +313,16 @@ class StreamingMixin:
         self._starting_input_mode = "text"
         try:
             if self.session:
-                await self.end_session(reset_starting_count=False)
+                # preserve_pending_input：这次 teardown 是「就地换成 offline 会话」
+                # 的一步，不是会话结束。session_ready 在上面已经置 False，所以拆
+                # session 的整个 await 窗口里，并发的 text / 附件任务都会把消息缓存
+                # 进 pending_input_data；end_session 默认会把这个队列清空，那些输入
+                # 就在用户毫无察觉的情况下没了。重建完成后由
+                # _flush_pending_input_data 正常放出去。
+                await self.end_session(
+                    reset_starting_count=False,
+                    preserve_pending_input=True,
+                )
         finally:
             self._starting_session_count = max(0, self._starting_session_count - 1)
             if self._starting_session_count == 0:
