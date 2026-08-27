@@ -106,3 +106,36 @@ def test_pending_host_message_status_contract() -> None:
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_pending_queue_caps_match_what_the_node_harness_stubs() -> None:
+    """The .cjs harness declares these constants in its own vm context.
+
+    That is necessary -- it runs the functions in isolation -- but it means
+    changing the source values does NOT change the harness, so a quota could be
+    widened to the shared total and every behavioural test would stay green.
+    This is the assertion that fails instead.
+    """
+    import re
+
+    source = (ROOT / "static" / "app" / "app-chat-adapter.js").read_text(encoding="utf-8")
+    harness = (
+        ROOT / "tests" / "frontend" / "plugin_chat_pending_status.test.cjs"
+    ).read_text(encoding="utf-8")
+
+    def _value(text: str, name: str) -> str:
+        found = re.search(rf"{name}\s*=\s*(\d+)", text)
+        assert found, f"{name} not found"
+        return found.group(1)
+
+    for name in ("_PENDING_HOST_ASSISTANT_MAX", "_PENDING_HOST_PLUGIN_MAX"):
+        assert _value(source, name) == _value(harness, name), (
+            f"{name} drifted between the source and the node harness"
+        )
+
+    # The plugin lane must stay strictly smaller than the assistant lane: the
+    # point is that a plugin burst cannot cost the user assistant output, and
+    # equal budgets would make the two lanes interchangeable in review.
+    assert int(_value(source, "_PENDING_HOST_PLUGIN_MAX")) < int(
+        _value(source, "_PENDING_HOST_ASSISTANT_MAX")
+    )
