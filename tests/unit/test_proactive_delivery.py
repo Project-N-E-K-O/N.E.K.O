@@ -1091,3 +1091,103 @@ def test_split_passes_text_only_callbacks_through_untouched() -> None:
 
     assert taken == cbs
     assert overflow == []
+
+
+# ---------------------------------------------------------------------------
+# Queue budget: what the manager may HOLD, vs what one release may send.
+#
+# CALLBACK_IMAGE_MAX_* bound a single model turn. The queue itself had only a
+# TTL, so cues piling up while the user talks (the claim keeps being denied)
+# could hold hundreds of MB of base64 with nothing to stop them.
+# ---------------------------------------------------------------------------
+
+
+def _img_of_decoded_size(decoded_bytes: int) -> str:
+    """A base64 string whose approx decoded size is decoded_bytes."""
+    return "A" * ((decoded_bytes + 2) // 3 * 4)
+
+
+def test_queue_budget_numbers_are_the_agreed_ones():
+    """Pin the figures; every other test below derives from them."""
+    from main_logic import proactive_delivery as pd
+
+    assert pd.QUEUED_CUE_MAX_COUNT == 50
+    assert pd.QUEUED_IMAGE_MAX_TOTAL_BYTES == 4 * pd.CALLBACK_IMAGE_MAX_TOTAL_BYTES
+
+
+@pytest.mark.asyncio
+async def test_queue_depth_is_bounded_and_drops_are_acked():
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    loop = asyncio.get_running_loop()
+    overflow = 15
+    acks = []
+    for i in range(pd.QUEUED_CUE_MAX_COUNT + overflow):
+        fut = loop.create_future()
+        acks.append(fut)
+        mgr.submit(
+            {"text": f"cue-{i}", pd.DELIVERY_ACK_FUTURE_KEY: fut},
+            coalesce_key=f"k{i}",
+        )
+
+    assert len(mgr._queue) == pd.QUEUED_CUE_MAX_COUNT
+    # Dropped producers were TOLD, not left waiting on a future forever --
+    # the same contract a TTL drop honours.
+    resolved = [f for f in acks if f.done()]
+    assert len(resolved) == overflow
+    assert all(f.result() is False for f in resolved)
+
+
+def test_an_important_waiting_cue_survives_a_flood_of_trivial_ones():
+    """The property that makes the drop policy defensible.
+
+    Dropping the oldest would let a burst of unimportant cues evict the
+    important one that has been waiting longest — the same failure shape that
+    made a shared image cap unworkable.
+    """
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    important = {"text": "important"}
+    mgr.submit(important, priority=9, coalesce_key="important")
+
+    for i in range(pd.QUEUED_CUE_MAX_COUNT * 2):
+        mgr.submit({"text": f"noise-{i}"}, priority=0, coalesce_key=f"n{i}")
+
+    queued = [c.callback for c in mgr._queue]
+    assert important in queued
+    assert len(mgr._queue) == pd.QUEUED_CUE_MAX_COUNT
+
+
+def test_queued_image_bytes_are_bounded_independently_of_count():
+    """Count and bytes are independent axes: few cues can still be huge."""
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    one_turn = pd.CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    # Ten turns' worth in ten cues — far under the count cap, far over bytes.
+    for i in range(10):
+        mgr.submit(
+            {"text": f"img-{i}", "media_images": [_img_of_decoded_size(one_turn)]},
+            coalesce_key=f"i{i}",
+        )
+
+    assert len(mgr._queue) < 10, "byte ceiling never fired"
+    total = sum(mgr._cue_image_bytes(c) for c in mgr._queue)
+    assert total <= pd.QUEUED_IMAGE_MAX_TOTAL_BYTES
+
+
+def test_text_only_cues_are_not_charged_image_bytes():
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    for i in range(pd.QUEUED_CUE_MAX_COUNT):
+        mgr.submit({"text": f"plain-{i}"}, coalesce_key=f"p{i}")
+
+    assert len(mgr._queue) == pd.QUEUED_CUE_MAX_COUNT
+    assert sum(mgr._cue_image_bytes(c) for c in mgr._queue) == 0

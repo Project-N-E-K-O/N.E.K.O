@@ -94,6 +94,21 @@ CALLBACK_IMAGE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
 USER_PENDING_IMAGE_MAX_COUNT = 5
 PLUGIN_PENDING_IMAGE_MAX_COUNT = 3
 
+# What the manager queue may HOLD, as opposed to what one release may send.
+#
+# CALLBACK_IMAGE_MAX_* above bound a single model turn. The queue itself had
+# only a TTL, and nothing bounded its depth or its bytes: cues accumulate
+# precisely when the proactive claim keeps being denied (the user is talking),
+# so a plugin pushing images into a busy conversation could hold hundreds of MB
+# of base64 with nothing to stop it, each cue carrying its own full copy.
+#
+# The count matches the flood guard on pending_agent_callbacks, so a cue that
+# survives one queue is not arbitrarily dropped by the other. The byte ceiling
+# is four turns' worth of the documented per-turn budget -- generous enough
+# that ordinary backlog is untouched, finite enough to bound the worst case.
+QUEUED_CUE_MAX_COUNT = 50
+QUEUED_IMAGE_MAX_TOTAL_BYTES = 4 * CALLBACK_IMAGE_MAX_TOTAL_BYTES
+
 
 def approx_base64_decoded_bytes(encoded: str) -> int:
     """Decoded size of a base64 payload, without materializing the bytes."""
@@ -307,11 +322,50 @@ class ProactiveDeliveryManager:
         self._queue.append(
             _QueuedCue(eff, next(self._seq), key, callback, self._now())
         )
+        self._enforce_queue_budget()
         logger.debug(
             "[proactive%s] submit key=%r eff_priority=%d queue=%d",
             self._suffix(), key, eff, len(self._queue),
         )
         self._schedule_pump(0.0)
+
+    @staticmethod
+    def _cue_image_bytes(cue: "_QueuedCue") -> int:
+        images = cue.callback.get("media_images") if isinstance(cue.callback, dict) else None
+        if not isinstance(images, (list, tuple)):
+            return 0
+        return sum(
+            approx_base64_decoded_bytes(img) for img in images if isinstance(img, str)
+        )
+
+    def _enforce_queue_budget(self) -> None:
+        """Bound what the queue holds, by cue count and by queued image bytes.
+
+        Drops in REVERSE release order -- the cue that would have gone out last
+        goes first -- so an over-budget burst sheds its own least important,
+        most recent tail instead of the important cue that has waited longest.
+        Release order is (priority DESC, FIFO), so that victim is simply the
+        maximum sort_key.
+
+        Dropped cues are acked False, the same as a TTL drop: the producer is
+        told its cue will not be delivered rather than being left waiting.
+        """
+        if not self._queue:
+            return
+        queued_bytes = sum(self._cue_image_bytes(c) for c in self._queue)
+        while self._queue and (
+            len(self._queue) > QUEUED_CUE_MAX_COUNT
+            or queued_bytes > QUEUED_IMAGE_MAX_TOTAL_BYTES
+        ):
+            victim = max(self._queue, key=lambda c: c.sort_key)
+            self._queue.remove(victim)
+            queued_bytes -= self._cue_image_bytes(victim)
+            resolve_callback_delivery_ack(victim.callback, False)
+            logger.info(
+                "[proactive%s] dropping queued cue key=%r reason=queue_budget "
+                "(depth=%d bytes=%d)",
+                self._suffix(), victim.coalesce_key, len(self._queue), queued_bytes,
+            )
 
     def retract(self, callback: dict) -> bool:
         """Remove a not-yet-released callback from the manager queue."""
