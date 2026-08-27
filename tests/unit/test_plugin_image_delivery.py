@@ -2474,3 +2474,35 @@ async def test_model_fetch_bounds_a_trickling_media_endpoint(monkeypatch):
     elapsed = _time.monotonic() - started
 
     assert elapsed < 2.0, f"a trickling endpoint held the fetch for {elapsed:.1f}s"
+
+
+@pytest.mark.asyncio
+async def test_httpx_timeouts_are_reported_as_timeouts(monkeypatch):
+    """httpx.TimeoutException is NOT a builtin TimeoutError.
+
+    Its MRO is TransportError -> RequestError -> HTTPError -> Exception, so a
+    connect/read/pool timeout would land in the generic branch and report 502,
+    reporting a slow upstream with the same code as a broken one.
+    """
+    import httpx
+
+    from main_routers import plugin_media_router as pmr
+
+    assert not issubclass(httpx.TimeoutException, TimeoutError)
+
+    class _Stream:
+        async def __aenter__(self):
+            raise httpx.ReadTimeout("slow")
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        pmr, "get_internal_http_client",
+        lambda: type("C", (), {"stream": lambda self, *a, **k: _Stream()})(),
+    )
+    monkeypatch.setattr(pmr.runtime, "resolve_user_plugin_base", lambda: "http://127.0.0.1:1")
+
+    with pytest.raises(Exception) as raised:
+        await pmr.get_plugin_media("abc123")
+    assert getattr(raised.value, "status_code", None) == 504

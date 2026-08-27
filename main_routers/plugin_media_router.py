@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import re
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from starlette.responses import Response
 
@@ -98,7 +99,13 @@ async def get_plugin_media(image_id: str) -> Response:
                     raise HTTPException(status_code=502, detail="media too large")
     except HTTPException:
         raise
-    except TimeoutError:
+    except (TimeoutError, httpx.TimeoutException):
+        # httpx.TimeoutException does NOT inherit from the builtin TimeoutError
+        # (TransportError -> RequestError -> HTTPError), so connect/read/pool
+        # timeouts would otherwise fall into the generic branch and report 502
+        # -- hiding a slow upstream behind the same code as a broken one
+        # (CodeRabbit). asyncio.TimeoutError IS the builtin on 3.11, so the
+        # total deadline above is already covered by the first arm.
         raise HTTPException(status_code=504, detail="plugin media timed out") from None
     except Exception:
         raise HTTPException(status_code=502, detail="plugin media unavailable") from None
