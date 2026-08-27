@@ -1050,6 +1050,52 @@ def test_model_image_budget_matches_the_documented_plugin_contract() -> None:
     assert character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES == 8 * 1024 * 1024
 
 
+def test_staged_quotas_match_the_documented_plugin_contract() -> None:
+    """The guide now states the per-TURN staging quotas, not just per push.
+
+    The 8 above is the per-push ceiling and stays true. What was never written
+    down is that text-mode `read` images are staged rather than sent, so one
+    turn can carry several pushes' worth -- and the maintainer chose to keep
+    the resulting nine rather than trim across sources.
+    """
+    from pathlib import Path
+
+    from main_logic import proactive_delivery as pd
+
+    guide = Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
+    text = guide.read_text(encoding="utf-8")
+
+    # The figures the guide prints, tied to the constants that enforce them, so
+    # changing a quota without the doc (or the reverse) fails here.
+    assert f"| 用户自己的截图 / 摄像头帧 | {pd.USER_PENDING_IMAGE_MAX_COUNT} |" in text
+    assert f"| 插件 `read` 图片 | {pd.PLUGIN_PENDING_IMAGE_MAX_COUNT} |" in text
+    user_mib = pd.USER_PENDING_IMAGE_MAX_BYTES // (1024 * 1024)
+    plugin_mib = pd.PLUGIN_PENDING_IMAGE_MAX_BYTES // (1024 * 1024)
+    assert f"| {pd.USER_PENDING_IMAGE_MAX_COUNT} | {user_mib} MiB |" in text
+    assert f"| {pd.PLUGIN_PENDING_IMAGE_MAX_COUNT} | {plugin_mib} MiB |" in text
+
+    # The stated turn total must be what the quotas actually add up to
+    # (both lanes plus the single proactive slot).
+    turn_total = (
+        pd.USER_PENDING_IMAGE_MAX_COUNT + pd.PLUGIN_PENDING_IMAGE_MAX_COUNT + 1
+    )
+    assert f"一个回合最多可能带 {turn_total} 张图" in text
+
+
+def test_the_guide_does_not_promise_ordering_the_model_path_cannot_keep() -> None:
+    """parts are documented as ordered; only chat rendering honours that.
+
+    The model path filters images out of the ordered list and aggregates text,
+    so interleaved caption/image pairs do not survive. Rather than leave the
+    promise standing, the guide now scopes it.
+    """
+    from pathlib import Path
+
+    guide = Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
+    text = guide.read_text(encoding="utf-8")
+    assert "**进模型的那条路不保序**" in text
+
+
 @pytest.mark.asyncio
 async def test_model_path_caps_image_count_per_push(monkeypatch) -> None:
     """Images past the count cap never reach the model or the fetcher."""

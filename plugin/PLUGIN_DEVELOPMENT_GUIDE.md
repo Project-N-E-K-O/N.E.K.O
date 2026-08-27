@@ -290,7 +290,7 @@ schema 见
 ctx.push_message(
     visibility=[],                  # ["chat"] / ["hud"] / ["chat","hud"] / []
     ai_behavior="respond",          # "respond" / "read" / "blind"
-    parts=[                         # 有序的内容 parts
+    parts=[                         # 有序的内容 parts（chat 保序；模型侧见下方限制）
         {"type": "text",  "text": "看这个"},
         {"type": "image", "data": img_bytes, "mime": "image/png"},
         # 以下三种当前只在 schema 中占位，AI 注入链路 warn-drop，
@@ -371,6 +371,23 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。
 >   `session.stream_image(base64)`）。任意外部 URL 仍会被拒绝，避免把远端抓取
 >   引入 agent event 投递路径。单条消息最多向模型注入 8 张、合计 8 MiB 图片；
 >   超出的 image parts 仍可按 `visibility` 显示，但不会进入模型上下文。
+> - 上面的 8 张 / 8 MiB 是**单次 push** 的上限。文字模式下 `ai_behavior="read"`
+>   的图不是立刻发给模型，而是先暂存、等用户下次开口时一起送出，所以**一个回合**
+>   里可能攒着好几次 push 的图。暂存按来源分开计额，互不侵蚀：
+>
+>   | 来源 | 张数 | 字节 |
+>   | --- | --- | --- |
+>   | 用户自己的截图 / 摄像头帧 | 5 | 16 MiB |
+>   | 插件 `read` 图片 | 3 | 8 MiB |
+>   | 主动搭话遗留的屏幕截图 | 1（独立单槽，带 TTL） | — |
+>
+>   超额时裁掉的**永远是同一来源里最旧的那张**——插件推得再猛也拿不走用户的帧，
+>   反之亦然。所以一个回合最多可能带 9 张图，比单次 push 的 8 张略多，这是有意的：
+>   共用一个总额度就必须在两个来源之间挑一个牺牲，而那没有正确答案。
+> - `parts` 的顺序在 **chat 渲染**里是保留的（文字和图按你给的次序出现）。但
+>   **进模型的那条路不保序**：图片会被拆出来先注入，文字合成一段随后给出。所以
+>   别依赖「说明 A、图 A、说明 B、图 B」这种交错来让模型把说明和图对应起来——
+>   要对应就把说明写进同一段文字里（例如「第一张是…，第二张是…」）。
 > - `visibility=["chat"]` 可显示 image parts；HUD 通知目前只渲染 text part，
 >   不显示 image part。
 > - `audio` / `video` 当前没有对应的 realtime 注入通道（`stream_audio` 是 PCM 实时
