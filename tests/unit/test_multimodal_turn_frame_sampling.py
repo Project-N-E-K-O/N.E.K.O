@@ -546,3 +546,45 @@ async def test_unshrinkable_multimodal_item_fails_the_turn_instead_of_the_item()
             (_jpeg_b64(900, 900),),
             turn_id="turn-oversized",
         )
+
+
+async def test_cancelled_after_history_commit_does_not_requeue_attachments():
+    """History cannot be rolled back, so the attachments must not come back."""
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = ["attachment"]
+    client._conversation_history = []
+
+    async def commit_then_cancel(*_args, **_kwargs):
+        # stream_text 已经把带图的 HumanMessage 追加进去，随后被下一句话打断。
+        client._conversation_history.append(object())
+        raise asyncio.CancelledError()
+
+    client.stream_text = commit_then_cancel
+
+    assert await client.submit_multimodal_turn(
+        "look",
+        ("frame",),
+        turn_id="turn-1",
+    ) is False
+
+    # 附件已经在上下文里了；放回队列会让下一轮再发一遍，配上无关的 transcript。
+    assert client._pending_images == []
+
+
+async def test_cancelled_before_history_commit_still_requeues_attachments():
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = ["attachment"]
+    client._conversation_history = []
+
+    async def cancel_before_commit(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    client.stream_text = cancel_before_commit
+
+    assert await client.submit_multimodal_turn(
+        "look",
+        ("frame",),
+        turn_id="turn-1",
+    ) is False
+
+    assert client._pending_images == ["attachment"]

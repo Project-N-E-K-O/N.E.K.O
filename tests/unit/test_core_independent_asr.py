@@ -9977,3 +9977,52 @@ async def test_endpoint_cutoff_survives_provider_final_clearing_the_live_field()
     assert record.endpoint_at == sealed_at
     assert turn is not None
     assert turn.images == ("spoken-frame",)
+
+
+@pytest.mark.unit
+async def test_frame_validated_during_lifecycle_notification_joins_the_turn() -> None:
+    """Speech onset, not record creation, is the ownership boundary."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_audio_started_at = onset
+
+    # 语音已确认，Core 还卡在 _send_asr_lifecycle_state 的投递里；这一帧就是这段
+    # 发声的开头（用户开口时指的东西），它先于 record 落地。
+    assert runtime._stage_independent_visual_frame(
+        "onset-frame",
+        source="screen",
+        request_id="screen-onset",
+        captured_at=onset + 0.01,
+    )
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=98)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("onset-frame",)
+
+
+@pytest.mark.unit
+async def test_frame_captured_before_the_onset_is_still_a_prior_turn_frame() -> None:
+    """Widening the window to the onset must not reach into the previous turn."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+
+    assert runtime._stage_independent_visual_frame(
+        "prior-turn-frame",
+        source="screen",
+        request_id="screen-prior",
+        captured_at=onset - 1.0,
+    )
+    runtime._asr_turn_audio_started_at = onset
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=99)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+
+    assert runtime._snapshot_core_multimodal_turn(turn_id, "new question") is None

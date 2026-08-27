@@ -1801,10 +1801,12 @@ class LifecycleMixin:
                             orphan_session = expected_session
 
                             async def _reap_handoff_session_after_listener_exit():
-                                try:
-                                    await stuck_listener
-                                except (asyncio.CancelledError, Exception):
-                                    pass
+                                # 先关会话，再（有界地）等 listener。能走到这条路
+                                # 的前提就是 listener 吞掉了取消、停不下来；先等它
+                                # 就等于让 WebSocket 永远开着，而那个脱缰的 listener
+                                # 会在 Core 已经宣告会话结束之后继续回调。
+                                # OmniRealtimeClient.close() 会先同步摘掉 socket，
+                                # 所以立刻发起才是止血的那一步。
                                 try:
                                     await orphan_session.close()
                                 except Exception as reap_err:
@@ -1813,6 +1815,17 @@ class LifecycleMixin:
                                         self.lanlan_name,
                                         reap_err,
                                     )
+                                try:
+                                    await asyncio.wait(
+                                        {stuck_listener},
+                                        timeout=getattr(
+                                            self,
+                                            "_core_voice_listener_cancel_timeout_s",
+                                            2.0,
+                                        ),
+                                    )
+                                except (asyncio.CancelledError, Exception):
+                                    pass
 
                             reaper = asyncio.create_task(
                                 _reap_handoff_session_after_listener_exit()

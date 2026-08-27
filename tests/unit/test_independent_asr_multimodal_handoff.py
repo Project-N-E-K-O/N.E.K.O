@@ -509,11 +509,14 @@ async def test_handoff_listener_cancel_timeout_fail_closes_active_session() -> N
     assert teardown_order == ["close_asr", "session_ended"]
     candidate.submit_multimodal_turn.assert_not_awaited()
     candidate.close.assert_awaited_once_with()
-    old_session.close.assert_not_awaited()
 
-    listener_release.set()
+    # 孤儿会话必须**立刻**关，不能等那个已经证明停不下来的 listener：
+    # 否则 WebSocket 永远开着，脱缰的 listener 还会在 Core 宣告会话结束之后继续
+    # 回调（Codex P1）。
     await real_wait_for(old_session_closed.wait(), 1.0)
     old_session.close.assert_awaited_once_with()
+
+    listener_release.set()
 
 
 async def test_new_user_turn_during_candidate_connect_cancels_old_handoff() -> None:

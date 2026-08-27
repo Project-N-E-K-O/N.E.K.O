@@ -622,13 +622,54 @@ class AsrRuntimeMixin:
         for previous in self._core_multimodal_turns.values():
             previous.invalidated.set()
         self._core_multimodal_turns.clear()
-        self._core_multimodal_turns[turn_id] = _CoreMultimodalTurnRecord(
+        # 所有权的起点是**语音确认那一刻**，不是这行代码执行的时刻：两者之间隔着
+        # _send_asr_lifecycle_state() 的投递 await，期间落地的帧是这段发声真正的
+        # 开头（用户开口时指的东西）。runtime 已经在每个 SPEECH_CONFIRMED 点记了
+        # _asr_turn_audio_started_at，直接用它；只有在它足够新（TTL 之内）时才采
+        # 信，免得残值把窗口往前拉到上一轮。
+        registered_at = time.monotonic()
+        started_at = registered_at
+        onset = getattr(
+            getattr(self, "_asr_runtime", None),
+            "_asr_turn_audio_started_at",
+            None,
+        )
+        onset_known = (
+            isinstance(onset, (int, float))
+            and 0.0 <= registered_at - float(onset)
+            <= self._independent_visual_frame_ttl_s
+        )
+        if onset_known:
+            started_at = float(onset)
+        record = _CoreMultimodalTurnRecord(
             turn_id=turn_id,
             session_epoch=token.ingress.session_epoch,
             route_generation=self._voice_input_transition_generation,
             start_image_generation=self._independent_visual_generation,
-            started_at=time.monotonic(),
+            started_at=started_at,
         )
+        self._core_multimodal_turns[turn_id] = record
+        # 缓存里那张如果就是在这个窗口里拍的，直接并进来。生成号基线同样要让开
+        # 它，否则 accepts() 会以 generation 为由把它挡在外面；而单槽缓存只留最新
+        # 一张，更早的本来就找不回来了。
+        #
+        # 只有拿到可信的 onset 时才这么做。拿不到时时间戳区分不了「上一轮的残帧」
+        # 和「本轮开头的帧」——monotonic 在 Windows 上是 ~15ms 粒度，注册时刻和刚
+        # 才那帧的拍摄时刻完全可能相等——此时必须退回生成号基线这条硬判据，
+        # 保住"绝不复用上一轮的帧"。
+        latest = self._latest_independent_visual_frame
+        if (
+            onset_known
+            and latest is not None
+            and latest.session_epoch == record.session_epoch
+            and latest.route_generation == record.route_generation
+            and latest.captured_at >= record.started_at
+        ):
+            record.start_image_generation = min(
+                record.start_image_generation,
+                latest.generation - 1,
+            )
+            record.observe(latest)
 
     def _snapshot_core_multimodal_turn(
         self,

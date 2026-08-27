@@ -143,6 +143,8 @@ class _MediaMixin:
             # staging 之后、子任务真正消费之前挤进队列，然后被本轮整批吞掉——用户
             # 那张图既配错了发言，也不再能给它自己的追问用。顺带失败路径也不需要
             # 再回滚一段共享队列。
+            history = getattr(self, "_conversation_history", None)
+            history_len_before = len(history) if isinstance(history, list) else None
             try:
                 await self._run_external_voice_stream(
                     text,
@@ -150,9 +152,22 @@ class _MediaMixin:
                 )
             except BaseException as exc:
                 # 本轮帧是 invocation-local 的，失败即消失；但取走的那段用户附件
-                # 是共享状态，必须放回队头，否则一次失败的 ASR 回合会把用户明确
-                # 投递的图吃掉。
-                if attachments and isinstance(pending, list):
+                # 是共享状态，一次失败的 ASR 回合不该把用户明确投递的图吃掉。
+                #
+                # 只在这一轮**还没进 history** 时放回。被后一句话打断时，
+                # stream_text 可能已经把带图的 HumanMessage 追加进去了，那些附件
+                # 已经在上下文里；此时再放回队列，下一轮会把同一批图再发一遍，配
+                # 上一段无关的 transcript。history 回滚不了，就以它为准。
+                committed_to_history = (
+                    history_len_before is not None
+                    and isinstance(history, list)
+                    and len(history) > history_len_before
+                )
+                if (
+                    attachments
+                    and isinstance(pending, list)
+                    and not committed_to_history
+                ):
                     pending[0:0] = attachments
                 if isinstance(exc, self._ExternalVoiceSubmitCancelled):
                     return False
