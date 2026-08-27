@@ -179,6 +179,56 @@ describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
     expect(lastEmit(emitted)).toEqual({ custom: {} })
   })
 
+  it('overlay 数组比基线短时，编辑靠前的项不会丢掉后面的继承项', async () => {
+    const baseline = { hosts: ['a', 'b', 'c'] }
+    const { host, emitted } = mountEditor({ hosts: ['a'] }, baseline)
+    await nextTick()
+
+    const inputs = Array.from(host.querySelectorAll('input')) as HTMLInputElement[]
+    typeInto(inputs[1]!, 'b2')
+    await nextTick()
+
+    expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'b2', 'c'] })
+  })
+
+  it('往「比基线短」的 overlay 数组里添加项，追加在完整视图末尾', async () => {
+    const baseline = { hosts: ['a', 'b', 'c'] }
+    const { host, emitted } = mountEditor({ hosts: ['a'] }, baseline)
+    await nextTick()
+
+    const addBtn = Array.from(host.querySelectorAll('.arr > .add button')).pop() as HTMLButtonElement
+    addBtn.click()
+    await nextTick()
+
+    expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'b', 'c', ''] })
+  })
+
+  it('删除数组项按完整视图删，不会连带冲掉继承项', async () => {
+    const baseline = { hosts: ['a', 'b', 'c'] }
+    const { host, emitted } = mountEditor({ hosts: ['a'] }, baseline)
+    await nextTick()
+
+    const row = rowFor(host, '0')
+    ;(row.querySelector(':scope > .ops button') as HTMLButtonElement).click()
+    await nextTick()
+
+    expect(lastEmit(emitted)).toEqual({ hosts: ['b', 'c'] })
+  })
+
+  it('数组项内的字段「重置」写回基线值，而不是把字段删掉', async () => {
+    // 数组整体替换，没有继承回填 —— 摘掉键就等于把 servers[0].host
+    // 从生效配置里删了。
+    const baseline = { servers: [{ host: 'h1', port: 80 }] }
+    const { host, emitted } = mountEditor({ servers: [{ host: 'mine', port: 80 }] }, baseline)
+    await nextTick()
+
+    const row = rowFor(host, 'host')
+    ;(row.querySelector(':scope > .ops button') as HTMLButtonElement).click()
+    await nextTick()
+
+    expect(lastEmit(emitted)).toEqual({ servers: [{ host: 'h1', port: 80 }] })
+  })
+
   it('overlay 数组比基线短时，补齐中间位置取基线值而不是留空洞', async () => {
     const baseline = { hosts: ['a', 'b', 'c'] }
     const { host, emitted } = mountEditor({ hosts: ['a'] }, baseline)

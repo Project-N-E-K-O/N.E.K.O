@@ -12,6 +12,7 @@
               @update:model-value="(val) => updateObjectKey(k, val)"
               :baseline-value="baselineChild(k)"
               :path="childPath(k)"
+              :replace-semantics="replaceSemantics"
             />
           </div>
           <div class="ops">
@@ -20,7 +21,7 @@
               size="small"
               type="primary"
               text
-              @click="removeObjectKey(k)"
+              @click="resetObjectKey(k)"
             >
               {{ t('common.reset') }}
             </el-button>
@@ -77,20 +78,12 @@
               @update:model-value="(val) => updateArrayIndex(idx, val)"
               :baseline-value="baselineArrayItem(idx)"
               :path="childPath(String(idx))"
+              :replace-semantics="true"
             />
           </div>
           <div class="ops">
-            <el-button
-              v-if="arrayHasIndex(idx)"
-              size="small"
-              type="danger"
-              text
-              @click="removeArrayIndex(idx)"
-            >
+            <el-button size="small" type="danger" text @click="removeArrayIndex(idx)">
               {{ t('common.delete') }}
-            </el-button>
-            <el-button v-else size="small" type="primary" text @click="restoreArrayIndex(idx)">
-              {{ t('common.reset') }}
             </el-button>
           </div>
         </div>
@@ -130,6 +123,10 @@ interface Props {
   modelValue: any
   path?: string
   baselineValue?: any
+  // 数组在后端是整体替换，数组项内部没有「未覆盖就继承基线」这回事：
+  // 写回什么，生效的就是什么。这条上下文沿数组项往下传递，决定「重置」
+  // 是把键摘掉退回继承，还是必须把基线值显式写回去。
+  replaceSemantics?: boolean
 }
 
 const props = defineProps<Props>()
@@ -341,7 +338,7 @@ function updateObjectKey(k: string, v: any) {
   // 这条语义，界面上还显示着继承内容。所以把键本身摘掉让它退回继承；摘完自己
   // 也空了就继续向上冒泡。基线里没有的键是 profile 自己建的空表，属显式意图，
   // 保留。
-  if (isEmptyPlainObject(v) && asPlainObject(baselineChild(k)) !== null) {
+  if (!props.replaceSemantics && isEmptyPlainObject(v) && asPlainObject(baselineChild(k)) !== null) {
     delete next[k]
   } else {
     next[k] = v
@@ -349,8 +346,21 @@ function updateObjectKey(k: string, v: any) {
   emitUpdate(next)
 }
 
-// 「重置」与「删除」落到同一个动作：把键移出 overlay。
-// 基线里有该键就退回继承，没有就是彻底移除自定义键。
+// 可继承上下文里「重置」= 把键摘掉退回继承；替换语义下没有回填，
+// 摘掉等于把该字段从生效配置里删了（例如 servers[0].host），
+// 所以必须把基线值显式写回。
+function resetObjectKey(k: string) {
+  if (!isValidKeySegment(k)) return
+  if (!props.replaceSemantics) {
+    removeObjectKey(k)
+    return
+  }
+  const next = { ...overlayObject.value }
+  next[k] = baselineChild(k)
+  emitUpdate(next)
+}
+
+// 「删除」始终是把键移出 overlay。
 function removeObjectKey(k: string) {
   if (!isValidKeySegment(k)) return
   const next = { ...overlayObject.value }
@@ -358,23 +368,17 @@ function removeObjectKey(k: string) {
   emitUpdate(next)
 }
 
+// 数组在后端是整体替换，overlay 里存的必须是完整数组。所以写回的基础必须与
+// 界面渲染的是同一个视图（overlay 优先、缺位取基线）—— 只拷稀疏 overlay 会让
+// 增、删、改把界面上看得见的继承项一起冲掉。
 function currentArray(): any[] {
-  return Array.isArray(displayValue.value) ? [...displayValue.value] : []
-}
-
-function arrayHasIndex(idx: number) {
-  return Array.isArray(displayValue.value) && idx < displayValue.value.length
+  return [...arrayItems.value]
 }
 
 function updateArrayIndex(idx: number, v: any) {
   const a = currentArray()
-  // overlay 数组比 baseline 短时，界面照样显示后面的继承项。补齐中间位置必须
-  // 取 baseline 的对应元素 —— 填 undefined 会在整体替换语义下变成 null 空洞，
-  // 后端 tomli_w 也序列化不了。
-  const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
-  while (a.length < idx) a.push(b[a.length])
-  if (a.length === idx) a.push(v)
-  else a[idx] = v
+  if (idx < a.length) a[idx] = v
+  else a.push(v)
   emitUpdate(a)
 }
 
@@ -391,25 +395,13 @@ function baselineArrayItem(idx: number) {
 
 function rowClassForArrayIndex(idx: number) {
   if (kind.value !== 'array') return ''
-  const a = Array.isArray(displayValue.value) ? displayValue.value : []
+  const a = Array.isArray(props.modelValue) ? props.modelValue : []
   const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
   if (idx < a.length && idx >= b.length) return 'diff-added'
-  if (idx >= a.length && idx < b.length) return 'diff-deleted'
-  if (idx < a.length && idx < b.length) {
-    if (!deepEqual(a[idx], b[idx])) return 'diff-modified'
-  }
+  // 只在基线里、overlay 还没覆盖到的位置是「继承」，不标已删除（同对象侧）
+  if (idx >= a.length) return ''
+  if (idx < b.length && !deepEqual(a[idx], b[idx])) return 'diff-modified'
   return ''
-}
-
-function restoreArrayIndex(idx: number) {
-  const a = currentArray()
-  const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
-  if (idx >= 0 && idx < b.length) {
-    while (a.length < idx) a.push(b[a.length])
-    if (a.length === idx) a.push(b[idx])
-    else a[idx] = b[idx]
-    emitUpdate(a)
-  }
 }
 
 function addArrayItem() {
