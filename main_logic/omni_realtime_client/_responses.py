@@ -1505,9 +1505,20 @@ class _ResponseMixin:
                 "prompt_ephemeral: skipped — StepFun visual analysis is pending"
             )
             return False
+        # 独立 ASR 给会话上了原始帧栅栏：麦克风路线归 Core，帧不许走 provider 连
+        # 接，但 stage_multimodal_frame 仍然为「主动观察」把缓存喂得温热。栅栏期还
+        # 把 has_vision 算成真的话，下面那次 native inject 必被栅栏拒掉、整条主动搭
+        # 话连文本一起发不出去；而屏幕共享期间帧持续到达，缓存一直被重新装填，于是
+        # 整场都哑了。栅栏期按无视觉处理：这一轮退化成纯文本，帧留着不消费，等栅栏
+        # 解除之后的某一轮再用。
+        raw_delivery_fenced = (
+            getattr(self, "_raw_visual_delivery_blocked", False)
+            and not external_visual_delivery
+        )
         has_vision = self._image_recognized_this_turn or (
             (self._supports_native_image or external_visual_delivery)
             and has_pending_frame
+            and not raw_delivery_fenced
         )
         # Snapshot the current image so concurrent stream_image() calls don't
         # cause us to mark a newer frame as consumed.

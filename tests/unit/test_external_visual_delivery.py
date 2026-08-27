@@ -678,3 +678,51 @@ async def test_gemini_text_only_external_asr_stays_text_only():
     assert len(content.parts) == 1
     assert content.parts[0].text == "只有转写"
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_proactive_nudge_still_speaks_while_raw_frames_are_fenced():
+    """A fenced raw route means no visual, not no nudge.
+
+    Independent ASR arms the session's raw-frame fence but keeps the
+    latest-frame cache warm for proactive observation. Treating that cached
+    frame as deliverable makes every proactive turn fail its native image
+    inject and return without sending even its text -- and a screen share
+    keeps rearming the cache, so she stays silent for the whole session.
+    """
+    client = _make_client("openai", "gpt-4o-realtime-preview")
+    client.ws = AsyncMock()
+    client._ai_recent_activity_time = 0
+    client._user_recent_activity_time = 0
+    client._client_vad_active = False
+    client._client_vad_last_speech_time = 0
+    injected: dict = {}
+
+    async def inject_text(text, **kwargs):
+        injected["text"] = text
+        injected.update(kwargs)
+        kwargs["on_completed"]()
+        return object()
+
+    client.inject_text_and_request_response = AsyncMock(side_effect=inject_text)
+    assert client._supports_native_image is True
+
+    # Core owns the frames while independent ASR runs: the cache is kept warm
+    # without the frame ever being allowed onto the provider connection.
+    client.block_raw_visual_delivery()
+    staged = client.stage_multimodal_frame(
+        DUMMY_IMAGE_B64,
+        source="screen",
+        request_id="independent-screen-1",
+    )
+    assert staged.accepted is True
+    assert client._latest_image_b64 == DUMMY_IMAGE_B64
+
+    delivered = await client.prompt_ephemeral("主动看看屏幕")
+
+    assert delivered is True
+    assert injected["text"] == "主动看看屏幕"
+    assert not injected.get("events_before_text")
+    # 帧没被消费：栅栏解除之后它还能用。
+    assert client._proactive_image_consumed is False
+    await client.close()

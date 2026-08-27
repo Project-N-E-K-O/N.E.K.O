@@ -3138,3 +3138,43 @@ async def test_callback_media_is_not_requeued_once_its_turn_reached_history(
     )
 
     assert mgr.pending_agent_callbacks == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_typed_text_cancels_the_in_flight_offline_stream_first(monkeypatch):
+    """Typed text must stop the producer, not just rotate the speech id.
+
+    An Offline session can be mid-stream on an independent-ASR external turn
+    (or an earlier text response). Both turns share ``_is_responding`` and both
+    append to the same history, and rotating ``current_speech_id`` without
+    cancelling leaves the old stream emitting deltas under the new id.
+    """
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    order = []
+    sid_at_interrupt = {}
+
+    async def _handle_interruption():
+        order.append("interrupt")
+        sid_at_interrupt["sid"] = mgr.current_speech_id
+
+    async def _stream_text(_text, **_kwargs):
+        order.append("stream_text")
+
+    session.handle_interruption = AsyncMock(side_effect=_handle_interruption)
+    session.stream_text = AsyncMock(side_effect=_stream_text)
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+    old_sid = mgr.current_speech_id
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "别说了，换个话题"},
+    )
+
+    assert order == ["interrupt", "stream_text"]
+    # 取消要发生在 speech_id 轮换**之前**，否则旧流的 delta 会挂到新 id 上。
+    assert sid_at_interrupt["sid"] == old_sid
+    assert mgr.current_speech_id != old_sid

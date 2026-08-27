@@ -297,8 +297,8 @@ class StreamingMixin:
         # ——把当前会话就地换成 offline 客户端——各自却都有一段 end_session +
         # start_session 的 await 窗口。不共闸的话，两条并发 handoff 会互相拆掉对方
         # 刚建好的 offline 会话：后进的那条 teardown 掉先进的成果，先进的那条随后
-        # 往已经退役的客户端提交。同名同序（handoff 闸在外、swap 闸在里）也保证不会
-        # 反向加锁。
+        # 往已经退役的客户端提交。加锁顺序与 lifecycle 那条一致（handoff 闸在外、
+        # swap 闸在里），不会反向。
         lock = getattr(self, '_multimodal_handoff_lock', None)
         if lock is None:
             lock = asyncio.Lock()
@@ -546,6 +546,28 @@ class StreamingMixin:
                     # 先打断当前正在播放的语音（旧speech_id），避免误打断新回复
                     async with self.lock:
                         interrupted_speech_id = self.current_speech_id
+
+                    # 再停掉**产出方**：offline 会话可能正跑着一轮独立 ASR 的
+                    # external turn（_external_voice_submit_task），或一轮还没收完
+                    # 的普通文本响应。下面就要轮换 speech_id，不先取消的话那条流
+                    # 会继续吐 delta，全部挂到这条新消息的 sid 上；两条流还共用
+                    # _is_responding，先收尾的那条把它翻 False，另一条被截断。
+                    # 与独立 ASR 准备回合前那次 handle_interruption() 同一判据。
+                    _interrupt = getattr(self.session, "handle_interruption", None)
+                    if callable(_interrupt):
+                        try:
+                            await _interrupt()
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as _interrupt_error:
+                            # 打断是尽力而为：一个坏掉的会话不该把用户刚打的这句话
+                            # 一起吞掉。失败时旧流可能继续吐 delta（就是这段要修的
+                            # 问题），但比丢消息轻。
+                            logger.warning(
+                                "[%s] text input could not interrupt the session: %s",
+                                self.lanlan_name,
+                                _interrupt_error,
+                            )
 
                     self.audio_resampler.clear()
                     await self._clear_tts_pipeline()

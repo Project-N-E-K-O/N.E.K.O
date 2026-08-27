@@ -768,15 +768,33 @@ class AsrRuntimeMixin:
         # 变了而直接 return —— 那句话既不落库也不提交，重叠发声等于抹掉用户完整的上
         # 一轮。invalidated 已经置上，足以让它放弃**图**；话必须留住。
         # 每条记录都在自己 dispatch 的 finally 里被 _abandon_core_voice_turn 按
-        # turn_id 移除，所以留在这个 dict 里的都是**还在飞**的回合。淘汰最旧的等于
-        # 挤掉一条还挂在 handle_input_transcript 上的 final —— 正是这个保留机制要防
-        # 的事。上限只当内存兜底，取一个真实场景摸不到的数。
+        # turn_id 移除。到不到上限，淘汰的判据都是**这条 final 派发完了没有**，不是
+        # 注册得早不早：挤掉一条还挂在 handle_input_transcript 上的 final，等于把用
+        # 户整句话丢掉。上限只对还没开始派发的记录（准备了却没等到 final 的回合）生
+        # 效，是内存兜底。
         while len(self._core_multimodal_turns) >= _MAX_LIVE_TURN_RECORDS:
-            oldest = min(
-                self._core_multimodal_turns.items(),
-                key=lambda item: item[1].registered_at,
-            )[0]
-            del self._core_multimodal_turns[oldest]
+            idle = [
+                key
+                for key, record in self._core_multimodal_turns.items()
+                if not record.dispatch_started
+            ]
+            if not idle:
+                # 全都在派发中。宁可让 dict 暂时超限也不丢数据 —— 真无限增长意味着
+                # 有 dispatch 卡死不返回，那是另一个 bug，不该在这里用丢用户发言来
+                # 掩盖它。
+                logger.warning(
+                    "[%s] %d independent ASR turn records are all mid-dispatch; "
+                    "keeping them past the cap rather than dropping a final",
+                    self.lanlan_name,
+                    len(self._core_multimodal_turns),
+                )
+                break
+            del self._core_multimodal_turns[
+                min(
+                    idle,
+                    key=lambda key: self._core_multimodal_turns[key].registered_at,
+                )
+            ]
         # 所有权的起点是**语音确认那一刻**，不是这行代码执行的时刻：两者之间隔着
         # _send_asr_lifecycle_state() 的投递 await，期间落地的帧是这段发声真正的
         # 开头（用户开口时指的东西）。runtime 已经在每个 SPEECH_CONFIRMED 点记了
@@ -3283,6 +3301,9 @@ class AsrRuntimeMixin:
             ]
             turn_record = self._core_multimodal_turns.get(external_turn_id)
             if turn_record is not None:
+                # 从这里到本函数的 finally（_abandon_core_voice_turn 按 turn_id 摘
+                # 掉它）之间，这条记录是**在派发中**的，后继的 prepare 不能挤掉它。
+                turn_record.dispatch_started = True
                 await self._await_independent_visual_validation_tasks(
                     external_turn_id
                 )
@@ -3342,21 +3363,28 @@ class AsrRuntimeMixin:
                     # the preview bubble and the clear must not remove it.
                     await self._send_core_asr_preview_clear(external_turn_id)
                 return
-            if (
-                multimodal_turn is not None
-                and turn_record is not None
-                and turn_record.invalidated.is_set()
-            ):
-                # 冻结之后到真正提交之间还有一串 await（handle_input_transcript、
-                # 会话准备……）。这期间后继发声可能已经 prepare 过，视觉所有权随之
-                # 交出去了 —— 那些帧属于新那一轮，不能再随这条 transcript 提交。
-                # 降级成纯文本（正常的无图路径），话仍然要送出去。
+            def visual_ownership_lost() -> bool:
+                """Whether a successor has taken this turn's frames since the freeze.
+
+                Deliberately kept out of ``route_still_core()``: losing the
+                frames must downgrade this turn to text, never drop the user's
+                sentence. Re-checkable, because every await between the freeze
+                and the provider call is another chance for a successor to
+                prepare -- the transcript send, preview restoration, the swap
+                barrier, replacement-session preparation.
+                """
+                return turn_record is not None and turn_record.invalidated.is_set()
+
+            def note_visual_ownership_lost() -> None:
                 logger.info(
                     "[%s] independent ASR turn %s superseded after freeze; "
                     "submitting transcript without its frames",
                     self.lanlan_name,
                     external_turn_id,
                 )
+
+            if multimodal_turn is not None and visual_ownership_lost():
+                note_visual_ownership_lost()
                 multimodal_turn = None
             if getattr(self, "response_backend", "realtime") == "offline_vlm":
                 # handle_input_transcript historically keys voice display off
@@ -3465,11 +3493,23 @@ class AsrRuntimeMixin:
                             raise RuntimeError(
                                 "DIRECT_MULTIMODAL_SUBMIT_UNAVAILABLE"
                             )
-                        await submit_multimodal(
-                            multimodal_turn.transcript,
-                            multimodal_turn.images,
-                            turn_id=multimodal_turn.turn_id,
-                        )
+                        if visual_ownership_lost():
+                            # 上面那次检查之后还隔着传 transcript、恢复预览、抢
+                            # swap 闸几段 await。这是**真正调用 provider 之前**的
+                            # 最后一个同步点。
+                            note_visual_ownership_lost()
+                            multimodal_turn = None
+                            await self._submit_core_voice_turn(
+                                event.text,
+                                turn_id=external_turn_id,
+                                session_ref=session_ref,
+                            )
+                        else:
+                            await submit_multimodal(
+                                multimodal_turn.transcript,
+                                multimodal_turn.images,
+                                turn_id=multimodal_turn.turn_id,
+                            )
                     else:
                         # Candidate connect must happen outside the swap lock so
                         # the healthy Realtime session remains usable until the
@@ -3477,6 +3517,17 @@ class AsrRuntimeMixin:
                         handoff_target = session_ref
             finally:
                 session_swap_lock.release()
+            if handoff_target is not None and visual_ownership_lost():
+                # 交接本身还要连一个候选会话，比直接提交更长。释放 swap 闸之后再
+                # 确认一次所有权，否则整段交接都在替后继那一轮搬帧。
+                note_visual_ownership_lost()
+                handoff_target = None
+                multimodal_turn = None
+                await self._submit_core_voice_turn(
+                    event.text,
+                    turn_id=external_turn_id,
+                    session_ref=session_ref,
+                )
             if handoff_target is not None:
                 delivered = await self._handoff_to_offline_vlm_and_submit(
                     multimodal_turn,

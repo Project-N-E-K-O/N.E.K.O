@@ -3918,16 +3918,21 @@ class IndependentAsrRuntime:
         await self._activate_pending_independent_turn(epoch)
         overlap_token = self._asr_overlap_onset_token
         overlap_onset_at = self._asr_overlap_onset_at
-        self._asr_overlap_onset_token = None
-        self._asr_overlap_onset_at = None
-        if overlap_token is not None:
-            # 单槽 onset 和已兑换成 credit 的旧周期同时存在时，这条**直接**重放服务
-            # 的是新的那个 onset。留着旧 credit 会让它稍后被另一个后继兑走，两轮的
-            # 视觉所有权边界互换 —— 有效帧被丢、上一轮的帧又去喂错回合。这条路径
-            # 已经接管了后继回合，旧 credit 到此作废。
-            self._asr_overlap_completed_token = None
-            self._asr_overlap_completed_onsets.clear()
-            self._asr_overlap_completed_turns = 0
+        if overlap_token is not None and self._asr_overlap_completed_turns > 0:
+            # 单槽 onset 和已兑换成 credit 的旧周期同时存在时，credit 排在前面。
+            # provider 的 FIFO 会先送那些周期的 endpoint/final，再轮到这个还活着的
+            # onset。此刻**直接**重放的话，先到的那个 endpoint 会把这条 onset 建出
+            # 来的记录封掉 —— 旧那轮的 transcript 配上新那轮的视觉窗口；而新那轮的
+            # endpoint 再没有 credit 可兑，它的 final 会被整条丢掉。
+            #
+            # 所以两边都不动：onset 留在单槽里，credit 留在队列里各自按 FIFO 兑付。
+            # credit 兑完之后，那条 final 走到这里时 _asr_overlap_completed_turns
+            # 已经归零，重放才轮到这个 onset。身份轮换（硬静音 / 中止 / 路由切换）
+            # 会由 _reset_asr_turn_state 把单槽和队列一起清掉，不会留下半边。
+            overlap_token = None
+        else:
+            self._asr_overlap_onset_token = None
+            self._asr_overlap_onset_at = None
         if (
             detector_ref is not None
             and self._asr_lifecycle is lifecycle_ref

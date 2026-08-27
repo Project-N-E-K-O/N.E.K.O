@@ -16,6 +16,7 @@ import pytest
 from main_logic.asr_client import VoiceIdentityActivationResult
 from main_logic.core import LLMSessionManager
 from main_logic.core.asr_runtime import AsrRuntimeMixin, _HotSwapAudioFrame
+from main_logic.core.multimodal_turn import _MAX_LIVE_TURN_RECORDS
 from main_logic.asr_client.runtime import (
     AsrRuntimeCallbacks,
     AsrStartResult,
@@ -9610,6 +9611,67 @@ async def test_final_superseded_after_freeze_submits_text_without_frames() -> No
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("delivery", ["direct_atomic", "handoff_required"])
+async def test_ownership_lost_between_the_freeze_check_and_the_provider_call(
+    delivery,
+) -> None:
+    """One check up front is not enough; every await is another window.
+
+    Between the post-freeze check and the actual provider call there is still
+    the transcript send, preview restoration, the swap barrier and (on the
+    handoff path) preparing a replacement session. A successor prepared in any
+    of those windows owns the frames, so the last synchronous point before the
+    call has to look again.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.submit_multimodal_turn = AsyncMock()
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    runtime._handoff_to_offline_vlm_and_submit = AsyncMock(return_value=True)
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "frame-of-the-old-turn",
+        source="screen",
+        request_id="screen-1",
+        captured_at=record.started_at,
+    )
+
+    def _take_ownership_then_report_delivery():
+        # 这一步排在冻结后那次检查**之后**、真正调 provider 之前。
+        successor = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(),
+            turn_id=token.turn_id + 1,
+        )
+        runtime._begin_core_multimodal_turn(
+            f"asr-{successor.ingress.session_epoch}-{successor.turn_id}",
+            successor,
+        )
+        return delivery
+
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        side_effect=_take_ownership_then_report_delivery
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=token,
+            provider="openai",
+            text="look here",
+        )
+    )
+
+    assert record.invalidated.is_set()
+    runtime.session.submit_multimodal_turn.assert_not_awaited()
+    runtime._handoff_to_offline_vlm_and_submit.assert_not_awaited()
+    runtime.session.submit_external_voice_turn.assert_awaited_once()
+    assert "look here" in runtime.session.submit_external_voice_turn.await_args.args
+
+
+@pytest.mark.unit
 async def test_visual_validation_wait_timeout_does_not_cancel_image_task() -> None:
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
@@ -10764,6 +10826,89 @@ async def test_successor_prepares_do_not_evict_a_still_running_final() -> None:
 
 
 @pytest.mark.unit
+async def test_a_dispatching_record_outlives_the_cap() -> None:
+    """The cap must never be the thing that drops an accepted final.
+
+    Raising the limit only moves the failure to a higher overlap count. What
+    decides eviction is whether that record's own dispatch has finished -- the
+    dict is bounded by removals from each dispatch's own finally, and a run of
+    prepares long enough to hit the cap must skip anything mid-dispatch.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    running = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=501)
+    running_id = f"asr-{running.ingress.session_epoch}-{running.turn_id}"
+    runtime._begin_core_multimodal_turn(running_id, running)
+    running_record = runtime._core_multimodal_turns[running_id]
+    running_record.dispatch_started = True
+
+    # 远多于上限的后继 prepare。
+    for turn_id in range(502, 502 + _MAX_LIVE_TURN_RECORDS * 3):
+        token = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(), turn_id=turn_id
+        )
+        runtime._begin_core_multimodal_turn(
+            f"asr-{token.ingress.session_epoch}-{token.turn_id}", token
+        )
+
+    assert runtime._core_multimodal_turns.get(running_id) is running_record
+    # 没在派发的那些仍然有界。
+    assert len(runtime._core_multimodal_turns) <= _MAX_LIVE_TURN_RECORDS
+
+
+@pytest.mark.unit
+async def test_the_real_dispatch_marks_its_record_before_it_can_be_evicted() -> None:
+    """The flag has to be set by the dispatch itself, not only in a test.
+
+    A guard that only checks the eviction predicate passes even when nothing
+    ever sets the flag; this drives the actual final through
+    ``_dispatch_core_asr_transcript`` and lets a long run of successor prepares
+    land while it is suspended.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    accepted = runtime.handle_input_transcript
+    seen_mid_dispatch = {}
+
+    async def accept_then_let_successors_pile_up(*args, **kwargs):
+        result = await accepted(*args, **kwargs)
+        for turn_id_n in range(601, 601 + _MAX_LIVE_TURN_RECORDS * 2):
+            successor = VoiceTurnToken(
+                ingress=runtime._capture_ingress_token(),
+                turn_id=turn_id_n,
+            )
+            runtime._begin_core_multimodal_turn(
+                f"asr-{successor.ingress.session_epoch}-{successor.turn_id}",
+                successor,
+            )
+        seen_mid_dispatch["record"] = runtime._core_multimodal_turns.get(turn_id)
+        return result
+
+    runtime.handle_input_transcript = accept_then_let_successors_pile_up
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=token,
+            provider="openai",
+            text="the sentence that must not be dropped",
+        )
+    )
+
+    assert seen_mid_dispatch["record"] is record
+    runtime.session.submit_external_voice_turn.assert_awaited_once()
+    # 自己的 finally 摘掉它。
+    assert turn_id not in runtime._core_multimodal_turns
+
+
+@pytest.mark.unit
 async def test_validation_tracking_picks_the_active_record_not_a_retained_one() -> None:
     """Retained records exist only so an in-flight final keeps its transcript.
 
@@ -10858,34 +11003,65 @@ async def test_prerecord_stash_still_arms_while_older_records_are_retained() -> 
 
 
 @pytest.mark.unit
-def test_direct_overlap_replay_drops_stale_completed_credits() -> None:
-    """A credit left queued would later be redeemed for a different successor.
+async def test_live_onset_replay_waits_behind_queued_overlap_credits() -> None:
+    """FIFO order decides who gets replayed, not who is newest.
 
-    When a completed onset/pause credit coexists with a newer single-slot onset
-    as the preceding delayed final arrives, this direct replay serves the newer
-    onset. Leaving the older credit queued swaps the two turns' visual ownership
-    boundaries later on.
+    A completed onset/pause cycle (turn 2) and a still-live onset (turn 3) can
+    coexist when turn 1's final is delayed. The provider FIFO still delivers
+    turn 2's endpoint/final first, so replaying turn 3 right now hands turn 2's
+    endpoint a turn-3 record: turn 2's transcript takes turn 3's visual window,
+    and turn 3's own endpoint finds no credit left, dropping its final.
     """
-    import inspect
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
 
-    from main_logic.asr_client import runtime as asr_runtime_module
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    # Turn 2: a full onset/pause cycle while turn 1 is ACTIVE -> one credit.
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    assert runtime._asr_overlap_completed_turns == 1
+    # Turn 3: onset only -- the user is still speaking, so it stays in the
+    # single slot instead of becoming a credit.
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    assert runtime._asr_overlap_onset_token is not None
 
-    source = inspect.getsource(asr_runtime_module).splitlines()
-    sites = [
-        index
-        for index, line in enumerate(source)
-        if "self._asr_overlap_onset_at = None" in line
-        and "overlap_onset_at = self._asr_overlap_onset_at"
-        in source[index - 2]
-    ]
-    assert sites, "direct overlap replay consumption site not found"
-    for index in sites:
-        window = chr(10).join(source[index : index + 12])
-        assert "self._asr_overlap_completed_onsets.clear()" in window, (
-            f"line {index + 1}: the direct replay must invalidate stale credits, "
-            f"got: {window!r}"
-        )
-        assert "self._asr_overlap_completed_turns = 0" in window
+    # Turn 1's delayed final. Turn 3 must NOT be replayed here.
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert runtime._asr_overlap_completed_turns == 1
+    assert runtime._asr_overlap_onset_token is not None
+
+    # Turn 2 redeems its own credit, in its own FIFO slot.
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    # Credits are drained, so turn 3's onset finally gets its replay.
+    assert runtime._asr_overlap_completed_turns == 0
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("third", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["first", "second", "third"]
+    assert runtime.handle_new_message.await_count == 3
+    assert runtime._asr_overlap_onset_token is None
 
 
 @pytest.mark.unit

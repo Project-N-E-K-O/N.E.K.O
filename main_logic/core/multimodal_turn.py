@@ -73,6 +73,9 @@ class _CoreMultimodalTurnRecord:
     # record 真正建立的时刻。started_at 可能被回拨到语音起点（overlap 的后继发声
     # 甚至早于上一轮封口），所以"这个封口属于本轮吗"不能拿 started_at 判。
     registered_at: float = 0.0
+    # 这条回合的 final 是否已经开始派发。派发中的记录绝不能被后继的 prepare 挤掉：
+    # 它一没，那条 final 回来做身份自检时就认为世界变了，用户整句话既不落库也不提交。
+    dispatch_started: bool = False
     first_frame: _IndependentVisualFrame | None = None
     last_frame: _IndependentVisualFrame | None = None
     # 语义端点时刻（monotonic 秒）。None = 这段发声还没结束。拍摄时间晚于它的帧
