@@ -586,11 +586,16 @@ class _StreamingMixin:
         # Plugin `read` frames sit in their own quota-bounded list. Instances
         # built via __new__ (tests, legacy callers) never ran __init__, so read
         # it the same defensive way the proactive slot is read above.
-        plugin_images = list(getattr(self, "_pending_plugin_images", None) or [])
+        #
+        # Only the DECISION is taken here. The contents are read later, next to
+        # the user's list, because the vision-model switch below is an await:
+        # a snapshot taken here would miss a plugin read that arrived during
+        # the switch and would still be erased by the clear afterwards, losing
+        # it from every turn (Codex P2).
         has_images = (
             bool(proactive_image)
             or len(self._pending_images) > 0
-            or len(plugin_images) > 0
+            or len(getattr(self, "_pending_plugin_images", None) or []) > 0
         )
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
@@ -623,6 +628,11 @@ class _StreamingMixin:
                         "url": f"data:image/jpeg;base64,{proactive_image}"
                     }
                 })
+            # Read HERE, after the model switch await above and with no
+            # suspension point between this and the clear below, so what is
+            # attached and what is cleared are the same set -- the property
+            # the user's list gets for free by being iterated in place.
+            plugin_images = list(getattr(self, "_pending_plugin_images", None) or [])
             # Ordering: the proactive screen leads (it is what the screen
             # showed BEFORE the user spoke), then plugin-supplied context, then
             # the user's own frames last so they sit closest to the text they

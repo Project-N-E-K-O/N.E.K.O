@@ -305,7 +305,7 @@ class ProactiveDeliveryManager:
 
     # ── producer ─────────────────────────────────────────────────────────
     def submit(self, callback: dict, *, priority: Any = 0,
-               coalesce_key: Optional[str] = None) -> None:
+               coalesce_key: Optional[str] = None) -> list[str]:
         key = self._resolve_key(callback, coalesce_key)
         eff = effective_priority(priority)
         # Coalesce: newest replaces any queued cue with the same key.
@@ -322,12 +322,17 @@ class ProactiveDeliveryManager:
         self._queue.append(
             _QueuedCue(eff, next(self._seq), key, callback, self._now())
         )
-        self._enforce_queue_budget()
+        evicted_keys = self._enforce_queue_budget()
         logger.debug(
             "[proactive%s] submit key=%r eff_priority=%d queue=%d",
             self._suffix(), key, eff, len(self._queue),
         )
         self._schedule_pump(0.0)
+        # Reported so the owner can rebuild per-key coalescing bookkeeping: a
+        # cue whose seq was recorded at submit time but which the budget then
+        # evicted must stop marking older same-key cues stale, or the older one
+        # gets retracted for a replacement that no longer exists (Codex P2).
+        return evicted_keys
 
     @staticmethod
     def _cue_image_bytes(cue: "_QueuedCue") -> int:
@@ -338,7 +343,7 @@ class ProactiveDeliveryManager:
             approx_base64_decoded_bytes(img) for img in images if isinstance(img, str)
         )
 
-    def _enforce_queue_budget(self) -> None:
+    def _enforce_queue_budget(self) -> list[str]:
         """Bound what the queue holds, by cue count and by queued image bytes.
 
         Drops in REVERSE release order -- the cue that would have gone out last
@@ -350,8 +355,9 @@ class ProactiveDeliveryManager:
         Dropped cues are acked False, the same as a TTL drop: the producer is
         told its cue will not be delivered rather than being left waiting.
         """
+        evicted_keys: list[str] = []
         if not self._queue:
-            return
+            return evicted_keys
         queued_bytes = sum(self._cue_image_bytes(c) for c in self._queue)
         while self._queue and (
             len(self._queue) > QUEUED_CUE_MAX_COUNT
@@ -360,12 +366,15 @@ class ProactiveDeliveryManager:
             victim = max(self._queue, key=lambda c: c.sort_key)
             self._queue.remove(victim)
             queued_bytes -= self._cue_image_bytes(victim)
+            if victim.coalesce_key:
+                evicted_keys.append(victim.coalesce_key)
             resolve_callback_delivery_ack(victim.callback, False)
             logger.info(
                 "[proactive%s] dropping queued cue key=%r reason=queue_budget "
                 "(depth=%d bytes=%d)",
                 self._suffix(), victim.coalesce_key, len(self._queue), queued_bytes,
             )
+        return evicted_keys
 
     def retract(self, callback: dict) -> bool:
         """Remove a not-yet-released callback from the manager queue."""

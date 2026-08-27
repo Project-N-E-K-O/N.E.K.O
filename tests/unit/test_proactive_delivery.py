@@ -1191,3 +1191,32 @@ def test_text_only_cues_are_not_charged_image_bytes():
 
     assert len(mgr._queue) == pd.QUEUED_CUE_MAX_COUNT
     assert sum(mgr._cue_image_bytes(c) for c in mgr._queue) == 0
+
+
+def test_budget_eviction_reports_the_keys_it_dropped():
+    """The manager coalesces on submit, so an eviction can strand bookkeeping.
+
+    If the newly submitted cue displaced an older same-key one and is then
+    itself evicted for budget, the key's recorded sequence still points at the
+    evicted cue. The owner uses that sequence to retract older same-key cues as
+    stale — so without this report BOTH are lost.
+    """
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    for i in range(pd.QUEUED_CUE_MAX_COUNT):
+        mgr.submit({"text": f"important-{i}"}, priority=9, coalesce_key=f"hi{i}")
+
+    # Least important and newest: the budget's own victim by construction.
+    evicted = mgr.submit({"text": "loser"}, priority=0, coalesce_key="loser-key")
+
+    assert evicted == ["loser-key"]
+    assert len(mgr._queue) == pd.QUEUED_CUE_MAX_COUNT
+    assert all(c.callback.get("text") != "loser" for c in mgr._queue)
+
+
+def test_submit_reports_nothing_when_nothing_was_evicted():
+    delivered = []
+    mgr = _make(delivered)
+    assert mgr.submit({"text": "fits"}, coalesce_key="k") == []

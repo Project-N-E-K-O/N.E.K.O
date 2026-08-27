@@ -1743,6 +1743,48 @@ class ProactiveMixin:
         if seq > latest.get(key, -1):
             latest[key] = seq
 
+    def _recompute_coalesce_latest(self, key: Any) -> None:
+        """Rebuild ``_coalesce_latest[key]`` from cues that actually survived.
+
+        A seq recorded at submission time stops being true the moment that cue
+        is rejected rather than queued — by the pending-queue flood guard, or
+        by the delivery manager's own budget. Left stale, it keeps marking
+        OLDER same-key cues stale, so the older one is retracted in favour of a
+        replacement that no longer exists anywhere and the key is lost
+        entirely (Codex P2).
+
+        Rebuilds from both live pending queues plus whatever the manager still
+        holds, so a manager-held cue whose seq was recorded at submit time is
+        counted as surviving.
+        """
+        key = str(key or "").strip()
+        if not key or not getattr(self, "_coalesce_latest", None):
+            return
+        surviving_seqs = [
+            entry.get("_coalesce_submit_seq")
+            for entry in (
+                list(self.pending_agent_callbacks)
+                + list(self.pending_extra_replies)
+            )
+            if isinstance(entry, dict)
+            and not entry.get(DELIVERY_RETRACTED_KEY)
+            and str(entry.get("coalesce_key") or "").strip() == key
+            and isinstance(entry.get("_coalesce_submit_seq"), int)
+        ]
+        manager_seq_reader = getattr(
+            getattr(self, "proactive_manager", None),
+            "latest_queued_coalesce_seq",
+            None,
+        )
+        if callable(manager_seq_reader):
+            manager_seq = manager_seq_reader(key)
+            if isinstance(manager_seq, int):
+                surviving_seqs.append(manager_seq)
+        if surviving_seqs:
+            self._coalesce_latest[key] = max(surviving_seqs)
+        else:
+            self._coalesce_latest.pop(key, None)
+
     def _coalesce_entry_is_stale(self, entry: Any) -> bool:
         """True when ``entry``'s coalesce_key has a NEWER recorded submission.
 
@@ -1840,7 +1882,15 @@ class ProactiveMixin:
                 self.lanlan_name,
             )
             return
-        self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
+        evicted_keys = self.proactive_manager.submit(
+            callback, priority=priority, coalesce_key=coalesce_key
+        )
+        # The manager coalesces on submit, so an over-budget eviction can drop
+        # the very cue that just displaced an older same-key one. Without this
+        # the key's recorded seq still points at the evicted cue and retracts
+        # the survivor too, losing both.
+        for evicted_key in (evicted_keys or ()):
+            self._recompute_coalesce_latest(evicted_key)
 
     def _drop_receipts_shadowed_by_terminal_result(
         self,
@@ -2684,35 +2734,8 @@ class ProactiveMixin:
                 and any(dropped is callback for dropped in flood_dropped)
                 and getattr(self, "_coalesce_latest", {}).get(new_key) == new_seq
             ):
-                # Flood rejection means this cue never became pending. Rebuild
-                # latest from entries that actually survived in either live
-                # queue. This also covers manager-held respond cues, whose seq
-                # was already recorded at submit time before this enqueue.
-                surviving_seqs = [
-                    entry.get("_coalesce_submit_seq")
-                    for entry in (
-                        list(self.pending_agent_callbacks)
-                        + list(self.pending_extra_replies)
-                    )
-                    if isinstance(entry, dict)
-                    and not entry.get(DELIVERY_RETRACTED_KEY)
-                    and str(entry.get("coalesce_key") or "").strip() == new_key
-                    and isinstance(entry.get("_coalesce_submit_seq"), int)
-                ]
-                delivery_manager = getattr(self, "proactive_manager", None)
-                manager_seq_reader = getattr(
-                    delivery_manager,
-                    "latest_queued_coalesce_seq",
-                    None,
-                )
-                if callable(manager_seq_reader):
-                    manager_seq = manager_seq_reader(new_key)
-                    if isinstance(manager_seq, int):
-                        surviving_seqs.append(manager_seq)
-                if surviving_seqs:
-                    self._coalesce_latest[new_key] = max(surviving_seqs)
-                else:
-                    self._coalesce_latest.pop(new_key, None)
+                # Flood rejection means this cue never became pending.
+                self._recompute_coalesce_latest(new_key)
             self._enforce_pending_extra_reply_queue_limit(
                 AGENT_CALLBACK_QUEUE_MAX_ITEMS
             )
