@@ -1730,6 +1730,32 @@ class LifecycleMixin:
                         or self.session is not current
                     ):
                         return False
+                    if visual_still_owned is not None and not visual_still_owned():
+                        # 与下面那条慢路径同一判据：这条快速路径同样隔着
+                        # prepare_external_voice_turn / handle_interruption /
+                        # handle_new_message / ensure_tts_pipeline_alive 几段
+                        # await，后继发声可以在其中任意一段拿走帧。丢帧只降级成
+                        # 纯文本，话照送。
+                        submit_text = getattr(
+                            current,
+                            'submit_external_voice_turn',
+                            None,
+                        )
+                        if not callable(submit_text):
+                            # 这条分支的既有风格是拿不到提交方法就 return False
+                            # （不像慢路径那样抛），保持一致。
+                            return False
+                        logger.info(
+                            '[%s] Offline submit lost frame ownership mid-flight; '
+                            'submitting turn %s without its frames',
+                            self.lanlan_name,
+                            turn.turn_id,
+                        )
+                        delivered = await submit_text(
+                            turn.transcript,
+                            turn_id=turn.turn_id,
+                        )
+                        return delivered is not False
                     delivered = await submit(
                         turn.transcript,
                         turn.images,

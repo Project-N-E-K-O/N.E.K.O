@@ -10916,6 +10916,39 @@ async def test_a_dispatching_record_outlives_the_cap() -> None:
 
 
 @pytest.mark.unit
+async def test_all_records_mid_dispatch_keeps_them_past_the_cap() -> None:
+    """When nothing is evictable the cap yields, it does not pick a victim.
+
+    Every record in the dict belongs to a final that is still being dispatched,
+    so evicting any of them drops a sentence the user already finished. Going
+    over the cap is the lesser failure: unbounded growth would mean a dispatch
+    that never returns, which is a different bug and must not be papered over
+    by discarding speech.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    for turn_id in range(701, 701 + _MAX_LIVE_TURN_RECORDS + 4):
+        token = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(), turn_id=turn_id
+        )
+        record_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        runtime._begin_core_multimodal_turn(record_id, token)
+        # 每一条都立刻进入派发，于是永远没有可淘汰的记录。
+        runtime._core_multimodal_turns[record_id].dispatch_started = True
+
+    assert len(runtime._core_multimodal_turns) == _MAX_LIVE_TURN_RECORDS + 4
+    assert all(
+        record.dispatch_started
+        for record in runtime._core_multimodal_turns.values()
+    )
+    # 各自的 dispatch 收尾时才回落到界内。
+    for record_id in list(runtime._core_multimodal_turns)[:4]:
+        runtime._abandon_core_voice_turn(record_id, session_ref=None)
+    assert len(runtime._core_multimodal_turns) == _MAX_LIVE_TURN_RECORDS
+
+
+@pytest.mark.unit
 async def test_the_real_dispatch_marks_its_record_before_it_can_be_evicted() -> None:
     """The flag has to be set by the dispatch itself, not only in a test.
 

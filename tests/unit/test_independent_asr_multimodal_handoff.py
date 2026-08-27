@@ -1230,3 +1230,56 @@ async def test_handoff_keeping_ownership_still_submits_the_frames():
         turn_id="turn-1",
     )
     candidate.submit_external_voice_turn.assert_not_awaited()
+
+
+async def test_existing_offline_fast_path_also_downgrades_on_lost_ownership():
+    """The fast path has its own awaits, so it needs the same check.
+
+    A session that is already Offline skips candidate construction, but still
+    goes through preparation/interruption/handle_new_message and the TTS
+    pipeline before submitting. A successor prepared in any of those windows
+    takes the frames; the sentence must still be answered, as text.
+    """
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.response_backend = "offline_vlm"
+    manager.handle_new_message = AsyncMock()
+
+    owned = {"frames": True}
+
+    async def lose_ownership_during_tts_startup() -> None:
+        owned["frames"] = False
+
+    manager.ensure_tts_pipeline_alive = AsyncMock(
+        side_effect=lose_ownership_during_tts_startup
+    )
+
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session.handle_interruption = AsyncMock()
+    session.submit_multimodal_turn = AsyncMock()
+    session.submit_external_voice_turn = AsyncMock(return_value=True)
+    manager.session = session
+    turn = SimpleNamespace(
+        transcript="what is this",
+        images=("raw-frame",),
+        turn_id="turn-1",
+    )
+
+    delivered = await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=session,
+        prepared_session=session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+        visual_still_owned=lambda: owned["frames"],
+    )
+
+    assert delivered is True
+    session.submit_multimodal_turn.assert_not_awaited()
+    session.submit_external_voice_turn.assert_awaited_once_with(
+        "what is this",
+        turn_id="turn-1",
+    )
