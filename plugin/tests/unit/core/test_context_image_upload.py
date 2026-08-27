@@ -708,9 +708,15 @@ def test_upload_waits_for_the_downlink_instead_of_sending_into_a_void(tmp_path):
         ctx = _ctx_with_downlink(tmp_path, _RecordingTransport(), ready=False)
         loop = asyncio.get_running_loop()
         with pytest.raises(TimeoutError) as raised:
-            await ctx._upload_image(
-                b"jpeg", mime="image/jpeg",
-                deadline=loop.time() + 0.3, timeout=0.3,
+            # Outer bound, same reason as the elapsed-budget test below: a
+            # regression that decouples the wait from the caller's deadline
+            # would make this hang rather than fail.
+            await asyncio.wait_for(
+                ctx._upload_image(
+                    b"jpeg", mime="image/jpeg",
+                    deadline=loop.time() + 0.3, timeout=0.3,
+                ),
+                timeout=2.0,
             )
         assert "downlink not ready" in str(raised.value)
 
