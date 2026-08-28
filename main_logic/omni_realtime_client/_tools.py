@@ -73,6 +73,14 @@ class _ToolBatch:
     entries: List[_ToolBatchEntry] = field(default_factory=list)
     collector: Optional[asyncio.Task] = None
     sealed: bool = False
+    # Whether every call of this batch is known. True from construction for
+    # Gemini (one event carries the whole list) and for a raw call with no
+    # response identity (nothing can be proven a sibling of it). A raw batch
+    # keyed by a response id stays open until that response terminates.
+    closed: bool = False
+    # Pulsed when an entry joins or the batch closes, so a collector that has
+    # run out of work can wake on either instead of sleeping out a poll.
+    changed: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 # Payload of the ``function_call_output`` sent for a call the client gave up
@@ -282,7 +290,50 @@ class _ToolingMixin:
         entry = _ToolBatchEntry(call=call, owner=owner, task=task)
         batch.entries.append(entry)
         self._tool_batch_entries_by_task()[task] = entry
+        batch.changed.set()
         return entry
+
+    def close_raw_tool_batch(self, response_id: str | None) -> None:
+        """Mark the batch a provider response issued as complete.
+
+        Called from the receive loop when that response terminates: no further
+        ``function_call_arguments.done`` can name it, so its collector may
+        answer as soon as its own calls settle. Without this the collector had
+        to guess, and a tool that finished before the receive loop had read
+        its sibling's event made it guess wrong -- it sealed a batch of one,
+        and the sibling opened a second batch, so the provider got two
+        continuations each missing the other's parallel output.
+        """
+
+        if not response_id:
+            return
+        batch = self._tool_batch_registry().get(
+            (
+                self._connection_generation,
+                getattr(self, "_tool_scope_generation", 0),
+                str(response_id),
+            )
+        )
+        if batch is None:
+            return
+        batch.closed = True
+        batch.changed.set()
+
+    def _raw_tool_batch_response_is_open(self, batch: _ToolBatch) -> bool:
+        """Whether the response that issued this batch can still add to it.
+
+        Evidence, not a timer: the batch is keyed by a response id, so it can
+        only grow while that response is the one this connection is tracking.
+        A provider that never announced a response leaves the tracked id None
+        and gets no grace at all -- which is the pre-batch behaviour, and the
+        right answer, since nothing there can prove two calls are siblings.
+        """
+
+        key = batch.registry_key
+        if key is None:
+            return False
+        tracked = self._current_response_id
+        return tracked is not None and str(tracked) == key[2]
 
     def _seal_tool_batch(self, batch: _ToolBatch) -> None:
         """Stop a batch from accepting siblings once its answer is going out.
@@ -479,6 +530,7 @@ class _ToolingMixin:
 
         collected: Dict[int, ToolResult] = {}
         poll_interval = self._TOOL_TASK_CANCEL_TIMEOUT_S
+        waited_for_closure = False
         while True:
             retired_tasks = self._retired_tool_tasks()
             pending = []
@@ -497,7 +549,29 @@ class _ToolingMixin:
                 elif task not in retired_tasks:
                     pending.append(task)
             if not pending:
-                break
+                if (
+                    batch.closed
+                    or waited_for_closure
+                    or not self._raw_tool_batch_response_is_open(batch)
+                ):
+                    break
+                # Every known call has settled, but the provider response that
+                # issued them has not terminated, so a sibling may still be
+                # announced. ONE grace round, not the backoff ramp: an event
+                # already sitting in the socket buffer arrives in microseconds,
+                # while a provider that never terminates its responses must not
+                # be able to hold every tool result for seconds. Falling
+                # through answers what is in hand -- the pre-batch shape.
+                waited_for_closure = True
+                batch.changed.clear()
+                try:
+                    await asyncio.wait_for(
+                        batch.changed.wait(),
+                        timeout=self._TOOL_TASK_CANCEL_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                continue
             # Deliberately NOT a total budget. Bailing out after a fixed
             # deadline would discard the result of a legitimately slow tool --
             # a long web lookup is not a stuck one, and dropping its output
@@ -563,7 +637,7 @@ class _ToolingMixin:
             open_batch = registry.get(key)
             if open_batch is not None and not open_batch.sealed:
                 return open_batch
-        batch = _ToolBatch(registry_key=key)
+        batch = _ToolBatch(registry_key=key, closed=key is None)
         if key is not None:
             registry[key] = batch
         return batch
@@ -627,7 +701,7 @@ class _ToolingMixin:
 
         # Gemini delivers the whole parallel batch in one ``tool_call`` event,
         # so this is complete on construction and never grows.
-        batch = _ToolBatch()
+        batch = _ToolBatch(closed=True)
         for call in calls:
             self._register_tool_batch_entry(
                 batch,

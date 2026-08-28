@@ -830,11 +830,34 @@ class _ResponseMixin:
         for owner, results in self._retire_tool_tasks_as_abandoned(tasks):
             if not results:
                 continue
-            await self._send_tool_result_gemini(
-                results,
-                provider_session=owner.provider_session,
-                owner=owner,
+            # BOUNDED, and shielded so the bound only releases US. The settle
+            # budget promises that the proactive message always gets out, and
+            # this write goes to the same session that just proved it can be
+            # slow: awaiting it outright would let a wedged session restore
+            # the unbounded tool-turn gate #2837 removed. Shielded rather than
+            # cancelled because the reply is still worth delivering late -- it
+            # just no longer gets to hold the notification.
+            send = self._create_tool_task(
+                self._send_tool_result_gemini(
+                    results,
+                    provider_session=owner.provider_session,
+                    owner=owner,
+                )
             )
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(send),
+                    timeout=self._TOOL_TASK_CANCEL_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                # Tracked as a tool task, so it is still awaited on close and
+                # its failure is still logged -- it simply no longer holds the
+                # notification.
+                logger.warning(
+                    "Gemini abandoned-call reply is still in flight after "
+                    "%.1fs; proceeding with the proactive inject",
+                    self._TOOL_TASK_CANCEL_TIMEOUT_S,
+                )
 
     def _settle_gemini_proactive_inject(
         self,

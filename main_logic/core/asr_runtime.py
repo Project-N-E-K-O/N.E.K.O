@@ -1121,8 +1121,28 @@ class AsrRuntimeMixin:
                 self.lanlan_name,
             )
 
-    async def _abort_independent_asr(self, reason: str) -> None:
+    async def _abort_independent_asr(
+        self,
+        reason: str,
+        *,
+        still_current: Callable[[], bool] | None = None,
+    ) -> None:
+        """Abort the independent run and drop the audio that belonged to it.
+
+        ``still_current`` is for callers that no longer hold the pipeline
+        transition lock across this: ``self._asr_runtime.abort`` is an await,
+        and a session restart or route replacement landing inside it installs
+        a NEW route. Invalidating afterwards would then clear the successor's
+        queued and hot-swap audio and drop its microphone input. Re-checked
+        after the await for exactly that reason -- checking only on entry
+        would leave the window this argument exists to close.
+        """
+
+        if still_current is not None and not still_current():
+            return
         await self._asr_runtime.abort(reason)
+        if still_current is not None and not still_current():
+            return
         self._invalidate_voice_pcm_sync(reason)
         await self._voice_input_registry.wait_idle()
 
@@ -1861,7 +1881,15 @@ class AsrRuntimeMixin:
         """
 
         if failure.independent_route:
-            await self._abort_independent_asr("audio_preprocessing_failed")
+            await self._abort_independent_asr(
+                "audio_preprocessing_failed",
+                # This phase runs without the pipeline transition lock, so a
+                # restart can install a newer route while the abort is in
+                # flight; its audio is not this failure's to clear.
+                still_current=lambda: self._asr_route_operation_matches(
+                    failure.route_operation_generation
+                ),
+            )
 
         def preprocessing_failure_is_current() -> bool:
             # The route-operation generation is deliberately NOT repeated here:

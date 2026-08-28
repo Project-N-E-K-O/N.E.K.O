@@ -2093,6 +2093,19 @@ class _TransportMixin:
                 elif event_type == "conversation.item.created":
                     self._response_arbiter.notify_item_created(event)
                 elif event_type == "response.done":
+                    # No further function call can name this response, so its
+                    # tool batch may answer as soon as its own calls settle.
+                    # Ahead of the finalize branches below on purpose: several
+                    # of them `continue`, and a stale or non-finalizing
+                    # terminal still proves the response is over.
+                    self.close_raw_tool_batch(
+                        _response_id_text(event.get("response_id"))
+                        or _response_id_text(
+                            (event.get("response") or {}).get("id")
+                            if isinstance(event.get("response"), dict)
+                            else None
+                        )
+                    )
                     finalize_response = (
                         self._response_arbiter.notify_response_terminal(event)
                     )
@@ -2466,13 +2479,20 @@ class _TransportMixin:
         """
 
         utterance = str(item_id) if item_id else ""
+        if utterance:
+            # Answered from the id list ALONE, and deliberately without
+            # consuming the id-less fallback marker. Transcription is
+            # asynchronous, so on a proxy that omitted `item_id` for the
+            # NEWER utterance an older identified transcript can arrive
+            # first; consuming the marker there would make that newer
+            # utterance's own id-less transcript read as an unscoped turn and
+            # retire tool work that legitimately belongs to it.
+            return utterance in self._raw_speech_started_scoped_item_ids
+        # Neither side carries identity: this is the pre-identity shape, and
+        # the flag is the only answer available. It is one-shot, so consume it.
         already_pending = self._raw_speech_started_scope_pending_transcript
         self._raw_speech_started_scope_pending_transcript = False
-        if not utterance:
-            # Neither side carries identity: this is the pre-identity shape,
-            # and the flag is the only answer available.
-            return already_pending
-        return utterance in self._raw_speech_started_scoped_item_ids
+        return already_pending
 
     def _on_connection_attached(self) -> None:
         """Mark a replacement connection as live and hand it the teardown latches.

@@ -6506,6 +6506,60 @@ async def test_a_live_route_releases_the_pipeline_failure_ingress_latch() -> Non
     assert runtime._voice_input_pipeline_failure_token is None
 
 
+async def test_stale_failure_abort_does_not_clear_successor_route_audio() -> None:
+    """A restart landing inside the abort keeps its own queued audio.
+
+    `_abort_independent_asr` invalidates the voice PCM sync AFTER awaiting the
+    runtime abort. That await is no longer covered by the pipeline transition
+    lock, so a session restart can install a newer route inside it -- and the
+    old failure would then clear the successor's queued and hot-swap audio and
+    drop its microphone input.
+    """
+
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "glm"
+    assert runtime._begin_voice_input_connection("socket-a") is True
+    runtime._voice_lease_owner = "core"
+    runtime._voice_lease_synchronized = True
+    abort_started = asyncio.Event()
+    release_abort = asyncio.Event()
+
+    async def blocking_abort(_reason: str) -> None:
+        abort_started.set()
+        await release_abort.wait()
+
+    runtime._asr_runtime.abort = AsyncMock(side_effect=blocking_abort)
+    invalidated: list[str] = []
+    runtime._invalidate_voice_pcm_sync = lambda reason: invalidated.append(reason)
+
+    failure = asyncio.create_task(
+        runtime._fail_voice_input_pipeline(
+            ingress_token=runtime._capture_ingress_token(),
+            session_ref=runtime.session,
+            audio_epoch=runtime._audio_stream_epoch,
+            pipeline_ref=runtime._voice_input_audio_pipeline,
+        )
+    )
+    await asyncio.wait_for(abort_started.wait(), 1)
+
+    # A newer route operation claims the route while the abort is in flight.
+    object.__setattr__(
+        runtime,
+        "_asr_route_operation_generation",
+        runtime._asr_route_operation_generation + 1,
+    )
+    release_abort.set()
+    await asyncio.wait_for(failure, 1)
+
+    assert invalidated == [], (
+        "the successor route owns the voice PCM sync now; this failure must "
+        "not clear it"
+    )
+    runtime.send_status.assert_not_awaited()
+
+
 async def test_pipeline_failure_from_replaced_connection_is_silent() -> None:
     runtime = _Runtime()
     runtime.is_active = True
