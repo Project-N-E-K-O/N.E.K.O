@@ -2922,3 +2922,120 @@ def test_public_resource_allowlist_accepts_a_symlinked_storage_root(tmp_path, mo
     inner.unlink()
     os.symlink(outside, inner)
     assert not is_public_avatar_tool_resource_path(link, f"{tool['id']}/default.png")
+
+
+def _flaky_lstat(monkeypatch, *targets):
+    """Make os.lstat fail for exactly these paths, as a busy network root would."""
+    real_lstat = os.lstat
+    wanted = {str(target) for target in targets}
+
+    def probe(path, *args, **kwargs):
+        if str(path) in wanted:
+            raise OSError(errno.EBUSY, "metadata temporarily unavailable")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", probe)
+
+
+def test_a_transient_record_probe_failure_never_condemns_a_healthy_tool(tmp_path, monkeypatch):
+    """The inner record probe must not report absence when the metadata read failed."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Healthy",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    record = store.root / tool["id"] / "record.json"
+    root_key = store._root_key()
+
+    _flaky_lstat(monkeypatch, record)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.read_record(tool["id"])
+    # 读不到元数据必须报成暂时性失败：报 tool_not_found 会让启动恢复把这个健康
+    # 道具判成「被证伪」，轻则隔离，重则在有中断证据时拿旧 backup 顶掉它。
+    assert raised.value.transient is True
+    assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
+
+    monkeypatch.undo()
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    assert [item["id"] for item in store.list_items()] == [tool["id"]]
+
+
+def test_a_failed_staging_probe_keeps_the_root_recovery_pending(tmp_path, monkeypatch):
+    """Skipping an unprobeable orphan while reporting success drops the retry."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.initialize()
+    orphan = store.root / ".local-12345678-1234-4123-8123-123456789abc.uploading"
+    orphan.mkdir()
+    root_key = store._root_key()
+
+    _flaky_lstat(monkeypatch, orphan)
+    try:
+        store.initialize()
+        # 孤儿没被清掉，就不能宣称恢复完成 —— 否则本进程内不会再重试，它继续
+        # 绕过配额计费并占着同一个 ID。
+        assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
+        assert orphan.is_dir()
+
+        monkeypatch.undo()
+        monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+        store.initialize()
+        assert not orphan.exists()
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+def test_a_failed_slot_probe_still_holds_the_tool_slot(tmp_path, monkeypatch):
+    """An unprobeable directory must not free a slot - absence is not proof of absence."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.limits["maxTools"] = 1
+    tool = _create_tool(
+        store,
+        name="First",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+
+    _flaky_lstat(monkeypatch, store.root / tool["id"])
+    with pytest.raises(AvatarToolStoreError) as raised:
+        _create_tool(
+            store, name="Second", change_mode="press-swap", change_meanings=["m"],
+            default_image=_png(), change_images=[_png()],
+        )
+    # 少算一个名额就能建出第 65 个，等目录重新可读时已经超限了。名额检查排在
+    # 配额检查之前，所以这里必须是名额拒绝，不能拿配额拒绝顶替。
+    assert raised.value.code == "tool_limit_reached"
+
+
+def test_a_failed_quota_probe_refuses_to_publish(tmp_path, monkeypatch):
+    """A total that cannot be established authoritatively must not authorise a write."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="First",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    store.limits["maxTools"] = 99
+
+    _flaky_lstat(monkeypatch, store.root / tool["id"] / "default.png")
+    with pytest.raises(AvatarToolStoreError) as raised:
+        _create_tool(
+            store, name="Second", change_mode="press-swap", change_meanings=["m"],
+            default_image=_png(), change_images=[_png()],
+        )
+    # 漏掉的字节会让 maxTotalBytes 形同虚设，所以算不准就必须拒绝写入。
+    assert raised.value.code == "avatar_tools_directory_unavailable"
+    assert raised.value.transient is True
+

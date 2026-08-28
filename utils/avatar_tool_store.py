@@ -151,20 +151,44 @@ def is_public_avatar_tool_resource_path(root: Path | str, path: object) -> bool:
     return candidate.is_file()
 
 
-def _probe_owned_directory(path: Path) -> tuple[bool, OSError | None]:
-    """Report whether ``path`` is a real directory, keeping I/O failures distinguishable.
+def _probe_entry(path: Path) -> tuple[str, int, OSError | None]:
+    """Classify a directory entry, keeping I/O failures distinguishable from absence.
 
-    ``Path.is_dir()`` collapses every ``OSError`` into ``False``. On a network-backed
-    or locked root that turns one transient metadata failure into "the directory is
-    gone", which is exactly the answer that unlocks the rollback path below.
+    ``Path.is_dir()`` / ``Path.is_file()`` collapse every ``OSError`` into ``False``.
+    On a network-backed or locked root that turns one transient metadata failure into
+    "it is not there", and "not there" is exactly the answer that unlocks destructive
+    recovery, frees a slot, or drops bytes from the quota total. Callers must decide
+    per site what an unknown entry means; none of them may treat it as absence.
+
+    Returns ``(kind, size, error)`` where kind is ``dir``/``file``/``other``/
+    ``absent``/``unknown``. ``lstat`` never follows symlinks, so a link reports
+    ``other`` rather than the type of whatever it points at.
     """
     try:
         status = os.lstat(path)
     except (FileNotFoundError, NotADirectoryError):
-        return False, None
+        return "absent", 0, None
     except OSError as exc:
-        return False, exc
-    return stat.S_ISDIR(status.st_mode), None
+        return "unknown", 0, exc
+    if stat.S_ISDIR(status.st_mode):
+        return "dir", status.st_size, None
+    if stat.S_ISREG(status.st_mode):
+        return "file", status.st_size, None
+    return "other", 0, None
+
+
+def _storage_total_unavailable() -> AvatarToolStoreError:
+    """Refuse to publish when the managed total cannot be established.
+
+    Silently dropping unreadable entries understates the total, which lets a create
+    or update pass ``maxTotalBytes`` and publish past the configured ceiling.
+    """
+    return AvatarToolStoreError(
+        "avatar_tools_directory_unavailable",
+        "Avatar tool storage is unavailable",
+        status_code=503,
+        transient=True,
+    )
 
 
 def _validate_name(value: object, *, maximum: int) -> str:
@@ -463,12 +487,14 @@ class AvatarToolStore:
             # 在盘上的 final，否则就是把用户的最新版本回滚掉。
             # 探测本身失败绝不能读成「不在」：那正好是放行回滚的那个答案，
             # 而回滚会拿旧 backup 盖掉盘上还好好的 final。读不到就留到下次。
-            final_present, probe_error = _probe_owned_directory(final)
+            final_kind, _, probe_error = _probe_entry(final)
+            final_present = final_kind == "dir"
             # 必须是真正的暂存目录：一个同名的普通文件（同步客户端、手工操作
             # 都可能留下）不构成「更新没走完」的证据，不能凭它放行回滚。
             interrupted = False
             if probe_error is None:
-                interrupted, probe_error = _probe_owned_directory(updating)
+                updating_kind, _, probe_error = _probe_entry(updating)
+                interrupted = updating_kind == "dir"
             if probe_error is not None:
                 defer(probe_error)
                 complete = False
@@ -500,7 +526,8 @@ class AvatarToolStore:
 
             backup_present = False
             if may_restore:
-                backup_present, probe_error = _probe_owned_directory(backup)
+                backup_kind, _, probe_error = _probe_entry(backup)
+                backup_present = backup_kind == "dir"
                 if probe_error is not None:
                     defer(probe_error)
                     complete = False
@@ -551,7 +578,19 @@ class AvatarToolStore:
                 or LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(candidate.name)
             ):
                 continue
-            if candidate.is_symlink() or not candidate.is_dir():
+            candidate_kind, _, probe_error = _probe_entry(candidate)
+            if probe_error is not None:
+                # 探测失败就跳过、却仍然报「恢复完成」，会让 ensure() 清掉待恢复
+                # 标记：上传孤儿继续绕过配额计费并占着同一个 ID，删除孤儿继续占
+                # 配额，而本进程内不会再重试。
+                logger.warning(
+                    "Deferring avatar tool staging cleanup for %s: %s",
+                    candidate.name,
+                    probe_error,
+                )
+                complete = False
+                continue
+            if candidate_kind != "dir":
                 continue
             remove_owned_directory(candidate)
         return complete
@@ -593,7 +632,19 @@ class AvatarToolStore:
         if not is_local_avatar_tool_id(tool_id):
             raise AvatarToolStoreError("invalid_tool_id", "Invalid local avatar tool ID")
         path = directory / "record.json"
-        if path.is_symlink() or not path.is_file():
+        record_kind, _, probe_error = _probe_entry(path)
+        if probe_error is not None:
+            # 读不到元数据不等于记录不在。在这里报成 tool_not_found（非 transient），
+            # 启动恢复就会把一个健康道具判成「被证伪」—— 轻则隔离，重则在有中断
+            # 证据时拿旧 backup 把它顶掉。外层目录探测已经守住这条判据，内层不能
+            # 再把它漏掉。
+            raise AvatarToolStoreError(
+                "record_invalid",
+                "Avatar tool record is invalid",
+                status_code=404,
+                transient=True,
+            ) from probe_error
+        if record_kind != "file":
             raise AvatarToolStoreError("tool_not_found", "Avatar tool does not exist", status_code=404)
         try:
             # 有界读取：畸形的多 GB record 只会被读走 64 KiB + 1 字节就出局，
@@ -987,11 +1038,15 @@ class AvatarToolStore:
         occupied = 0
         quarantined = _QUARANTINED_TOOL_IDS.get(self._root_key(), frozenset())
         for candidate in self.root.iterdir():
-            if (
-                candidate.is_symlink()
-                or not candidate.is_dir()
-                or not is_local_avatar_tool_id(candidate.name)
-            ):
+            if not is_local_avatar_tool_id(candidate.name):
+                continue
+            candidate_kind, _, probe_error = _probe_entry(candidate)
+            if probe_error is not None:
+                # 和下面「读不出记录照常占名额」同一条判据：少算一个，第 65 个道具
+                # 就能建出来，等目录重新可读时已经超限了。
+                occupied += 1
+                continue
+            if candidate_kind != "dir":
                 continue
             if candidate.name in quarantined:
                 # 隔离只认确定性损坏（内容与摘要不符），这类记录已经被证伪，
@@ -1020,15 +1075,19 @@ class AvatarToolStore:
             is_published = is_local_avatar_tool_id(directory.name)
             is_pending_delete = LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(directory.name) is not None
             is_update_backup = LOCAL_AVATAR_TOOL_BACKUP_PATTERN.fullmatch(directory.name) is not None
-            if (
-                directory.is_symlink()
-                or not directory.is_dir()
-                or not (is_published or is_pending_delete or is_update_backup)
-            ):
+            if not (is_published or is_pending_delete or is_update_backup):
+                continue
+            directory_kind, _, probe_error = _probe_entry(directory)
+            if probe_error is not None:
+                raise _storage_total_unavailable() from probe_error
+            if directory_kind != "dir":
                 continue
             for entry in directory.iterdir():
-                if entry.is_file() and not entry.is_symlink():
-                    total += entry.stat().st_size
+                entry_kind, entry_size, probe_error = _probe_entry(entry)
+                if probe_error is not None:
+                    raise _storage_total_unavailable() from probe_error
+                if entry_kind == "file":
+                    total += entry_size
         return total
 
     def delete_tool(self, tool_id: str) -> str:
