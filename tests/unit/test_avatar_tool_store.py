@@ -3157,3 +3157,55 @@ def test_directory_bytes_refuses_to_understate_the_total(tmp_path, monkeypatch):
     assert raised.value.code == "avatar_tools_directory_unavailable"
     assert raised.value.transient is True
 
+
+@pytest.mark.parametrize("occupant", ["file", "symlink"])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_a_foreign_occupant_at_the_final_path_defers_instead_of_being_deleted(
+    tmp_path, monkeypatch, occupant, interrupted
+):
+    """A non-directory squatting the final name is neither overwritten nor cleaned up."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Original",
+        change_mode="press-swap",
+        change_meanings=["the only surviving copy"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    final = store.root / tool["id"]
+    backup = store.root / f".{tool['id']}.backup"
+    shutil.copytree(final, backup)
+
+    # 正式目录被同步客户端或手工操作换成了别的东西。
+    shutil.rmtree(final)
+    if occupant == "file":
+        final.write_bytes(b"replaced by a sync client")
+    else:
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        try:
+            os.symlink(outside, final, target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError):
+            pytest.skip("creating a symlink needs privileges on this platform")
+
+    updating = store.root / f".{tool['id']}.updating"
+    if interrupted:
+        shutil.copytree(backup, updating)
+
+    root_key = store._root_key()
+    try:
+        store.initialize()
+
+        # 拿 backup 覆盖要先删掉占位的东西，那违反「恢复不替用户删除正式目录」。
+        kind, _, _ = avatar_tool_store._probe_entry(final)
+        assert kind != "absent", "recovery deleted whatever was sitting at the final path"
+        assert kind != "dir", "the stale backup was published over a foreign occupant"
+        # 而 backup 可能是这个道具仅存的副本，也不能顺手清掉。
+        assert backup.is_dir(), "the only surviving copy was cleaned up"
+        # 两条路都走不了，就必须留在待恢复状态，别宣称恢复完成。
+        assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+

@@ -504,6 +504,7 @@ class AvatarToolStore:
             # 而回滚会拿旧 backup 盖掉盘上还好好的 final。读不到就留到下次。
             final_kind, _, probe_error = _probe_entry(final)
             final_present = final_kind == "dir"
+            final_absent = final_kind == "absent"
             # 必须是真正的暂存目录：一个同名的普通文件（同步客户端、手工操作
             # 都可能留下）不构成「更新没走完」的证据，不能凭它放行回滚。
             interrupted = False
@@ -514,7 +515,22 @@ class AvatarToolStore:
                 defer(probe_error)
                 complete = False
                 continue
-            may_restore = interrupted or not final_present
+            # 只有「确实不在」才算没有东西会被牺牲。`not final_present` 把「这个
+            # 名字被别的东西占着」也算了进去，那是不一样的状态 —— 见下面的处置。
+            may_restore = interrupted or final_absent
+
+            if not final_present and not final_absent:
+                # 正式目录的名字被一个非本模块创建的东西占着（同步客户端或手工
+                # 操作留下的普通文件、软链接）。两个方向都不能走：拿 backup 覆盖
+                # 要先删掉用户的东西，违反「恢复不替用户删除正式目录」；直接清掉
+                # backup 又可能丢掉这个道具仅存的副本。保留现场，留待下次。
+                logger.warning(
+                    "Avatar tool final path %s is not a directory (%s); deferring recovery",
+                    final,
+                    final_kind,
+                )
+                complete = False
+                continue
             final_condemned = False
 
             if final_present:
