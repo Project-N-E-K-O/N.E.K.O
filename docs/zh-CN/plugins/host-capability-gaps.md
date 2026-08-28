@@ -1,6 +1,8 @@
 # 插件宿主能力缺口：audio / video parts 支持
 
-> 本页记录插件侧**无法自行绕过**的宿主能力缺口，结论均在本页引用的源码中
+> 本页记录插件**无法靠自己补齐**的宿主能力缺口。个别场景有受限的替代路径
+> （音频可借前端播放器，见下文），但那替代不了原生通道，视频则连替代都没有。
+> 结论均在本页引用的源码中
 > 核实：宿主行为看 `app/main_server/character_runtime.py` 与
 > `plugin/server/messaging/proactive_bridge.py`，wire 负载看
 > `plugin/core/context.py` + `plugin/settings.py`，临时媒体存储看

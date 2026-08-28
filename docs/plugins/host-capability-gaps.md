@@ -1,7 +1,9 @@
 # Plugin Host Capability Gaps: audio / video parts
 
-> This page records host-side capability gaps that plugins **cannot work
-> around** themselves. Every claim is verified against the sources it cites:
+> This page records host-side capability gaps that plugins **cannot close on
+> their own**. A couple of them have a limited workaround (audio can borrow the
+> frontend player, see below), but a workaround is not the native channel — and
+> video has none at all. Every claim is verified against the sources it cites:
 > `app/main_server/character_runtime.py` and
 > `plugin/server/messaging/proactive_bridge.py` for host behaviour,
 > `plugin/core/context.py` + `plugin/settings.py` for the wire payload,

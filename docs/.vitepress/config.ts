@@ -280,7 +280,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       entries: 'Entries & Parameters', router: 'Router (Code Splitting)', lifecycleCfg: 'Lifecycle',
       sdk: 'SDK Reference', migration: 'v0.9 Migration', dec: 'Decorators', ex: 'Examples', adv: 'Advanced Topics',
       hosted: 'Hosted UI', tool: 'LLM Tool Calling', claw: 'Agent Automation & QwenPaw', best: 'Best Practices',
-      upgrade: 'Rollback-safe Local Upgrades',
+      upgrade: 'Rollback-safe Local Upgrades', gaps: 'Host Capabilities & Gaps',
     },
     'zh-CN': {
       group: '插件开发', overview: '概览',
@@ -289,7 +289,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       entries: '入口与参数', router: 'Router（代码拆分）', lifecycleCfg: '生命周期',
       sdk: 'SDK 参考', migration: 'v0.9 迁移', dec: '装饰器', ex: '示例', adv: '进阶话题',
       hosted: 'Hosted UI', tool: 'LLM Tool Calling', claw: 'Agent 自动化与 QwenPaw', best: '最佳实践',
-      upgrade: '可回滚的本地插件升级',
+      upgrade: '可回滚的本地插件升级', gaps: '宿主能力与缺口',
     },
     ja: {
       group: 'プラグイン開発', overview: '概要',
@@ -298,7 +298,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       entries: 'エントリーとパラメータ', router: 'Router（コード分割）', lifecycleCfg: 'ライフサイクル',
       sdk: 'SDK リファレンス', migration: 'v0.9 移行', dec: 'デコレーター', ex: 'サンプル', adv: '高度なトピック',
       hosted: 'Hosted UI', tool: 'LLM ツール呼び出し', claw: 'Agent Automation & QwenPaw', best: 'ベストプラクティス',
-      upgrade: 'ロールバック可能なローカル更新',
+      upgrade: 'ロールバック可能なローカル更新', gaps: 'ホスト機能とギャップ',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -329,6 +329,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         ...(lang === 'ja' ? [] : [{ text: t.hosted, link: `${p}/plugins/hosted-ui` }]),
         { text: t.ex, link: `${p}/plugins/examples` },
         { text: t.adv, link: `${p}/plugins/advanced` },
+        ...(lang === 'ja' ? [] : [{ text: t.gaps, link: `${p}/plugins/host-capability-gaps` }]),
         { text: t.best, link: `${p}/plugins/best-practices` },
       ],
     },
