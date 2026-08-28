@@ -252,12 +252,25 @@ async def test_description_mode_stops_when_the_cue_image_is_rejected_early():
     client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
 
     real_stream_image = client.stream_image
+    sent_image_event_ids: list[str] = []
 
     async def _reject_right_after_send(image_b64, **kwargs):
         result = await real_stream_image(image_b64, **kwargs)
+        # 前提自证：拒绝必须发生在图**真的写出去之后**。少了这一步，一个在发送
+        # 前就返回 accepted=False 的实现同样能让本用例通过——那时文字也没发，
+        # 断言全绿却什么都没测到。
+        sent_image_event_ids.extend(
+            event["event_id"]
+            for event in _sent_events(client)
+            if event.get("type") == "input_image_buffer.append"
+            and event.get("event_id")
+        )
+        assert sent_image_event_ids, "图还没发出去，这条用例测不到它要测的东西"
+        assert bool(getattr(result, "accepted", False)) is True
         handler = client._inject_rejection_handlers.get(kwargs.get("event_id"))
-        if handler is not None:
-            handler("image rejected by provider")
+        assert handler is not None, "拒绝句柄没注册，拒绝无从关联"
+        assert kwargs.get("event_id") in sent_image_event_ids
+        handler("image rejected by provider")
         return result
 
     client.stream_image = _reject_right_after_send
@@ -265,6 +278,7 @@ async def test_description_mode_stops_when_the_cue_image_is_rejected_early():
     delivered = await client.prompt_ephemeral("describe what you notice")
 
     assert delivered is False
+    assert sent_image_event_ids, "夹具没走到发送那一步"
     # 图发出去了，但拒绝已经到达——不能再投这一轮的文字。
     input_texts = _input_texts(_sent_events(client))
     assert not any("describe what you notice" in text for text in input_texts)
