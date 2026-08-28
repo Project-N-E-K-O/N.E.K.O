@@ -945,6 +945,71 @@ async def test_adopting_a_still_live_announcement_moves_its_id_off_the_lane():
     await arbiter.shutdown()
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_barge_in_adopts_the_early_reply_when_its_cancel_terminal_arrives():
+    """A real cancel acknowledgement must beat the missing-created timeout."""
+
+    create_sent = asyncio.Event()
+    cancel_sent = asyncio.Event()
+    sent: list[dict] = []
+    aborted: list[str] = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-early"}}
+            )
+            arbiter.notify_item_created(
+                {"item": {"id": "provider-assigned-id", "role": "user"}}
+            )
+        elif event["type"] == "response.create":
+            create_sent.set()
+        elif event["type"] == "response.cancel":
+            cancel_sent.set()
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "item-ours", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="item-ours",
+        expected_item_role="user",
+        item_ack_timeout=0.05,
+        response_started_timeout=30,
+    )
+    await asyncio.wait_for(create_sent.wait(), 1)
+    await asyncio.wait_for(ticket.sent, 1)
+
+    cancelling = asyncio.create_task(arbiter.cancel_current(timeout=1))
+    await asyncio.wait_for(cancel_sent.wait(), 1)
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-early", "status": "cancelled"},
+        }
+    )
+
+    await asyncio.wait_for(cancelling, 1)
+    assert aborted == [], "a delivered cancel terminal must preserve the connection"
+    assert arbiter._response_owner is None
+    assert arbiter._server_response_ids == {}
+    assert arbiter.is_busy is False
+    assert [event["type"] for event in sent].count("response.cancel") == 1
+    await arbiter.shutdown()
+
+
 async def _adoption_harness(
     during_create_send=None, during_item_window=None, ack_expected=True
 ):

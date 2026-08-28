@@ -4173,7 +4173,9 @@
         },
         "status": {
             "active": "● 已就绪",
-            "inactive": "○ 未配置"
+            "inactive": "○ 未配置",
+            "expired": "已失效",
+            "invalid": "凭证损坏"
         },
         "qrLogin": {
             "tryQR": "或者...试试扫码登录?",

@@ -24,6 +24,7 @@ session:
 {
   "action": "voice_input_control",
   "event": "lease_sync",
+  "engaged": true,
   "owner": "core",
   "hard_muted": false,
   "focus_suppressed": false,
@@ -34,6 +35,18 @@ session:
 `lease_generation` is scoped to one WebSocket and must increase monotonically.
 Start a fresh sequence after reconnecting. The server rejects invalid or stale
 control messages with status code `VOICE_INPUT_CONTROL_REJECTED`.
+
+`engaged` has the following wire-level claim semantics:
+
+| JSON value | Window state | Voice-connection claim |
+| --- | --- | --- |
+| `true` | Active recording or reconnecting an active recording | Claims |
+| `false` | Passive auxiliary window | Does not claim |
+| omitted | Legacy-client compatibility | Claims |
+
+Only the literal JSON value `false` suppresses the claim. Passive windows must
+therefore send it explicitly to avoid taking the microphone lease from the
+active window.
 
 For compatibility, an older client that sends no `voice_input_control` message
 can still start one ordinary `audio` session. Immediately before that session
@@ -86,8 +99,9 @@ chunk per binary frame: 480 samples (10 ms) at 48 kHz on desktop, 512 samples
 | 8 | remaining bytes | Mono signed PCM16 samples in little-endian order |
 
 The PCM payload must be non-empty, have an even byte length, and represent at
-most one second of audio at the declared rate. No JSON `action` accompanies
-this frame; the server decodes it as `stream_data` with `input_type: "audio"`.
+most 120 ms of audio at the declared rate. Normal clients should keep using
+10-32 ms frames as described above. No JSON `action` accompanies this frame;
+the server decodes it as `stream_data` with `input_type: "audio"`.
 
 For compatibility, clients may instead send a JSON text frame:
 

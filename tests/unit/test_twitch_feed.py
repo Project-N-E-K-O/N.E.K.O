@@ -33,9 +33,13 @@ async def test_twitch_live_streams_use_encrypted_credential_and_public_projectio
 
     async def _credential(*, force_refresh=False):
         assert force_refresh is False
-        return "clientid123", "secret-token", "42"
+        return {
+            "client_id": "clientid123",
+            "access_token": "secret-token",
+            "user_id": "42",
+        }
 
-    monkeypatch.setattr(twitch_feed._auth_service, "followed_stream_access", _credential)
+    monkeypatch.setattr(twitch_feed._auth_service, "followed_stream_credential", _credential)
     monkeypatch.setattr(twitch_feed, "get_external_http_client", lambda: _Client())
 
     result = await twitch_feed.fetch_twitch_live_streams(limit=5)
@@ -63,8 +67,9 @@ async def test_twitch_live_streams_use_encrypted_credential_and_public_projectio
 
 
 @pytest.mark.asyncio
-async def test_twitch_live_streams_report_reauthorization_when_401_refresh_fails(monkeypatch):
+async def test_twitch_live_streams_mark_rejected_when_401_retry_fails(monkeypatch):
     credential_calls = []
+    rejected = []
     request_count = 0
 
     class _Response:
@@ -81,12 +86,19 @@ async def test_twitch_live_streams_report_reauthorization_when_401_refresh_fails
 
     async def _credential(*, force_refresh=False):
         credential_calls.append(force_refresh)
-        if force_refresh:
-            return "", "", ""
-        return "clientid123", "expired-token", "42"
+        return {
+            "client_id": "clientid123",
+            "access_token": "refreshed-token" if force_refresh else "expired-token",
+            "user_id": "42",
+        }
 
-    monkeypatch.setattr(twitch_feed._auth_service, "followed_stream_access", _credential)
+    monkeypatch.setattr(twitch_feed._auth_service, "followed_stream_credential", _credential)
     monkeypatch.setattr(twitch_feed, "get_external_http_client", lambda: _Client())
+    monkeypatch.setattr(
+        twitch_feed.credential_manager,
+        "mark_auth_rejected",
+        lambda platform, expected: rejected.append((platform, expected)) or True,
+    )
 
     result = await twitch_feed.fetch_twitch_live_streams(limit=5)
 
@@ -97,7 +109,12 @@ async def test_twitch_live_streams_report_reauthorization_when_401_refresh_fails
         "error": "Twitch followed-stream access requires reauthorization",
     }
     assert credential_calls == [False, True]
-    assert request_count == 1
+    assert request_count == 2
+    assert rejected == [("twitch", {
+        "client_id": "clientid123",
+        "access_token": "refreshed-token",
+        "user_id": "42",
+    })]
 
 
 @pytest.mark.asyncio
@@ -142,19 +159,59 @@ async def test_twitch_device_exchange_sends_scopes_and_saves_only_after_validati
 
 
 @pytest.mark.asyncio
-async def test_twitch_status_reports_saved_follow_credential(monkeypatch):
-    async def _load():
-        return {
-            "client_id": "clientid123",
-            "access_token": "access-secret",
-            "refresh_token": "refresh-secret",
-            "user_id": "42",
-            "login": "neko_user",
-            "scopes": "user:read:follows",
-            "expires_at": "2000000000",
-        }
+async def test_twitch_refresh_saves_only_against_the_used_snapshot(monkeypatch):
+    original = {
+        "client_id": "clientid123",
+        "access_token": "expired-token",
+        "refresh_token": "refresh-token",
+    }
+    refreshed = {**original, "access_token": "fresh-token"}
+    saved = []
 
-    monkeypatch.setattr(twitch_auth, "_load", _load)
+    async def _request(_method, _url, *, headers=None, data=None):
+        return 200, {"access_token": "fresh-token"}
+
+    async def _validated(_client_id, _data):
+        return refreshed
+
+    async def _save(credential, *, expected_credentials=None):
+        saved.append((credential, expected_credentials))
+        return True
+
+    monkeypatch.setattr(twitch_auth, "_request", _request)
+    monkeypatch.setattr(twitch_auth, "_validated_credential", _validated)
+    monkeypatch.setattr(twitch_auth, "_save", _save)
+
+    result = await twitch_auth.TwitchAuthService()._credential_for_access(
+        original,
+        force_refresh=True,
+    )
+
+    assert result == refreshed
+    assert saved == [(refreshed, original)]
+
+
+@pytest.mark.asyncio
+async def test_twitch_status_reports_saved_follow_credential(monkeypatch):
+    snapshot_calls = 0
+
+    async def _snapshot():
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return cookies_login.CredentialSnapshot(
+            cookies_login.credential_manager.READY,
+            {
+                "client_id": "clientid123",
+                "access_token": "access-secret",
+                "refresh_token": "refresh-secret",
+                "user_id": "42",
+                "login": "neko_user",
+                "scopes": "user:read:follows",
+                "expires_at": "2000000000",
+            },
+        )
+
+    monkeypatch.setattr(twitch_auth, "_snapshot", _snapshot)
 
     result = await twitch_auth.TwitchAuthService().status()
 
@@ -162,6 +219,24 @@ async def test_twitch_status_reports_saved_follow_credential(monkeypatch):
     assert result["has_cookies"] is True
     assert result["login"] == "neko_user"
     assert "access-secret" not in str(result)
+    assert snapshot_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_twitch_incomplete_snapshot_never_reports_logged_in_cookie(monkeypatch):
+    async def _snapshot():
+        return cookies_login.CredentialSnapshot(
+            cookies_login.credential_manager.READY,
+            {"client_id": "clientid123", "access_token": "access-secret"},
+        )
+
+    monkeypatch.setattr(twitch_auth, "_snapshot", _snapshot)
+
+    result = await twitch_auth.TwitchAuthService().status()
+
+    assert result["logged_in"] is False
+    assert result["has_cookies"] is False
+    assert result["has_stored_credentials"] is True
 
 
 def test_twitch_oauth_response_validation_handles_expiry_and_strict_activation_url():
@@ -208,6 +283,19 @@ def test_twitch_device_ui_polls_and_preserves_active_authorization_card():
     assert "if (twitchDevicePollInFlight) return 'in_flight'" in source
     assert "freshTwitchResult.replaceWith(existingTwitchResult)" in source
     assert "document.addEventListener('visibilitychange'" in source
+
+
+def test_credential_ui_keeps_rejected_entries_visible_and_removable():
+    source = Path("static/js/cookies_login.js").read_text(encoding="utf-8")
+    template = Path("templates/cookies_login.html").read_text(encoding="utf-8")
+
+    assert "const hasStoredCredentials" in source
+    assert "credentialState === 'auth_rejected'" in source
+    assert "if (stored)" in source
+    assert "width: 44px;" in template and "height: 44px;" in template
+    for locale_path in Path("static/locales").glob("*.json"):
+        status = json.loads(locale_path.read_text(encoding="utf-8"))["cookiesLogin"]["status"]
+        assert status["expired"].strip() and status["invalid"].strip()
 
 
 def test_cookie_save_rejects_non_manual_platforms_from_login_manager_metadata():

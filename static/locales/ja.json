@@ -4173,7 +4173,9 @@
         },
         "status": {
             "active": "● 準備完了",
-            "inactive": "○ 未設定"
+            "inactive": "○ 未設定",
+            "expired": "期限切れ",
+            "invalid": "認証情報が破損"
         },
         "qrLogin": {
             "tryQR": "または...QRコードログインを試しますか？",

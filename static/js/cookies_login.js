@@ -1304,8 +1304,13 @@ async function refreshStatusList({ reveal = false } = {}) {
             res.data?.has_cookies === true ||
             res.data === true
         );
-        const hasActiveCredentials = results.some(isActiveResponse);
-        const hasVisibleStatus = hasActiveCredentials || hasLoadFailure;
+        const hasStoredCredentials = res => isActiveResponse(res) || (
+            res.success === true && (
+                res.has_stored_credentials === true ||
+                res.data?.has_stored_credentials === true
+            )
+        );
+        const hasVisibleStatus = results.some(hasStoredCredentials) || hasLoadFailure;
         const statusArea = document.getElementById('status-area');
         if (statusArea) {
             if (reveal || hasLoadFailure) {
@@ -1324,7 +1329,9 @@ async function refreshStatusList({ reveal = false } = {}) {
             // 还是 { success: true, has_cookies: true } 
             // 都能被正确识别为 true
             const active = isActiveResponse(res);
-            if (!active) return;
+            const stored = hasStoredCredentials(res);
+            if (!stored) return;
+            const credentialState = res.credential_state || res.data?.credential_state || '';
 
             // 1. 卡片主容器
             const statusCard = document.createElement('div');
@@ -1346,15 +1353,24 @@ async function refreshStatusList({ reveal = false } = {}) {
             actionsWrapper.className = 'status-actions';
 
             // 获取翻译文本并过滤掉旧字典里的状态符号
-            let statusRawText = active ? safeT('cookiesLogin.status.active', '生效中') : safeT('cookiesLogin.status.inactive', '未配置');
+            let statusRawText;
+            if (credentialState === 'auth_rejected') {
+                statusRawText = safeT('cookiesLogin.status.expired', '已失效');
+            } else if (credentialState === 'invalid') {
+                statusRawText = safeT('cookiesLogin.status.invalid', '凭证损坏');
+            } else {
+                statusRawText = active
+                    ? safeT('cookiesLogin.status.active', '生效中')
+                    : safeT('cookiesLogin.status.inactive', '未配置');
+            }
             
             const statusTag = document.createElement('div');
             statusTag.className = `status-tag ${active ? 'active' : 'inactive'}`;
             statusTag.textContent = statusRawText.replace(/^[○●]\s*/u, '');
             actionsWrapper.appendChild(statusTag);
 
-            // 若处于生效状态，添加红色的垃圾桶按钮
-            if (active) {
+            // 已失效或损坏的凭证仍需保留删除入口。
+            if (stored) {
                 const delBtn = document.createElement('button');
                 delBtn.className = 'del-btn';
                 delBtn.title = safeT('cookiesLogin.removeCredentials', '清除凭证');

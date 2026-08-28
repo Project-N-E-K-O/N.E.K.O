@@ -557,3 +557,48 @@ async def test_late_failure_from_a_retired_generation_cannot_recover_the_success
     assert manager.session_closed_by_server is False
     manager.send_status.assert_not_awaited()
     manager.disconnected_by_server.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_arbiter_fail_close_reaches_the_manager_from_inside_a_host_callback():
+    # Same contract as
+    # test_arbiter_fail_close_still_reaches_the_manager_via_receive_loop, but
+    # the loop is parked in a host callback rather than at __anext__ when the
+    # fail-close lands. That is not an exotic combination: the fail-close
+    # reasons ARE slow-host reasons, and this file's sibling comments already
+    # note "the loop is blocked in on_new_message".
+    #
+    # The ownership re-checks that follow every host await return straight out
+    # of handle_messages, so the loop must still hand the latch to the
+    # disconnect recovery on the way out -- otherwise the socket is dead,
+    # _fatal_error_occurred drops every later send, and the manager is never
+    # told.
+    failures = AsyncMock()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_audio_delta(_audio: bytes) -> None:
+        entered.set()
+        await release.wait()
+
+    client = _make_client(on_connection_error=failures)
+    client.on_audio_delta = blocking_audio_delta
+    ws = _ControlledWs()
+    receiver = await _start_receiver(client, ws)
+
+    ws._events.put_nowait(
+        json.dumps({"type": "response.audio.delta", "delta": "AAAA"})
+    )
+    await asyncio.wait_for(entered.wait(), timeout=2)
+
+    reason = "response lifecycle could not reach a terminal state"
+    await client._response_arbiter._tear_down_transport(reason)
+    release.set()
+
+    await asyncio.wait_for(receiver, timeout=2)
+    await _settle_background_tasks(client)
+
+    assert client.ws is None
+    assert client._fatal_error_occurred is True
+    failures.assert_awaited_once_with(_failure_status("CHARACTER_DISCONNECTED"))
+    assert client._local_failure_recovery is None

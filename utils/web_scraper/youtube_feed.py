@@ -31,6 +31,7 @@ from typing import Any, Iterator
 
 import httpx
 
+from utils.cookies_login import credential_manager
 from utils.external_http_client import get_external_http_client
 from utils.language_utils import get_global_language_full
 
@@ -362,6 +363,12 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
             status_code = exc.response.status_code
             if not authorization or status_code not in {401, 403}:
                 raise
+            if status_code == 401:
+                await asyncio.to_thread(
+                    credential_manager.mark_auth_rejected,
+                    "youtube",
+                    cookies,
+                )
             logger.warning(
                 "YouTube 登录认证被拒绝(status=%d)，重试匿名首页 Feed",
                 status_code,

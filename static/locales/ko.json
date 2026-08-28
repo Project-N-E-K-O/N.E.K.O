@@ -4173,7 +4173,9 @@
         },
         "status": {
             "active": "● 준비 완료",
-            "inactive": "○ 구성되지 않음"
+            "inactive": "○ 구성되지 않음",
+            "expired": "만료됨",
+            "invalid": "자격 증명 손상"
         },
         "qrLogin": {
             "tryQR": "또는... QR 코드 로그인을 시도해 보시겠습니까?",

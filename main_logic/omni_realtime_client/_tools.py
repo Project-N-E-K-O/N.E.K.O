@@ -13,8 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import dataclass
+import hashlib
+
 from ._shared import (
     Any,
+    asyncio,
+    Awaitable,
     Dict,
     List,
     OnToolCallCallback,
@@ -28,8 +33,26 @@ from ._shared import (
 )
 
 
+@dataclass(frozen=True)
+class _ToolTaskOwner:
+    connection_generation: int
+    scope_generation: int
+    host_turn_id: str | None
+    provider_turn_host_id: str | None
+    provider_session: Any
+
+
 
 class _ToolingMixin:
+    _TOOL_TASK_CANCEL_TIMEOUT_S = 0.5
+    # Ceiling for the collector's re-poll interval. The poll only exists to
+    # notice a provider cancellation that its target refuses to honour, so it
+    # starts at the cancel timeout and backs off: a batch still running after
+    # several seconds is not one where another few seconds of ordering latency
+    # matters, and a tool that never returns should not hold a 2Hz wakeup for
+    # the rest of the user turn.
+    _TOOL_BATCH_POLL_CEILING_S = 5.0
+
     def set_tools(self, tool_definitions: Optional[List[ToolDefinition]]) -> None:
         """Replace the active tool list. Takes effect the next time the
         client builds its session config (next ``connect`` call). For an
@@ -45,6 +68,320 @@ class _ToolingMixin:
 
     def has_tools(self) -> bool:
         return bool(self._tool_definitions) and self.on_tool_call is not None
+
+    def _capture_tool_task_owner(
+        self,
+        provider_session: Any,
+        *,
+        connection_generation: int | None = None,
+    ) -> _ToolTaskOwner:
+        return _ToolTaskOwner(
+            connection_generation=(
+                self._connection_generation
+                if connection_generation is None
+                else connection_generation
+            ),
+            scope_generation=getattr(self, "_tool_scope_generation", 0),
+            host_turn_id=self._read_host_turn_id(),
+            # Snapshotted WITH the live read above, not re-read at result
+            # time: see ``_tool_task_owner_is_current``.
+            provider_turn_host_id=getattr(self, "_current_turn_host_id", None),
+            provider_session=provider_session,
+        )
+
+    def _tool_task_owner_is_current(self, owner: _ToolTaskOwner) -> bool:
+        if owner.connection_generation != self._connection_generation:
+            return False
+        if owner.scope_generation != getattr(self, "_tool_scope_generation", 0):
+            return False
+        live_session = self._gemini_session if self._is_gemini else self.ws
+        if owner.provider_session is not live_session:
+            return False
+        if owner.host_turn_id is None:
+            return True
+        # Providers without server VAD rotate the host speech id at the
+        # function-calling response.done before the tool result is ready. That
+        # ends a provider response, not the user turn that owns the tool. New
+        # user inputs advance ``scope_generation`` explicitly; this clause only
+        # has to catch a host rotation that happened INSIDE the provider
+        # response that issued the call -- so it compares the two ids this
+        # owner sampled together and never re-reads the live snapshot.
+        #
+        # Re-reading it here is what made both directions wrong.
+        # ``_current_turn_host_id`` is re-stamped by every ``response.created``,
+        # including the one a tool result itself triggers: a parallel batch's
+        # faster sibling then moved the snapshot and orphaned the slower one.
+        # Pinning it for the whole tool scope traded that for the mirror-image
+        # bug, because sequential batches inside ONE user turn legitimately run
+        # under later, rotated snapshots. Only the owner's own pair is stable
+        # across both shapes.
+        return (
+            owner.provider_turn_host_id is None
+            or owner.provider_turn_host_id == owner.host_turn_id
+        )
+
+    def _tool_task_connection_is_current(self, owner: _ToolTaskOwner) -> bool:
+        """Keep cancellation on the captured connection, independent of turn scope."""
+
+        live_session = self._gemini_session if self._is_gemini else self.ws
+        return bool(
+            owner.connection_generation == self._connection_generation
+            and owner.provider_session is live_session
+        )
+
+    def _track_tool_task(
+        self,
+        task: asyncio.Task,
+        *,
+        call_ids: tuple[str, ...] = (),
+    ) -> asyncio.Task:
+        tool_tasks = getattr(self, "_tool_tasks", None)
+        if tool_tasks is None:
+            tool_tasks = set()
+            self._tool_tasks = tool_tasks
+        tasks_by_call_id = getattr(self, "_tool_tasks_by_call_id", None)
+        if tasks_by_call_id is None:
+            tasks_by_call_id = {}
+            self._tool_tasks_by_call_id = tasks_by_call_id
+        tool_tasks.add(task)
+        tracked_ids = tuple(call_id for call_id in call_ids if call_id)
+        for call_id in tracked_ids:
+            tasks_by_call_id.setdefault(call_id, set()).add(task)
+
+        def _done(completed: asyncio.Task) -> None:
+            tool_tasks.discard(completed)
+            self._retired_tool_task_registry().discard(completed)
+            for call_id in tracked_ids:
+                tasks = tasks_by_call_id.get(call_id)
+                if tasks is None:
+                    continue
+                tasks.discard(completed)
+                if not tasks:
+                    tasks_by_call_id.pop(call_id, None)
+            if not completed.cancelled():
+                error = completed.exception()
+                if error is not None:
+                    call_fingerprints = ",".join(
+                        hashlib.sha256(call_id.encode("utf-8")).hexdigest()[:12]
+                        for call_id in tracked_ids
+                    )
+                    logger.error(
+                        "Realtime tool task failed task=%s "
+                        "call_fingerprints=%s error_type=%s",
+                        completed.get_name(),
+                        call_fingerprints or "none",
+                        type(error).__name__,
+                    )
+
+        task.add_done_callback(_done)
+        return task
+
+    def _create_tool_task(
+        self,
+        coro: Awaitable[Any],
+        *,
+        call_ids: tuple[str, ...] = (),
+    ) -> asyncio.Task:
+        return self._track_tool_task(
+            asyncio.create_task(coro),
+            call_ids=call_ids,
+        )
+
+    def _advance_tool_scope(self) -> tuple[asyncio.Task, ...]:
+        """Retire every tool owned by the preceding user/connection scope."""
+
+        self._tool_scope_generation = getattr(self, "_tool_scope_generation", 0) + 1
+        getattr(self, "_cancelled_tool_call_ids", set()).clear()
+        current_task = asyncio.current_task()
+        tasks = tuple(getattr(self, "_tool_tasks", ()))
+        retired = self._retired_tool_task_registry()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+                # Marked HERE. The cancelled-id set is cleared one line up, so
+                # a handler that ignores cancellation would otherwise carry no
+                # retirement marker at all and read as live forever.
+                retired.add(task)
+        return tuple(task for task in tasks if task is not current_task)
+
+    def note_user_turn_started(self) -> None:
+        """Invalidate tool work from the turn that the new user turn replaces."""
+
+        self._advance_tool_scope()
+
+    def _cancel_tool_call_ids(self, call_ids: List[str]) -> None:
+        cancelled_ids = getattr(self, "_cancelled_tool_call_ids", None)
+        if cancelled_ids is None:
+            cancelled_ids = set()
+            self._cancelled_tool_call_ids = cancelled_ids
+        stable_call_ids = set(str(call_id) for call_id in call_ids if call_id)
+        for call_id in stable_call_ids:
+            cancelled_ids.add(
+                (
+                    self._connection_generation,
+                    getattr(self, "_tool_scope_generation", 0),
+                    call_id,
+                )
+            )
+            tasks_by_call_id = getattr(self, "_tool_tasks_by_call_id", {})
+            retired = self._retired_tool_task_registry()
+            for task in tuple(tasks_by_call_id.get(call_id, ())):
+                if not task.done():
+                    task.cancel()
+                    retired.add(task)
+
+    def _retired_tool_task_registry(self) -> set:
+        registry = getattr(self, "_retired_tool_task_set", None)
+        if registry is None:
+            registry = set()
+            self._retired_tool_task_set = registry
+        return registry
+
+    def _retired_tool_tasks(self) -> set:
+        """Tool tasks that can no longer produce a usable result.
+
+        RECORDED at each retirement point, not re-derived from the cancelled
+        call ids. Two things retire a call -- a provider cancellation and a
+        scope advance (a new user turn or a replacement connection) -- and the
+        second CLEARS the cancelled-id set as it goes, so reconstructing from
+        ids can only ever see the first. A handler that swallows
+        CancelledError then sits in ``_tool_tasks`` with no marker at all, and
+        every later wait for tool work to settle spends its whole budget on an
+        answer that cannot come. Recording it where the retirement happens is
+        correct for both routes, and for any third one added later.
+
+        Results are still filtered by call id at send time. That asks a
+        different question -- may this payload go out -- and stays keyed to
+        the call rather than the task.
+        """
+
+        registry = self._retired_tool_task_registry()
+        if registry:
+            registry.difference_update(
+                {task for task in registry if task.done()}
+            )
+        return registry
+
+    def _tool_call_was_cancelled(
+        self,
+        owner: _ToolTaskOwner,
+        call_id: str,
+    ) -> bool:
+        return (
+            owner.connection_generation,
+            owner.scope_generation,
+            call_id,
+        ) in getattr(self, "_cancelled_tool_call_ids", set())
+
+    async def _await_retired_tool_tasks(
+        self,
+        tasks: tuple[asyncio.Task, ...],
+    ) -> None:
+        pending = tuple(task for task in tasks if not task.done())
+        if not pending:
+            return
+        _, still_pending = await asyncio.wait(
+            pending,
+            timeout=self._TOOL_TASK_CANCEL_TIMEOUT_S,
+        )
+        if still_pending:
+            logger.warning(
+                "Realtime close: %d tool task(s) ignored cancellation; "
+                "their retired owner will block any later result injection",
+                len(still_pending),
+            )
+
+    def _start_raw_tool_call(
+        self,
+        call: ToolCall,
+        owner: _ToolTaskOwner,
+    ) -> asyncio.Task:
+        async def _run() -> None:
+            if not self._tool_task_owner_is_current(owner):
+                return
+            result = await self._execute_tool_call(call)
+            if not self._tool_task_owner_is_current(owner):
+                return
+            await self._send_tool_result_openai_realtime(result, owner=owner)
+
+        return self._create_tool_task(_run(), call_ids=(call.call_id,))
+
+    def _start_gemini_tool_batch(
+        self,
+        calls: List[ToolCall],
+        owner: _ToolTaskOwner,
+    ) -> asyncio.Task:
+        async def _execute(call: ToolCall) -> ToolResult | None:
+            if not self._tool_task_owner_is_current(owner):
+                return None
+            return await self._execute_tool_call(call)
+
+        call_tasks = [
+            self._create_tool_task(_execute(call), call_ids=(call.call_id,))
+            for call in calls
+        ]
+
+        async def _collect() -> None:
+            # Deliberately not one ``gather``. A call the provider cancelled is
+            # dropped from the results below anyway, so continuing to WAIT for
+            # it buys nothing -- and a handler that swallows CancelledError (or
+            # sits in cancellation-resistant I/O) would otherwise hold every
+            # sibling's ``function_call_output`` hostage and stall the whole
+            # provider turn. Re-check the cancelled set on the same bound the
+            # close path already allows a tool to ignore cancellation for.
+            # Keyed by POSITION, not call_id. Gemini may omit ids, and the
+            # ingestion path normalizes a missing one to "" -- so keying by
+            # call_id collapses an anonymous parallel batch into a single
+            # entry, sending the last result twice and dropping the other
+            # function's real response. The batch is positional; keep it that
+            # way, exactly as the blanket gather this replaced was.
+            pending = list(enumerate(call_tasks))
+            outcomes: Dict[int, ToolResult] = {}
+            poll_interval = self._TOOL_TASK_CANCEL_TIMEOUT_S
+            while pending:
+                retired_tasks = self._retired_tool_tasks()
+                still_pending = []
+                for index, task in pending:
+                    if task.done():
+                        if not task.cancelled() and task.exception() is None:
+                            value = task.result()
+                            if isinstance(value, ToolResult):
+                                outcomes[index] = value
+                    elif task not in retired_tasks:
+                        still_pending.append((index, task))
+                pending = still_pending
+                if not pending:
+                    break
+                # Deliberately NOT a total budget. Bailing out after a fixed
+                # deadline would discard the result of a legitimately slow
+                # tool -- a long web lookup is not a stuck one, and dropping
+                # its output leaves the provider with an unanswered call,
+                # which is the failure this collector exists to prevent.
+                # Bound the polling COST instead of the wait.
+                await asyncio.wait(
+                    [task for _, task in pending],
+                    timeout=poll_interval,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                poll_interval = min(
+                    poll_interval * 2, self._TOOL_BATCH_POLL_CEILING_S
+                )
+            if not self._tool_task_owner_is_current(owner):
+                return
+            results = [
+                outcomes[index]
+                for index, call in enumerate(calls)
+                if index in outcomes
+                and not self._tool_call_was_cancelled(owner, call.call_id)
+            ]
+            if results:
+                await self._send_tool_result_gemini(
+                    results,
+                    provider_session=owner.provider_session,
+                    owner=owner,
+                )
+
+        return self._create_tool_task(_collect())
 
     def _tools_for_openai_realtime(self) -> List[Dict[str, Any]]:
         """OpenAI Realtime / GLM Realtime schema — flat (type/name/
@@ -162,7 +499,12 @@ class _ToolingMixin:
                 is_error=True, error_message=str(e),
             )
 
-    async def _send_tool_result_openai_realtime(self, result: ToolResult) -> None:
+    async def _send_tool_result_openai_realtime(
+        self,
+        result: ToolResult,
+        *,
+        owner: _ToolTaskOwner | None = None,
+    ) -> None:
         """OpenAI Realtime / GLM Realtime / StepFun / Qwen / Free —
         send tool result via ``conversation.item.create`` of type
         ``function_call_output``, then ``response.create``.
@@ -178,11 +520,14 @@ class _ToolingMixin:
           internal registry tracking and must never be sent back to the
           server, or the request is likely to be rejected.
         """
+        if owner is not None and not self._tool_task_owner_is_current(owner):
+            return
+
         item: Dict[str, Any] = {
             "type": "function_call_output",
             "output": result.output_as_json_string(),
         }
-        api = self._api_type.lower()
+        api = canonical_realtime_dialect(self._api_type)
         if api == 'glm':
             # GLM 协议不接受 call_id。哪怕我们内部合成了，也不外传。
             pass
@@ -192,10 +537,33 @@ class _ToolingMixin:
             "type": "conversation.item.create",
             "item": item,
         }
-        ticket = await self._ensure_response_arbiter().enqueue(
+        arbiter = self._ensure_response_arbiter()
+
+        async def _send_owned_event(event: Dict[str, Any]) -> None:
+            is_cancel = event.get("type") == "response.cancel"
+            await self.send_event(
+                event,
+                send_guard=(
+                    (lambda: self._tool_task_connection_is_current(owner))
+                    if is_cancel
+                    else (lambda: self._tool_task_owner_is_current(owner))
+                ),
+            )
+
+        ticket = await arbiter.enqueue(
             source="tool_result",
             events_before_response=(item_event,),
             response_event={"type": "response.create"},
+            event_sender=_send_owned_event if owner is not None else None,
             priority=5,
         )
-        await ticket.sent
+        try:
+            if owner is not None and not self._tool_task_owner_is_current(owner):
+                await arbiter.cancel_ticket(ticket, wait=False)
+                return
+            await asyncio.shield(ticket.sent)
+            if owner is not None and not self._tool_task_owner_is_current(owner):
+                await arbiter.cancel_ticket(ticket, wait=False)
+        except asyncio.CancelledError:
+            await asyncio.shield(arbiter.cancel_ticket(ticket, wait=False))
+            raise

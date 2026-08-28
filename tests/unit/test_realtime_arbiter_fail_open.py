@@ -2780,3 +2780,77 @@ async def test_a_release_over_another_live_response_leaves_the_quarantine_down()
         "resp-live has already announced; quarantining here would mute its "
         "own id-less tool calls until some later response.created"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stuck_release_still_ends_its_own_turn_on_one_connection():
+    """Positive control for the test below: both hooks are reachable here.
+
+    Without this, ``hooks == []`` there would also hold on a provider whose
+    ``_has_server_vad`` is True -- where ``_notify_turn_finished`` skips
+    ``on_sid_rotate`` outright and the assertion proves nothing about the
+    connection guard.
+    """
+
+    hooks: list[str] = []
+
+    async def _response_done() -> None:
+        hooks.append("response_done")
+
+    async def _sid_rotate() -> None:
+        hooks.append("sid_rotate")
+
+    client = _free_client(on_response_done=_response_done, on_sid_rotate=_sid_rotate)
+    _begin_response(client, "resp-1")
+
+    await client._on_arbiter_stuck_release("stalled", "resp-1")
+
+    assert hooks == ["response_done", "sid_rotate"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stuck_release_leaves_a_replacement_connections_turn_alone():
+    # The release runs in its caller's task, not the arbiter worker, so
+    # reset_connection_state does not cancel it -- and a replacement bumps
+    # _connection_generation without touching _turn_epoch, so the turn-epoch
+    # guard alone still reads "ours". Both end-of-turn hooks would then fire
+    # against the replacement: on_sid_rotate would split the new turn's bubble.
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+    hooks: list[str] = []
+
+    async def _blocking_repetition() -> None:
+        entered.set()
+        await resume.wait()
+
+    async def _response_done() -> None:
+        hooks.append("response_done")
+
+    async def _sid_rotate() -> None:
+        hooks.append("sid_rotate")
+
+    client = _free_client(
+        on_repetition_detected=_blocking_repetition,
+        on_response_done=_response_done,
+        on_sid_rotate=_sid_rotate,
+    )
+    _begin_response(client, "resp-1")
+    # Third strike, so _check_repetition actually reaches the blocking hook.
+    client._current_response_transcript = "一模一样的一句话"
+    client._recent_responses = ["一模一样的一句话", "一模一样的一句话"]
+
+    release = asyncio.create_task(client._on_arbiter_stuck_release("stalled", "resp-1"))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    released_epoch = client._current_turn_epoch
+    client._on_connection_attached()
+    # Premise: only the connection moved. The turn-epoch guard still says ours,
+    # which is why it cannot be the one making this decision.
+    assert client._turn_epoch == released_epoch
+
+    resume.set()
+    await asyncio.wait_for(release, timeout=1)
+
+    assert hooks == []

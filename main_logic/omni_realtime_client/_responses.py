@@ -57,6 +57,10 @@ from ._protocol_capabilities import (
 # from leaving the scheduler request open forever.
 _PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS = 30.0
 _GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS = 3.0
+# How long a Gemini proactive inject waits for in-flight tool work to settle.
+# BOUNDED on purpose -- see ``_settle_tools_before_gemini_proactive``. Reuses
+# the cancel grace budget rather than inventing a second number.
+_GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS = 3.0
 _PROACTIVE_TICKET_CANCEL_OBSERVE_TIMEOUT_SECONDS = 0.5
 _GEMINI_PROACTIVE_SESSION_CLOSE_CANCEL = "Gemini session is closing"
 _GEMINI_PROACTIVE_TASK_UNSET = object()
@@ -124,6 +128,7 @@ class _ResponseMixin:
                 text,
                 skipped=skipped,
                 raise_on_error=True,
+                starts_user_turn=False,
             )
             return
 
@@ -131,7 +136,9 @@ class _ResponseMixin:
             # skipped=False：需要模型主动响应（任务结果汇报）
             # 通过 create_response 注入 user 消息 + 触发响应
             # Qwen 不支持 conversation.item.create，走下方 update_session
-            await self.create_response(text)
+            # Transport-only user message: a task-result report is not the
+            # real user's turn, so it must not retire in-flight tool calls.
+            await self.create_response(text, starts_user_turn=False)
         else:
             # skipped=True 或 Qwen：仅追加到 session instructions
             lock = getattr(self, "_prime_context_lock", None)
@@ -149,8 +156,23 @@ class _ResponseMixin:
                 self.instructions = next_instructions
             logger.info("prime_context: updated session instructions")
 
-    async def create_response(self, instructions: str, skipped: bool = False) -> None:
+    async def create_response(
+        self,
+        instructions: str,
+        skipped: bool = False,
+        *,
+        starts_user_turn: bool = True,
+    ) -> None:
         """Inject a persistent user message and trigger an LLM response.
+
+        ``starts_user_turn=False`` marks an injection that uses a provider
+        ``role=user`` message purely as transport and does NOT replace the
+        real user's turn (a background task-result report, for instance).
+        Only a real user turn may retire in-flight tool calls, so keeping the
+        distinction here is what stops a system-initiated report from
+        cancelling a running tool and leaving its ``function_call``
+        unanswered. Mirrors ``_gemini_send_user_turn``'s keyword of the same
+        name.
 
         Unlike ``prime_context`` (which appends to the system instructions),
         this method creates a user-role conversation message and triggers a
@@ -179,6 +201,7 @@ class _ResponseMixin:
                 instructions,
                 skipped=skipped,
                 raise_on_error=True,
+                starts_user_turn=starts_user_turn,
             )
             return
 
@@ -186,6 +209,9 @@ class _ResponseMixin:
         if not instructions or not instructions.strip():
             logger.info("Skipping empty content in create_response")
             return
+
+        if starts_user_turn:
+            self.note_user_turn_started()
 
         if skipped:
             self._skip_until_next_response = True
@@ -254,6 +280,8 @@ class _ResponseMixin:
         stable_turn_id = str(turn_id or "").strip()
         if not stable_turn_id:
             raise ValueError("external ASR turn_id must not be empty")
+
+        self.note_user_turn_started()
 
         event_suffix = uuid.uuid4().hex
         item_id = f"item_neko_{uuid.uuid4().hex}"
@@ -610,6 +638,17 @@ class _ResponseMixin:
                     )
                     self._gemini_proactive_quarantine_task = proactive_quarantine
                 await self._await_gemini_proactive_quarantine()
+            # ⚠️ 必须在上面这段 Gemini 隔离**之后**才宣告新用户回合。
+            # note_user_turn_started() 会推进 _tool_scope_generation，而
+            # _interrupt_and_quarantine_gemini_proactive_outcome 的第一道闸
+            # scope_still_ours() 正是拿 owner 里记下的 scope 跟它比：先推进的话这
+            # 个判据恒不相等，隔离每次都走 retire_without_touching_the_live_turn，
+            # 一次 client_content 打断都不发。那条已被 SDK 收下、还在生成的主动
+            # 搭话回合于是完全没被打断，外部 ASR 回合直接压在同一个 unscoped SDK
+            # session 上，两个回合的音频/文本交错——正是这道围栏要防的事。
+            # 隔离针对的是**上一轮**（主动搭话）那一轮，所以它必须在上一轮的
+            # scope 下跑完；跑完之后这一轮才真正开始。
+            self.note_user_turn_started()
             try:
                 if not self._is_gemini:
                     arbiter = self._ensure_response_arbiter()
@@ -943,7 +982,35 @@ class _ResponseMixin:
                         gemini_text_parts.append(prefix_text)
             gemini_text_parts.append(text.strip())
             gemini_text = "\n".join(gemini_text_parts)
+            proactive_session = self._gemini_session
+            proactive_scope = getattr(self, "_tool_scope_generation", 0)
+            await self._settle_tools_before_gemini_proactive()
+            if self._gemini_session is not proactive_session:
+                # The settle is an await: a teardown OR a replacement session
+                # can land inside it, and this inject belongs to neither.
+                raise RuntimeError("Gemini session not available for proactive inject")
+            if proactive_scope != getattr(self, "_tool_scope_generation", 0):
+                # A real user turn began while we waited. Sending now would put
+                # this notification inside their turn, and Gemini treats client
+                # content as an interruption of the current generation -- the
+                # exact failure the wait exists to avoid, just aimed at the user
+                # instead of at a tool. The caller keeps the callback queued and
+                # retries it on the next idle hook, so nothing is lost.
+                #
+                # Deliberately NOT also gated on is_active_response(): waiting
+                # for tools makes a model response DURING the wait the normal
+                # case (the tool returned and generation continued), and
+                # rejecting on that would silently drop proactive messages on
+                # the healthy path. Guarding an active response is documented
+                # as the caller's job.
+                raise RuntimeError(
+                    "Gemini proactive inject was superseded by a new user turn"
+                )
             outcome_token = f"gemini_inject_{uuid.uuid4().hex}"
+            # getattr, not attribute access: several focused tests build the
+            # client via __new__ and this read is now unconditional, where the
+            # owner tuple below only ran when a callback was supplied.
+            proactive_generation = getattr(self, "_connection_generation", 0)
             if on_rejected is not None or on_completed is not None:
                 if getattr(self, "_gemini_proactive_outcome", None) is not None:
                     raise RuntimeError("another Gemini proactive inject is pending")
@@ -951,6 +1018,17 @@ class _ResponseMixin:
                     outcome_token,
                     on_rejected,
                     on_completed,
+                )
+                self._gemini_proactive_outcome_owner = (
+                    proactive_generation,
+                    proactive_session,
+                    outcome_token,
+                    self._gemini_context_manager,
+                    # The connection and the session both survive a new user
+                    # turn, so neither can tell one apart. Only the tool scope
+                    # moves -- and this inject stops owning the Gemini
+                    # generation the moment it does.
+                    proactive_scope,
                 )
                 self._proactive_inject_outcome_token = outcome_token
                 self._proactive_inject_awaiting_outcome = True
@@ -960,18 +1038,34 @@ class _ResponseMixin:
                 "_gemini_proactive_submit_task",
                 None,
             )
+            existing_submit_session = getattr(
+                self,
+                "_gemini_proactive_submit_session",
+                None,
+            )
             if (
                 existing_submit_task is not None
                 and existing_submit_task is not submit_task
                 and not existing_submit_task.done()
+                # 按 session 收窄，与上面 outcome owner 同一判据。两条 send 只有落
+                # 在**同一个** SDK session 上才会互相交错；卡在退休 session 上的那
+                # 条不该挡住替换连接的 inject——_on_connection_attached 正是为此退
+                # 掉了前一条的 outcome，如果这里还拦着，替换连接依然要等到 60s 过
+                # 期或隔离结束才做得成自己的主动搭话。退休那条由拆除路径
+                # (_cancel_gemini_submit_tasks) 取消，不会漏。
+                and existing_submit_session is proactive_session
             ):
                 outcome = getattr(self, "_gemini_proactive_outcome", None)
                 if outcome is not None and outcome[0] == outcome_token:
                     self._settle_gemini_proactive_inject(notify=False)
                 raise RuntimeError("another Gemini proactive SDK send is pending")
             self._gemini_proactive_submit_task = submit_task
+            self._gemini_proactive_submit_session = proactive_session
             try:
-                await self._gemini_send_user_turn(gemini_text)
+                await self._gemini_send_user_turn(
+                    gemini_text,
+                    starts_user_turn=False,
+                )
             except asyncio.CancelledError as exc:
                 outcome = getattr(self, "_gemini_proactive_outcome", None)
                 if outcome is not None and outcome[0] == outcome_token:
@@ -1003,9 +1097,17 @@ class _ResponseMixin:
                         self._gemini_proactive_quarantine_task = quarantine_task
                 raise
             except Exception:
-                outcome = getattr(self, "_gemini_proactive_outcome", None)
-                if outcome is not None and outcome[0] == outcome_token:
-                    self._settle_gemini_proactive_inject(notify=False)
+                # Owner-scoped, like the CancelledError branch above. This send
+                # can fail AFTER a replacement attached and registered its own
+                # outcome, and an unconditional settle would clear the
+                # SUCCESSOR's -- its caller would then never see a completion
+                # or rejection and would wait out its full timeout.
+                self._settle_gemini_proactive_inject(
+                    notify=False,
+                    expected_connection_generation=proactive_generation,
+                    expected_provider_session=proactive_session,
+                    expected_outcome_token=outcome_token,
+                )
                 raise
             finally:
                 if (
@@ -1013,18 +1115,15 @@ class _ResponseMixin:
                     is submit_task
                 ):
                     self._gemini_proactive_submit_task = None
+                    self._gemini_proactive_submit_session = None
             if on_rejected is not None or on_completed is not None:
                 self._fire_task(
                     self._expire_gemini_proactive_outcome(outcome_token, 60.0)
                 )
             return
-        # NOTE on Qwen: the Aliyun realtime doc states conversation.item.create
-        # "currently only supports function_call_output items". That is stale
-        # for qwen3.5-omni-flash-realtime — empirically it accepts a
-        # ``role=user`` ``input_text`` message item and responds to it (no
-        # error event), identical to OpenAI / GLM / Step. Verified live against
-        # the dashscope realtime endpoint. So Qwen takes the same path below;
-        # do NOT re-add a Qwen exclusion without re-checking the live API.
+        # Qwen follows the WebSocket path documented above. Its older
+        # function_call_output-only documentation is stale; do not restore a
+        # Qwen exclusion without rechecking the live API.
         if self.ws is None:
             raise RuntimeError("realtime websocket is not connected")
 
@@ -1217,17 +1316,94 @@ class _ResponseMixin:
             raise
         return ticket
 
+    async def _settle_tools_before_gemini_proactive(self) -> bool:
+        """Let in-flight tool work finish first, within a bounded budget.
+
+        The raw providers get this ordering for free: their proactive inject
+        enqueues at priority 20 and a tool result at priority 5, so the
+        arbiter always sends the result first and the two never race. Gemini
+        has no arbiter on this path -- the inject is a direct
+        ``send_client_content`` -- and Gemini treats client content as an
+        interruption of the current generation, which is exactly how
+        ``cancel_response`` implements barge-in for it. An unhindered inject
+        can therefore abandon a function call whose side effect has already
+        run, leaving the provider without its output.
+
+        ``starts_user_turn=False`` does not cover this. That keeps the LOCAL
+        tool scope alive so a result is not discarded on arrival; it cannot
+        stop the provider from dropping the call.
+
+        Bounded, and that is the whole design. The tool-turn gate this branch
+        removed had no TTL and could block proactive messages forever; here a
+        tool that outlives the budget loses its ordering guarantee, never the
+        message. Returns whether everything settled -- for the log only.
+        """
+
+        current = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS
+        poll_interval = self._TOOL_TASK_CANCEL_TIMEOUT_S
+        while True:
+            # Recomputed every round, not snapshotted once -- same shape as
+            # the batch collector's own wait loop, and for the same reason. A
+            # call the provider cancelled cannot answer any more: its result
+            # is filtered out on arrival and the collector has already stopped
+            # waiting for it. But the task object survives until the handler
+            # exits, which a handler that swallows CancelledError never does,
+            # so waiting for one spends this budget on nothing. Cancellations
+            # arrive asynchronously, so a snapshot taken before the wait goes
+            # stale the moment one lands inside it.
+            retired = self._retired_tool_tasks()
+            pending = tuple(
+                task
+                for task in getattr(self, "_tool_tasks", ())
+                if not task.done() and task is not current and task not in retired
+            )
+            if not pending:
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                logger.warning(
+                    "Gemini proactive inject proceeding with %d tool call(s) "
+                    "still running after %.1fs; the provider may drop them",
+                    len(pending),
+                    _GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS,
+                )
+                return False
+            await asyncio.wait(
+                pending,
+                timeout=min(poll_interval, remaining),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            poll_interval = min(
+                poll_interval * 2, self._TOOL_BATCH_POLL_CEILING_S
+            )
+
     def _settle_gemini_proactive_inject(
         self,
         *,
         error_msg: Optional[str] = None,
         notify: bool = True,
+        expected_connection_generation: int | None = None,
+        expected_provider_session: Any = None,
+        expected_outcome_token: str | None = None,
     ) -> None:
         """Settle the one pending Gemini proactive turn at its lifecycle edge."""
         outcome = getattr(self, "_gemini_proactive_outcome", None)
         if outcome is None:
             return
         token, on_rejected, on_completed = outcome
+        if expected_connection_generation is not None:
+            if token != expected_outcome_token:
+                return
+            expected_owner = (
+                expected_connection_generation,
+                expected_provider_session,
+                expected_outcome_token,
+            )
+            owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+            if owner is None or owner[:3] != expected_owner:
+                return
         self._gemini_proactive_outcome = None
         quarantine_task = getattr(self, "_gemini_proactive_quarantine_task", None)
         if (
@@ -1242,6 +1418,7 @@ class _ResponseMixin:
             and quarantine_task.done()
         ):
             self._gemini_proactive_quarantine_task = None
+        self._gemini_proactive_outcome_owner = None
         if getattr(self, "_proactive_inject_outcome_token", None) == token:
             self._proactive_inject_outcome_token = None
             self._proactive_inject_awaiting_outcome = False
@@ -1284,35 +1461,104 @@ class _ResponseMixin:
         outcome = getattr(self, "_gemini_proactive_outcome", None)
         if outcome is None or outcome[0] != token:
             return
+        owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+        if owner is None or owner[2] != token:
+            return
+        connection_generation, provider_session, _, context = owner[:4]
+        owner_scope = owner[4] if len(owner) > 4 else None
         # Gemini lifecycle events are not tagged with a response id. Do not
         # release this token while the original generation can still emit a
         # late terminal: that terminal could otherwise settle a newer retry.
+        def scope_still_ours() -> bool:
+            # The connection and the session both survive a new user turn, so
+            # neither tells one apart. Only the tool scope moves.
+            return owner_scope is None or owner_scope == getattr(
+                self, "_tool_scope_generation", 0
+            )
+
+        def retire_without_touching_the_live_turn() -> None:
+            # BOTH halves of this quarantine act on whatever is generating
+            # now: client_content interrupts it, and the retirement below
+            # marks the session fatal and closes it. Once a real user turn
+            # owns the generation, either one takes THEIR response down, so
+            # neither may run -- this inject has no claim left. Settling is
+            # still correct and still safe: the outcome fences added for
+            # replacement connections already stop a late terminal from the
+            # abandoned turn settling anyone else's retry.
+            logger.info(
+                "Gemini proactive quarantine retired without interrupting: a "
+                "new user turn owns the generation now"
+            )
+            self._settle_gemini_proactive_inject(
+                error_msg=error_msg,
+                expected_connection_generation=connection_generation,
+                expected_provider_session=provider_session,
+                expected_outcome_token=token,
+            )
+
+        if not scope_still_ours():
+            retire_without_touching_the_live_turn()
+            return
         try:
-            await self.cancel_response()
+            await provider_session.send_client_content(
+                turns=None,
+                turn_complete=False,
+            )
         except Exception as exc:
             logger.warning(
                 "Gemini proactive interrupt failed while quarantining outcome: %s",
                 exc,
             )
         await asyncio.sleep(_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS)
-        outcome = getattr(self, "_gemini_proactive_outcome", None)
-        if outcome is None or outcome[0] != token:
+        if not scope_still_ours():
+            # Re-checked: the grace period is exactly long enough for a user
+            # to start talking.
+            retire_without_touching_the_live_turn()
+            return
+        live_owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+        still_current_connection = bool(
+            connection_generation == self._connection_generation
+            and provider_session is self._gemini_session
+        )
+        if live_owner is None:
+            # SETTLED, not merely superseded -- and the two are different
+            # owners of the teardown. Every other settler (an ordinary close,
+            # the receive-loop teardown, a normal turn_complete) either owns
+            # the context it closed or has no context to close, so exiting the
+            # captured one here would be a second __aexit__ on a one-shot SDK
+            # context that already left the close registry. Deliberately NOT
+            # gated on connection currency: an ordinary close finishing during
+            # the grace sleep also drops _gemini_session, which makes the
+            # connection read false and used to let this fall straight through.
+            return
+        if still_current_connection and live_owner[:3] != owner[:3]:
+            # SUPERSEDED on the live connection: a newer outcome took over and
+            # owns what follows. A replacement CONNECTION is the opposite case
+            # and must not return -- nobody else will exit the context this
+            # quarantine captured.
             return
 
         # No terminal followed the interrupt. Retire the whole Gemini session
         # before releasing the token so no event from the abandoned turn can
         # cross-talk with a future reconnect/retry.
-        self._fatal_error_occurred = True
+        if still_current_connection:
+            self._fatal_error_occurred = True
         try:
-            await self._close_gemini()
+            if still_current_connection:
+                await self._close_gemini()
+            else:
+                await self._close_gemini_context(context, provider_session)
         except Exception as exc:
             logger.warning(
                 "Gemini proactive quarantine close failed: %s",
                 exc,
             )
-        outcome = getattr(self, "_gemini_proactive_outcome", None)
-        if outcome is not None and outcome[0] == token:
-            self._settle_gemini_proactive_inject(error_msg=error_msg)
+        self._settle_gemini_proactive_inject(
+            error_msg=error_msg,
+            expected_connection_generation=connection_generation,
+            expected_provider_session=provider_session,
+            expected_outcome_token=token,
+        )
 
     async def _expire_inject_rejection_handler(
         self,
@@ -1841,6 +2087,13 @@ class _ResponseMixin:
         )
 
         proactive_ticket = None
+        # Captured before the inject so the timeout path below can tell a
+        # still-ours generation from one a later user turn took over.
+        ephemeral_scope = getattr(self, "_tool_scope_generation", 0)
+
+        def _ephemeral_scope_still_ours() -> bool:
+            return ephemeral_scope == getattr(self, "_tool_scope_generation", 0)
+
         try:
             inject_kwargs = {
                 "on_rejected": _on_rejected,
@@ -1888,7 +2141,15 @@ class _ResponseMixin:
                         )
                     )
                 elif not outcome_observed.is_set():
-                    await asyncio.shield(self.cancel_response())
+                    # Same fence as the timeout path below, and for the same
+                    # reason: with no ticket this is a raw client_content
+                    # interrupt aimed at whatever is generating NOW, so after
+                    # a real user turn it would cancel THEIR response.
+                    await asyncio.shield(
+                        self.cancel_response(
+                            send_guard=_ephemeral_scope_still_ours,
+                        )
+                    )
             except Exception as cancel_exc:
                 logger.warning(
                     "prompt_ephemeral: cancellation cleanup failed: %s",
@@ -1972,7 +2233,13 @@ class _ResponseMixin:
                             )
                         )
                     else:
-                        await self.cancel_response()
+                        # Gemini has no ticket to cancel, so this is a raw
+                        # client_content interrupt aimed at whatever is
+                        # generating now. Guard it: after a new user turn it
+                        # would cancel THEIR response instead of ours.
+                        await self.cancel_response(
+                            send_guard=_ephemeral_scope_still_ours,
+                        )
                 except Exception as cancel_exc:
                     logger.warning(
                         "prompt_ephemeral: timed-out response cancel failed; keeping inject quarantined: %s",
@@ -2032,10 +2299,18 @@ class _ResponseMixin:
         )
         return True
 
-    async def cancel_response(self, *, wait: bool = False, timeout: float = 3.0) -> None:
+    async def cancel_response(
+        self,
+        *,
+        wait: bool = False,
+        timeout: float = 3.0,
+        send_guard: Callable[[], bool] | None = None,
+    ) -> None:
         """Cancel the current response."""
         if self._is_gemini:
             if self._gemini_session is None:
+                return
+            if send_guard is not None and not send_guard():
                 return
             # Gemini Live has no response.cancel event. Any client_content
             # interrupts current generation; leaving turn_complete false avoids
@@ -2048,4 +2323,7 @@ class _ResponseMixin:
         if wait:
             await self._ensure_response_arbiter().cancel_current(timeout)
             return
-        await self.send_event({"type": "response.cancel"})
+        await self.send_event(
+            {"type": "response.cancel"},
+            send_guard=send_guard,
+        )

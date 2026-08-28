@@ -2140,7 +2140,7 @@ async def test_cancelled_smart_turn_release_can_be_retried() -> None:
             side_effect=[asyncio.CancelledError(), None],
         )
     )
-    lease = SmartTurnLease(token, runtime)
+    lease = SmartTurnLease(token, runtime, 7)
 
     with pytest.raises(asyncio.CancelledError):
         await lease.release()
@@ -2253,6 +2253,75 @@ async def test_reset_during_inflight_prepare_does_not_block_next_turn() -> None:
     await detector.close()
 
 
+async def test_stale_prepare_waiter_cannot_clear_same_token_successor() -> None:
+    class _SequencedCoordinator(_SemanticCoordinator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first_started = asyncio.Event()
+            self.first_release = asyncio.Event()
+            self.second_started = asyncio.Event()
+            self.second_release = asyncio.Event()
+
+        async def prepare_predictor(self) -> bool:
+            self.prepare_calls += 1
+            if self.prepare_calls == 1:
+                self.first_started.set()
+                await self.first_release.wait()
+            else:
+                self.second_started.set()
+                await self.second_release.wait()
+            return True
+
+    coordinator = _SequencedCoordinator()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(_ingress_token(), turn_id=1)
+    first = asyncio.create_task(detector.prepare_endpointing(token))
+    await asyncio.wait_for(coordinator.first_started.wait(), 1)
+    first_prepare_task = detector._prepare_task
+    assert first_prepare_task is not None
+    await detector.reset()
+
+    old_finish_started = asyncio.Event()
+    allow_old_finish = asyncio.Event()
+    successor_finish_started = asyncio.Event()
+    allow_successor_finish = asyncio.Event()
+    original_finish = detector._finish_prepare_waiter
+
+    async def controlled_finish(prepare_task, *args, **kwargs):
+        if prepare_task is first_prepare_task:
+            old_finish_started.set()
+            await allow_old_finish.wait()
+        else:
+            successor_finish_started.set()
+            await allow_successor_finish.wait()
+        return await original_finish(prepare_task, *args, **kwargs)
+
+    detector._finish_prepare_waiter = controlled_finish
+    successor = asyncio.create_task(detector.prepare_endpointing(token))
+    coordinator.first_release.set()
+    await asyncio.wait_for(old_finish_started.wait(), 1)
+    await asyncio.wait_for(coordinator.second_started.wait(), 1)
+    coordinator.second_release.set()
+    await asyncio.wait_for(successor_finish_started.wait(), 1)
+
+    allow_old_finish.set()
+    assert await asyncio.wait_for(first, 1) is None
+    assert detector.endpointing_ready(token) is True
+
+    allow_successor_finish.set()
+    lease = await asyncio.wait_for(successor, 1)
+    assert lease is not None
+    assert detector.endpointing_ready(token) is True
+    await lease.release()
+    await detector.close()
+
+
 async def test_concurrent_same_token_prepare_calls_coalesce() -> None:
     coordinator = _BlockingSemanticCoordinator(block_prepare=True)
     detector = DetectorRuntime(
@@ -2265,8 +2334,14 @@ async def test_concurrent_same_token_prepare_calls_coalesce() -> None:
     token = VoiceTurnToken(_ingress_token(), turn_id=1)
     first = asyncio.create_task(detector.prepare_endpointing(token))
     await asyncio.wait_for(coordinator.prepare_started.wait(), 1)
-    second = asyncio.create_task(detector.prepare_endpointing(token))
-    await asyncio.sleep(0)
+    second_started = asyncio.Event()
+
+    async def prepare_second_lease():
+        second_started.set()
+        return await detector.prepare_endpointing(token)
+
+    second = asyncio.create_task(prepare_second_lease())
+    await asyncio.wait_for(second_started.wait(), 1)
     coordinator.prepare_release.set()
 
     first_lease = await asyncio.wait_for(first, 1)
@@ -2275,6 +2350,49 @@ async def test_concurrent_same_token_prepare_calls_coalesce() -> None:
     assert second_lease is not None
     assert coordinator.prepare_calls == 1
     await first_lease.release()
+    assert detector.endpointing_ready(token) is True
+    assert detector._semantic_adapter._smart_turn_pin_count == 1
+    await second_lease.release()
+    assert detector.endpointing_ready(token) is False
+    assert detector._semantic_adapter._smart_turn_pin_count == 0
+    await detector.close()
+
+
+async def test_cancelled_same_token_prepare_waiters_do_not_orphan_pin() -> None:
+    coordinator = _BlockingSemanticCoordinator(block_prepare=True)
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(_ingress_token(), turn_id=1)
+    first = asyncio.create_task(detector.prepare_endpointing(token))
+    await asyncio.wait_for(coordinator.prepare_started.wait(), 1)
+    second_started = asyncio.Event()
+
+    async def prepare_second_lease():
+        second_started.set()
+        return await detector.prepare_endpointing(token)
+
+    second = asyncio.create_task(prepare_second_lease())
+    await asyncio.wait_for(second_started.wait(), 1)
+    prepare_task = detector._prepare_task
+    assert prepare_task is not None
+
+    first.cancel()
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    with pytest.raises(asyncio.CancelledError):
+        await second
+
+    coordinator.prepare_release.set()
+    assert await asyncio.wait_for(prepare_task, 1) is False
+    assert detector.endpointing_ready(token) is False
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+    assert detector._semantic_adapter._smart_turn_pin_count == 0
     await detector.close()
 
 
@@ -2306,6 +2424,59 @@ async def test_close_while_waiting_for_stale_prepare_cleans_up() -> None:
     assert detector._prepare_token is None
     assert detector._semantic_adapter._smart_turn_pin_count == 0
     assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+
+
+async def test_cancelled_detector_close_retry_waits_for_owned_cleanup() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+    )
+    adapter = _OverflowAdapter()
+    detector._semantic_adapter = adapter
+    detector._semantic_started = True
+
+    async def blocked_overflow_reset() -> None:
+        adapter.reset_started.set()
+        await adapter.reset_release.wait()
+
+    overflow_reset = asyncio.create_task(blocked_overflow_reset())
+    detector._overflow_reset_task = overflow_reset
+    await adapter.reset_started.wait()
+    close_impl_started = asyncio.Event()
+    original_close_impl = detector._close_impl
+
+    async def observed_close_impl() -> None:
+        close_impl_started.set()
+        await original_close_impl()
+
+    detector._close_impl = observed_close_impl
+
+    first_close = asyncio.create_task(detector.close())
+    await close_impl_started.wait()
+    first_close.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_close
+
+    assert detector._closed is True
+    assert overflow_reset.cancelled() is False
+    assert adapter.closed is False
+
+    retry_started = asyncio.Event()
+
+    async def retry_detector_close() -> None:
+        retry_started.set()
+        await detector.close()
+
+    retry_close = asyncio.create_task(retry_detector_close())
+    await retry_started.wait()
+    assert retry_close.done() is False
+
+    adapter.reset_release.set()
+    await asyncio.wait_for(retry_close, 1)
+    assert adapter.closed is True
 
 
 async def test_overflow_reset_rejects_audio_until_barrier_finishes() -> None:

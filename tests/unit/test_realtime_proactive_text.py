@@ -769,6 +769,12 @@ async def test_gemini_outcome_ttl_closes_session_before_releasing_token(monkeypa
         rejected.append,
         lambda: None,
     )
+    client._gemini_proactive_outcome_owner = (
+        client._connection_generation,
+        gemini_session,
+        token,
+        context_manager,
+    )
     client._proactive_inject_outcome_token = token
     client._proactive_inject_awaiting_outcome = True
     monkeypatch.setattr(
@@ -791,6 +797,147 @@ async def test_gemini_outcome_ttl_closes_session_before_releasing_token(monkeypa
         "turn_complete": False,
     }
     await client.close()
+
+
+@pytest.mark.unit
+async def test_external_voice_turn_interrupts_before_it_claims_the_new_turn(
+    monkeypatch,
+):
+    """开外部 ASR 回合前，必须真的打断还在生成的那条主动搭话。
+
+    这里是两条加固的交汇点，顺序一错就静默失效：
+    ``note_user_turn_started()`` 会推进 ``_tool_scope_generation``，而隔离的第一
+    道闸 ``scope_still_ours()`` 拿 owner 里记下的 scope 跟它比。若先宣告新回合，
+    该判据恒不相等，隔离每次都走 retire 分支、一次 ``client_content`` 打断都不
+    发；那条已被 SDK 收下、还在生成的主动搭话回合于是毫发无损，外部 ASR 回合直接
+    压在同一个 unscoped SDK session 上，两个回合的音频/文本交错。
+
+    断言的是两件事的**先后**，不是各自发生过。只断言「打断发了」会漏掉「新回合
+    没宣告」；只断言 scope 前进了同样漏——隔离退休 session 时自己也会推一格，
+    把 ``note_user_turn_started()`` 整个删掉，单看 scope 依然在涨。
+    """
+    events: list[str] = []
+
+    client = _make_client(api_type="gemini", model="gemini-live")
+    session = AsyncMock()
+    context = AsyncMock()
+
+    async def _record_send(*, turns, turn_complete):
+        if turns is None and turn_complete is False:
+            events.append("interrupt")
+
+    session.send_client_content.side_effect = _record_send
+    client._gemini_session = session
+    client._gemini_context_manager = context
+    client.ws = session
+
+    _real_note = type(client).note_user_turn_started
+
+    def _spy_note() -> None:
+        events.append("user_turn_started")
+        _real_note(client)
+
+    client.note_user_turn_started = _spy_note
+
+    token = "live-proactive-turn"
+    client._gemini_proactive_outcome = (token, None, None)
+    client._gemini_proactive_outcome_owner = (
+        client._connection_generation,
+        session,
+        token,
+        context,
+        # 生产代码写的是 5 元组（末位是 inject 当时的 tool scope）。少写这一位，
+        # scope_still_ours() 会因为 owner_scope is None 无条件返回 True——闸门被
+        # 短路，这条用例就变成"碰巧过"而不是真的走了那道判据。（实测过：只把这
+        # 一位删掉，本用例仍然通过，因为抓住顺序错误的是下面的事件顺序断言；写
+        # 满是为了让被测的闸门真的被求值。）
+        client._tool_scope_generation,
+    )
+    monkeypatch.setattr(
+        responses_module,
+        "_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS",
+        0,
+    )
+
+    await client.prepare_external_voice_turn(turn_id="external-turn")
+
+    assert events == ["interrupt", "user_turn_started"], (
+        "隔离必须在宣告新用户回合之前跑完：先宣告会推进 tool scope，"
+        "scope_still_ours() 恒假，隔离退化成一次打断都不发的 retire 分支"
+    )
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_old_gemini_quarantine_releases_only_its_captured_context(
+    monkeypatch,
+):
+    client = _make_client(api_type="gemini", model="gemini-live")
+    interrupt_started = asyncio.Event()
+    release_interrupt = asyncio.Event()
+
+    async def block_old_interrupt(*, turns, turn_complete):
+        assert turns is None
+        assert turn_complete is False
+        interrupt_started.set()
+        await release_interrupt.wait()
+
+    old_session = AsyncMock()
+    old_session.send_client_content.side_effect = block_old_interrupt
+    old_context = AsyncMock()
+    client._gemini_session = old_session
+    client._gemini_context_manager = old_context
+    client.ws = old_session
+    client._on_connection_attached()
+    old_generation = client._connection_generation
+    old_token = "retired-quarantine"
+    client._gemini_proactive_outcome = (old_token, None, None)
+    client._gemini_proactive_outcome_owner = (
+        old_generation,
+        old_session,
+        old_token,
+        old_context,
+    )
+    monkeypatch.setattr(
+        responses_module,
+        "_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS",
+        0,
+    )
+
+    quarantine = asyncio.create_task(
+        client._interrupt_and_quarantine_gemini_proactive_outcome(
+            old_token,
+            error_msg="retired",
+        )
+    )
+    await asyncio.wait_for(interrupt_started.wait(), timeout=1)
+
+    replacement_session = AsyncMock()
+    replacement_context = AsyncMock()
+    client._gemini_session = replacement_session
+    client._gemini_context_manager = replacement_context
+    client.ws = replacement_session
+    client._on_connection_attached()
+    replacement_token = "replacement-outcome"
+    client._gemini_proactive_outcome = (replacement_token, None, None)
+    client._gemini_proactive_outcome_owner = (
+        client._connection_generation,
+        replacement_session,
+        replacement_token,
+        replacement_context,
+    )
+    release_interrupt.set()
+    await asyncio.wait_for(quarantine, timeout=1)
+
+    assert old_session.send_client_content.await_count == 1
+    old_context.__aexit__.assert_awaited_once_with(None, None, None)
+    replacement_session.send_client_content.assert_not_awaited()
+    replacement_context.__aexit__.assert_not_awaited()
+    assert client._gemini_session is replacement_session
+    assert client._gemini_context_manager is replacement_context
+    assert client.ws is replacement_session
+    assert client._fatal_error_occurred is False
+    assert client._gemini_proactive_outcome == (replacement_token, None, None)
 
 
 @pytest.mark.unit
@@ -844,6 +991,25 @@ async def test_gemini_cancelled_wait_observes_boundary_completion(monkeypatch):
     assert client._gemini_session.send_client_content.await_count == 1
     assert client._gemini_proactive_outcome is None
     assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_cancel_response_honors_send_guard():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+
+    await client.cancel_response(send_guard=lambda: False)
+
+    client._gemini_session.send_client_content.assert_not_awaited()
+
+    await client.cancel_response(send_guard=lambda: True)
+
+    client._gemini_session.send_client_content.assert_awaited_once_with(
+        turns=None,
+        turn_complete=False,
+    )
     await client.close()
 
 

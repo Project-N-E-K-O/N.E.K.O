@@ -26,6 +26,7 @@ compatibility path.
 {
   "action": "voice_input_control",
   "event": "lease_sync",
+  "engaged": true,
   "owner": "core",
   "hard_muted": false,
   "focus_suppressed": false,
@@ -37,6 +38,16 @@ compatibility path.
 `focus_suppress`, `focus_resume`, `game_takeover`, or `game_release`.
 `lease_sync` requires the complete `owner`, `hard_muted`, and
 `focus_suppressed` snapshot. `owner` is `none`, `core`, or `game`.
+`engaged` uses this exact claim matrix:
+
+| JSON value | Window state | Voice-connection claim |
+| --- | --- | --- |
+| `true` | Active recording or reconnecting an active recording | Claims |
+| `false` | Passive auxiliary window | Does not claim |
+| omitted | Legacy-client compatibility | Claims |
+
+Only the literal JSON value `false` suppresses the claim. New passive clients
+must send it explicitly.
 
 Generations are scoped to one WebSocket, strictly increase, and restart after
 reconnection. Any explicit control attempt permanently selects this strict
@@ -78,8 +89,9 @@ bytes 4..7   uint32 little-endian sample rate (16000 or 48000)
 bytes 8..N   mono signed PCM16, little-endian
 ```
 
-The PCM payload must be non-empty, even-sized, and no longer than one second.
-The server treats this frame as `stream_data` with `input_type: "audio"`.
+The PCM payload must be non-empty, even-sized, and no longer than 120 ms.
+Normal clients should send 10-32 ms frames. The server treats this frame as
+`stream_data` with `input_type: "audio"`.
 
 For compatibility, clients may send a JSON array of signed 16-bit PCM sample
 values instead. Audio is **not base64**:

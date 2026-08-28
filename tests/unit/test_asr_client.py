@@ -1954,6 +1954,283 @@ async def test_runtime_start_closed_during_lifecycle_returns_stale_without_ready
     candidate.close.assert_awaited_once_with()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["close", "abort", "warm"])
+async def test_cancelled_runtime_teardown_keeps_provider_close_owned(operation: str):
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def blocking_close() -> None:
+        close_started.set()
+        await release_close.wait()
+
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    _install_active_runtime_state(runtime, detector)
+    session = runtime._asr_session
+    session.close = AsyncMock(side_effect=blocking_close)
+
+    if operation == "close":
+        teardown = runtime.close()
+    elif operation == "abort":
+        teardown = runtime.abort("test_cancel")
+    else:
+        teardown = runtime._close_transport_only()
+    teardown_task = asyncio.create_task(teardown)
+    await close_started.wait()
+
+    teardown_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await teardown_task
+
+    assert runtime._asr_session is None
+    assert session.close.await_count == 1
+
+    owned_cleanup = tuple(runtime._asr_owned_cleanup_tasks)
+    assert owned_cleanup
+    release_close.set()
+    await asyncio.gather(*owned_cleanup)
+    assert not runtime._asr_owned_cleanup_tasks
+    assert session.close.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_runtime_close_retry_waits_for_same_cleanup() -> None:
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def blocking_close() -> None:
+        close_started.set()
+        await release_close.wait()
+
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    _install_active_runtime_state(runtime, detector)
+    session = runtime._asr_session
+    session.close = AsyncMock(side_effect=blocking_close)
+
+    first_close = asyncio.create_task(runtime.close())
+    await close_started.wait()
+    owned_close = runtime._asr_runtime_close_task
+    first_close.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_close
+
+    retry_started = asyncio.Event()
+
+    async def retry_runtime_close() -> None:
+        retry_started.set()
+        await runtime.close()
+
+    retry_close = asyncio.create_task(retry_runtime_close())
+    await retry_started.wait()
+    assert runtime._asr_runtime_close_task is owned_close
+    assert retry_close.done() is False
+
+    release_close.set()
+    await asyncio.wait_for(retry_close, 1)
+    assert session.close.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_detaches_before_owned_task_can_be_invalidated() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    _install_active_runtime_state(runtime, detector)
+    session = runtime._asr_session
+    original_schedule = runtime._schedule_owned_cleanup
+    detached_at_schedule: list[bool] = []
+
+    def invalidate_in_schedule_gap(awaitable, *, name):
+        detached_at_schedule.append(
+            runtime._asr_session is None
+            and runtime._asr_lifecycle is None
+            and runtime._asr_detector is None
+        )
+        task = original_schedule(awaitable, name=name)
+        runtime._invalidate_asr_start()
+        return task
+
+    runtime._schedule_owned_cleanup = invalidate_in_schedule_gap
+
+    await runtime.close()
+
+    # Every cleanup this close owns must be scheduled against fully detached
+    # state -- asserted as a property rather than a count, so the claim does
+    # not depend on how many tasks close() happens to split its teardown into.
+    assert detached_at_schedule
+    assert all(detached_at_schedule), detached_at_schedule
+    assert runtime._asr_session is None
+    assert runtime._asr_lifecycle is None
+    assert runtime._asr_detector is None
+    detector.close.assert_awaited_once_with()
+    session.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_start_keeps_predecessor_cleanup_owned() -> None:
+    detector_close_started = asyncio.Event()
+    release_detector_close = asyncio.Event()
+
+    async def blocking_detector_close() -> None:
+        detector_close_started.set()
+        await release_detector_close.wait()
+
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    detector.close.side_effect = blocking_detector_close
+    _install_active_runtime_state(runtime, detector)
+    session = runtime._asr_session
+
+    starting = asyncio.create_task(
+        runtime.start(
+            route_key="independent",
+            resource_optimization_enabled=True,
+        )
+    )
+    await asyncio.wait_for(detector_close_started.wait(), timeout=1)
+    starting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await starting
+
+    owned_cleanup = tuple(runtime._asr_owned_cleanup_tasks)
+    assert runtime._asr_session is None
+    assert runtime._asr_detector is None
+    assert runtime._asr_lifecycle is None
+    assert len(owned_cleanup) == 1
+    assert owned_cleanup[0].cancelled() is False
+    assert session.close.await_count == 0
+
+    release_detector_close.set()
+    await asyncio.wait_for(asyncio.gather(*owned_cleanup), timeout=1)
+
+    detector.close.assert_awaited_once_with()
+    session.close.assert_awaited_once_with()
+    assert not runtime._asr_owned_cleanup_tasks
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_invalidates_start_waiting_for_predecessor_cleanup(
+    monkeypatch,
+) -> None:
+    detector_close_started = asyncio.Event()
+    release_detector_close = asyncio.Event()
+    explicit_close_scheduled = asyncio.Event()
+
+    async def blocking_detector_close() -> None:
+        detector_close_started.set()
+        await release_detector_close.wait()
+
+    candidate = _RuntimeStartCandidate()
+    _patch_runtime_start(monkeypatch, [candidate])
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    detector.close.side_effect = blocking_detector_close
+    _install_active_runtime_state(runtime, detector)
+    old_session = runtime._asr_session
+    original_schedule = runtime._schedule_owned_cleanup
+
+    def observe_explicit_close(awaitable, *, name):
+        task = original_schedule(awaitable, name=name)
+        if name == "independent-asr-close":
+            explicit_close_scheduled.set()
+        return task
+
+    runtime._schedule_owned_cleanup = observe_explicit_close
+
+    starting = asyncio.create_task(
+        runtime.start(
+            route_key="qwen",
+            resource_optimization_enabled=True,
+        )
+    )
+    await asyncio.wait_for(detector_close_started.wait(), timeout=1)
+    predecessor_cleanup = next(
+        task
+        for task in runtime._asr_owned_cleanup_tasks
+        if task.get_name() == "independent-asr-start-predecessor-close"
+    )
+
+    closing = asyncio.create_task(runtime.close())
+    await asyncio.wait_for(explicit_close_scheduled.wait(), timeout=1)
+
+    assert runtime._asr_runtime_close_task is not predecessor_cleanup
+    assert closing.done() is False
+
+    release_detector_close.set()
+    await asyncio.wait_for(closing, timeout=1)
+    result = await asyncio.wait_for(starting, timeout=1)
+
+    assert result.status is AsrStartStatus.FAILED
+    assert result.failure_code == "ASR_START_STALE"
+    assert runtime._asr_session is None
+    assert candidate.connect_started.is_set() is False
+    asr_runtime_module._create_asr_session_from_selection.assert_not_called()
+    detector.close.assert_awaited_once_with()
+    old_session.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_continues_after_detector_close_failure() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    detector.close.side_effect = RuntimeError("detector close failed")
+    _install_active_runtime_state(runtime, detector)
+    session = runtime._asr_session
+
+    await runtime.close()
+
+    detector.close.assert_awaited_once_with()
+    session.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_abort_closes_session_when_lease_release_fails() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    _install_active_runtime_state(runtime, detector)
+    session = runtime._asr_session
+    lease = SimpleNamespace(
+        release=AsyncMock(side_effect=RuntimeError("lease release failed")),
+    )
+    runtime._asr_smart_turn_lease = lease
+
+    await runtime.abort("test_release_failure")
+
+    lease.release.assert_awaited_once_with()
+    session.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_owned_cleanup_observes_background_failure(caplog) -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+
+    async def fail_cleanup() -> None:
+        raise RuntimeError("cleanup failed")
+
+    cleanup_observed = asyncio.Event()
+    original_done = runtime._owned_cleanup_done
+
+    def observed_done(task) -> None:
+        original_done(task)
+        cleanup_observed.set()
+
+    runtime._owned_cleanup_done = observed_done
+    caplog.set_level("ERROR")
+    cleanup = runtime._schedule_owned_cleanup(
+        fail_cleanup(),
+        name="test-owned-cleanup-failure",
+    )
+    await asyncio.wait_for(cleanup_observed.wait(), timeout=1)
+
+    assert cleanup.done() is True
+    assert not runtime._asr_owned_cleanup_tasks
+    assert (
+        "independent ASR background task test-owned-cleanup-failure failed"
+        in caplog.text
+    )
+
+
 async def test_new_runtime_start_survives_old_connect_success(monkeypatch) -> None:
     first_release = asyncio.Event()
     first = _RuntimeStartCandidate(connect_gate=first_release)
@@ -2699,3 +2976,40 @@ def test_asr_connect_retry_budget_cannot_outlive_the_frontend_start_deadline():
     assert start_loop.index("_CONNECT_TOTAL_BUDGET_SECONDS") < start_loop.index(
         "await asyncio.sleep(backoff)"
     ), "the budget check must refuse the retry before sleeping for it"
+
+
+@pytest.mark.asyncio
+async def test_close_does_not_queue_its_own_cleanup_behind_a_stuck_predecessor() -> None:
+    """A retired teardown that never returns must not keep this generation open."""
+
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    _install_active_runtime_state(runtime, detector)
+    session = runtime._asr_session
+
+    stuck_forever = asyncio.Event()
+
+    async def never_returns() -> None:
+        await stuck_forever.wait()
+
+    predecessor = runtime._schedule_owned_cleanup(
+        never_returns(),
+        name="retired-provider-close",
+    )
+
+    close = asyncio.create_task(runtime.close())
+    # The predecessor is still blocked, so close() cannot have returned -- but
+    # the resources IT detached are independent of that teardown and must
+    # already be released.
+    for _ in range(40):
+        if session.close.await_count and detector.close.await_count:
+            break
+        await asyncio.sleep(0.01)
+
+    detector.close.assert_awaited_once_with()
+    session.close.assert_awaited_once_with()
+    assert not close.done(), "close() joins the predecessor before returning"
+
+    stuck_forever.set()
+    await asyncio.wait_for(close, timeout=1)
+    await asyncio.wait_for(predecessor, timeout=1)

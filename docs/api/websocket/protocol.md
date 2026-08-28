@@ -71,6 +71,17 @@ restarts after reconnecting. Invalid or stale control messages produce
 `VOICE_INPUT_CONTROL_REJECTED` and permanently disable legacy fallback for that
 connection.
 
+The snapshot's `engaged` field uses this exact claim matrix:
+
+| JSON value | Window state | Voice-connection claim |
+| --- | --- | --- |
+| `true` | Active recording or reconnecting an active recording | Claims |
+| `false` | Passive auxiliary window | Does not claim |
+| omitted | Legacy-client compatibility | Claims |
+
+Only the literal JSON value `false` suppresses the claim. New passive clients
+must send it explicitly.
+
 For compatibility, a connection that has sent no control message can acquire a
 generation-0 Core lease immediately before its first ordinary audio session
 starts. This does not run on the game route and cannot override an explicit
