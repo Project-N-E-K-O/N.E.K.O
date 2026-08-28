@@ -3178,3 +3178,43 @@ async def test_typed_text_cancels_the_in_flight_offline_stream_first(monkeypatch
     # 取消要发生在 speech_id 轮换**之前**，否则旧流的 delta 会挂到新 id 上。
     assert sid_at_interrupt["sid"] == old_sid
     assert mgr.current_speech_id != old_sid
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_callback_media_returns_when_cancelled_before_the_stream_begins(
+    monkeypatch,
+):
+    """The rollback window is the whole post-drain stretch, not just stream_text.
+
+    The callback leaves the queue and is reported delivered the moment its text
+    renders, but several awaits still stand between that and the turn reaching
+    history -- the Focus decision and the thinking-bubble pulse. A teardown that
+    cancels this input task in there loses the callback's text AND its images
+    with no retry left.
+    """
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    callback = _media_callback("agent finished", ["cb-image-1"])
+    mgr.pending_agent_callbacks = [callback]
+    session.stream_text = AsyncMock()
+
+    async def cancelled_focus_decision(_text):
+        raise asyncio.CancelledError()
+
+    mgr._focus_inline_decision = cancelled_focus_decision
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    # 取消必须继续向上传播（回滚是顺手做的，不是把取消吃掉）。
+    with pytest.raises(asyncio.CancelledError):
+        await core_module.LLMSessionManager._process_stream_data_internal(
+            mgr,
+            {"input_type": "text", "data": "什么情况"},
+        )
+
+    # 这一轮从没到达 stream_text，callback 必须完好回队。
+    session.stream_text.assert_not_awaited()
+    assert mgr.pending_agent_callbacks == [callback]
+    assert callback["media_images"] == ["cb-image-1"]

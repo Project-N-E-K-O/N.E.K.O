@@ -83,12 +83,19 @@ _STUCK_RELEASE_NOTIFY_TIMEOUT = 2.0
 
 
 class ResponseAdmissionRejected(RuntimeError):
-    """This request lost its admission window; it was never (or no longer) sent.
+    """This request lost its admission window **before anything was sent**.
 
-    Distinct from an ordinary interruption: nothing of this request survives on
-    the provider side (a committed item is deleted first), so the caller is free
-    to re-submit an equivalent request in a degraded form. Subclasses
-    ``RuntimeError`` so existing broad handlers keep working.
+    The promise is narrow on purpose: not one byte of this request reached the
+    provider, so the caller may safely re-submit an equivalent request in a
+    degraded form. It is NOT raised once an item has been committed to the
+    transport -- the compensating ``conversation.item.delete`` is fire-and-
+    forget (the provider confirms asynchronously with ``conversation.item.deleted``
+    and may instead answer with an error), so a committed item may well survive
+    and a re-submit would duplicate the user's turn against stale visual
+    context. Those paths keep raising a plain ``RuntimeError``, which callers
+    treat as "this turn is over".
+
+    Subclasses ``RuntimeError`` so existing broad handlers keep working.
     """
 
 
@@ -2025,12 +2032,10 @@ class RealtimeResponseArbiter:
                 if queued.interrupted or admission_rejected:
                     if queued.item_committed and admission_rejected:
                         await self._delete_committed_item(queued)
-                    if admission_rejected and not queued.interrupted:
-                        # 已提交的 item 上面刚删掉，provider 侧不留痕迹；调用方
-                        # 可以安全地改用降级形式重投。真打断走下面那条，语义不同。
-                        raise ResponseAdmissionRejected(
-                            "response dispatch admission rejected after commit"
-                        )
+                    # 这里**不能**抛 ResponseAdmissionRejected：上面那次补偿删除
+                    # 是 fire-and-forget，provider 异步确认、也可能改回一个 error，
+                    # 于是这条已提交的 item 完全可能还留在会话历史里。此时让调用方
+                    # 降级重投就会变成重复的用户回合，还配着过期的视觉上下文。
                     raise RuntimeError("response dispatch interrupted")
                 queued.item_committed = True
                 await self._worker_send(event)
@@ -2048,10 +2053,9 @@ class RealtimeResponseArbiter:
                 and not queued.admission_check()
             )
             if queued.item_committed and admission_rejected:
+                # 同上：补偿删除未经确认，不承诺「provider 侧不留痕迹」。
                 await self._delete_committed_item(queued)
-                raise ResponseAdmissionRejected(
-                    "response dispatch admission rejected after commit"
-                )
+                raise RuntimeError("response dispatch interrupted")
 
             if queued.item_ack is not None:
                 if queued.item_committed and queued.interrupted:
@@ -2083,10 +2087,9 @@ class RealtimeResponseArbiter:
                 and not queued.admission_check()
             )
             if queued.item_committed and admission_rejected:
+                # 同上：补偿删除未经确认，不承诺「provider 侧不留痕迹」。
                 await self._delete_committed_item(queued)
-                raise ResponseAdmissionRejected(
-                    "response dispatch admission rejected after commit"
-                )
+                raise RuntimeError("response dispatch interrupted")
             if queued.interrupted:
                 raise RuntimeError("response dispatch interrupted")
             if not self._connection_available:

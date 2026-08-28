@@ -666,6 +666,10 @@ class StreamingMixin:
                     _agent_cb_ctx = ""
                     _agent_cb_images = []
                     _agent_cb_media_drained = []
+                    # ⚠️ 必须在外层 try **之前**绑定：回滚发生在 drain 之后的任意
+                    # 一个 await 上，包括早于下面赋值点的那些。定义在 try 内部的话，
+                    # 早期取消会让 except 里读到未绑定的名字，回滚静默失效。
+                    _cb_turn_committed = False
                     if self.pending_agent_callbacks:
                         callbacks_snapshot = self._claim_agent_callbacks_for_llm()
                         try:
@@ -709,104 +713,109 @@ class StreamingMixin:
                                 callbacks_snapshot
                             )
 
-                    text_request_id = message.get("request_id")
-                    self._active_text_request_id = text_request_id
-                    # Path A (inline) Focus 凝神：score this user message and, if
-                    # over the bar, run THIS reply thinking-on. Scored on
-                    # ``record_data`` (= memory_text or data) — the user-VISIBLE
-                    # text that also feeds the activity tracker / cadence baseline
-                    # and history replacement. Scoring raw ``data`` instead would
-                    # read a hidden scaffold prompt (e.g. avatar-drop file
-                    # contents) the user never typed, mismatching the cadence
-                    # signal and entering Focus on evidence the user didn't author.
-                    _focus_thinking = await self._focus_inline_decision(record_data)
+                    try:
+                        text_request_id = message.get("request_id")
+                        self._active_text_request_id = text_request_id
+                        # Path A (inline) Focus 凝神：score this user message and, if
+                        # over the bar, run THIS reply thinking-on. Scored on
+                        # ``record_data`` (= memory_text or data) — the user-VISIBLE
+                        # text that also feeds the activity tracker / cadence baseline
+                        # and history replacement. Scoring raw ``data`` instead would
+                        # read a hidden scaffold prompt (e.g. avatar-drop file
+                        # contents) the user never typed, mismatching the cadence
+                        # signal and entering Focus on evidence the user didn't author.
+                        _focus_thinking = await self._focus_inline_decision(record_data)
 
-                    async def response_discarded_callback(
-                        reason: str,
-                        attempt: int,
-                        max_attempts: int,
-                        will_retry: bool,
-                        discard_message: str | None = None,
-                        *,
-                        _request_id=text_request_id,
-                    ) -> None:
-                        await self.handle_response_discarded(
-                            reason,
-                            attempt,
-                            max_attempts,
-                            will_retry,
-                            discard_message,
-                            request_id=_request_id,
-                        )
-
-                    input_transcript_callback = None
-                    if memory_text:
-                        transcript_metadata = {"source": message_source} if message_source else None
-
-                        async def input_transcript_callback(
-                            _transcript: str,
+                        async def response_discarded_callback(
+                            reason: str,
+                            attempt: int,
+                            max_attempts: int,
+                            will_retry: bool,
+                            discard_message: str | None = None,
                             *,
-                            _memory_text: str = memory_text,
-                            _message_source: str = message_source,
-                            _transcript_metadata: dict | None = transcript_metadata,
+                            _request_id=text_request_id,
                         ) -> None:
-                            await self.handle_input_transcript(
-                                _memory_text,
-                                is_voice_source=False,
-                                source=_message_source,
-                                metadata=_transcript_metadata,
+                            await self.handle_response_discarded(
+                                reason,
+                                attempt,
+                                max_attempts,
+                                will_retry,
+                                discard_message,
+                                request_id=_request_id,
                             )
 
-                    stream_text_kwargs = {
-                        "system_prefix": _agent_cb_ctx or None,
-                        "thinking_on": _focus_thinking,
-                        "response_discarded_callback": response_discarded_callback,
-                    }
-                    _cb_turn_committed = False
+                        input_transcript_callback = None
+                        if memory_text:
+                            transcript_metadata = {"source": message_source} if message_source else None
 
-                    def _mark_cb_turn_committed() -> None:
-                        nonlocal _cb_turn_committed
-                        _cb_turn_committed = True
+                            async def input_transcript_callback(
+                                _transcript: str,
+                                *,
+                                _memory_text: str = memory_text,
+                                _message_source: str = message_source,
+                                _transcript_metadata: dict | None = transcript_metadata,
+                            ) -> None:
+                                await self.handle_input_transcript(
+                                    _memory_text,
+                                    is_voice_source=False,
+                                    source=_message_source,
+                                    metadata=_transcript_metadata,
+                                )
 
-                    if _agent_cb_images:
-                        stream_text_kwargs["system_prefix_images"] = _agent_cb_images
-                        # 本次调用自己的「已进 history」标记。不能拿全局 history 长
-                        # 度判断：并发的另一条文本请求同样会追加。
-                        stream_text_kwargs["on_turn_committed"] = (
-                            _mark_cb_turn_committed
-                        )
-                    if input_transcript_callback:
-                        stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
-                    if memory_text:
-                        stream_text_kwargs["history_replacement_text"] = memory_text
-                    if _focus_thinking:
-                        # 凝神 turn runs thinking-on: pre-pulse the frontend so the
-                        # bubble shows up the instant the turn starts (immediate
-                        # feedback), before any reasoning chunk arrives. Idempotent
-                        # and harmless — a non-Focus turn instead pulses lazily from
-                        # OmniOfflineClient.on_thinking_active on its first reasoning
-                        # chunk (handle_thinking_active). Either way the bubble clears
-                        # on the first visible token (send_lanlan_response) or in the
-                        # unconditional finally below.
-                        await self._push_focus_thinking(True)
-                    try:
-                        await self.session.stream_text(data, **stream_text_kwargs)
+                        stream_text_kwargs = {
+                            "system_prefix": _agent_cb_ctx or None,
+                            "thinking_on": _focus_thinking,
+                            "response_discarded_callback": response_discarded_callback,
+                        }
+                        def _mark_cb_turn_committed() -> None:
+                            nonlocal _cb_turn_committed
+                            _cb_turn_committed = True
+
+                        if _agent_cb_images:
+                            stream_text_kwargs["system_prefix_images"] = _agent_cb_images
+                            # 本次调用自己的「已进 history」标记。不能拿全局 history 长
+                            # 度判断：并发的另一条文本请求同样会追加。
+                            stream_text_kwargs["on_turn_committed"] = (
+                                _mark_cb_turn_committed
+                            )
+                        if input_transcript_callback:
+                            stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
+                        if memory_text:
+                            stream_text_kwargs["history_replacement_text"] = memory_text
+                        if _focus_thinking:
+                            # 凝神 turn runs thinking-on: pre-pulse the frontend so the
+                            # bubble shows up the instant the turn starts (immediate
+                            # feedback), before any reasoning chunk arrives. Idempotent
+                            # and harmless — a non-Focus turn instead pulses lazily from
+                            # OmniOfflineClient.on_thinking_active on its first reasoning
+                            # chunk (handle_thinking_active). Either way the bubble clears
+                            # on the first visible token (send_lanlan_response) or in the
+                            # unconditional finally below.
+                            await self._push_focus_thinking(True)
+                        try:
+                            await self.session.stream_text(data, **stream_text_kwargs)
+                        finally:
+                            # Clear unconditionally: a non-Focus turn may have pulsed the
+                            # bubble True via the reasoning callback, so gating the clear
+                            # on _focus_thinking would leave it stuck on tool-only / empty
+                            # / error turns. _push_focus_thinking is idempotent, so a no-op
+                            # clear when nothing pulsed costs nothing.
+                            await self._push_focus_thinking(False)
                     except BaseException:
-                        # 只在**这一轮**没进 history 时回滚。已提交之后的失败属于
-                        # 既有的 best-effort 契约（内容已经在模型眼前了），回滚反
-                        # 而会重复投递。
+                        # drain 之后到本轮进 history 之间的**每一个** await 都要
+                        # 覆盖，不只是 stream_text：会话拆除时这条输入任务可能在
+                        # _focus_inline_decision / _push_focus_thinking(True) 里就
+                        # 被取消，那时 callback 已经摘队并报告投递成功，文本和图会
+                        # 一起永久消失。
+                        #
+                        # 仍然只在**这一轮没进 history** 时回滚：已提交之后的失败
+                        # 属于既有的 best-effort 契约（内容已经在模型眼前了），
+                        # 回滚反而会重复投递。
                         if _agent_cb_media_drained and not _cb_turn_committed:
                             self._requeue_undelivered_callback_media(
                                 _agent_cb_media_drained
                             )
                         raise
-                    finally:
-                        # Clear unconditionally: a non-Focus turn may have pulsed the
-                        # bubble True via the reasoning callback, so gating the clear
-                        # on _focus_thinking would leave it stuck on tool-only / empty
-                        # / error turns. _push_focus_thinking is idempotent, so a no-op
-                        # clear when nothing pulsed costs nothing.
-                        await self._push_focus_thinking(False)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
