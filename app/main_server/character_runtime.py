@@ -1102,6 +1102,42 @@ async def _handle_agent_event(event: dict):
                         type(sess).__name__ if sess else "None",
                     )
                     image_indexes = []
+                elif ai_behavior_v2 == "read" and not getattr(
+                    sess, "_supports_native_image", True
+                ):
+                    # ``read`` is NOT supported on a realtime provider without
+                    # native vision (standard StepFun is the only one left).
+                    #
+                    # Such a session answers ``stream_image(cache_latest=False)``
+                    # by RETURNING a VISION_MODEL description instead of putting
+                    # anything in the conversation -- see _transport.stream_image.
+                    # Delivering that description needs a conversation item bound
+                    # to a delivery ticket, which is what _stream_cb_media builds
+                    # for ``respond`` callbacks. ``read`` is best-effort input to
+                    # whatever session happens to exist and owns no such ticket,
+                    # so it has nowhere to put the description.
+                    #
+                    # Bail out HERE rather than at the inject site: reaching that
+                    # site means the fetch, the decode and a paid VISION_MODEL
+                    # call have already happened for a description that is then
+                    # dropped on the floor. Skipping early is honest about the
+                    # gap and costs nothing. Passing cache_latest=True instead
+                    # would land the image in the ambient frame cache, where an
+                    # unrelated prompt_ephemeral can resend it as a screenshot.
+                    #
+                    # ``respond`` is unaffected -- its images ride the callback
+                    # and go through _stream_cb_media, which does handle this.
+                    # Text mode is unaffected too: OmniOfflineClient has no
+                    # _supports_native_image, so the getattr default keeps it in.
+                    logger.warning(
+                        "[EventBus] %d read image(s) dropped: session=%s has no native "
+                        "vision, and ai_behavior='read' has no ticket-bound channel for "
+                        "a VISION_MODEL description; use ai_behavior='respond' to reach "
+                        "this provider",
+                        len(image_indexes),
+                        type(sess).__name__ if sess else "None",
+                    )
+                    image_indexes = []
                 resolved_model_images: dict[int, str | BaseException] = {}
                 # Fetch concurrently, but charge the pool in CANONICAL PART
                 # ORDER once each batch is in. Drawing from a shared pool

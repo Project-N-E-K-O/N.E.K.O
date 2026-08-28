@@ -412,21 +412,39 @@ async def test_read_image_is_not_queued_when_no_model_session(
 
 
 @pytest.mark.asyncio
-async def test_non_native_realtime_read_uses_current_session_image_path(
+async def test_non_native_realtime_read_images_are_skipped_before_fetch(
     monkeypatch,
 ) -> None:
+    """``read`` is not supported on a realtime provider without native vision.
+
+    Such a session answers ``stream_image(cache_latest=False)`` by RETURNING a
+    VISION_MODEL description rather than putting anything in the conversation,
+    and ``read`` owns no delivery ticket to hang that description on (which is
+    what ``_stream_cb_media`` builds for ``respond``). Reaching the inject site
+    therefore costs a fetch, a decode and a paid vision call for a string that
+    is dropped on the floor, so the host bails out before any of it.
+
+    The predecessor of this test asserted that ``stream_image`` WAS awaited and
+    called itself ``..._uses_current_session_image_path``. It could not have
+    caught the gap: ``manager.session`` is a MagicMock, so the real early-return
+    in ``_transport.stream_image`` never ran, and the host did not read
+    ``_supports_native_image`` at all. Deleting the flag from that test changed
+    nothing about its outcome -- the assertion below is the one that makes the
+    flag load-bearing.
+    """
     from app import main_server
 
     manager = _manager()
     manager.session._supports_native_image = False
     encoded = base64.b64encode(b"non-native-read-image").decode("ascii")
+    fetch = AsyncMock(return_value=encoded)
     monkeypatch.setattr(
         "app.main_server.character_runtime._get_session_manager",
         lambda _name: manager,
     )
     monkeypatch.setattr(
         "app.main_server.character_runtime._fetch_plugin_image_base64",
-        AsyncMock(return_value=encoded),
+        fetch,
     )
 
     await main_server._handle_agent_event({
@@ -440,6 +458,53 @@ async def test_non_native_realtime_read_uses_current_session_image_path(
         "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
     })
 
+    # Skipped, not merely un-injected: the short circuit sits above the fetch,
+    # so a background plugin cannot repeat the whole cost per push.
+    fetch.assert_not_awaited()
+    manager.session.stream_image.assert_not_awaited()
+    # The text half of the cue still delivers -- only the media is dropped.
+    manager.enqueue_agent_callback.assert_called_once()
+    callback = manager.enqueue_agent_callback.call_args.args[0]
+    assert callback["media_images"] == []
+    manager.submit_proactive_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_native_realtime_read_still_injects_into_current_session(
+    monkeypatch,
+) -> None:
+    """Dual of the test above: the skip is keyed on the flag, not on ``read``.
+
+    Without this, flipping the host's condition to drop every ``read`` image
+    would leave the suite green.
+    """
+    from app import main_server
+
+    manager = _manager()
+    manager.session._supports_native_image = True
+    encoded = base64.b64encode(b"native-read-image").decode("ascii")
+    fetch = AsyncMock(return_value=encoded)
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        fetch,
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "remember it",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
+    })
+
+    fetch.assert_awaited_once()
     manager.session.stream_image.assert_awaited_once_with(
         encoded,
         bypass_rate_limit=True,
@@ -447,8 +512,7 @@ async def test_non_native_realtime_read_uses_current_session_image_path(
         source="plugin",
     )
     manager.enqueue_agent_callback.assert_called_once()
-    callback = manager.enqueue_agent_callback.call_args.args[0]
-    assert callback["media_images"] == []
+    assert manager.enqueue_agent_callback.call_args.args[0]["media_images"] == []
     manager.submit_proactive_callback.assert_not_called()
 
 
@@ -2505,3 +2569,96 @@ async def test_httpx_timeouts_are_reported_as_timeouts(monkeypatch):
     with pytest.raises(Exception) as raised:
         await pmr.get_plugin_media("abc123")
     assert getattr(raised.value, "status_code", None) == 504
+
+
+# ---------------------------------------------------------------------------
+# Per-request ceiling across sources
+#
+# The per-source staging quotas (user 5/16 MiB, plugin 3/8 MiB, plus the
+# proactive screenshot) are independent BY DESIGN so neither source can spend
+# the other's budget. They all land on one HumanMessage though, so their sum
+# is what the provider is asked to accept -- several times the per-request
+# ceiling, which rejects the whole request rather than dropping images.
+# ---------------------------------------------------------------------------
+
+
+def _b64_of_size(decoded_bytes: int, filler: str) -> str:
+    """A base64 string whose approx decoded size is ``decoded_bytes``."""
+    return filler * ((decoded_bytes * 4 // 3) // len(filler))
+
+
+def test_turn_image_budget_trims_oldest_across_sources() -> None:
+    from main_logic.proactive_delivery import (
+        TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+        trim_images_to_turn_budget,
+    )
+
+    half = TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES // 2
+    # Attachment order is chronological: proactive screenshot, plugin frame,
+    # then the user's own frame. Three halves overflow; the user's frame is
+    # what the message is about, so it must be the survivor.
+    proactive = _b64_of_size(half, "p")
+    plugin = _b64_of_size(half, "g")
+    user = _b64_of_size(half, "u")
+
+    kept, dropped = trim_images_to_turn_budget([proactive, plugin, user])
+
+    assert dropped == 1
+    assert kept == [plugin, user]
+    # Trimming is a prefix take, which is what lets the caller conclude the
+    # proactive screenshot survives iff nothing was dropped.
+    assert kept == [proactive, plugin, user][dropped:]
+
+
+def test_turn_image_budget_keeps_a_lone_oversized_image() -> None:
+    """Bounds ACCUMULATION, not one image.
+
+    A single frame already passed its own per-image limit upstream. Dropping
+    it would leave a message whose visual content silently vanished, which is
+    worse than letting the provider judge one oversized attachment.
+    """
+    from main_logic.proactive_delivery import (
+        TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+        trim_images_to_turn_budget,
+    )
+
+    lone = _b64_of_size(TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES * 2, "x")
+
+    kept, dropped = trim_images_to_turn_budget([lone])
+
+    assert kept == [lone]
+    assert dropped == 0
+
+
+def test_turn_image_budget_leaves_a_fitting_turn_untouched() -> None:
+    from main_logic.proactive_delivery import (
+        TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+        trim_images_to_turn_budget,
+    )
+
+    third = TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES // 4
+    images = [_b64_of_size(third, c) for c in "abc"]
+
+    kept, dropped = trim_images_to_turn_budget(images)
+
+    assert kept == images
+    assert dropped == 0
+
+
+def test_per_source_quotas_alone_can_exceed_the_request_ceiling() -> None:
+    """The reason the ceiling exists at all.
+
+    If someone later "simplifies" by deleting the ceiling and trusting the
+    per-source quotas, this is the arithmetic that makes that wrong. Asserted
+    against the constants themselves so raising a quota re-breaks it.
+    """
+    from main_logic.proactive_delivery import (
+        PLUGIN_PENDING_IMAGE_MAX_BYTES,
+        TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+        USER_PENDING_IMAGE_MAX_BYTES,
+    )
+
+    assert (
+        USER_PENDING_IMAGE_MAX_BYTES + PLUGIN_PENDING_IMAGE_MAX_BYTES
+        > TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES
+    )
