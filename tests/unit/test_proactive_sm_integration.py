@@ -3848,3 +3848,48 @@ async def test_late_media_rejection_after_stream_returns_still_retires():
 
     assert sess._fatal_error_occurred is True
     sess.close.assert_awaited_once_with()
+
+
+async def test_per_turn_image_budget_holds_across_the_whole_drained_batch():
+    """The cap is per TURN, so a per-callback check does not enforce it.
+
+    Every selected callback's images land in one ``system_prefix_images`` list
+    and go out as a single user message. Image-only callbacks cost almost no
+    token budget, so a queue of them can pile far past the per-turn cap and get
+    the user's whole turn rejected by the provider. Overflow callbacks stay
+    queued for a later turn rather than being dropped.
+    """
+    from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
+
+    session = _FakeOmniOffline(delivered=True)
+    session.stream_image = AsyncMock(return_value=None)
+    mgr = _make_mgr(session=session)
+    callbacks = [
+        {
+            "_callback_delivery_id": f"id-batch-{i}",
+            "status": "completed",
+            "summary": f"camera event {i}",
+            "delivery_mode": "passive",
+            "origin": "event",
+            "media_images": [f"img-{i}-a", f"img-{i}-b"],
+        }
+        for i in range(6)
+    ]
+    mgr.pending_agent_callbacks = list(callbacks)
+
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        callbacks,
+        session,
+    )
+
+    staged = outcome["system_prefix_images"]
+    assert len(staged) <= MAX_MULTIMODAL_TURN_IMAGES
+    # 整条整条地放：放得下的那条两张都在，放不下的一张都不进。
+    assert staged == ["img-0-a", "img-0-b"]
+    # 放不下的留在队列里等下一轮，不是丢掉。
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+    assert "camera event 0" in rendered
+    assert [cb["_callback_delivery_id"] for cb in mgr.pending_agent_callbacks] == [
+        f"id-batch-{i}" for i in range(1, 6)
+    ]

@@ -40,6 +40,7 @@ from main_logic.proactive_delivery import (
     resolve_callback_delivery_ack,
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
+from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
 from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -2484,6 +2485,26 @@ class ProactiveMixin:
             and bool(getattr(session, "_supports_native_image", False))
             and getattr(raw_visual_mode, "value", raw_visual_mode) == "native"
         )
+        # MAX_MULTIMODAL_TURN_IMAGES 是**每轮**预算，不是每条 callback 的预算：
+        # 下面这个循环把所有被选中的 callback 的图累加进同一个 system_prefix_images，
+        # 而 stream_text 会把整份列表放进同一条 user message。入口处的每条上限挡不住
+        # 这个方向 —— 纯图 callback 几乎不占 token 预算，队列里几十条就能凑出一个
+        # 大到被 provider 拒收的请求，把用户这一轮一起打掉。
+        #
+        # 已经在本会话 staged 过的那些是既成事实，先把它们的名额预留出来；新的只在
+        # 剩余名额里整条整条地放得下才 stage。放不下的**留在队列里**（不设 staged
+        # 标记 → _callback_media_ready_for_session 为假 → drain 不会摘走它），
+        # 留给下一轮，而不是丢掉。
+        reserved = 0
+        if offline_session:
+            for callback in callbacks:
+                if not isinstance(callback, dict):
+                    continue
+                ready_images = list(callback.get("media_images") or [])
+                if ready_images and self._callback_media_ready_for_session(
+                    callback, session
+                ):
+                    reserved += len(ready_images)
         for callback in callbacks:
             if not isinstance(callback, dict):
                 continue
@@ -2495,8 +2516,22 @@ class ProactiveMixin:
             if self._callback_media_ready_for_session(callback, session):
                 if offline_session:
                     outcome["system_prefix_images"].extend(images)
+                    reserved -= len(images)
                 continue
             if offline_session:
+                already = len(outcome["system_prefix_images"])
+                if (
+                    already + max(reserved, 0) + len(images)
+                    > MAX_MULTIMODAL_TURN_IMAGES
+                ):
+                    logger.info(
+                        "[%s] passive callback media deferred: %d image(s) would "
+                        "exceed the %d-image per-turn budget; keeping it queued",
+                        self.lanlan_name,
+                        len(images),
+                        MAX_MULTIMODAL_TURN_IMAGES,
+                    )
+                    continue
                 # Offline stream_image only appends to the session-global
                 # _pending_images queue; it performs no validation.  Mark this
                 # exact session as the owner, then carry the already-validated
