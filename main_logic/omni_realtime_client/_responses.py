@@ -533,6 +533,43 @@ class _ResponseMixin:
         # 之后不会重复做）；连一张都压不进上限时抛错，让 Core 走既有的整轮
         # fail-closed（ASR_MULTIMODAL_TURN_FAILED）。不静默降级成纯文本 —— 那是
         # 本 PR 明确禁止的行为。
+        # ⚠️ 降级要跑在超限判断**之前**。所有权已经丢了的话这些帧本来就不会送
+        # 出去，先摘掉再判大小：否则一批注定要丢的帧压不进上限时会抛
+        # RealtimeImagePayloadTooLargeError，把这一轮整个判死（Core 走
+        # ASR_MULTIMODAL_TURN_FAILED），而它其实只该降级成纯文本、话照送。
+        def _downgrade_if_visual_ownership_lost(event: Dict[str, Any]) -> None:
+            if visual_still_owned is None or visual_still_owned():
+                return
+            _item = event.get("item")
+            if not isinstance(_item, dict):
+                return
+            _content = _item.get("content")
+            if not isinstance(_content, list):
+                return
+            _kept = [
+                part
+                for part in _content
+                if not (
+                    isinstance(part, dict) and part.get("type") == "input_image"
+                )
+            ]
+            if len(_kept) != len(_content):
+                logger.info(
+                    "external multimodal turn %s lost visual ownership; "
+                    "submitting text-only",
+                    stable_turn_id,
+                )
+                _item["content"] = _kept
+
+        # 跑两次，位置不同、作用也不同：
+        #   这里（enqueue 之前）—— 覆盖上面重压/摘帧那段 to_thread 让出点，并且
+        #     能在还没占用 arbiter 名额时就把负载降下来；
+        #   pre_commit（dispatch、_worker_send 之前）—— 覆盖 arbiter 内部的等待
+        #     （等活跃响应结束、等发送信号量），那段窗口调用方够不着。
+        # 两次都只摘图、保留 transcript，不走"整条拒"：拒是**提交之后**才发生的，
+        # 要付一次未经确认的补偿删除（issue #2982）。
+        _downgrade_if_visual_ownership_lost(item_event)
+
         item_payload = json.dumps(item_event)
         if len(item_payload) > OMNI_WS_FRAME_LIMIT_BYTES:
             shrunk = await asyncio.to_thread(
@@ -566,38 +603,6 @@ class _ResponseMixin:
         # 就地摘掉图片、保留 transcript，而不是让 admission_check 去拒整条：
         # 那是**提交之后**才拒，需要一次未经确认的补偿删除（见 issue #2982），
         # 比在提交前把帧摘掉贵得多。丢帧只降级成纯文本，话照送。
-        def _downgrade_if_visual_ownership_lost(event: Dict[str, Any]) -> None:
-            if visual_still_owned is None or visual_still_owned():
-                return
-            _item = event.get("item")
-            if not isinstance(_item, dict):
-                return
-            _content = _item.get("content")
-            if not isinstance(_content, list):
-                return
-            _kept = [
-                part
-                for part in _content
-                if not (
-                    isinstance(part, dict) and part.get("type") == "input_image"
-                )
-            ]
-            if len(_kept) != len(_content):
-                logger.info(
-                    "external multimodal turn %s lost visual ownership; "
-                    "submitting text-only",
-                    stable_turn_id,
-                )
-                _item["content"] = _kept
-
-        # 跑两次，位置不同、作用也不同：
-        #   这里（enqueue 之前）—— 覆盖上面重压/摘帧那段 to_thread 让出点，并且
-        #     能在还没占用 arbiter 名额时就把负载降下来；
-        #   pre_commit（dispatch、_worker_send 之前）—— 覆盖 arbiter 内部的等待
-        #     （等活跃响应结束、等发送信号量），那段窗口调用方够不着。
-        # 两次都只摘图、保留 transcript，不走"整条拒"：拒是**提交之后**才发生的，
-        # 要付一次未经确认的补偿删除（issue #2982）。
-        _downgrade_if_visual_ownership_lost(item_event)
         arbiter = self._ensure_response_arbiter()
         ticket = await arbiter.enqueue(
             source="external_asr_multimodal",
@@ -613,6 +618,14 @@ class _ResponseMixin:
                 None,
             ) in (None, stable_turn_id),
             pre_commit=_downgrade_if_visual_ownership_lost,
+            # 第三处，也是最后一处：arbiter 交给传输之后，send_event 还要等
+            # _send_semaphore；那段等待里所有权同样可能翻转，而 payload 是拿到
+            # 信号量之后才序列化的。用 main(#2837) 引入的每-ticket event_sender
+            # 把同一个降级函数送进那个临界区，序列化自然会带上结果。
+            event_sender=lambda _ev: self.send_event(
+                _ev,
+                pre_send=_downgrade_if_visual_ownership_lost,
+            ),
         )
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:

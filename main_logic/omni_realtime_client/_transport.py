@@ -579,6 +579,7 @@ class _TransportMixin:
         expected_visual_mode: VisualDeliveryMode | str | None = None,
         callback_owned_visual: bool = False,
         send_guard: Callable[[], bool] | None = None,
+        pre_send: Callable[[dict], None] | None = None,
     ) -> bool:
         if send_guard is not None and not send_guard():
             raise ConnectionError("realtime event owner is no longer current")
@@ -622,6 +623,12 @@ class _TransportMixin:
                     )
                 if not self.ws:
                     return False
+                if pre_send is not None:
+                    # 临界区之内、序列化**之前**的最后一次就地改写机会。等信号量
+                    # 是真实让出点，调用方在此之前做的任何判据都可能在这段等待里
+                    # 翻转；而 payload 是下一行才生成的，所以在这里改 event 就能
+                    # 被带上，不需要重新序列化。
+                    pre_send(event)
                 payload = json.dumps(event)
                 # Guard: Qwen/GLM/Step servers enforce 256KB max frame; for
                 # oversized image payloads, try to re-compress the JPEG at

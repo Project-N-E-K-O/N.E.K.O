@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from types import MethodType
 from types import SimpleNamespace
@@ -332,7 +333,11 @@ async def test_openai_turn_drops_frames_lost_while_shrinking_the_item():
         return "shrunk"
 
     async def _fake_enqueue(**kwargs):
-        captured.append(kwargs["events_before_response"][0])
+        event = kwargs["events_before_response"][0]
+        # 忠实模拟 arbiter：提交前会调 pre_commit。所有权是在重压那一步丢的，
+        # 早于 enqueue 的那次降级还持有，所以这条路要靠 pre_commit 兜住。
+        kwargs["pre_commit"](event)
+        captured.append(event)
         # 用已完成的 future 而不是 asyncio.sleep(0)：submit_multimodal_turn 只
         # await ticket.sent，`done` 那个协程永远不会被等待，会留一条
         # RuntimeWarning（warnings-as-errors 下直接失败）。
@@ -379,6 +384,116 @@ async def test_openai_turn_drops_frames_lost_while_shrinking_the_item():
 
 
 @pytest.mark.asyncio
+async def test_lost_ownership_downgrades_before_the_oversize_check_fails_the_turn():
+    """Frames already forfeited must not fail the whole turn on size.
+
+    The oversize path deliberately raises RealtimeImagePayloadTooLargeError so
+    Core can fail the turn closed rather than silently dropping images. But if
+    visual ownership is already gone those frames were never going to be sent,
+    and raising there kills a turn that should merely have degraded to
+    text-only -- the sentence would be lost, which this PR forbids outright.
+
+    So the downgrade runs before the size check.
+    """
+    client = _make_client("openai", "gpt-4o-realtime-preview")
+    client.ws = AsyncMock()
+    client.handle_interruption = AsyncMock()
+    captured: list = []
+
+    async def _fake_enqueue(**kwargs):
+        event = kwargs["events_before_response"][0]
+        kwargs["pre_commit"](event)
+        captured.append(event)
+        loop = asyncio.get_running_loop()
+        sent, done = loop.create_future(), loop.create_future()
+        sent.set_result(None)
+        done.set_result(None)
+        return SimpleNamespace(sent=sent, done=done)
+
+    _arbiter = SimpleNamespace(
+        enqueue=_fake_enqueue,
+        resume_dispatch=lambda: None,
+        pause_dispatch=lambda: None,
+        cancel_ticket=AsyncMock(),
+        cancel_current=AsyncMock(),
+    )
+    client._ensure_response_arbiter = lambda: _arbiter
+
+    # 固定住"压不下去"这个前提：抛错的那条路要求 _try_shrink_image_payload
+    # 返回 None。不固定的话重压可能碰巧成功，用例就走不到要证伪的地方——
+    # 第一版正是这样，把降级去掉它也照过。
+    client._try_shrink_image_payload = lambda *_a: None
+    _real_limit = responses_module.OMNI_WS_FRAME_LIMIT_BYTES
+    # 上限取在「带 3 张图必然超、摘掉图之后不超」之间，这样才测得到"先降级、
+    # 后判大小"这个顺序。
+    responses_module.OMNI_WS_FRAME_LIMIT_BYTES = 3 * len(DUMMY_IMAGE_B64)
+    try:
+        await client.prepare_external_voice_turn(turn_id="turn-oversize")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            [DUMMY_IMAGE_B64] * 3,
+            turn_id="turn-oversize",
+            visual_still_owned=lambda: False,
+        )
+    finally:
+        responses_module.OMNI_WS_FRAME_LIMIT_BYTES = _real_limit
+
+    assert captured, "整轮被超限判死了——降级应当跑在大小检查之前"
+    content = captured[0]["item"]["content"]
+    assert all(part["type"] != "input_image" for part in content)
+    assert any(part.get("text") == "看一下这张图" for part in content)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_send_event_downgrades_inside_the_transport_critical_section():
+    """The last await before the write is the send semaphore.
+
+    send_event() serializes the payload only after acquiring _send_semaphore,
+    so an item queued behind another transport write can lose visual ownership
+    while waiting. Running the downgrade inside that critical section, before
+    json.dumps, means the mutation is picked up without re-serializing.
+
+    Asserted on what actually reached the socket, not on the dict we passed in:
+    a hook that ran after serialization would leave the images on the wire.
+    """
+    client = _make_client("openai", "gpt-4o-realtime-preview")
+    written: list = []
+
+    class _Sock:
+        async def send(self, payload):
+            written.append(payload)
+
+    client.ws = _Sock()
+
+    event = {
+        "type": "conversation.item.create",
+        "item": {
+            "role": "user",
+            "content": [
+                {"type": "input_image", "image_url": "data:image/jpeg;base64,x"},
+                {"type": "input_text", "text": "look"},
+            ],
+        },
+    }
+
+    def _strip_images(ev):
+        item = ev["item"]
+        item["content"] = [
+            part for part in item["content"] if part.get("type") != "input_image"
+        ]
+
+    assert await client.send_event(event, pre_send=_strip_images) is True
+
+    assert written, "什么都没写出去"
+    payload = json.loads(written[0])
+    content = payload["item"]["content"]
+    assert all(part["type"] != "input_image" for part in content)
+    assert any(part.get("text") == "look" for part in content)
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_openai_turn_drops_frames_lost_between_enqueue_and_dispatch():
     """The pre-enqueue check cannot cover the arbiter's own waits.
 
@@ -401,9 +516,12 @@ async def test_openai_turn_drops_frames_lost_between_enqueue_and_dispatch():
     owned = [True]
     captured: list = []
 
+    enqueue_kwargs: list = []
+
     async def _fake_enqueue(**kwargs):
         # 模拟 arbiter：enqueue 返回之后、真正提交之前还有等待，后继回合就在
         # 这段窗口里拿走了视觉所有权。
+        enqueue_kwargs.append(kwargs)
         event = kwargs["events_before_response"][0]
         owned[0] = False
         kwargs["pre_commit"](event)
@@ -437,6 +555,32 @@ async def test_openai_turn_drops_frames_lost_between_enqueue_and_dispatch():
     content = captured[0]["item"]["content"]
     assert all(part["type"] != "input_image" for part in content)
     assert any(part.get("text") == "看一下这张图" for part in content)
+
+    # 还要证明**第三道**闸门接上了：ticket 自带的 event_sender 必须把同一个降级
+    # 函数带进 send_event 的临界区（那里等信号量，所有权同样可能翻转）。只验
+    # pre_commit 的话，这条接线断掉也发现不了。
+    sender = enqueue_kwargs[0].get("event_sender")
+    assert sender is not None, "ticket 没带 event_sender，传输临界区那道闸门没接上"
+    written: list = []
+
+    class _Sock:
+        async def send(self, payload):
+            written.append(payload)
+
+    client.ws = _Sock()
+    await sender({
+        "type": "conversation.item.create",
+        "item": {
+            "role": "user",
+            "content": [
+                {"type": "input_image", "image_url": "data:image/jpeg;base64,x"},
+                {"type": "input_text", "text": "看一下这张图"},
+            ],
+        },
+    })
+    assert written, "event_sender 没把事件写出去"
+    sent_content = json.loads(written[0])["item"]["content"]
+    assert all(part["type"] != "input_image" for part in sent_content)
     await client.close()
 
 
