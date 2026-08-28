@@ -109,6 +109,25 @@ PLUGIN_PENDING_IMAGE_MAX_COUNT = 3
 PLUGIN_PENDING_IMAGE_MAX_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
 USER_PENDING_IMAGE_MAX_BYTES = 2 * CALLBACK_IMAGE_MAX_TOTAL_BYTES
 
+# What ONE outgoing request may carry, across every source at once.
+#
+# The per-source quotas above deliberately do not talk to each other -- that is
+# the whole point of splitting them, so neither source can spend the other's
+# budget. But they are not the last word on what leaves the process: the text
+# path attaches the proactive screenshot, the plugin frames AND the user frames
+# to the SAME HumanMessage, so the worst case is their SUM (16 + 8 MiB plus a
+# screenshot), which is several times the per-request ceiling the provider will
+# accept. A request over that ceiling is rejected outright, so the failure is
+# not "the model saw fewer images" but "the user's message never arrived".
+#
+# Same figure as the per-turn callback budget rather than a second spelling:
+# one turn is one turn regardless of which path assembled it, and this is the
+# number PLUGIN_DEVELOPMENT_GUIDE.md already advertises.
+#
+# This is a CEILING, not a quota — it never grants budget a per-source quota
+# withheld. It only trims what the per-source quotas already let through.
+TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
+
 # What the manager queue may HOLD, as opposed to what one release may send.
 #
 # CALLBACK_IMAGE_MAX_* above bound a single model turn. The queue itself had
@@ -128,6 +147,38 @@ QUEUED_IMAGE_MAX_TOTAL_BYTES = 4 * CALLBACK_IMAGE_MAX_TOTAL_BYTES
 def approx_base64_decoded_bytes(encoded: str) -> int:
     """Decoded size of a base64 payload, without materializing the bytes."""
     return len(encoded) * 3 // 4
+
+
+def trim_images_to_turn_budget(images: list[str]) -> tuple[list[str], int]:
+    """Trim one turn's attachments to what a single request may carry.
+
+    ``images`` is in ATTACHMENT order, which is also chronological: the
+    proactive screenshot (what the screen showed before the user spoke), then
+    plugin-supplied context, then the user's own frames. Trimming takes from
+    the FRONT, so the frames nearest the text -- the ones the message is
+    actually about -- are the last to go, and a plugin cannot displace the
+    frame the user just staged.
+
+    The per-source quotas in this module bound each source separately and on
+    purpose. This bounds their SUM, which is the only figure the provider
+    sees. It never grants budget a per-source quota withheld; it only trims
+    what those quotas already let through.
+
+    The LAST image is kept unconditionally, mirroring the byte arm of the
+    per-source quotas: it already passed its own per-image limit upstream, and
+    sending one over-budget image for the provider to judge beats sending a
+    message whose visual content silently vanished.
+
+    Returns ``(kept, dropped_count)``; ``kept`` is a prefix-trimmed view, so
+    the caller can tell exactly which leading attachments were dropped.
+    """
+    kept = list(images)
+    dropped = 0
+    total = sum(approx_base64_decoded_bytes(img) for img in kept)
+    while len(kept) > 1 and total > TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES:
+        total -= approx_base64_decoded_bytes(kept.pop(0))
+        dropped += 1
+    return kept, dropped
 
 
 def split_callbacks_by_image_budget(callbacks: list) -> tuple[list, list]:

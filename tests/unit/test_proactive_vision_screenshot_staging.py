@@ -624,3 +624,71 @@ def test_plugin_and_user_frames_share_one_turn_in_source_order():
     # Both staged lists consumed by this turn; neither leaks into the next.
     assert c._pending_images == []
     assert c._pending_plugin_images == []
+
+
+# ---------------------------------------------------------------------------
+# Per-request ceiling — the CALL SITE.
+#
+# trim_images_to_turn_budget is unit-tested next to its own constants, but a
+# correct helper nobody calls bounds nothing. This asserts stream_text actually
+# routes its three sources through it.
+# ---------------------------------------------------------------------------
+
+
+def _b64_sized(decoded_bytes: int, filler: str) -> str:
+    return filler * ((decoded_bytes * 4 // 3) // len(filler))
+
+
+def test_stream_text_trims_attachments_to_the_per_request_ceiling():
+    """The three staging quotas are independent; their SUM is not bounded by
+    any of them, and it is the sum the provider is asked to accept."""
+    from main_logic.proactive_delivery import TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES
+
+    budget = TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES
+    proactive = _b64_sized(budget * 5 // 8, "P")
+    plugin = _b64_sized(budget // 4, "G")
+    user = _b64_sized(budget // 4, "U")
+
+    c, captured = _make_offline_for_stream()
+    c._pending_plugin_images = [plugin]
+    c._pending_images = [user]
+    c.set_proactive_screenshot(proactive)
+
+    asyncio.run(c.stream_text("这几张图"))
+
+    urls = _image_urls(_last_user_message(captured).content)
+    # Trimmed from the FRONT: the oldest attachment goes, the user's own frame
+    # (nearest the text it belongs to) survives.
+    assert urls == [
+        f"data:image/jpeg;base64,{plugin}",
+        f"data:image/jpeg;base64,{user}",
+    ]
+    # Trimmed frames are still consumed, exactly like evicted ones: a dropped
+    # attachment must not trail into the next turn and fight fresh frames.
+    assert c._pending_images == []
+    assert c._pending_plugin_images == []
+    assert c._proactive_image_to_inject is None
+
+
+def test_stream_text_keeps_all_attachments_when_the_turn_fits():
+    """Dual: the ceiling must not trim a turn that was already within budget."""
+    from main_logic.proactive_delivery import TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES
+
+    small = TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES // 8
+    proactive = _b64_sized(small, "P")
+    plugin = _b64_sized(small, "G")
+    user = _b64_sized(small, "U")
+
+    c, captured = _make_offline_for_stream()
+    c._pending_plugin_images = [plugin]
+    c._pending_images = [user]
+    c.set_proactive_screenshot(proactive)
+
+    asyncio.run(c.stream_text("这几张图"))
+
+    urls = _image_urls(_last_user_message(captured).content)
+    assert urls == [
+        f"data:image/jpeg;base64,{proactive}",
+        f"data:image/jpeg;base64,{plugin}",
+        f"data:image/jpeg;base64,{user}",
+    ]

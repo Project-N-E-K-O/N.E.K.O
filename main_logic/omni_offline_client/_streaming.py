@@ -13,6 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from main_logic.proactive_delivery import (
+    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+    trim_images_to_turn_budget,
+)
+
 from ._shared import (
     AIMessage,
     Any,
@@ -617,34 +622,36 @@ class _StreamingMixin:
             # Multi-modal message: images + text
             content = []
 
-            # Add images first. Temporal order: the proactive screenshot (the
-            # screen she commented on, BEFORE the user spoke) leads, then the
-            # user's own pending frame(s) — so the model doesn't mistake the
-            # earlier screen for what the user just captured.
-            if proactive_image:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{proactive_image}"
-                    }
-                })
             # Read HERE, after the model switch await above and with no
             # suspension point between this and the clear below, so what is
             # attached and what is cleared are the same set -- the property
             # the user's list gets for free by being iterated in place.
             plugin_images = list(getattr(self, "_pending_plugin_images", None) or [])
-            # Ordering: the proactive screen leads (it is what the screen
-            # showed BEFORE the user spoke), then plugin-supplied context, then
-            # the user's own frames last so they sit closest to the text they
-            # belong to.
-            for img_b64 in plugin_images:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{img_b64}"
-                    }
-                })
-            for img_b64 in self._pending_images:
+            # Ordering, which is both temporal and by relevance: the proactive
+            # screen leads (it is what the screen showed BEFORE the user
+            # spoke), then plugin-supplied context, then the user's own frames
+            # last so they sit closest to the text they belong to.
+            _ordered_images = (
+                ([proactive_image] if proactive_image else [])
+                + plugin_images
+                + list(self._pending_images)
+            )
+            # The three sources are quota'd SEPARATELY on purpose (neither can
+            # spend the other's budget), but they all land on this one
+            # HumanMessage, so what the provider sees is their SUM -- past the
+            # per-request ceiling, which rejects the whole request rather than
+            # dropping images. Trim from the front: the frames nearest the text
+            # are the ones it is about.
+            _attached_images, _dropped_images = trim_images_to_turn_budget(
+                _ordered_images
+            )
+            if _dropped_images:
+                logger.warning(
+                    f"Dropped {_dropped_images} oldest attachment(s): this turn's "
+                    f"images exceeded the {TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES}-byte "
+                    f"per-request budget"
+                )
+            for img_b64 in _attached_images:
                 content.append({
                     "type": "image_url",
                     "image_url": {
@@ -659,14 +666,14 @@ class _StreamingMixin:
             })
 
             user_message = HumanMessage(content=content)
-            _img_count = (
-                len(self._pending_images)
-                + len(plugin_images)
-                + (1 if proactive_image else 0)
-            )
+            # Report what was ATTACHED, not what was staged. The trim above
+            # takes a prefix, and the proactive screenshot is that prefix's
+            # first element, so it survives exactly when nothing was dropped.
+            _img_count = len(_attached_images)
+            _proactive_attached = bool(proactive_image) and _dropped_images == 0
             logger.info(
                 f"Sending multi-modal message with {_img_count} image(s)"
-                f"{' (incl. proactive screen)' if proactive_image else ''}"
+                f"{' (incl. proactive screen)' if _proactive_attached else ''}"
             )
 
             # Clear pending images after using them (content already holds the
