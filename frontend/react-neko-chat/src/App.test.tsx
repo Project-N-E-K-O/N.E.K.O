@@ -17,7 +17,6 @@ import {
 import MessageList from './MessageList';
 import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from './avatarTools';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
-import { MEME_IMAGE_LOAD_FAILED_STICKER_URL } from './memeImageFallback';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 import compactChatStyles from './styles.css?raw';
 
@@ -986,295 +985,27 @@ describe('App', () => {
     }
   });
 
-  it('keeps the proactive meme overlay through the same-turn assistant caption that follows it', () => {
+  it('keeps proactive memes inside chat history instead of floating above the compact input', () => {
     window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    // 回归：主动分享是「发表情包 + 说台词」，台词是 assistant 消息、紧随 meme 落地。
-    // 旧逻辑「有新消息就收起」会让图一瞬间被台词顶掉（线上实测：图闪一下就没）。
     const meme = parseChatMessage({
-      id: 'meme-abc123',
+      id: 'meme-history-only',
       role: 'assistant',
       author: 'Neko',
       time: '10:00',
       createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=x', alt: 'lol' }],
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=history-only', alt: 'history meme' }],
       status: 'sent',
     });
-    const { container, rerender } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-    );
-    const img = container.querySelector('.compact-meme-overlay img');
-    expect(img).not.toBeNull();
-    expect(img).toHaveAttribute('src', '/api/meme/proxy-image?url=x');
-    expect(img).toHaveAttribute('loading', 'eager');
-    expect(img).toHaveAttribute('fetchpriority', 'high');
-    expect(img).not.toHaveAttribute('data-neko-image-load-failed-sticker');
 
-    const caption = parseChatMessage({
-      id: 'assistant-newer',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:01',
-      createdAt: 2,
-      blocks: [{ type: 'text', text: 'hi' }],
-      status: 'sent',
-    });
-    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[meme, caption]} />);
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=x');
-  });
-
-  it('collapses the meme overlay once the user speaks again', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-abc123', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=x', alt: 'lol' }], status: 'sent',
-    });
-    const { container, rerender } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay')).not.toBeNull();
-
-    const userReply = parseChatMessage({
-      id: 'user-1', role: 'user', author: 'Me', time: '10:02', createdAt: 3,
-      blocks: [{ type: 'text', text: 'haha' }], status: 'sent',
-    });
-    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[meme, userReply]} />);
-    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
-  });
-
-  it('keeps the meme overlay alongside a music card from the same share (independent widgets)', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-xyz', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=y', alt: 'lol' }], status: 'sent',
-    });
-    const musicCard = parseChatMessage({
-      id: 'music-abc', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 2,
-      blocks: [{ type: 'link', url: 'https://example.com/song', title: 'Song' }], status: 'sent',
-    });
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, musicCard]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=y');
-  });
-
-  it('keeps the meme overlay even when a much later music-only turn arrives (no user message)', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    // 表情包是独立挂件，不被猫娘后续的音乐分享收起；只有用户开口才换场。
-    const meme = parseChatMessage({
-      id: 'meme-old', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1000,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=z', alt: 'lol' }], status: 'sent',
-    });
-    const laterMusic = parseChatMessage({
-      id: 'music-later', role: 'assistant', author: 'Neko', time: '10:05', createdAt: 1000 + 60000,
-      blocks: [{ type: 'link', url: 'https://example.com/song2', title: 'Song2' }], status: 'sent',
-    });
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, laterMusic]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=z');
-  });
-
-  it('keeps the meme overlay through a same-turn caption that shares its turnId', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    // host 给主动分享 meme 打上它所属轮的 turnId（与同轮台词相同）；同轮台词不该顶掉图。
-    const meme = parseChatMessage({
-      id: 'meme-turn1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1, turnId: 'turn-1',
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=t1', alt: 'lol' }], status: 'sent',
-    });
-    const sameTurnCaption = parseChatMessage({
-      id: 'assistant-caption', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 2, turnId: 'turn-1',
-      blocks: [{ type: 'text', text: '给你看个图～' }], status: 'sent',
-    });
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, sameTurnCaption]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=t1');
-  });
-
-  it('collapses the meme overlay once a new assistant turn (different turnId) arrives', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    // 真正的新一轮回复/主动搭话（不同 turnId）应顶掉旧图，即便用户没开口。
-    const meme = parseChatMessage({
-      id: 'meme-turn1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1, turnId: 'turn-1',
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=t1', alt: 'lol' }], status: 'sent',
-    });
-    const { container, rerender } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay')).not.toBeNull();
-
-    const newTurnReply = parseChatMessage({
-      id: 'assistant-newturn', role: 'assistant', author: 'Neko', time: '10:05', createdAt: 2, turnId: 'turn-2',
-      blocks: [{ type: 'text', text: '在干嘛呀～' }], status: 'sent',
-    });
-    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[meme, newTurnReply]} />);
-    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
-  });
-
-  it('keeps the meme overlay when a non-assistant (tool/system) message with a different turnId follows', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    // 只有「不同 turnId 的助手发言」算换场；tool/system 不是发言，不该顶掉图。
-    const meme = parseChatMessage({
-      id: 'meme-turn1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1, turnId: 'turn-1',
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=t1', alt: 'lol' }], status: 'sent',
-    });
-    const toolMsg = parseChatMessage({
-      id: 'tool-x', role: 'tool', author: 'Tool', time: '10:01', createdAt: 2, turnId: 'turn-2',
-      blocks: [{ type: 'text', text: 'tool result' }], status: 'sent',
-    });
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, toolMsg]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=t1');
-  });
-
-  it('renders the meme overlay close button after the image loads and hides the overlay when clicked', async () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-closeme', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=close', alt: 'lol' }], status: 'sent',
-    });
     const { container } = render(
       <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
     );
-    const img = container.querySelector('.compact-meme-overlay img');
-    expect(img).toHaveAttribute('src', '/api/meme/proxy-image?url=close');
-    expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
 
-    fireEvent.load(img as Element);
-    await waitFor(() => expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull());
-    const closeButton = container.querySelector('.compact-meme-overlay-close');
-    // ⚠️ host 只把带 data-compact-hit-region 的子元素登记成 native 可交互区；漏了它 Electron
-    // pass-through 窗口里点击会穿到桌面（见 app-react-chat-window collectCompactCompositeGeometryItems）。
-    expect(closeButton).toHaveAttribute('data-compact-hit-region', 'true');
-
-    fireEvent.click(closeButton as Element);
     expect(container.querySelector('.compact-meme-overlay')).toBeNull();
+    expect(container.querySelector('[data-compact-export-history-message-id="meme-history-only"]')).toBeNull();
   });
 
-  it('refreshes compact interaction geometry when the meme close hit region changes', async () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-close-geometry', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=geometry', alt: 'lol' }], status: 'sent',
-    });
-    const geometryRefreshes: Event[] = [];
-    const handleGeometryRefresh = (event: Event) => geometryRefreshes.push(event);
-    window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
-    try {
-      const { container } = render(
-        <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-      );
-      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
-      geometryRefreshes.length = 0;
-
-      const img = container.querySelector('.compact-meme-overlay img');
-      expect(img).not.toBeNull();
-      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
-      fireEvent.load(img as Element);
-      expect(geometryRefreshes.length).toBe(0);
-      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
-      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
-      geometryRefreshes.length = 0;
-
-      fireEvent.click(container.querySelector('.compact-meme-overlay-close') as Element);
-      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
-      expect(container.querySelector('.compact-meme-overlay')).toBeNull();
-    } finally {
-      window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
-    }
-  });
-
-  it('renders the meme overlay close button after the image fails to load', async () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-error-geometry', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=error', alt: 'lol' }], status: 'sent',
-    });
-    const geometryRefreshes: Event[] = [];
-    const handleGeometryRefresh = (event: Event) => geometryRefreshes.push(event);
-    window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
-    try {
-      const { container } = render(
-        <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-      );
-      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
-      geometryRefreshes.length = 0;
-
-      const img = container.querySelector('.compact-meme-overlay img');
-      expect(img).not.toBeNull();
-      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
-      fireEvent.error(img as Element);
-      expect(img).toHaveAttribute('src', MEME_IMAGE_LOAD_FAILED_STICKER_URL);
-      expect(img).toHaveAttribute('data-neko-image-load-failed-sticker', 'true');
-      expect(geometryRefreshes.length).toBe(0);
-      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
-      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
-    } finally {
-      window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
-    }
-  });
-
-  it('does not reuse a loaded meme overlay close button after history remounts the same image', async () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-history-remount', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=history-remount', alt: 'lol' }], status: 'sent',
-    });
-    vi.useFakeTimers();
-    try {
-      const { container } = render(
-        <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-      );
-
-      const firstImage = container.querySelector('.compact-meme-overlay img');
-      fireEvent.load(firstImage as Element);
-      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
-
-      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
-      expect(container.querySelector('.compact-meme-overlay')).toBeNull();
-
-      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
-      });
-
-      const remountedImage = container.querySelector('.compact-meme-overlay img');
-      expect(remountedImage).toHaveAttribute('src', '/api/meme/proxy-image?url=history-remount');
-      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
-
-      fireEvent.load(remountedImage as Element);
-      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('shows a newer meme even after the previous one was manually closed', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const memeA = parseChatMessage({
-      id: 'meme-A', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=A', alt: 'A' }], status: 'sent',
-    });
-    const { container, rerender } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[memeA]} />,
-    );
-    const memeAImage = container.querySelector('.compact-meme-overlay img');
-    fireEvent.load(memeAImage as Element);
-    expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
-    fireEvent.click(container.querySelector('.compact-meme-overlay-close') as Element);
-    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
-
-    // 叉掉旧图后，来一张新表情包（不同 id）应照常显示——dismiss 只钉旧 id。
-    const memeB = parseChatMessage({
-      id: 'meme-B', role: 'assistant', author: 'Neko', time: '10:05', createdAt: 2,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=B', alt: 'B' }], status: 'sent',
-    });
-    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[memeA, memeB]} />);
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=B');
-  });
-
-  it('hides the proactive meme overlay while compact history is open', () => {
+  it('renders proactive memes inside compact history when it is open', () => {
     const meme = parseChatMessage({
       id: 'meme-visible-in-history',
       role: 'assistant',

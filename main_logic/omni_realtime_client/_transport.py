@@ -755,6 +755,7 @@ class _TransportMixin:
         cache_latest: bool = True,
         event_id: str | None = None,
         on_rejected: Optional[Callable[[str], None]] = None,
+        source: str = "user",
     ) -> str | None:
         """Stream raw image data to the API.
 
@@ -768,6 +769,12 @@ class _TransportMixin:
         a later provider ``error.event_id`` with the callback delivery that
         owns the image. The handler is registered before send so an immediate
         asynchronous rejection cannot outrun it.
+
+        ``source`` is accepted for signature parity with the text client,
+        which charges staged frames to a per-source quota. Realtime sends
+        immediately and stages nothing, so there is no quota to charge here --
+        but the host injects images through a duck-typed ``stream_image`` and
+        cannot know which client it holds.
 
         ``cache_latest=False`` sends an already-cached proactive snapshot
         without treating that resend as a newly captured frame generation.

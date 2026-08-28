@@ -19,7 +19,7 @@ import httpx
 
 from config import USER_PLUGIN_SERVER_PORT
 
-from ._shared import is_china_region, logger
+from ._shared import logger
 
 
 _CACHE_TTL_SECONDS = 600.0
@@ -28,7 +28,6 @@ _FAILURE_COOLDOWN_SECONDS = 300.0
 _MIN_RUN_INTERVAL_SECONDS = 5.0
 _MAX_CACHE_ENTRIES = 64
 _RUN_TIMEOUT_SECONDS = 30.0
-_PRIMARY_BACKEND_BUDGET_RATIO = 0.72
 _POLL_INTERVAL_SECONDS = 0.25
 _MAX_POLL_INTERVAL_SECONDS = 2.0
 _FLOW_CONTROL_ERROR_CODES = frozenset(
@@ -218,11 +217,11 @@ async def _invoke_plugin(
         "max_results": limit,
         "_ctx": {"entry_timeout": run_timeout},
     }
-    if backend in {"baidu", "duckduckgo"}:
+    if backend in {"anysearch", "baidu", "duckduckgo"}:
         args["backend"] = backend
-    elif preferred_backend in {"baidu", "duckduckgo"}:
-        # Keep plugin auto semantics (including Baidu -> DDG fallback), while
-        # making its primary coordinator match the gateway's reserved slot.
+    elif preferred_backend in {"anysearch", "baidu", "duckduckgo"}:
+        # Keep plugin auto semantics while making its primary coordinator match
+        # the gateway's reserved slot.
         args["preferred_backend"] = preferred_backend
     body = {
         "task_id": f"proactive-search-{uuid.uuid4().hex}",
@@ -323,12 +322,15 @@ async def _invoke_plugin(
 async def _invoke_in_backend_slot(
     query: str,
     limit: int,
-    backend: str,
+    reservation_backend: str,
     deadline: float,
+    *,
+    entry_backend: Optional[str] = None,
+    preferred_backend: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Serialize one upstream backend while leaving other engines independent."""
+    """Serialize one known backend or the neutral automatic-dispatch scope."""
     loop = asyncio.get_running_loop()
-    lock = _backend_locks.setdefault(backend, asyncio.Lock())
+    lock = _backend_locks.setdefault(reservation_backend, asyncio.Lock())
     remaining = deadline - loop.time()
     if remaining <= 0:
         raise TimeoutError("等待联网搜索插件超时")
@@ -340,10 +342,10 @@ async def _invoke_in_backend_slot(
 
     try:
         now = time.monotonic()
-        cooldown_until = _failure_cooldown_until.get(backend, 0.0)
+        cooldown_until = _failure_cooldown_until.get(reservation_backend, 0.0)
         if now < cooldown_until:
             raise _PluginThrottleError("联网搜索暂处于失败冷却期")
-        throttle_wait = max(0.0, _next_run_at.get(backend, 0.0) - now)
+        throttle_wait = max(0.0, _next_run_at.get(reservation_backend, 0.0) - now)
         if throttle_wait:
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -351,7 +353,7 @@ async def _invoke_in_backend_slot(
             async with asyncio.timeout(remaining):
                 await asyncio.sleep(throttle_wait)
 
-        _next_run_at[backend] = time.monotonic() + _MIN_RUN_INTERVAL_SECONDS
+        _next_run_at[reservation_backend] = time.monotonic() + _MIN_RUN_INTERVAL_SECONDS
         remaining = deadline - loop.time()
         if remaining <= 0:
             raise TimeoutError("等待联网搜索插件超时")
@@ -359,14 +361,14 @@ async def _invoke_in_backend_slot(
             return await _invoke_plugin(
                 query,
                 limit,
-                backend,
-                None,
+                entry_backend,
+                preferred_backend,
                 run_timeout=remaining,
             )
         except _PluginThrottleError:
             raise
         except Exception:
-            _failure_cooldown_until[backend] = (
+            _failure_cooldown_until[reservation_backend] = (
                 time.monotonic() + _FAILURE_COOLDOWN_SECONDS
             )
             raise
@@ -390,23 +392,19 @@ async def search_via_plugin(
     except (TypeError, ValueError):
         requested_limit = 5
     plugin_limit = max(3, requested_limit)
-    requested_backend = backend if backend in {"baidu", "duckduckgo"} else None
+    requested_backend = backend if backend in {"anysearch", "baidu", "duckduckgo"} else None
     hinted_backend = (
         preferred_backend
-        if preferred_backend in {"baidu", "duckduckgo"}
+        if preferred_backend in {"anysearch", "baidu", "duckduckgo"}
         else None
     )
-    selected_backend = requested_backend or hinted_backend
-    if selected_backend is None:
-        selected_backend = "baidu" if is_china_region() else "duckduckgo"
-    allow_cross_engine_fallback = (
-        requested_backend is None and selected_backend == "baidu"
-    )
-    cache_scope = (
-        f"{selected_backend}:fallback"
-        if allow_cross_engine_fallback
-        else selected_backend
-    )
+    # The plugin owns automatic AnySearch -> regional-engine fallback and may
+    # be configured to use a fixed legacy engine.  The host therefore cannot
+    # truthfully attribute an automatic call to AnySearch: keep that call in a
+    # neutral scope and let the plugin coordinate the actual backend. Explicit
+    # or hinted choices remain isolated by their known backend.
+    reservation_backend = requested_backend or hinted_backend or "auto"
+    cache_scope = reservation_backend
     key = (cache_scope, normalized_query.casefold(), requested_limit)
     cached = _cached(key)
     if cached is not None:
@@ -419,37 +417,15 @@ async def search_via_plugin(
 
         async def execute() -> Dict[str, Any]:
             deadline = loop.time() + _RUN_TIMEOUT_SECONDS
-            primary_deadline = (
-                loop.time()
-                + (_RUN_TIMEOUT_SECONDS * _PRIMARY_BACKEND_BUDGET_RATIO)
-                if allow_cross_engine_fallback
-                else deadline
-            )
             try:
-                try:
-                    result = await _invoke_in_backend_slot(
-                        normalized_query,
-                        plugin_limit,
-                        selected_backend,
-                        primary_deadline,
-                    )
-                except Exception as primary_error:
-                    if not allow_cross_engine_fallback:
-                        raise
-                    logger.info(
-                        "受控百度搜索失败，协调 DuckDuckGo 后端后重试 "
-                        "(error_type=%s)",
-                        type(primary_error).__name__,
-                    )
-                    try:
-                        result = await _invoke_in_backend_slot(
-                            normalized_query,
-                            plugin_limit,
-                            "duckduckgo",
-                            deadline,
-                        )
-                    except Exception:
-                        raise primary_error
+                result = await _invoke_in_backend_slot(
+                    normalized_query,
+                    plugin_limit,
+                    reservation_backend,
+                    deadline,
+                    entry_backend=requested_backend,
+                    preferred_backend=hinted_backend,
+                )
             except _PluginThrottleError as error:
                 # Busy/cooldown responses are normal flow control from a
                 # healthy plugin, not grounds for a five-minute outage.

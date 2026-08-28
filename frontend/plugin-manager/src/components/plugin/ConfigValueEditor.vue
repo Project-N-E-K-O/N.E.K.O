@@ -8,30 +8,31 @@
           </div>
           <div class="v">
             <ConfigValueEditor
-              :model-value="isKeyDeleted(k) ? baselineChild(k) : (modelValue as any)[k]"
+              :model-value="overlayChild(k)"
               @update:model-value="(val) => updateObjectKey(k, val)"
               :baseline-value="baselineChild(k)"
               :path="childPath(k)"
+              :replace-semantics="replaceSemantics"
             />
           </div>
           <div class="ops">
             <el-button
-              v-if="!isProtectedKey(k) && !isKeyDeleted(k)"
+              v-if="!isProtectedKey(k) && isOverriddenKey(k)"
+              size="small"
+              type="primary"
+              text
+              @click="resetObjectKey(k)"
+            >
+              {{ t('common.reset') }}
+            </el-button>
+            <el-button
+              v-else-if="!isProtectedKey(k) && isCustomKey(k)"
               size="small"
               type="danger"
               text
               @click="removeObjectKey(k)"
             >
               {{ t('common.delete') }}
-            </el-button>
-            <el-button
-              v-else-if="!isProtectedKey(k) && isKeyDeleted(k)"
-              size="small"
-              type="primary"
-              text
-              @click="restoreObjectKey(k)"
-            >
-              {{ t('common.reset') }}
             </el-button>
           </div>
         </div>
@@ -77,20 +78,12 @@
               @update:model-value="(val) => updateArrayIndex(idx, val)"
               :baseline-value="baselineArrayItem(idx)"
               :path="childPath(String(idx))"
+              :replace-semantics="true"
             />
           </div>
           <div class="ops">
-            <el-button
-              v-if="Array.isArray(modelValue) && idx < modelValue.length"
-              size="small"
-              type="danger"
-              text
-              @click="removeArrayIndex(idx)"
-            >
+            <el-button size="small" type="danger" text @click="removeArrayIndex(idx)">
               {{ t('common.delete') }}
-            </el-button>
-            <el-button v-else size="small" type="primary" text @click="restoreArrayIndex(idx)">
-              {{ t('common.reset') }}
             </el-button>
           </div>
         </div>
@@ -130,6 +123,10 @@ interface Props {
   modelValue: any
   path?: string
   baselineValue?: any
+  // 数组在后端是整体替换，数组项内部没有「未覆盖就继承基线」这回事：
+  // 写回什么，生效的就是什么。这条上下文沿数组项往下传递，决定「重置」
+  // 是把键摘掉退回继承，还是必须把基线值显式写回去。
+  replaceSemantics?: boolean
 }
 
 const props = defineProps<Props>()
@@ -145,8 +142,31 @@ function isValidKeySegment(key: string) {
   return true
 }
 
+// `modelValue` 只承载 profile overlay：某个键未被覆盖时它是 undefined。
+// 渲染继承值要回落到 baseline，但写回时绝不能把 baseline 拷进 overlay，
+// 否则用户只改一个字段就会把整段清单默认值固化进 profile。
+function asPlainObject(v: unknown): Record<string, any> | null {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : null
+}
+
+function isEmptyPlainObject(v: unknown): boolean {
+  const o = asPlainObject(v)
+  return o !== null && Object.keys(o).length === 0
+}
+
+const overlayObject = computed<Record<string, any>>(() => asPlainObject(props.modelValue) ?? {})
+
+const displayValue = computed<any>(() =>
+  props.modelValue !== undefined ? props.modelValue : props.baselineValue
+)
+
+function overlayChild(k: string) {
+  const a = asPlainObject(props.modelValue)
+  return a ? a[k] : undefined
+}
+
 const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() => {
-  const v = props.modelValue
+  const v = displayValue.value
   if (Array.isArray(v)) return 'array'
   if (v !== null && typeof v === 'object') return 'object'
   if (typeof v === 'boolean') return 'boolean'
@@ -154,11 +174,20 @@ const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() =
   return 'string'
 })
 
+// 数组项内的对象同理：overlay 项存在时它就是生效值的全部，基线独有的字段
+// 不会被继承，列出来只会让人以为它还在。此时基线只用于「重置」已覆盖的字段。
+const isReplacedObject = computed(
+  () => props.replaceSemantics === true && asPlainObject(props.modelValue) !== null
+)
+
 const objectKeys = computed(() => {
   if (kind.value !== 'object') return []
-  const a = props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {}
-  const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
-  const keys = new Set<string>([...Object.keys(a || {}), ...Object.keys(b || {})])
+  const a = overlayObject.value
+  const b =
+    isReplacedObject.value || !props.baselineValue || typeof props.baselineValue !== 'object'
+      ? {}
+      : props.baselineValue
+  const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)])
 
   // 在根节点编辑 profile 覆盖配置时，隐藏顶层的 plugin 段，避免在 diff 视图中被标记为“已删除”
   // plugin 段仍通过上方 JSON 预览完整展示，并且 profile 不能修改 plugin
@@ -169,17 +198,14 @@ const objectKeys = computed(() => {
   return Array.from(keys).sort()
 })
 
+// 数组是整体替换：overlay 一旦存在，它就是生效值的全部，基线不再逐位继承。
+// 拿基线补尾会造出删不掉的幻影项 —— 用户删掉末项，界面立刻又把它填回来，
+// 下一次编辑再随 currentArray() 写回去。overlay 不存在时整份继承基线，
+// 此时首次写回要落成完整数组。
 const arrayItems = computed(() => {
   if (kind.value !== 'array') return []
-  const a = Array.isArray(props.modelValue) ? props.modelValue : []
-  const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
-  const len = Math.max(a.length, b.length)
-  const items: any[] = []
-  for (let i = 0; i < len; i++) {
-    if (i < a.length) items.push(a[i])
-    else items.push(b[i])
-  }
-  return items
+  if (Array.isArray(props.modelValue)) return [...props.modelValue]
+  return Array.isArray(props.baselineValue) ? [...props.baselineValue] : []
 })
 
 const strVal = ref('')
@@ -187,7 +213,7 @@ const numVal = ref<number | undefined>(undefined)
 const boolVal = ref(false)
 
 watch(
-  () => props.modelValue,
+  displayValue,
   (v) => {
     if (kind.value === 'string') strVal.value = v == null ? '' : String(v)
     if (kind.value === 'number') numVal.value = typeof v === 'number' ? v : undefined
@@ -206,13 +232,25 @@ function baselineChild(k: string) {
   return undefined
 }
 
-function isKeyDeleted(k: string) {
-  if (kind.value !== 'object') return false
-  const a = props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {}
+function hasOverlayKey(k: string) {
+  return Object.prototype.hasOwnProperty.call(overlayObject.value, k)
+}
+
+function hasBaselineKey(k: string) {
   const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
-  const inA = Object.prototype.hasOwnProperty.call(a, k)
-  const inB = Object.prototype.hasOwnProperty.call(b, k)
-  return !inA && inB
+  return Object.prototype.hasOwnProperty.call(b, k)
+}
+
+// 该键被 profile 覆盖了清单/运行时的默认值 —— 可以「重置」回继承
+function isOverriddenKey(k: string) {
+  if (kind.value !== 'object') return false
+  return hasOverlayKey(k) && hasBaselineKey(k)
+}
+
+// 该键是 profile 自己新增的，基线里没有 —— 只能「删除」
+function isCustomKey(k: string) {
+  if (kind.value !== 'object') return false
+  return hasOverlayKey(k) && !hasBaselineKey(k)
 }
 
 function deepEqual(a: any, b: any, seen?: WeakMap<object, object>): boolean {
@@ -258,7 +296,7 @@ function deepEqual(a: any, b: any, seen?: WeakMap<object, object>): boolean {
 
 function rowClassForKey(k: string) {
   if (kind.value !== 'object') return ''
-  const a = props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {}
+  const a = overlayObject.value
   const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
 
   const inA = Object.prototype.hasOwnProperty.call(a, k)
@@ -299,35 +337,59 @@ const indentStyle = computed(() => {
 
 function updateObjectKey(k: string, v: any) {
   if (!isValidKeySegment(k)) return
-  const next = { ...(props.modelValue || {}) }
-  next[k] = v
+  const next = { ...overlayObject.value }
+  // 子层把最后一个覆盖项重置掉后会回传空对象。基线里该键是张表时，空表不是
+  // 「什么都不覆盖」而是「清空这张表」—— 后端 deep_merge 把空 mapping 当替换
+  // 处理（config_merge.py），存下去会把整段基线抹掉，而前端预览的合并不实现
+  // 这条语义，界面上还显示着继承内容。所以把键本身摘掉让它退回继承；摘完自己
+  // 也空了就继续向上冒泡。基线里没有的键是 profile 自己建的空表，属显式意图，
+  // 保留。
+  if (!props.replaceSemantics && isEmptyPlainObject(v) && asPlainObject(baselineChild(k)) !== null) {
+    delete next[k]
+  } else {
+    next[k] = v
+  }
   emitUpdate(next)
 }
 
-function removeObjectKey(k: string) {
+// 可继承上下文里「重置」= 把键摘掉退回继承；替换语义下没有回填，
+// 摘掉等于把该字段从生效配置里删了（例如 servers[0].host），
+// 所以必须把基线值显式写回。
+function resetObjectKey(k: string) {
   if (!isValidKeySegment(k)) return
-  const next = { ...(props.modelValue || {}) }
-  delete next[k]
-  emitUpdate(next)
-}
-
-function restoreObjectKey(k: string) {
-  if (!isValidKeySegment(k)) return
-  const next = { ...(props.modelValue || {}) }
+  if (!props.replaceSemantics) {
+    removeObjectKey(k)
+    return
+  }
+  const next = { ...overlayObject.value }
   next[k] = baselineChild(k)
   emitUpdate(next)
 }
 
+// 「删除」始终是把键移出 overlay。
+function removeObjectKey(k: string) {
+  if (!isValidKeySegment(k)) return
+  const next = { ...overlayObject.value }
+  delete next[k]
+  emitUpdate(next)
+}
+
+// 数组在后端是整体替换，overlay 里存的必须是完整数组。所以写回的基础必须与
+// 界面渲染的是同一个视图（overlay 优先、缺位取基线）—— 只拷稀疏 overlay 会让
+// 增、删、改把界面上看得见的继承项一起冲掉。
+function currentArray(): any[] {
+  return [...arrayItems.value]
+}
+
 function updateArrayIndex(idx: number, v: any) {
-  const a = Array.isArray(props.modelValue) ? [...props.modelValue] : []
-  while (a.length < idx) a.push(undefined)
-  if (a.length === idx) a.push(v)
-  else a[idx] = v
+  const a = currentArray()
+  if (idx < a.length) a[idx] = v
+  else a.push(v)
   emitUpdate(a)
 }
 
 function removeArrayIndex(idx: number) {
-  const next = Array.isArray(props.modelValue) ? [...props.modelValue] : []
+  const next = currentArray()
   next.splice(idx, 1)
   emitUpdate(next)
 }
@@ -342,26 +404,14 @@ function rowClassForArrayIndex(idx: number) {
   const a = Array.isArray(props.modelValue) ? props.modelValue : []
   const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
   if (idx < a.length && idx >= b.length) return 'diff-added'
-  if (idx >= a.length && idx < b.length) return 'diff-deleted'
-  if (idx < a.length && idx < b.length) {
-    if (!deepEqual(a[idx], b[idx])) return 'diff-modified'
-  }
+  // 只在基线里、overlay 还没覆盖到的位置是「继承」，不标已删除（同对象侧）
+  if (idx >= a.length) return ''
+  if (idx < b.length && !deepEqual(a[idx], b[idx])) return 'diff-modified'
   return ''
 }
 
-function restoreArrayIndex(idx: number) {
-  const a = Array.isArray(props.modelValue) ? [...props.modelValue] : []
-  const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
-  if (idx >= 0 && idx < b.length) {
-    while (a.length < idx) a.push(b[a.length])
-    if (a.length === idx) a.push(b[idx])
-    else a[idx] = b[idx]
-    emitUpdate(a)
-  }
-}
-
 function addArrayItem() {
-  const next = Array.isArray(props.modelValue) ? [...props.modelValue] : []
+  const next = currentArray()
   next.push('')
   emitUpdate(next)
 }
@@ -396,8 +446,8 @@ function confirmAddKey() {
     return
   }
 
-  const next = { ...(props.modelValue || {}) }
-  if (Object.prototype.hasOwnProperty.call(next, key)) {
+  const next = { ...overlayObject.value }
+  if (hasOverlayKey(key) || (!isReplacedObject.value && hasBaselineKey(key))) {
     ElMessage.warning(t('plugins.duplicateFieldKey'))
     return
   }

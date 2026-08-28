@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from plugin.core import host as host_module
 from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.server.application.plugins import upgrade_support
 from plugin.server.application.plugins.upgrade_support import (
@@ -24,6 +25,14 @@ async def _async_none() -> None:
 
 async def _async_false() -> bool:
     return False
+
+
+async def _async_true() -> bool:
+    return True
+
+
+async def _record(events: list[str], value: str) -> None:
+    events.append(value)
 
 
 def test_legacy_profile_case_variants_cannot_share_one_canonical_target() -> None:
@@ -75,6 +84,88 @@ async def test_replace_plugin_replaces_only_payload_and_preserves_external_user_
     assert (target / "vendor" / "dependency.txt").read_text(encoding="utf-8") == "new"
     for path, content in expected_state.items():
         assert path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_invalidates_module_cache_before_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    events: list[str] = []
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    def evict(plugin_id: str) -> None:
+        events.append(f"evict:{plugin_id}")
+
+    monkeypatch.setattr(host_module, "evict_cached_plugin_modules", evict)
+
+    await replace_plugin(
+        layout=resolve_plugin_layout("demo", target),
+        install_new=install_new,
+        validate_new=_async_none,
+        is_running=lambda _plugin_id: _async_true(),
+        stop=lambda plugin_id: _record(events, f"stop:{plugin_id}"),
+        start=lambda plugin_id: _record(events, f"start:{plugin_id}"),
+        cleanup_backup=remove_directory,
+    )
+
+    assert events == ["stop:demo", "evict:demo", "start:demo"]
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_invalidates_new_cache_before_rollback_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    events: list[str] = []
+    start_attempts = 0
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    async def start(plugin_id: str) -> None:
+        nonlocal start_attempts
+        start_attempts += 1
+        events.append(f"start:{plugin_id}")
+        if start_attempts == 1:
+            raise RuntimeError("replacement failed to start")
+
+    def evict(plugin_id: str) -> None:
+        events.append(f"evict:{plugin_id}")
+
+    monkeypatch.setattr(host_module, "evict_cached_plugin_modules", evict)
+
+    with pytest.raises(ReplacePluginError, match="restart"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target),
+            install_new=install_new,
+            validate_new=_async_none,
+            is_running=lambda _plugin_id: _async_true(),
+            stop=lambda plugin_id: _record(events, f"stop:{plugin_id}"),
+            start=start,
+            cleanup_backup=remove_directory,
+        )
+
+    assert events == [
+        "stop:demo",
+        "evict:demo",
+        "start:demo",
+        "evict:demo",
+        "start:demo",
+    ]
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == "version = 1\n"
 
 
 @pytest.mark.asyncio
@@ -323,6 +414,196 @@ async def test_replace_plugin_rejects_invalid_preserve_target_before_side_effect
 
     assert events == []
     assert not storage_root.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_kind", ["duplicate", "nested"])
+async def test_replace_plugin_rejects_overlapping_targets_before_side_effects(
+    tmp_path: Path,
+    target_kind: str,
+) -> None:
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(
+        '[plugin]\nid = "demo"\nversion = "1.0.0"\n',
+        encoding="utf-8",
+    )
+    additional_target = target if target_kind == "duplicate" else target / "profiles"
+    events: list[str] = []
+
+    async def is_running(plugin_id: str) -> bool:
+        events.append(f"running:{plugin_id}")
+        return False
+
+    with pytest.raises(ValueError, match="distinct and non-overlapping"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+            install_new=lambda: _async_none(),  # type: ignore[arg-type]
+            validate_new=_async_none,
+            is_running=is_running,
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+            additional_targets=(additional_target,),
+        )
+
+    assert events == []
+    assert (target / "plugin.toml").is_file()
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_rejects_persistent_state_target_before_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = tmp_path / "plugins"
+    target = state_root / "demo"
+    target.mkdir(parents=True)
+    state_db = target / "data" / "study.db"
+    state_db.parent.mkdir()
+    state_db.write_bytes(b"state")
+    events: list[str] = []
+    monkeypatch.setattr(upgrade_support, "get_plugin_state_root", lambda: state_root)
+
+    async def is_running(plugin_id: str) -> bool:
+        events.append(f"running:{plugin_id}")
+        return False
+
+    with pytest.raises(ValueError, match="persistent state paths"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=tmp_path),
+            install_new=lambda: _async_none(),  # type: ignore[arg-type]
+            validate_new=_async_none,
+            is_running=is_running,
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+        )
+
+    assert events == []
+    assert state_db.read_bytes() == b"state"
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_uses_layout_state_root_for_custom_storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "installed" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    storage_root = tmp_path / "custom-state"
+    plugin_state = storage_root / "plugins" / "demo"
+    state_db = plugin_state / "data" / "study.db"
+    state_db.parent.mkdir(parents=True)
+    state_db.write_bytes(b"state")
+    events: list[str] = []
+    monkeypatch.setattr(
+        upgrade_support,
+        "get_plugin_state_root",
+        lambda: tmp_path / "unrelated-global-state",
+    )
+
+    async def is_running(plugin_id: str) -> bool:
+        events.append(f"running:{plugin_id}")
+        return False
+
+    with pytest.raises(ValueError, match="persistent state paths"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=storage_root),
+            install_new=lambda: _async_none(),  # type: ignore[arg-type]
+            validate_new=_async_none,
+            is_running=is_running,
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+            additional_targets=(plugin_state,),
+        )
+
+    assert events == []
+    assert state_db.read_bytes() == b"state"
+    assert target.is_dir()
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_rejects_target_containing_persistent_state_before_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "exec" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    profile_ancestor = tmp_path / "managed"
+    state_root = profile_ancestor / "plugins"
+    state_db = state_root / "study_companion" / "data" / "study.db"
+    state_db.parent.mkdir(parents=True)
+    state_db.write_bytes(b"state")
+    events: list[str] = []
+    monkeypatch.setattr(upgrade_support, "get_plugin_state_root", lambda: state_root)
+
+    async def is_running(plugin_id: str) -> bool:
+        events.append(f"running:{plugin_id}")
+        return False
+
+    with pytest.raises(ValueError, match="persistent state paths"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target),
+            install_new=lambda: _async_none(),  # type: ignore[arg-type]
+            validate_new=_async_none,
+            is_running=is_running,
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+            additional_targets=(profile_ancestor,),
+        )
+
+    assert events == []
+    assert state_db.read_bytes() == b"state"
+    assert target.is_dir()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overlap", ["root", "child", "ancestor"])
+async def test_replace_plugin_rejects_builtin_root_overlap_before_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overlap: str,
+) -> None:
+    target = tmp_path / "user-plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    builtin_root = tmp_path / "runtime" / "plugin" / "plugins"
+    builtin_plugin = builtin_root / "demo"
+    builtin_plugin.mkdir(parents=True)
+    builtin_file = builtin_plugin / "plugin.toml"
+    builtin_file.write_text("version = builtin\n", encoding="utf-8")
+    forbidden_target = {
+        "root": builtin_root,
+        "child": builtin_plugin,
+        "ancestor": builtin_root.parent,
+    }[overlap]
+    events: list[str] = []
+    monkeypatch.setattr(upgrade_support.settings, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+
+    async def is_running(plugin_id: str) -> bool:
+        events.append(f"running:{plugin_id}")
+        return False
+
+    with pytest.raises(ValueError, match="immutable builtin plugin paths"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target),
+            install_new=lambda: _async_none(),  # type: ignore[arg-type]
+            validate_new=_async_none,
+            is_running=is_running,
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+            additional_targets=(forbidden_target,),
+        )
+
+    assert events == []
+    assert builtin_file.read_text(encoding="utf-8") == "version = builtin\n"
+    assert target.is_dir()
 
 
 @pytest.mark.asyncio

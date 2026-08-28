@@ -12,9 +12,18 @@ Plugin Manager はファイルを変更する前に install plan を取得しま
 | --- | --- | --- |
 | `install` | 対象 identity とディレクトリが未使用です。 | そのままインストールします。 |
 | `upgrade` | package identity と対象ディレクトリに一致する既存プラグインが 1 つあります。 | 現在と更新後の version を表示し、明示確認を求めます。 |
+| `override_builtin` | single-plugin の Market package が同じ identity の有効な内蔵ソースを安全に上書きできます。 | 内蔵版と Market 版の version を表示し、明示確認を求めます。 |
 | `blocked` | 曖昧または危険な置換になります。 | インストール先を変更する前に停止します。 |
 
 確認 token は package bytes、対象 path、現在の `plugin.toml` から生成されます。サーバーはインストール直前に plan を再構築し、確認後に package または既存対象が変化していれば更新を拒否します。
+
+## コード、状態、有効ソース
+
+ユーザープラグインのコードは `.neko-plugin-installations/plugins` にインストールされ、runtime state は `plugins/<plugin_id>/{config,data,cache}` に残ります。install、upgrade、rollback、通常の uninstall は state directory を移動、コピー、置換、削除しません。実行 root と state root が同じ path に解決される場合、または一方の root が他方の配下にネストされる場合は、`PLUGIN_EXEC_STATE_ROOT_COLLISION` で拒否されます。
+
+registry は宣言された plugin ID ごとに user installation、builtin の順で 1 つの有効ソースを選びます。Market override は builtin を shadow しますが、どちらも rename しません。Market 版の uninstall は user code と package profile だけを削除し、registry refresh 後に builtin が再び有効になります。
+
+旧 layout の user code は登録前に検証済み staging を通して新しい実行 root へコピーされます。旧 directory は保持され、atomic migration ledger により uninstall 後の再移行を防ぎます。
 
 ## 更新トランザクション
 
@@ -35,6 +44,8 @@ Plugin Manager はファイルを変更する前に install plan を取得しま
 
 backup、install、validate、profile preserve、restart の失敗時は、全対象を逆順で復元します。更新前に実行中だったプラグインは、可能であれば復元済みの旧バージョンから再起動します。
 
+builtin source switch は独立 transaction です。plan を再確認して user code と package profile を昇格し、Market source を記録して registry を refresh した後、必要な場合だけ Market 版を起動します。失敗時は今回作成した対象だけを削除し、lock snapshot、有効な builtin source、元の実行状態を復元します。runtime state は rollback 対象にしません。
+
 | `rollback_status` | 意味 |
 | --- | --- |
 | `not_needed` | 更新成功。ロールバックは不要でした。 |
@@ -51,6 +62,11 @@ Plugin Manager は `incomplete` を復旧成功として表示してはいけま
 - 同じ plugin ID が複数ディレクトリに存在する;
 - single-plugin package のプラグイン数が 1 ではない;
 - ディレクトリ名、package ID、または指定 root が許可範囲外を指す。
+- `override_identity_mismatch`: package ID、plugin ID、package 内ディレクトリ、builtin ディレクトリが一致しない;
+- `override_previous_ids_not_supported`: builtin override package が `[plugin].previous_ids` を宣言している;
+- `override_entry_missing`: manifest が指定する entry module が package に存在しない;
+- `override_builtin_identity_mismatch`: builtin manifest ID が canonical ID と一致しない;
+- `multiple_builtin_sources`: 複数の builtin ディレクトリが同じ plugin ID を宣言している。
 
 衝突のある bundle は一括更新せず、single-plugin package で個別に更新します。
 
@@ -83,6 +99,8 @@ previous_ids = ["old_plugin_id"] # 任意の旧 identity 衝突 guard
 | Install orchestration と path policy | `plugin/server/application/plugin_cli/service.py` |
 | HTTP request/response model | `plugin/server/routes/plugin_cli.py` |
 | Plugin Manager の確認と結果表示 | `frontend/plugin-manager/src/composables/usePackageManager.ts` |
+| 旧 layout migration | `plugin/server/application/plugins/layout_migration.py` |
+| builtin source switch と rollback | `plugin/server/application/plugins/source_switch.py` |
 
 ## 検証
 

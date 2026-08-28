@@ -1378,8 +1378,8 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 .message-block-image img {
   display: block;
   width: 100%;
-  height: 100%;
-  object-fit: cover;
+  height: auto;
+  object-fit: contain;
 }
 
 .message-block-image img[data-neko-image-load-failed-sticker="true"] {
@@ -1521,6 +1521,18 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .message-row-system {
   justify-content: center;
+}
+
+.system-chip-source {
+  flex: none;
+  font-size: 11px;
+  letter-spacing: .02em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  opacity: .7;
+  align-self: flex-start;
+  margin-top: 1px;
 }
 
 .system-chip {
@@ -3477,96 +3489,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 #music-player-mount.compact-music-player-mount:empty {
   display: none;
-}
-
-/* 主动分享表情包 overlay：常显挂件，显示最新一张表情包，常显到用户开口（下一条 role==='user'
-   消息）才收起。默认贴近胶囊（offset-y 8px）；位置可用 --compact-meme-overlay-offset-y 微调。
-   ⚠️ 像素位置需在三条链路（index 宽屏 / 窄宽手机 / chat.html Electron）实测微调。 */
-.compact-meme-overlay {
-  --compact-meme-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
-  --compact-meme-overlay-offset-y: 8px;
-  position: fixed;
-  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-meme-surface-width) / 2));
-  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + var(--compact-meme-overlay-offset-y));
-  box-sizing: border-box;
-  width: min(calc(var(--compact-meme-surface-width) - 16px), 240px, calc(100vw - 24px));
-  transform: translateX(-50%);
-  z-index: 8;
-  /* 居中 inline-block 的 frame（frame 收紧到图片尺寸，让关闭叉贴图片角）。 */
-  text-align: center;
-  /* 被动展示，不接收指针事件——让点击穿透到桌面/下层，且不被 Electron pass-through 当可交互 island。
-     注：pointer-events 会继承给子元素，所以图片区也穿透；唯独关闭叉按钮单独开 auto 才可点。 */
-  pointer-events: none;
-  -webkit-app-region: no-drag;
-}
-
-/* 同一轮既推表情包又放歌时，音乐条占据胶囊正上方那一档；表情包上移到音乐条上方让位，避免重叠。
-   只有这种共存场景才需要大 offset，单表情包仍贴近胶囊（上面的 8px）。 */
-.app-shell:has(#music-player-mount.compact-music-player-mount:not(:empty)) .compact-meme-overlay {
-  --compact-meme-overlay-offset-y: 96px;
-}
-
-.compact-meme-overlay img {
-  display: block;
-  width: auto;
-  max-width: 100%;
-  max-height: 200px;
-  margin: 0 auto;
-  object-fit: contain;
-  border-radius: 12px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
-}
-
-.compact-meme-overlay img[data-neko-image-load-failed-sticker="true"] {
-  background: #fff;
-}
-
-/* 关闭叉的定位框：inline-block 收紧到图片实际尺寸，叉子绝对定位到框右上角＝图片右上角。
-   pointer-events 继承 overlay 的 none（图片区继续穿透），只有下面的按钮单独开 auto。 */
-.compact-meme-overlay-frame {
-  position: relative;
-  display: inline-block;
-  max-width: 100%;
-}
-
-.compact-meme-overlay-close {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  display: inline-grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.5);
-  color: #fff;
-  line-height: 0;
-  cursor: pointer;
-  /* overlay 整体 pointer-events:none（含图片区，点击穿透）；唯独这个按钮开 auto 才接得住点击。 */
-  pointer-events: auto;
-  -webkit-app-region: no-drag;
-  opacity: 0.85;
-  transition: opacity 0.16s ease, background 0.16s ease, transform 0.16s ease;
-  z-index: 1;
-}
-
-.compact-meme-overlay-close:hover {
-  background: rgba(0, 0, 0, 0.68);
-  opacity: 1;
-  transform: scale(1.06);
-}
-
-.compact-meme-overlay-close:active {
-  transform: scale(0.96);
-}
-
-.compact-meme-overlay-close-icon {
-  display: block;
-  width: 12px;
-  height: 12px;
-  pointer-events: none;
 }
 
 #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"],

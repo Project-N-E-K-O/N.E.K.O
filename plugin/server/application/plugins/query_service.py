@@ -498,6 +498,7 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
 
             plugin_meta = _normalize_mapping(plugin_meta_obj, context=f"plugins[{plugin_id}]")
             plugin_info = dict(plugin_meta)
+            plugin_info.pop("entries_preview", None)
             plugin_info["status"] = _resolve_plugin_status(
                 plugin_id=plugin_id,
                 plugin_meta=plugin_meta,

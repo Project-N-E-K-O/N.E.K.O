@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 
 import pytest
 
 from plugin.server import lifecycle as module
+from plugin.server.application.plugins.operation_lock import plugin_operation_lock
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -77,7 +79,9 @@ async def test_ensure_plugin_messaging_started_starts_router_when_response_map_i
 
 
 @pytest.mark.asyncio
-async def test_startup_uses_registry_refresh_then_autostart(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_startup_reconciles_existing_install_source_after_migration_before_registry_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     plugins_backup = copy.deepcopy(module.state.plugins)
     hosts_backup = dict(module.state.plugin_hosts)
     handlers_backup = dict(module.state.event_handlers)
@@ -99,6 +103,28 @@ async def test_startup_uses_registry_refresh_then_autostart(monkeypatch: pytest.
         monkeypatch.setattr(module.metrics_collector, "start", _noop_async)
         monkeypatch.setattr(module, "start_bridge", lambda: None)
         monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+
+        async def _migrate_layout():
+            calls.append(("layout", "migrate"))
+            return type(
+                "MigrationResult",
+                (),
+                {"migrated": (), "blocked": ()},
+            )()
+
+        monkeypatch.setattr(module, "migrate_legacy_plugin_layout", _migrate_layout)
+
+        install_source_manager = object()
+
+        class _StartupReconciler:
+            def __init__(self, manager: object) -> None:
+                assert manager is install_source_manager
+
+            async def run(self) -> None:
+                calls.append(("install_source", "reconcile"))
+
+        monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+        monkeypatch.setattr(module, "StartupReconciler", _StartupReconciler)
 
         async def _retry_deferred_profile_cleanup() -> int:
             calls.append(("profile_cleanup", "retry"))
@@ -150,6 +176,8 @@ async def test_startup_uses_registry_refresh_then_autostart(monkeypatch: pytest.
         await service.startup()
 
         assert calls == [
+            ("layout", "migrate"),
+            ("install_source", "reconcile"),
             ("profile_cleanup", "retry"),
             ("registry", "refresh"),
             ("start", "auto_plugin:False"),
@@ -166,3 +194,28 @@ async def test_startup_uses_registry_refresh_then_autostart(monkeypatch: pytest.
             module.state.event_handlers.update(handlers_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_layout_migration_and_reconcile_share_plugin_operation_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = module.ServerLifecycleService()
+    migration_started = asyncio.Event()
+
+    async def migrate_layout():
+        migration_started.set()
+        return type("MigrationResult", (), {"migrated": (), "blocked": ()})()
+
+    monkeypatch.setattr(module, "migrate_legacy_plugin_layout", migrate_layout)
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: None)
+
+    async with plugin_operation_lock.hold():
+        task = asyncio.create_task(
+            service._migrate_layout_and_reconcile_install_sources()
+        )
+        await asyncio.sleep(0)
+        assert not migration_started.is_set()
+
+    await task
+    assert migration_started.is_set()

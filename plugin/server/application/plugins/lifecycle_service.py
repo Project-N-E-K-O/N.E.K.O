@@ -66,7 +66,10 @@ from plugin.settings import (
     PLUGIN_SHUTDOWN_TIMEOUT,
     PLUGIN_STARTUP_TIMEOUT,
     PLUGIN_SYNC_AUTO_START_ON_TOGGLE,
+    get_plugin_state_root,
+    ensure_plugin_exec_state_roots_separated,
     get_user_plugin_config_root,
+    get_user_plugin_exec_root,
     get_user_package_profiles_root,
 )
 from plugin.utils import parse_bool_config
@@ -355,14 +358,23 @@ def _path_within_plugin_roots_sync(path: Path) -> bool:
     except Exception:
         resolved_path = path
 
+    resolved_exec_root = get_user_plugin_exec_root().resolve(strict=False)
+    resolved_builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT.resolve(strict=False)
+    resolved_state_root = get_plugin_state_root().resolve(strict=False)
+    if resolved_exec_root == resolved_state_root:
+        return False
+    allowed_roots: set[Path] = set()
+    if resolved_exec_root not in {resolved_builtin_root, resolved_state_root}:
+        allowed_roots.add(resolved_exec_root)
+    # Preserve injected/test roots while explicitly excluding both immutable
+    # builtin code and the SDK-owned persistent state root.
     for root in PLUGIN_CONFIG_ROOTS:
-        try:
-            resolved_root = root.resolve()
-        except Exception:
-            resolved_root = root
-        if resolved_path == resolved_root or resolved_root in resolved_path.parents:
-            return True
-    return False
+        resolved_root = root.resolve(strict=False)
+        if resolved_root not in {resolved_builtin_root, resolved_state_root}:
+            allowed_roots.add(resolved_root)
+    # Deletion owns one direct child installation only. In particular, the
+    # builtin root and SDK state root are never acceptable lifecycle targets.
+    return resolved_path.parent in allowed_roots
 
 
 def _remove_plugin_metadata_sync(plugin_id: str) -> bool:
@@ -442,6 +454,13 @@ class _StagedPackageProfile:
 
 
 def _deferred_profile_cleanup_record_path_sync() -> Path:
+    return (
+        get_plugin_state_root().expanduser().resolve().parent
+        / _DEFERRED_PROFILE_CLEANUP_FILENAME
+    )
+
+
+def _legacy_deferred_profile_cleanup_record_path_sync() -> Path:
     return (
         get_user_plugin_config_root().expanduser().resolve().parent
         / _DEFERRED_PROFILE_CLEANUP_FILENAME
@@ -530,7 +549,19 @@ def _is_safe_deferred_profile_cleanup_path(path: Path) -> bool:
 def _retry_deferred_profile_cleanup_sync() -> int:
     """Retry profile cleanup jobs persisted after transient deletion failures."""
     record_path = _deferred_profile_cleanup_record_path_sync()
-    paths = _load_deferred_profile_cleanup_paths_sync(record_path)
+    record_paths = [record_path]
+    legacy_record_path = _legacy_deferred_profile_cleanup_record_path_sync()
+    if legacy_record_path != record_path and legacy_record_path.exists():
+        record_paths.append(legacy_record_path)
+
+    paths: list[str] = []
+    for candidate in record_paths:
+        loaded = _load_deferred_profile_cleanup_paths_sync(candidate)
+        if loaded is None:
+            return 0
+        for raw_path in loaded:
+            if raw_path not in paths:
+                paths.append(raw_path)
     if not paths:
         return 0
 
@@ -566,6 +597,18 @@ def _retry_deferred_profile_cleanup_sync() -> int:
             record_path,
             exc,
         )
+    else:
+        for legacy_path in record_paths[1:]:
+            try:
+                legacy_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning(
+                    "delete_plugin: failed to remove migrated cleanup record {}: {}",
+                    legacy_path,
+                    exc,
+                )
     return cleaned
 
 
@@ -660,6 +703,32 @@ def _stage_orphaned_package_profile_sync(plugin_dir: Path) -> _StagedPackageProf
             "delete_plugin: failed to resolve package profile for plugin_dir={}: {}",
             plugin_dir,
             exc,
+        )
+        return None
+
+    state_root = get_plugin_state_root().expanduser().resolve(strict=False)
+    if (
+        current_profile_dir == state_root
+        or state_root in current_profile_dir.parents
+        or current_profile_dir in state_root.parents
+    ):
+        logger.warning(
+            "delete_plugin: refusing to remove package profile overlapping "
+            "the persistent state root: {}",
+            current_profile_dir,
+        )
+        return None
+
+    builtin_root = Path(BUILTIN_PLUGIN_CONFIG_ROOT).expanduser().resolve(strict=False)
+    if (
+        current_profile_dir == builtin_root
+        or builtin_root in current_profile_dir.parents
+        or current_profile_dir in builtin_root.parents
+    ):
+        logger.warning(
+            "delete_plugin: refusing to remove package profile overlapping "
+            "the builtin plugin root: {}",
+            current_profile_dir,
         )
         return None
 
@@ -1605,6 +1674,18 @@ class PluginLifecycleService:
         return await self._delete_plugin_unlocked(plugin_id)
 
     async def _delete_plugin_unlocked(self, plugin_id: str) -> dict[str, object]:
+        try:
+            await asyncio.to_thread(ensure_plugin_exec_state_roots_separated)
+        except ValueError as exc:
+            if getattr(exc, "code", "") == "PLUGIN_EXEC_STATE_ROOT_COLLISION":
+                raise _to_domain_error(
+                    code="PLUGIN_EXEC_STATE_ROOT_COLLISION",
+                    message=str(exc),
+                    status_code=409,
+                    plugin_id=plugin_id,
+                    error_type=type(exc).__name__,
+                ) from exc
+            raise
         plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
         if plugin_meta is None:
             raise _to_domain_error(
@@ -1671,8 +1752,33 @@ class PluginLifecycleService:
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             await asyncio.to_thread(_remove_plugin_metadata_sync, plugin_id)
-            await asyncio.to_thread(clear_runtime_override, plugin_id)
             await plugin_registry_service.refresh_registry()
+            restored_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
+            restored_builtin = bool(
+                restored_meta
+                and restored_meta.get("effective_source") == "builtin"
+            )
+            restored_builtin_started = False
+            restored_builtin_restart_error: dict[str, str] | None = None
+            if not restored_builtin:
+                await asyncio.to_thread(clear_runtime_override, plugin_id)
+            if is_running and restored_builtin:
+                try:
+                    await self.start_plugin(plugin_id, refresh_registry=False)
+                    restored_builtin_started = True
+                except Exception as restart_exc:
+                    restored_builtin_restart_error = {
+                        "code": "PLUGIN_BUILTIN_RESTORE_START_FAILED",
+                        "message": str(restart_exc),
+                        "error_type": type(restart_exc).__name__,
+                    }
+                    logger.error(
+                        "delete_plugin: builtin source restored but restart failed: "
+                        "plugin_id={}, err_type={}, err={}",
+                        plugin_id,
+                        type(restart_exc).__name__,
+                        restart_exc,
+                    )
         except ServerDomainError:
             raise
         except IO_RUNTIME_ERRORS as exc:
@@ -1717,6 +1823,9 @@ class PluginLifecycleService:
                 "plugin_dir": str(plugin_dir),
                 "deleted_from_disk": deleted_from_disk,
                 "deleted_profile_dir": str(deleted_profile_dir) if deleted_profile_dir else None,
+                "restored_builtin": restored_builtin,
+                "restored_builtin_started": restored_builtin_started,
+                "restored_builtin_restart_error": restored_builtin_restart_error,
             },
         )
         response: dict[str, object] = {
@@ -1724,6 +1833,9 @@ class PluginLifecycleService:
             "plugin_id": plugin_id,
             "plugin_dir": str(plugin_dir),
             "deleted_from_disk": deleted_from_disk,
+            "restored_builtin": restored_builtin,
+            "restored_builtin_started": restored_builtin_started,
+            "restored_builtin_restart_error": restored_builtin_restart_error,
             "message": "Plugin deleted successfully",
         }
         return response

@@ -88,6 +88,7 @@ import { useConnectionStore } from '@/stores/connection'
 
 const { t } = useI18n()
 const connectionStore = useConnectionStore()
+const PLUGIN_MANAGER_BOOT_SHELL_ID = 'plugin-manager-boot-shell'
 const PIN_STATE_RETRY_DELAYS_MS = [50, 150, 350, 750]
 const isMaximized = ref(false)
 const pinAvailable = ref(false)
@@ -228,6 +229,7 @@ function closeWindow() {
 }
 
 onMounted(() => {
+  document.getElementById(PLUGIN_MANAGER_BOOT_SHELL_ID)?.remove()
   void refreshPinState()
   void refreshMaximizeState()
   window.addEventListener('resize', handleWindowResize)

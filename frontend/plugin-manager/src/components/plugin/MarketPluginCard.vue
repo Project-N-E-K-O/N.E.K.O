@@ -1,7 +1,7 @@
 <template>
   <el-card
     class="plugin-card market-plugin-card"
-    :class="{ 'market-plugin-card--installed': installed }"
+    :class="{ 'market-plugin-card--installed': effectiveAction.installed }"
     @click="$emit('click')"
   >
     <template #header>
@@ -11,8 +11,8 @@
             {{ t('market.recommended') }}
           </el-tag>
           <h3 class="plugin-name">{{ plugin.name }}</h3>
-          <el-tag v-if="installed" size="small" type="success">
-            {{ t('market.installed') }}
+          <el-tag v-if="effectiveAction.installed" size="small" type="success">
+            {{ effectiveAction.effectiveSource === 'builtin' ? t('market.usingBuiltin') : t('market.installed') }}
           </el-tag>
           <!-- v2 (R8): yanked 红色徽章；当前装的版本被作者撤回时显示 -->
           <el-tooltip
@@ -73,9 +73,25 @@
         >
           {{ upgrading ? t('market.upgrading') : t('market.upgradeTo', { version: plugin.version }) }}
         </el-button>
-        <!-- 已装且无新版可升 → 显示禁用的"已安装"按钮 -->
         <el-button
-          v-else-if="installed"
+          v-else-if="effectiveAction.kind === 'blocked'"
+          type="primary"
+          size="small"
+          disabled
+        >
+          {{ t('market.autoUpgradeBlocked') }}
+        </el-button>
+        <el-button
+          v-else-if="effectiveAction.kind === 'builtin'"
+          type="primary"
+          size="small"
+          disabled
+        >
+          {{ t('market.usingBuiltin') }}
+        </el-button>
+        <!-- Market 已装且无新版可升 → 显示禁用的"已安装"按钮 -->
+        <el-button
+          v-else-if="effectiveAction.kind === 'installed'"
           type="primary"
           size="small"
           disabled
@@ -84,7 +100,7 @@
         </el-button>
         <!-- 未装 + Market 没有发布版本 → 禁用安装，文案"暂无可用版本" -->
         <el-button
-          v-else-if="!plugin.has_release"
+          v-else-if="effectiveAction.kind === 'unavailable'"
           type="primary"
           size="small"
           disabled
@@ -119,6 +135,7 @@ import { useI18n } from 'vue-i18n'
 import { User, Download } from '@element-plus/icons-vue'
 import type { MarketPlugin } from '@/api/market'
 import { compareVersion } from '@/utils/version'
+import type { MarketPluginAction } from '@/utils/marketPluginInstallState'
 
 interface Props {
   plugin: MarketPlugin
@@ -132,6 +149,8 @@ interface Props {
   yankReason?: string
   /** v2: upgrading 状态（按钮 loading + disabled）。 */
   upgrading?: boolean
+  /** Effective-source aware action returned by the Market installed projection. */
+  action?: MarketPluginAction
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -141,6 +160,7 @@ const props = withDefaults(defineProps<Props>(), {
   yanked: false,
   yankReason: '',
   upgrading: false,
+  action: undefined,
 })
 
 defineEmits<{
@@ -155,12 +175,36 @@ const { t } = useI18n()
  * v2 (R9.1 / R9.8): 升级按钮显示条件 —— 已装、本地有版本号、Market 有版本号、
  * 且 semver 比较显示本地落后。任一条件失败即不显示。
  */
-const showUpgrade = computed(() => {
+const legacyShowUpgrade = computed(() => {
   if (!props.installed) return false
   if (!props.localVersion || !props.plugin.version) return false
   if (!props.plugin.has_release) return false
   return compareVersion(props.localVersion, props.plugin.version) < 0
 })
+
+const effectiveAction = computed<MarketPluginAction>(() => {
+  if (props.action) return props.action
+  if (legacyShowUpgrade.value) {
+    return {
+      kind: 'upgrade',
+      effectiveSource: 'market',
+      currentVersion: props.localVersion || '',
+      targetVersion: props.plugin.version,
+      installed: true,
+    }
+  }
+  return {
+    kind: props.installed ? 'installed' : props.plugin.has_release ? 'install' : 'unavailable',
+    effectiveSource: props.installed ? 'market' : 'unknown',
+    currentVersion: props.localVersion || '',
+    targetVersion: props.plugin.version,
+    installed: props.installed,
+  }
+})
+
+const showUpgrade = computed(() =>
+  effectiveAction.value.kind === 'upgrade' || effectiveAction.value.kind === 'override_builtin',
+)
 
 function formatCount(count: number): string {
   if (count >= 1000) return `${(count / 1000).toFixed(1)}k`

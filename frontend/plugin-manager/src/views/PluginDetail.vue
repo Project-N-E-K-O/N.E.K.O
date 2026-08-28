@@ -100,6 +100,7 @@
                   :height="hostedSurfaceFrameHeight"
                   :active="isSurfaceActive(surface)"
                   :activation-revision="activationRevisionFor(surface)"
+                  :ref="(instance) => setGuideSurfaceFrameRef(surface.id, instance)"
                   @open-logs="openLogsTab"
                   @message="relayHostedSurfaceMessageToStaticUi"
                 />
@@ -112,6 +113,7 @@
               :height="hostedSurfaceFrameHeight"
               :active="isSurfaceActive(guideSurfaces[0]!)"
               :activation-revision="activationRevisionFor(guideSurfaces[0]!)"
+              :ref="(instance) => setGuideSurfaceFrameRef(guideSurfaces[0]?.id || '', instance)"
               @open-logs="openLogsTab"
               @message="relayHostedSurfaceMessageToStaticUi"
             />
@@ -178,7 +180,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, provide, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
@@ -194,6 +196,13 @@ import { getPluginUiSurfaceInfo } from '@/api/plugins'
 import { resolvePluginDisplayText, type PluginDisplayText } from '@/utils/pluginDisplay'
 import { useI18n } from 'vue-i18n'
 import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
+import {
+  PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY,
+  refreshHostedPanelFrames,
+} from '@/views/pluginDetailHostedPanelRefresh'
+
+/** One immediate pass, no retries. */
+const SINGLE_REFRESH_PASS = [0] as const
 
 const route = useRoute()
 const router = useRouter()
@@ -212,6 +221,7 @@ type SurfaceMessageReceiver = {
   refreshContext: () => Promise<void>
 }
 const panelSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
+const guideSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
 const surfaceActivationRevisions = ref<Record<string, number>>({})
 const hostedSurfaceFrameHeight = 'clamp(560px, calc(100vh - 220px), 1200px)'
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
@@ -426,13 +436,39 @@ function setPanelSurfaceFrameRef(surfaceId: string, instance: unknown) {
   }
 }
 
+function setGuideSurfaceFrameRef(surfaceId: string, instance: unknown) {
+  if (!surfaceId) return
+  const receiver = instance as SurfaceMessageReceiver | null
+  if (receiver && typeof receiver.refreshContext === 'function') {
+    guideSurfaceFrameRefs.set(surfaceId, receiver)
+  } else {
+    guideSurfaceFrameRefs.delete(surfaceId)
+  }
+}
+
+async function refreshHostedSurfaceContexts(gapsMs?: readonly number[]): Promise<void> {
+  // Guides can be hosted-tsx too, and they get a context id just like panels
+  // do, so a runtime change leaves them just as stale.
+  await refreshHostedPanelFrames([
+    ...panelSurfaceFrameRefs.values(),
+    ...guideSurfaceFrameRefs.values(),
+  ], gapsMs)
+}
+
+// Start/stop/reload keeps the retry chain: the plugin process may still be
+// booting its UI context provider when the mutation resolves.
+provide(PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY, () => refreshHostedSurfaceContexts())
+
 function relayHostedSurfaceMessageToStaticUi(data: unknown) {
   if (isLegacyOpenSurfaceMessage(data)) {
     openHostedSurfaceFromStaticUi(data.payload)
     return
   }
   if (data && typeof data === 'object' && (data as { type?: unknown }).type === 'neko-plugin-context-invalidated') {
-    void Promise.allSettled(Array.from(panelSurfaceFrameRefs.values(), (frame) => frame.refreshContext()))
+    // A plugin that emits this is demonstrably alive and has already finished
+    // the mutation it is reporting, so one pass is enough — retrying would
+    // just triple the IPC round trips into its process.
+    void refreshHostedSurfaceContexts(SINGLE_REFRESH_PASS)
     return
   }
   // Hosted surface messages have already been source/origin checked by the

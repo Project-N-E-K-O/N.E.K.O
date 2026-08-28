@@ -163,6 +163,44 @@ AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
 MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
 USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 
+
+def resolve_user_plugin_base() -> str:
+    """The plugin server's ACTUAL loopback origin, right now.
+
+    ``USER_PLUGIN_BASE`` is the configured origin. It is not always the live
+    one: when the preferred port is busy, the LAUNCHER picks a free one and
+    publishes it in ``NEKO_USER_PLUGIN_SERVER_PORT`` before spawning anything,
+    so every child inherits the same answer.
+
+    The launcher is named deliberately. An earlier version of this docstring
+    said "the plugin server binds elsewhere and publishes the real port", which
+    reads as though the server arbitrates its own port and announces it
+    afterwards. It does not, and the difference matters to anyone auditing this
+    path: a server that re-bound on its own could only publish into its OWN
+    environment, which no sibling process would ever see. Port arbitration
+    happens exactly once, in ``launcher_core.runtime.apply_port_strategy``,
+    ahead of every consumer; the plugin HTTP app is hosted in-process by
+    agent_server (``_start_embedded_user_plugin_server``) and merely binds the
+    port it is given, failing loudly if it cannot.
+
+    This lives in config, at the bottom of the layering, because four separate
+    layers need the same answer -- the process that MINTS media URLs, the main
+    server, the router that proxies those URLs to the browser, and the agent
+    router. They had drifted into separate copies, one of which silently
+    ignored the environment variable, so a proxy resolved to the port that had
+    not minted the id and images went missing exactly in the port-busy case the
+    variable exists to handle (Codex).
+    """
+    raw_port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
+    if raw_port:
+        try:
+            port = int(raw_port)
+        except ValueError:
+            port = 0
+        if 0 < port <= 65535:
+            return f"http://127.0.0.1:{port}"
+    return USER_PLUGIN_BASE.rstrip("/")
+
 # OpenFang Agent 执行后端端口 (由 Electron 并行启动，端口写入 port_config.json)
 OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
 OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"

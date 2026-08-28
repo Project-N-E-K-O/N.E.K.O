@@ -90,3 +90,32 @@ jobs:
         # rebuilds and verifies that artifact on every run, which is the right
         # place for it — a stale local bundle would only produce a false green.
         run: uv run pytest tests/unit -q
+
+  plugin-manager-vitest:
+    name: Plugin manager vitest
+    # 前端侧的同一个洞。frontend/plugin-manager 有 36 个 vitest 文件、327 条用例，
+    # 在此之前没有任何 npm 脚本或 workflow 会执行它们：`test:hosted` 只覆盖
+    # src/components/plugin/hosted，而 build-desktop.yml 只跑 `npm run build-only`。
+    # 结果和 tests/unit 当年一样 —— 补齐依赖后一跑，10 条是红的，其中
+    # src/utils/i18nLabel.test.ts 的兜底顺序断言从写下起就没对过。
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/plugin-manager/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend/plugin-manager
+        run: npm ci
+
+      - name: Run plugin-manager unit suite
+        # 只排除 hosted/e2e（那是 playwright，另有 test:hosted:e2e 负责）。
+        # 限定 src 是为了把 scripts/*.test.mjs 挡在外面 —— 它们是 node:test
+        # 格式，由 test:hosted-script 单独跑，被 vitest 收进来只会报 no test suite。
+        working-directory: frontend/plugin-manager
+        run: npm run test:unit

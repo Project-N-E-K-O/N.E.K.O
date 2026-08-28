@@ -275,8 +275,17 @@ export function usePluginListContextActions() {
         return
       }
       case 'delete':
-        await deletePlugin(plugin.id)
-        ElMessage.success(t('messages.pluginDeleted'))
+        {
+          const result = await deletePlugin(plugin.id)
+          if (result.restored_builtin_restart_error) {
+            ElMessage.warning(t('messages.pluginDeletedBuiltinRestartFailed', {
+              plugin: plugin.name,
+              error: result.restored_builtin_restart_error.message,
+            }))
+          } else {
+            ElMessage.success(t('messages.pluginDeleted'))
+          }
+        }
         try {
           await pluginStore.syncRegistryAndFetch()
           await pluginStore.fetchPluginStatus()

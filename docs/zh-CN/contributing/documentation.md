@@ -10,7 +10,7 @@ Project N.E.K.O. 的文档属于产品契约的一部分。文档应靠近所描
 | 架构与 API 参考 | 由当前代码支撑的契约 | `architecture/`、`modules/`、`api/` |
 | 贡献规范 | 仓库级开发与验证规则 | `contributing/` |
 | 项目记录 | 设计决策、性能快照和 SDK 变更说明 | `design/`、`benchmarks/`、`changelog/` |
-| 组件自有文档 | 随单个组件维护的详细说明 | 例如 `plugin/plugins/neko_live/docs/` |
+| 组件自有文档 | 随单个组件维护的详细说明 | 例如 `plugin/plugins/mcp_adapter/docs/` |
 
 [项目记录](/zh-CN/records/)用于保存证据和背景，不能替代当前代码、测试或已接受的 issue。
 

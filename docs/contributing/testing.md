@@ -31,7 +31,9 @@ There is no `--run-e2e` option in current `tests/conftest.py`. The only opt-in C
 
 ## Markers
 
-Root `pytest.ini` registers `unit`, `frontend`, `e2e`, `performance`, `plugin_unit`, and `plugin_e2e`. `conftest.py` adds `manual` and skips manual tests unless explicitly enabled.
+Root `pytest.ini` registers `unit`, `frontend`, `e2e`, `performance`,
+`plugin_unit`, `plugin_integration`, and `plugin_e2e`. `conftest.py` adds
+`manual` and skips manual tests unless explicitly enabled.
 
 A directory is not proof of behavior. Inspect fixtures and test code to see whether it starts servers, uses Playwright, needs an external credential, or mutates local UI/OS state.
 

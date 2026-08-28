@@ -127,6 +127,9 @@ def test_cat_mind_runtime_keeps_dom_free_observation_and_request_boundaries():
         "getReturnSummaryDraft",
         "consumeReturnSummaryDraft",
         "getDebugSnapshot",
+        "getDebugTimeline",
+        "exportDebugTimeline",
+        "clearDebugTimeline",
         "recordDecision",
         "acknowledgeActionRequest",
         "observe",
@@ -1199,6 +1202,9 @@ def test_cat_mind_phase1_runtime_observes_without_dispatching_actions():
         assert.ok(win.nekoCatMind);
         assert.equal(typeof win.nekoCatMind.getState, 'function');
         assert.equal(typeof win.nekoCatMind.getRecentEvents, 'function');
+        assert.equal(typeof win.nekoCatMind.getDebugTimeline, 'function');
+        assert.equal(typeof win.nekoCatMind.exportDebugTimeline, 'function');
+        assert.equal(typeof win.nekoCatMind.clearDebugTimeline, 'function');
         assert.equal(typeof win.nekoCatMind.observe, 'function');
         assert.equal(typeof win.nekoCatMind.reset, 'function');
 
@@ -1247,6 +1253,15 @@ def test_cat_mind_phase1_runtime_observes_without_dispatching_actions():
         }}));
         win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
           detail: {{
+            type: 'cat_local_text_received',
+            source: 'cat-local-chat',
+            tier: 'cat2',
+            timestamp: 2450,
+            detail: {{ requestId: 'local-text-debug-1', text: 'private-conversation-text' }}
+          }}
+        }}));
+        win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+          detail: {{
             type: 'cat1_walk_done_near_chat',
             source: 'cat1-journey',
             tier: 'cat1',
@@ -1281,6 +1296,20 @@ def test_cat_mind_phase1_runtime_observes_without_dispatching_actions():
         assert.equal(debugSnapshot.lastDecision.candidates[1].reason, 'near_chat_unavailable');
         assert.ok(stateChanges.some((change) => change.reason === 'observation'));
         assert.ok(stateChanges.some((change) => change.reason === 'decision'));
+        const debugTimeline = win.nekoCatMind.getDebugTimeline();
+        assert.ok(debugTimeline.some((entry) =>
+          entry.reason === 'observation' && entry.observation && entry.observation.type === 'drag_end'
+        ));
+        assert.ok(debugTimeline.some((entry) =>
+          entry.reason === 'decision' && entry.decision && entry.decision.outcome === 'cat1_eat_snack'
+        ));
+        const exportedTimeline = win.nekoCatMind.exportDebugTimeline();
+        assert.equal(exportedTimeline.includes('private-conversation-text'), false);
+        const parsedTimeline = JSON.parse(exportedTimeline);
+        assert.equal(parsedTimeline.schemaVersion, 1);
+        assert.equal(parsedTimeline.entryCount, debugTimeline.length);
+        win.nekoCatMind.clearDebugTimeline();
+        assert.equal(win.nekoCatMind.getDebugTimeline().length, 0);
 
         win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
           detail: {{ active: false, returnCommitted: true, returnSource: 'live2d-return-click' }}
@@ -2727,6 +2756,20 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
             {{ atMs: 6500, type: 'drag_end', phase: 'drag_end' }},
             {{ atMs: 6620, type: 'cat1_stretch_done_near_chat', phase: 'settled' }},
           ] }},
+          interruptedDragChain: {{ burstTimeline: Array.from({{ length: 6 }}, (_, index) => {{
+            const offset = 500 + index * 4000;
+            return [
+              {{ atMs: offset, type: 'drag_start', phase: 'drag_start' }},
+              {{ atMs: offset + 200, phase: 'drag_active' }},
+              {{ atMs: offset + 1050, type: 'drag_end', phase: 'drag_end', detail: {{
+                activityId: 'interrupted-drag-chain-' + index,
+                pathDistancePx: 110,
+                displacementPx: 85,
+                durationMs: 850,
+              }} }},
+              {{ atMs: offset + 1170, type: 'cat1_stretch_done_near_chat', phase: 'settled' }},
+            ];
+          }}).flat() }},
         }};
         const total = (result) => Object.values(result.counts).reduce((sum, count) => sum + count, 0);
         const startsInWindow = (result, startMinute) => result.starts.filter(
@@ -2780,6 +2823,7 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
         const shortOrdinaryHigh = simulate(true, shortBurstProfiles.ordinaryHigh);
         const shortOrdinaryHighFullLoad = simulate(true, shortBurstProfiles.ordinaryHighFullLoad);
         const shortHigh = simulate(true, shortBurstProfiles.high);
+        const interruptedDragChain = simulate(true, shortBurstProfiles.interruptedDragChain);
         const timingVariants = [
           {{ socialDurationMs: 936, smallMoveDurationMs: 720 }},
           {{ socialDurationMs: 2040, smallMoveDurationMs: 1320 }},
@@ -2954,6 +2998,14 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
           'three ordinary drags must still respond promptly after their real physical load is settled: ' +
             JSON.stringify(shortOrdinaryHighFullLoad.starts.slice(0, 3)));
         assert.ok(startsByMinute(shortHigh, 3).length >= 3 && startsByMinute(shortHigh, 3).length <= 5);
+        const interruptedDragChainEarlyStarts = startsByMinute(interruptedDragChain, 0.5);
+        assert.equal(interruptedDragChainEarlyStarts.length, 1,
+          'six compressed drags may advance the first response but must not start one action per drag: ' +
+            JSON.stringify(interruptedDragChainEarlyStarts));
+        assert.equal(interruptedDragChain.terminals.filter(
+          (item) => item.result === 'interrupted' && item.reason === 'return-ball-drag-active'
+        ).length, 1);
+        assertLifecycle(interruptedDragChain);
         assert.ok(startsByMinute(shortNone, 10).length <= startsByMinute(shortLow, 10).length,
           'one easy hover may preserve the quiet count instead of forcing an extra action');
         assert.ok(startsByMinute(shortLow, 10).length <= startsByMinute(shortNormal, 10).length);
@@ -3187,6 +3239,7 @@ def test_cat_mind_scores_use_five_dimensions_shared_cadence_and_ranking_cooldown
     assert "positiveNeedCurveRange: 8" in source
     assert "positiveNeedCurveCeiling: 78" in source
     assert "cadenceFloor: -58" in source
+    assert "dragInterruptionCadenceFloor: -98" in source
     assert "cadenceCeiling: 18" in source
     assert "cooldownMultiplier" not in source
     assert "immediateRepeat" not in source
@@ -4161,6 +4214,7 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
           detail: {{ source: 'desktop-window', tier: 'cat1', timestamp: now, visible: true }}
         }}));
         flushDecision();
+        assert.equal(win.nekoCatMind.getRecentEvents().at(-1).type, 'desktop_occlusion_or_layer_change');
         assert.equal(Object.prototype.hasOwnProperty.call(returnSummary(), 'episode'), false);
 
         // Reset/new entry always starts with an empty local accumulator.

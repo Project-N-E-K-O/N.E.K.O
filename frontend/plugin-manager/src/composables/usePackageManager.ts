@@ -761,6 +761,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       response.operation === 'upgrade'
       || response.operation === 'reinstall'
       || response.operation === 'downgrade'
+      || response.operation === 'override_builtin'
     ) {
       const plan = installPlan.value
       ElMessage.success(t(`package.install.${response.operation}Succeeded`, {

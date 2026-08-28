@@ -159,6 +159,42 @@
         return !!(provider && provider.sourceEnumerationMayPrompt === true);
     }
 
+    async function requestWindowsGraphicsCaptureFallback(provider, error, sourceId) {
+        if (!provider || typeof provider.requestWindowsGraphicsCaptureFallback !== 'function') {
+            return null;
+        }
+        try {
+            return await provider.requestWindowsGraphicsCaptureFallback({
+                name: String(error && error.name || ''),
+                message: String(error && error.message || ''),
+                deferRestartUntilConfirmed: true,
+                sourceType: typeof sourceId === 'string' && sourceId.startsWith('window:')
+                    ? 'window'
+                    : 'screen'
+            });
+        } catch (fallbackRequestError) {
+            console.warn('[屏幕源] 请求 Windows Graphics Capture 兼容模式失败:', fallbackRequestError);
+            return null;
+        }
+    }
+
+    async function confirmWindowsGraphicsCaptureFallback(provider, fallback) {
+        if (!fallback || fallback.restartApproved !== true || !fallback.restartToken
+            || !provider || typeof provider.restartWindowsGraphicsCaptureFallback !== 'function') {
+            return fallback;
+        }
+        try {
+            return await provider.restartWindowsGraphicsCaptureFallback(fallback.restartToken);
+        } catch (restartError) {
+            console.warn('[屏幕源] 确认 Windows Graphics Capture 兼容模式重启失败:', restartError);
+            return {
+                prompted: false,
+                restarting: false,
+                reason: 'restart-confirmation-failed'
+            };
+        }
+    }
+
     function hasVisibleModelSurface() {
         var modelContainerIds = [
             'live2d-container',
@@ -1701,6 +1737,7 @@
             return;
         }
 
+        var windowsGraphicsCapturePrompted = false;
         try {
             var nativeCapture = null;
             // Capture into a local reference first. A cancelled browser picker may
@@ -2050,12 +2087,41 @@
                                     pushSelectedSourceToMain(null);
                                     fallbackSucceeded = true;
                                 } catch (fallback2Err) {
+                                    if (discardCancelledScreenSharingStart(attempt)) return;
                                     if (!manualCaptureIdentityIsCurrent()) return;
+                                    // 用户关闭系统选择器时沿用标准路径的取消语义，
+                                    // 不要把此前的指定源失败误报为 WGC 故障。
+                                    if (fallback2Err.name === 'NotAllowedError') throw fallback2Err;
                                     console.warn('[屏幕源] getDisplayMedia 回退也失败:', fallback2Err);
                                 }
                             }
 
                             if (!fallbackSucceeded) {
+                                var windowsGraphicsCaptureFallback = await requestWindowsGraphicsCaptureFallback(
+                                    desktopProvider,
+                                    captureErr,
+                                    selectedSourceId
+                                );
+                                windowsGraphicsCapturePrompted = !!(
+                                    windowsGraphicsCaptureFallback
+                                    && windowsGraphicsCaptureFallback.prompted
+                                );
+                                if (windowsGraphicsCaptureFallback
+                                    && windowsGraphicsCaptureFallback.restartApproved === true) {
+                                    if (discardCancelledScreenSharingStart(attempt)) return;
+                                    if (!manualCaptureIdentityIsCurrent()) return;
+                                    windowsGraphicsCaptureFallback = await confirmWindowsGraphicsCaptureFallback(
+                                        desktopProvider,
+                                        windowsGraphicsCaptureFallback
+                                    );
+                                    windowsGraphicsCapturePrompted = !!(
+                                        windowsGraphicsCaptureFallback
+                                        && windowsGraphicsCaptureFallback.prompted
+                                    );
+                                }
+                                if (windowsGraphicsCaptureFallback && windowsGraphicsCaptureFallback.restarting) {
+                                    return;
+                                }
                                 console.warn('[屏幕源] 所有前端持续流方式均失败，停止屏幕分享');
                             }
                         }
@@ -2064,6 +2130,7 @@
                         }
                     } else if (!isNativeFrameProvider(desktopProvider)) {
                         // 使用标准的getDisplayMedia（显示系统选择器）
+                        var displayCaptureGeneration = screenSourceSelectionGeneration;
                         try {
                             captureStream = rememberScreenSharingAttemptStream(attempt, await navigator.mediaDevices.getDisplayMedia({
                                 video: {
@@ -2077,6 +2144,30 @@
                             // 用户主动取消则直接抛出，不兜底
                             if (displayErr.name === 'NotAllowedError') throw displayErr;
                             console.warn('[屏幕源] getDisplayMedia 失败，停止屏幕分享:', displayErr);
+                            var displayWgcFallback = await requestWindowsGraphicsCaptureFallback(
+                                desktopProvider,
+                                displayErr,
+                                null
+                            );
+                            windowsGraphicsCapturePrompted = !!(
+                                displayWgcFallback
+                                && displayWgcFallback.prompted
+                            );
+                            if (displayWgcFallback && displayWgcFallback.restartApproved === true) {
+                                if (discardCancelledScreenSharingStart(attempt)) return;
+                                if (displayCaptureGeneration !== screenSourceSelectionGeneration) return;
+                                displayWgcFallback = await confirmWindowsGraphicsCaptureFallback(
+                                    desktopProvider,
+                                    displayWgcFallback
+                                );
+                                windowsGraphicsCapturePrompted = !!(
+                                    displayWgcFallback
+                                    && displayWgcFallback.prompted
+                                );
+                            }
+                            if (displayWgcFallback && displayWgcFallback.restarting) {
+                                return;
+                            }
                         }
                     }
                 }
@@ -2211,7 +2302,9 @@
                     '屏幕捕获已停止，请检查系统权限或重新选择来源'
                 );
             }
-            window.showStatusToast(err.name + ': ' + err.message + (hint ? '\n' + hint : ''), 5000);
+            if (!windowsGraphicsCapturePrompted) {
+                window.showStatusToast(err.name + ': ' + err.message + (hint ? '\n' + hint : ''), 5000);
+            }
         }
     }
     mod.startScreenSharing = startScreenSharing;

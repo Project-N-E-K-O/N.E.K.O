@@ -573,3 +573,122 @@ async def test_finish_does_not_stage_on_sid_mismatch():
     # 既不写新截图，也不清旧值——整轮在 sid 校验处早 return。
     assert mgr.session._proactive_image_to_inject == "PREEXISTING"
     assert mgr.session._conversation_history == []
+
+
+def test_plugin_read_arriving_during_model_switch_is_not_lost():
+    """The vision-model switch is an await; the staged lists must survive it.
+
+    Reading the plugin list BEFORE that await and clearing it wholesale after
+    loses anything that arrived in between: absent from the message that was
+    already built, and erased before the next turn could carry it. The user's
+    list never had this because it is iterated in place, after the switch.
+    """
+    c, captured = _make_offline_for_stream()
+    c._pending_plugin_images = []
+    asyncio.run(c.stream_image("EARLY", source="plugin"))
+
+    async def _switch_and_race(*_a, **_k):
+        # A plugin push landing while the vision model is being switched in.
+        c._pending_plugin_images.append("DURING")
+
+    c.switch_model = AsyncMock(side_effect=_switch_and_race)
+
+    asyncio.run(c.stream_text("看看这个"))
+
+    sent = [u.rsplit(",", 1)[-1] for u in _image_urls(_last_user_message(captured).content)]
+    assert "EARLY" in sent
+    # Accounted for either way — attached to this turn, or still staged for the
+    # next one. What it must never be is dropped from both.
+    assert "DURING" in sent or "DURING" in c._pending_plugin_images
+
+
+def test_plugin_and_user_frames_share_one_turn_in_source_order():
+    c, captured = _make_offline_for_stream()
+    c._pending_plugin_images = []
+    c.set_proactive_screenshot("SHOT")
+    # Two per source: with one each, a reversal inside a group is invisible.
+    asyncio.run(c.stream_image("PLUG1", source="plugin"))
+    asyncio.run(c.stream_image("PLUG2", source="plugin"))
+    asyncio.run(c.stream_image("USER1"))
+    asyncio.run(c.stream_image("USER2"))
+
+    asyncio.run(c.stream_text("三个来源"))
+
+    msg = _last_user_message(captured)
+    sent = [u.rsplit(",", 1)[-1] for u in _image_urls(msg.content)]
+    # Proactive screen leads, then plugin context, then the user's own frames
+    # last so they sit closest to the text they belong to. Within each source,
+    # arrival order.
+    assert sent == ["SHOT", "PLUG1", "PLUG2", "USER1", "USER2"]
+    assert msg.content[-1] == {"type": "text", "text": "三个来源"}
+    # Both staged lists consumed by this turn; neither leaks into the next.
+    assert c._pending_images == []
+    assert c._pending_plugin_images == []
+
+
+# ---------------------------------------------------------------------------
+# Per-request ceiling — the CALL SITE.
+#
+# trim_images_to_turn_budget is unit-tested next to its own constants, but a
+# correct helper nobody calls bounds nothing. This asserts stream_text actually
+# routes its three sources through it.
+# ---------------------------------------------------------------------------
+
+
+def _b64_sized(decoded_bytes: int, filler: str) -> str:
+    return filler * ((decoded_bytes * 4 // 3) // len(filler))
+
+
+def test_stream_text_trims_attachments_to_the_per_request_ceiling():
+    """The three staging quotas are independent; their SUM is not bounded by
+    any of them, and it is the sum the provider is asked to accept."""
+    from main_logic.proactive_delivery import TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES
+
+    budget = TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES
+    proactive = _b64_sized(budget * 5 // 8, "P")
+    plugin = _b64_sized(budget // 4, "G")
+    user = _b64_sized(budget // 4, "U")
+
+    c, captured = _make_offline_for_stream()
+    c._pending_plugin_images = [plugin]
+    c._pending_images = [user]
+    c.set_proactive_screenshot(proactive)
+
+    asyncio.run(c.stream_text("这几张图"))
+
+    urls = _image_urls(_last_user_message(captured).content)
+    # Trimmed from the FRONT: the oldest attachment goes, the user's own frame
+    # (nearest the text it belongs to) survives.
+    assert urls == [
+        f"data:image/jpeg;base64,{plugin}",
+        f"data:image/jpeg;base64,{user}",
+    ]
+    # Trimmed frames are still consumed, exactly like evicted ones: a dropped
+    # attachment must not trail into the next turn and fight fresh frames.
+    assert c._pending_images == []
+    assert c._pending_plugin_images == []
+    assert c._proactive_image_to_inject is None
+
+
+def test_stream_text_keeps_all_attachments_when_the_turn_fits():
+    """Dual: the ceiling must not trim a turn that was already within budget."""
+    from main_logic.proactive_delivery import TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES
+
+    small = TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES // 8
+    proactive = _b64_sized(small, "P")
+    plugin = _b64_sized(small, "G")
+    user = _b64_sized(small, "U")
+
+    c, captured = _make_offline_for_stream()
+    c._pending_plugin_images = [plugin]
+    c._pending_images = [user]
+    c.set_proactive_screenshot(proactive)
+
+    asyncio.run(c.stream_text("这几张图"))
+
+    urls = _image_urls(_last_user_message(captured).content)
+    assert urls == [
+        f"data:image/jpeg;base64,{proactive}",
+        f"data:image/jpeg;base64,{plugin}",
+        f"data:image/jpeg;base64,{user}",
+    ]

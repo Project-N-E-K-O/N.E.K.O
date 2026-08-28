@@ -33,6 +33,7 @@ async function mountFrame() {
   const iframe = container.querySelector('iframe') as HTMLIFrameElement
   iframe.dispatchEvent(new Event('load'))
   return {
+    iframe,
     dispatch(payload: Record<string, unknown>) {
       window.dispatchEvent(new MessageEvent('message', {
         data: { type: 'neko-study-open-surface', payload },
@@ -59,6 +60,13 @@ describe('PluginUIFrame open-surface bridge', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('preserves native modal dialogs for legacy static plugin UIs', async () => {
+    const frame = await mountFrame()
+
+    expect(frame.iframe.getAttribute('sandbox')?.split(/\s+/)).toContain('allow-modals')
+    frame.unmount()
   })
 
   it('passes through only a non-negative safe activation revision', async () => {

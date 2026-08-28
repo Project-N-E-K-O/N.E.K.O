@@ -56,10 +56,18 @@ export function getPluginConfigToml(pluginId: string): Promise<PluginConfigToml>
 }
 
 /**
- * 获取插件基础配置（直接来自 plugin.toml，不包含 profile 叠加）
+ * 获取运行时插件基础配置（不包含 profile 叠加）
  */
 export function getPluginBaseConfig(pluginId: string): Promise<PluginBaseConfig> {
   return get(`/plugin/${encodeURIComponent(pluginId)}/config/base`)
+}
+
+/**
+ * 获取用于编辑 profile 的配置基线：插件清单默认值与运行时配置合并，
+ * 不包含任何 profile 覆盖项。
+ */
+export function getPluginEffectiveBaseConfig(pluginId: string): Promise<PluginBaseConfig> {
+  return get(`/plugin/${encodeURIComponent(pluginId)}/config/base/effective`)
 }
 
 /**
@@ -211,4 +219,3 @@ export function hotUpdatePluginConfig(
     profile: profile ?? null
   })
 }
-

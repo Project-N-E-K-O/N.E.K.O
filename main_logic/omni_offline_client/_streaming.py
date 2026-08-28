@@ -13,6 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from main_logic.proactive_delivery import (
+    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+    trim_images_to_turn_budget,
+)
+
 from ._shared import (
     AIMessage,
     Any,
@@ -540,7 +545,7 @@ class _StreamingMixin:
         """  # noqa: DOCSTRING_CJK
         if not text or not text.strip():
             # If only images without text, use a default prompt
-            if self._pending_images:
+            if self._pending_images or getattr(self, "_pending_plugin_images", None):
                 text = "请分析这些图片。"
             else:
                 return
@@ -583,7 +588,20 @@ class _StreamingMixin:
                 self._proactive_image_staged_at = 0.0
                 self._proactive_image_history_len = 0
                 proactive_image = None
-        has_images = bool(proactive_image) or len(self._pending_images) > 0
+        # Plugin `read` frames sit in their own quota-bounded list. Instances
+        # built via __new__ (tests, legacy callers) never ran __init__, so read
+        # it the same defensive way the proactive slot is read above.
+        #
+        # Only the DECISION is taken here. The contents are read later, next to
+        # the user's list, because the vision-model switch below is an await:
+        # a snapshot taken here would miss a plugin read that arrived during
+        # the switch and would still be erased by the clear afterwards, losing
+        # it from every turn (Codex P2).
+        has_images = (
+            bool(proactive_image)
+            or len(self._pending_images) > 0
+            or len(getattr(self, "_pending_plugin_images", None) or []) > 0
+        )
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
         # 落 history，跟 voice mode user-role 注入对偶。
@@ -604,18 +622,36 @@ class _StreamingMixin:
             # Multi-modal message: images + text
             content = []
 
-            # Add images first. Temporal order: the proactive screenshot (the
-            # screen she commented on, BEFORE the user spoke) leads, then the
-            # user's own pending frame(s) — so the model doesn't mistake the
-            # earlier screen for what the user just captured.
-            if proactive_image:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{proactive_image}"
-                    }
-                })
-            for img_b64 in self._pending_images:
+            # Read HERE, after the model switch await above and with no
+            # suspension point between this and the clear below, so what is
+            # attached and what is cleared are the same set -- the property
+            # the user's list gets for free by being iterated in place.
+            plugin_images = list(getattr(self, "_pending_plugin_images", None) or [])
+            # Ordering, which is both temporal and by relevance: the proactive
+            # screen leads (it is what the screen showed BEFORE the user
+            # spoke), then plugin-supplied context, then the user's own frames
+            # last so they sit closest to the text they belong to.
+            _ordered_images = (
+                ([proactive_image] if proactive_image else [])
+                + plugin_images
+                + list(self._pending_images)
+            )
+            # The three sources are quota'd SEPARATELY on purpose (neither can
+            # spend the other's budget), but they all land on this one
+            # HumanMessage, so what the provider sees is their SUM -- past the
+            # per-request ceiling, which rejects the whole request rather than
+            # dropping images. Trim from the front: the frames nearest the text
+            # are the ones it is about.
+            _attached_images, _dropped_images = trim_images_to_turn_budget(
+                _ordered_images
+            )
+            if _dropped_images:
+                logger.warning(
+                    f"Dropped {_dropped_images} oldest attachment(s): this turn's "
+                    f"images exceeded the {TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES}-byte "
+                    f"per-request budget"
+                )
+            for img_b64 in _attached_images:
                 content.append({
                     "type": "image_url",
                     "image_url": {
@@ -630,16 +666,27 @@ class _StreamingMixin:
             })
 
             user_message = HumanMessage(content=content)
-            _img_count = len(self._pending_images) + (1 if proactive_image else 0)
+            # Report what was ATTACHED, not what was staged. The trim above
+            # takes a prefix, and the proactive screenshot is that prefix's
+            # first element, so it survives exactly when nothing was dropped.
+            _img_count = len(_attached_images)
+            _proactive_attached = bool(proactive_image) and _dropped_images == 0
             logger.info(
                 f"Sending multi-modal message with {_img_count} image(s)"
-                f"{' (incl. proactive screen)' if proactive_image else ''}"
+                f"{' (incl. proactive screen)' if _proactive_attached else ''}"
             )
 
             # Clear pending images after using them (content already holds the
             # data urls). The proactive screenshot is one-shot: consumed by this
             # reply, then cleared so it never re-injects into later turns.
             self._pending_images.clear()
+            # Cleared wholesale, exactly like the user's list above: both are
+            # consumed by this turn. Anything a plugin appends during the model
+            # call is lost the same way a user frame would be -- one shared
+            # window, not a new asymmetry between the two sources.
+            _plugin_pending = getattr(self, "_pending_plugin_images", None)
+            if _plugin_pending is not None:
+                _plugin_pending.clear()
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0

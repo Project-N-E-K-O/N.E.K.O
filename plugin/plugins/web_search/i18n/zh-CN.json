@@ -1,4 +1,4 @@
 {
   "plugin.name": "网络搜索",
-  "plugin.description": "联网搜索。自动根据用户 IP 选择搜索引擎（中国大陆 Baidu／海外 DuckDuckGo），无需 API Key"
+  "plugin.description": "联网搜索。优先使用 AnySearch，并根据用户 IP 选择地区；支持可选 API Key，失败时回退至百度或 DuckDuckGo"
 }

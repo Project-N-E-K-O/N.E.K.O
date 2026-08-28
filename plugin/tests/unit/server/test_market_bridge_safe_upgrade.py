@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
 from plugin.server.routes import market_bridge
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
@@ -73,6 +74,220 @@ def test_market_override_records_canonical_package_url() -> None:
     assert override["market_detail"]["package_url"] == canonical_url
 
 
+@pytest.mark.asyncio
+async def test_market_builtin_override_requires_current_preflight_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user"
+    manifest = builtin_root / "demo" / "plugin.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        '[plugin]\nid = "demo"\nversion = "1.0.0"\n',
+        encoding="utf-8",
+    )
+    user_root.mkdir()
+
+    async def authoritative_release(_payload: object) -> dict[str, object]:
+        return {
+            "plugin_market_id": "market-demo",
+            "version": "2.0.0",
+            "channel": "stable",
+            "package_url": "https://example.invalid/demo.neko-plugin",
+            "package_sha256": "a" * 64,
+            "payload_hash": None,
+            "published_at": None,
+        }
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_fetch_authoritative_market_override_release",
+        authoritative_release,
+    )
+    monkeypatch.setattr(
+        market_bridge.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(
+            lambda cls: SimpleNamespace(
+                builtin_plugins_root=builtin_root,
+                user_plugins_root=user_root,
+            )
+        ),
+    )
+    payload = market_bridge.MarketInstallRequest(
+        plugin_id="market-demo",
+        expected_plugin_toml_id="demo",
+        version="2.0.0",
+        package_url="https://example.invalid/demo.neko-plugin",
+        package_sha256="a" * 64,
+        mode="override_builtin",
+    )
+    bridge_token = market_bridge.get_bridge_token()
+
+    with pytest.raises(HTTPException) as missing_info:
+        await market_bridge.market_install(payload, token=bridge_token)
+    assert missing_info.value.status_code == 409
+    assert missing_info.value.detail["code"] == "override_confirmation_required"
+
+    confirmation = await market_bridge.market_override_confirmation(
+        payload,
+        token=bridge_token,
+    )
+    assert confirmation.current_version == "1.0.0"
+    assert confirmation.target_version == "2.0.0"
+    assert len(confirmation.confirmation_token) == 64
+
+    manifest.write_text(
+        '[plugin]\nid = "demo"\nversion = "1.0.1"\n',
+        encoding="utf-8",
+    )
+    stale_payload = payload.model_copy(
+        update={"confirmation_token": confirmation.confirmation_token},
+    )
+    with pytest.raises(HTTPException) as stale_info:
+        await market_bridge.market_install(stale_payload, token=bridge_token)
+    assert stale_info.value.status_code == 409
+    assert stale_info.value.detail["code"] == "override_confirmation_changed"
+
+    fresh_confirmation = await market_bridge.market_override_confirmation(
+        payload,
+        token=bridge_token,
+    )
+
+    dispatched_payloads: list[object] = []
+
+    async def finish_task(_task_id: str, dispatched_payload: object) -> None:
+        dispatched_payloads.append(dispatched_payload)
+        return None
+
+    monkeypatch.setattr(market_bridge, "_execute_install", finish_task)
+    accepted = await market_bridge.market_install(
+        payload.model_copy(
+            update={"confirmation_token": fresh_confirmation.confirmation_token},
+        ),
+        token=bridge_token,
+    )
+    await market_bridge._task_workers[accepted.task_id]
+    market_bridge._task_workers.pop(accepted.task_id, None)
+    market_bridge._tasks.pop(accepted.task_id, None)
+
+    assert accepted.status == "pending"
+    assert len(dispatched_payloads) == 1
+    assert (
+        getattr(dispatched_payloads[0], "verified_builtin_manifest_sha256", None)
+        == fresh_confirmation.builtin_manifest_sha256
+    )
+
+
+@pytest.mark.asyncio
+async def test_market_builtin_override_rejects_caller_hash_not_in_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = market_bridge.MarketInstallRequest(
+        plugin_id="42",
+        expected_plugin_toml_id="demo",
+        version="2.0.0",
+        package_url="https://attacker.invalid/demo.neko-plugin",
+        canonical_package_url="https://attacker.invalid/demo.neko-plugin",
+        package_sha256="a" * 64,
+        channel="stable",
+        mode="override_builtin",
+    )
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, url: str, **_kwargs: object) -> object:
+            request = market_bridge.httpx.Request("GET", url)
+            return market_bridge.httpx.Response(
+                200,
+                request=request,
+                json=[
+                    {
+                        "version": "2.0.0",
+                        "channel": "stable",
+                        "package_url": "https://market.invalid/demo.neko-plugin",
+                        "package_sha256": "b" * 64,
+                        "payload_hash": None,
+                        "created_at": "2026-08-26T00:00:00Z",
+                    }
+                ],
+            )
+
+    monkeypatch.setattr(market_bridge.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(market_bridge, "MARKET_API_URL", "https://market.invalid")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await market_bridge._fetch_authoritative_market_override_release(payload)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "market_release_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_market_builtin_override_routes_verified_package_to_source_switch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_path = tmp_path / "study_companion.neko-plugin"
+    package_path.write_bytes(b"verified package")
+    payload = market_bridge.MarketInstallRequest(
+        plugin_id="study_companion",
+        expected_plugin_toml_id="study_companion",
+        version="0.1.6",
+        package_url="https://example.invalid/study_companion.neko-plugin",
+        package_sha256="a" * 64,
+        mode="override_builtin",
+        verified_builtin_manifest_sha256="f" * 64,
+    )
+    calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_download_package",
+        lambda _url, _task: _async_value(package_path),
+    )
+    monkeypatch.setattr(
+        market_bridge,
+        "_verify_downloaded_package_with_fallback",
+        lambda *_args, **_kwargs: _async_value((package_path, "passed")),
+    )
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+
+    async def upload_and_install(**kwargs: Any) -> dict[str, object]:
+        calls.append(kwargs)
+        return {
+            "upload": {},
+            "unpack": {"operation": "override_builtin", "restarted": True},
+            "install": {"channel": "market"},
+        }
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_cli_service",
+        SimpleNamespace(upload_and_install=upload_and_install),
+    )
+
+    task: dict[str, Any] = {}
+    await market_bridge._do_install(task, payload, {})
+
+    assert calls[0]["install_source_override"]["mode"] == "override_builtin"
+    assert calls[0]["install_source_override"]["override_confirmation"] == {
+        "builtin_manifest_sha256": "f" * 64,
+    }
+    assert task["result"]["operation"] == "override_builtin"
+    assert task["result"]["restarted"] is True
+    assert task["result"]["install"]["operation"] == "override_builtin"
+
+
 def _configure_paths(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -82,6 +297,7 @@ def _configure_paths(
 ) -> None:
     policy = SimpleNamespace(
         user_plugins_root=plugins_root,
+        builtin_plugins_root=plugins_root.parent / "builtin",
         package_profiles_root=profiles_root,
         package_artifacts_root=plugins_root.parent / "packages",
     )
@@ -94,6 +310,7 @@ def _configure_paths(
         market_bridge,
         "get_install_source_manager",
         lambda: SimpleNamespace(
+            is_degraded=False,
             find_active_market_entry=lambda plugin_id: entry or _entry(plugin_id)
         ),
     )
@@ -102,6 +319,38 @@ def _configure_paths(
         "inspect_package",
         lambda path: SimpleNamespace(package_id="demo"),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["install", "upgrade"])
+async def test_market_mutation_rejects_degraded_lock_before_download(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    manager = SimpleNamespace(is_degraded=True, degrade_reason="legacy_migration_failed")
+    monkeypatch.setattr(market_bridge, "get_install_source_manager", lambda: manager)
+
+    async def unexpected_download(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("download must not start while the lock is degraded")
+
+    monkeypatch.setattr(market_bridge, "_download_package", unexpected_download)
+    payload = market_bridge.MarketInstallRequest(
+        plugin_id="demo",
+        expected_plugin_toml_id="demo",
+        version="2.0.0",
+        package_url="https://example.invalid/demo.neko-plugin",
+        package_sha256="a" * 64,
+        mode="install" if operation == "install" else "upgrade",
+    )
+
+    with pytest.raises(market_bridge._TaskError) as exc_info:
+        if operation == "install":
+            await market_bridge._do_install({}, payload, {})
+        else:
+            await market_bridge._do_upgrade({}, payload, {})
+
+    assert exc_info.value.code == "install_source_read_only"
+    assert exc_info.value.http_status == 503
 
 
 @pytest.mark.asyncio
@@ -853,6 +1102,141 @@ async def test_market_backup_failure_reports_incomplete_when_old_plugin_cannot_r
         await market_bridge._do_upgrade({}, _payload(), {})
 
     assert exc_info.value.code == "upgrade_rollback_incomplete"
+
+
+@pytest.mark.asyncio
+async def test_market_builtin_override_upgrade_rejects_non_catalog_release_before_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    builtin_manifest = tmp_path / "builtin" / "demo" / "plugin.toml"
+    plugin_dir.mkdir(parents=True)
+    builtin_manifest.parent.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text('[plugin]\nid = "demo"\n', encoding="utf-8")
+    builtin_manifest.write_text('[plugin]\nid = "demo"\n', encoding="utf-8")
+    _configure_paths(
+        monkeypatch,
+        plugins_root=plugins_root,
+        profiles_root=profiles_root,
+    )
+
+    async def reject_release(_payload: object) -> dict[str, object]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "market_release_mismatch",
+                "message": "request does not match catalog",
+            },
+        )
+
+    async def unexpected_download(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("non-catalog packages must not be downloaded")
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_fetch_authoritative_market_override_release",
+        reject_release,
+    )
+    monkeypatch.setattr(market_bridge, "_download_package", unexpected_download)
+
+    with pytest.raises(market_bridge._TaskError) as exc_info:
+        await market_bridge._do_upgrade({}, _payload("demo"), {})
+
+    assert exc_info.value.code == "market_release_mismatch"
+    assert exc_info.value.http_status == 409
+
+
+@pytest.mark.asyncio
+async def test_stopped_builtin_override_upgrade_validates_runtime_and_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import lifecycle_service
+
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    builtin_manifest = tmp_path / "builtin" / "demo" / "plugin.toml"
+    plugin_dir.mkdir(parents=True)
+    builtin_manifest.parent.mkdir(parents=True)
+    original_manifest = '[plugin]\nid = "demo"\nversion = "1.0.0"\n'
+    (plugin_dir / "plugin.toml").write_text(original_manifest, encoding="utf-8")
+    builtin_manifest.write_text(original_manifest, encoding="utf-8")
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"catalog package")
+    _configure_paths(
+        monkeypatch,
+        plugins_root=plugins_root,
+        profiles_root=profiles_root,
+    )
+    authoritative_release = {
+        "plugin_market_id": "42",
+        "version": "2.0.0",
+        "channel": "stable",
+        "package_url": "https://market.invalid/demo.neko-plugin",
+        "package_sha256": "a" * 64,
+        "payload_hash": "catalog-payload",
+        "published_at": "2026-08-26T00:00:00Z",
+    }
+    monkeypatch.setattr(
+        market_bridge,
+        "_fetch_authoritative_market_override_release",
+        lambda _payload: _async_value(authoritative_release),
+    )
+    monkeypatch.setattr(
+        market_bridge,
+        "_download_package",
+        lambda _url, _task: _async_value(package_path),
+    )
+    monkeypatch.setattr(
+        market_bridge,
+        "_verify_downloaded_package_with_fallback",
+        lambda *_args, **_kwargs: _async_value((package_path, "passed")),
+    )
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+    monkeypatch.setattr(market_bridge, "plugin_is_running", lambda _plugin_id: _async_false())
+
+    captured_override: dict[str, Any] = {}
+
+    async def install_invalid_runtime(**kwargs: Any) -> dict[str, object]:
+        captured_override.update(kwargs["install_source_override"])
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.toml").write_text(
+            '[plugin]\nid = "demo"\nentry = "plugin.plugins.demo:Plugin"\n',
+            encoding="utf-8",
+        )
+        return {"operation": "upgrade"}
+
+    validation_calls: list[tuple[str, Path]] = []
+
+    async def reject_invalid_runtime(*, plugin_id: str, config_path: Path) -> None:
+        validation_calls.append((plugin_id, config_path))
+        raise RuntimeError("entry class is missing")
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_cli_service",
+        SimpleNamespace(upload_and_install=install_invalid_runtime),
+    )
+    monkeypatch.setattr(
+        lifecycle_service.plugin_registry_service,
+        "validate_plugin_runtime_source",
+        reject_invalid_runtime,
+    )
+
+    with pytest.raises(market_bridge._TaskError) as exc_info:
+        await market_bridge._do_upgrade({}, _payload("demo"), {})
+
+    assert exc_info.value.code == "upgrade_rollback_completed"
+    assert validation_calls == [("demo", plugin_dir / "plugin.toml")]
+    assert (plugin_dir / "plugin.toml").read_text(encoding="utf-8") == original_manifest
+    assert captured_override["market_detail"] == {
+        **authoritative_release,
+        "expected_plugin_toml_id": "demo",
+    }
 
 
 async def _async_none() -> None:

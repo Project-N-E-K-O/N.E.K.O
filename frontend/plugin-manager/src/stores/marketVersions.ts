@@ -2,26 +2,31 @@
  * Lightweight cache of "what's the latest version of market plugin X on channel C".
  *
  * Loaded lazily when the plugin list view first asks about any installed
- * market plugin. We hit the same ``/plugins`` Market Bridge endpoint that
- * ``MarketPanel`` uses, but we DON'T try to compete with ``MarketPanel``
- * for data ownership — ``MarketPanel`` keeps its own local ref, this
- * store is purely for the install-source "update available" badge on
- * the main plugin list.
+ * market plugin. We use the Market Bridge's compact
+ * ``/plugins/latest-versions`` endpoint rather than competing with
+ * ``MarketPanel`` for catalog data; this store is purely for the
+ * install-source "update available" badge on the main plugin list.
  *
- * Cache is keyed by ``${channel}::${slugOrId}``. ``_fetchAll`` fetches
- * the stable and beta channels separately so a plugin installed from
- * beta compares against the beta latest (and stable against stable);
- * otherwise the badge would compare apples to oranges and either hide
- * a real beta update or invent one against the wrong channel.
+ * Cache is keyed by ``${channel}::${slugOrId}``.  Rather than scanning every
+ * page of the Market catalog, ``_fetchAll`` asks the compact latest-versions
+ * endpoint only about plugin ids recorded in local market install sources.
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { fetchMarketPlugins, type MarketPlugin } from '@/api/market'
+import {
+  fetchMarketLatestVersions,
+  type MarketPlugin,
+} from '@/api/market'
 
 const _REFRESH_INTERVAL_MS = 5 * 60 * 1000  // 5 minutes
 
 export type MarketChannelKey = 'stable' | 'beta'
-const _CHANNELS: MarketChannelKey[] = ['stable', 'beta']
+export interface MarketVersionTarget {
+  pluginId: string | number
+  channel: MarketChannelKey
+}
+
+const _LOOKUP_CHUNK_SIZE = 100
 
 function _cacheKey(channel: MarketChannelKey, slugOrId: string): string {
   return `${channel}::${slugOrId}`
@@ -37,7 +42,9 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
   const lastFetchedAt = ref<number>(0)
   const loading = ref(false)
   const loadError = ref<string | null>(null)
-  let inflight: Promise<void> | null = null
+  let lastTargetSignature = ''
+  let refreshSequence = 0
+  let inflight: { signature: string; promise: Promise<void> } | null = null
 
   /** Merge a page of market plugins into the cache.
    *
@@ -63,83 +70,103 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
     latestByKey.value = next
   }
 
-  /** Fetch all pages of the market's plugin list for one channel.
-   *
-   *  Pages accumulate into the shared accumulator; the caller does the
-   *  atomic swap into ``latestByKey`` once every channel has finished
-   *  so a partial fetch never overwrites a previous good snapshot. */
+  /** Fetch compact latest-version rows for one channel in bounded batches. */
   async function _fetchChannel(
     channel: MarketChannelKey,
+    pluginIds: string[],
     accumulator: Record<string, string>,
   ): Promise<void> {
-    let page = 1
-    const pageSize = 100
-    // Defensive cap — no market we care about has >10k plugins per channel.
-    const maxPages = 100
-    while (page <= maxPages) {
-      const result = await fetchMarketPlugins({ page, page_size: pageSize, channel })
-      // ``fetchMarketPlugins`` returns ``null`` on network / API error.
-      // Throwing here lets ``_fetchAll`` keep the previous snapshot instead
-      // of swapping in a partial/empty accumulator and marking it fresh.
-      if (result === null) {
-        throw new Error(`marketVersions: ${channel} channel fetch failed at page ${page}`)
+    for (let offset = 0; offset < pluginIds.length; offset += _LOOKUP_CHUNK_SIZE) {
+      const chunk = pluginIds.slice(offset, offset + _LOOKUP_CHUNK_SIZE)
+      const versions = await fetchMarketLatestVersions(chunk, channel)
+      // A failed chunk makes the whole snapshot untrustworthy: retain the
+      // previous complete one rather than making absent ids look up-to-date.
+      if (versions === null) {
+        throw new Error(`marketVersions: ${channel} latest-version lookup failed`)
       }
-      if (!result.items?.length) break
-      for (const p of result.items) {
-        if (p.slug) accumulator[_cacheKey(channel, p.slug)] = p.version
-        const idKey = p.id != null ? String(p.id) : ''
-        if (idKey) accumulator[_cacheKey(channel, idKey)] = p.version
+      for (const version of versions) {
+        accumulator[_cacheKey(channel, String(version.plugin_id))] = version.version
       }
-      const total = result.total ?? 0
-      if (total && page * pageSize >= total) break
-      if (result.items.length < pageSize) break
-      page += 1
     }
   }
 
-  /** Fetch every supported channel's plugin list. Swap-on-success
-   *  semantics: pages accumulate into a local map and ``latestByKey``
-   *  is replaced atomically only after every channel finishes. Any
-   *  thrown exception leaves the previous successful snapshot intact —
-   *  partial coverage that could mark a plugin as "no longer in market"
-   *  just because we failed before reaching its page would be worse
-   *  than serving a slightly stale snapshot. */
-  async function _fetchAll(): Promise<void> {
+  function _normalizeTargets(targets: MarketVersionTarget[]): MarketVersionTarget[] {
+    const unique = new Map<string, MarketVersionTarget>()
+    for (const target of targets) {
+      const pluginId = String(target.pluginId || '').trim()
+      if (!pluginId || !/^\d+$/.test(pluginId) || target.channel !== 'stable' && target.channel !== 'beta') {
+        continue
+      }
+      unique.set(_cacheKey(target.channel, pluginId), { pluginId, channel: target.channel })
+    }
+    return [...unique.values()]
+  }
+
+  function _signatureFor(targets: MarketVersionTarget[]): string {
+    return targets
+      .map((target) => _cacheKey(target.channel, String(target.pluginId)))
+      .sort()
+      .join('|')
+  }
+
+  /** Fetch exactly the locally installed Market plugins.  Results build in a
+   *  local accumulator and atomically replace the cache only on success. */
+  async function _fetchAll(
+    targets: MarketVersionTarget[],
+    signature: string,
+    sequence: number,
+  ): Promise<void> {
     loading.value = true
     loadError.value = null
     const accumulator: Record<string, string> = {}
     try {
-      for (const channel of _CHANNELS) {
-        await _fetchChannel(channel, accumulator)
+      const idsByChannel = new Map<MarketChannelKey, string[]>()
+      for (const target of targets) {
+        const ids = idsByChannel.get(target.channel) ?? []
+        ids.push(String(target.pluginId))
+        idsByChannel.set(target.channel, ids)
       }
-      latestByKey.value = accumulator
-      lastFetchedAt.value = Date.now()
+      for (const [channel, pluginIds] of idsByChannel) {
+        await _fetchChannel(channel, pluginIds, accumulator)
+      }
+      if (sequence === refreshSequence) {
+        latestByKey.value = accumulator
+        lastFetchedAt.value = Date.now()
+        lastTargetSignature = signature
+      }
     } catch (err: any) {
-      loadError.value = err?.message ?? String(err)
+      if (sequence === refreshSequence) {
+        loadError.value = err?.message ?? String(err)
+      }
       // Intentionally do NOT touch ``latestByKey.value`` — the previous
       // successful snapshot stays live so ``latest()`` callers still get
       // an answer for plugins they care about. ``isReady`` likewise
       // stays based on ``lastFetchedAt`` so the UI doesn't flip into a
       // "never loaded" state on transient network errors.
     } finally {
-      loading.value = false
+      if (sequence === refreshSequence) loading.value = false
     }
   }
 
-  /** Trigger a refresh if the cache is stale or empty. Callers can await
-   *  this, but they don't have to — latest() will still return whatever
-   *  was cached previously while the new fetch is in flight. */
-  function ensureFresh(): Promise<void> {
+  /** Trigger a refresh for the currently installed Market plugin targets. */
+  function ensureFresh(targets: MarketVersionTarget[]): Promise<void> {
+    const normalizedTargets = _normalizeTargets(targets)
+    const signature = _signatureFor(normalizedTargets)
     const stale = Date.now() - lastFetchedAt.value > _REFRESH_INTERVAL_MS
-    if (!stale && !loadError.value) {
+    if (!stale && !loadError.value && signature === lastTargetSignature) {
       return Promise.resolve()
     }
-    if (!inflight) {
-      inflight = _fetchAll().finally(() => {
-        inflight = null
-      })
+    if (inflight?.signature === signature) {
+      return inflight.promise
     }
-    return inflight
+    const sequence = ++refreshSequence
+    const promise = _fetchAll(normalizedTargets, signature, sequence)
+    inflight = { signature, promise }
+    void promise.then(
+      () => { if (inflight?.promise === promise) inflight = null },
+      () => { if (inflight?.promise === promise) inflight = null },
+    )
+    return promise
   }
 
   /** Synchronous lookup against the current cache.

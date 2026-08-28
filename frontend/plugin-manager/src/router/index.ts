@@ -77,6 +77,10 @@ const routes: RouteRecordRaw[] = [
         meta: {
           titleKey: 'nav.adapterUI'
         }
+      },
+      {
+        path: ':pathMatch(.*)*',
+        redirect: '/'
       }
     ]
   }
@@ -100,4 +104,3 @@ router.beforeEach((to, from, next) => {
 })
 
 export default router
-
