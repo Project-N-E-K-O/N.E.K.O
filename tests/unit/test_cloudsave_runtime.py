@@ -3242,3 +3242,23 @@ def test_standard_data_candidates_on_unix_platforms(tmp_path):
         candidates = cm._get_standard_data_directory_candidates()
         assert candidates[0] == fake_home / ".xdg-data"
         assert fake_home / ".local" / "share" in candidates
+
+
+@pytest.mark.unit
+def test_runtime_root_counts_an_interrupted_avatar_transaction_as_content(tmp_path):
+    """An interrupted update may leave `.backup` as a tool's only copy; empty means replaced."""
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import _runtime_root_has_user_content
+
+    avatar_tools = Path(cm.app_docs_dir) / "avatar_tools"
+    backup = avatar_tools / ".local-12345678-1234-4123-8123-123456789abc.backup"
+    backup.mkdir(parents=True)
+    (backup / "record.json").write_text('{"recordVersion":2}', encoding="utf-8")
+
+    assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is True
+
+    # 判据不能放宽成「任何点开头的都算内容」：同步客户端留下的噪声仍然是噪声。
+    shutil.rmtree(backup)
+    (avatar_tools / ".DS_Store").write_text("macOS metadata", encoding="utf-8")
+    assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is False

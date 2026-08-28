@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
 import shutil
+import stat as stat_module
 import threading
 import uuid
 from pathlib import Path
@@ -2818,3 +2820,105 @@ def test_a_transient_read_failure_never_quarantines_whatever_is_locked(
         assert store._occupied_tool_slots() == 1, locked
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+def test_recovery_treats_a_failed_directory_probe_as_transient_not_absent(tmp_path, monkeypatch):
+    """A probe failure must not read as "the final is gone" - that unlocks rollback."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Updated",
+        change_mode="press-swap",
+        change_meanings=["the version the user just saved"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    final = store.root / tool["id"]
+    current_revision = store.record_revision(store.read_record(tool["id"]))
+
+    # 上一次更新已经把新版本发布成 final，只是清理 backup 那步失败，旧版本残留。
+    backup = store.root / f".{tool['id']}.backup"
+    shutil.copytree(final, backup)
+    (backup / "record.json").write_text(
+        (backup / "record.json").read_text(encoding="utf-8").replace(
+            "the version the user just saved", "the stale backup"
+        ),
+        encoding="utf-8",
+    )
+    stale = json.loads((backup / "record.json").read_text(encoding="utf-8"))
+    stale["resourceDigests"] = {
+        name: AvatarToolStore._file_digest(backup / name, 32 * 1024 * 1024)
+        for name in stale["resourceDigests"]
+    }
+    (backup / "record.json").write_text(json.dumps(stale, ensure_ascii=False), encoding="utf-8")
+    # 没有 .updating —— 上一次更新是走完了的，这个 backup 只是残留，不是回滚证据。
+    assert not (store.root / f".{tool['id']}.updating").exists()
+
+    real_stat, real_lstat = os.stat, os.lstat
+
+    def flaky(real):
+        def probe(path, *args, **kwargs):
+            if str(path) == str(final):
+                raise OSError(errno.EBUSY, "metadata temporarily unavailable")
+            return real(path, *args, **kwargs)
+
+        return probe
+
+    root_key = store._root_key()
+    # 两个都挡住：is_dir() 走 stat，is_symlink() 走 lstat。只挡一个的话，改回
+    # is_dir() 的写法仍然读得到目录，这个用例就抓不到回归了。
+    monkeypatch.setattr(os, "lstat", flaky(real_lstat))
+    monkeypatch.setattr(os, "stat", flaky(real_stat))
+    try:
+        store.initialize()
+        # 只是一次读不到元数据，final 必须原样还在。
+        assert stat_module.S_ISDIR(real_lstat(str(final)).st_mode), (
+            "the live final was rolled back on a transient probe failure"
+        )
+        assert stat_module.S_ISDIR(real_lstat(str(backup)).st_mode)
+        assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+        monkeypatch.undo()
+        monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+        store.initialize()
+
+        # 元数据能读了，final 被证明有效，残留 backup 这才被清掉。
+        assert not backup.exists()
+        assert store.record_revision(store.read_record(tool["id"])) == current_revision
+        assert store.get_detail(tool["id"])["changeItems"][0]["meaning"] == (
+            "the version the user just saved"
+        )
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+def test_public_resource_allowlist_accepts_a_symlinked_storage_root(tmp_path, monkeypatch):
+    """The write side never rejects a symlinked root, so the serving side must not either."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    real_root = tmp_path / "real_avatar_tools"
+    store = AvatarToolStore(_ConfigManager(real_root))
+    tool = _create_tool(
+        store,
+        name="Linked",
+        change_mode="press-swap",
+        change_meanings=["served through a symlinked root"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+
+    link = tmp_path / "linked_avatar_tools"
+    try:
+        os.symlink(real_root, link, target_is_directory=True)
+    except (OSError, NotImplementedError, AttributeError):
+        pytest.skip("creating a symlink needs privileges on this platform")
+
+    assert is_public_avatar_tool_resource_path(link, f"{tool['id']}/default.png")
+
+    # 根「里面」的软链接仍然一律拒绝：那才是能指到根外面去的那一类。
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(_png())
+    inner = real_root / tool["id"] / "default.png"
+    inner.unlink()
+    os.symlink(outside, inner)
+    assert not is_public_avatar_tool_resource_path(link, f"{tool['id']}/default.png")

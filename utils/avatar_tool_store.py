@@ -16,6 +16,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import threading
 import unicodedata
 from pathlib import Path
@@ -138,13 +139,32 @@ def is_public_avatar_tool_resource_path(root: Path | str, path: object) -> bool:
     root_path = Path(root)
     directory = root_path / tool_id
     candidate = directory / filename
-    if root_path.is_symlink() or directory.is_symlink() or candidate.is_symlink():
+    # 根目录本身允许是软链接：用软链接把存储挪到别的盘是正当操作，而写入侧从来
+    # 不拒绝这种根。拒绝它只会让道具建得出来、图却全是 404。穿越由下面的 resolve
+    # 比较挡住；根「里面」的软链接仍然一律拒绝，那才是能指出去的那一类。
+    if directory.is_symlink() or candidate.is_symlink():
         return False
     try:
         candidate.resolve().relative_to(root_path.resolve())
     except (OSError, ValueError):
         return False
     return candidate.is_file()
+
+
+def _probe_owned_directory(path: Path) -> tuple[bool, OSError | None]:
+    """Report whether ``path`` is a real directory, keeping I/O failures distinguishable.
+
+    ``Path.is_dir()`` collapses every ``OSError`` into ``False``. On a network-backed
+    or locked root that turns one transient metadata failure into "the directory is
+    gone", which is exactly the answer that unlocks the rollback path below.
+    """
+    try:
+        status = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False, None
+    except OSError as exc:
+        return False, exc
+    return stat.S_ISDIR(status.st_mode), None
 
 
 def _validate_name(value: object, *, maximum: int) -> str:
@@ -441,10 +461,18 @@ class AvatarToolStore:
             #     再 updating→final，最后删 backup），backup 才是该回到的状态。
             # 除此之外的 backup 只是上一次成功更新的残留，绝不能拿它覆盖一个还
             # 在盘上的 final，否则就是把用户的最新版本回滚掉。
-            final_present = final.is_dir() and not final.is_symlink()
+            # 探测本身失败绝不能读成「不在」：那正好是放行回滚的那个答案，
+            # 而回滚会拿旧 backup 盖掉盘上还好好的 final。读不到就留到下次。
+            final_present, probe_error = _probe_owned_directory(final)
             # 必须是真正的暂存目录：一个同名的普通文件（同步客户端、手工操作
             # 都可能留下）不构成「更新没走完」的证据，不能凭它放行回滚。
-            interrupted = updating.is_dir() and not updating.is_symlink()
+            interrupted = False
+            if probe_error is None:
+                interrupted, probe_error = _probe_owned_directory(updating)
+            if probe_error is not None:
+                defer(probe_error)
+                complete = False
+                continue
             may_restore = interrupted or not final_present
             final_condemned = False
 
@@ -470,7 +498,15 @@ class AvatarToolStore:
                     remove_owned_directory(backup)
                     continue
 
-            if may_restore and backup.is_dir() and not backup.is_symlink():
+            backup_present = False
+            if may_restore:
+                backup_present, probe_error = _probe_owned_directory(backup)
+                if probe_error is not None:
+                    defer(probe_error)
+                    complete = False
+                    continue
+
+            if backup_present:
                 try:
                     self._read_record_from_directory(
                         tool_id, backup, verify_resources=True

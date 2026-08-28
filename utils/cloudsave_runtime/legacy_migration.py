@@ -37,6 +37,7 @@ from ._shared import (
     LEGACY_RUNTIME_DIR_NAMES,
     NON_RUNTIME_CONTENT_DIR_NAMES,
     ROOT_CONFIG_MERGE_FILES,
+    TRANSACTIONAL_RUNTIME_DIR_NAMES,
     RUNTIME_ASSET_DIR_NAMES,
     TARGET_OPTIONAL_STATE_FILES,
 )
@@ -108,9 +109,12 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
                 if _runtime_config_dir_has_user_content(config_manager):
                     return True
                 continue
+            transactional = name in TRANSACTIONAL_RUNTIME_DIR_NAMES
             try:
                 for child in candidate.iterdir():
-                    if _is_ignorable_runtime_entry(child):
+                    if _is_ignorable_runtime_entry(
+                        child, keep_transactional=transactional
+                    ):
                         continue
                     return True
             except StopIteration:
@@ -123,15 +127,23 @@ def runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
     return _runtime_root_has_user_content(root, config_manager=config_manager)
 
 
-def _is_ignorable_runtime_entry(path: Path) -> bool:
+def _is_ignorable_runtime_entry(path: Path, *, keep_transactional: bool = False) -> bool:
     name = path.name
     if name == ".gitkeep":
         return True
     if name.startswith("."):
-        return True
+        # 事务目录是崩溃恢复的唯一线索，判定「有没有用户内容」时它算内容。
+        return not (keep_transactional and _is_transactional_entry_name(name))
     if name == "__pycache__":
         return True
     return False
+
+
+_TRANSACTIONAL_ENTRY_SUFFIXES = (".backup", ".updating")
+
+
+def _is_transactional_entry_name(name: str) -> bool:
+    return name.startswith(".") and name.endswith(_TRANSACTIONAL_ENTRY_SUFFIXES)
 
 
 def _copy_runtime_root_entries(source_root: Path, destination_root: Path) -> list[str]:

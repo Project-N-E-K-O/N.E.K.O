@@ -160,6 +160,13 @@ LEGACY_RUNTIME_DIR_NAMES = (
 )
 
 
+# 这些运行时目录用点开头的暂存目录做原子更新（如 avatar_tools 的
+# ``.<tool-id>.backup`` / ``.<tool-id>.updating``）。更新被打断时，它们可能是
+# 某个道具仅存的副本，所以扫描「有没有用户内容」时不能因为点开头就跳过 ——
+# 那会让 bootstrap 判定目标根为空，进而不备份就整根替换掉。
+TRANSACTIONAL_RUNTIME_DIR_NAMES = frozenset({"avatar_tools"})
+
+
 NON_RUNTIME_CONTENT_DIR_NAMES = {
     "cloudsave",
     "cloudsave_backups",
