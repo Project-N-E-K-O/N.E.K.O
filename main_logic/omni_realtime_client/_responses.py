@@ -851,16 +851,43 @@ class _ResponseMixin:
         self._gemini_external_submit_task = submit_task
         self._gemini_external_outcome_token = outcome_token
         accepted = False
+        quarantined = False
         try:
             await self._gemini_send_user_turn(
                 text,
                 images_bytes=images_bytes,
             )
             accepted = True
+        except asyncio.CancelledError:
+            # 取消只结束了**我们的 await**，Gemini 可能已经收下这一轮：
+            # TranscriptDispatcher 的 invalidate_all() 会把取消沿 worker 一路传到
+            # 这里，而那时 send 早就交给 SDK 了。此时按"没送成"结算 token，等于对
+            # 外宣称没有在飞的回合，下一轮 prepare 便不会起隔离，那一轮的迟到
+            # transcript / 响应会串进后继回合。
+            #
+            # 所以保住 token，改为就地武装隔离——隔离本体会 join 掉这条 submit、
+            # settle token 再退掉这条连接，所以忙标志不会因此永久挂住（
+            # is_active_response() 读的就是这个 token）。这与 proactive 那条路
+            # 在 CancelledError 上的处理对偶，判据一致。
+            #
+            # 不走 _start_gemini_external_submit_quarantine：它有
+            # "submit_task is asyncio.current_task() → return" 的自保，从这里调
+            # 是空转。直接 fire 隔离本体，由它去 join 我们自己。
+            quarantined = True
+            _existing = getattr(self, "_gemini_external_quarantine_task", None)
+            if _existing is None or _existing.done():
+                self._gemini_external_quarantine_task = self._fire_task(
+                    self._quarantine_gemini_external_submit(
+                        submit_task,
+                        outcome_token,
+                    )
+                )
+            raise
         finally:
             if getattr(self, "_gemini_external_submit_task", None) is submit_task:
                 self._gemini_external_submit_task = None
-            if not accepted:
+            if not accepted and not quarantined:
+                # 同步发送失败（provider 直接拒）才立刻结算：那一轮确实没被收下。
                 self._settle_gemini_external_turn(outcome_token)
 
     async def submit_external_voice_turn(self, text: str, *, turn_id: str) -> None:

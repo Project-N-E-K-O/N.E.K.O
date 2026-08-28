@@ -654,6 +654,11 @@ class IndependentAsrRuntime:
         # 到 transcript 派发之后才冻结多模态回合，那时上面那个已经是 None 了；
         # 消费方靠"这个时刻是否晚于本回合起点"排除上一轮的残值。
         self._asr_last_turn_endpointed_at: float | None = None
+        # 上面那个保留副本**属于哪一轮**。时间戳分不清"上一轮的封口"和"本轮的封
+        # 口"：monotonic 在 Windows 上是 ~15ms 粒度，两者都可能与后继 record 的注
+        # 册时刻相等，往任一个方向猜都会错（猜"归上一轮"会丢掉本轮自己的截止点，
+        # 猜"归本轮"会把上一轮的封口盖到后继头上）。带上身份就不用猜。
+        self._asr_last_turn_endpointed_key: str | None = None
         self._asr_first_partial_recorded = False
         self._voice_input_resource_optimization_enabled = True
 
@@ -3632,6 +3637,7 @@ class IndependentAsrRuntime:
             ):
                 self._asr_pending_speech_onset_at = replay_onset_at
                 _lent_pending_onset = True
+            pending_before = self._asr_pending_speech_confirmed
             await self._handle_independent_asr_activity(
                 SpeechActivityEvent.SPEECH_RESUMED,
                 epoch,
@@ -3641,6 +3647,67 @@ class IndependentAsrRuntime:
                 or self._asr_lifecycle is not lifecycle
             ):
                 return
+            if (
+                not pending_before
+                and self._asr_pending_speech_confirmed
+                and lifecycle.snapshot.state is VoiceLifecycleState.PREWARMING
+            ):
+                # 重放被"传输未就绪"挡住了，停在 PREWARMING 并挂起了确认。
+                # （provider 权威下 SOFT_WAKE→PREWARMING 之后拦路的就是
+                # asr_session.is_ready —— _ensure_smart_turn_ready 在 provider
+                # 权威下无 await 直接返回 True；PREWARMING 的 lifecycle 广播没送达
+                # 是同态的另一种成因。别在注释里写死"唯一成因"。）
+                #
+                # 但这一轮**不需要**传输：它的音频早在上一轮还 ACTIVE 时就已经过
+                # 线，endpoint 和它自己的 final 已经排在有序 FIFO 里、正要到达。
+                # 而且能走到这里就说明老 session 还被认领着——_restart_transport
+                # 和 _close_transport_only 都是先把 _asr_session 置 None 再 close，
+                # 之后 is_adopted_candidate() 会丢掉它的全部回调——也就是说重连
+                # **还没开始**，那条 final 就排在后面。等重连救不回它：重连会换新
+                # session，老队列里那条 final 必定在 is_adopted_candidate() 上被
+                # 丢掉。就地补完确认，让紧随其后的 final 找到一个 DRAINING 的回合。
+                #
+                # 这里刻意**不**走 _handle_independent_asr_error：那条出口会 bump
+                # epoch、拆掉整个 session、cancel 掉正在跑的重连任务，并把语音路由
+                # fail-closed 到本次会话结束——为一句其实救得回来的话把整场语音判
+                # 死，违反"绝不丢用户的句子"。真丢的情况（final 始终不来）由下面封
+                # 口时装上的 provider-final watchdog 兜底：10s 硬顶，且不受
+                # _voice_input_resource_optimization_enabled 开关影响（那个开关会
+                # 让 _schedule_transport_warm_expiry 直接 return，所以不能靠它）。
+                #
+                # 门里 not pending_before 是刻意的：只补偿**这次重放自己造出来的**
+                # 那笔挂起确认，不吞别人的。
+                #
+                # 刻意不做的两件事：不调 _activate_asr_audio_dispatcher /
+                # drain_active_start_audio（重连确认分支有，但这一轮的音频早已过
+                # 线，本地没有待发缓冲）；不武装 _schedule_transport_warm_expiry
+                # （忙窗口的界由上面那个 watchdog 提供）。将来若有人让这条路承接
+                # 未发出的 PCM，必须回来补第一条。
+                lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+                self._asr_turn_onset_at = (
+                    self._asr_pending_speech_onset_at
+                    if self._asr_pending_speech_onset_at is not None
+                    else time.monotonic()
+                )
+                self._asr_pending_speech_confirmed = False
+                self._asr_pending_speech_onset_at = None
+                self._asr_turn_audio_started_at = time.monotonic()
+                self._asr_first_partial_recorded = False
+                confirm_identity = self._capture_runtime_identity(
+                    ingress_token=self._asr_current_ingress_token,
+                )
+                delivered = await self._send_asr_lifecycle_state(
+                    VoiceLifecycleState.ACTIVE,
+                    provider=provider,
+                    session_epoch=epoch,
+                    expected_identity=confirm_identity,
+                )
+                if (
+                    not delivered
+                    or epoch != self._asr_session_epoch
+                    or self._asr_lifecycle is not lifecycle
+                ):
+                    return
             if lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE:
                 # 没唤醒。credit 原样留着等下一次兑付；借出去的 onset 也要收回，
                 # 免得它被后面某个不相干的回合当成自己的起点。
@@ -3738,6 +3805,12 @@ class IndependentAsrRuntime:
             self._asr_sealed_turn_token = self._capture_transport_token(lifecycle)
             self._asr_turn_endpointed_at = time.monotonic()
             self._asr_last_turn_endpointed_at = self._asr_turn_endpointed_at
+            # 与 Core 侧 record.turn_id 同构（asr_runtime.py 的
+            # external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"），
+            # 好让冻结时能直接判"这个封口是不是这条 record 的"。
+            self._asr_last_turn_endpointed_key = (
+                f"asr-{turn_token.ingress.session_epoch}-{turn_token.turn_id}"
+            )
             self._schedule_provider_final_watchdog(
                 epoch,
                 lifecycle,

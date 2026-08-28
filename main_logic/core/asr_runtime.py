@@ -628,6 +628,11 @@ class AsrRuntimeMixin:
                 None,
             )
             retained_endpoint = isinstance(endpointed_at, (int, float))
+            retained_key = getattr(
+                runtime,
+                "_asr_last_turn_endpointed_key",
+                None,
+            )
         if not isinstance(endpointed_at, (int, float)):
             lifecycle = getattr(runtime, "_asr_lifecycle", None)
             state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
@@ -647,16 +652,26 @@ class AsrRuntimeMixin:
             # 保留副本跨轮存活，所以要求它晚于 record **注册**的时刻：上一轮的封口
             # 必然发生在本轮 record 建立之前。live 字段只描述在飞那一轮，仍用
             # started_at，免得极短发声里 seal 抢在注册之前时反而绑不上。
-            if retained_endpoint:
-                # 保留副本跨轮存活，可能是上一轮的，所以要求它**严格晚于**本轮
-                # record 注册的时刻。不能用 >=：monotonic 在 Windows 上是 ~15ms
-                # 粒度（本文件 _begin_core_multimodal_turn 里已经为同一个原因退
-                # 回过生成号判据），上一轮的封口和后继 record 的注册完全可能落在
-                # 同一个 tick 上而相等。判等号的话，上一轮的封口会被盖到后继回合
-                # 头上，本轮之后拍的每一帧都过不了 accepts()，稍长一点的发声等开
-                # 头那张过期就整轮退化成纯文本。相等归上一轮——上一轮的封口必然
-                # 发生在本轮 record 建立之前，而本轮自己的封口会由 live 字段那条
-                # 分支绑上，不会因为这里收严而漏。
+            if retained_endpoint and isinstance(retained_key, str):
+                # 保留副本跨轮存活，所以先问它**属于哪一轮**。
+                #
+                # 为什么不靠时间戳：monotonic 在 Windows 上是 ~15ms 粒度（本文件
+                # _begin_core_multimodal_turn 里已经为同一个原因退回过生成号判
+                # 据）。"上一轮的封口"和"本轮自己的封口"都可能与本轮 record 的注
+                # 册时刻相等，往任一个方向猜都会错：
+                #   猜"相等归上一轮"（严格 >）—— 本轮若在注册的同一 tick 里封口，
+                #     它自己的截止点被丢掉，endpoint_at 一直是 None，停口之后拍的
+                #     帧会被折进这条 transcript；
+                #   猜"相等归本轮"（>=）—— 上一轮的封口被盖到后继回合头上，本轮
+                #     之后拍的每一帧都过不了 accepts()，稍长的发声等开头那张过期
+                #     就整轮退化成纯文本。
+                # 带上身份就不用猜：runtime 封口时把回合键一并记下（同构于
+                # record.turn_id），这里直接判是不是同一轮。
+                floor_ok = retained_key == record.turn_id
+            elif retained_endpoint:
+                # 旧 runtime / 测试替身没有那个身份字段时的兼容回落：退回时间戳，
+                # 并把相等判给上一轮（丢掉本轮自己的截止点只是少一道过滤，把上一
+                # 轮的封口盖到后继头上则会让整轮退化成纯文本，后者更贵）。
                 floor_ok = sealed_at > record.registered_at
             elif live_endpoint:
                 # live 字段只描述在飞的那一轮，用 started_at 当下界；取 >= 是为了

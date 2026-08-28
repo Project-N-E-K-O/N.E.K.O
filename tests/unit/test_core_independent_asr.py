@@ -10848,10 +10848,13 @@ async def test_previous_turn_seal_in_the_same_tick_is_not_this_turn_cutoff() -> 
     runtime._begin_core_multimodal_turn(turn_id, token)
     record = runtime._core_multimodal_turns[turn_id]
 
-    # 上一轮的封口副本，时刻与本轮 record 的注册时刻**相等**（同一个 tick）。
-    # live 字段是空的——PROVIDER_FINAL 已经把它清掉了，这正是保留副本存在的原因。
+    # 上一轮的封口副本，时刻与本轮 record 的注册时刻**相等**（同一个 tick），
+    # 但身份是上一轮的。live 字段是空的——PROVIDER_FINAL 已经把它清掉了，这正是
+    # 保留副本存在的原因。
     runtime._asr_turn_endpointed_at = None
     runtime._asr_last_turn_endpointed_at = record.registered_at
+    runtime._asr_last_turn_endpointed_key = "asr-0-96"
+    assert runtime._asr_last_turn_endpointed_key != record.turn_id
 
     assert runtime._stage_independent_visual_frame(
         "opening-frame",
@@ -10877,6 +10880,41 @@ async def test_previous_turn_seal_in_the_same_tick_is_not_this_turn_cutoff() -> 
 
 
 @pytest.mark.unit
+async def test_this_turn_seal_in_the_same_tick_is_still_its_cutoff() -> None:
+    """同 tick 的另一个方向：本轮自己的封口不能因为"撞上注册时刻"被丢掉。
+
+    很短的一句话完全可能在 record 注册的同一个 ~15ms tick 里就封口；
+    PROVIDER_FINAL 之后 live 字段被清，只剩保留副本。纯按时间戳判的话，往哪个
+    方向猜都会错一半——这里就是"猜相等归上一轮"会错的那一半：本轮的截止点丢了，
+    用户停口之后拍的帧会被折进这条 transcript。
+
+    判据因此不是时间戳而是回合身份：runtime 封口时把回合键一并记下。
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=101)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 本轮自己的封口，恰好与注册落在同一个 tick 上。
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = record.registered_at
+    runtime._asr_last_turn_endpointed_key = record.turn_id
+
+    runtime._stage_independent_visual_frame(
+        "opening-frame",
+        source="screen",
+        request_id="screen-opening",
+        captured_at=record.started_at,
+    )
+
+    assert record.endpoint_at == record.registered_at, (
+        "本轮自己的封口被当成上一轮残值丢掉了：相等时必须靠身份而不是时间戳"
+    )
+
+
+@pytest.mark.unit
 async def test_a_seal_after_this_record_registered_still_becomes_its_cutoff() -> None:
     """对偶：真正晚于本轮注册的封口照旧要绑上，别把闸门收成"保留副本一律不认"。"""
     runtime = _Runtime()
@@ -10889,6 +10927,7 @@ async def test_a_seal_after_this_record_registered_still_becomes_its_cutoff() ->
     sealed_at = record.registered_at + 1.0
     runtime._asr_turn_endpointed_at = None
     runtime._asr_last_turn_endpointed_at = sealed_at
+    runtime._asr_last_turn_endpointed_key = record.turn_id
 
     runtime._stage_independent_visual_frame(
         "late-frame",
@@ -12186,14 +12225,19 @@ async def test_overlap_credit_survives_a_replay_that_never_activates() -> None:
 
 
 @pytest.mark.unit
-async def test_a_pending_confirmation_keeps_the_lent_onset() -> None:
-    """Reclaiming the onset must not rob a confirmation that is still coming.
+async def test_an_unwoken_redemption_still_seals_and_delivers_the_queued_final() -> None:
+    """重放没唤醒会话时，endpoint 仍要封口——那条 final 已经在路上了。
 
-    When the session is not ready the replay parks in PREWARMING with
-    ``_asr_pending_speech_confirmed`` set and deliberately holds the onset for
-    the confirmation that follows the reconnect. Clearing it there sends that
-    confirmation back to a fresh ``detected_at``, so every frame since the user
-    actually started speaking is excluded and the turn goes text-only.
+    ⚠️ 本用例**取代**了上一轮的 test_a_pending_confirmation_keeps_the_lent_onset，
+    并有意推翻它"留着 onset 等重连后的确认来取"的理由。重连救不回这条 final：
+    _restart_transport() 先把 _asr_session 置 None 再 close，之后 provider 回调
+    全被 is_adopted_candidate() 丢掉。而能走到这里说明老 session 还被认领着，
+    也就是重连还没开始、那条 final 就排在有序 FIFO 里马上到——就地补完确认，
+    让它找得到一个 DRAINING 的回合，才是不丢这句话的唯一办法。
+
+    HEAD 上的真实回显是：state=PREWARMING、credit 仍为 1、sealed_token=None、
+    warm_expiry 与 final watchdog **两个定时器都是 None**，transcripts 只有
+    ["first"]——既丢了整句话，又留下一个没有任何兜底的忙标志。
     """
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")
@@ -12215,16 +12259,83 @@ async def test_a_pending_confirmation_keeps_the_lent_onset() -> None:
     await runtime._handle_independent_asr_final("first", epoch, "openai")
     await runtime._wait_asr_transcript_dispatch_idle()
 
-    # 重放停在 PREWARMING：session 未就绪，确认被挂起、onset 特意留着。
-    async def park_in_prewarming(*_args, **_kwargs):
-        runtime._asr_runtime._asr_pending_speech_confirmed = True
+    component = runtime._asr_runtime
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert component._asr_overlap_completed_turns == 1
+    recorded_onset = component._asr_overlap_completed_onsets[0]
 
-    runtime._asr_runtime._handle_independent_asr_activity = park_in_prewarming
+    # 不打桩：跑真实控制流，只让传输在两条有序回调之间掉线。
+    component._asr_session.is_ready = False
+
     await runtime._handle_independent_asr_endpoint(epoch)
 
-    # credit 没被扣（回合没醒），而借出去的 onset 也**没有**被收回。
-    assert runtime._asr_overlap_completed_turns == 1
-    assert runtime._asr_pending_speech_onset_at is not None
+    # 仍然封口，那条排在后面的 final 才有 DRAINING 可落。
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+    # 恰好兑付一次，不多不少。
+    assert component._asr_overlap_completed_turns == 0
+    assert list(component._asr_overlap_completed_onsets) == []
+    assert component._asr_overlap_completed_token is None
+    # onset 被本轮消费掉，不会被后面某个不相干的回合当成自己的起点。
+    assert component._asr_pending_speech_onset_at is None
+    # 用的是用户当初真实开口的时刻，不是这次重放的时刻。
+    assert component._asr_turn_onset_at == recorded_onset
+    # 忙窗口有定时器兜底（HEAD 上这里是 None）。
+    assert component._asr_final_watchdog_task is not None
+    # 没走 fail-closed 出口：那条会 bump epoch、拆掉 session、把语音判死。
+    # 只有这组断言能区分两条出口——错误出口也会发同名 status。
+    assert runtime._asr_session_epoch == epoch
+    assert runtime._asr_lifecycle is not None
+
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["first", "second"]
+    # 收尾不留忙标志。
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+
+@pytest.mark.unit
+async def test_an_unwoken_redemption_never_parks_in_an_untimed_busy_state() -> None:
+    """不变量：忙标志必须有定时器兜底，不论实现怎么变。
+
+    断的是"不存在 忙态 且 两个定时器都为 None"这个组合，而不是某个具体实现，
+    所以将来换别的补偿方式也依然成立。HEAD 正好落在这个禁止组合里。
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+    component = runtime._asr_runtime
+
+    for event in (
+        SpeechActivityEvent.SPEECH_STARTED,
+        SpeechActivityEvent.SPEECH_RESUMED,
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+    ):
+        await runtime._handle_independent_asr_activity(event, epoch)
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    component._asr_session.is_ready = False
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    state = (
+        runtime._asr_lifecycle.snapshot.state
+        if runtime._asr_lifecycle is not None
+        else None
+    )
+    busy = {
+        VoiceLifecycleState.PREWARMING,
+        VoiceLifecycleState.ACTIVE,
+        VoiceLifecycleState.DRAINING,
+    }
+    assert not (
+        state in busy
+        and component._asr_warm_expiry_task is None
+        and component._asr_final_watchdog_task is None
+    ), "忙标志停在了没有任何定时器兜底的状态上"
 
 
 @pytest.mark.unit

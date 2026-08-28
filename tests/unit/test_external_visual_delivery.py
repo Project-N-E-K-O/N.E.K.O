@@ -795,6 +795,77 @@ async def test_successive_gemini_external_turns_quarantine_the_live_predecessor(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_external_submit_keeps_its_token_and_arms_quarantine():
+    """取消只结束我们的 await，Gemini 可能已经收下这一轮。
+
+    TranscriptDispatcher.invalidate_all() 会把取消沿 worker 一路传到这里，而那时
+    send 早就交给 SDK 了。按"没送成"结算 token，等于对外宣称没有在飞的回合：下一
+    轮 prepare 便不会起隔离，那一轮的迟到 transcript / 响应会串进后继回合。
+
+    所以取消路径必须保住 token 并武装隔离。两个断言缺一不可——只断言"token 还在"
+    的话，一个永久挂住 token、把会话钉成"忙"（is_active_response() 读的就是它）的
+    实现也能过；只断言"隔离起了"则漏掉提前结算。
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    send_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _stalling_send(*_args, **_kwargs):
+        send_started.set()
+        await release.wait()
+
+    client._gemini_send_user_turn = AsyncMock(side_effect=_stalling_send)
+    quarantine_args = []
+
+    async def _fake_quarantine(submit_task, outcome_token):
+        quarantine_args.append((submit_task, outcome_token))
+
+    client._quarantine_gemini_external_submit = _fake_quarantine
+    client._gemini_external_outcome_token = None
+
+    submit = asyncio.create_task(client._submit_external_gemini_turn("被打断的一句"))
+    await asyncio.wait_for(send_started.wait(), timeout=1)
+    token_in_flight = client._gemini_external_outcome_token
+    assert token_in_flight is not None
+
+    submit.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await submit
+
+    # 没有被当成"没送成"结算掉。
+    assert client._gemini_external_outcome_token is token_in_flight
+    # 隔离已武装，且拿到的是这条 submit 与这张 token。
+    assert client._gemini_external_quarantine_task is not None
+    await asyncio.wait_for(
+        asyncio.shield(client._gemini_external_quarantine_task), timeout=1
+    )
+    assert quarantine_args == [(submit, token_in_flight)]
+    release.set()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_synchronous_external_send_failure_still_settles_immediately():
+    """对偶：provider 当场拒收就是真的没送成，token 要立刻结算。
+
+    否则会话被一张永远等不到终结事件的 token 钉成"忙"，她再也不会主动开口。
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._gemini_send_user_turn = AsyncMock(
+        side_effect=RuntimeError("provider refused")
+    )
+    client._quarantine_gemini_external_submit = AsyncMock()
+    client._gemini_external_outcome_token = None
+
+    with pytest.raises(RuntimeError, match="provider refused"):
+        await client._submit_external_gemini_turn("发不出去的一句")
+
+    assert client._gemini_external_outcome_token is None
+    client._quarantine_gemini_external_submit.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_first_gemini_external_turn_does_not_pay_for_quarantine():
     """No live predecessor means no connection retirement."""
     client = _make_client("gemini", "gemini-2.0-flash-live-001")
