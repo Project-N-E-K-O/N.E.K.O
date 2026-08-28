@@ -3258,7 +3258,47 @@ def test_runtime_root_counts_an_interrupted_avatar_transaction_as_content(tmp_pa
 
     assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is True
 
-    # 判据不能放宽成「任何点开头的都算内容」：同步客户端留下的噪声仍然是噪声。
+    # 判据不能放宽成「任何点开头的都算内容」：放宽了会把无关隐藏条目当成用户
+    # 内容，从而拦下本该发生的迁移。名字必须逐字命中该模块的事务命名。
     shutil.rmtree(backup)
-    (avatar_tools / ".DS_Store").write_text("macOS metadata", encoding="utf-8")
-    assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is False
+    for noise in (".DS_Store", ".cache.backup", ".local-not-a-uuid.updating"):
+        entry = avatar_tools / noise
+        entry.mkdir()
+        (entry / "record.json").write_text('{"recordVersion":2}', encoding="utf-8")
+        assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is False, noise
+        shutil.rmtree(entry)
+
+
+@pytest.mark.unit
+def test_transactional_entry_pattern_tracks_the_avatar_tool_store_naming():
+    """Both sides must agree letter for letter, or a sole surviving copy is deleted."""
+    from utils.avatar_tool_store import (
+        LOCAL_AVATAR_TOOL_BACKUP_PATTERN,
+        LOCAL_AVATAR_TOOL_DELETING_PATTERN,
+        LOCAL_AVATAR_TOOL_UPDATE_PATTERN,
+        LOCAL_AVATAR_TOOL_UPLOAD_PATTERN,
+    )
+    from utils.cloudsave_runtime._shared import TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS
+
+    pattern = TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS["avatar_tools"]
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+
+    # 被打断的更新：这两个可能是仅存副本，收紧到认不出就是静默删除。
+    for suffix, owner in (
+        (".backup", LOCAL_AVATAR_TOOL_BACKUP_PATTERN),
+        (".updating", LOCAL_AVATAR_TOOL_UPDATE_PATTERN),
+    ):
+        name = f".{tool_id}{suffix}"
+        assert owner.fullmatch(name) is not None, (
+            "这个用例的样本名已经和 store 的命名脱节，先修样本再看结论"
+        )
+        assert pattern.fullmatch(name) is not None, suffix
+
+    # 创建暂存和删除暂存都不是仅存副本：用户要么还没创建成功，要么就是要删掉它。
+    for suffix, owner in (
+        (".uploading", LOCAL_AVATAR_TOOL_UPLOAD_PATTERN),
+        (".deleting", LOCAL_AVATAR_TOOL_DELETING_PATTERN),
+    ):
+        name = f".{tool_id}{suffix}"
+        assert owner.fullmatch(name) is not None, "样本名和 store 的命名脱节"
+        assert pattern.fullmatch(name) is None, suffix
