@@ -2342,3 +2342,65 @@ def test_recovery_removes_a_provably_invalid_backup_so_it_stops_eating_the_quota
         assert root_key not in avatar_tool_store._RECOVERY_PENDING_ROOTS
     finally:
         avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+@pytest.mark.unit
+def test_a_condemned_tool_stops_eating_the_storage_quota(tmp_path, monkeypatch):
+    """A proven-corrupt tool has no UI delete path, so it must not hold quota."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Damaged",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    root_key = store._root_key()
+    occupied = store._current_storage_bytes()
+    assert occupied > 0
+
+    (store.root / tool["id"] / "default.png").write_bytes(b"truncated")
+    try:
+        with pytest.raises(AvatarToolStoreError):
+            store.get_detail(tool["id"])
+        assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
+        # 用户看不到它、也进不了它的编辑页，所以它不能继续扣着配额。
+        assert store._current_storage_bytes() == 0
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+@pytest.mark.unit
+def test_recovery_quarantines_a_condemned_final_without_deleting_it(tmp_path, monkeypatch):
+    """Closure violations count as condemned; the user's files must survive."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Damaged",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    final = store.root / tool["id"]
+    # 中断更新的痕迹，让恢复会走到这个道具。
+    (store.root / f".{tool['id']}.updating").mkdir()
+    # 闭包被破坏：用户往目录里放了一个额外文件。
+    (final / "notes.txt").write_bytes(b"something the user dropped in")
+
+    root_key = store._root_key()
+    try:
+        store.initialize()
+        assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
+        # 关键：目录和用户放进去的文件都还在，恢复不替用户做删除决定。
+        assert final.is_dir()
+        assert (final / "notes.txt").is_file()
+        assert (final / "default.png").is_file()
+        # 但它不再占配额。
+        assert store._current_storage_bytes() == 0
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)

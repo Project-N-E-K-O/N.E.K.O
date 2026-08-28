@@ -427,6 +427,7 @@ class AvatarToolStore:
             final = self.root / tool_id
             updating = self.root / f".{tool_id}.updating"
             backup = self.root / f".{tool_id}.backup"
+            final_condemned = False
             if final.is_dir() and not final.is_symlink():
                 try:
                     self._read_record_from_directory(
@@ -444,6 +445,10 @@ class AvatarToolStore:
                         )
                         complete = False
                         continue
+                    # 被证伪的 final 不删 —— 「闭包不符」也算证伪，可能只是用户往
+                    # 目录里放了别的文件，删掉会连带丢掉他的原图。登记隔离即可：
+                    # 它本来就进不了公开目录，隔离后也不再占名额和存储预算。
+                    final_condemned = True
                 except OSError as exc:
                     logger.warning(
                         "Deferring avatar tool recovery for %s: %s", tool_id, exc
@@ -454,6 +459,8 @@ class AvatarToolStore:
                     remove_owned_directory(updating)
                     remove_owned_directory(backup)
                     continue
+            if final_condemned:
+                self.quarantine(tool_id)
             backup_condemned = False
             if backup.is_dir() and not backup.is_symlink():
                 try:
@@ -942,7 +949,12 @@ class AvatarToolStore:
 
     def _current_storage_bytes(self) -> int:
         total = 0
+        quarantined = _QUARANTINED_TOOL_IDS.get(self._root_key(), frozenset())
         for directory in self.root.iterdir():
+            if directory.name in quarantined:
+                # 被证伪的道具在库里看不到、编辑页也打不开，用户没有任何入口删掉
+                # 它。再让它占着配额，等于把剩余空间永久扣走。
+                continue
             is_published = is_local_avatar_tool_id(directory.name)
             is_pending_delete = LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(directory.name) is not None
             is_update_backup = LOCAL_AVATAR_TOOL_BACKUP_PATTERN.fullmatch(directory.name) is not None
