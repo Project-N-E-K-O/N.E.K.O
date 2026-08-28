@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -726,5 +727,336 @@ async def test_refresh_registry_registers_duplicate_declared_plugin_ids_with_run
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
             module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_user_source_shadows_builtin_without_suffix_and_builtin_recovers_after_uninstall(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    builtin_root = tmp_path / "builtin" / "plugins"
+    user_root = tmp_path / "user" / "plugins"
+    (tmp_path / "shadow_entry.py").write_text(
+        "class Plugin:\n    pass\n",
+        encoding="utf-8",
+    )
+
+    def write_source(root: Path, version: str) -> Path:
+        plugin_dir = root / "study_companion"
+        plugin_dir.mkdir(parents=True)
+        config = plugin_dir / "plugin.toml"
+        config.write_text(
+            "\n".join(
+                [
+                    "[plugin]",
+                    "id = 'study_companion'",
+                    "name = 'Study Companion'",
+                    "type = 'plugin'",
+                    "entry = 'shadow_entry:Plugin'",
+                    f"version = '{version}'",
+                    "",
+                    "[plugin_runtime]",
+                    "enabled = true",
+                    "auto_start = false",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return config
+
+    builtin_config = write_source(builtin_root, "0.1.5")
+    user_config = write_source(user_root, "0.1.6")
+    hidden_staging = user_root / ".neko_override_staging_test"
+    shutil.copytree(user_config.parent, hidden_staging)
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        monkeypatch.setattr(module, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (user_root, builtin_root))
+
+        service = module.PluginRegistryService()
+        installed = await service.refresh_registry()
+
+        assert installed["success"] is True
+        assert installed["shadowed"] == [
+            {
+                "plugin_id": "study_companion",
+                "config_path": str(builtin_config),
+                "source": "builtin",
+            }
+        ]
+        with module.state.acquire_plugins_read_lock():
+            market_meta = dict(module.state.plugins["study_companion"])
+            assert "study_companion_1" not in module.state.plugins
+        assert market_meta["version"] == "0.1.6"
+        assert market_meta["effective_source"] == "user"
+        assert market_meta["builtin_version"] == "0.1.5"
+        assert Path(market_meta["config_path"]) == user_config
+
+        shutil.rmtree(user_config.parent)
+        restored = await service.refresh_registry()
+
+        assert restored["success"] is True
+        with module.state.acquire_plugins_read_lock():
+            builtin_meta = dict(module.state.plugins["study_companion"])
+            assert "study_companion_1" not in module.state.plugins
+        assert builtin_meta["version"] == "0.1.5"
+        assert builtin_meta["effective_source"] == "builtin"
+        assert Path(builtin_meta["config_path"]) == builtin_config
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_user_conflict_keeps_builtin_declared_id_and_runtime_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_id = "demo"
+    builtin_root = tmp_path / "builtin" / "plugins"
+    user_root = tmp_path / "user" / "plugins"
+    builtin_config = _write_package_plugin_fixture(builtin_root, plugin_id)
+    user_config = _write_package_plugin_fixture(
+        user_root,
+        "old_name",
+        plugin_id=plugin_id,
+    )
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        monkeypatch.setattr(module, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (user_root, builtin_root))
+
+        result = await module.PluginRegistryService().refresh_registry()
+        _contexts, contexts_by_id = module._collect_plugin_contexts_from_roots_sync(
+            (user_root, builtin_root),
+        )
+
+        assert result["success"] is True, result
+        assert result["shadowed"] == []
+        with module.state.acquire_plugins_read_lock():
+            builtin_meta = dict(module.state.plugins[plugin_id])
+            legacy_meta = dict(module.state.plugins[f"{plugin_id}_1"])
+        assert Path(builtin_meta["config_path"]) == builtin_config
+        assert builtin_meta["effective_source"] == "builtin"
+        assert Path(legacy_meta["config_path"]) == user_config
+        assert legacy_meta["effective_source"] == "user"
+        assert contexts_by_id[plugin_id].toml_path == builtin_config
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_user_conflict_cannot_replace_canonical_user_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_id = "demo"
+    builtin_root = tmp_path / "builtin" / "plugins"
+    user_root = tmp_path / "user" / "plugins"
+    builtin_config = _write_package_plugin_fixture(builtin_root, plugin_id)
+    user_config = _write_package_plugin_fixture(user_root, plugin_id)
+    legacy_config = _write_package_plugin_fixture(
+        user_root,
+        "old_name",
+        plugin_id=plugin_id,
+    )
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        monkeypatch.setattr(module, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (user_root, builtin_root))
+
+        result = await module.PluginRegistryService().refresh_registry()
+
+        assert result["success"] is True, result
+        assert result["shadowed"] == [
+            {
+                "plugin_id": plugin_id,
+                "config_path": str(builtin_config),
+                "source": "builtin",
+            }
+        ]
+        with module.state.acquire_plugins_read_lock():
+            effective = dict(module.state.plugins[plugin_id])
+            legacy = dict(module.state.plugins[f"{plugin_id}_1"])
+        assert Path(effective["config_path"]) == user_config
+        assert effective["effective_source"] == "user"
+        assert Path(legacy["config_path"]) == legacy_config
+        assert legacy["effective_source"] == "user"
+        assert "shadowed_builtin_path" not in legacy
+        assert "builtin_version" not in legacy
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_canonical_user_override_precedes_earlier_legacy_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_id = "demo"
+    builtin_root = tmp_path / "builtin" / "plugins"
+    user_root = tmp_path / "user" / "plugins"
+    builtin_config = _write_package_plugin_fixture(builtin_root, plugin_id)
+    legacy_config = _write_package_plugin_fixture(
+        user_root,
+        "aaa_legacy",
+        plugin_id=plugin_id,
+    )
+    user_config = _write_package_plugin_fixture(user_root, plugin_id)
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        monkeypatch.setattr(module, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (user_root, builtin_root))
+
+        result = await module.PluginRegistryService().refresh_registry()
+        _contexts, contexts_by_id = module._collect_plugin_contexts_from_roots_sync(
+            (user_root, builtin_root),
+        )
+
+        assert result["success"] is True, result
+        assert result["shadowed"] == [
+            {
+                "plugin_id": plugin_id,
+                "config_path": str(builtin_config),
+                "source": "builtin",
+            }
+        ]
+        with module.state.acquire_plugins_read_lock():
+            effective = dict(module.state.plugins[plugin_id])
+            legacy = dict(module.state.plugins[f"{plugin_id}_1"])
+        assert Path(effective["config_path"]) == user_config
+        assert effective["effective_source"] == "user"
+        assert Path(legacy["config_path"]) == legacy_config
+        assert legacy["effective_source"] == "user"
+        assert contexts_by_id[plugin_id].toml_path == user_config
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alias_running", [True, False])
+async def test_override_refresh_preserves_only_running_config_path_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    alias_running: bool,
+) -> None:
+    plugin_id = "study_companion"
+    alias_id = f"{plugin_id}_1"
+    builtin_root = tmp_path / "builtin" / "plugins"
+    user_root = tmp_path / "user" / "plugins"
+    (tmp_path / "alias_entry.py").write_text(
+        "class Plugin:\n    pass\n",
+        encoding="utf-8",
+    )
+
+    def write_source(root: Path, version: str) -> Path:
+        plugin_dir = root / plugin_id
+        plugin_dir.mkdir(parents=True)
+        config_path = plugin_dir / "plugin.toml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[plugin]",
+                    f"id = '{plugin_id}'",
+                    "name = 'Study Companion'",
+                    "type = 'plugin'",
+                    "entry = 'alias_entry:Plugin'",
+                    f"version = '{version}'",
+                    "",
+                    "[plugin_runtime]",
+                    "enabled = true",
+                    "auto_start = false",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return config_path
+
+    builtin_config = write_source(builtin_root, "0.1.5")
+    user_config = write_source(user_root, "0.1.6")
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins[plugin_id] = {
+                "id": plugin_id,
+                "name": "Builtin Plugin",
+                "config_path": str(builtin_config.resolve()),
+                "runtime_enabled": True,
+            }
+            module.state.plugins[alias_id] = {
+                "id": alias_id,
+                "name": "Legacy Alias",
+                "config_path": str(user_config.resolve()),
+                "runtime_enabled": True,
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            if alias_running:
+                module.state.plugin_hosts[alias_id] = _AliveHost()
+        stale_snapshot = module.state.get_plugins_snapshot_cached(force=True)
+        assert alias_id in stale_snapshot
+
+        monkeypatch.setattr(module, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (user_root, builtin_root))
+        result = await module.PluginRegistryService().refresh_registry()
+
+        assert result["success"] is True, result
+        assert result["shadowed"] == [
+            {
+                "plugin_id": plugin_id,
+                "config_path": str(builtin_config),
+                "source": "builtin",
+            }
+        ]
+        fresh_snapshot = module.state.get_plugins_snapshot_cached()
+        canonical = fresh_snapshot[plugin_id]
+        assert canonical["version"] == "0.1.6"
+        assert canonical["effective_source"] == "user"
+        assert Path(canonical["config_path"]) == user_config
+        if alias_running:
+            alias_meta = fresh_snapshot[alias_id]
+            assert alias_meta["name"] == "Legacy Alias"
+            assert alias_meta["runtime_source_missing"] is True
+        else:
+            assert alias_id not in fresh_snapshot
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup

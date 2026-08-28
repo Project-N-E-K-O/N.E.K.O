@@ -4328,10 +4328,9 @@ async def test_reflect_endpoint_uses_durable_character_locale(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_plugins_without_session_locale_omit_process_fallback(monkeypatch):
+async def test_wechat_plugin_without_session_locale_omits_process_fallback(monkeypatch):
     import httpx
 
-    from plugin.plugins.bilibili_dm import BiliDMPlugin
     from plugin.plugins.wechat_integration import WechatIntegrationPlugin
     from utils import language_utils
 
@@ -4352,16 +4351,6 @@ async def test_plugins_without_session_locale_omit_process_fallback(monkeypatch)
             calls.append((url, kwargs))
             return Response()
 
-    class Logger:
-        def info(self, *_args):
-            return None
-
-        def warning(self, *_args):
-            return None
-
-    class Harness:
-        logger = Logger()
-
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: Client())
     monkeypatch.setattr(language_utils, "get_global_language", lambda: "zh")
     monkeypatch.setattr(
@@ -4370,16 +4359,6 @@ async def test_plugins_without_session_locale_omit_process_fallback(monkeypatch)
         lambda: "zh-TW",
     )
 
-    await BiliDMPlugin._build_session_instructions(
-        Harness(),
-        "Neko",
-        "Master",
-        "character",
-        {},
-        "admin",
-        "123",
-        "Master",
-    )
     assert await WechatIntegrationPlugin._fetch_memory_context("Neko") == "memory"
 
     assert all("params" not in kwargs for _url, kwargs in calls)

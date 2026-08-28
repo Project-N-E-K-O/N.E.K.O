@@ -210,6 +210,12 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     vi.useRealTimers()
   })
 
+  it('preserves native modal dialogs for static plugin surfaces', async () => {
+    const frame = await mountFrame()
+
+    expect(frame.iframe()?.getAttribute('sandbox')?.split(/\s+/)).toContain('allow-modals')
+  })
+
   it('retries an automatic PLUGIN_NOT_RUNNING response until the host becomes ready', async () => {
     apiMocks.callPluginHostedSurfaceAction
       .mockRejectedValueOnce(makeNotRunningError())

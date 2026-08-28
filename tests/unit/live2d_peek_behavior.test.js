@@ -163,6 +163,8 @@ function createHarness({
         controls,
         getLive2DPeekViewport: context.getLive2DPeekViewport,
         getLive2DPeekEdgeContact: context.getLive2DPeekEdgeContact,
+        getLive2DPeekRotationDegrees: context.getLive2DPeekRotationDegrees,
+        getLive2DPeekSideRotationMagnitude: context.getLive2DPeekSideRotationMagnitude,
         refreshLive2DPeekDisplayContext: context.refreshLive2DPeekDisplayContext,
         validateLive2DPeekEdgeContact: context.validateLive2DPeekEdgeContact,
         settleLive2DBaseAtEdgeContact: context.settleLive2DBaseAtEdgeContact,
@@ -295,6 +297,13 @@ function flushNextFrame(harness, time = 400) {
     const callback = harness.rafQueue.shift();
     assert.equal(typeof callback, 'function');
     callback(time);
+}
+
+function assertClose(actual, expected, message, tolerance = 1e-6) {
+    assert.ok(
+        Math.abs(actual - expected) <= tolerance,
+        `${message}: expected ${expected}, got ${actual}`
+    );
 }
 
 async function waitForQueuedFrame(harness, attempts = 10) {
@@ -1275,22 +1284,30 @@ test('locked edge validation cannot reclassify an oversize model to the opposite
     );
 });
 
-test('restoring a peek transform keeps the grabbed model-local point under the pointer', () => {
+test('restoring any dynamic side-peek transform keeps the grabbed model-local point under the pointer', () => {
     const harness = createHarness();
-    const model = createRotatingModel({ x: -180, y: 100, width: 300, height: 600 });
-    model.rotation = Math.PI / 3;
-    model.scale.x = -1;
-    const pointer = model.toGlobal({ x: 70, y: 90 });
-    const localGrab = harness.getLive2DModelLocalGrabPoint(model, pointer);
+    for (const degrees of [55, 41.5, 28, -55, -41.5, -28]) {
+        const model = createRotatingModel({ x: -180, y: 100, width: 300, height: 600 });
+        model.rotation = degrees * Math.PI / 180;
+        model.scale.x = degrees > 0 ? 1 : -1;
+        const pointer = model.toGlobal({ x: 70, y: 90 });
+        const localGrab = harness.getLive2DModelLocalGrabPoint(model, pointer);
 
-    model.x = 40;
-    model.y = 120;
-    model.rotation = 0;
-    model.scale.x = 1;
-    assert.equal(harness.placeLive2DGrabPointAtPointer(model, localGrab, pointer), true);
-    const restored = model.toGlobal(localGrab);
-    assert.ok(Math.abs(restored.x - pointer.x) < 1e-9, `x mismatch: ${restored.x} vs ${pointer.x}`);
-    assert.ok(Math.abs(restored.y - pointer.y) < 1e-9, `y mismatch: ${restored.y} vs ${pointer.y}`);
+        model.x = 40;
+        model.y = 120;
+        model.rotation = 0;
+        model.scale.x = 1;
+        assert.equal(harness.placeLive2DGrabPointAtPointer(model, localGrab, pointer), true);
+        const restored = model.toGlobal(localGrab);
+        assert.ok(
+            Math.abs(restored.x - pointer.x) < 1e-9,
+            `${degrees}deg x mismatch: ${restored.x} vs ${pointer.x}`
+        );
+        assert.ok(
+            Math.abs(restored.y - pointer.y) < 1e-9,
+            `${degrees}deg y mismatch: ${restored.y} vs ${pointer.y}`
+        );
+    }
 });
 
 test('edge peek enter naturally moves model offscreen and reports visible bounds', async () => {
@@ -1340,10 +1357,103 @@ test('restore anchor stores semantic display identity without absolute coordinat
     assert.equal('screenY' in anchor.display, false);
 });
 
+test('goodbye capture and semantic restore preserve a precise side head pose', async () => {
+    const harness = createHarness({ reducedMotion: true });
+    const manager = new harness.Live2DManager();
+    const ratio = 0.65;
+    const model = createRotatingModel({ x: 0, y: ratio * 800 - 110 });
+    manager.currentModel = model;
+    manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+    manager.getHeadDetectionGeometryInfo = () => {
+        const anchor = model.transformPoint(150, 110);
+        return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+    };
+    manager.getBodyScreenRectInfo = () => {
+        const waist = model.transformPoint(150, 330);
+        return { rect: { centerX: waist.x, bottom: waist.y } };
+    };
+    harness.window.live2dManager = manager;
+    const workArea = { left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800 };
+
+    assert.equal(await manager._tryApplyLive2DPeek(model, {
+        edge: 'left',
+        side: 'left',
+        verticalEdge: '',
+        geometry: model.getBounds(),
+        workArea
+    }), true);
+    const originalRotation = manager._live2DPeekState.peekRotation;
+    const goodbyeEvent = { type: 'live2d-goodbye-click', detail: {} };
+    harness.window.dispatchEvent(goodbyeEvent);
+    const anchor = goodbyeEvent.detail.edgeAnchor;
+
+    assert.equal(anchor.kind, 'live2d-edge-peek');
+    assert.equal(anchor.edge, 'left');
+    assertClose(anchor.headAnchorRatio, ratio, 'captured head ratio');
+    assert.equal(manager.isLive2DPeekActive(), false);
+
+    model.x = 350;
+    model.y = 100;
+    assert.equal(await harness.window.nekoLive2DPeek.restoreAnchor(anchor), true);
+    assertClose(manager._live2DPeekState.headAnchorRatio, ratio, 'restored head ratio');
+    assertClose(manager._live2DPeekState.peekRotation, originalRotation, 'restored rotation');
+    assertClose(manager.getHeadScreenAnchor().y, ratio * workArea.height, 'restored head y', 0.001);
+});
+
+test('legacy and invalid side restore anchors safely recompute a finite current pose', async () => {
+    const invalidRatios = [undefined, null, '', Number.NaN, Number.POSITIVE_INFINITY];
+    for (const headAnchorRatio of invalidRatios) {
+        const harness = createHarness({ reducedMotion: true });
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: 350, y: 100 });
+        manager.currentModel = model;
+        manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+        manager.getHeadDetectionGeometryInfo = () => {
+            const anchor = model.transformPoint(150, 110);
+            return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+        };
+        manager.getBodyScreenRectInfo = () => {
+            const waist = model.transformPoint(150, 330);
+            return { rect: { centerX: waist.x, bottom: waist.y } };
+        };
+        harness.window.live2dManager = manager;
+        const anchor = {
+            kind: 'live2d-edge-peek',
+            edge: 'left',
+            side: 'left',
+            edgeAnchorRatio: 0.5,
+            facing: 'inward'
+        };
+        if (headAnchorRatio !== undefined) anchor.headAnchorRatio = headAnchorRatio;
+
+        assert.equal(await harness.window.nekoLive2DPeek.restoreAnchor(anchor), true);
+        const state = manager._live2DPeekState;
+        assert.ok(Number.isFinite(model.x) && Number.isFinite(model.y) && Number.isFinite(model.rotation));
+        assert.ok(
+            Number.isFinite(state.headAnchorRatio) && state.headAnchorRatio >= 0 && state.headAnchorRatio <= 1,
+            `invalid ${String(headAnchorRatio)} must recompute a safe ratio`
+        );
+        assert.equal(state.headAnchored, true);
+        assert.equal(state.waistAnchored, false);
+        const magnitude = Math.abs(state.peekRotation * 180 / Math.PI);
+        assert.ok(magnitude >= 28 && magnitude <= 55, `invalid ${String(headAnchorRatio)} pose must stay bounded`);
+    }
+});
+
 test('detail-less goodbye events preserve the edge anchor for later listeners', async () => {
     const harness = createHarness();
     const manager = new harness.Live2DManager();
-    const model = createModel({ x: 0 });
+    const ratio = 0.35;
+    const model = createRotatingModel({ x: 0, y: ratio * 800 - 110 });
+    manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+    manager.getHeadDetectionGeometryInfo = () => {
+        const anchor = model.transformPoint(150, 110);
+        return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+    };
+    manager.getBodyScreenRectInfo = () => {
+        const waist = model.transformPoint(150, 330);
+        return { rect: { centerX: waist.x, bottom: waist.y } };
+    };
     harness.window.live2dManager = manager;
 
     const enterPromise = manager._tryApplyLive2DPeek(model);
@@ -1359,37 +1469,253 @@ test('detail-less goodbye events preserve the edge anchor for later listeners', 
 
     assert.equal(receivedAnchor.kind, 'live2d-edge-peek');
     assert.equal(receivedAnchor.edge, 'left');
+    assertClose(receivedAnchor.headAnchorRatio, ratio, 'detail-less goodbye head ratio');
     assert.equal(manager.isLive2DPeekActive(), false);
 });
 
-test('head anchor keeps the face visible when a tail widens the model bounds', async () => {
+test('side rotation follows the locked smoothstep curve continuously', () => {
+    const harness = createHarness();
+    assert.equal(typeof harness.getLive2DPeekSideRotationMagnitude, 'function');
+    const cases = [
+        { ratio: 0, degrees: 55 },
+        { ratio: 0.20, degrees: 55 },
+        { ratio: 0.35, degrees: 50.78125 },
+        { ratio: 0.50, degrees: 41.5 },
+        { ratio: 0.65, degrees: 32.21875 },
+        { ratio: 0.80, degrees: 28 },
+        { ratio: 1, degrees: 28 }
+    ];
+
+    for (const item of cases) {
+        assertClose(
+            harness.getLive2DPeekSideRotationMagnitude(item.ratio),
+            item.degrees,
+            `ratio ${item.ratio}`
+        );
+    }
+
+    for (const invalidRatio of [undefined, null, '', Number.NaN, Number.POSITIVE_INFINITY]) {
+        assert.equal(
+            harness.getLive2DPeekRotationDegrees({ side: 'left', verticalEdge: '' }, invalidRatio),
+            60,
+            `left must retain the legacy fallback for ${String(invalidRatio)}`
+        );
+        assert.equal(
+            harness.getLive2DPeekRotationDegrees({ side: 'right', verticalEdge: '' }, invalidRatio),
+            -60,
+            `right must retain the legacy fallback for ${String(invalidRatio)}`
+        );
+    }
+    assert.equal(
+        harness.getLive2DPeekRotationDegrees({ side: 'left', verticalEdge: '' }, 0),
+        55,
+        'numeric zero is valid and clamps to the upper-pose endpoint'
+    );
+
+    let previous = harness.getLive2DPeekSideRotationMagnitude(0);
+    for (let step = 1; step <= 100; step += 1) {
+        const next = harness.getLive2DPeekSideRotationMagnitude(step / 100);
+        assert.ok(next <= previous, `curve must be monotonic at ratio ${step / 100}`);
+        assert.ok(previous - next < 1, `curve must not jump at ratio ${step / 100}`);
+        previous = next;
+    }
+});
+
+test('precise head anchors drive mirrored upper middle and lower side poses', async () => {
+    const expectedMagnitude = (ratio) => {
+        const t = Math.min(1, Math.max(0, (ratio - 0.20) / 0.60));
+        const smooth = t * t * (3 - 2 * t);
+        return 55 + (28 - 55) * smooth;
+    };
+    const cases = [
+        { name: 'left-upper', side: 'left', ratio: 0.20 },
+        { name: 'left-middle', side: 'left', ratio: 0.50 },
+        { name: 'left-lower', side: 'left', ratio: 0.80 },
+        { name: 'right-upper', side: 'right', ratio: 0.20 },
+        { name: 'right-middle', side: 'right', ratio: 0.50 },
+        { name: 'right-lower', side: 'right', ratio: 0.80 }
+    ];
+
+    for (const item of cases) {
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({
+            x: item.side === 'left' ? 0 : 700,
+            y: item.ratio * 800 - 110,
+            scaleX: 1,
+            width: 300,
+            height: 600
+        });
+        manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+        manager.getHeadDetectionGeometryInfo = () => {
+            const anchor = model.transformPoint(150, 110);
+            return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+        };
+        manager.getBodyScreenRectInfo = () => {
+            const waist = model.transformPoint(150, 330);
+            return { rect: { centerX: waist.x, bottom: waist.y } };
+        };
+        const workArea = { left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800 };
+        const enterPromise = manager._tryApplyLive2DPeek(model, {
+            edge: item.side,
+            side: item.side,
+            verticalEdge: '',
+            geometry: model.getBounds(),
+            workArea
+        });
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true, `${item.name} should enter`);
+
+        const state = manager._live2DPeekState;
+        const expectedDegrees = expectedMagnitude(item.ratio) * (item.side === 'left' ? 1 : -1);
+        assertClose(state.peekRotation * 180 / Math.PI, expectedDegrees, `${item.name} rotation`);
+        assertClose(state.headAnchorRatio, item.ratio, `${item.name} stored head ratio`);
+        assert.equal(state.headAnchored, true, `${item.name} should use the precise head anchor`);
+        assert.equal(state.headAnchorSource, 'manager', `${item.name} should reject bounds fallback as precise`);
+        assert.equal(state.waistAnchored, false, `${item.name} must not use the waist anchor`);
+
+        const head = manager.getHeadScreenAnchor();
+        const waist = manager.getBodyScreenRectInfo().rect;
+        const headXRange = item.side === 'left' ? [36, 84] : [916, 964];
+        assert.ok(
+            head.x >= headXRange[0] && head.x <= headXRange[1],
+            `${item.name} head x must remain visible, got ${head.x}`
+        );
+        assertClose(head.y, item.ratio * workArea.height, `${item.name} head y`, 0.001);
+        assert.ok(
+            item.side === 'left' ? waist.centerX <= 0 : waist.centerX >= 1000,
+            `${item.name} waist should remain outside when head visibility allows it, got ${waist.centerX}`
+        );
+        assert.ok(state.visibleBounds && state.visibleBounds.width > 0 && state.visibleBounds.height > 0);
+
+        model.x = state.hiddenX;
+        model.y = state.hiddenY;
+        model.rotation = state.peekRotation;
+        model.scale.x = state.peekScaleX;
+        const hiddenBounds = model.getBounds();
+        assert.ok(
+            item.side === 'left' ? hiddenBounds.right < 0 : hiddenBounds.left > 1000,
+            `${item.name} hidden pose must be fully outside the viewport`
+        );
+    }
+});
+
+test('ordinary side peek keeps the legacy waist fallback without a precise manager head anchor', async () => {
+    for (const side of ['left', 'right']) {
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: side === 'left' ? 0 : 700, y: 120 });
+        manager.getBodyScreenRectInfo = () => {
+            const waist = model.transformPoint(150, 330);
+            return { rect: { centerX: waist.x, bottom: waist.y } };
+        };
+        const enterPromise = manager._tryApplyLive2DPeek(model);
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true);
+
+        const state = manager._live2DPeekState;
+        assert.equal(state.headAnchorSource, 'bounds-fallback');
+        assert.equal(state.headAnchored, false);
+        assert.equal(state.waistAnchored, true);
+        assert.equal(state.headAnchorRatio, null);
+        assertClose(
+            Math.abs(state.peekRotation * 180 / Math.PI),
+            60,
+            `${side} fallback rotation`
+        );
+        assertClose(
+            manager.getBodyScreenRectInfo().rect.centerX,
+            side === 'left' ? -8 : 1008,
+            `${side} fallback waist x`,
+            0.001
+        );
+    }
+});
+
+test('ordinary side peek rejects an unreliable detected head and keeps the waist fallback', async () => {
     const harness = createHarness();
     const manager = new harness.Live2DManager();
-    const model = createModel({ x: 0, y: 120, width: 700, height: 600 });
-    const transformedPoint = (localX, localY) => ({
-        x: model.x + localX * Math.cos(model.rotation) - localY * Math.sin(model.rotation),
-        y: model.y + localX * Math.sin(model.rotation) + localY * Math.cos(model.rotation)
-    });
-    manager.getHeadScreenAnchor = () => transformedPoint(140, 110);
+    const model = createRotatingModel({ x: 0, y: 120 });
+    manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+    manager.getHeadDetectionGeometryInfo = () => {
+        const anchor = model.transformPoint(150, 110);
+        return { reliableHeadRect: false, headAnchor: anchor, rawHeadAnchor: anchor };
+    };
     manager.getBodyScreenRectInfo = () => {
-        const waist = transformedPoint(140, 330);
+        const waist = model.transformPoint(150, 330);
         return { rect: { centerX: waist.x, bottom: waist.y } };
     };
 
     const enterPromise = manager._tryApplyLive2DPeek(model);
     flushNextFrame(harness);
     assert.equal(await enterPromise, true);
+    assert.equal(manager._live2DPeekState.headAnchored, false);
+    assert.equal(manager._live2DPeekState.waistAnchored, true);
+    assert.equal(manager._live2DPeekState.headAnchorRatio, null);
+    assertClose(manager._live2DPeekState.peekRotation * 180 / Math.PI, 60, 'unreliable head fallback');
+    assertClose(manager.getBodyScreenRectInfo().rect.centerX, -8, 'unreliable head waist x', 0.001);
+});
+
+test('side head visibility wins when the waist cannot be pushed outside simultaneously', async () => {
+    const harness = createHarness();
+    const manager = new harness.Live2DManager();
+    const model = createRotatingModel({ x: 0, y: 290 });
+    manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+    manager.getHeadDetectionGeometryInfo = () => {
+        const anchor = model.transformPoint(150, 110);
+        return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+    };
+    manager.getBodyScreenRectInfo = () => {
+        const nearWaist = model.transformPoint(150, 140);
+        return { rect: { centerX: nearWaist.x, bottom: nearWaist.y } };
+    };
+
+    const enterPromise = manager._tryApplyLive2DPeek(model, {
+        edge: 'left',
+        side: 'left',
+        verticalEdge: '',
+        geometry: model.getBounds(),
+        workArea: { left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800 }
+    });
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
 
     const head = manager.getHeadScreenAnchor();
-    assert.equal(manager._live2DPeekState.side, 'left');
+    const waist = manager.getBodyScreenRectInfo().rect;
+    assert.ok(head.x >= 36, `head must retain the 36px minimum inset, got ${head.x}`);
+    assert.ok(waist.centerX > 0, 'the waist may remain visible when moving it out would crop the head');
     assert.equal(manager._live2DPeekState.headAnchored, true);
-    assert.ok(head.x > 20 && head.x < 260, `head should lean inside the edge, got ${head.x}`);
-    assert.equal(manager._live2DPeekState.waistAnchored, true);
-    assert.ok(Math.abs(manager.getBodyScreenRectInfo().rect.centerX + 8) < 0.001);
-    assert.ok(Math.abs(manager.getBodyScreenRectInfo().rect.bottom - 450) < 0.001);
-    const lowerBody = transformedPoint(140, 600);
-    assert.ok(lowerBody.x < 0, 'lower body should remain outside the side edge');
-    assert.ok(model.x > -500, 'placement must not expose only the tail-side edge of the bounds');
+    assert.equal(manager._live2DPeekState.waistAnchored, false);
+});
+
+test('side head ratio is relative to a non-zero work-area top', async () => {
+    const harness = createHarness({ innerHeight: 800 });
+    const manager = new harness.Live2DManager();
+    const model = createRotatingModel({ x: 0, y: 290 });
+    manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+    manager.getHeadDetectionGeometryInfo = () => {
+        const anchor = model.transformPoint(150, 110);
+        return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+    };
+    manager.getBodyScreenRectInfo = () => {
+        const waist = model.transformPoint(150, 330);
+        return { rect: { centerX: waist.x, bottom: waist.y } };
+    };
+    const workArea = { left: 0, top: 28, right: 1000, bottom: 772, width: 1000, height: 744 };
+
+    const enterPromise = manager._tryApplyLive2DPeek(model, {
+        edge: 'left',
+        side: 'left',
+        verticalEdge: '',
+        geometry: model.getBounds(),
+        workArea
+    });
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+
+    assertClose(manager._live2DPeekState.headAnchorRatio, 0.5, 'work-area-relative ratio');
+    assertClose(manager._live2DPeekState.peekRotation * 180 / Math.PI, 41.5, 'work-area-relative pose');
+    assertClose(manager.getHeadScreenAnchor().y, 400, 'work-area-relative head y', 0.001);
 });
 
 test('corner peeks keep the head at the corner and the body outside the matching vertical edge', async () => {
@@ -1492,6 +1818,35 @@ test('corner peeks fall back to model transforms when no head anchor is availabl
             `${item.edge} fallback head y should remain visible, got ${estimatedHead.y}`
         );
         assert.ok(item.bodyOutside(lowerBody.y), `${item.edge} fallback should keep the lower body outside the viewport`);
+    }
+});
+
+test('side-only reliable detection metadata does not change corner bounds fallback', async () => {
+    const cases = [
+        { edge: 'top-left', y: 0, rotation: 135, headYRange: [36, 64] },
+        { edge: 'bottom-left', y: 200, rotation: 45, headYRange: [736, 764] }
+    ];
+
+    for (const item of cases) {
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: 0, y: item.y, scaleX: 1 });
+        manager.getHeadScreenAnchor = () => null;
+        manager.getHeadDetectionGeometryInfo = () => {
+            const anchor = model.transformPoint(150, 110);
+            return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+        };
+
+        const enterPromise = manager._tryApplyLive2DPeek(model);
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true);
+
+        const estimatedHead = model.transformPoint(150, 600 * 0.24);
+        assert.equal(manager._live2DPeekState.edge, item.edge);
+        assert.equal(manager._live2DPeekState.headAnchorSource, 'bounds-fallback');
+        assertClose(model.rotation * 180 / Math.PI, item.rotation, `${item.edge} rotation`);
+        assert.ok(estimatedHead.x >= 48 && estimatedHead.x <= 84);
+        assert.ok(estimatedHead.y >= item.headYRange[0] && estimatedHead.y <= item.headYRange[1]);
     }
 });
 
@@ -2835,6 +3190,55 @@ test('display change rebuilds the active anchor against the refreshed display', 
     assert.equal(model.rotation, hiddenRotation);
     assert.equal(model.scale.x, hiddenScaleX);
     assert.equal(model.interactive, false);
+});
+
+test('display change preserves a precise side head ratio and pose', async () => {
+    const currentDisplay = {
+        id: 'display-test',
+        screenX: 0,
+        screenY: 0,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay, reducedMotion: true });
+    const manager = new harness.Live2DManager();
+    const ratio = 0.65;
+    const model = createRotatingModel({ x: 0, y: ratio * 800 - 110 });
+    manager.currentModel = model;
+    manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+    manager.getHeadDetectionGeometryInfo = () => {
+        const anchor = model.transformPoint(150, 110);
+        return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+    };
+    manager.getBodyScreenRectInfo = () => {
+        const waist = model.transformPoint(150, 330);
+        return { rect: { centerX: waist.x, bottom: waist.y } };
+    };
+    harness.window.live2dManager = manager;
+
+    assert.equal(await manager._tryApplyLive2DPeek(model, {
+        edge: 'left',
+        side: 'left',
+        verticalEdge: '',
+        geometry: model.getBounds(),
+        workArea: { left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800 }
+    }), true);
+    const originalRotation = manager._live2DPeekState.peekRotation;
+
+    currentDisplay.bounds.height = 1000;
+    currentDisplay.workArea.height = 1000;
+    harness.window.innerHeight = 1000;
+    harness.window.screen.height = 1000;
+    harness.window.dispatchEvent({ type: 'electron-display-changed' });
+    await new Promise((resolve) => setImmediate(resolve));
+    harness.window.dispatchEvent({ type: 'electron-display-changed' });
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(manager.isLive2DPeekActive(), true);
+    assertClose(manager._live2DPeekState.headAnchorRatio, ratio, 'display-restored head ratio');
+    assertClose(manager._live2DPeekState.peekRotation, originalRotation, 'display-restored pose');
+    assertClose(manager.getHeadScreenAnchor().y, ratio * 1000, 'display-restored head y', 0.001);
 });
 
 test('non-display clear invalidates a pending display anchor restore', async () => {

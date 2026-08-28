@@ -25,29 +25,9 @@ from __future__ import annotations
 
 import os
 import sys
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-def _tiny_jpeg_b64(colour=(1, 2, 3)) -> str:
-    """A real, decodable JPEG. The ingestion boundary now validates payloads,
-    so placeholder strings are (correctly) rejected as not-an-image."""
-    import base64
-    import io as _io
-
-    from PIL import Image
-
-    buf = _io.BytesIO()
-    Image.new("RGB", (4, 4), colour).save(buf, "JPEG")
-    return base64.b64encode(buf.getvalue()).decode()
-
-
-_RESPOND_IMG = _tiny_jpeg_b64((10, 20, 30))
-_READ_IMG = _tiny_jpeg_b64((40, 50, 60))
-_RETRY_IMG = _tiny_jpeg_b64((70, 80, 90))
-
-
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -134,6 +114,60 @@ async def test_passthrough_writes_to_websocket_with_passthrough_metadata():
     assert payload["turn_id"] == "turn-1"
     assert payload["request_id"] == "req-1"
     assert payload["metadata"] == {"source": "plugin", "passthrough": True}
+
+
+@pytest.mark.unit
+async def test_passthrough_can_carry_structured_image_blocks():
+    ws = _FakeWebsocket(connected=True)
+    mgr = _make_mgr(websocket=ws)
+    blocks = [
+        {"type": "text", "text": "look"},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/example"},
+    ]
+
+    assert await mgr.passthrough_to_chat_bubble("look", blocks=blocks) is True
+
+    payload = ws.send_json.await_args.args[0]
+    assert payload["blocks"] == blocks
+
+
+@pytest.mark.unit
+async def test_passthrough_sends_image_only_blocks_without_text():
+    ws = _FakeWebsocket(connected=True)
+    mgr = _make_mgr(websocket=ws)
+    blocks = [{"type": "image", "url": "http://127.0.0.1:48916/media/example"}]
+
+    assert await mgr.passthrough_to_chat_bubble("", blocks=blocks) is True
+
+    payload = ws.send_json.await_args.args[0]
+    assert payload["text"] == ""
+    assert payload["blocks"] == blocks
+
+
+@pytest.mark.unit
+async def test_render_chat_blocks_uses_a_display_only_websocket_frame():
+    ws = _FakeWebsocket(connected=True)
+    mgr = _make_mgr(websocket=ws)
+    blocks = [{"type": "image", "url": "http://127.0.0.1:48916/media/example"}]
+
+    assert await mgr.render_chat_blocks(
+        blocks, request_id="r", source="plugin", source_name="LifeKit"
+    ) is True
+
+    payload = ws.send_json.await_args.args[0]
+    assert payload == {
+        "type": "chat_blocks",
+        "blocks": blocks,
+        "request_id": "r",
+        # source_name rides along so the bubble can name its origin: a plugin
+        # may write in the character's voice, and for blind pushes she has no
+        # memory of the content at all.
+        "metadata": {
+            "source": "plugin",
+            "source_name": "LifeKit",
+            "passthrough": True,
+        },
+    }
 
 
 @pytest.mark.unit
@@ -273,6 +307,7 @@ async def test_main_server_proactive_chat_blind_invokes_passthrough(monkeypatch)
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None  # disable HUD send for cleanliness
@@ -301,13 +336,17 @@ async def test_main_server_proactive_chat_blind_invokes_passthrough(monkeypatch)
 
     await main_server._handle_agent_event(event)
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
-    call = fake_mgr.passthrough_to_chat_bubble.await_args
-    # text positional arg
-    assert call.args[0] == "verbatim line"
-    # request_id from task_id, source from source_kind
+    # System message, not an assistant bubble: blind content never reaches the
+    # model, so an assistant-looking bubble claims something she never said and
+    # has no memory of.
+    fake_mgr.passthrough_to_chat_bubble.assert_not_awaited()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
+    call = fake_mgr.render_chat_blocks.await_args
+    assert call.args[0] == [{"type": "text", "text": "verbatim line"}]
     assert call.kwargs.get("request_id") == "task-42"
     assert call.kwargs.get("source") == "plugin"
+    # The plugin's own name labels the bubble.
+    assert call.kwargs.get("source_name") == "foo"
     # silent + blind → LLM channel NOT engaged
     fake_mgr.enqueue_agent_callback.assert_not_called()
 
@@ -323,6 +362,7 @@ async def test_main_server_proactive_chat_blind_preserves_verbatim_whitespace(mo
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None
@@ -347,22 +387,26 @@ async def test_main_server_proactive_chat_blind_preserves_verbatim_whitespace(mo
 
     await main_server._handle_agent_event(event)
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
-    call = fake_mgr.passthrough_to_chat_bubble.await_args
-    assert call.args[0] == "  hello world\n\n"
+    fake_mgr.render_chat_blocks.assert_awaited_once()
+    call = fake_mgr.render_chat_blocks.await_args
+    # Verbatim contract survives the move: compare against the event text
+    # itself, so the whitespace under test cannot be lost to escaping here.
+    assert call.args[0] == [{"type": "text", "text": event["text"]}]
 
 
 @pytest.mark.unit
-async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(monkeypatch):
-    """When ai_behavior != "blind", the passthrough branch must NOT fire
-    even if visibility includes "chat" — non-blind ai_behavior already
-    enqueues the LLM callback, and the AI's own response is what fills
-    the chat bubble.
+async def test_main_server_proactive_chat_respond_renders_as_system_and_still_responds(monkeypatch):
+    """Chat visibility renders; ai_behavior decides what the model does.
+
+    respond used to render nothing at all. It now shows the plugin's text as a
+    system message AND hands the callback to the proactive manager, so the
+    reader sees what prompted the reply rather than only the reply.
     """
     from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.submit_proactive_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
@@ -389,174 +433,13 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
     await main_server._handle_agent_event(event)
 
     fake_mgr.passthrough_to_chat_bubble.assert_not_called()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     # respond → handed to the proactive delivery manager (which enqueues +
     # triggers at release time, gated on the playback/min-gap pacing).
     fake_mgr.submit_proactive_callback.assert_called_once()
     # And NOT the old direct path — guards against a future double-dispatch
     # regression (manager + direct enqueue both firing).
     fake_mgr.enqueue_agent_callback.assert_not_called()
-
-
-@pytest.mark.unit
-async def test_image_only_respond_defers_callback_owned_media(monkeypatch):
-    from app import main_server
-
-    fake_mgr = MagicMock()
-    fake_mgr.session = MagicMock()
-    fake_mgr.session.stream_image = AsyncMock()
-    fake_mgr.enqueue_agent_callback = MagicMock()
-    fake_mgr.submit_proactive_callback = MagicMock()
-    fake_mgr.websocket = None
-    fake_mgr._pending_agent_callback_task = None
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._get_session_manager",
-        lambda _name: fake_mgr,
-    )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._is_websocket_connected",
-        lambda _ws: False,
-    )
-
-    await main_server._handle_agent_event(
-        {
-            "event_type": "proactive_message",
-            "lanlan_name": "Test",
-            "text": "",
-            "channel": "plugin:camera",
-            "task_id": "image-only-respond",
-            "delivery_mode": "proactive",
-            "ai_behavior": "respond",
-            "visibility": [],
-            "source_kind": "plugin",
-            "source_name": "camera",
-            "media_parts": [
-                {
-                    "type": "image",
-                    "binary_base64": _RESPOND_IMG,
-                    "mime": "image/png",
-                }
-            ],
-        }
-    )
-
-    fake_mgr.session.stream_image.assert_not_awaited()
-    fake_mgr.submit_proactive_callback.assert_called_once()
-    callback = fake_mgr.submit_proactive_callback.call_args.args[0]
-    assert callback["media_images"] == [_RESPOND_IMG]
-    fake_mgr.enqueue_agent_callback.assert_not_called()
-
-
-@pytest.mark.unit
-async def test_read_image_defers_media_until_passive_callback_consumption(
-    monkeypatch,
-):
-    from app import main_server
-
-    fake_mgr = MagicMock()
-    fake_mgr.session = MagicMock()
-    fake_mgr.session.stream_image = AsyncMock(
-        return_value=SimpleNamespace(
-            accepted=True,
-            mode="external_description",
-            description="桌面上有一本打开的书。",
-        )
-    )
-    fake_mgr.enqueue_agent_callback = MagicMock()
-    fake_mgr.submit_proactive_callback = MagicMock()
-    fake_mgr.websocket = None
-    fake_mgr._pending_agent_callback_task = None
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._get_session_manager",
-        lambda _name: fake_mgr,
-    )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._is_websocket_connected",
-        lambda _ws: False,
-    )
-
-    await main_server._handle_agent_event(
-        {
-            "event_type": "proactive_message",
-            "lanlan_name": "Test",
-            "text": "学习状态更新",
-            "channel": "plugin:study",
-            "task_id": "passive-image-read",
-            "delivery_mode": "passive",
-            "ai_behavior": "read",
-            "visibility": [],
-            "source_kind": "plugin",
-            "source_name": "study",
-            "media_parts": [
-                {
-                    "type": "image",
-                    "binary_base64": _READ_IMG,
-                    "mime": "image/png",
-                }
-            ],
-        }
-    )
-
-    fake_mgr.session.stream_image.assert_not_awaited()
-    fake_mgr.enqueue_agent_callback.assert_called_once()
-    callback = fake_mgr.enqueue_agent_callback.call_args.args[0]
-    assert callback["media_images"] == [_READ_IMG]
-    assert callback["detail"] == "学习状态更新"
-    fake_mgr.submit_proactive_callback.assert_not_called()
-
-
-@pytest.mark.unit
-async def test_read_image_does_not_probe_current_session_before_enqueue(monkeypatch):
-    from app import main_server
-
-    fake_mgr = MagicMock()
-    fake_mgr.session = MagicMock()
-    fake_mgr.session.stream_image = AsyncMock(
-        return_value=SimpleNamespace(
-            accepted=False,
-            mode="native",
-            rejection_reason="raw_visual_delivery_blocked",
-        )
-    )
-    fake_mgr.enqueue_agent_callback = MagicMock()
-    fake_mgr.submit_proactive_callback = MagicMock()
-    fake_mgr.websocket = None
-    fake_mgr._pending_agent_callback_task = None
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._get_session_manager",
-        lambda _name: fake_mgr,
-    )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._is_websocket_connected",
-        lambda _ws: False,
-    )
-
-    await main_server._handle_agent_event(
-        {
-            "event_type": "proactive_message",
-            "lanlan_name": "Test",
-            "text": "",
-            "channel": "plugin:camera",
-            "task_id": "passive-image-retry",
-            "delivery_mode": "passive",
-            "ai_behavior": "read",
-            "visibility": [],
-            "source_kind": "plugin",
-            "source_name": "camera",
-            "media_parts": [
-                {
-                    "type": "image",
-                    "binary_base64": _RETRY_IMG,
-                    "mime": "image/png",
-                }
-            ],
-        }
-    )
-
-    fake_mgr.enqueue_agent_callback.assert_called_once()
-    fake_mgr.session.stream_image.assert_not_awaited()
-    callback = fake_mgr.enqueue_agent_callback.call_args.args[0]
-    assert callback["media_images"] == [_RETRY_IMG]
-    fake_mgr.submit_proactive_callback.assert_not_called()
 
 
 @pytest.mark.unit
@@ -576,6 +459,7 @@ async def test_blind_with_proactive_delivery_mode_does_not_enqueue_callback(monk
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None
@@ -607,7 +491,7 @@ async def test_blind_with_proactive_delivery_mode_does_not_enqueue_callback(monk
     fake_mgr.enqueue_agent_callback.assert_not_called()
     fake_mgr.trigger_agent_callbacks.assert_not_called()
     # Chat passthrough still fires (visibility includes "chat", behavior is blind).
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -618,6 +502,7 @@ async def test_blind_with_passive_delivery_mode_does_not_enqueue_callback(monkey
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None
@@ -643,7 +528,7 @@ async def test_blind_with_passive_delivery_mode_does_not_enqueue_callback(monkey
     await main_server._handle_agent_event(event)
 
     fake_mgr.enqueue_agent_callback.assert_not_called()
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -658,6 +543,7 @@ async def test_passthrough_uses_resolved_source_kind_from_channel(monkeypatch):
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None
@@ -681,8 +567,8 @@ async def test_passthrough_uses_resolved_source_kind_from_channel(monkeypatch):
 
     await main_server._handle_agent_event(event)
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
-    call = fake_mgr.passthrough_to_chat_bubble.await_args
+    fake_mgr.render_chat_blocks.assert_awaited_once()
+    call = fake_mgr.render_chat_blocks.await_args
     # Channel "computer_use" must resolve to source_kind="cu", NOT "plugin".
     assert call.kwargs.get("source") == "cu"
 
@@ -695,6 +581,7 @@ async def test_main_server_proactive_hud_only_blind_does_not_invoke_passthrough(
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None
@@ -755,6 +642,7 @@ def _hud_event(visibility, ai_behavior="blind", text="hud-or-chat line"):
 def _hud_fake_mgr():
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = MagicMock()
@@ -793,7 +681,7 @@ async def test_visibility_chat_blind_chat_fires_hud_does_not(monkeypatch):
 
     await main_server._handle_agent_event(_hud_event(["chat"]))
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     assert _hud_send_count(fake_mgr) == 0
 
 
@@ -821,7 +709,7 @@ async def test_visibility_chat_and_hud_blind_both_fire(monkeypatch):
 
     await main_server._handle_agent_event(_hud_event(["chat", "hud"]))
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     assert _hud_send_count(fake_mgr) == 1
 
 
@@ -907,6 +795,7 @@ async def test_chat_blind_passthrough_emits_turn_end_via_proactive_complete(monk
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.handle_proactive_complete = AsyncMock()
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
@@ -932,8 +821,10 @@ async def test_chat_blind_passthrough_emits_turn_end_via_proactive_complete(monk
 
     await main_server._handle_agent_event(event)
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
-    fake_mgr.handle_proactive_complete.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
+    # No turn-end: a system message never opened an assistant turn. The old
+    # passthrough did, which is why this used to expect exactly one.
+    fake_mgr.handle_proactive_complete.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -951,9 +842,11 @@ async def test_chat_and_hud_blind_emits_turn_end_exactly_once(monkeypatch):
 
     await main_server._handle_agent_event(_hud_event(["chat", "hud"]))
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     assert _hud_send_count(fake_mgr) == 1
-    fake_mgr.handle_proactive_complete.assert_awaited_once()
+    # HUD is unchanged; the chat half is a system bubble now, and a system
+    # bubble opens no assistant turn to close.
+    fake_mgr.handle_proactive_complete.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -1014,6 +907,7 @@ async def test_chat_blind_passthrough_noop_skips_turn_end(monkeypatch):
     # helper returns normally but reports False to indicate nothing was
     # sent.
     fake_mgr.passthrough_to_chat_bubble = AsyncMock(return_value=False)
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.handle_proactive_complete = AsyncMock()
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
@@ -1025,7 +919,7 @@ async def test_chat_blind_passthrough_noop_skips_turn_end(monkeypatch):
 
     await main_server._handle_agent_event(_blind_chat_event("task-blind-noop"))
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     fake_mgr.handle_proactive_complete.assert_not_called()
 
 
@@ -1040,7 +934,9 @@ async def test_chat_blind_passthrough_unexpected_raise_skips_turn_end(monkeypatc
     from app import main_server
 
     fake_mgr = MagicMock()
-    fake_mgr.passthrough_to_chat_bubble = AsyncMock(side_effect=RuntimeError("ws boom"))
+    fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    # The system renderer is what runs now, so it is what must raise.
+    fake_mgr.render_chat_blocks = AsyncMock(side_effect=RuntimeError("ws boom"))
     fake_mgr.handle_proactive_complete = AsyncMock()
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
@@ -1052,7 +948,7 @@ async def test_chat_blind_passthrough_unexpected_raise_skips_turn_end(monkeypatc
 
     await main_server._handle_agent_event(_blind_chat_event("task-blind-raise"))
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     fake_mgr.handle_proactive_complete.assert_not_called()
 
 
@@ -1084,93 +980,3 @@ async def test_chat_blind_passthrough_real_helper_swallowed_send_skips_turn_end(
 
     assert real_mgr.websocket.send_json.await_count == 1
     real_mgr.handle_proactive_complete.assert_not_called()
-
-
-@pytest.mark.unit
-async def test_plugin_images_are_bounded_at_the_ingestion_boundary(monkeypatch):
-    """A plugin is an untrusted producer; its inline images need the same limits.
-
-    These strings are retained on a callback until delivery, and the callback
-    queue caps item COUNT, not bytes inside an item. Without a per-image size
-    check and a per-turn count cap, one plugin can pin an arbitrary payload in
-    memory and push an unbounded number of images into a single turn's prefix.
-    Both limits already exist in the repo -- this boundary just skipped them.
-    """
-    import base64 as _b64
-    import io as _io
-
-    from PIL import Image
-
-    from app import main_server
-    from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
-    from utils.screenshot_utils import MAX_BASE64_SIZE
-
-    def _jpeg(colour):
-        buf = _io.BytesIO()
-        Image.new("RGB", (4, 4), colour).save(buf, "JPEG")
-        return _b64.b64encode(buf.getvalue()).decode()
-
-    fake_mgr = MagicMock()
-    fake_mgr.session = MagicMock()
-    fake_mgr.session.stream_image = AsyncMock()
-    fake_mgr.enqueue_agent_callback = MagicMock()
-    fake_mgr.submit_proactive_callback = MagicMock()
-    fake_mgr.websocket = None
-    fake_mgr._pending_agent_callback_task = None
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._get_session_manager",
-        lambda _name: fake_mgr,
-    )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._is_websocket_connected",
-        lambda _ws: False,
-    )
-
-    oversized = "x" * (MAX_BASE64_SIZE + 1)
-    # 短的垃圾串也必须被拒：它会被原样插进 data:image URL 送给 provider。
-    malformed = "img-0"
-    valid = [_jpeg((i, i, i)) for i in range(MAX_MULTIMODAL_TURN_IMAGES + 4)]
-    parts = [
-        {"type": "image", "binary_base64": oversized, "mime": "image/png"},
-        {"type": "image", "binary_base64": malformed, "mime": "image/png"},
-    ] + [
-        {"type": "image", "binary_base64": b64, "mime": "image/jpeg"}
-        for b64 in valid
-    ]
-
-    validated = {"count": 0}
-    real_validate = main_server.character_runtime.validate_inline_image_b64
-
-    async def counting_validate(b64):
-        validated["count"] += 1
-        return await real_validate(b64)
-
-    monkeypatch.setattr(
-        "app.main_server.character_runtime.validate_inline_image_b64",
-        counting_validate,
-    )
-
-    await main_server._handle_agent_event(
-        {
-            "event_type": "proactive_message",
-            "lanlan_name": "Test",
-            "text": "",
-            "channel": "plugin:camera",
-            "task_id": "flood",
-            "delivery_mode": "proactive",
-            "ai_behavior": "respond",
-            "visibility": [],
-            "source_kind": "plugin",
-            "source_name": "camera",
-            "media_parts": parts,
-        }
-    )
-
-    fake_mgr.submit_proactive_callback.assert_called_once()
-    retained = fake_mgr.submit_proactive_callback.call_args.args[0]["media_images"]
-    # 超大的和非法的都整张丢掉，其余按每轮上限截断，保留最早的几张。
-    assert oversized not in retained
-    assert malformed not in retained
-    assert retained == valid[:MAX_MULTIMODAL_TURN_IMAGES]
-    # 名额判在校验之前：超量的那些不该白跑一次 base64 解码 + PIL 全量解像素。
-    assert validated["count"] == MAX_MULTIMODAL_TURN_IMAGES + 2

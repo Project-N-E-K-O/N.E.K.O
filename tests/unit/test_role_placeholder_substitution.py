@@ -202,6 +202,7 @@ def _mgr_for_main_server(send_lanlan_return=True):
     fake_mgr.send_lanlan_response = AsyncMock(return_value=send_lanlan_return)
     fake_mgr.handle_proactive_complete = AsyncMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock(return_value=True)
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = MagicMock()
@@ -274,8 +275,11 @@ async def test_main_server_chat_passthrough_substitutes_master_name(monkeypatch)
         }
     )
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
-    sent_text = fake_mgr.passthrough_to_chat_bubble.await_args.args[0]
+    # Plugin chat output is a system message now; the placeholder contract is
+    # unchanged, it just lives inside the text block rather than a bare string.
+    fake_mgr.render_chat_blocks.assert_awaited_once()
+    blocks = fake_mgr.render_chat_blocks.await_args.args[0]
+    sent_text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
     assert "{MASTER_NAME}" not in sent_text
     assert "小明 你看一下这个" in sent_text
 

@@ -16,6 +16,11 @@ from plugin._types.exceptions import PluginExecutionError
 
 _SPECIAL_ARG_NAMES = frozenset({"self", "cls", "_ctx", "args", "kwargs"})
 
+# The host injects this kwarg into every entry invocation (run_id, lanlan_name,
+# entry_timeout, ...). Handlers opt into it by naming it or by declaring
+# **kwargs; everyone else must not be handed a kwarg they never asked for.
+_HOST_INJECTED_ARG = "_ctx"
+
 
 def resolve_entry_timeout(meta: object | None, default_timeout: float | None) -> float | None:
     """Resolve per-entry timeout from metadata.
@@ -52,15 +57,22 @@ def prepare_entry_kwargs(
     meta: object | None,
     args: dict[str, Any],
 ) -> dict[str, Any]:
-    """Validate and normalize kwargs before calling a handler."""
+    """Validate and normalize kwargs before calling a handler.
+
+    Entries that declare a params model already have their kwargs filtered
+    against the handler signature. Entries without one — zero-arg handlers,
+    plainly typed handlers, ``input_schema=`` handlers — used to receive the
+    host-injected ``_ctx`` verbatim and blew up with ``TypeError`` unless the
+    author defensively wrote ``**kwargs``. Drop it for them too.
+    """
 
     normalized_args = dict(args)
     if meta is None:
-        return normalized_args
+        return _drop_unsupported_host_ctx(handler, normalized_args)
 
     params_model = getattr(meta, "params", None)
     if params_model is None or not bool(getattr(meta, "model_validate", True)):
-        return normalized_args
+        return _drop_unsupported_host_ctx(handler, normalized_args)
 
     payload = {key: value for key, value in normalized_args.items() if key != "_ctx"}
     try:
@@ -158,6 +170,36 @@ def _resolve_model_injection_name(
     if len(candidate_names) == 1 and candidate_names[0] not in validated_payload:
         return candidate_names[0]
     return None
+
+
+def _accepts_host_ctx(handler: object) -> bool:
+    """Whether ``handler`` opted into the host-injected ``_ctx`` kwarg."""
+
+    try:
+        signature = inspect.signature(handler)
+    except (TypeError, ValueError):
+        # No introspectable signature: keep the old behaviour rather than
+        # silently dropping an argument the handler may well accept.
+        return True
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        # The host always passes it by keyword, so a positional-only `_ctx`
+        # cannot receive it — same kinds `_filter_supported_kwargs` allows.
+        if parameter.name == _HOST_INJECTED_ARG and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
+
+
+def _drop_unsupported_host_ctx(handler: object, args: dict[str, Any]) -> dict[str, Any]:
+    if _HOST_INJECTED_ARG not in args or _accepts_host_ctx(handler):
+        return args
+    filtered = dict(args)
+    filtered.pop(_HOST_INJECTED_ARG, None)
+    return filtered
 
 
 def _filter_supported_kwargs(signature: inspect.Signature, args: dict[str, Any]) -> dict[str, Any]:

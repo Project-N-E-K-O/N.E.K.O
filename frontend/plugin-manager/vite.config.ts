@@ -3,14 +3,32 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
+import Components from 'unplugin-vue-components/vite'
+import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
 const BACKEND_TARGET = process.env.VITE_BACKEND_URL || 'http://localhost:48916'
+const isVitest = process.env.VITEST === 'true'
+const elementPlusImportStyle = isVitest ? false : 'css'
+
+// 组件测试普遍用 `app.component('el-tabs', stub)` 之类的全局桩替掉 Element Plus，
+// 断言再去查桩渲染出的标记（如 data-tab-name）。ElementPlusResolver 会把模板里的
+// <el-tabs> 编译成显式 `import { ElTabs } from 'element-plus'`，直接绕过全局注册，
+// 于是桩失效、断言落空。测试环境关掉自动导入，让模板回到全局解析。
+const autoImportComponents = isVitest
+  ? []
+  : [
+      Components({
+        dts: false,
+        resolvers: [ElementPlusResolver({ importStyle: elementPlusImportStyle })],
+      }),
+    ]
 
 // https://vite.dev/config/
 export default defineConfig({
   base: '/ui/',
   plugins: [
     vue(),
+    ...autoImportComponents,
     vueDevTools(),
   ],
   resolve: {

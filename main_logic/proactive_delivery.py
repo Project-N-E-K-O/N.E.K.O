@@ -70,6 +70,254 @@ CALLBACK_EXPIRES_AT_KEY = "_expires_at_monotonic"
 VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
 SWAP_PRIME_DELIVERY_CLAIM_KEY = "_swap_prime_delivery_claimed"
 
+# Image budget for ONE model turn. A trigger drains every pending proactive
+# callback into a single turn, so a per-push cap alone does not bound what the
+# provider receives: cues pile up whenever the proactive claim is denied (the
+# user is mid-conversation), then release together. The figures match the
+# contract PLUGIN_DEVELOPMENT_GUIDE.md advertises to plugin authors.
+CALLBACK_IMAGE_MAX_COUNT = 8
+CALLBACK_IMAGE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
+
+# Staged-image quotas for the text path, counted PER SOURCE.
+#
+# The user's own screen/camera frames and plugin `read` images are attached to
+# the same turn. A single shared cap makes them fight, and every policy
+# available under one cap harms the user: evicting the oldest lets a background
+# plugin discard the frame the user just staged, and refusing the newest lets a
+# plugin block the user's own image once the queue is full. Both were tried
+# during review and both were correctly rejected.
+#
+# Separate quotas remove the conflict instead of picking a winner. Neither
+# source can spend the other's budget, so trimming is always the offending
+# source's own oldest frame. The user gets the larger share: they stage
+# deliberately, one frame at a time, and can see what they staged.
+USER_PENDING_IMAGE_MAX_COUNT = 5
+PLUGIN_PENDING_IMAGE_MAX_COUNT = 3
+
+# Bytes, also per source. Count and size are independent axes: three images
+# inside the plugin's count quota can still be three near-8-MiB images, which
+# is ~24 MiB attached to one turn and past what the provider will take.
+#
+# The plugin ceiling is the per-turn figure the plugin guide already
+# advertises, so the staged path cannot quietly exceed the documented
+# contract. The user gets the larger share for the same reason they get more
+# slots -- deliberate frames, staged one at a time.
+#
+# These bound ACCUMULATION, not a single image: a lone frame is kept even if
+# it is over, because it already passed its own per-image limit upstream and
+# silently dropping the only image is worse than letting the provider judge.
+PLUGIN_PENDING_IMAGE_MAX_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
+USER_PENDING_IMAGE_MAX_BYTES = 2 * CALLBACK_IMAGE_MAX_TOTAL_BYTES
+
+# What ONE outgoing request may carry, across every source at once.
+#
+# The per-source quotas above deliberately do not talk to each other -- that is
+# the whole point of splitting them, so neither source can spend the other's
+# budget. But they are not the last word on what leaves the process: the text
+# path attaches the proactive screenshot, the plugin frames AND the user frames
+# to the SAME HumanMessage, so the worst case is their SUM (16 + 8 MiB plus a
+# screenshot), which is several times the per-request ceiling the provider will
+# accept. A request over that ceiling is rejected outright, so the failure is
+# not "the model saw fewer images" but "the user's message never arrived".
+#
+# Same figure as the per-turn callback budget rather than a second spelling:
+# one turn is one turn regardless of which path assembled it, and this is the
+# number PLUGIN_DEVELOPMENT_GUIDE.md already advertises.
+#
+# This is a CEILING, not a quota — it never grants budget a per-source quota
+# withheld. It only trims what the per-source quotas already let through.
+TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
+
+# What the manager queue may HOLD, as opposed to what one release may send.
+#
+# CALLBACK_IMAGE_MAX_* above bound a single model turn. The queue itself had
+# only a TTL, and nothing bounded its depth or its bytes: cues accumulate
+# precisely when the proactive claim keeps being denied (the user is talking),
+# so a plugin pushing images into a busy conversation could hold hundreds of MB
+# of base64 with nothing to stop it, each cue carrying its own full copy.
+#
+# The count matches the flood guard on pending_agent_callbacks, so a cue that
+# survives one queue is not arbitrarily dropped by the other. The byte ceiling
+# is four turns' worth of the documented per-turn budget -- generous enough
+# that ordinary backlog is untouched, finite enough to bound the worst case.
+QUEUED_CUE_MAX_COUNT = 50
+QUEUED_IMAGE_MAX_TOTAL_BYTES = 4 * CALLBACK_IMAGE_MAX_TOTAL_BYTES
+
+
+def approx_base64_decoded_bytes(encoded: str) -> int:
+    """Decoded size of a base64 payload, without materializing the bytes."""
+    return len(encoded) * 3 // 4
+
+
+def trim_images_to_turn_budget(
+    images: list[str],
+    max_total_bytes: int = TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+) -> tuple[list[str], int]:
+    """Trim one turn's attachments to what a single request may carry.
+
+    ``images`` is in ATTACHMENT order, which is also chronological: the
+    proactive screenshot (what the screen showed before the user spoke), then
+    plugin-supplied context, then the user's own frames. Trimming takes from
+    the FRONT, so the frames nearest the text -- the ones the message is
+    actually about -- are the last to go, and a plugin cannot displace the
+    frame the user just staged.
+
+    The per-source quotas in this module bound each source separately and on
+    purpose. This bounds their SUM, which is the only figure the provider
+    sees. It never grants budget a per-source quota withheld; it only trims
+    what those quotas already let through.
+
+    The LAST image is kept unconditionally, mirroring the byte arm of the
+    per-source quotas: it already passed its own per-image limit upstream, and
+    sending one over-budget image for the provider to judge beats sending a
+    message whose visual content silently vanished.
+
+    Returns ``(kept, dropped_count)``; ``kept`` is a prefix-trimmed view, so
+    the caller can tell exactly which leading attachments were dropped.
+    """
+    kept = list(images)
+    dropped = 0
+    total = sum(approx_base64_decoded_bytes(img) for img in kept)
+    while len(kept) > 1 and total > max_total_bytes:
+        total -= approx_base64_decoded_bytes(kept.pop(0))
+        dropped += 1
+    return kept, dropped
+
+
+def split_callbacks_by_image_budget(callbacks: list) -> tuple[list, list]:
+    """Split a FIFO batch into (deliverable prefix, overflow) on the image budget.
+
+    The split is callback-ATOMIC: a callback is taken whole or left whole, so a
+    taken callback keeps its complete ``media_images`` and the downstream
+    preserve-until-success retry semantics stay intact.
+
+    The head callback is always taken even when it alone exceeds the budget.
+    Deferring it would park a cue that can never fit, and the queue would spin
+    on it forever — the opposite of what this bound exists to prevent.
+
+    Strict FIFO: once the budget is spent, everything after it defers, including
+    text-only callbacks. Letting later text jump the queue would reorder cues
+    against the narrative order the instruction renders them in.
+    """
+    taken: list = []
+    overflow: list = []
+    count = 0
+    total_bytes = 0
+    for callback in callbacks:
+        if overflow:
+            overflow.append(callback)
+            continue
+        images = callback.get("media_images") if isinstance(callback, dict) else None
+        images = [img for img in (images or []) if isinstance(img, str) and img]
+        if not images:
+            taken.append(callback)
+            continue
+        cb_bytes = sum(approx_base64_decoded_bytes(img) for img in images)
+        fits = (
+            count + len(images) <= CALLBACK_IMAGE_MAX_COUNT
+            and total_bytes + cb_bytes <= CALLBACK_IMAGE_MAX_TOTAL_BYTES
+        )
+        # ``count`` only advances for callbacks that contributed real images,
+        # so a non-zero count IS "the prefix already claimed budget" — which is
+        # the condition the head-progress rule turns on.
+        if not fits and count > 0:
+            overflow.append(callback)
+            continue
+        count += len(images)
+        total_bytes += cb_bytes
+        taken.append(callback)
+    return taken, overflow
+
+
+# 单轮图片超预算时保留的张数：开头 / 中间 / 结尾。与独立 ASR 的抽样判据同源
+# ——一段视觉材料最有信息量的是它的两端和中点。
+TURN_IMAGE_SAMPLE_KEEP = 3
+
+
+def _sample_head_middle_tail(images: list) -> list:
+    if len(images) <= TURN_IMAGE_SAMPLE_KEEP:
+        return list(images)
+    return [images[0], images[len(images) // 2], images[-1]]
+
+
+async def fit_images_to_turn_budget(
+    images: list,
+    max_total_bytes: int,
+) -> tuple[list, Optional[dict]]:
+    """Bring one turn's images under a byte budget without losing them silently.
+
+    A single request carrying too many bytes is rejected WHOLE by the provider,
+    so something has to give. The order of what gives is deliberate:
+
+    1. **Sample** down to head/middle/tail. A long burst of frames is mostly
+       redundant; its two ends and its midpoint carry nearly all of the signal.
+    2. **Compress** what survives. Re-encoding to 720p JPEG typically cuts a
+       screenshot several-fold and costs nothing a viewer would notice.
+    3. Only if both fail, drop from the front (oldest first, always keeping the
+       last one) -- and say so.
+
+    Never drops the turn itself, and never drops images without reporting it:
+    the returned notice is meant for the user, not just the log.
+
+    Returns ``(kept, notice)``; ``notice`` is None when nothing was needed.
+    """
+    kept = [img for img in (images or []) if img]
+    if not kept:
+        return kept, None
+    total = sum(approx_base64_decoded_bytes(img) for img in kept)
+    if total <= max_total_bytes:
+        return kept, None
+
+    original_count = len(kept)
+    notice: dict = {
+        "original_count": original_count,
+        "original_bytes": total,
+        "budget_bytes": max_total_bytes,
+        "sampled": False,
+        "compressed": False,
+        "dropped": 0,
+    }
+
+    if len(kept) > TURN_IMAGE_SAMPLE_KEEP:
+        kept = _sample_head_middle_tail(kept)
+        notice["sampled"] = True
+        total = sum(approx_base64_decoded_bytes(img) for img in kept)
+
+    if total > max_total_bytes:
+        from utils.screenshot_utils import decode_and_compress_screenshot_b64
+
+        def _compress_all(payloads: list) -> list:
+            out = []
+            for payload in payloads:
+                try:
+                    shrunk = decode_and_compress_screenshot_b64(payload)
+                except Exception:
+                    out.append(payload)
+                    continue
+                # 压缩反而变大就保留原图（已经是小图/已压过的会这样）。
+                out.append(shrunk if len(shrunk) < len(payload) else payload)
+            return out
+
+        try:
+            compressed = await asyncio.to_thread(_compress_all, kept)
+        except Exception:
+            compressed = kept
+        if sum(approx_base64_decoded_bytes(i) for i in compressed) < total:
+            kept = compressed
+            notice["compressed"] = True
+            total = sum(approx_base64_decoded_bytes(img) for img in kept)
+
+    # 兜底：压完仍超限，才轮到丢内容。复用既有的 trim —— 它的判据（从最旧丢、
+    # 无条件保住最后一张）正是这一步要的。
+    if total > max_total_bytes:
+        kept, dropped = trim_images_to_turn_budget(kept, max_total_bytes)
+        notice["dropped"] = dropped
+        total = sum(approx_base64_decoded_bytes(img) for img in kept)
+
+    notice["final_count"] = len(kept)
+    notice["final_bytes"] = total
+    return kept, notice
+
 
 def resolve_callback_delivery_ack(callback: dict, delivered: bool) -> None:
     """Resolve an optional in-memory delivery acknowledgement future."""
@@ -216,7 +464,7 @@ class ProactiveDeliveryManager:
 
     # ── producer ─────────────────────────────────────────────────────────
     def submit(self, callback: dict, *, priority: Any = 0,
-               coalesce_key: Optional[str] = None) -> None:
+               coalesce_key: Optional[str] = None) -> list[str]:
         key = self._resolve_key(callback, coalesce_key)
         eff = effective_priority(priority)
         # Coalesce: newest replaces any queued cue with the same key.
@@ -233,11 +481,59 @@ class ProactiveDeliveryManager:
         self._queue.append(
             _QueuedCue(eff, next(self._seq), key, callback, self._now())
         )
+        evicted_keys = self._enforce_queue_budget()
         logger.debug(
             "[proactive%s] submit key=%r eff_priority=%d queue=%d",
             self._suffix(), key, eff, len(self._queue),
         )
         self._schedule_pump(0.0)
+        # Reported so the owner can rebuild per-key coalescing bookkeeping: a
+        # cue whose seq was recorded at submit time but which the budget then
+        # evicted must stop marking older same-key cues stale, or the older one
+        # gets retracted for a replacement that no longer exists (Codex P2).
+        return evicted_keys
+
+    @staticmethod
+    def _cue_image_bytes(cue: "_QueuedCue") -> int:
+        images = cue.callback.get("media_images") if isinstance(cue.callback, dict) else None
+        if not isinstance(images, (list, tuple)):
+            return 0
+        return sum(
+            approx_base64_decoded_bytes(img) for img in images if isinstance(img, str)
+        )
+
+    def _enforce_queue_budget(self) -> list[str]:
+        """Bound what the queue holds, by cue count and by queued image bytes.
+
+        Drops in REVERSE release order -- the cue that would have gone out last
+        goes first -- so an over-budget burst sheds its own least important,
+        most recent tail instead of the important cue that has waited longest.
+        Release order is (priority DESC, FIFO), so that victim is simply the
+        maximum sort_key.
+
+        Dropped cues are acked False, the same as a TTL drop: the producer is
+        told its cue will not be delivered rather than being left waiting.
+        """
+        evicted_keys: list[str] = []
+        if not self._queue:
+            return evicted_keys
+        queued_bytes = sum(self._cue_image_bytes(c) for c in self._queue)
+        while self._queue and (
+            len(self._queue) > QUEUED_CUE_MAX_COUNT
+            or queued_bytes > QUEUED_IMAGE_MAX_TOTAL_BYTES
+        ):
+            victim = max(self._queue, key=lambda c: c.sort_key)
+            self._queue.remove(victim)
+            queued_bytes -= self._cue_image_bytes(victim)
+            if victim.coalesce_key:
+                evicted_keys.append(victim.coalesce_key)
+            resolve_callback_delivery_ack(victim.callback, False)
+            logger.info(
+                "[proactive%s] dropping queued cue key=%r reason=queue_budget "
+                "(depth=%d bytes=%d)",
+                self._suffix(), victim.coalesce_key, len(self._queue), queued_bytes,
+            )
+        return evicted_keys
 
     def retract(self, callback: dict) -> bool:
         """Remove a not-yet-released callback from the manager queue."""

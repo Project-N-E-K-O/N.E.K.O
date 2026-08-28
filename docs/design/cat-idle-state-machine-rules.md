@@ -4,7 +4,7 @@
 
 本文记录当前代码实际使用的精确数值和提示词规则，作为调参、测试和 review 的共同口径。数值变更必须同时更新代码、相关断言和本文。
 
-本规则由 Web 主页面和 NEKO-PC 的 Pet renderer 页面内同一套 Cat Mind 执行。NEKO-PC 桌面壳只提供 observation、跨窗口坐标和窗口安全事实；它不持有五维、短时意图、cooldown、pending/active action 或 episode，不运行 selector，也不发 action request。因此下列数值、provider、生命周期和摘要规则在两端完全共用，不存在桌面专用评分分支。
+本规则由 Web 主页面和 NEKO-PC 的 Pet renderer 页面内同一套 Cat Mind 执行。NEKO-PC 桌面壳只提供安全的桌面事实与能力，其中需要进入 Cat Mind 的部分由页面 consumer 转换为 observation；它不持有五维、短时意图、cooldown、pending/active action 或 episode，不运行 selector，也不发 action request。因此下列数值、provider、生命周期和摘要规则在两端完全共用，不存在桌面专用评分分支。
 
 五维在代码内部保存为 `0–1`，本文统一换算为 `0–100`。所有加减值均经过 `0–100` 截断。动作公式中的变量也使用 `0–100` 显示值。
 
@@ -125,14 +125,14 @@ CAT1 本地文字的 `5%` 哈气彩蛋只通过哈气专用窄入口请求既有
 
 | 事件 | 直接五维变化 | 作用 |
 |---|---:|---|
-| `desktop_occlusion_or_layer_change` | 0 | 更新桌面层级/遮挡事实，排入下一轮判断 |
+| `desktop_occlusion_or_layer_change` | 0 | 更新桌面层级/遮挡事实；`source=desktop-window-sensing` 的正式原生窗口流只记录，其他来源仍排入下一轮异步判断 |
 | `return_click` | 0 | 冻结一次性 return 摘要并结束本轮 Cat Mind |
 | `tier_changed` | 仅施加 2.4 的 tier 边界 | 切换当前合法动作池 |
 | `tier_demoted_by_drag` | 由随后 `tier_changed` 施加边界 | 记录既有拖拽降级表现，不成为主动候选 |
 
 这些事件不创建第六个需求字段，也不直接映射动作。`return_click`、tier 变化与动作结果仍遵守异步边界，不能在旧入口同步启动下一动作。
 
-Electron 桌面窗口感知只在真实小猫形态的 CAT1 阶段启用：小猫已经显示且 tier 为 CAT1 时启动；进入 CAT2/CAT3、return、呼吸球切换、猫形态失效或页面卸载时停止；以后重新进入 CAT1 时建立新的正式 sensing session。这里复用的是 CAT1 的进入与退出生命周期，不是把窗口读取改成 Cat Mind 的 30 秒 tick。初始当前窗口、后续身份/位置/尺寸变化以及 unavailable/current 恢复都只转换为 CAT1 的 `desktop_occlusion_or_layer_change` observation；Web 页面没有桌面 bridge 时无动作。页面适配不创建读取、检查 timer、第二窗口目标或 Cat Mind action request。
+Electron 桌面窗口感知只在真实小猫形态的 CAT1 阶段启用：小猫已经显示且 tier 为 CAT1 时启动；进入 CAT2/CAT3、return、呼吸球切换、猫形态失效或页面卸载时停止；以后重新进入 CAT1 时建立新的正式 sensing session。这里复用的是 CAT1 的进入与退出生命周期，不是把窗口读取改成 Cat Mind 的 30 秒 tick。该 sensing bridge 是 Primary Pet renderer 的通用桌面能力；当前 Cat Mind 只是把初始当前窗口、后续身份/位置/尺寸变化以及 unavailable/current 恢复投影成 `desktop_occlusion_or_layer_change` observation 的一个消费者。`source=desktop-window-sensing` 的正式原生窗口事实只保留在 recent events 和 debug 中，不排入 Cat Mind decision，因此高频移动不能在 runner 完成后串起下一动作；其他来源的同名 observation 保留既有异步判断语义。其他页面功能可以并列消费同一正式 session 的安全结果，但不能各自再次启动 session 或复制读取周期。Web 页面没有桌面 bridge 时无动作。页面 session owner 不创建底层读取、检查 timer、第二窗口目标或 Cat Mind action request。
 
 ### 3.5 动作完成和中断
 
@@ -205,18 +205,21 @@ need_contribution = 78 + 20 × (1 - exp(-(need_surplus - 8) / 8)), need_surplus 
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 计入余量 | -20 | -14 | -11.8125 | -7 | -2.1875 | 0 | 3.3516 | 12.1875 | 39 | 65.8125 | 78 | 85.8694 | 90.6424 | 渐近 98 |
 
-第二步，所有动作共享同一个连续节奏曲线。`t` 是距最近一次 runner 真实 `started` 的分钟数；本轮还没有 started 时，从进入猫形态算起。完整恢复窗为 `4.85` 分钟，即 `291` 秒：
+第二步，所有动作共享同一个连续节奏曲线。`t` 是距最近一次 runner 真实 `started` 的分钟数；本轮还没有 started 时，从进入猫形态算起。完整恢复窗为 `4.85` 分钟，即 `291` 秒。普通状态使用 `-58` 底部；如果最近的 active action 被下一次真实拖拽中断，由于该动作没有 `done` 完成反馈，恢复底部临时加深为 `-98`，直到下一次动作真实 `started`。两种情况都使用同一条连续曲线，不增加拖拽硬间隔：
 
 ```text
 p = clamp(t / 4.85, 0, 1)
-cadence = -58 + 76 × S(p)
+floor = -98，最近 active action 被拖拽中断且尚无下一次 started
+floor = -58，其他情况
+cadence = floor + (18 - floor) × S(p)
 ```
 
 | 距真实 started | 0 | 0.5 分 | 1 分 | 1.5 分 | 2 分 | 2.425 分 | 3 分 | 4 分 | 4.85 分及以后 |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 节奏分 | -58 | -55.74 | -49.64 | -40.69 | -29.89 | -20 | -6.74 | +11.82 | +18 |
+| 普通节奏分 | -58 | -55.74 | -49.64 | -40.69 | -29.89 | -20 | -6.74 | +11.82 | +18 |
+| 拖拽中断恢复节奏分 | -98 | -94.56 | -85.24 | -71.58 | -55.09 | -40 | -19.76 | +8.56 | +18 |
 
-这是连续评分，不是 3 分钟 gate 或 5 分钟强制触发。当前参数由项目的 30 秒 tick、五维自然流、runner 真实终态和完成反馈共同校准：无/少交互的持续平均目标是约 3–5 分钟一次，高需求可以更早进入下一次竞争，需求不足则继续等待。
+这是连续评分，不是 3 分钟 gate 或 5 分钟强制触发。当前参数由项目的 30 秒 tick、五维自然流、runner 真实终态和完成反馈共同校准：无/少交互的持续平均目标仍是约 3–5 分钟一次，高需求可以更早产生首次响应；但如果这次响应又被下一次拖拽打断，残留的高需求不能让随后每次松手都启动一个动作。拖拽中断恢复只影响共享节奏，不补写动作完成反馈、不修改五维，也不改变 provider 和 cooldown 语义。
 
 第三步加入对应动作的短时意图贡献。意图是选择器上下文，不是第六维，也不直接启动动作。证据合并采用饱和式累积；`current` 和 `strength` 均限制在 `0–1`：
 
@@ -301,13 +304,14 @@ queued decision
 
 - provider `dryRun` 必须只读。provider 拒绝发生在 request 之前；adapter 也可对已发 request 回 `rejected`。两者都不写 cooldown、done/failed/result、五维完成反馈或 episode，也不消费意图。
 - request 没有 ack 时的租约为 `5s`；accepted 后没有 started 时的租约为 `12s`。deadline 到达时由独立 timer 异步释放 pending 并记录协议失败；pending 期间若合并了用户触发，只排入一次后续判断，无输入时不自动重发 request，也不伪造终态或在 timer 回调里同步启动 runner。
-- `accepted` 必须带唯一 `runId`，只绑定 request；`started` 必须匹配同一个 `actionId + requestId + runId`。只有 started 才建立本动作 cooldown、重置 cadence 并消费对应 Cat Mind 动作意图。
+- `accepted` 必须带唯一 `runId`，只绑定 request；`started` 必须匹配同一个 `actionId + requestId + runId`。只有 started 才建立本动作 cooldown、重置 cadence、清除上一轮拖拽中断恢复状态，并消费对应 Cat Mind 动作意图。
 - 音频 runner 必须等 `audio.play()` 成功才报告 started；创建 `Audio`、选择素材或显示准备态都不算 started。
 - 严格终态只接受 `source=cat_mind` 且完整匹配 active 三元组的 `done/failed/cancelled/interrupted`。不匹配的 legacy/presentation 结果只留作调试，不结算。
 - accepted 后若终态先于 started，释放 request 并记录 `result_before_started`，但不写 cooldown、五维完成反馈、episode 或 started 观察标记。
-- done 结算动作完成反馈，并把 CAT1 活动或 CAT2/CAT3 休息写入有界 episode accumulator；其他终态永远不是完成经历。interrupted 先执行动作自身取消语义，再追加零五维的 interruption 元数据。
+- done 结算动作完成反馈，并把 CAT1 活动或 CAT2/CAT3 休息写入有界 episode accumulator；其他终态永远不是完成经历。interrupted 先执行动作自身取消语义，再追加零五维的 interruption 元数据；若 active action 明确被拖拽中断，则启用 `-98` 的连续节奏恢复底部，防止未领取完成反馈的残余高需求形成逐次拖拽连播。
 - pending/active 期间到达的用户触发按 observation type 合并保存。终态后的第一轮只完成 post-settle，随后用 `setTimeout(0)` 排入一次新判断；wakeup、observation 和 action result 都不能在旧同步栈里连播。
 - 有新鲜明确意图但 provider 暂不可用时保留 `providerRecheckNeeded`。既有 walk/stretch 的完成只可唤醒一次重新 dry-run，仍不是 selector 候选。
+- 桌面层级/遮挡 observation 是 provider 事实，不是自主时钟。连续窗口移动可高频更新 recent events 和调试状态，但不能绕过 30 秒 tick 在动作完成后立刻唤醒下一动作；仅当仍有新鲜明确意图且 `providerRecheckNeeded` 为真时才可触发一次可用性重试。
 
 ## 五、交互强度验收包络
 

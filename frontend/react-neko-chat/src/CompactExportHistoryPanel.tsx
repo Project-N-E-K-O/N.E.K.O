@@ -255,6 +255,7 @@ export default function CompactExportHistoryPanel({
     [allMessages],
   );
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const scrollContentRef = useRef<HTMLDivElement | null>(null);
   const autoScrollToBottomRef = useRef(autoScrollToBottom);
   autoScrollToBottomRef.current = autoScrollToBottom;
   const scrollbarDragRef = useRef<ScrollbarDragState | null>(null);
@@ -293,6 +294,7 @@ export default function CompactExportHistoryPanel({
   const exportActionsDisabled = !previewHasSelection || exportBusy;
   const historyInteractive = visibilityState === 'open';
   const selectionControlsInteractive = historyInteractive && controlsOpen;
+  const historyHasContent = messages.length > 0 || thinking;
   const scrollbarHitVisible = scrollbarVisible
     && !!scrollRef.current
     && !!getCompactHistoryScrollbarMetrics(scrollRef.current);
@@ -497,6 +499,51 @@ export default function CompactExportHistoryPanel({
       }
     };
   }, [autoScrollToBottom, messages, previewOpen, visibilityState, thinking]);
+
+  // 图片（尤其是远端表情包 / GIF）可能在上面的固定 settle 帧结束后才完成解码。若图片块没有
+  // width/height 元数据，它会从 0 高度增长到固有高度；此时 scrollHeight 增大但 scrollTop 不会
+  // 自动跟随，最新消息就只剩顶部一截露在输入框上方。监听真实内容尺寸，并用 capture load 兜底
+  // Chromium 未报告尺寸变化的缓存图片；只在用户仍处于自动跟随状态时钉底，避免打断查看旧消息。
+  useLayoutEffect(() => {
+    if (previewOpen) return undefined;
+    const scrollNode = scrollRef.current;
+    const contentNode = scrollContentRef.current;
+    if (!scrollNode || !contentNode) return undefined;
+
+    let frameId: number | null = null;
+    const scheduleContentGeometryRefresh = () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        if (autoScrollToBottomRef.current) {
+          scrollNode.scrollTop = scrollNode.scrollHeight;
+        }
+        window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+      });
+    };
+    const handleCapturedAssetLoad = (event: Event) => {
+      if (event.target instanceof HTMLImageElement) {
+        scheduleContentGeometryRefresh();
+      }
+    };
+
+    scrollNode.addEventListener('load', handleCapturedAssetLoad, true);
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(scheduleContentGeometryRefresh);
+      observer.observe(contentNode);
+    }
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      scrollNode.removeEventListener('load', handleCapturedAssetLoad, true);
+      observer?.disconnect();
+    };
+  }, [historyHasContent, previewOpen]);
 
   // 拖动开始/结束两个边界：content 的布局高度在 resizing 切换瞬间从 100% ↔ max 跳变（见 styles.css），
   // 若用户停在底部需同步把可视窗口重新锚定到下端，否则开始拖时内容会因 content 突然撑高而相对上移、
@@ -949,8 +996,8 @@ export default function CompactExportHistoryPanel({
             onWheel={handleWheel}
             onTouchMove={(event) => event.stopPropagation()}
           >
-            {(messages.length > 0 || thinking) ? (
-              <div className="compact-export-history-scroll-content">
+            {historyHasContent ? (
+              <div ref={scrollContentRef} className="compact-export-history-scroll-content">
                 {messages.map((message, index) => {
                   const selectable = isCompactExportMessageSelectable(message);
                   const selected = selectedIds.has(message.id);

@@ -1,4 +1,4 @@
 {
   "plugin.name": "Web Search",
-  "plugin.description": "Online search that picks the engine by user IP (Baidu inside mainland China, DuckDuckGo elsewhere). No API key required"
+  "plugin.description": "Online search with AnySearch first and a region selected from the user's IP. An API key is optional; failures fall back to Baidu or DuckDuckGo"
 }

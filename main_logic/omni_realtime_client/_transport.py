@@ -1060,6 +1060,12 @@ class _TransportMixin:
         owns the image. The handler is registered before send so an immediate
         asynchronous rejection cannot outrun it.
 
+        ``source`` is accepted for signature parity with the text client,
+        which charges staged frames to a per-source quota. Realtime sends
+        immediately and stages nothing, so there is no quota to charge here --
+        but the host injects images through a duck-typed ``stream_image`` and
+        cannot know which client it holds.
+
         ``cache_latest=False`` sends an already-cached proactive snapshot
         without treating that resend as a newly captured frame generation.
         For a non-native callback image it returns a structured result carrying

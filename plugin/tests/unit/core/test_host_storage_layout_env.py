@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -173,6 +174,9 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
                 "boot": EventHandler(meta=auto_meta, handler=_auto_custom),
             }
 
+        async def _on_command_loop_start(self) -> None:
+            order.append(self.ctx.handler_ctx)
+
     class _Sender:
         def __init__(self, channel: str) -> None:
             self.channel = channel
@@ -230,7 +234,12 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
         uplink_endpoint="ipc://up",
     )
 
-    assert order == ["startup", "ready", "auto_custom"]
+    assert order == [
+        "startup",
+        "ready",
+        "auto_custom",
+        "lifecycle.command_loop_start",
+    ]
     startup_payload = next(payload for payload in payloads if payload.get("req_id") == host_module.STARTUP_RESULT_REQ_ID)
     assert startup_payload["success"] is True
 
@@ -666,9 +675,15 @@ async def test_config_update_rolls_back_runtime_helpers_when_config_change_fails
         def __init__(self) -> None:
             self._effective_config = {"plugin": {"store": {"enabled": False}}}
             self.refreshed: list[dict[str, object]] = []
+            self.handler_contexts: list[str] = []
 
         def _refresh_instance_runtime_config(self, effective_config: dict[str, object]) -> None:
             self.refreshed.append(host_module.copy.deepcopy(effective_config))
+
+        @contextmanager
+        def _handler_scope(self, handler_ctx: str):
+            self.handler_contexts.append(handler_ctx)
+            yield
 
     def _config_change(**_kwargs: object) -> None:
         raise RuntimeError("boom")
@@ -695,3 +710,4 @@ async def test_config_update_rolls_back_runtime_helpers_when_config_change_fails
     ]
     assert sender.payloads[-1]["success"] is False
     assert "config_change handler failed" in str(sender.payloads[-1]["error"])
+    assert ctx.handler_contexts == ["lifecycle.config_change"]

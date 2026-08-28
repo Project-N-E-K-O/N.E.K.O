@@ -17,26 +17,507 @@
 
 import asyncio
 import atexit
+import base64
+import ipaddress
 import logging
 import sys
 import time
 import traceback
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Any, Optional
+from urllib.parse import urlsplit
+
+from PIL import Image
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
-from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
-from utils.screenshot_utils import validate_inline_image_b64
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
-from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY
+from main_logic.proactive_delivery import (
+    CALLBACK_EXPIRES_AT_KEY,
+    CALLBACK_IMAGE_MAX_COUNT,
+    CALLBACK_IMAGE_MAX_TOTAL_BYTES,
+    approx_base64_decoded_bytes,
+)
+from plugin.sdk.shared.core.images import (
+    MAX_SOURCE_IMAGE_PIXELS,
+    normalize_image_to_jpeg,
+)
 from utils.config_manager import get_reserved
+from utils.internal_http_client import get_internal_http_client
 
 from ._shared import runtime
 
 _IS_MAIN_PROCESS = runtime.is_main_process
 _config_manager = runtime.config_manager
 logger = runtime.logger
+
+_PLUGIN_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+# Two, not four: each in-flight transfer is bounded only by the per-image
+# ceiling, so the batch width IS the aggregate-budget overshoot while fetching.
+_PLUGIN_IMAGE_FETCH_BATCH_SIZE = 2
+# Per-push budgets. A single push carries an unbounded ``parts`` list, so
+# without these one plugin can pin (count x 8 MiB) of decoded image bytes in
+# this handler — and, for ``respond``, keep it pinned on the queued callback
+# until the pacing manager releases it. The count cap also bounds how long the
+# event handler blocks on fetches (ceil(count / batch) x the 2s per-fetch
+# timeout). Budgets are in DECODED bytes, matching _PLUGIN_IMAGE_MAX_BYTES.
+#
+# The 8 images / 8 MiB figures are the contract PLUGIN_DEVELOPMENT_GUIDE.md
+# already advertises to plugin authors ("单条消息最多向模型注入 8 张、合计
+# 8 MiB 图片"). One push is one turn's worth, so share the constants with the
+# per-turn budget in proactive_delivery rather than keeping a second spelling.
+_PLUGIN_IMAGE_MAX_COUNT = CALLBACK_IMAGE_MAX_COUNT
+_PLUGIN_IMAGE_TOTAL_MAX_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
+# The chat path is separate: URL-backed blocks cost the frontend a fetch (count
+# only), while inline data: URLs ride the WebSocket frame itself (count+bytes).
+_PLUGIN_CHAT_IMAGE_MAX_COUNT = 8
+_PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES = 8 * 1024 * 1024
+# Bounded base64 prefix that the dimension probe reads. Large enough for PNG
+# and JPEG headers; formats Pillow cannot parse from a truncated stream fall
+# back to a full decode.
+_PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS = 64 * 1024
+# Frames are also bounded on COUNT, not only on cumulative pixels: thousands of
+# 1x1 frames multiply to almost nothing yet still cost a decode and a timer tick
+# each, so a pixel budget alone does not see them (Codex). Well above any real
+# sticker, which is tens of frames.
+_PLUGIN_CHAT_MAX_ANIMATION_FRAMES = 300
+
+# Idle read timeout, and a TOTAL deadline over the whole fetch.
+#
+# httpx's timeout bounds ONE read, not the transfer: an endpoint sending a few
+# bytes just inside each interval satisfies it forever while holding a
+# connection and a slot in the bounded fetch pool (Codex). The dual of the same
+# bound on the browser-facing /media route -- both fetch from the same store,
+# and a defect fixed on one side belongs on the other.
+_PLUGIN_IMAGE_FETCH_TOTAL_DEADLINE_S = 8.0
+
+_approx_decoded_bytes = approx_base64_decoded_bytes
+
+
+class _PushImageByteBudget:
+    """How many decoded image bytes ONE push may still retain.
+
+    Charged by the event handler in canonical part order, once a batch of
+    resolutions is in -- never from inside the concurrent fetches themselves.
+    That was tried and reverted: drawing mid-transfer bounds the aggregate but
+    makes survival depend on which network read finishes first, so the set of
+    parts reaching the model varies with timing (Codex P2). Bounding each
+    transfer separately by the per-image ceiling and charging afterwards in
+    order costs a wider in-flight peak and buys determinism.
+
+    Single event loop, so no lock. There is no refund: a payload is charged
+    once, at its retained size, after it is fully resolved.
+    """
+
+    __slots__ = ("remaining",)
+
+    def __init__(self, total: int) -> None:
+        self.remaining = int(total)
+
+    def draw(self, count: int) -> bool:
+        """Reserve ``count`` bytes, or refuse if the pool cannot cover them."""
+        if count > self.remaining:
+            return False
+        self.remaining -= count
+        return True
+
+
+
+# Pillow's own format names for the raster types a chat bubble can render.
+# Keyed off the PARSED bytes, never off the plugin's declared ``mime``.
+# Formats whose frame count cannot be read from a truncated prefix: Pillow
+# counts GIF/WebP frames by walking the stream, so a prefix always reports 1.
+# PNG (APNG) carries acTL right after IHDR, and JPEG cannot animate, so both
+# keep the fast path.
+_FRAME_COUNT_NEEDS_FULL_PAYLOAD = {"GIF", "WEBP"}
+
+_PILLOW_FORMAT_TO_MIME = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "GIF": "image/gif",
+    "WEBP": "image/webp",
+    "BMP": "image/bmp",
+}
+
+
+def _inline_image_data_url_mime(encoded: str) -> Optional[str]:
+    """Return the MIME to publish for an inline payload, or None to reject it.
+
+    Two jobs, both of which have to key off the bytes rather than the part:
+
+    Bombs. The byte budget is structurally blind to them: a 20000x20000
+    single-colour PNG compresses to ~1.2 MiB, sails through an 8 MiB cap, and
+    costs the renderer ~1.6 GB to decode. Only a pixel count catches that.
+
+    MIME. The result is interpolated into a ``data:`` URL, and a data URL's
+    media type ends at the FIRST comma. A part declaring
+    ``image/svg+xml,<svg ...></svg>#`` still satisfies a startswith("image/")
+    test, but the browser would then treat the injected markup as the payload
+    and never look at the bytes validated here. So the MIME comes from the
+    format Pillow actually parsed, and anything outside the raster allowlist is
+    refused rather than passed through.
+
+    Dimensions are read from a bounded base64 prefix so the probe does not
+    scale with payload size (~0.1 ms flat, against ~14 ms to base64-decode a
+    full 8 MiB payload just to read its header). WebP is the one format Pillow
+    cannot open from a truncated stream, so it takes the full-decode fallback --
+    harmless, because a weaponized image is small by construction.
+
+    Returns None when nothing can be established: bytes this host cannot
+    inspect are bytes it should not hand to the renderer.
+    """
+    head = encoded[:_PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS]
+    head = head[: len(head) - (len(head) % 4)]
+    for candidate in (head, encoded):
+        if not candidate:
+            continue
+        try:
+            raw = base64.b64decode(candidate)
+        except Exception:
+            return None
+        try:
+            with Image.open(BytesIO(raw)) as image:
+                width, height = image.size
+                detected = str(image.format or "").upper()
+                # n_frames may itself need to walk the stream; a prefix that
+                # cannot answer is treated as a single frame and re-checked on
+                # the full-decode fallback below.
+                try:
+                    frames = max(1, int(getattr(image, "n_frames", 1)))
+                except Exception:
+                    frames = 1
+        except Image.DecompressionBombError:
+            # Already past Pillow's own ceiling; a full decode cannot help.
+            return None
+        except Exception:
+            continue
+        if width <= 0 or height <= 0:
+            return None
+        if candidate is head and detected in _FRAME_COUNT_NEEDS_FULL_PAYLOAD:
+            # The prefix cannot answer for these; counting off it would let an
+            # animation through as a single frame.
+            try:
+                with Image.open(BytesIO(base64.b64decode(encoded))) as full:
+                    # NOT n_frames: reading it walks the entire animation
+                    # before the ceiling below can reject it, so thousands of
+                    # 1x1 frames -- which stay well inside the wire budget --
+                    # cost a full walk on the event loop just to be refused
+                    # (Codex P2). Stop one frame past the ceiling; that is
+                    # already enough to know the image is over it, and it is
+                    # all the ceiling needs to decide.
+                    frames = 0
+                    try:
+                        while frames <= _PLUGIN_CHAT_MAX_ANIMATION_FRAMES:
+                            full.seek(frames)
+                            frames += 1
+                    except EOFError:
+                        pass
+                    frames = max(1, frames)
+            except Exception:
+                return None
+        # Animation multiplies the decode work the single-frame check bounds:
+        # hundreds of tiny frames stay under both the wire budget and the
+        # per-frame pixel cap while costing the renderer their SUM (Codex P2).
+        # Budget the total against the same ceiling rather than inventing a
+        # second number -- one animation may cost what one full-size still
+        # costs. Deliberately tight: the SDK upload path flattens to JPEG, so
+        # animation only reaches here through un-normalized inline bytes.
+        if frames > _PLUGIN_CHAT_MAX_ANIMATION_FRAMES:
+            return None
+        if frames * width * height > MAX_SOURCE_IMAGE_PIXELS:
+            return None
+        return _PILLOW_FORMAT_TO_MIME.get(detected)
+    return None
+
+
+def _is_local_plugin_media_url(url: str) -> bool:
+    """Accept temporary media on any loopback port selected by the plugin host."""
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port
+        media_id = parsed.path.removeprefix("/media/")
+        return (
+            parsed.scheme == "http"
+            and parsed.username is None
+            and parsed.password is None
+            and host is not None
+            and ipaddress.ip_address(host).is_loopback
+            and port is not None
+            and not parsed.query
+            and not parsed.fragment
+            and parsed.path.startswith("/media/")
+            and bool(media_id)
+            and "/" not in media_id
+        )
+    except ValueError:
+        return False
+
+
+def _normalize_inline_image_to_jpeg_base64(encoded: str) -> str:
+    """Re-encode an inline payload to jpeg so the declared mime is honest."""
+    raw = base64.b64decode(encoded)
+    return base64.b64encode(normalize_image_to_jpeg(raw)).decode("ascii")
+
+
+async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
+    """Resolve one canonical image part to the model's base64 input.
+
+    Bounds ONE transfer at the per-image ceiling and returns the bytes that
+    would actually be retained. Budget accounting is deliberately NOT done
+    here: the caller charges the pool in canonical part order, because drawing
+    from a shared pool inside concurrent fetches made survival depend on which
+    network read finished first rather than on part order (Codex P2).
+    """
+    encoded = part.get("binary_base64")
+    if isinstance(encoded, str) and encoded:
+        # Every model client DECLARES jpeg for callback images -- the offline
+        # path builds ``data:image/jpeg;base64,`` and realtime Gemini sends
+        # ``mime_type="image/jpeg"``. URL images are already jpeg because the
+        # SDK normalizes at upload; inline bytes never pass through it, so
+        # PNG/WebP would reach the provider mislabelled (Codex P2).
+        #
+        # Unlike the header probe this is a full decode+encode and Pillow's
+        # codecs release the GIL, so a thread genuinely buys something.
+        # Returning the NORMALIZED bytes is also what lets the caller charge
+        # the budget on what is retained, since jpeg can expand a png.
+        return await asyncio.to_thread(
+            _normalize_inline_image_to_jpeg_base64, encoded
+        )
+    url = part.get("url")
+    if not isinstance(url, str) or not url:
+        raise ValueError("plugin image part has no usable payload")
+    return await _fetch_plugin_image_base64(url)
+
+
+def _browser_media_url(url: str) -> str:
+    """Map a validated plugin media URL to the path the BROWSER should load.
+
+    The absolute form is minted for this process: the main server fetches it
+    in-process on the same host, so 127.0.0.1 is correct there. It is wrong for
+    the browser whenever the browser is elsewhere -- Docker, or another device
+    on the network -- because 127.0.0.1 then means the viewer's own machine,
+    and under HTTPS it is blocked as mixed content besides (Codex P2).
+
+    The failure is asymmetric, which is what makes it expensive: the model
+    fetch succeeds while the picture does not render, so the character
+    describes an image the user cannot see.
+
+    The caller has already run _is_local_plugin_media_url, which pins the path
+    to a single /media/<id> segment, so the path is safe to hand over as-is.
+    Internal and browser-facing URLs stay separate: only chat blocks are
+    rewritten, and the model path keeps the absolute address it fetches.
+    """
+    return urlsplit(url).path
+
+
+def _image_part_payloads_conflict(part: Any) -> bool:
+    """True when one image part carries BOTH a url and inline bytes.
+
+    The two consumers resolve such a part in OPPOSITE directions: the model
+    path prefers ``binary_base64`` and falls back to ``url``, while the chat
+    path prefers ``url`` and falls back to the bytes. A part carrying both can
+    therefore show the user one image while the character is reasoning about a
+    different one, and the reply reads as confidently wrong about what is on
+    screen (Codex P2).
+
+    Neither precedence is more correct, and the host cannot tell whether the
+    two sources agree without fetching and comparing both. So the ambiguity is
+    refused rather than silently resolved -- the same stance the inline MIME
+    probe takes: input this host cannot pin down is input it should not act on.
+    """
+    if not isinstance(part, dict) or part.get("type") != "image":
+        return False
+    url = part.get("url")
+    encoded = part.get("binary_base64")
+    return bool(
+        isinstance(url, str) and url.strip()
+        and isinstance(encoded, str) and encoded.strip()
+    )
+
+
+def _drop_conflicting_image_parts(parts: list[Any]) -> list[Any]:
+    """Remove dual-source image parts before EITHER consumer sees them.
+
+    Applied once where the canonical list enters the host, because the model
+    path and the chat path read from the same list and a per-consumer check
+    would have to be repeated in both -- and stay repeated as entry points are
+    added.
+    """
+    kept = [part for part in parts if not _image_part_payloads_conflict(part)]
+    dropped = len(parts) - len(kept)
+    if dropped:
+        logger.warning(
+            "[plugin-image] dropped %d image part(s) carrying both url and "
+            "inline bytes; the model and the chat bubble would have resolved "
+            "them to different images",
+            dropped,
+        )
+    return kept
+
+
+def _build_plugin_chat_blocks(
+    parts: list[Any],
+    *,
+    include_text: bool,
+) -> list[dict[str, str]]:
+    """Project canonical plugin parts to the frontend's supported blocks.
+
+    Images past the per-push budget are dropped; text blocks keep flowing so
+    the surviving mix stays in canonical order rather than truncating the tail.
+    """
+    blocks: list[dict[str, str]] = []
+    image_count = 0
+    inline_bytes = 0
+    dropped_images = 0
+    bomb_images = 0
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if (
+            include_text
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+        ):
+            blocks.append({"type": "text", "text": part["text"]})
+            continue
+        if part.get("type") != "image":
+            continue
+        if image_count >= _PLUGIN_CHAT_IMAGE_MAX_COUNT:
+            dropped_images += 1
+            continue
+        url = part.get("url")
+        if isinstance(url, str) and _is_local_plugin_media_url(url):
+            blocks.append({"type": "image", "url": _browser_media_url(url)})
+            image_count += 1
+            continue
+        encoded = part.get("binary_base64")
+        mime = str(part.get("mime") or "").strip().lower()
+        if isinstance(encoded, str) and encoded and mime.startswith("image/"):
+            decoded_bytes = _approx_decoded_bytes(encoded)
+            if inline_bytes + decoded_bytes > _PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES:
+                dropped_images += 1
+                continue
+            safe_mime = _inline_image_data_url_mime(encoded)
+            if safe_mime is None:
+                # Bytes and pixels are independent axes; the budget above
+                # cannot see a bomb, so this check is not redundant with it.
+                # It also refuses a MIME we could not corroborate from bytes.
+                bomb_images += 1
+                continue
+            inline_bytes += decoded_bytes
+            # safe_mime, NOT the declared ``mime`` -- see the helper's docstring.
+            blocks.append(
+                {"type": "image", "url": f"data:{safe_mime};base64,{encoded}"}
+            )
+            image_count += 1
+    if dropped_images:
+        logger.warning(
+            "[EventBus] %d chat image part(s) dropped: over the per-push budget "
+            "(max %d images, %d inline bytes)",
+            dropped_images,
+            _PLUGIN_CHAT_IMAGE_MAX_COUNT,
+            _PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES,
+        )
+    if bomb_images:
+        logger.warning(
+            "[EventBus] %d inline chat image(s) dropped: unreadable header or "
+            "over the %d pixel decode limit",
+            bomb_images,
+            MAX_SOURCE_IMAGE_PIXELS,
+        )
+    return blocks
+
+
+def _build_plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
+    """Synchronously validate plugin image parts and build frontend blocks."""
+    return _build_plugin_chat_blocks(media_parts, include_text=False)
+
+
+def _build_ordered_plugin_chat_blocks(parts: list[Any]) -> list[dict[str, str]]:
+    """Build supported frontend blocks without changing canonical part order."""
+    return _build_plugin_chat_blocks(parts, include_text=True)
+
+
+def _ordered_plugin_chat_blocks(parts: list[Any], mgr: Any) -> list[dict[str, str]]:
+    """Build ordered blocks and expand role placeholders in text."""
+    blocks = _build_ordered_plugin_chat_blocks(parts)
+    for block in blocks:
+        if block["type"] == "text":
+            block["text"] = core.apply_role_placeholders(
+                block["text"],
+                lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                master_name=getattr(mgr, "master_name", "") or "",
+            )
+    return blocks
+
+
+async def _fetch_plugin_image_base64(url: str) -> str:
+    """Fetch one temporary plugin image without blocking the event loop.
+
+    Bounded by the flat per-image ceiling. The aggregate per-push budget is
+    applied by the caller, in canonical part order, once the batch is in.
+    """
+    if not _is_local_plugin_media_url(url):
+        raise ValueError("image URL is not served by the local plugin media store")
+    client = get_internal_http_client()
+    async with asyncio.timeout(_PLUGIN_IMAGE_FETCH_TOTAL_DEADLINE_S), client.stream(
+        "GET",
+        url,
+        timeout=2.0,
+        follow_redirects=False,
+    ) as response:
+        response.raise_for_status()
+        content_type = str(response.headers.get("content-type") or "").lower()
+        if not content_type.startswith("image/"):
+            raise ValueError("plugin media store returned a non-image response")
+        raw_content_length = str(response.headers.get("content-length") or "").strip()
+        if raw_content_length:
+            try:
+                content_length = int(raw_content_length)
+            except ValueError:
+                content_length = 0
+            if content_length > _PLUGIN_IMAGE_MAX_BYTES:
+                raise ValueError("plugin image exceeds the remaining model input budget")
+        buffered = bytearray()
+        async for chunk in response.aiter_bytes():
+            if not chunk:
+                continue
+            buffered.extend(chunk)
+            if len(buffered) > _PLUGIN_IMAGE_MAX_BYTES:
+                raise ValueError("plugin image exceeds the per-image transfer limit")
+        content = bytes(buffered)
+    if not content:
+        raise ValueError("plugin media store returned an empty image")
+    encoded = await asyncio.to_thread(base64.b64encode, content)
+    return encoded.decode("ascii")
+
+
+def _resolve_event_source(event: dict) -> tuple[str, str]:
+    """Return (source_kind, source_name) for one agent event.
+
+    Extracted so the chat render and the callback build cannot disagree about
+    what a push is called: the render happens first and used to derive only
+    plugin/system, which quietly relabelled computer-use and browser events.
+    """
+    channel = str(event.get("channel") or "unknown")
+    kind = str(event.get("source_kind") or "").strip()
+    name = str(event.get("source_name") or "").strip()
+    if not kind:
+        if channel == "user_plugin":
+            kind = "plugin"
+        elif channel in ("computer_use", "cu"):
+            kind = "cu"
+        elif channel in ("browser_use", "browser"):
+            kind = "browser"
+        elif channel.startswith("plugin:"):
+            kind = "plugin"
+            if not name:
+                name = channel.split(":", 1)[1]
+        else:
+            kind = "system"
+    return kind, name
 
 
 def _resolve_callback_origin(event_type: str, event: dict, channel: str) -> str:
@@ -553,20 +1034,35 @@ async def _handle_agent_event(event: dict):
             text = raw_text.strip()
 
             # v2 push_message: media parts (image/audio/video) ride on the
-            # same proactive_message event.  Image parts go straight to the
-            # realtime session via ``stream_image`` (the public vision-input
-            # API on OmniRealtimeClient/OmniOfflineClient) before the (text
-            # → callback) path so the AI sees them in the same context
-            # window as the text it's about to respond to.
+            # same proactive_message event. Image parts are either injected
+            # into the active model session or retained on the callback that
+            # owns their eventual text/voice delivery boundary.
             #
             # Audio / video aren't supported here — ``stream_audio`` is the
             # live-mic PCM pipeline (specific sample rate + RNNoise gate),
             # not a generic file injector, and we have no video API.
             # ai_behavior=blind suppresses injection entirely.
+            ordered_parts = (
+                event.get("parts") if isinstance(event.get("parts"), list) else None
+            )
+            # Sanitized ONCE here, before either consumer: the chat path reads
+            # ordered_parts directly and media_parts is derived from it, so a
+            # check placed in either alone would leave the other reachable.
+            if ordered_parts is not None:
+                ordered_parts = _drop_conflicting_image_parts(ordered_parts)
             media_parts = (
-                event.get("media_parts")
-                if isinstance(event.get("media_parts"), list)
-                else []
+                [
+                    part
+                    for part in ordered_parts
+                    if isinstance(part, dict)
+                    and part.get("type") in ("image", "audio", "video")
+                ]
+                if ordered_parts is not None
+                else _drop_conflicting_image_parts(
+                    event.get("media_parts")
+                    if isinstance(event.get("media_parts"), list)
+                    else []
+                )
             )
             ai_behavior_v2 = event.get("ai_behavior")
             # Images that must travel WITH a proactive (respond) callback so they
@@ -576,19 +1072,119 @@ async def _handle_agent_event(event: dict):
             # (or drop it when no session exists yet) while the text is held back
             # by the manager — the eventual proactive response would then lack
             # its matching visual context.
-            deferred_proactive_images: list[str] = []
-            # Passive/read images stay attached to the callback until the next
-            # natural text/hot-swap consumer selects that exact callback. This
-            # keeps native provider context from receiving an unlabeled image
-            # before the matching passive text is eligible for delivery.
             deferred_callback_images: list[str] = []
             if media_parts and ai_behavior_v2 in ("respond", "read"):
-                for mp in media_parts:
+                sess = getattr(mgr, "session", None)
+                stream_image = getattr(sess, "stream_image", None) if sess else None
+                image_indexes = [
+                    index
+                    for index, part in enumerate(media_parts)
+                    if isinstance(part, dict) and part.get("type") == "image"
+                ]
+                if len(image_indexes) > _PLUGIN_IMAGE_MAX_COUNT:
+                    logger.warning(
+                        "[EventBus] plugin push carried %d images; only the first %d reach the model path",
+                        len(image_indexes),
+                        _PLUGIN_IMAGE_MAX_COUNT,
+                    )
+                    image_indexes = image_indexes[:_PLUGIN_IMAGE_MAX_COUNT]
+                if ai_behavior_v2 == "read" and stream_image is None:
+                    # ``read`` is documented as best-effort into the CURRENT
+                    # session; with no session these are dropped at the inject
+                    # site regardless. Resolving them first would spend network,
+                    # a decode and event-handler latency on media guaranteed to
+                    # be discarded -- background pushes can repeat that
+                    # indefinitely (Codex P2). ``respond`` is unaffected: its
+                    # images ride the callback and need no session yet.
+                    logger.debug(
+                        "[EventBus] %d read image(s) skipped: session=%s has no stream_image",
+                        len(image_indexes),
+                        type(sess).__name__ if sess else "None",
+                    )
+                    image_indexes = []
+                elif ai_behavior_v2 == "read" and not getattr(
+                    sess, "_supports_native_image", True
+                ):
+                    # ``read`` is NOT supported on a realtime provider without
+                    # native vision (standard StepFun is the only one left).
+                    #
+                    # Such a session answers ``stream_image(cache_latest=False)``
+                    # by RETURNING a VISION_MODEL description instead of putting
+                    # anything in the conversation -- see _transport.stream_image.
+                    # Delivering that description needs a conversation item bound
+                    # to a delivery ticket, which is what _stream_cb_media builds
+                    # for ``respond`` callbacks. ``read`` is best-effort input to
+                    # whatever session happens to exist and owns no such ticket,
+                    # so it has nowhere to put the description.
+                    #
+                    # Bail out HERE rather than at the inject site: reaching that
+                    # site means the fetch, the decode and a paid VISION_MODEL
+                    # call have already happened for a description that is then
+                    # dropped on the floor. Skipping early is honest about the
+                    # gap and costs nothing. Passing cache_latest=True instead
+                    # would land the image in the ambient frame cache, where an
+                    # unrelated prompt_ephemeral can resend it as a screenshot.
+                    #
+                    # ``respond`` is unaffected -- its images ride the callback
+                    # and go through _stream_cb_media, which does handle this.
+                    # Text mode is unaffected too: OmniOfflineClient has no
+                    # _supports_native_image, so the getattr default keeps it in.
+                    logger.warning(
+                        "[EventBus] %d read image(s) dropped: session=%s has no native "
+                        "vision, and ai_behavior='read' has no ticket-bound channel for "
+                        "a VISION_MODEL description; use ai_behavior='respond' to reach "
+                        "this provider",
+                        len(image_indexes),
+                        type(sess).__name__ if sess else "None",
+                    )
+                    image_indexes = []
+                resolved_model_images: dict[int, str | BaseException] = {}
+                # Fetch concurrently, but charge the pool in CANONICAL PART
+                # ORDER once each batch is in. Drawing from a shared pool
+                # inside the concurrent fetches bounded the aggregate but made
+                # survival depend on which network read finished first, so a
+                # fast later image could starve a slow earlier one and the set
+                # reaching the model varied with timing (Codex P2). Ordering is
+                # a contract this PR exists to keep; the round-trip saving is
+                # not, so the accounting moved out of the fetches.
+                #
+                # Each transfer is still bounded on its own by the per-image
+                # ceiling, so the in-flight worst case is the batch's worth --
+                # halved to two to keep that overshoot modest against an 8 MiB
+                # aggregate (CodeRabbit).
+                _image_budget = _PushImageByteBudget(_PLUGIN_IMAGE_TOTAL_MAX_BYTES)
+                for offset in range(0, len(image_indexes), _PLUGIN_IMAGE_FETCH_BATCH_SIZE):
+                    if _image_budget.remaining <= 0:
+                        logger.warning(
+                            "[EventBus] plugin image byte budget (%d) exhausted; %d image(s) not fetched",
+                            _PLUGIN_IMAGE_TOTAL_MAX_BYTES,
+                            len(image_indexes) - offset,
+                        )
+                        break
+                    batch = image_indexes[offset : offset + _PLUGIN_IMAGE_FETCH_BATCH_SIZE]
+                    results = await asyncio.gather(
+                        *(_resolve_plugin_model_image(media_parts[i]) for i in batch),
+                        return_exceptions=True,
+                    )
+                    for index, result in zip(batch, results):
+                        if isinstance(result, str):
+                            # Charged on the RETAINED bytes (post-normalization)
+                            # in part order, so the same input always yields the
+                            # same surviving set.
+                            if not _image_budget.draw(_approx_decoded_bytes(result)):
+                                logger.warning(
+                                    "[EventBus] plugin image dropped: over the %d byte per-push model budget",
+                                    _PLUGIN_IMAGE_TOTAL_MAX_BYTES,
+                                )
+                                continue
+                        # Exceptions are retained so the drop below logs the
+                        # underlying resolve failure.
+                        resolved_model_images[index] = result
+
+                for index, mp in enumerate(media_parts):
                     if not isinstance(mp, dict):
                         continue
                     part_type = mp.get("type")
-                    b64 = mp.get("binary_base64")
-                    url = mp.get("url")
                     mime = mp.get("mime") or ""
                     if part_type != "image":
                         # ``audio`` / ``video`` need provider-specific transport
@@ -601,69 +1197,111 @@ async def _handle_agent_event(event: dict):
                             mime,
                         )
                         continue
-                    if isinstance(b64, str) and b64:
-                        # 入口校验：这条路径此前照单全收任意非空字符串，既不校验
-                        # 单张大小也不限张数，而这些图会一直挂在 callback 上等待
-                        # 投递（队列本身只限条目数，不限条目内的字节）。用的是仓
-                        # 库既有的两个判据，不是新发明的预算：
-                        #   - validate_inline_image_b64：与 process_screen_data
-                        #     同一条「大小 → 解码 → PIL 打开」判据；
-                        #   - MAX_MULTIMODAL_TURN_IMAGES：每轮图片数上限。这些图
-                        #     最终会作为同一轮的前缀一起送进去，所以就是那个预算。
-                        # 超出的按「多余丢弃」处理，并留一行 warning 让插件作者看见
-                        # ——与上面 audio/video、url 两处未支持分支的处理一致。
-                        # 长度检查挡不住「短的垃圾字符串」：它会被原样插进
-                        # data:image/jpeg;base64,... 里送给 provider，足以让
-                        # provider 拒收**承载它的那一整轮用户发言**。所以必须真的
-                        # 解码并打开一次，判据与 process_screen_data 一致。
-                        # 先判名额再校验：校验要 base64 解码 + PIL 全量解像素
-                        # （还占一个 worker 线程），而 push-message schema 对
-                        # parts 的条数没有上限。名额满了之后这些工作全是白做的，
-                        # 一个事件塞几十张接近上限的合法图就能把它串行地耗掉。
-                        bucket = (
-                            deferred_proactive_images
-                            if ai_behavior_v2 == "respond"
-                            else deferred_callback_images
-                        )
-                        if len(bucket) >= MAX_MULTIMODAL_TURN_IMAGES:
-                            logger.warning(
-                                "[EventBus] image media_part dropped: already "
-                                "retained %d image(s), the per-turn cap",
-                                MAX_MULTIMODAL_TURN_IMAGES,
-                            )
-                            continue
-                        if not await validate_inline_image_b64(b64):
-                            logger.warning(
-                                "[EventBus] image media_part dropped: not a "
-                                "decodable image (%d chars)",
-                                len(b64),
-                            )
-                            continue
-                        if ai_behavior_v2 == "respond":
-                            # Defer: stream when the manager releases this cue so
-                            # the image shares the proactive response's context.
-                            # Image-only respond is still a real proactive turn;
-                            # the callback's source header supplies the text cue.
-                            deferred_proactive_images.append(b64)
-                            continue
-                        deferred_callback_images.append(b64)
-                    elif isinstance(url, str) and url:
-                        # TODO(v0.9): fetch URL → bytes → base64 → stream_image.
-                        # Until then plugin authors should inline-encode small
-                        # images (≤256KB) or pre-fetch URL-served frames into
-                        # ``parts`` themselves.
+                    resolved_b64 = resolved_model_images.get(index)
+                    if isinstance(resolved_b64, BaseException):
                         logger.warning(
-                            "[EventBus] image media_part url=%s not yet fetched; dropped",
-                            url[:80],
+                            "[EventBus] plugin image resolve failed; dropped: %s",
+                            resolved_b64,
                         )
-                    # else: malformed part, silently skip
+                        continue
+                    if not isinstance(resolved_b64, str) or not resolved_b64:
+                        continue
+                    if ai_behavior_v2 == "respond":
+                        # Defer: stream when the manager releases this cue so
+                        # the image shares the proactive response's context.
+                        deferred_callback_images.append(resolved_b64)
+                        continue
+                    # ``read`` is best-effort input to the current session.
+                    # It does not create a cross-session media inbox.
+                    if stream_image is None:
+                        logger.debug(
+                            "[EventBus] read image dropped: session=%s has no stream_image",
+                            type(sess).__name__ if sess else "None",
+                        )
+                        continue
+                    try:
+                        await stream_image(
+                            resolved_b64,
+                            bypass_rate_limit=True,
+                            # Plugin-owned input, not an ambient frame. The
+                            # realtime transport otherwise stores it as
+                            # _latest_image_b64 and marks it unconsumed, so an
+                            # unrelated prompt_ephemeral could resend it later
+                            # as a screenshot -- after it was already inserted
+                            # into the conversation (Codex P2).
+                            cache_latest=False,
+                            # Charged to the plugin quota, never the user's.
+                            source="plugin",
+                        )
+                        logger.debug(
+                            "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
+                            len(resolved_b64),
+                            mime,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[EventBus] read image stream_image failed; dropped: %s",
+                            e,
+                        )
 
+            # ONE chat-render path for every plugin push, regardless of
+            # ai_behavior. Plugin content is rendered as a SYSTEM message: it
+            # is neither the assistant speaking nor the user, and presenting it
+            # as either is a lie the reader cannot detect.
+            #
+            # Before this, `blind` rendered through passthrough_to_chat_bubble
+            # and therefore wore the assistant's avatar and name, while
+            # `read`/`respond` rendered image-bearing pushes through
+            # render_chat_blocks -- also as the assistant. The second was worse
+            # than cosmetic: those images DO reach the model, and they reach it
+            # on a user-role message, so the same content appeared to the
+            # reader as the assistant's and to the model as the user's.
+            #
+            # `blind` content is not in the model's context at all, so an
+            # assistant-looking bubble also created something the assistant has
+            # no memory of saying. A source-labelled system bubble keeps the
+            # plugin's own wording -- a plugin may still write in the
+            # character's voice -- while making its origin visible.
+            visibility = event.get("visibility")
             if (
-                text
-                or deferred_proactive_images
-                or deferred_callback_images
+                isinstance(visibility, list)
+                and "chat" in visibility
+                and hasattr(mgr, "render_chat_blocks")
             ):
-                if text and event.get("direct_reply"):
+                if ordered_parts is not None:
+                    visible_blocks = _ordered_plugin_chat_blocks(ordered_parts, mgr)
+                else:
+                    visible_images = _build_plugin_image_chat_blocks(media_parts)
+                    visible_blocks = []
+                    if text:
+                        visible_text = core.apply_role_placeholders(
+                            raw_text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
+                        visible_blocks.append({"type": "text", "text": visible_text})
+                    visible_blocks.extend(visible_images)
+                if visible_blocks:
+                    visible_source, visible_source_name = _resolve_event_source(event)
+                    # Display must not be able to cancel delivery. This runs
+                    # BEFORE the callback is built, so an exception here would
+                    # skip the model path entirely and lose both the deferred
+                    # images and the text (CodeRabbit).
+                    try:
+                        await mgr.render_chat_blocks(
+                            visible_blocks,
+                            request_id=event.get("task_id") or None,
+                            source=visible_source,
+                            source_name=visible_source_name or None,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[EventBus] render_chat_blocks failed; continuing delivery: %s",
+                            e,
+                        )
+
+            if text or deferred_callback_images:
+                if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()
                     # Plugin-supplied direct_reply text bypasses the LLM and
                     # speaks/types verbatim. Plugin authors may write
@@ -726,21 +1364,7 @@ async def _handle_agent_event(event: dict):
                 # Default source_kind from channel when caller didn't specify one.
                 # Plugin emit sites already pass explicit source_kind/source_name.
                 _channel = event.get("channel") or "unknown"
-                source_kind = (event.get("source_kind") or "").strip()
-                source_name = (event.get("source_name") or "").strip()
-                if not source_kind:
-                    if _channel == "user_plugin":
-                        source_kind = "plugin"
-                    elif _channel in ("computer_use", "cu"):
-                        source_kind = "cu"
-                    elif _channel in ("browser_use", "browser"):
-                        source_kind = "browser"
-                    elif _channel.startswith("plugin:"):
-                        source_kind = "plugin"
-                        if not source_name:
-                            source_name = _channel.split(":", 1)[1]
-                    else:
-                        source_kind = "system"
+                source_kind, source_name = _resolve_event_source(event)
                 event_metadata = (
                     event.get("metadata")
                     if isinstance(event.get("metadata"), dict)
@@ -773,8 +1397,6 @@ async def _handle_agent_event(event: dict):
                 cb_coalesce_key = event.get("coalesce_key")
                 if not isinstance(cb_coalesce_key, str):
                     cb_coalesce_key = ""
-                callback_summary = event.get("summary") or text
-                callback_detail = event.get("detail") or text
                 callback = {
                     "event": "agent_task_callback",
                     "origin": origin,
@@ -782,19 +1404,17 @@ async def _handle_agent_event(event: dict):
                     "channel": _channel,
                     "status": cb_status,
                     "success": bool(event.get("success", True)),
-                    "summary": callback_summary,
-                    "detail": callback_detail,
+                    "summary": event.get("summary") or text,
+                    "detail": event.get("detail") or text,
                     "error_message": event.get("error_message") or "",
                     "source_kind": source_kind,
                     "source_name": source_name,
                     "delivery_mode": delivery_mode,
                     "priority": cb_priority,
                     "coalesce_key": cb_coalesce_key,
-                    # Both respond and read images cross the provider boundary
-                    # only at their callback's actual delivery point.
-                    "media_images": (
-                        deferred_proactive_images + deferred_callback_images
-                    ),
+                    # Respond images stream at manager release. Read images are
+                    # best-effort input to the current session and are not queued.
+                    "media_images": deferred_callback_images,
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",
@@ -848,72 +1468,13 @@ async def _handle_agent_event(event: dict):
                 _vis_present = isinstance(_vis_raw, list)
                 _vis = _vis_raw if _vis_present else []
                 _ai_behavior = (event.get("ai_behavior") or "").strip()
-                if (
-                    "chat" in _vis
-                    and _ai_behavior == "blind"
-                    and hasattr(mgr, "passthrough_to_chat_bubble")
-                ):
-                    passthrough_dispatched = False
-                    try:
-                        # Reuse the already-resolved source_kind local (computed
-                        # above from channel: computer_use→cu, browser_use→browser,
-                        # plugin:*→plugin, else system). Falling back to event
-                        # raw + "plugin" default would mislabel non-plugin sources.
-                        passthrough_source = source_kind or "plugin"
-                        # Why: passthrough_to_chat_bubble swallows send_json
-                        # failures and is a no-op when WS is missing/disconnected,
-                        # so absence-of-exception is NOT proof a frame was sent.
-                        # We must gate handle_proactive_complete on the bool
-                        # return — otherwise we emit turn-end without a matching
-                        # turn-start (frontend never opened the assistant
-                        # lifecycle), corrupting proactive rescheduling.
-                        # Same role-placeholder contract as the direct_reply
-                        # path: blind-passthrough text reaches the chat bubble
-                        # verbatim without going through the LLM, so the
-                        # placeholder has to be expanded here or the literal
-                        # ``{MASTER_NAME}`` token would render in the bubble.
-                        passthrough_text = core.apply_role_placeholders(
-                            raw_text,
-                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
-                            master_name=getattr(mgr, "master_name", "") or "",
-                        )
-                        passthrough_dispatched = bool(
-                            await mgr.passthrough_to_chat_bubble(
-                                passthrough_text,
-                                request_id=event.get("task_id") or None,
-                                source=passthrough_source,
-                            )
-                        )
-                        logger.info(
-                            "[EventBus] passthrough_to_chat_bubble dispatched=%s (text_len=%d, source=%s)",
-                            passthrough_dispatched,
-                            len(text),
-                            passthrough_source,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "[EventBus] passthrough_to_chat_bubble failed: %s",
-                            e,
-                        )
-                    # Why: gemini_response opens an assistant turn lifecycle on
-                    # the frontend (ensureAssistantTurnStarted in app-websocket.js);
-                    # without a matching turn-end event the assistant bubble
-                    # stays "in-progress" and proactive rescheduling / lifecycle
-                    # finalization never fire. handle_proactive_complete is the
-                    # canonical turn-end emitter shared with the direct task_result
-                    # reply path above. The HUD agent_notification branch below
-                    # does NOT open an assistant turn, so single-emit here is
-                    # sufficient even when visibility=["chat","hud"].
-                    if passthrough_dispatched and hasattr(
-                        mgr, "handle_proactive_complete"
-                    ):
-                        try:
-                            await mgr.handle_proactive_complete()
-                        except Exception as e:
-                            logger.warning(
-                                "[EventBus] passthrough turn_end emit failed: %s",
-                                e,
-                            )
+                # Plugin chat output is rendered above, as a system message,
+                # for every ai_behavior. It used to go through
+                # passthrough_to_chat_bubble here, which wore the assistant's
+                # identity AND opened an assistant turn -- hence the turn-end
+                # that used to follow. A system bubble opens no turn, so there
+                # is none to close.
+
                 # v2 visibility contract: HUD agent_notification fires only
                 # when "hud" is in visibility. Why: visibility=["chat"] must
                 # not double-render as both chat bubble AND HUD toast.

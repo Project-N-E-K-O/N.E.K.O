@@ -15,6 +15,11 @@
 
 from typing import Sequence
 
+from main_logic.proactive_delivery import (
+    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+    fit_images_to_turn_budget,
+)
+
 from ._shared import (
     AIMessage,
     Any,
@@ -568,7 +573,12 @@ class _StreamingMixin:
             del self._pending_images[:len(attachment_images)]
         if not text or not text.strip():
             # If only images without text, use a default prompt
-            if attachment_images or prefix_images or own_images:
+            if (
+                attachment_images
+                or prefix_images
+                or own_images
+                or getattr(self, "_pending_plugin_images", None)
+            ):
                 text = "请分析这些图片。"
             else:
                 return
@@ -611,11 +621,19 @@ class _StreamingMixin:
                 self._proactive_image_staged_at = 0.0
                 self._proactive_image_history_len = 0
                 proactive_image = None
-        has_images = bool(
-            proactive_image
-            or prefix_images
-            or own_images
-            or attachment_images
+        # Plugin `read` frames sit in their own quota-bounded list. Instances
+        # built via __new__ (tests, legacy callers) never ran __init__, so read
+        # it the same defensive way the proactive slot is read above.
+        #
+        # 只在这里做**判断**，内容留到下面和用户列表一起读：切 vision model 是
+        # 个 await，此刻取快照会漏掉切换期间到达的插件图，而它随后又会被清掉，
+        # 等于从每一轮里都丢失（Codex P2）。
+        has_images = (
+            bool(proactive_image)
+            or bool(prefix_images)
+            or bool(own_images)
+            or bool(attachment_images)
+            or len(getattr(self, "_pending_plugin_images", None) or []) > 0
         )
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
@@ -646,33 +664,65 @@ class _StreamingMixin:
             # Multi-modal message: images + text
             content = []
 
-            # Add images first. Temporal order: the proactive screenshot (the
-            # screen she commented on, BEFORE the user spoke) leads, then this
-            # turn's own sampled frames, then the user's pending attachments —
-            # so the model doesn't mistake the earlier screen for what the user
-            # just captured.
-            if proactive_image:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{proactive_image}"
-                    }
-                })
-            for img_b64 in own_images:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{img_b64}"
-                    }
-                })
-            for img_b64 in attachment_images:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{img_b64}"
-                    }
-                })
-            for img_b64 in prefix_images:
+            # 在模型切换的 await **之后**读取，且到下面的清理之间没有挂起点，
+            # 保证「附上的」和「清掉的」是同一批（用户那条列表靠就地迭代天然拥有
+            # 这个性质）。
+            plugin_images = list(getattr(self, "_pending_plugin_images", None) or [])
+            # 就地取走所有权：读完立刻清空，中间**不能**有 await（否则模型调用期间
+            # 到达的插件图会被下面的清理连带抹掉，等于从每一轮里丢失）。取走之后
+            # 这批字节已经归本轮所有，后面再做异步的压缩/抽样就安全了。
+            _plugin_pending = getattr(self, "_pending_plugin_images", None)
+            if _plugin_pending is not None:
+                _plugin_pending.clear()
+            # 顺序既是时间顺序也是相关性顺序（#2964 × #2835 合并）：
+            #   1. 主动搭话截图 —— 用户开口**之前**屏幕上的东西，最远；
+            #   2. 插件提供的上下文；
+            #   3. passive callback 带的图（同样是上下文，不是用户这一刻拍的）；
+            #   4. 本回合自己抽样的帧（独立 ASR 的开头/中间/结尾）；
+            #   5. 用户显式投递的附件 —— 离它所属的文本最近。
+            # 4/5 放最后，是为了不让模型把更早的屏幕误当成用户刚拍的东西。
+            _ordered_images = (
+                ([proactive_image] if proactive_image else [])
+                + plugin_images
+                + list(prefix_images)
+                + list(own_images)
+                + list(attachment_images)
+            )
+            # 各来源的**张数**配额是分开的（谁也花不了谁的额度），但它们最终落在
+            # 同一条 HumanMessage 上，provider 看到的是**总和**——超过单请求上限
+            # 会整条请求被拒，而不是丢几张图。从**前面**裁：离文本最近的那些才是
+            # 它要讲的。
+            # 超预算时按阶梯处理，**不静默丢弃**：先抽样成开头/中间/结尾三张，
+            # 还超就压缩，都不行才从最旧的开始丢——并且无论走到哪一级都告诉用户。
+            # 整条请求超限会被 provider 整个拒掉，所以必须有人让步；让步的顺序是
+            # 「先减冗余、再降质量、最后才是丢内容」。
+            _attached_images, _budget_notice = await fit_images_to_turn_budget(
+                _ordered_images,
+                TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+            )
+            if _budget_notice:
+                logger.warning(
+                    "Turn images over the %d-byte budget: %d -> %d image(s) "
+                    "(sampled=%s compressed=%s dropped=%d)",
+                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+                    _budget_notice["original_count"],
+                    _budget_notice["final_count"],
+                    _budget_notice["sampled"],
+                    _budget_notice["compressed"],
+                    _budget_notice["dropped"],
+                )
+                if self.on_status_message:
+                    try:
+                        await self.on_status_message(json.dumps({
+                            "code": "TURN_IMAGES_TRIMMED",
+                            "details": _budget_notice,
+                        }))
+                    except Exception as _notice_error:
+                        logger.warning(
+                            "could not report the image trim to the user: %s",
+                            _notice_error,
+                        )
+            for img_b64 in _attached_images:
                 content.append({
                     "type": "image_url",
                     "image_url": {
@@ -687,22 +737,24 @@ class _StreamingMixin:
             })
 
             user_message = HumanMessage(content=content)
-            _img_count = (
-                len(attachment_images)
-                + len(prefix_images)
-                + len(own_images)
-                + (1 if proactive_image else 0)
-            )
+            # Report what was ATTACHED, not what was staged. The trim above
+            # takes a prefix, and the proactive screenshot is that prefix's
+            # first element, so it survives exactly when nothing was dropped.
+            _img_count = len(_attached_images)
+            _proactive_attached = bool(proactive_image) and _dropped_images == 0
             logger.info(
                 f"Sending multi-modal message with {_img_count} image(s)"
-                f"{' (incl. proactive screen)' if proactive_image else ''}"
+                f"{' (incl. proactive screen)' if _proactive_attached else ''}"
             )
 
             # Clear pending images after using them (content already holds the
             # data urls). The proactive screenshot is one-shot: consumed by this
             # reply, then cleared so it never re-injects into later turns.
-            # 附件在上面取快照时就已经出队了（那一步是原子的），这里只需要清掉
-            # 一次性的主动搭话截图。
+            # 用户附件在上面取快照时就已经**原子地**出队了，这里不能再整体
+            # clear：那会连带吃掉模型调用期间新到的附件（本 PR 专门修过的竞态）。
+            # 插件那条列表在上面读取时就已经原子地清空了（那里到读取之间不能有
+            # await），此处不再重复。
+            # 一次性的主动搭话截图同样在这里清掉。
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0

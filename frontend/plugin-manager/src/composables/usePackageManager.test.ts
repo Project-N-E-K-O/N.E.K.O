@@ -227,6 +227,25 @@ describe('usePackageManager safe installation flow', () => {
     )
   })
 
+  it('blocks a local package from overriding a builtin outside Market', async () => {
+    const manager = usePackageManager()
+    manager.installForm.value.package = 'study_companion.neko-plugin'
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...upgradePlan,
+      action: 'override_builtin',
+      plugin_id: 'study_companion',
+      directory_name: 'study_companion',
+      current_source: 'builtin',
+      target_source: 'market',
+      current_version: '0.1.5',
+      target_version: '0.1.6',
+    })
+    await manager.handleInstall()
+
+    expect(installPluginPackage).not.toHaveBeenCalled()
+    expect(ElMessage.error).toHaveBeenCalledWith('market.autoUpgradeBlocked')
+  })
+
   it('does not duplicate interceptor errors when refreshing plugin sources fails', async () => {
     const manager = usePackageManager()
     vi.mocked(getPluginCliPlugins).mockRejectedValue(new Error('offline'))

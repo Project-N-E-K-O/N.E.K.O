@@ -761,7 +761,6 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
         search_result = await search_via_plugin(
             query,
             limit,
-            preferred_backend="baidu" if china_region else "duckduckgo",
         )
         if search_result.get('success') and search_result.get('results'):
             all_results.extend(search_result['results'])

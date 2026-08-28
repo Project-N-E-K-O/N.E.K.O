@@ -159,12 +159,22 @@ const container = {{
 }};
 let renderedPlacement = null;
 let stagedConfig = null;
+let externalDrags = 0;
+let snapCalls = 0;
 const manager = {{
   container,
   image: {{}},
   isLocked: false,
   config: {{ offset_x: 100, offset_y: 50 }},
   editing: false,
+  beginExternalPositionDrag() {{ externalDrags += 1; return externalDrags; }},
+  isExternalPositionDragCurrent(sequence) {{ return sequence === externalDrags; }},
+  async snapModelIntoScreen() {{
+    snapCalls += 1;
+    this.config.offset_x = 15;
+    this.config.offset_y = 10;
+    return true;
+  }},
   beginModelManagerPositionEditing() {{
     if (!this.editing) this.setActiveOffsets(0, 0);
     this.editing = true;
@@ -213,12 +223,25 @@ function pointer(x, y) {{
 
 (async () => {{
   documentListeners.get('pointerdown')(pointer(400, 300));
+  assert.equal(externalDrags, 0, 'pointerdown alone must not cancel an active snap');
   windowListeners.get('pointermove')(pointer(430, 320));
+  assert.equal(externalDrags, 1);
   assert.deepEqual(renderedPlacement, {{ x: 30, y: 20 }});
   windowListeners.get('pointerup')(pointer(430, 320));
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(stagedConfig.offset_x, 30);
-  assert.equal(stagedConfig.offset_y, 20);
+  assert.equal(snapCalls, 1);
+  assert.equal(stagedConfig.offset_x, 15);
+  assert.equal(stagedConfig.offset_y, 10);
+
+  stagedConfig = null;
+  snapCalls = 0;
+  documentListeners.get('pointerdown')(pointer(400, 300));
+  windowListeners.get('pointermove')(pointer(430, 320));
+  externalDrags += 1; // A newer position interaction invalidates this completion.
+  windowListeners.get('pointerup')(pointer(430, 320));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(snapCalls, 0);
+  assert.equal(stagedConfig, null);
 }})().catch(error => {{ console.error(error); process.exit(1); }});
 """
     run_node_script(node, script, check=True, cwd=Path.cwd())

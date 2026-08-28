@@ -10,7 +10,7 @@ Project N.E.K.O. documentation is part of the product contract. Keep it close to
 | Architecture and API reference | Current code-backed contracts | `architecture/`, `modules/`, `api/` |
 | Contributor rules | Repository-wide development and validation rules | `contributing/` |
 | Project records | Design decisions, benchmark snapshots, and SDK change notes | `design/`, `benchmarks/`, `changelog/` |
-| Component-owned docs | Detailed documentation maintained with one component | For example `plugin/plugins/neko_live/docs/` |
+| Component-owned docs | Detailed documentation maintained with one component | For example `plugin/plugins/mcp_adapter/docs/` |
 
 The [Project Records](/records/) section is evidence and context, not a substitute for current code, tests, or accepted issues.
 

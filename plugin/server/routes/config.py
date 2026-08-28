@@ -129,6 +129,18 @@ async def get_plugin_base_config_endpoint(plugin_id: str, _: str = require_admin
         raise_http_from_domain(error, logger=logger)
 
 
+@router.get("/plugin/{plugin_id}/config/base/effective")
+async def get_plugin_effective_base_config_endpoint(
+    plugin_id: str,
+    _: str = require_admin,
+) -> dict[str, object]:
+    """Return manifest defaults merged with runtime config, without a profile overlay."""
+    try:
+        return await config_query_service.get_plugin_effective_base_config(plugin_id=plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
 @router.get("/plugin/{plugin_id}/config/profiles")
 async def get_plugin_profiles_state_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:

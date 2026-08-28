@@ -10,6 +10,7 @@ import zipfile
 
 from packaging.version import InvalidVersion, Version
 
+from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin.neko_plugin_cli.core.archive_utils import (
     read_archive_toml,
     validate_archive_structure,
@@ -17,7 +18,14 @@ from plugin.neko_plugin_cli.core.archive_utils import (
 from plugin.neko_plugin_cli.public import inspect_package
 
 
-InstallAction = Literal["install", "upgrade", "reinstall", "downgrade", "blocked"]
+InstallAction = Literal[
+    "install",
+    "upgrade",
+    "reinstall",
+    "downgrade",
+    "override_builtin",
+    "blocked",
+]
 REPLACEMENT_ACTIONS = frozenset({"upgrade", "reinstall", "downgrade"})
 PackageType = Literal["plugin", "bundle"]
 
@@ -36,6 +44,8 @@ class PluginInstallPlan:
     legacy_plugin_ids: tuple[str, ...]
     installed_package_id: str = ""
     manifestless_state: bool = False
+    current_source: str = ""
+    target_source: str = ""
 
 
 def confirmation_token(*, package_path: Path, target_dir: Path) -> str:
@@ -59,13 +69,22 @@ def confirmation_token(*, package_path: Path, target_dir: Path) -> str:
     return digest.hexdigest()
 
 
-def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInstallPlan:
+def build_install_plan(
+    *,
+    package_path: Path,
+    plugins_root: Path,
+    builtin_plugins_root: Path | None = None,
+) -> PluginInstallPlan:
     package_path = package_path.expanduser().resolve()
     plugins_root = plugins_root.expanduser().resolve()
     inspected = inspect_package(package_path)
 
     if inspected.package_type == "bundle":
-        conflicts = _bundle_conflicts(inspected.plugins, plugins_root)
+        conflicts = _bundle_conflicts(
+            inspected.plugins,
+            plugins_root,
+            builtin_plugins_root=builtin_plugins_root,
+        )
         return PluginInstallPlan(
             action="blocked" if conflicts else "install",
             package_type="bundle",
@@ -77,6 +96,7 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
             confirmation_token="",
             reason="bundle_conflict" if conflicts else "",
             legacy_plugin_ids=(),
+            target_source="user",
         )
 
     if len(inspected.plugins) != 1:
@@ -97,8 +117,19 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
     target_version = _plugin_text(packaged_manifest, "version") or inspected.version
     previous_ids = _previous_ids(packaged_manifest)
     installed = _installed_plugins(plugins_root)
+    builtin_installed = (
+        _installed_plugins(builtin_plugins_root.expanduser().resolve())
+        if builtin_plugins_root is not None
+        else {}
+    )
 
-    legacy_ids = tuple(sorted(previous_id for previous_id in previous_ids if previous_id in installed))
+    legacy_ids = tuple(
+        sorted(
+            previous_id
+            for previous_id in previous_ids
+            if previous_id in installed or previous_id in builtin_installed
+        )
+    )
     if legacy_ids:
         return PluginInstallPlan(
             action="blocked",
@@ -137,6 +168,48 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
             reason="multiple_installations",
             directory_name=directory_name,
         )
+    builtin_matches = _matching_builtins(
+        plugin_id=plugin_id,
+        builtin_plugins_root=builtin_plugins_root,
+    )
+    if len(builtin_matches) > 1:
+        return _blocked(
+            inspected.package_id,
+            plugin_id,
+            target_version,
+            reason="multiple_builtin_sources",
+            directory_name=directory_name,
+        )
+    if target_dir.exists() and not manifestless_state and builtin_matches:
+        return _blocked(
+            inspected.package_id,
+            plugin_id,
+            target_version,
+            reason="plugin_builtin_override_market_required",
+            directory_name=directory_name,
+        )
+    if not target_dir.exists() or manifestless_state:
+        if builtin_matches:
+            if manifestless_state:
+                return _blocked(
+                    inspected.package_id,
+                    plugin_id,
+                    target_version,
+                    reason="override_manifestless_state_conflict",
+                    directory_name=directory_name,
+                )
+            return _plan_builtin_override(
+                package_path=package_path,
+                archive_path=packaged_plugin.archive_path,
+                package_id=inspected.package_id,
+                plugin_id=plugin_id,
+                directory_name=directory_name,
+                target_dir=target_dir,
+                target_version=target_version,
+                previous_ids=previous_ids,
+                packaged_manifest=packaged_manifest,
+                builtin_dir=builtin_matches[0],
+            )
     if not target_dir.exists():
         return PluginInstallPlan(
             action="install",
@@ -149,6 +222,7 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
             confirmation_token="",
             reason="",
             legacy_plugin_ids=(),
+            target_source="user",
         )
 
     if manifestless_state:
@@ -185,6 +259,8 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
         confirmation_token=confirmation_token(package_path=package_path, target_dir=target_dir),
         reason="",
         legacy_plugin_ids=(),
+        current_source="user",
+        target_source="user",
     )
 
 
@@ -204,6 +280,166 @@ def _replacement_action(*, current_version: str, target_version: str) -> Install
     if target < current:
         return "downgrade"
     return "upgrade"
+
+
+def _matching_builtins(*, plugin_id: str, builtin_plugins_root: Path | None) -> list[Path]:
+    if builtin_plugins_root is None:
+        return []
+    return _installed_plugins(builtin_plugins_root.expanduser().resolve()).get(plugin_id, [])
+
+
+def _plan_builtin_override(
+    *,
+    package_path: Path,
+    archive_path: str,
+    package_id: str,
+    plugin_id: str,
+    directory_name: str,
+    target_dir: Path,
+    target_version: str,
+    previous_ids: tuple[str, ...],
+    packaged_manifest: dict[str, object],
+    builtin_dir: Path,
+) -> PluginInstallPlan:
+    """Build the fail-closed plan for a user copy shadowing a builtin plugin."""
+
+    builtin_manifest_path = builtin_dir / "plugin.toml"
+    builtin_manifest = _read_manifest(builtin_manifest_path)
+    current_version = _plugin_text(builtin_manifest, "version")
+    invalid_reason = ""
+    if package_id != plugin_id or directory_name != plugin_id or builtin_dir.name != plugin_id:
+        invalid_reason = "override_identity_mismatch"
+    elif previous_ids:
+        invalid_reason = "override_previous_ids_not_supported"
+    elif not _packaged_entry_is_valid(
+        package_path=package_path,
+        archive_path=archive_path,
+        plugin_id=plugin_id,
+        manifest=packaged_manifest,
+        target_dir=target_dir,
+        builtin_plugins_root=builtin_dir.parent,
+    ):
+        invalid_reason = "override_entry_missing"
+    elif _plugin_text(builtin_manifest, "id") != plugin_id:
+        invalid_reason = "override_builtin_identity_mismatch"
+
+    if invalid_reason:
+        return PluginInstallPlan(
+            action="blocked",
+            package_type="plugin",
+            package_id=package_id,
+            plugin_id=plugin_id,
+            directory_name=directory_name,
+            current_version=current_version,
+            target_version=target_version,
+            confirmation_token="",
+            reason=invalid_reason,
+            legacy_plugin_ids=(),
+            current_source="builtin",
+            target_source="market",
+        )
+
+    return PluginInstallPlan(
+        action="override_builtin",
+        package_type="plugin",
+        package_id=package_id,
+        plugin_id=plugin_id,
+        directory_name=directory_name,
+        current_version=current_version,
+        target_version=target_version,
+        confirmation_token=_builtin_override_confirmation_token(
+            package_path=package_path,
+            builtin_manifest_path=builtin_manifest_path,
+            target_dir=target_dir,
+            current_version=current_version,
+            target_version=target_version,
+        ),
+        reason="",
+        legacy_plugin_ids=(),
+        installed_package_id=package_id,
+        current_source="builtin",
+        target_source="market",
+    )
+
+
+def _builtin_override_confirmation_token(
+    *,
+    package_path: Path,
+    builtin_manifest_path: Path,
+    target_dir: Path,
+    current_version: str,
+    target_version: str,
+) -> str:
+    """Bind confirmation to the package and the exact effective builtin source."""
+
+    digest = hashlib.sha256()
+    with package_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    for value in (
+        hashlib.sha256(builtin_manifest_path.read_bytes()).hexdigest(),
+        "builtin",
+        str(target_dir.resolve()),
+        current_version,
+        target_version,
+    ):
+        digest.update(b"\0")
+        digest.update(value.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _packaged_entry_is_valid(
+    *,
+    package_path: Path,
+    archive_path: str,
+    plugin_id: str,
+    manifest: dict[str, object],
+    target_dir: Path,
+    builtin_plugins_root: Path,
+) -> bool:
+    entry = normalize_plugin_entry_point(
+        _plugin_text(manifest, "entry"),
+        config_path=target_dir / "plugin.toml",
+        builtin_plugin_root=builtin_plugins_root,
+    )
+    if ":" not in entry:
+        return False
+    module_name, attribute = (part.strip() for part in entry.rsplit(":", 1))
+    if not module_name or not attribute:
+        return False
+
+    # The plugin host imports user plugins through the ``plugins.<id>``
+    # namespace. A package-local entry such as ``main:Plugin`` may point at a
+    # real archive member, but it cannot be loaded safely by the child process
+    # after a source switch. Fail closed during override planning instead of
+    # committing a package that cannot subsequently start.
+    runtime_prefix = f"plugins.{plugin_id}"
+    if module_name == runtime_prefix:
+        relative_module = ""
+    elif module_name.startswith(runtime_prefix + "."):
+        relative_module = module_name[len(runtime_prefix) + 1 :]
+        if not relative_module:
+            return False
+    else:
+        return False
+
+    # Every remaining component must be a Python identifier so separators or
+    # traversal-like empty components can never escape the package subtree.
+    if relative_module and any(
+        not part.isidentifier() for part in relative_module.split(".")
+    ):
+        return False
+
+    base = archive_path.rstrip("/")
+    candidates = (
+        f"{base}/__init__.py"
+        if not relative_module
+        else f"{base}/{relative_module.replace('.', '/')}.py",
+        f"{base}/{relative_module.replace('.', '/')}/__init__.py" if relative_module else "",
+    )
+    with zipfile.ZipFile(package_path) as archive:
+        names = set(archive.namelist())
+    return any(candidate and candidate in names for candidate in candidates)
 
 
 def _blocked(
@@ -228,12 +464,29 @@ def _blocked(
     )
 
 
-def _bundle_conflicts(plugins: list[object], plugins_root: Path) -> bool:
+def _bundle_conflicts(
+    plugins: list[object],
+    plugins_root: Path,
+    *,
+    builtin_plugins_root: Path | None = None,
+) -> bool:
     installed = _installed_plugins(plugins_root)
+    builtin_root = (
+        builtin_plugins_root.expanduser().resolve()
+        if builtin_plugins_root is not None
+        else None
+    )
+    builtin_installed = _installed_plugins(builtin_root) if builtin_root is not None else {}
     for packaged in plugins:
         plugin_id = getattr(packaged, "plugin_id", "")
         archive_path = getattr(packaged, "archive_path", "")
-        if plugin_id in installed or (plugins_root / Path(archive_path).name).exists():
+        directory_name = Path(archive_path).name
+        if (
+            plugin_id in installed
+            or plugin_id in builtin_installed
+            or (plugins_root / directory_name).exists()
+            or (builtin_root is not None and (builtin_root / directory_name).exists())
+        ):
             return True
     return False
 
@@ -243,6 +496,8 @@ def _installed_plugins(plugins_root: Path) -> dict[str, list[Path]]:
     if not plugins_root.is_dir():
         return installed
     for manifest_path in plugins_root.glob("*/plugin.toml"):
+        if manifest_path.parent.name.startswith("."):
+            continue
         manifest = _read_manifest(manifest_path)
         plugin_id = _plugin_text(manifest, "id")
         if plugin_id:

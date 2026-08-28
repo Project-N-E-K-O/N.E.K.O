@@ -31,6 +31,7 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
 from main_logic.proactive_delivery import (
+    split_callbacks_by_image_budget,
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
@@ -38,9 +39,9 @@ from main_logic.proactive_delivery import (
     VOICE_DELIVERY_COMMITTED_KEY,
     callback_is_expired,
     resolve_callback_delivery_ack,
+    split_callbacks_by_image_budget,
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
-from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
 from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -1093,6 +1094,22 @@ class ProactiveMixin:
                 if not voice_snapshot:
                     self.proactive_manager.release_inflight_noop()
                     return False
+                # Same one-turn image budget as the text path. Trim BEFORE the
+                # commit mark so deferred cbs are never marked committed; they
+                # are still in pending_agent_callbacks (voice prunes only after
+                # a successful inject), so dropping them here re-queues them by
+                # construction — no explicit put-back.
+                _voice_taken, _voice_overflow = split_callbacks_by_image_budget(
+                    voice_snapshot
+                )
+                if _voice_overflow:
+                    voice_snapshot[:] = _voice_taken
+                    logger.info(
+                        "[%s] proactive image budget (voice): streaming %d cb(s), deferring %d to the next turn",
+                        self.lanlan_name,
+                        len(_voice_taken),
+                        len(_voice_overflow),
+                    )
                 self._mark_voice_delivery_committed(voice_snapshot)
                 voice_commit_snapshot = tuple(voice_snapshot)
                 voice_media_events: list[tuple[dict, dict]] = []
@@ -1475,6 +1492,11 @@ class ProactiveMixin:
         ]
 
         delivered = False
+        # Image-budget overflow parked by _deliver_agent_callbacks_text. It is
+        # re-queued in the finally below rather than at the split, so it lands
+        # AFTER the exception path restores callbacks_snapshot and the queue
+        # keeps the order the cues arrived in.
+        self._proactive_image_overflow = []
         try:
             if isinstance(self.session, OmniOfflineClient):
                 delivered = await self._deliver_agent_callbacks_text(callbacks_snapshot)
@@ -1496,7 +1518,21 @@ class ProactiveMixin:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
             self.pending_agent_callbacks.extend(callbacks_snapshot)
         finally:
+            # Runs after the except-path restore above, so the deferred tail
+            # lands behind the prefix it was split from either way.
+            _overflow = getattr(self, "_proactive_image_overflow", None)
+            if _overflow:
+                self.pending_agent_callbacks.extend(_overflow)
+            self._proactive_image_overflow = []
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
+            if _overflow:
+                # Nothing else re-drives a deferred tail on the TEXT path: the
+                # manager's queue is already empty and, unlike voice, no
+                # response.done / voice_play_end arrives to re-fire trigger. So
+                # the ninth cue of a nine-image batch would sit until some
+                # unrelated event happened along. Armed AFTER PROACTIVE_DONE so
+                # the retry is not denied by our own still-held claim (Codex P2).
+                self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
         if delivered:
             for cb in callbacks_snapshot:
                 resolve_callback_delivery_ack(cb, True)
@@ -1650,6 +1686,34 @@ class ProactiveMixin:
             active_callbacks = self.filter_deliverable_callbacks(
                 active_callbacks
             )
+            # One turn's image budget. Every pending proactive callback drains
+            # into this single prompt_ephemeral, so without the split a batch
+            # that accumulated while the user was talking can exceed the
+            # provider's request limit — and the caller's exception path
+            # re-queues the WHOLE snapshot, so an over-limit batch would retry
+            # forever and wedge every later cue behind it.
+            #
+            # Placed ABOVE the topic-hint re-check on purpose: the split can
+            # push a topic hook into the overflow, and that check is what
+            # retracts a teaser whose hook is no longer part of this turn.
+            # Running the split after it would leave the teaser on screen while
+            # the opener it promised got deferred (Codex P2).
+            active_callbacks, _image_overflow = split_callbacks_by_image_budget(
+                active_callbacks
+            )
+            if _image_overflow:
+                # Handed to trigger_agent_callbacks' finally rather than
+                # re-queued here. Its exception path restores the delivered
+                # prefix, so an eager put-back would order the queue
+                # [overflow, prefix] — the reverse of how the cues arrived
+                # (CodeRabbit).
+                self._proactive_image_overflow = list(_image_overflow)
+                logger.info(
+                    "[%s] proactive image budget: delivering %d cb(s), deferring %d to the next turn",
+                    self.lanlan_name,
+                    len(active_callbacks),
+                    len(_image_overflow),
+                )
             callbacks_snapshot[:] = active_callbacks
             if topic_hint_sent and not any(
                 isinstance(cb, dict) and cb.get("channel") == "topic_hook"
@@ -1663,6 +1727,26 @@ class ProactiveMixin:
                     active_callbacks
                 )
                 callbacks_snapshot[:] = active_callbacks
+                # Re-filtering is not enough: that await is also a preempt
+                # window, and a stale callback is a different thing from a
+                # stale TURN. Without this the user can take the session
+                # during the cancel write and still get an unrelated proactive
+                # prompt afterwards. Mirrors the check after send_topic_hint
+                # above (CodeRabbit).
+                async with self.lock:
+                    preempted_after_cancel = (
+                        self.state.is_proactive_preempted()
+                        or self.current_speech_id != proactive_sid
+                    )
+                if preempted_after_cancel:
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: preempted during topic hint cancel, aborting before prompt",
+                        self.lanlan_name,
+                    )
+                    self.pending_agent_callbacks.extend(active_callbacks)
+                    callbacks_snapshot[:] = []
+                    self.proactive_manager.release_inflight_noop()
+                    return False
             if not active_callbacks:
                 if topic_hint_sent:
                     await self.send_cancel_topic_hint(turn_id=proactive_sid)
@@ -1889,6 +1973,48 @@ class ProactiveMixin:
         if seq > latest.get(key, -1):
             latest[key] = seq
 
+    def _recompute_coalesce_latest(self, key: Any) -> None:
+        """Rebuild ``_coalesce_latest[key]`` from cues that actually survived.
+
+        A seq recorded at submission time stops being true the moment that cue
+        is rejected rather than queued — by the pending-queue flood guard, or
+        by the delivery manager's own budget. Left stale, it keeps marking
+        OLDER same-key cues stale, so the older one is retracted in favour of a
+        replacement that no longer exists anywhere and the key is lost
+        entirely (Codex P2).
+
+        Rebuilds from both live pending queues plus whatever the manager still
+        holds, so a manager-held cue whose seq was recorded at submit time is
+        counted as surviving.
+        """
+        key = str(key or "").strip()
+        if not key or not getattr(self, "_coalesce_latest", None):
+            return
+        surviving_seqs = [
+            entry.get("_coalesce_submit_seq")
+            for entry in (
+                list(self.pending_agent_callbacks)
+                + list(self.pending_extra_replies)
+            )
+            if isinstance(entry, dict)
+            and not entry.get(DELIVERY_RETRACTED_KEY)
+            and str(entry.get("coalesce_key") or "").strip() == key
+            and isinstance(entry.get("_coalesce_submit_seq"), int)
+        ]
+        manager_seq_reader = getattr(
+            getattr(self, "proactive_manager", None),
+            "latest_queued_coalesce_seq",
+            None,
+        )
+        if callable(manager_seq_reader):
+            manager_seq = manager_seq_reader(key)
+            if isinstance(manager_seq, int):
+                surviving_seqs.append(manager_seq)
+        if surviving_seqs:
+            self._coalesce_latest[key] = max(surviving_seqs)
+        else:
+            self._coalesce_latest.pop(key, None)
+
     def _coalesce_entry_is_stale(self, entry: Any) -> bool:
         """True when ``entry``'s coalesce_key has a NEWER recorded submission.
 
@@ -1986,7 +2112,15 @@ class ProactiveMixin:
                 self.lanlan_name,
             )
             return
-        self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
+        evicted_keys = self.proactive_manager.submit(
+            callback, priority=priority, coalesce_key=coalesce_key
+        )
+        # The manager coalesces on submit, so an over-budget eviction can drop
+        # the very cue that just displaced an older same-key one. Without this
+        # the key's recorded seq still points at the evicted cue and retracts
+        # the survivor too, losing both.
+        for evicted_key in (evicted_keys or ()):
+            self._recompute_coalesce_latest(evicted_key)
 
     def _drop_receipts_shadowed_by_terminal_result(
         self,
@@ -2490,26 +2624,22 @@ class ProactiveMixin:
             and bool(getattr(session, "_supports_native_image", False))
             and getattr(raw_visual_mode, "value", raw_visual_mode) == "native"
         )
-        # MAX_MULTIMODAL_TURN_IMAGES 是**每轮**预算，不是每条 callback 的预算：
-        # 下面这个循环把所有被选中的 callback 的图累加进同一个 system_prefix_images，
-        # 而 stream_text 会把整份列表放进同一条 user message。入口处的每条上限挡不住
-        # 这个方向 —— 纯图 callback 几乎不占 token 预算，队列里几十条就能凑出一个
-        # 大到被 provider 拒收的请求，把用户这一轮一起打掉。
-        #
-        # 已经在本会话 staged 过的那些是既成事实，先把它们的名额预留出来；新的只在
-        # 剩余名额里整条整条地放得下才 stage。放不下的**留在队列里**（不设 staged
-        # 标记 → _callback_media_ready_for_session 为假 → drain 不会摘走它），
-        # 留给下一轮，而不是丢掉。
-        reserved = 0
-        committed = 0
-        for callback in callbacks:
-            if not isinstance(callback, dict):
-                continue
-            ready_images = list(callback.get("media_images") or [])
-            if ready_images and self._callback_media_ready_for_session(
-                callback, session
-            ):
-                reserved += len(ready_images)
+        # 每轮图片预算。#2964 引入的 passive/text 消费点是 main 的
+        # split_callbacks_by_image_budget 尚未覆盖的第三个消费点（前两个是
+        # proactive 投递和语音路径），判据完全相同，所以直接复用那个共享 helper，
+        # 而不是在这里另写一套：callback 原子取舍、严格 FIFO、队头即使单条超限
+        # 也照take（否则它永远排不进来、把后面全堵死）。
+        # 溢出的**留在队列里**等下一轮：不设 staged 标记 →
+        # _callback_media_ready_for_session 为假 → drain 不会摘走它。
+        callbacks, _image_overflow = split_callbacks_by_image_budget(list(callbacks))
+        if _image_overflow:
+            logger.info(
+                "[%s] passive callback media: staging %d cb(s), deferring %d to "
+                "the next turn on the per-turn image budget",
+                self.lanlan_name,
+                len(callbacks),
+                len(_image_overflow),
+            )
         for callback in callbacks:
             if not isinstance(callback, dict):
                 continue
@@ -2521,27 +2651,7 @@ class ProactiveMixin:
             if self._callback_media_ready_for_session(callback, session):
                 if offline_session:
                     outcome["system_prefix_images"].extend(images)
-                committed += len(images)
-                reserved -= len(images)
                 continue
-            # 预算判据与传输无关：不管是 offline 的 system_prefix_images 前缀，
-            # 还是 DIRECT_ATOMIC Realtime 逐张 stream_image 送出去的原生帧，这些图
-            # 最终都落在**同一轮**里。之前只在 offline 分支判，Realtime 那条整个
-            # 绕过去了。
-            if (
-                committed + max(reserved, 0) + len(images)
-                > MAX_MULTIMODAL_TURN_IMAGES
-            ):
-                logger.info(
-                    "[%s] passive callback media deferred: %d image(s) would "
-                    "exceed the %d-image per-turn budget; keeping it queued",
-                    self.lanlan_name,
-                    len(images),
-                    MAX_MULTIMODAL_TURN_IMAGES,
-                )
-                continue
-            # 名额在这里就记账：部分投递失败只会让实际用量更少，偏保守的方向。
-            committed += len(images)
             if offline_session:
                 # Offline stream_image only appends to the session-global
                 # _pending_images queue; it performs no validation.  Mark this
@@ -3284,35 +3394,8 @@ class ProactiveMixin:
                 and any(dropped is callback for dropped in flood_dropped)
                 and getattr(self, "_coalesce_latest", {}).get(new_key) == new_seq
             ):
-                # Flood rejection means this cue never became pending. Rebuild
-                # latest from entries that actually survived in either live
-                # queue. This also covers manager-held respond cues, whose seq
-                # was already recorded at submit time before this enqueue.
-                surviving_seqs = [
-                    entry.get("_coalesce_submit_seq")
-                    for entry in (
-                        list(self.pending_agent_callbacks)
-                        + list(self.pending_extra_replies)
-                    )
-                    if isinstance(entry, dict)
-                    and not entry.get(DELIVERY_RETRACTED_KEY)
-                    and str(entry.get("coalesce_key") or "").strip() == new_key
-                    and isinstance(entry.get("_coalesce_submit_seq"), int)
-                ]
-                delivery_manager = getattr(self, "proactive_manager", None)
-                manager_seq_reader = getattr(
-                    delivery_manager,
-                    "latest_queued_coalesce_seq",
-                    None,
-                )
-                if callable(manager_seq_reader):
-                    manager_seq = manager_seq_reader(new_key)
-                    if isinstance(manager_seq, int):
-                        surviving_seqs.append(manager_seq)
-                if surviving_seqs:
-                    self._coalesce_latest[new_key] = max(surviving_seqs)
-                else:
-                    self._coalesce_latest.pop(new_key, None)
+                # Flood rejection means this cue never became pending.
+                self._recompute_coalesce_latest(new_key)
             self._enforce_pending_extra_reply_queue_limit(
                 AGENT_CALLBACK_QUEUE_MAX_ITEMS
             )
@@ -3412,20 +3495,50 @@ class ProactiveMixin:
         ended up here because the SM denied the claim earlier). The caller
         therefore should NOT prepend an additional notification template.
         """
+        # 三方合并（#2964 × #2835）：main 侧加在 drain 里的那几道闸（purge、topic
+        # hook 回收、stale coalesce 回收、deliverable 过滤、swap claim、token 预算）
+        # 在本 PR 里**已经全部在 _claim_agent_callbacks_for_llm 内**——PR 把它们整合
+        # 到了「选取并围栏快照」那一步，因为 callback 媒体的 staging 必须发生在选取
+        # 之后、drain 之前。在这里再来一遍是重复的。
         if callbacks_snapshot is None:
             callbacks_snapshot = self._claim_agent_callbacks_for_llm()
         callbacks_snapshot = list(callbacks_snapshot or [])
         queued_obj_ids = {id(callback) for callback in self.pending_agent_callbacks}
-        active_callbacks = [
-            callback
-            for callback in callbacks_snapshot
-            if id(callback) in queued_obj_ids
-            and not callback.get(DELIVERY_RETRACTED_KEY)
-            and self._callback_media_ready_for_session(
-                callback,
-                getattr(self, "session", None),
+        # 判据（#2964 × #2835，按维护者拍板）：**文字一定投出去，图 best effort**。
+        #
+        #   * passive + 带图：照投文字。图挂上了（_stage_passive_callback_media 已经
+        #     把它拷进 system_prefix_images / 送给 provider）就跟着走，没挂上就这一轮
+        #     不带 —— 但**不因此扣住这条通知**。扣住会让它在「两条路都投不了」时永远
+        #     卡在队列里，那比丢图更糟。
+        #   * proactive + 带图：STOP。它等的是 proactive 那条路（那条能带图），而且
+        #     跳过它去投更晚的 cue，模型听到的顺序就和排队顺序反了。STOP 而不是
+        #     skip：它后面的一律跟着等。
+        #   * 已退队 / 已撤回：跳过即可 —— 它们不会再出现，挡住后面没有意义。
+        _session = getattr(self, "session", None)
+        active_callbacks = []
+        for callback in callbacks_snapshot:
+            if (
+                id(callback) not in queued_obj_ids
+                or callback.get(DELIVERY_RETRACTED_KEY)
+            ):
+                continue
+            _has_media = bool(
+                isinstance(callback, dict) and callback.get("media_images")
             )
-        ]
+            if _has_media and callback.get("delivery_mode") != "passive":
+                break
+            if _has_media and not self._callback_media_ready_for_session(
+                callback, _session
+            ):
+                # best effort：文字照走，图这一轮带不上。说出来 —— 静默丢失正是
+                # 当初让这个问题难被发现的原因。
+                logger.warning(
+                    "[%s] passive callback delivered as text-only; %d image(s) "
+                    "were not staged for this session",
+                    self.lanlan_name,
+                    len(callback.get("media_images") or []),
+                )
+            active_callbacks.append(callback)
         if not active_callbacks:
             self._release_agent_callback_prompt_claims(callbacks_snapshot)
             return ""

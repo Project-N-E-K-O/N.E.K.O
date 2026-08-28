@@ -6,7 +6,7 @@ try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +29,7 @@ from plugin.core.registry import (
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
-from plugin.settings import PLUGIN_CONFIG_ROOTS
+from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS
 
 logger = get_logger("server.application.plugins.registry")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -65,6 +65,10 @@ _MANAGED_META_KEYS = {
     "entries_preview",
     "adapter_mode",
     "runtime_source_missing",
+    "source",
+    "effective_source",
+    "builtin_version",
+    "shadowed_builtin_path",
 }
 
 
@@ -92,6 +96,7 @@ class PluginDiscoverySnapshot:
     records: list[PluginDiscoveryRecord]
     failures: list[PluginDiscoveryFailure]
     config_paths: set[Path]
+    shadowed: list[PluginDiscoveryRecord]
 
 
 def _get_registered_plugin_snapshot_sync() -> dict[str, dict[str, object]]:
@@ -145,6 +150,7 @@ def _find_plugin_config_path(plugin_id: str, roots: tuple[Path, ...]) -> Path | 
     if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
         return None
 
+    # Roots are declared in effective-source priority order (user, builtin).
     for root in roots:
         resolved_root = root.resolve()
         config_file = (resolved_root / normalized_plugin_id / "plugin.toml").resolve()
@@ -153,6 +159,76 @@ def _find_plugin_config_path(plugin_id: str, roots: tuple[Path, ...]) -> Path | 
         if config_file.exists():
             return config_file
     return None
+
+
+def _source_for_config_path(config_path: Path) -> str:
+    builtin_root = _resolve_config_path(BUILTIN_PLUGIN_CONFIG_ROOT)
+    return "builtin" if config_path.parent.parent == builtin_root else "user"
+
+
+def _select_effective_records(
+    records: list[PluginDiscoveryRecord],
+    roots: tuple[Path, ...],
+) -> tuple[list[PluginDiscoveryRecord], list[PluginDiscoveryRecord]]:
+    """Apply the sole supported same-ID source precedence rule.
+
+    Only canonical ``<root>/<id>/plugin.toml`` installations across distinct
+    roots form a builtin/user override. Other duplicate declarations remain
+    real conflicts and continue through the legacy ``_1`` resolution path.
+    """
+    grouped: dict[str, list[PluginDiscoveryRecord]] = {}
+    order: list[str] = []
+    for record in records:
+        if record.plugin_id not in grouped:
+            grouped[record.plugin_id] = []
+            order.append(record.plugin_id)
+        grouped[record.plugin_id].append(record)
+
+    selected: list[PluginDiscoveryRecord] = []
+    shadowed: list[PluginDiscoveryRecord] = []
+    for plugin_id in order:
+        group = grouped[plugin_id]
+        canonical = [record for record in group if record.config_path.parent.name == plugin_id]
+        sources = {_source_for_config_path(record.config_path) for record in canonical}
+        if not {"builtin", "user"}.issubset(sources):
+            # This is a real legacy ID conflict, not a supported source
+            # override. Preserve the historical builtin-first winner even
+            # though discovery roots are now ordered user-first.
+            winners = sorted(
+                group,
+                key=lambda record: _source_for_config_path(record.config_path) != "builtin",
+            )
+            hidden: list[PluginDiscoveryRecord] = []
+        else:
+            winners = sorted(
+                (
+                    record
+                    for record in group
+                    if record not in canonical
+                    or _source_for_config_path(record.config_path) == "user"
+                ),
+                key=lambda record: record not in canonical,
+            )
+            hidden = [record for record in canonical if record not in winners]
+
+        builtin_hidden = next(
+            (record for record in hidden if _source_for_config_path(record.config_path) == "builtin"),
+            None,
+        )
+        for record in winners:
+            source = _source_for_config_path(record.config_path)
+            record.meta_payload["source"] = source
+            record.meta_payload["effective_source"] = source
+            if source == "builtin":
+                record.meta_payload["builtin_version"] = str(record.meta_payload.get("version", ""))
+            elif builtin_hidden is not None and record in canonical:
+                record.meta_payload["builtin_version"] = str(
+                    builtin_hidden.meta_payload.get("version", "")
+                )
+                record.meta_payload["shadowed_builtin_path"] = str(builtin_hidden.config_path)
+        selected.extend(winners)
+        shadowed.extend(hidden)
+    return selected, shadowed
 
 
 def _resolve_meta_config_path(meta: dict[str, object] | None) -> Path | None:
@@ -176,6 +252,14 @@ def _resolve_config_path(path: Path) -> Path:
         return path
 
 
+def _config_path_belongs_to_roots(config_path: Path, roots: tuple[Path, ...]) -> bool:
+    resolved_path = _resolve_config_path(config_path)
+    return any(
+        _resolve_config_path(root) in resolved_path.parents
+        for root in roots
+    )
+
+
 def _find_existing_runtime_plugin_id_by_config_path(
     config_path: Path,
     existing_snapshot: dict[str, dict[str, object]],
@@ -191,8 +275,10 @@ def _find_existing_runtime_plugin_id_by_config_path(
 def _collect_plugin_contexts_from_roots_sync(
     roots: tuple[Path, ...],
 ) -> tuple[list[PluginContext], dict[str, PluginContext]]:
-    plugin_contexts: list[PluginContext] = []
+    # Dependency ordering must use the same effective source as registration.
+    candidates: dict[str, list[tuple[PluginContext, str, bool]]] = {}
     pid_to_context: dict[str, PluginContext] = {}
+    context_order: list[str] = []
     processed_paths: set[Path] = set()
 
     for root in roots:
@@ -205,6 +291,8 @@ def _collect_plugin_contexts_from_roots_sync(
             continue
 
         for config_path in sorted(resolved_root.glob("*/plugin.toml")):
+            if config_path.parent.name.startswith("."):
+                continue
             try:
                 ctx = _parse_single_plugin_config(config_path, processed_paths, logger)
             except Exception as exc:
@@ -218,16 +306,43 @@ def _collect_plugin_contexts_from_roots_sync(
 
             if ctx is None:
                 continue
-            if ctx.pid in pid_to_context:
-                logger.warning(
-                    "duplicate plugin id '{}' ignored while building runtime plan",
-                    ctx.pid,
+            if ctx.pid not in candidates:
+                context_order.append(ctx.pid)
+            candidates.setdefault(ctx.pid, []).append(
+                (
+                    ctx,
+                    _source_for_config_path(config_path),
+                    config_path.parent.name == ctx.pid,
                 )
+            )
+
+    for plugin_id in context_order:
+        group = candidates[plugin_id]
+        canonical_user = next(
+            (ctx for ctx, source, canonical in group if canonical and source == "user"),
+            None,
+        )
+        canonical_builtin = next(
+            (ctx for ctx, source, canonical in group if canonical and source == "builtin"),
+            None,
+        )
+        if canonical_user is not None and canonical_builtin is not None:
+            winner = canonical_user
+        else:
+            winner = next(
+                (ctx for ctx, source, _canonical in group if source == "builtin"),
+                group[0][0],
+            )
+        pid_to_context[plugin_id] = winner
+        for ctx, _source, _canonical in group:
+            if ctx is winner:
                 continue
+            logger.debug(
+                "duplicate plugin id '{}' ignored while building runtime plan",
+                plugin_id,
+            )
 
-            plugin_contexts.append(ctx)
-            pid_to_context[ctx.pid] = ctx
-
+    plugin_contexts = [pid_to_context[plugin_id] for plugin_id in context_order]
     return plugin_contexts, pid_to_context
 
 
@@ -293,7 +408,11 @@ def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscovery
             logger.info("No plugin config directory {}, skipping", resolved_root)
             continue
 
-        found_toml_files = sorted(resolved_root.glob("*/plugin.toml"))
+        found_toml_files = [
+            path
+            for path in sorted(resolved_root.glob("*/plugin.toml"))
+            if not path.parent.name.startswith(".")
+        ]
         logger.info(
             "Found {} plugin.toml files in {}: {}",
             len(found_toml_files),
@@ -348,10 +467,12 @@ def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscovery
                     )
                 )
 
+    effective_records, shadowed = _select_effective_records(records, roots)
     return PluginDiscoverySnapshot(
-        records=records,
+        records=effective_records,
         failures=failures,
-        config_paths=config_paths,
+        config_paths={_resolve_config_path(record.config_path) for record in effective_records},
+        shadowed=shadowed,
     )
 
 
@@ -508,6 +629,28 @@ def _build_discovery_record_from_context(ctx: PluginContext) -> PluginDiscoveryR
     )
 
 
+def _validate_plugin_runtime_source_sync(plugin_id: str, config_path: Path) -> None:
+    """Validate one selected source even when its manifest disables runtime loading."""
+
+    resolved_config_path = _resolve_config_path(config_path)
+    ctx = _parse_single_plugin_config(resolved_config_path, set(), logger)
+    if ctx is None or ctx.pid != plugin_id:
+        raise RuntimeError("promoted plugin configuration could not be validated")
+
+    payload = _build_discovery_payload(
+        replace(ctx, enabled=True),
+        plugin_id=plugin_id,
+    )
+    if payload.get("runtime_load_state") != "failed":
+        return
+    error_type = str(payload.get("runtime_load_error_type") or "unknown")
+    error_phase = str(payload.get("runtime_load_error_phase") or "unknown")
+    raise RuntimeError(
+        "promoted plugin runtime validation failed "
+        f"({error_type} during {error_phase})"
+    )
+
+
 def _apply_discovery_record_sync(
     record: PluginDiscoveryRecord,
     *,
@@ -523,7 +666,19 @@ def _apply_discovery_record_sync(
     if target_plugin_id is None:
         target_plugin_id = record.plugin_id
 
-    runtime_plugin_id = _resolve_plugin_id_conflict(
+    existing_target_meta = (existing_snapshot or {}).get(target_plugin_id)
+    existing_target_path = _resolve_meta_config_path(existing_target_meta)
+    source_replacement = (
+        target_plugin_id == record.plugin_id
+        and existing_target_path is not None
+        and existing_target_path != _resolve_config_path(record.config_path)
+        and (
+            bool(record.meta_payload.get("shadowed_builtin_path"))
+            or not existing_target_path.exists()
+        )
+    )
+
+    runtime_plugin_id = target_plugin_id if source_replacement else _resolve_plugin_id_conflict(
         target_plugin_id,
         logger,
         config_path=record.config_path,
@@ -559,12 +714,21 @@ def _apply_discovery_record_sync(
         dependencies=record.meta_payload.get("dependencies") if isinstance(record.meta_payload.get("dependencies"), list) else None,
         plugin_ui=record.meta_payload.get("plugin_ui") if isinstance(record.meta_payload.get("plugin_ui"), dict) else None,
     )
-    resolved_id = register_plugin(
-        plugin_meta,
-        logger,
-        config_path=record.config_path,
-        entry_point=record.entry_point,
-    )
+    if source_replacement:
+        resolved_id = runtime_plugin_id
+        with state.acquire_plugins_write_lock():
+            replacement_dump = plugin_meta.model_dump(mode="python")
+            replacement_dump["config_path"] = str(record.config_path)
+            replacement_dump["entry_point"] = record.entry_point
+            state.plugins[resolved_id] = replacement_dump
+        state.invalidate_snapshot_cache("plugins")
+    else:
+        resolved_id = register_plugin(
+            plugin_meta,
+            logger,
+            config_path=record.config_path,
+            entry_point=record.entry_point,
+        )
     if resolved_id is None:
         raise ServerDomainError(
             code="PLUGIN_REGISTRY_CONFLICT",
@@ -594,6 +758,30 @@ def _apply_discovery_record_sync(
         state.plugins[resolved_id] = merged
     state.invalidate_snapshot_cache("plugins")
     return resolved_id, payload
+
+
+def _remove_config_path_aliases_sync(config_path: Path, *, keep_plugin_id: str) -> list[str]:
+    resolved_path = _resolve_config_path(config_path)
+    running_ids = _list_running_plugin_ids_sync()
+    removed: list[str] = []
+    kept_running: list[str] = []
+    with state.acquire_plugins_write_lock():
+        for plugin_id, raw_meta in list(state.plugins.items()):
+            if plugin_id == keep_plugin_id or not isinstance(raw_meta, dict):
+                continue
+            if _resolve_meta_config_path(raw_meta) != resolved_path:
+                continue
+            if plugin_id in running_ids:
+                preserved = dict(raw_meta)
+                preserved["runtime_source_missing"] = True
+                state.plugins[plugin_id] = preserved
+                kept_running.append(plugin_id)
+                continue
+            state.plugins.pop(plugin_id, None)
+            removed.append(plugin_id)
+    if removed or kept_running:
+        state.invalidate_snapshot_cache("plugins")
+    return removed
 
 
 def _remove_stale_plugin_metadata_sync(
@@ -660,6 +848,18 @@ class PluginRegistryService:
     async def refresh_plugin(self, plugin_id: str) -> dict[str, object]:
         return await asyncio.to_thread(self._refresh_plugin_sync, plugin_id)
 
+    async def validate_plugin_runtime_source(
+        self,
+        *,
+        plugin_id: str,
+        config_path: Path,
+    ) -> None:
+        await asyncio.to_thread(
+            _validate_plugin_runtime_source_sync,
+            plugin_id,
+            config_path,
+        )
+
     async def list_autostart_plugin_ids(self) -> list[str]:
         return await asyncio.to_thread(_get_autostart_plugin_ids_sync)
 
@@ -675,6 +875,7 @@ class PluginRegistryService:
         added: list[str] = []
         updated: list[str] = []
         unchanged: list[str] = []
+        refreshed_ids: set[str] = set()
         snapshot = _discover_registry_snapshot_sync(roots)
         failed = [
             {
@@ -691,6 +892,11 @@ class PluginRegistryService:
                     record.config_path,
                     existing_snapshot,
                 )
+                if record.meta_payload.get("shadowed_builtin_path"):
+                    # A valid user override always owns the declared ID. Clean
+                    # up aliases left by the legacy conflict renamer instead of
+                    # perpetuating ``study_companion_1``.
+                    previous_runtime_plugin_id = record.plugin_id
                 previous_plugin_id = previous_runtime_plugin_id or record.plugin_id
                 previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
                 resolved_id, payload = _apply_discovery_record_sync(
@@ -698,6 +904,9 @@ class PluginRegistryService:
                     existing_snapshot=existing_snapshot,
                     preferred_runtime_plugin_id=previous_runtime_plugin_id,
                 )
+                if record.meta_payload.get("shadowed_builtin_path"):
+                    _remove_config_path_aliases_sync(record.config_path, keep_plugin_id=resolved_id)
+                refreshed_ids.add(resolved_id)
                 current_managed = _select_managed_fields(payload)
                 if resolved_id not in existing_snapshot:
                     added.append(resolved_id)
@@ -728,7 +937,7 @@ class PluginRegistryService:
                     }
                 )
 
-        missing_ids = _collect_missing_plugin_ids_sync(existing_snapshot)
+        missing_ids = _collect_missing_plugin_ids_sync(existing_snapshot) - refreshed_ids
         removed, removed_running = _remove_stale_plugin_metadata_sync(missing_ids, running_ids=running_ids)
         return {
             "success": not failed,
@@ -738,6 +947,14 @@ class PluginRegistryService:
             "removed_running": removed_running,
             "unchanged": unchanged,
             "failed": failed,
+            "shadowed": [
+                {
+                    "plugin_id": record.plugin_id,
+                    "config_path": str(record.config_path),
+                    "source": _source_for_config_path(record.config_path),
+                }
+                for record in snapshot.shadowed
+            ],
             "scanned_count": len(snapshot.records) + len(snapshot.failures),
         }
 
@@ -753,9 +970,34 @@ class PluginRegistryService:
 
         roots = tuple(PLUGIN_CONFIG_ROOTS)
         existing_snapshot = _get_registered_plugin_snapshot_sync()
-        config_path = _resolve_meta_config_path(existing_snapshot.get(normalized_plugin_id))
-        if config_path is None or not config_path.exists():
-            config_path = _find_plugin_config_path(normalized_plugin_id, roots)
+        _prepare_plugin_import_roots(roots, logger)
+        existing_config_path = _resolve_meta_config_path(existing_snapshot.get(normalized_plugin_id))
+        record: PluginDiscoveryRecord | None = None
+        if (
+            existing_config_path is not None
+            and existing_config_path.exists()
+            and not _config_path_belongs_to_roots(existing_config_path, roots)
+        ):
+            ctx = _parse_single_plugin_config(existing_config_path, set(), logger)
+            if ctx is not None:
+                record = _build_discovery_record_from_context(ctx)
+        else:
+            discovery = _discover_registry_snapshot_sync(roots)
+            record = next(
+                (
+                    item
+                    for item in discovery.records
+                    if existing_config_path is not None
+                    and _resolve_config_path(item.config_path) == existing_config_path
+                ),
+                None,
+            )
+            if record is None:
+                record = next(
+                    (item for item in discovery.records if item.plugin_id == normalized_plugin_id),
+                    None,
+                )
+        config_path = record.config_path if record is not None else None
         if config_path is None:
             raise ServerDomainError(
                 code="PLUGIN_CONFIG_NOT_FOUND",
@@ -764,21 +1006,12 @@ class PluginRegistryService:
                 details={"plugin_id": normalized_plugin_id},
             )
 
-        _prepare_plugin_import_roots(roots, logger)
-        ctx = _parse_single_plugin_config(config_path, set(), logger)
-        if ctx is None:
-            raise ServerDomainError(
-                code="PLUGIN_DISCOVERY_FAILED",
-                message=f"Plugin '{normalized_plugin_id}' configuration could not be parsed",
-                status_code=400,
-                details={"plugin_id": normalized_plugin_id},
-            )
-
-        record = _build_discovery_record_from_context(ctx)
         previous_runtime_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
             config_path,
             existing_snapshot,
         )
+        if record.meta_payload.get("shadowed_builtin_path"):
+            previous_runtime_plugin_id = record.plugin_id
         previous_plugin_id = previous_runtime_plugin_id or normalized_plugin_id
         previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
         resolved_id, payload = _apply_discovery_record_sync(
@@ -786,6 +1019,8 @@ class PluginRegistryService:
             existing_snapshot=existing_snapshot,
             preferred_runtime_plugin_id=previous_runtime_plugin_id,
         )
+        if record.meta_payload.get("shadowed_builtin_path"):
+            _remove_config_path_aliases_sync(config_path, keep_plugin_id=resolved_id)
         current_managed = _select_managed_fields(payload)
         status = "added"
         if previous_plugin_id in existing_snapshot:

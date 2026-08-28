@@ -163,6 +163,32 @@ AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
 MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
 USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 
+
+def resolve_user_plugin_base() -> str:
+    """The plugin server's ACTUAL loopback origin, right now.
+
+    ``USER_PLUGIN_BASE`` is the configured origin. It is not always the live
+    one: when the preferred port is busy the plugin server binds elsewhere and
+    publishes the real port in ``NEKO_USER_PLUGIN_SERVER_PORT``.
+
+    This lives in config, at the bottom of the layering, because four separate
+    layers need the same answer -- the process that MINTS media URLs, the main
+    server, the router that proxies those URLs to the browser, and the agent
+    router. They had drifted into separate copies, one of which silently
+    ignored the environment variable, so a proxy resolved to the port that had
+    not minted the id and images went missing exactly in the port-busy case the
+    variable exists to handle (Codex).
+    """
+    raw_port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
+    if raw_port:
+        try:
+            port = int(raw_port)
+        except ValueError:
+            port = 0
+        if 0 < port <= 65535:
+            return f"http://127.0.0.1:{port}"
+    return USER_PLUGIN_BASE.rstrip("/")
+
 # OpenFang Agent 执行后端端口 (由 Electron 并行启动，端口写入 port_config.json)
 OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
 OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"

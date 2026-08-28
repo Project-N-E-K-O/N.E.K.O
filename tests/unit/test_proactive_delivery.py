@@ -984,3 +984,293 @@ def test_enqueue_coalesce_evicts_drained_extras_orphan():
     assert [r["summary"] for r in mgr.pending_extra_replies] == ["old snapshot"]
     mgr.enqueue_agent_callback(_proactive_cb("new snapshot", coalesce_key="gs"))
     assert [r["summary"] for r in mgr.pending_extra_replies] == ["new snapshot"]
+
+
+# ---------------------------------------------------------------------------
+# Per-turn image budget
+#
+# A trigger drains EVERY pending proactive callback into one model turn, so a
+# per-push cap does not bound the request. Cues pile up whenever the proactive
+# claim is denied (the user is mid-conversation) and then release together.
+# ---------------------------------------------------------------------------
+
+
+def _image_cb(name: str, images: list[str]) -> dict:
+    return {"_callback_delivery_id": name, "status": "completed",
+            "summary": name, "media_images": list(images)}
+
+
+def test_image_budget_constants_are_pinned() -> None:
+    """Anchor the literals the split tests below compute against."""
+    from main_logic.proactive_delivery import (
+        CALLBACK_IMAGE_MAX_COUNT,
+        CALLBACK_IMAGE_MAX_TOTAL_BYTES,
+    )
+
+    assert CALLBACK_IMAGE_MAX_COUNT == 8
+    assert CALLBACK_IMAGE_MAX_TOTAL_BYTES == 8 * 1024 * 1024
+
+
+def test_split_takes_a_callback_atomic_fifo_prefix() -> None:
+    """Whole callbacks only — a taken cb keeps its complete media set.
+
+    Splitting mid-callback would break the downstream preserve-until-success
+    retry, which re-streams ``media_images`` as one unit.
+    """
+    from main_logic.proactive_delivery import split_callbacks_by_image_budget
+
+    cbs = [_image_cb("a", ["a1", "a2", "a3", "a4"]),
+           _image_cb("b", ["b1", "b2", "b3", "b4"]),
+           _image_cb("c", ["c1", "c2", "c3", "c4"])]
+
+    taken, overflow = split_callbacks_by_image_budget(cbs)
+
+    assert [cb["summary"] for cb in taken] == ["a", "b"]
+    assert [cb["summary"] for cb in overflow] == ["c"]
+    assert taken[1]["media_images"] == ["b1", "b2", "b3", "b4"]
+
+
+def test_split_always_takes_the_head_even_when_it_alone_overflows() -> None:
+    """Guarantees forward progress.
+
+    Deferring an over-budget head would park a cue that can never fit and the
+    queue would spin on it forever — the exact wedge this bound exists to stop.
+    """
+    from main_logic.proactive_delivery import split_callbacks_by_image_budget
+
+    huge = _image_cb("huge", ["i%d" % i for i in range(40)])
+
+    taken, overflow = split_callbacks_by_image_budget([huge, _image_cb("next", ["n"])])
+
+    assert [cb["summary"] for cb in taken] == ["huge"]
+    assert [cb["summary"] for cb in overflow] == ["next"]
+
+
+def test_split_enforces_the_byte_budget_not_just_the_count() -> None:
+    from main_logic.proactive_delivery import (
+        CALLBACK_IMAGE_MAX_TOTAL_BYTES,
+        split_callbacks_by_image_budget,
+    )
+
+    five_mib = "A" * (5 * 1024 * 1024 * 4 // 3)
+    cbs = [_image_cb("first", [five_mib]), _image_cb("second", [five_mib])]
+
+    taken, overflow = split_callbacks_by_image_budget(cbs)
+
+    assert 2 * (len(five_mib) * 3 // 4) > CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    assert [cb["summary"] for cb in taken] == ["first"]
+    assert [cb["summary"] for cb in overflow] == ["second"]
+
+
+def test_split_defers_text_only_callbacks_behind_the_budget() -> None:
+    """Strict FIFO: later text must not jump ahead of deferred image cues.
+
+    The instruction renders callbacks in order, so letting text overtake would
+    reorder the narrative against what the user already saw queued.
+    """
+    from main_logic.proactive_delivery import split_callbacks_by_image_budget
+
+    text_only = {"_callback_delivery_id": "t", "status": "completed", "summary": "t"}
+    cbs = [_image_cb("a", ["i%d" % i for i in range(8)]),
+           _image_cb("b", ["b1"]),
+           text_only]
+
+    taken, overflow = split_callbacks_by_image_budget(cbs)
+
+    assert [cb["summary"] for cb in taken] == ["a"]
+    assert [cb["summary"] for cb in overflow] == ["b", "t"]
+
+
+def test_split_passes_text_only_callbacks_through_untouched() -> None:
+    """A batch with no images must never be deferred by an image budget."""
+    from main_logic.proactive_delivery import split_callbacks_by_image_budget
+
+    cbs = [{"summary": "x"}, {"summary": "y"}, {"summary": "z"}]
+
+    taken, overflow = split_callbacks_by_image_budget(cbs)
+
+    assert taken == cbs
+    assert overflow == []
+
+
+# ---------------------------------------------------------------------------
+# Queue budget: what the manager may HOLD, vs what one release may send.
+#
+# CALLBACK_IMAGE_MAX_* bound a single model turn. The queue itself had only a
+# TTL, so cues piling up while the user talks (the claim keeps being denied)
+# could hold hundreds of MB of base64 with nothing to stop them.
+# ---------------------------------------------------------------------------
+
+
+def _img_of_decoded_size(decoded_bytes: int) -> str:
+    """A base64 string whose approx decoded size is decoded_bytes."""
+    return "A" * ((decoded_bytes + 2) // 3 * 4)
+
+
+def test_queue_budget_numbers_are_the_agreed_ones():
+    """Pin the figures; every other test below derives from them."""
+    from main_logic import proactive_delivery as pd
+
+    assert pd.QUEUED_CUE_MAX_COUNT == 50
+    assert pd.QUEUED_IMAGE_MAX_TOTAL_BYTES == 4 * pd.CALLBACK_IMAGE_MAX_TOTAL_BYTES
+
+
+@pytest.mark.asyncio
+async def test_queue_depth_is_bounded_and_drops_are_acked():
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    loop = asyncio.get_running_loop()
+    overflow = 15
+    acks = []
+    for i in range(pd.QUEUED_CUE_MAX_COUNT + overflow):
+        fut = loop.create_future()
+        acks.append(fut)
+        mgr.submit(
+            {"text": f"cue-{i}", pd.DELIVERY_ACK_FUTURE_KEY: fut},
+            coalesce_key=f"k{i}",
+        )
+
+    assert len(mgr._queue) == pd.QUEUED_CUE_MAX_COUNT
+    # Dropped producers were TOLD, not left waiting on a future forever --
+    # the same contract a TTL drop honours.
+    resolved = [f for f in acks if f.done()]
+    assert len(resolved) == overflow
+    assert all(f.result() is False for f in resolved)
+
+
+def test_an_important_waiting_cue_survives_a_flood_of_trivial_ones():
+    """The property that makes the drop policy defensible.
+
+    Dropping the oldest would let a burst of unimportant cues evict the
+    important one that has been waiting longest — the same failure shape that
+    made a shared image cap unworkable.
+    """
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    important = {"text": "important"}
+    mgr.submit(important, priority=9, coalesce_key="important")
+
+    for i in range(pd.QUEUED_CUE_MAX_COUNT * 2):
+        mgr.submit({"text": f"noise-{i}"}, priority=0, coalesce_key=f"n{i}")
+
+    queued = [c.callback for c in mgr._queue]
+    assert important in queued
+    assert len(mgr._queue) == pd.QUEUED_CUE_MAX_COUNT
+
+
+def test_queued_image_bytes_are_bounded_independently_of_count():
+    """Count and bytes are independent axes: few cues can still be huge."""
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    one_turn = pd.CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    # Ten turns' worth in ten cues — far under the count cap, far over bytes.
+    for i in range(10):
+        mgr.submit(
+            {"text": f"img-{i}", "media_images": [_img_of_decoded_size(one_turn)]},
+            coalesce_key=f"i{i}",
+        )
+
+    assert len(mgr._queue) < 10, "byte ceiling never fired"
+    total = sum(mgr._cue_image_bytes(c) for c in mgr._queue)
+    assert total <= pd.QUEUED_IMAGE_MAX_TOTAL_BYTES
+
+
+def test_text_only_cues_are_not_charged_image_bytes():
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    for i in range(pd.QUEUED_CUE_MAX_COUNT):
+        mgr.submit({"text": f"plain-{i}"}, coalesce_key=f"p{i}")
+
+    assert len(mgr._queue) == pd.QUEUED_CUE_MAX_COUNT
+    assert sum(mgr._cue_image_bytes(c) for c in mgr._queue) == 0
+
+
+def test_budget_eviction_reports_the_keys_it_dropped():
+    """The manager coalesces on submit, so an eviction can strand bookkeeping.
+
+    If the newly submitted cue displaced an older same-key one and is then
+    itself evicted for budget, the key's recorded sequence still points at the
+    evicted cue. The owner uses that sequence to retract older same-key cues as
+    stale — so without this report BOTH are lost.
+    """
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    for i in range(pd.QUEUED_CUE_MAX_COUNT):
+        mgr.submit({"text": f"important-{i}"}, priority=9, coalesce_key=f"hi{i}")
+
+    # Least important and newest: the budget's own victim by construction.
+    evicted = mgr.submit({"text": "loser"}, priority=0, coalesce_key="loser-key")
+
+    assert evicted == ["loser-key"]
+    assert len(mgr._queue) == pd.QUEUED_CUE_MAX_COUNT
+    assert all(c.callback.get("text") != "loser" for c in mgr._queue)
+
+
+def test_submit_reports_nothing_when_nothing_was_evicted():
+    delivered = []
+    mgr = _make(delivered)
+    assert mgr.submit({"text": "fits"}, coalesce_key="k") == []
+
+
+def _tiny_jpeg(px: int = 900) -> str:
+    import base64
+    import io as _io
+
+    from PIL import Image
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (px, px), (120, 30, 200)).save(buf, "JPEG", quality=95)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+@pytest.mark.asyncio
+async def test_over_budget_turn_samples_then_compresses_before_dropping():
+    """Going over the request budget must cost redundancy first, content last.
+
+    A rejected request loses the whole turn, so something has to give. The
+    order is deliberate: drop redundant frames (a burst's ends and midpoint
+    carry nearly all of it), then quality, and only then content -- and every
+    step is reported so the user is never silently short an image.
+    """
+    from main_logic.proactive_delivery import (
+        approx_base64_decoded_bytes,
+        fit_images_to_turn_budget,
+    )
+
+    images = [_tiny_jpeg() for _ in range(10)]
+    total = sum(approx_base64_decoded_bytes(i) for i in images)
+
+    # 预算宽松：一张都不动，也不打扰用户。
+    kept, notice = await fit_images_to_turn_budget(images, total * 2)
+    assert kept == images
+    assert notice is None
+
+    # 只需抽样：降到开头/中间/结尾三张，不压缩、不丢弃。
+    kept, notice = await fit_images_to_turn_budget(images, total // 2)
+    assert kept == [images[0], images[len(images) // 2], images[-1]]
+    assert notice["sampled"] is True
+    assert notice["compressed"] is False
+    assert notice["dropped"] == 0
+
+    # 抽样还不够：压缩，仍然一张不丢。
+    kept, notice = await fit_images_to_turn_budget(images, total // 8)
+    assert len(kept) == 3
+    assert notice["compressed"] is True
+    assert notice["dropped"] == 0
+    assert sum(approx_base64_decoded_bytes(i) for i in kept) < total // 8 * 2
+
+    # 压完仍超限才丢内容，且无条件保住至少一张。
+    kept, notice = await fit_images_to_turn_budget(images, 2000)
+    assert len(kept) >= 1
+    assert notice["dropped"] > 0
+    assert notice["final_count"] == len(kept)

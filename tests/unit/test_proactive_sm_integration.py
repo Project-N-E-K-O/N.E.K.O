@@ -24,6 +24,8 @@ from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
+import pytest
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 # 为隔离 trigger_agent_callbacks / trigger_greeting 的环境依赖（prompt 资源、
@@ -40,6 +42,7 @@ from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
 )
 from main_logic.session_state import (
     ProactivePhase,
@@ -74,6 +77,25 @@ class _FakeOmniOffline(OmniOfflineClient):
 
     def update_max_response_length(self, *_a, **_kw):
         pass
+
+
+class _CapturingImageOmniOffline(_FakeOmniOffline):
+    def __init__(self):
+        super().__init__(delivered=True)
+        self.image_batches: list[list[str]] = []
+
+    async def prompt_ephemeral(
+        self,
+        instruction: str,
+        *,
+        images=None,
+        on_committed=None,
+    ) -> bool:
+        self.called_with.append(instruction)
+        self.image_batches.append(list(images or []))
+        if on_committed:
+            on_committed()
+        return True
 
 
 def _make_mgr(session=None) -> core_module.LLMSessionManager:
@@ -1246,10 +1268,12 @@ async def test_text_mode_success_keeps_late_extra_replies():
     mgr.pending_extra_replies = [initial_extra]
 
     delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
 
     assert delivered is True
     assert mgr.pending_agent_callbacks == [late_cb]
     assert mgr.pending_extra_replies == [late_extra]
+    assert mgr._fired_tasks == []
 
 
 def test_drain_agent_callbacks_purges_retracted_callbacks_and_extras():
@@ -1311,9 +1335,8 @@ async def test_passive_image_is_staged_before_text_drain_can_prune_callback():
     }
     mgr.pending_agent_callbacks = [cb]
 
-    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) == ""
-    assert mgr.pending_agent_callbacks == [cb]
-
+    # 生产里的顺序就是「先 staging、再 drain」：staging 把图挂进
+    # system_prefix_images，drain 渲染文字，两者随同一条 user message 出去。
     outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
         mgr,
         [cb],
@@ -1321,6 +1344,7 @@ async def test_passive_image_is_staged_before_text_drain_can_prune_callback():
     )
     rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
+    # Offline 的图是随 stream_text 的前缀走的，不经过 stream_image。
     session.stream_image.assert_not_awaited()
     assert outcome["system_prefix_images"] == ["image-b64"]
     assert "camera event" in rendered
@@ -1335,6 +1359,7 @@ async def test_text_passive_media_stages_only_the_selected_prompt_snapshot():
         "_callback_delivery_id": "id-retracted-media",
         "status": "completed",
         "summary": "must not render",
+        "delivery_mode": "passive",
         "media_images": ["retracted-image"],
         DELIVERY_RETRACTED_KEY: True,
     }
@@ -1342,6 +1367,9 @@ async def test_text_passive_media_stages_only_the_selected_prompt_snapshot():
         "_callback_delivery_id": "id-selected-media",
         "status": "completed",
         "summary": "selected callback",
+        # 仓库约定：缺省 delivery_mode 即 proactive，而 proactive + 带图会被 STOP
+        # 闸扣住等 proactive 路径。这条测的是 passive 文本路径，写明确。
+        "delivery_mode": "passive",
         "media_images": ["selected-image"],
     }
     mgr.pending_agent_callbacks = [retracted, selected]
@@ -1425,8 +1453,9 @@ async def test_transient_native_passive_image_rejection_keeps_callback_for_retry
     )
     rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
-    assert rendered == ""
-    assert mgr.pending_agent_callbacks == [cb]
+    # 维护者判据：图 best effort。瞬时拒绝时图带不上，但文字照投、不留队。
+    assert "camera event" in rendered
+    assert mgr.pending_agent_callbacks == []
     assert cb["media_images"] == ["image-b64"]
 
 
@@ -1496,7 +1525,9 @@ async def test_partial_native_passive_media_staging_requires_session_retirement(
     assert outcome["native_prefix_committed"] is True
     assert outcome["native_rejection_pending"] is True
     assert cb["_passive_media_staged_count"] == 1
-    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) == ""
+    # 维护者判据：文字一定投出去，图 best effort —— 没挂上就这一轮不带，
+    # 但不因此扣住这条通知（扣住会让它在两条路都投不了时永远卡在队列里）。
+    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) != ""
 
 
 async def test_first_native_passive_media_exception_requires_session_retirement():
@@ -1527,7 +1558,9 @@ async def test_first_native_passive_media_exception_requires_session_retirement(
     assert outcome["safe_to_continue"] is False
     assert outcome["native_prefix_committed"] is False
     assert cb["_passive_media_staged_count"] == 0
-    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) == ""
+    # 维护者判据：文字一定投出去，图 best effort —— 没挂上就这一轮不带，
+    # 但不因此扣住这条通知（扣住会让它在两条路都投不了时永远卡在队列里）。
+    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) != ""
 
 
 async def test_partial_gemini_passive_media_staging_requires_session_retirement():
@@ -1562,7 +1595,9 @@ async def test_partial_gemini_passive_media_staging_requires_session_retirement(
     assert outcome["safe_to_continue"] is False
     assert outcome["native_prefix_committed"] is True
     assert cb["_passive_media_staged_count"] == 1
-    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) == ""
+    # 维护者判据：文字一定投出去，图 best effort —— 没挂上就这一轮不带，
+    # 但不因此扣住这条通知（扣住会让它在两条路都投不了时永远卡在队列里）。
+    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) != ""
 
 
 async def test_passive_native_async_rejection_invalidates_live_stage_outcome():
@@ -1630,8 +1665,10 @@ async def test_passive_handoff_required_never_calls_stream_or_annotation():
     session.stream_image.assert_not_awaited()
     session._analyze_image_with_vision_model.assert_not_awaited()
     assert cb["media_images"] == ["image-b64"]
-    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) == ""
-    assert mgr.pending_agent_callbacks == [cb]
+    # 维护者判据：文字一定投出去，图 best effort —— 没挂上就这一轮不带，
+    # 但不因此扣住这条通知（扣住会让它在两条路都投不了时永远卡在队列里）。
+    assert "camera event" in core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+    assert mgr.pending_agent_callbacks == []
 
 
 async def test_passive_image_description_never_rides_hot_swap_prime():
@@ -3515,431 +3552,284 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
             assert master_name in name_session.called_with[0]
 
 
-async def test_inject_failure_after_native_media_retires_the_session():
-    """A committed image with no paired text is an incomplete transaction.
+# ---------------------------------------------------------------------------
+# Per-turn image budget at the two real consumption points
+#
+# Both paths flatten EVERY pending callback into one model turn. Batches build
+# up whenever the proactive claim is denied (user mid-conversation) and release
+# together, so a per-push cap alone does not bound the request. An over-limit
+# request also re-queues its whole snapshot on failure — it would retry forever
+# and wedge every later cue behind it.
+# ---------------------------------------------------------------------------
 
-    ``media_ok=False`` and the activity-lost-the-race path both retire the
-    session when a native prefix was already persisted. A ``inject_text_and_
-    request_response`` exception leaves the same unlabelled image in the same
-    live session, so it must retire it too — otherwise an unrelated user turn
-    consumes the image while the retry sends it again.
-    """
-    sess = _make_voice_sess()
-    sess._inject_rejection_handlers = {}
-    sess._fatal_error_occurred = False
-    sess.close = AsyncMock()
-    mgr = _make_mgr(session=sess)
-    mgr.end_session = AsyncMock()
-    mgr._schedule_proactive_retry = MagicMock()
-    retirement_tasks = []
 
-    def _fire_retirement(coro):
-        task = asyncio.create_task(coro)
-        retirement_tasks.append(task)
-        return task
-
-    mgr._fire_task = _fire_retirement
-
-    async def _stream_image(_image_b64, **_kwargs):
-        return SimpleNamespace(accepted=True, mode="native")
-
-    sess.stream_image = _stream_image
-
-    async def _inject_boom(*_args, **_kwargs):
-        raise RuntimeError("ws write failed")
-
-    sess.inject_text_and_request_response = _inject_boom
-    cb = {
-        "_callback_delivery_id": "id-inject-fail-after-native-media",
+def _budget_cb(name: str, image_count: int) -> dict:
+    return {
+        "_callback_delivery_id": "id-%s" % name,
         "status": "completed",
-        "summary": "native media then inject failure",
-        "media_images": ["callback-image"],
-    }
-    mgr.pending_agent_callbacks = [cb]
-
-    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
-    await asyncio.gather(*retirement_tasks)
-
-    assert delivered is False
-    assert sess._fatal_error_occurred is True
-    sess.close.assert_awaited_once_with()
-    mgr.end_session.assert_awaited_once_with(by_server=True, expected_session=sess)
-    # 回调留在队列里等重试，但重试会落在一条新会话上——而且必须自己排重试：
-    # 失败的注入没有产生 response，不会有 response.done 来重新驱动队列。
-    assert mgr.pending_agent_callbacks == [cb]
-    mgr._schedule_proactive_retry.assert_called_once_with(
-        mgr.proactive_manager.min_gap_s
-    )
-
-
-async def test_async_rejection_after_a_committed_image_retires_the_session():
-    """An earlier persisted image orphaned by a later async rejection is unsafe.
-
-    Distinct from the single-image case: there the explicit rejection proves the
-    one image never landed, so the session stays. Here image 1 is already in the
-    provider's conversation when image 2 is rejected asynchronously, and its
-    paired callback text will never be sent.
-    """
-    sess = _make_voice_sess()
-    sess._is_gemini = False
-    sess._supports_native_image = True
-    sess._visual_delivery_mode = "native"
-    sess._fatal_error_occurred = False
-    sess._inject_rejection_handlers = {}
-    sess.close = AsyncMock()
-    mgr = _make_mgr(session=sess)
-    mgr.end_session = AsyncMock()
-    mgr._schedule_proactive_retry = MagicMock()
-    retirement_tasks = []
-
-    def _fire_retirement(coro):
-        task = asyncio.create_task(coro)
-        retirement_tasks.append(task)
-        return task
-
-    mgr._fire_task = _fire_retirement
-
-    async def _stream_image(image_b64, *, on_rejected=None, **_kwargs):
-        if image_b64 == "callback-image-2" and on_rejected is not None:
-            # provider 先接了这一帧，随后才异步拒绝。
-            on_rejected("second callback image rejected")
-        return SimpleNamespace(accepted=True, mode="native")
-
-    sess.stream_image = _stream_image
-    cb = {
-        "_callback_delivery_id": "id-async-reject-after-commit",
-        "status": "completed",
-        "summary": "two native callback images",
-        "media_images": ["callback-image-1", "callback-image-2"],
-    }
-    mgr.pending_agent_callbacks = [cb]
-
-    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
-    await asyncio.gather(*retirement_tasks)
-
-    assert delivered is False
-    assert sess.inject_calls == 0
-    assert sess._fatal_error_occurred is True
-    sess.close.assert_awaited_once_with()
-    assert mgr.pending_agent_callbacks == [cb]
-
-
-async def test_expiry_after_native_media_retires_the_session():
-    """A retracted callback cannot leave its committed image behind.
-
-    The retract re-filter runs after `_stream_cb_media` may already have
-    persisted a native image. Returning here without retiring leaves an
-    unlabelled image in the live session while the callback is gone from the
-    queue entirely — so no retry ever comes back to finish it.
-    """
-    sess = _make_voice_sess()
-    sess._is_gemini = False
-    sess._supports_native_image = True
-    sess._visual_delivery_mode = "native"
-    sess._fatal_error_occurred = False
-    sess._inject_rejection_handlers = {}
-    sess.close = AsyncMock()
-    mgr = _make_mgr(session=sess)
-    mgr.end_session = AsyncMock()
-    mgr._schedule_proactive_retry = MagicMock()
-    retirement_tasks = []
-
-    def _fire_retirement(coro):
-        task = asyncio.create_task(coro)
-        retirement_tasks.append(task)
-        return task
-
-    mgr._fire_task = _fire_retirement
-
-    cb = {
-        "_callback_delivery_id": "id-expired-after-native-media",
-        "status": "completed",
-        "summary": "native image then expiry",
-        "media_images": ["callback-image"],
+        "summary": "cue %s" % name,
+        "media_images": ["%s-img%d" % (name, i) for i in range(image_count)],
     }
 
-    async def _stream_image(_image_b64, **_kwargs):
-        # 图落进会话之后，这条 callback 才过期被撤回。
-        cb[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1.0
-        return SimpleNamespace(accepted=True, mode="native")
 
-    sess.stream_image = _stream_image
-    mgr.pending_agent_callbacks = [cb]
+async def test_text_mode_bounds_images_across_one_proactive_turn():
+    from main_logic.proactive_delivery import CALLBACK_IMAGE_MAX_COUNT
 
-    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
-    await asyncio.gather(*retirement_tasks)
-
-    assert delivered is False
-    assert sess.inject_calls == 0
-    assert sess._fatal_error_occurred is True
-    sess.close.assert_awaited_once_with()
-
-
-async def test_async_inject_rejection_after_native_media_retires_the_session():
-    """A post-inject rejection can orphan an already-committed image.
-
-    The rejection may target the callback item itself (its paired text never
-    landed) or `response.create` (the optimistically persisted item would be
-    duplicated by the retry). Either way the callback stays queued, so the
-    retry must land on a fresh session.
-    """
-    sess = _make_voice_sess()
-    sess._is_gemini = False
-    sess._supports_native_image = True
-    sess._visual_delivery_mode = "native"
-    sess._fatal_error_occurred = False
-    sess._inject_rejection_handlers = {}
-    sess.close = AsyncMock()
+    assert CALLBACK_IMAGE_MAX_COUNT == 8
+    sess = _CapturingImageOmniOffline()
     mgr = _make_mgr(session=sess)
-    mgr.end_session = AsyncMock()
-    mgr._schedule_proactive_retry = MagicMock()
-    retirement_tasks = []
-
-    def _fire_retirement(coro):
-        task = asyncio.create_task(coro)
-        retirement_tasks.append(task)
-        return task
-
-    mgr._fire_task = _fire_retirement
-
-    async def _stream_image(_image_b64, **_kwargs):
-        return SimpleNamespace(accepted=True, mode="native")
-
-    sess.stream_image = _stream_image
-
-    async def _inject_then_reject(_text, *, on_rejected=None, **_kwargs):
-        # 写出去了，但服务端随后异步拒绝这一项。
-        sess.inject_calls += 1
-        if on_rejected is not None:
-            on_rejected("callback item rejected")
-
-    sess.inject_text_and_request_response = _inject_then_reject
-    cb = {
-        "_callback_delivery_id": "id-async-inject-reject",
-        "status": "completed",
-        "summary": "native image then async inject rejection",
-        "media_images": ["callback-image"],
-    }
-    mgr.pending_agent_callbacks = [cb]
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
 
     delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
-    await asyncio.gather(*retirement_tasks)
 
-    assert delivered is False
-    assert sess._fatal_error_occurred is True
-    sess.close.assert_awaited_once_with()
-    # cb 留队重试，但重试会落在新会话上 —— 而且必须自己排：会话已经退休，不会再有
-    # response.done 来驱动它。
-    assert mgr.pending_agent_callbacks == [cb]
-    mgr._schedule_proactive_retry.assert_called_once_with(
-        mgr.proactive_manager.min_gap_s
-    )
-
-
-async def test_inject_rejection_arriving_after_return_still_retires():
-    """The rejection can land after inject returns, inside the ack grace window.
-
-    Codex point: the earlier regression fired `on_rejected` inline during the
-    inject await, so execution was still before the post-inject branch. The
-    supported ordering is the other one — the callback runs after inject has
-    already returned, when that branch has long been passed.
-    """
-    sess = _make_voice_sess()
-    sess._is_gemini = False
-    sess._supports_native_image = True
-    sess._visual_delivery_mode = "native"
-    sess._fatal_error_occurred = False
-    sess._inject_rejection_handlers = {}
-    sess.close = AsyncMock()
-    mgr = _make_mgr(session=sess)
-    mgr.end_session = AsyncMock()
-    mgr._schedule_proactive_retry = MagicMock()
-    fired = []
-
-    def _fire(coro):
-        task = asyncio.create_task(coro)
-        fired.append(task)
-        return task
-
-    mgr._fire_task = _fire
-
-    async def _stream_image(_image_b64, **_kwargs):
-        return SimpleNamespace(accepted=True, mode="native")
-
-    sess.stream_image = _stream_image
-    captured = {}
-
-    async def _inject_and_return(_text, *, on_rejected=None, **_kwargs):
-        sess.inject_calls += 1
-        captured["on_rejected"] = on_rejected
-
-    sess.inject_text_and_request_response = _inject_and_return
-    cb = {
-        "_callback_delivery_id": "id-late-inject-reject",
-        "status": "completed",
-        "summary": "native image, rejection lands after inject returned",
-        "media_images": ["callback-image"],
-    }
-    mgr.pending_agent_callbacks = [cb]
-
-    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     assert delivered is True
-    assert sess._fatal_error_occurred is False
-
-    # inject 已经返回、分支早已越过；拒绝此刻才到。
-    captured["on_rejected"]("late callback item rejection")
-    await asyncio.gather(*fired)
-
-    assert sess._fatal_error_occurred is True
-    sess.close.assert_awaited_once_with()
-    mgr._schedule_proactive_retry.assert_called_once_with(
-        mgr.proactive_manager.min_gap_s
-    )
-
-
-async def test_late_media_rejection_after_stream_returns_still_retires():
-    """A second native image can be rejected after `_stream_cb_media()` returned.
-
-    The count>1 predicate lives in the post-media branch because the counter is
-    only final there — but by the time a LATE media rejection arrives, execution
-    has already passed that branch. The callback must cover that ordering, which
-    it can safely do once the media phase is marked done.
-    """
-    sess = _make_voice_sess()
-    sess._is_gemini = False
-    sess._supports_native_image = True
-    sess._visual_delivery_mode = "native"
-    sess._fatal_error_occurred = False
-    sess._inject_rejection_handlers = {}
-    sess.close = AsyncMock()
-    mgr = _make_mgr(session=sess)
-    mgr.end_session = AsyncMock()
-    mgr._schedule_proactive_retry = MagicMock()
-    fired = []
-
-    def _fire(coro):
-        task = asyncio.create_task(coro)
-        fired.append(task)
-        return task
-
-    mgr._fire_task = _fire
-    captured = {}
-
-    async def _stream_image(image_b64, *, on_rejected=None, **_kwargs):
-        captured.setdefault("on_rejected", on_rejected)
-        return SimpleNamespace(accepted=True, mode="native")
-
-    sess.stream_image = _stream_image
-    cb = {
-        "_callback_delivery_id": "id-late-media-reject",
-        "status": "completed",
-        "summary": "two native images, second rejected late",
-        "media_images": ["callback-image-1", "callback-image-2"],
-    }
-    mgr.pending_agent_callbacks = [cb]
-
-    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
-    assert delivered is True
-    assert sess._fatal_error_occurred is False
-
-    # 媒体阶段早已返回，分支也早已越过；第二张图此刻才被拒。
-    captured["on_rejected"]("late media rejection")
-    await asyncio.gather(*fired)
-
-    assert sess._fatal_error_occurred is True
-    sess.close.assert_awaited_once_with()
-
-
-async def test_per_turn_image_budget_holds_across_the_whole_drained_batch():
-    """The cap is per TURN, so a per-callback check does not enforce it.
-
-    Every selected callback's images land in one ``system_prefix_images`` list
-    and go out as a single user message. Image-only callbacks cost almost no
-    token budget, so a queue of them can pile far past the per-turn cap and get
-    the user's whole turn rejected by the provider. Overflow callbacks stay
-    queued for a later turn rather than being dropped.
-    """
-    from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
-
-    session = _FakeOmniOffline(delivered=True)
-    session.stream_image = AsyncMock(return_value=None)
-    mgr = _make_mgr(session=session)
-    callbacks = [
-        {
-            "_callback_delivery_id": f"id-batch-{i}",
-            "status": "completed",
-            "summary": f"camera event {i}",
-            "delivery_mode": "passive",
-            "origin": "event",
-            "media_images": [f"img-{i}-a", f"img-{i}-b"],
-        }
-        for i in range(6)
+    assert len(sess.image_batches) == 1
+    assert sess.image_batches[0] == [
+        "a-img0", "a-img1", "a-img2", "a-img3",
+        "b-img0", "b-img1", "b-img2", "b-img3",
     ]
-    mgr.pending_agent_callbacks = list(callbacks)
+    # The third cue is DEFERRED, not dropped: it goes back on the queue for the
+    # next turn rather than silently losing its images.
+    assert mgr.pending_agent_callbacks == [cbs[2]]
 
-    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
-        mgr,
-        callbacks,
-        session,
-    )
 
-    staged = outcome["system_prefix_images"]
-    assert len(staged) <= MAX_MULTIMODAL_TURN_IMAGES
-    # 整条整条地放：放得下的那条两张都在，放不下的一张都不进。
-    assert staged == ["img-0-a", "img-0-b"]
-    # 放不下的留在队列里等下一轮，不是丢掉。
+async def test_text_mode_under_budget_batch_is_untouched():
+    """The bound must not disturb ordinary multi-cue batches."""
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 1), _budget_cb("b", 2)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert sess.image_batches == [["a-img0", "b-img0", "b-img1"]]
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_voice_mode_bounds_images_across_one_proactive_turn():
+    sess = _make_voice_sess()
+    streamed: list[str] = []
+
+    async def _stream_image(
+        image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        streamed.append(image_b64)
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
+    mgr.pending_extra_replies = []
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert streamed == [
+        "a-img0", "a-img1", "a-img2", "a-img3",
+        "b-img0", "b-img1", "b-img2", "b-img3",
+    ]
+    # Voice prunes pending only after a successful inject, so the deferred cue
+    # is re-queued by construction — it was simply never taken.
+    assert mgr.pending_agent_callbacks == [cbs[2]]
+
+
+def test_text_drain_stops_at_a_held_media_callback():
+    """Holding one back must hold back everything behind it.
+
+    The drain has no channel for media_images, so a proactive media callback
+    waits for the proactive path. Skipping past it to drain a LATER cue would
+    put the later cue in front of the earlier one — the model would hear them
+    out of the order they were queued in.
+    """
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    image_cb = _budget_cb("with-image", 1)
+    later_text = {
+        "_callback_delivery_id": "id-later",
+        "status": "completed",
+        "summary": "queued after the image",
+    }
+    mgr.pending_agent_callbacks = [image_cb, later_text]
+
     rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
-    assert "camera event 0" in rendered
-    assert [cb["_callback_delivery_id"] for cb in mgr.pending_agent_callbacks] == [
-        f"id-batch-{i}" for i in range(1, 6)
-    ]
+
+    assert rendered == ""
+    # Neither is consumed: the suffix waits with the cue it queued behind.
+    assert mgr.pending_agent_callbacks == [image_cb, later_text]
+    assert mgr.pending_agent_callbacks[0]["media_images"] == ["with-image-img0"]
 
 
-async def test_per_turn_image_budget_also_binds_the_direct_atomic_realtime_path():
-    """The budget is a property of the turn, not of the transport.
+def test_text_drain_takes_the_prefix_before_a_held_media_callback():
+    """Stopping is not the same as refusing: earlier text still drains."""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    earlier_text = {
+        "_callback_delivery_id": "id-earlier",
+        "status": "completed",
+        "summary": "queued before the image",
+    }
+    image_cb = _budget_cb("with-image", 1)
+    mgr.pending_agent_callbacks = [earlier_text, image_cb]
 
-    Offline carries callback images as a ``system_prefix_images`` prefix;
-    DIRECT_ATOMIC Realtime streams them natively one by one. Both land in the
-    same turn, so a check written inside the offline branch leaves the Realtime
-    path completely unbounded.
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert "queued before the image" in rendered
+    assert mgr.pending_agent_callbacks == [image_cb]
+
+
+def test_text_drain_returns_empty_when_every_callback_carries_media():
+    """No text to render must not mean the images get dropped either."""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    only_image = _budget_cb("only-image", 2)
+    mgr.pending_agent_callbacks = [only_image]
+
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert rendered == ""
+    assert mgr.pending_agent_callbacks == [only_image]
+
+
+def test_passive_media_callbacks_deliver_text_with_images_best_effort():
+    """Text always goes out; images ride along only if they were staged.
+
+    Holding a passive cue back until its images attach would strand it whenever
+    neither path can take it. Dropping it entirely would lose the notice. So the
+    text is delivered either way, and the images are best-effort: attached when
+    ``_stage_passive_callback_media`` already claimed them for this session,
+    skipped (with a warning) when it did not.
+
+    A PROACTIVE media cue is different and still stops the queue -- it is
+    waiting for the proactive path, which can carry its images.
     """
-    from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    passive_cb = _budget_cb("passive-image", 1)
+    passive_cb["delivery_mode"] = "passive"
+    proactive_cb = _budget_cb("proactive-image", 1)
+    mgr.pending_agent_callbacks = [passive_cb, proactive_cb]
 
-    session = _make_voice_sess()
-    session._is_gemini = True
-    session._supports_native_image = True
-    session._visual_delivery_mode = "native"
-    sent = []
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
-    async def stream_image(image_b64, **_kwargs):
-        sent.append(image_b64)
-        return ImageStageResult(accepted=True, mode="native")
+    # 图没挂上，但文字投出去了，且这条不再留在队列里。
+    assert "cue passive-image" in rendered
+    # 带图的 proactive cue 仍然等它自己的路径。
+    assert mgr.pending_agent_callbacks == [proactive_cb]
 
-    session.stream_image = AsyncMock(side_effect=stream_image)
-    mgr = _make_mgr(session=session)
-    callbacks = [
-        {
-            "_callback_delivery_id": f"id-native-batch-{i}",
-            "status": "completed",
-            "summary": f"camera event {i}",
-            "delivery_mode": "passive",
-            "origin": "event",
-            "media_images": [f"native-{i}-a", f"native-{i}-b"],
-        }
-        for i in range(5)
-    ]
-    mgr.pending_agent_callbacks = list(callbacks)
+async def test_deferred_image_overflow_is_re_driven_on_the_text_path():
+    """A deferred tail must not wait for an unrelated event to wake it.
 
-    await core_module.LLMSessionManager._stage_passive_callback_media(
-        mgr,
-        callbacks,
-        session,
+    The manager's queue is already empty by this point and the text path has no
+    response.done to re-fire trigger, so without an armed retry the ninth cue
+    of a nine-image batch sits in pending indefinitely.
+    """
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
+    cbs = [_budget_cb("c%d" % i, 1) for i in range(9)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert len(sess.image_batches[0]) == 8
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == ["cue c8"]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
     )
 
-    assert len(sent) <= MAX_MULTIMODAL_TURN_IMAGES
-    # 整条整条地放：第一条的两张都送了，后面的一张都没送。
-    assert sent == ["native-0-a", "native-0-b"]
-    # 放不下的留在队列里等下一轮。
-    assert [cb["_callback_delivery_id"] for cb in mgr.pending_agent_callbacks][1:] == [
-        f"id-native-batch-{i}" for i in range(1, 5)
+
+async def test_no_retry_is_armed_when_nothing_was_deferred():
+    """The retry is for a deferred tail only — not every proactive turn."""
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
+    mgr.pending_agent_callbacks = [_budget_cb("a", 2)]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert mgr.pending_agent_callbacks == []
+    mgr._schedule_proactive_retry.assert_not_called()
+
+
+async def test_image_overflow_keeps_fifo_order_when_delivery_fails():
+    """The deferred tail must not overtake the prefix it was split from.
+
+    The exception path re-queues the delivered prefix, so re-queuing the
+    overflow at split time would leave [C, A, B] and the next turn would speak
+    the cues out of order.
+    """
+    sess = _FakeOmniOffline(raise_exc=RuntimeError("provider rejected the request"))
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == [
+        "cue a", "cue b", "cue c",
     ]
+
+
+async def test_preemption_during_the_hint_cancel_aborts_before_prompting():
+    """The cancel write is a yield point, so it is also a preempt window.
+
+    Re-filtering callbacks after it is not enough: a stale CALLBACK and a stale
+    TURN are different things. Without the re-check the user can take the
+    session during that await and still receive an unrelated proactive prompt.
+    """
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr.topic_hook_delivery_allowed = lambda: True
+    mgr.send_topic_hint = AsyncMock(return_value=True)
+
+    async def _cancel(**_kw):
+        # The user grabs the session while the cancel write is in flight.
+        mgr.current_speech_id = "user-took-over"
+
+    mgr.send_cancel_topic_hint = AsyncMock(side_effect=_cancel)
+    heavy = _budget_cb("heavy", 8)
+    topic = _budget_cb("topic", 1)
+    topic["channel"] = "topic_hook"
+    topic["source_kind"] = "topic"
+    mgr.pending_agent_callbacks = [heavy, topic]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.image_batches == [], "no prompt may go out after preemption"
+    # Nothing is lost: the whole batch goes back for a later turn.
+    assert {cb["summary"] for cb in mgr.pending_agent_callbacks} == {
+        "cue heavy", "cue topic",
+    }
+
+
+async def test_topic_hint_is_retracted_when_its_hook_lands_in_image_overflow():
+    """A teaser must never outlive the opener it promised.
+
+    The hint fires from the pre-split batch, so a topic hook pushed into the
+    overflow would leave "she has something to bring up" on screen while the
+    turn prompts only unrelated cues and the topic slips to a later turn.
+    """
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr.topic_hook_delivery_allowed = lambda: True
+    mgr.send_topic_hint = AsyncMock(return_value=True)
+    mgr.send_cancel_topic_hint = AsyncMock()
+    heavy = _budget_cb("heavy", 8)
+    topic = _budget_cb("topic", 1)
+    topic["channel"] = "topic_hook"
+    topic["source_kind"] = "topic"
+    mgr.pending_agent_callbacks = [heavy, topic]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    mgr.send_topic_hint.assert_awaited_once()
+    mgr.send_cancel_topic_hint.assert_awaited_once()
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == ["cue topic"]
+    assert sess.image_batches == [["heavy-img%d" % i for i in range(8)]]

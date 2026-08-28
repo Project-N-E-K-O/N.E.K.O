@@ -27,7 +27,8 @@ Parts are an ordered list of dicts.  Each part has a ``type`` discriminator:
 
 * ``{"type": "text",  "text": str}``
 * ``{"type": "image", "data": bytes, "mime": str}``  (inline)
-* ``{"type": "image", "url":  str,   "mime": str}``  (remote)
+* ``{"type": "image", "url":  str,   "mime": str}``  (URL reference;
+  model injection accepts URLs returned by ``ctx.images.upload()``)
 * ``{"type": "audio", "data": bytes, "mime": str}``
 * ``{"type": "audio", "url":  str,   "mime": str}``
 * ``{"type": "video", "url":  str,   "mime": str}``

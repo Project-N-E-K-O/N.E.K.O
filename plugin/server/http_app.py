@@ -30,6 +30,7 @@ from plugin.server.routes import (
     llm_tools_router,
     logs_router,
     market_bridge_router,
+    media_router,
     messages_router,
     metrics_router,
     plugin_cli_router,
@@ -289,6 +290,7 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
     app.include_router(metrics_router)
     app.include_router(config_router)
     app.include_router(logs_router)
+    app.include_router(media_router)
     app.include_router(frontend_router)
     app.include_router(websocket_router)
     app.include_router(plugin_ui_router)

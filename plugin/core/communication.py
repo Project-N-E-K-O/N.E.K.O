@@ -1,11 +1,13 @@
 """插件进程间通信资源管理器 - ZMQ 版
 
 通过 :class:`~plugin.core.zmq_transport.HostTransport` 与子进程通信。
-所有消息复用 2 个 ZMQ 管道 (downlink / uplink), 按 channel tag 分流。
+控制消息复用 downlink / uplink 并按 channel tag 分流；图片字节使用独立
+media uplink，避免大 payload 阻塞结果、状态和停止命令。
 """
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -32,6 +34,17 @@ _T = TypeVar("_T")
 STARTUP_RESULT_REQ_ID = "__plugin_startup__"
 
 
+def _resolve_plugin_server_base_url() -> str:
+    """Return the plugin server's actual loopback origin for media URLs.
+
+    Delegates so the consumer that proxies these URLs to the browser cannot
+    resolve them differently from the process that minted them.
+    """
+    from config.network import resolve_user_plugin_base
+
+    return resolve_user_plugin_base()
+
+
 @dataclass
 class PluginCommunicationResourceManager:
     """Host-side communication manager backed by ZMQ transport.
@@ -47,6 +60,7 @@ class PluginCommunicationResourceManager:
     # async internals
     _pending_futures: Dict[str, asyncio.Future] = field(default_factory=dict)
     _uplink_consumer_task: Optional[asyncio.Task] = None
+    _image_consumer_task: Optional[asyncio.Task] = None
     _shutdown_event: Optional[asyncio.Event] = None
     _message_target_queue: Optional[asyncio.Queue] = None
     _background_tasks: set[asyncio.Task] = field(default_factory=set)
@@ -88,6 +102,12 @@ class PluginCommunicationResourceManager:
         if self._uplink_consumer_task is None or self._uplink_consumer_task.done():
             self._uplink_consumer_task = asyncio.create_task(self._consume_uplink())
             self.logger.debug("Started uplink consumer for plugin {}", self.plugin_id)
+        if (
+            callable(getattr(self.transport, "recv_image", None))
+            and (self._image_consumer_task is None or self._image_consumer_task.done())
+        ):
+            self._image_consumer_task = asyncio.create_task(self._consume_images())
+            self.logger.debug("Started image consumer for plugin {}", self.plugin_id)
 
     async def start(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
         await self._run_on_owner_loop(self._start_local(message_target_queue=message_target_queue))
@@ -147,29 +167,37 @@ class PluginCommunicationResourceManager:
         if se is not None:
             se.set()
 
-        # Let the consumer drain briefly, then cancel.
+        # Let both independent consumers drain briefly, then cancel together.
         graceful = min(0.5, float(timeout)) if timeout is not None else 0.5
-        if self._uplink_consumer_task and not self._uplink_consumer_task.done():
-            current_loop = asyncio.get_running_loop()
-            task_loop = self._uplink_consumer_task.get_loop()
-            if task_loop is current_loop:
+        current_loop = asyncio.get_running_loop()
+        consumers = [
+            task
+            for task in (self._uplink_consumer_task, self._image_consumer_task)
+            if task is not None and not task.done()
+        ]
+        same_loop_consumers = [task for task in consumers if task.get_loop() is current_loop]
+        cross_loop_consumers = [task for task in consumers if task.get_loop() is not current_loop]
+        if same_loop_consumers:
+            _done, still_running = await asyncio.wait(
+                same_loop_consumers,
+                timeout=graceful,
+            )
+            for task in still_running:
+                task.cancel()
+            if still_running:
+                await asyncio.gather(*still_running, return_exceptions=True)
+        for task in cross_loop_consumers:
+            try:
+                task.get_loop().call_soon_threadsafe(task.cancel)
+            except Exception:
                 try:
-                    await asyncio.wait_for(self._uplink_consumer_task, timeout=graceful)
-                except asyncio.TimeoutError:
-                    self._uplink_consumer_task.cancel()
-                    try:
-                        await self._uplink_consumer_task
-                    except asyncio.CancelledError:
-                        pass
-            else:
-                try:
-                    task_loop.call_soon_threadsafe(self._uplink_consumer_task.cancel)
-                except Exception:
                     self.logger.debug(
-                        "Failed to cancel cross-loop uplink consumer for plugin {}",
+                        "Failed to cancel cross-loop consumer for plugin {}",
                         self.plugin_id,
                         exc_info=True,
                     )
+                except Exception:
+                    pass
 
         self._cleanup_pending_futures()
 
@@ -188,6 +216,7 @@ class PluginCommunicationResourceManager:
             self._background_tasks.clear()
 
         self._uplink_consumer_task = None
+        self._image_consumer_task = None
         self._shutdown_event = None
         self.logger.debug("Communication for plugin {} shutdown complete", self.plugin_id)
 
@@ -284,7 +313,14 @@ class PluginCommunicationResourceManager:
 
     async def get_ui_context(self, context_id: str = "main", timeout: float = 5.0) -> Any:
         req_id = str(uuid.uuid4())
-        msg = {"type": "UI_CONTEXT", "req_id": req_id, "context_id": str(context_id or "main")}
+        # 把本侧预算一起发过去：子进程要在它到期之前收手并回一个降级结果
+        # （actions + context_error），否则父进程先超时，降级分支等于白写。
+        msg = {
+            "type": "UI_CONTEXT",
+            "req_id": req_id,
+            "context_id": str(context_id or "main"),
+            "timeout": float(timeout),
+        }
         return await self._send_command_and_wait(req_id, msg, timeout, f"ui context {context_id}")
 
     async def _trigger_custom_event_local(
@@ -457,6 +493,69 @@ class PluginCommunicationResourceManager:
             except Exception:
                 if not se.is_set():
                     self.logger.exception("Error in uplink consumer for plugin {}", self.plugin_id)
+                await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
+
+    async def _consume_images(self) -> None:
+        """Store isolated-media uploads and return a small URL response."""
+        from plugin.core.image_store import get_image_store
+
+        self._ensure_shutdown_event()
+        se = self._shutdown_event
+        if se is None:
+            return
+        poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
+        while not se.is_set():
+            try:
+                upload = await self.transport.recv_image(timeout_ms=poll_ms)
+                if upload is None:
+                    continue
+                metadata, data = upload
+                request_id = metadata.get("request_id")
+                if not isinstance(request_id, str) or not request_id:
+                    self.logger.warning(
+                        "Image upload without request_id from plugin {}",
+                        self.plugin_id,
+                    )
+                    continue
+                try:
+                    if metadata.get("type") != "IMAGE_UPLOAD":
+                        raise ValueError("unsupported image upload message")
+                    if metadata.get("mime") != "image/jpeg":
+                        raise ValueError(
+                            "temporary image transport accepts normalized JPEG only"
+                        )
+                    image_id = await asyncio.to_thread(
+                        get_image_store().put,
+                        data,
+                        mime="image/jpeg",
+                    )
+                    response = {
+                        "type": "IMAGE_UPLOAD_RESULT",
+                        "request_id": request_id,
+                        "result": {
+                            "type": "image",
+                            "url": f"{_resolve_plugin_server_base_url()}/media/{image_id}",
+                            "mime": "image/jpeg",
+                        },
+                    }
+                except Exception as exc:
+                    response = {
+                        "type": "IMAGE_UPLOAD_RESULT",
+                        "request_id": request_id,
+                        "error": {
+                            "code": "image_upload_failed",
+                            "message": str(exc),
+                        },
+                    }
+                await self.transport.send_response(response)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                if not se.is_set():
+                    self.logger.exception(
+                        "Error in image consumer for plugin {}",
+                        self.plugin_id,
+                    )
                 await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
 
     # ── result dispatch ──────────────────────────────────────────

@@ -118,7 +118,20 @@ class BusProtocol(Protocol):
     memory: BusMemoryProtocol | None
 
 
+class PluginImagesProtocol(Protocol):
+    async def upload(
+        self,
+        data: bytes | bytearray,
+        *,
+        mime: str | None = None,
+        timeout: float = 3.0,
+    ) -> dict[str, object]: ...
+
+
 class PluginContextProtocol(Protocol):
+    @property
+    def images(self) -> PluginImagesProtocol: ...
+
     plugin_id: str
     metadata: Metadata
     logger: LoggerLike | None
@@ -267,6 +280,7 @@ __all__ = [
     "PushMessageFailureReason",
     "PushMessageRejected",
     "PushMessageResult",
+    "PluginImagesProtocol",
     "PushMessageSubmitted",
     "RouterProtocol",
 ]
