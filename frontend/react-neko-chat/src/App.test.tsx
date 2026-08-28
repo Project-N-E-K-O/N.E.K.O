@@ -9609,6 +9609,7 @@ describe('App', () => {
     rotateCompactToolToCenter(screenshotButton);
     fireEvent.click(screenshotButton);
     expect(onComposerScreenshot).toHaveBeenCalledTimes(1);
+    expect(onComposerScreenshot).toHaveBeenCalledWith(expect.objectContaining({ nativeEvent: expect.any(Event) }));
   });
 
   it('renders pending composer attachments and removes them through callback', () => {

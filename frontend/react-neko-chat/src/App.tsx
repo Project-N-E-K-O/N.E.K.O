@@ -83,7 +83,7 @@ export {
 export type ChatWindowProps = ChatWindowSchemaProps & {
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
   onComposerImportImage?: () => void;
-  onComposerScreenshot?: () => void;
+  onComposerScreenshot?: (event?: ReactMouseEvent) => void;
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
@@ -3462,7 +3462,7 @@ function CompactChatApp({
   }, [resolveCompactInputToolWheelLayout]);
 
   const closeCompactInputToolFan = useCallback((options?: {
-    afterClose?: () => void;
+    afterClose?: (event?: ReactMouseEvent) => void;
     deferDesktopAction?: boolean;
   }) => {
     clearCompactInputToolFanCloseTimer();
@@ -4958,7 +4958,7 @@ function CompactChatApp({
     }
   }
 
-  const compactFanRunAction = (action: (() => void) | undefined) => (event: ReactMouseEvent) => {
+  const compactFanRunAction = (action: ((event?: ReactMouseEvent) => void) | undefined) => (event: ReactMouseEvent) => {
     if (shouldSuppressCompactToolClick(event)) {
       event.preventDefault();
       event.stopPropagation();
@@ -4966,7 +4966,7 @@ function CompactChatApp({
     }
     compactInputToolFanOpenIntentRef.current = 'click';
     clearCompactInputToolFanCloseTimer();
-    action?.();
+    action?.(event);
   };
 
   const compactFanToggleOnAction = (action: (() => void) | undefined) => (event: ReactMouseEvent) => {

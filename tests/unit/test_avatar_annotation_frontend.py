@@ -502,8 +502,14 @@ const setScreenshotCaptureSessionActive = () => {};
 const captureDesktopRegionDirectly = async () => __DIRECT__;
 const recaptureWithoutNeko = async () => null;
 let _captureScreenshotDataUrlBusy = false;
+let trustedScreenshotCaptureToken = 'test-token';
+const consumeTrustedScreenshotCaptureToken = (token) => {
+  if (token !== trustedScreenshotCaptureToken) return false;
+  trustedScreenshotCaptureToken = '';
+  return true;
+};
 __CAPTURE__
-captureScreenshotDataUrl().then((shot) => {
+captureScreenshotDataUrl('test-token').then((shot) => {
   results.data = shot && shot.dataUrl;
   results.selected = S.selectedScreenSourceId;
   console.log(JSON.stringify(results));
@@ -612,6 +618,12 @@ const captureDesktopRegionDirectly = async () => {
 };
 const recaptureWithoutNeko = async () => null;
 let _captureScreenshotDataUrlBusy = false;
+let trustedScreenshotCaptureToken = 'test-token';
+const consumeTrustedScreenshotCaptureToken = (token) => {
+  if (token !== trustedScreenshotCaptureToken) return false;
+  trustedScreenshotCaptureToken = '';
+  return true;
+};
 __CAPTURE__
 const mod = { captureScreenshotDataUrl };
 mod.enqueueCapturedScreenshotResult = async () => {
@@ -641,7 +653,7 @@ def _remembered_screenshot_race_script(
     if run_outer:
         outer = _fn(buttons_src, "captureScreenshotToPendingList")
         run = """mod.captureScreenshotToPendingList = captureScreenshotToPendingList;
-mod.captureScreenshotToPendingList().then(() => {
+mod.captureScreenshotToPendingList('test-token').then(() => {
   console.log(JSON.stringify(results));
 }).catch((error) => {
   results.error = error && error.message;
@@ -649,7 +661,7 @@ mod.captureScreenshotToPendingList().then(() => {
 });"""
     else:
         outer = ""
-        run = """captureScreenshotDataUrl().then((shot) => {
+        run = """captureScreenshotDataUrl('test-token').then((shot) => {
   results.data = shot && shot.dataUrl;
   results.unavailable = !!(shot && shot.rememberedWindowUnavailable);
   console.log(JSON.stringify(results));

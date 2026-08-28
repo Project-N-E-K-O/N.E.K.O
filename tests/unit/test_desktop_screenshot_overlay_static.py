@@ -56,7 +56,7 @@ def test_successful_desktop_pin_is_not_reported_as_cancelled():
         1,
     )[1].split("window.captureScreenshotDataUrl = mod.captureScreenshotDataUrl", 1)[0]
     pending_block = APP_BUTTONS.split(
-        "mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList()",
+        "mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList(token)",
         1,
     )[1].split("screenshotButton.addEventListener", 1)[0]
 
@@ -90,9 +90,7 @@ def test_desktop_pin_failures_never_trigger_a_second_screenshot_fallback():
 
 
 def test_react_chat_marks_screenshot_capability_ready_after_binding_the_button():
-    button_index = APP_BUTTONS.index(
-        "screenshotButton.addEventListener('click', mod.captureScreenshotToPendingList);"
-    )
+    button_index = APP_BUTTONS.index("screenshotButton.addEventListener('click', function (event)")
     ready_index = APP_BUTTONS.index("window.__NEKO_SCREENSHOT_CAPTURE_READY__ = true;")
     assert button_index < ready_index
 

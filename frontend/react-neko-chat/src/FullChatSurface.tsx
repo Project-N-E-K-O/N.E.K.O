@@ -63,7 +63,7 @@ import {
 type ChatWindowProps = ChatWindowSchemaProps & {
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
   onComposerImportImage?: () => void;
-  onComposerScreenshot?: () => void;
+  onComposerScreenshot?: (event?: ReactMouseEvent) => void;
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
@@ -1653,7 +1653,7 @@ export default function FullChatSurface({
   }, []);
 
   const closeCompactInputToolFan = useCallback((options?: {
-    afterClose?: () => void;
+    afterClose?: (event?: ReactMouseEvent) => void;
     deferDesktopAction?: boolean;
   }) => {
     clearCompactInputToolFanCloseTimer();
@@ -2463,7 +2463,7 @@ export default function FullChatSurface({
   );
 
   const compactFanCloseOnAction = (
-    action: (() => void) | undefined,
+    action: ((event?: ReactMouseEvent) => void) | undefined,
     options?: { deferDesktopAction?: boolean },
   ) => (event: ReactMouseEvent) => {
     if (shouldSuppressCompactToolClick(event)) {
@@ -2472,7 +2472,7 @@ export default function FullChatSurface({
       return;
     }
     closeCompactInputToolFan({
-      afterClose: action,
+      afterClose: () => action?.(event),
       deferDesktopAction: options?.deferDesktopAction,
     });
   };
@@ -3423,7 +3423,7 @@ export default function FullChatSurface({
                     aria-label={resolvedScreenshotAriaLabel}
                     data-neko-tooltip={screenshotButtonLabel}
                     disabled={composerInteractionsDisabled}
-                    onClick={() => onComposerScreenshot?.()}
+                    onClick={(event) => onComposerScreenshot?.(event)}
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
                   </button>

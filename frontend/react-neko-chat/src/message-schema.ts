@@ -256,7 +256,7 @@ export const chatWindowPropsSchema = z.object({
     .returns(z.void())
     .optional(),
   onComposerScreenshot: z.function()
-    .args()
+    .args(z.any())
     .returns(z.void())
     .optional(),
   onComposerRemoveAttachment: z.function()

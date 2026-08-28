@@ -526,11 +526,11 @@
         I.dispatchHostEvent('import-image', {});
     }
 
-    I.handleComposerScreenshot = function handleComposerScreenshot() {
+    I.handleComposerScreenshot = function handleComposerScreenshot(event) {
         var handled = false;
         if (typeof I.state.onComposerScreenshot === 'function') {
             try {
-                I.state.onComposerScreenshot();
+                I.state.onComposerScreenshot(event);
                 handled = true;
             } catch (error) {
                 console.error('[ReactChatWindow] onComposerScreenshot failed:', error);

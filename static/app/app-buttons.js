@@ -27,12 +27,44 @@
     const SCREENSHOT_PROXY_GUARD_MARKER = '__nekoScreenshotProxyGuarded__';
     let trustedScreenshotCaptureToken = '';
 
-    function mintTrustedScreenshotCaptureToken() {
-        trustedScreenshotCaptureToken = [
-            Date.now().toString(36),
-            Math.random().toString(36).slice(2),
-            Math.random().toString(36).slice(2),
-        ].join('');
+    function hasTrustedScreenshotActivation(event) {
+        var nativeEvent = event && event.nativeEvent ? event.nativeEvent : event;
+        if (nativeEvent) {
+            return nativeEvent.isTrusted === true;
+        }
+        try {
+            return !!(window.navigator
+                && window.navigator.userActivation
+                && window.navigator.userActivation.isActive);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function mintTrustedScreenshotCaptureToken(event) {
+        if (!hasTrustedScreenshotActivation(event)) {
+            console.warn('[截图] 未授权的截图入口已忽略');
+            return '';
+        }
+        var cryptoApi = null;
+        try {
+            cryptoApi = window.crypto;
+        } catch (_) {}
+        if (!cryptoApi || typeof cryptoApi.getRandomValues !== 'function') {
+            console.warn('[截图] 当前环境不支持安全截图授权');
+            return '';
+        }
+
+        var bytes = new Uint8Array(32);
+        try {
+            cryptoApi.getRandomValues(bytes);
+        } catch (_) {
+            console.warn('[截图] 无法生成安全截图授权令牌');
+            return '';
+        }
+        trustedScreenshotCaptureToken = Array.prototype.map.call(bytes, function (byte) {
+            return byte.toString(16).padStart(2, '0');
+        }).join('');
         return trustedScreenshotCaptureToken;
     }
 
@@ -1919,12 +1951,15 @@
         host.setOnComposerImportImage(function () {
             return mod.openImageImportPicker();
         });
-        host.setOnComposerScreenshot(function () {
+        host.setOnComposerScreenshot(function (event) {
             if (isHomeTutorialInteractionLocked()) {
                 showHomeTutorialLockedToast();
                 return false;
             }
-            var screenshotCaptureToken = mintTrustedScreenshotCaptureToken();
+            var screenshotCaptureToken = mintTrustedScreenshotCaptureToken(event);
+            if (!screenshotCaptureToken) {
+                return false;
+            }
             if (window.__NEKO_MULTI_WINDOW__ && window.nekoScreenshotProxy) {
                 window.nekoScreenshotProxy.request(screenshotCaptureToken);
                 return true;
@@ -3873,15 +3908,7 @@
         }
 
         mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl(token) {
-            var hasTrustedUserActivation = !!(window.navigator
-                && window.navigator.userActivation
-                && window.navigator.userActivation.isActive);
-            if (typeof token === 'string' && token.length > 0) {
-                if (!consumeTrustedScreenshotCaptureToken(token)) {
-                    console.warn('[截图] 未授权的截图请求已忽略');
-                    throw new Error('SCREENSHOT_AUTH_REQUIRED');
-                }
-            } else if (!hasTrustedUserActivation) {
+            if (!consumeTrustedScreenshotCaptureToken(token)) {
                 console.warn('[截图] 未授权的截图请求已忽略');
                 throw new Error('SCREENSHOT_AUTH_REQUIRED');
             }
@@ -4226,8 +4253,8 @@
         // ----------------------------------------------------------------
         // Screenshot button click
         // ----------------------------------------------------------------
-        screenshotButton.addEventListener('click', function () {
-            return mod.captureScreenshotToPendingList(mintTrustedScreenshotCaptureToken());
+        screenshotButton.addEventListener('click', function (event) {
+            return mod.captureScreenshotToPendingList(mintTrustedScreenshotCaptureToken(event));
         });
         // F4 由 PC 主进程直接触发 React Chat 的截图入口。页面 URL 已加载并不代表
         // app-buttons 已完成初始化；显式标记能力就绪，避免首轮 F4 误回退到旧的 Pet 路径。
