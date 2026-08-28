@@ -177,6 +177,21 @@ def _probe_entry(path: Path) -> tuple[str, int, OSError | None]:
     return "other", 0, None
 
 
+def _record_temporarily_unreadable() -> AvatarToolStoreError:
+    """Report an unreadable record without condemning it.
+
+    Recovery treats a non-transient ``record_invalid`` as proof that the published
+    copy is broken, which quarantines the tool and — with rollback evidence present —
+    lets an older backup replace it. A metadata read that merely failed is not proof.
+    """
+    return AvatarToolStoreError(
+        "record_invalid",
+        "Avatar tool record is invalid",
+        status_code=404,
+        transient=True,
+    )
+
+
 def _storage_total_unavailable() -> AvatarToolStoreError:
     """Refuse to publish when the managed total cannot be established.
 
@@ -776,7 +791,10 @@ class AvatarToolStore:
                 **({"sound": "special.mp3"} if special_sound else {}),
             }
         directory = directory or self.root / expected_id
-        if directory.is_symlink() or not directory.is_dir():
+        directory_kind, _, probe_error = _probe_entry(directory)
+        if probe_error is not None:
+            raise _record_temporarily_unreadable() from probe_error
+        if directory_kind != "dir":
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         resource_names = ["default.png", *(item["image"] for item in clean_items)]
         if normal_sound:
@@ -801,7 +819,10 @@ class AvatarToolStore:
             )
         for filename in resource_names:
             resource = directory / filename
-            if resource.is_symlink() or not resource.is_file():
+            resource_kind, _, probe_error = _probe_entry(resource)
+            if probe_error is not None:
+                raise _record_temporarily_unreadable() from probe_error
+            if resource_kind != "file":
                 raise AvatarToolStoreError("record_invalid", "Avatar tool resource is invalid", status_code=404)
             if verify_resources:
                 try:
@@ -835,7 +856,12 @@ class AvatarToolStore:
             for entry in directory.iterdir():
                 # 之前只把普通文件计入集合，于是同步盘或手工改动塞进来的子目录、
                 # 符号链接会被无声忽略，闭包照样判过。
-                if entry.is_symlink() or not entry.is_file():
+                entry_kind, _, probe_error = _probe_entry(entry)
+                if probe_error is not None:
+                    # 闭包不符属于「被证伪」，会让恢复隔离甚至回滚这个道具。一次
+                    # 读不到目录项就下这个结论，等于拿瞬时故障判用户的道具死刑。
+                    raise _record_temporarily_unreadable() from probe_error
+                if entry_kind != "file":
                     raise AvatarToolStoreError(
                         "record_invalid",
                         "Avatar tool resource closure is invalid",
@@ -1306,11 +1332,16 @@ class AvatarToolStore:
 
     @staticmethod
     def _directory_bytes(directory: Path) -> int:
-        return sum(
-            entry.stat().st_size
-            for entry in directory.iterdir()
-            if entry.is_file() and not entry.is_symlink()
-        )
+        total = 0
+        for entry in directory.iterdir():
+            entry_kind, entry_size, probe_error = _probe_entry(entry)
+            if probe_error is not None:
+                # 这个值直接参与配额判定：少算暂存目录的字节就会放行一次本该被
+                # 拒绝的更新。和 _current_storage_bytes 同一条判据。
+                raise _storage_total_unavailable() from probe_error
+            if entry_kind == "file":
+                total += entry_size
+        return total
 
     def _write_staged_tool(
         self,

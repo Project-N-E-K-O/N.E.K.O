@@ -3039,3 +3039,121 @@ def test_a_failed_quota_probe_refuses_to_publish(tmp_path, monkeypatch):
     assert raised.value.code == "avatar_tools_directory_unavailable"
     assert raised.value.transient is True
 
+
+@pytest.mark.parametrize("target", ["directory", "resource"])
+def test_a_transient_probe_failure_inside_validation_never_condemns(tmp_path, monkeypatch, target):
+    """Probe failures inside record validation must stay transient, not proof of damage."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Healthy",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    final = store.root / tool["id"]
+    root_key = store._root_key()
+
+    _flaky_lstat(monkeypatch, final if target == "directory" else final / "default.png")
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.read_record(tool["id"], verify_resources=True)
+    # 报成非 transient 的 record_invalid，等于告诉恢复「这份已经坏了」——它会隔离
+    # 这个健康道具，有中断证据时还会拿旧 backup 顶掉它。
+    assert raised.value.transient is True
+    assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
+
+    monkeypatch.undo()
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    assert [item["id"] for item in store.list_items()] == [tool["id"]]
+
+
+def test_a_transient_closure_probe_failure_is_not_a_closure_violation(tmp_path, monkeypatch):
+    """An unreadable entry must not be reported as "this tool has foreign content"."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Healthy",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    intruder = store.root / tool["id"] / "extra.txt"
+    intruder.write_text("dropped in by a sync client", encoding="utf-8")
+
+    # 先确认基线：能读到这个多余文件时，闭包不符是确定性的证伪。
+    with pytest.raises(AvatarToolStoreError) as proven:
+        store.read_record(tool["id"], verify_resources=True)
+    assert proven.value.transient is False
+
+    # 同一个文件，只是这一轮读不到 —— 结论必须从「被证伪」退回「暂时读不出来」。
+    _flaky_lstat(monkeypatch, intruder)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.read_record(tool["id"], verify_resources=True)
+    assert raised.value.transient is True
+
+
+def test_a_failed_staging_size_probe_refuses_the_update(tmp_path, monkeypatch):
+    """Understating the staged size would authorise an update that busts the quota."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="First",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    final = store.root / tool["id"]
+    base_revision = store.record_revision(store.read_record(tool["id"]))
+
+    real_lstat = os.lstat
+
+    def probe(path, *args, **kwargs):
+        # 暂存目录里的文件是本进程刚写出来的，这里模拟网络盘在那一刻抖了一下。
+        if ".updating" in str(path) and str(path).endswith(".png"):
+            raise OSError(errno.EBUSY, "metadata temporarily unavailable")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", probe)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.update_tool(
+            tool["id"],
+            base_revision=base_revision,
+            name="Renamed",
+            change_mode="press-swap",
+            change_meanings=["meaning"],
+            default_resource=None,
+            default_image=_png(size=(9, 9)),
+            change_resources=[""],
+            change_images=[_png(size=(10, 10))],
+        )
+    # 无论被哪一层拦下，都必须是「暂时不可用」而不是「你的记录坏了」，
+    # 而且原记录必须完好无损 —— 一次读不到不能让用户丢掉已保存的那一份。
+    assert raised.value.transient is True
+
+    monkeypatch.undo()
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    assert final.is_dir()
+    assert store.read_record(tool["id"])["name"] == "First"
+
+
+def test_directory_bytes_refuses_to_understate_the_total(tmp_path, monkeypatch):
+    """Silently dropping an unreadable file would authorise a write past the quota."""
+    directory = tmp_path / "staged"
+    directory.mkdir()
+    (directory / "default.png").write_bytes(b"x" * 128)
+
+    # 基线：读得到就照常统计。
+    assert AvatarToolStore._directory_bytes(directory) == 128
+
+    _flaky_lstat(monkeypatch, directory / "default.png")
+    with pytest.raises(AvatarToolStoreError) as raised:
+        AvatarToolStore._directory_bytes(directory)
+    assert raised.value.code == "avatar_tools_directory_unavailable"
+    assert raised.value.transient is True
+
