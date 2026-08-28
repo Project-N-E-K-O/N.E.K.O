@@ -69,6 +69,14 @@ DELIVERY_RETRACTED_KEY = "_proactive_delivery_retracted"
 CALLBACK_EXPIRES_AT_KEY = "_expires_at_monotonic"
 VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
 SWAP_PRIME_DELIVERY_CLAIM_KEY = "_swap_prime_delivery_claimed"
+# 最近一次挂图失败是**瞬时**的（网络抖动 / provider 临时拒绝），不是终局的
+# （格式不支持之类）。终局失败再试也没用，瞬时的下一轮大概率能成 —— 所以只有
+# 瞬时失败值得为它把这条通知多留一轮。
+PASSIVE_MEDIA_TRANSIENT_KEY = "_passive_media_transient_failure"
+# 已经为此多留过几轮。上限 1：留两轮以上就等于回到「扣住不放」，那是这条判据
+# 一开始要避免的。
+PASSIVE_MEDIA_RETRY_KEY = "_passive_media_retries"
+PASSIVE_MEDIA_MAX_RETRIES = 1
 
 # Image budget for ONE model turn. A trigger drains every pending proactive
 # callback into a single turn, so a per-push cap alone does not bound what the

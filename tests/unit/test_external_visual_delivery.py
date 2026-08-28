@@ -1,5 +1,6 @@
 import asyncio
 from types import MethodType
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -806,4 +807,87 @@ async def test_first_gemini_external_turn_does_not_pay_for_quarantine():
     client._start_gemini_external_submit_quarantine.assert_not_called()
     client._await_gemini_external_quarantine.assert_not_awaited()
     client._gemini_send_user_turn.assert_awaited_once()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_late_terminal_of_an_interrupted_turn_cannot_settle_a_newer_token():
+    """A terminal event carries no identity; the epoch supplies one.
+
+    Independent ASR interrupts an ordinary Gemini response, then submits its
+    final before the cancelled response emits ``interrupted``/``turn_complete``.
+    That late terminal is processed per-event, so it reads whatever external
+    token is current -- the brand new one -- and clearing it makes the session
+    look idle while the external response is still live, letting a proactive or
+    successor turn overlap it.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._gemini_send_user_turn = AsyncMock()
+    client._start_gemini_external_submit_quarantine = MagicMock()
+    client._await_gemini_external_quarantine = AsyncMock()
+    client._gemini_external_outcome_token = None
+
+    # 一个普通响应正在跑：它的 turn 已经开始（epoch 已推进）。
+    client._turn_epoch = 7
+    client._current_turn_epoch = 7
+
+    await client._submit_external_gemini_turn("用户插话")
+    external_token = client._gemini_external_outcome_token
+    assert external_token is not None
+
+    # 被取消的那一轮的迟到终结：它属于 epoch 7，早于 token 的铸造刻度。
+    assert client._external_token_belongs_to_current_turn() is False
+    assert client._gemini_external_outcome_token is external_token
+
+    # 外部回合自己的响应开始后，epoch 前进，它的终结才有权结算。
+    client._current_turn_epoch = 8
+    assert client._external_token_belongs_to_current_turn() is True
+    client._settle_gemini_external_turn(external_token)
+    assert client._gemini_external_outcome_token is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_process_response_does_not_settle_a_token_from_a_later_turn():
+    """Drive the real terminal handler, not just the predicate.
+
+    A guard that only exercises the predicate stays green when the event loop
+    stops consulting it -- the same call-site blind spot this PR has hit before.
+    This feeds an actual ``turn_complete`` through
+    ``_process_gemini_response`` for a turn that started BEFORE the external
+    token was minted.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client._settle_gemini_proactive_inject = MagicMock()
+
+    token = object()
+    client._gemini_external_outcome_token = token
+    # token 铸造于 epoch 7 之后；下面这一轮属于 epoch 7，早于它。
+    client._gemini_external_token_epoch = 7
+    client._current_turn_epoch = 7
+    client._is_responding = True
+
+    server_content = SimpleNamespace(
+        model_turn=None,
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=True,
+    )
+    response = SimpleNamespace(server_content=server_content, tool_call=None)
+
+    await client._process_gemini_response(response, connection_generation=1)
+
+    # 迟到的终结属于更早那一轮，无权结算这个 token。
+    assert client._gemini_external_outcome_token is token
+
+    # 外部回合自己的那一轮（epoch 前进）才结算得掉。
+    client._current_turn_epoch = 8
+    client._is_responding = True
+    await client._process_gemini_response(response, connection_generation=1)
+    assert client._gemini_external_outcome_token is None
     await client.close()

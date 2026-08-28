@@ -696,10 +696,30 @@ class _StreamingMixin:
             # 还超就压缩，都不行才从最旧的开始丢——并且无论走到哪一级都告诉用户。
             # 整条请求超限会被 provider 整个拒掉，所以必须有人让步；让步的顺序是
             # 「先减冗余、再降质量、最后才是丢内容」。
-            _attached_images, _budget_notice = await fit_images_to_turn_budget(
-                _ordered_images,
-                TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
-            )
+            def _restore_consumed_queues() -> None:
+                """Put both queues back when this turn dies before committing.
+
+                The user's attachments were dequeued atomically above and the
+                plugin list was cleared at read time, so from here until the
+                message reaches history nothing else owns those bytes. A
+                teardown landing on one of the awaits below would otherwise
+                lose them from every future turn.
+                """
+                if attachment_images:
+                    self._pending_images[0:0] = attachment_images
+                if plugin_images:
+                    _queue = getattr(self, "_pending_plugin_images", None)
+                    if _queue is not None:
+                        _queue[0:0] = plugin_images
+
+            try:
+                _attached_images, _budget_notice = await fit_images_to_turn_budget(
+                    _ordered_images,
+                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+                )
+            except BaseException:
+                _restore_consumed_queues()
+                raise
             if _budget_notice:
                 logger.warning(
                     "Turn images over the %d-byte budget: %d -> %d image(s) "
@@ -717,6 +737,9 @@ class _StreamingMixin:
                             "code": "TURN_IMAGES_TRIMMED",
                             "details": _budget_notice,
                         }))
+                    except asyncio.CancelledError:
+                        _restore_consumed_queues()
+                        raise
                     except Exception as _notice_error:
                         logger.warning(
                             "could not report the image trim to the user: %s",

@@ -755,6 +755,7 @@ class _GeminiMixin:
                     if (
                         external_outcome_token is not None
                         and self._still_owns_connection(connection_generation)
+                        and self._external_token_belongs_to_current_turn()
                     ):
                         self._settle_gemini_external_turn(
                             external_outcome_token
@@ -775,6 +776,7 @@ class _GeminiMixin:
                     if (
                         external_outcome_token is not None
                         and self._still_owns_connection(connection_generation)
+                        and self._external_token_belongs_to_current_turn()
                     ):
                         self._settle_gemini_external_turn(
                             external_outcome_token

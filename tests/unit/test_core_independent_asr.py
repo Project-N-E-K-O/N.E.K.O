@@ -11259,3 +11259,80 @@ async def test_endpoint_marking_skips_invalidated_records() -> None:
 
     assert active.endpoint_at is not None
     assert retained.endpoint_at is None
+
+
+@pytest.mark.unit
+async def test_frames_after_a_sealed_turn_are_kept_for_the_successor() -> None:
+    """A sealed record is done taking frames, so it must not block the buffer.
+
+    Between the endpoint and the provider final, the record is sealed but not
+    yet invalidated -- the successor cannot be prepared until that final lands.
+    Frames captured in that window fail the sealed record's ``accepts()``
+    (they are past its endpoint), so if it still counts as the active record
+    they are neither attached nor retained: the successor turn loses its
+    opening and middle frames and keeps only the latest-frame cache.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=901)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 这一轮说完了：封口，但 provider final 还没回来，所以还没作废。
+    record.endpoint_at = record.started_at + 1.0
+    assert not record.invalidated.is_set()
+    assert runtime._active_multimodal_turn_record() is None
+
+    # 后继开口，帧在封口之后拍到。
+    assert runtime._stage_independent_visual_frame(
+        "successor-opening-frame",
+        source="screen",
+        request_id="screen-successor",
+        captured_at=record.endpoint_at + 0.5,
+    )
+
+    # 它进不了已封口的那条记录，但必须被留住给后继。
+    assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
+        "successor-opening-frame"
+    ]
+
+
+@pytest.mark.unit
+async def test_a_late_registration_still_adopts_its_real_onset() -> None:
+    """Waiting behind a provider final does not make an onset stale.
+
+    An overlapping utterance registers only after the previous turn's final
+    lands, and that provider timeout reaches 40s in the registry. Judging the
+    onset by the FRAME freshness window (5s) rejects it, resets ``started_at``
+    to registration time and drops every frame captured since the user actually
+    started speaking -- the turn goes text-only while the screen was streaming
+    the whole time. Frame freshness is enforced separately, at freeze time.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    now = time.monotonic()
+    real_onset = now - 30.0  # 排在一个 provider final 后面，远超帧的 5s TTL
+    runtime._asr_runtime._asr_turn_onset_at = real_onset
+
+    frame_at = real_onset + 1.0
+    assert runtime._stage_independent_visual_frame(
+        "frame-from-the-real-onset",
+        source="screen",
+        request_id="screen-late",
+        captured_at=frame_at,
+    )
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=902)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 起点是真实开口时刻，不是注册时刻。
+    assert record.started_at == pytest.approx(real_onset, abs=0.01)
+    # 那一刻以来的帧被采纳了，而不是整轮退化成纯文本。
+    assert [f.image_b64 for f in record.sampled_frames()] == [
+        "frame-from-the-real-onset"
+    ]

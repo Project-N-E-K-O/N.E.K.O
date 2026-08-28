@@ -592,6 +592,24 @@ class _ResponseMixin:
                 raise
         return self._connection_generation != connection_generation
 
+    def _external_token_belongs_to_current_turn(self) -> bool:
+        """Whether the turn now ending is the one that owns the external token.
+
+        A terminal event carries no identity of its own, so a response that was
+        already running when the token was minted -- typically one that
+        ``handle_interruption()`` just cancelled -- would otherwise settle
+        ownership it never had.
+        """
+        token = getattr(self, "_gemini_external_outcome_token", None)
+        if token is None:
+            return False
+        minted_at = getattr(self, "_gemini_external_token_epoch", None)
+        if minted_at is None:
+            # 没有刻度可比（旧会话 / 测试替身）：保持既有行为，宁可早结算也不要
+            # 把会话永久钉成「忙」。
+            return True
+        return getattr(self, "_current_turn_epoch", 0) > minted_at
+
     def _settle_gemini_external_turn(self, token: object | None = None) -> None:
         """Release accepted external-ASR ownership at its terminal edge."""
 
@@ -763,6 +781,12 @@ class _ResponseMixin:
         outcome_token = object()
         self._gemini_external_submit_task = submit_task
         self._gemini_external_outcome_token = outcome_token
+        # 铸造时刻的 turn epoch。终结事件是**逐事件**捕获当前 token 的，所以一个
+        # 在本次铸造**之前**就已开始、随后被 handle_interruption 取消的普通响应，
+        # 它迟到的终结会捕获到这个新 token 并把它清掉 —— 会话随即显得空闲，而外部
+        # 回合其实还活着，主动搭话或后继回合就能与它重叠。
+        # 记下这个刻度，让终结只结算**在它之后才开始**的那一轮。
+        self._gemini_external_token_epoch = getattr(self, "_turn_epoch", 0)
         accepted = False
         try:
             await self._gemini_send_user_turn(

@@ -1453,10 +1453,23 @@ async def test_transient_native_passive_image_rejection_keeps_callback_for_retry
     )
     rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
-    # 维护者判据：图 best effort。瞬时拒绝时图带不上，但文字照投、不留队。
-    assert "camera event" in rendered
-    assert mgr.pending_agent_callbacks == []
+    # 维护者判据（①B）：**瞬时**失败值得留一轮再试 —— 网络抖一下就把图丢了不划算。
+    # 这一轮它连文字都不投（保序：跳过它去投更晚的 cue 会让顺序反过来）。
+    assert rendered == ""
+    assert mgr.pending_agent_callbacks == [cb]
     assert cb["media_images"] == ["image-b64"]
+
+    # 但**只留一轮**。再来一次仍然挂不上，就走 best effort：文字照投、图不带，
+    # 不会无限扣住。
+    await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+    rendered_after_retry = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert "camera event" in rendered_after_retry
+    assert mgr.pending_agent_callbacks == []
 
 
 async def test_offline_passive_media_uses_call_local_images_without_touching_queue():

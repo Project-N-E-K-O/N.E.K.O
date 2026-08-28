@@ -61,6 +61,11 @@ from main_logic.voice_turn.audio_input import (
 from main_logic import core as _core_facade
 
 from ._shared import logger
+# onset 可信窗口。判据是「一个回合从确认到建记录最长能等多久」，不是帧的新鲜度：
+# 重叠发声要排在上一轮的 provider final 后面，而 registry 里最长的
+# provider_final_timeout_ms 是 40 秒。留一倍余量。
+_ONSET_TRUST_WINDOW_S = 80.0
+
 from .multimodal_turn import (
     _MAX_PRERECORD_VISUAL_VALIDATIONS,
     _MAX_LIVE_TURN_RECORDS,
@@ -641,6 +646,12 @@ class AsrRuntimeMixin:
             record
             for record in self._core_multimodal_turns.values()
             if not record.invalidated.is_set()
+            # 已封口（endpoint_at 已打）的同样不算 active：它的 accepts() 会按
+            # 那个时刻挡掉之后拍的帧，而作废要等 provider final 回来、后继才能
+            # prepare。这段窗口里如果把它算作 active，后继发声的帧既进不了它、
+            # 又因为「有 active record」而不进 prerecord 缓冲，直接丢掉 ——
+            # 后继回合开头和中间的帧就永久没了，只剩单槽缓存那一张。
+            and record.endpoint_at is None
         ]
         if not active:
             return None
@@ -812,10 +823,20 @@ class AsrRuntimeMixin:
         onset = getattr(runtime, "_asr_turn_onset_at", None)
         if not isinstance(onset, (int, float)):
             onset = getattr(runtime, "_asr_turn_audio_started_at", None)
+        # 这里判的是「这个 onset 是不是本回合的」，不是「帧新不新鲜」——帧的新鲜度
+        # 由 _snapshot_core_multimodal_turn 在冻结时另行 fail-closed。原来借用帧的
+        # 5 秒 TTL，会在**合法但迟到**的注册上误判：重叠发声排在一个 provider final
+        # 后面（该超时最长可到 40 秒），或 ASR 重连，都会让 onset 早于注册超过 5 秒。
+        # 一旦误判，started_at 退回注册时刻、prerecord 缓冲被清、真实开口以来的帧
+        # 全部不采纳 —— 明明屏幕/摄像头一直有输入，这一轮却退化成纯文本。
+        #
+        # 改用「一个回合等到建记录最长能等多久」为界：provider final 的最长超时
+        # （registry 里最大 40s）再留一倍余量。仍然拒绝未来时刻的 onset，也仍然
+        # 有生成号基线兜底「绝不复用上一轮的帧」。
         onset_known = (
             isinstance(onset, (int, float))
             and 0.0 <= registered_at - float(onset)
-            <= self._independent_visual_frame_ttl_s
+            <= _ONSET_TRUST_WINDOW_S
         )
         if onset_known:
             started_at = float(onset)

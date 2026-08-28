@@ -2799,3 +2799,53 @@ async def test_offline_turn_with_images_reaches_history_without_crashing():
     # 消费完就清空，与用户列表同一窗口。
     assert client._pending_images == []
     assert client._pending_plugin_images == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_budget_fitting_gives_both_image_queues_back():
+    """Ownership was taken before an await; a death there must give it back.
+
+    The user's attachments are dequeued atomically and the plugin list is
+    cleared at read time, so between that point and the history append nothing
+    else holds those bytes. Budget fitting can suspend there for threaded
+    compression -- a teardown landing on it would otherwise erase both sets
+    from every future turn.
+    """
+    import time
+
+    from main_logic.omni_offline_client._client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = ["user-frame-a", "user-frame-b"]
+    client._pending_plugin_images = ["plugin-frame"]
+    client._conversation_history = []
+    client._proactive_image_to_inject = None
+    client._proactive_image_staged_at = 0.0
+    client._proactive_image_history_len = 0
+    client.vision_model = None
+    client.model = "test-model"
+    client._begin_reasoning_stream = lambda: None
+    for hook in (
+        "on_response_discarded", "on_status_message", "on_input_transcript",
+        "on_text_delta", "on_thinking_active", "on_output_transcript",
+        "on_response_done", "on_repetition_detected",
+    ):
+        setattr(client, hook, None)
+    client._is_responding = False
+    client._skip_next_response = False
+
+    async def cancelled_fit(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    with patch(
+        "main_logic.omni_offline_client._streaming.fit_images_to_turn_budget",
+        cancelled_fit,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await client.stream_text("看看这个")
+
+    # 两条队列都完整还了回来，顺序也没乱。
+    assert client._pending_images == ["user-frame-a", "user-frame-b"]
+    assert client._pending_plugin_images == ["plugin-frame"]
+    # 这一轮什么都没提交。
+    assert client._conversation_history == []

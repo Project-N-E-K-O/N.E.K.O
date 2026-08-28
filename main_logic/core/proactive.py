@@ -31,6 +31,9 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
 from main_logic.proactive_delivery import (
+    PASSIVE_MEDIA_MAX_RETRIES,
+    PASSIVE_MEDIA_RETRY_KEY,
+    PASSIVE_MEDIA_TRANSIENT_KEY,
     split_callbacks_by_image_budget,
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
@@ -2644,9 +2647,13 @@ class ProactiveMixin:
             if not isinstance(callback, dict):
                 continue
             images = list(callback.get("media_images") or [])
+            # 标记只反映**最近一次**尝试：新一轮开始就先清掉，让下面的失败分支
+            # 重新决定它是瞬时还是终局。
+            callback.pop(PASSIVE_MEDIA_TRANSIENT_KEY, None)
             if not images:
                 callback.pop("_passive_media_session_id", None)
                 callback.pop("_passive_media_staged_count", None)
+                callback.pop(PASSIVE_MEDIA_RETRY_KEY, None)
                 continue
             if self._callback_media_ready_for_session(callback, session):
                 if offline_session:
@@ -2752,6 +2759,8 @@ class ProactiveMixin:
                 if not accepted:
                     reason = getattr(stage_result, "rejection_reason", None)
                     if reason not in self._terminal_callback_image_rejections():
+                        # 瞬时失败：值得下一轮再试，drain 会据此多留一轮。
+                        callback[PASSIVE_MEDIA_TRANSIENT_KEY] = True
                         callback["media_images"] = images
                         if pending_images_snapshot is not None:
                             pending_images[:] = pending_images_snapshot
@@ -3530,13 +3539,32 @@ class ProactiveMixin:
             if _has_media and not self._callback_media_ready_for_session(
                 callback, _session
             ):
+                _retries = int(callback.get(PASSIVE_MEDIA_RETRY_KEY, 0) or 0)
+                if (
+                    callback.get(PASSIVE_MEDIA_TRANSIENT_KEY)
+                    and _retries < PASSIVE_MEDIA_MAX_RETRIES
+                ):
+                    # 最近一次是**瞬时**失败（网络抖 / provider 临时拒），下一轮
+                    # 大概率能成，为它多留一轮。STOP 而不是 skip：跳过它去投更晚
+                    # 的 cue，模型听到的顺序就反了。留够次数还不成就走下面的
+                    # best-effort，不会无限扣住。
+                    callback[PASSIVE_MEDIA_RETRY_KEY] = _retries + 1
+                    logger.info(
+                        "[%s] passive callback media hit a transient failure; "
+                        "holding one round for a retry (%d/%d)",
+                        self.lanlan_name,
+                        _retries + 1,
+                        PASSIVE_MEDIA_MAX_RETRIES,
+                    )
+                    break
                 # best effort：文字照走，图这一轮带不上。说出来 —— 静默丢失正是
                 # 当初让这个问题难被发现的原因。
                 logger.warning(
                     "[%s] passive callback delivered as text-only; %d image(s) "
-                    "were not staged for this session",
+                    "were not staged for this session%s",
                     self.lanlan_name,
                     len(callback.get("media_images") or []),
+                    " (after a retry)" if _retries else "",
                 )
             active_callbacks.append(callback)
         if not active_callbacks:
