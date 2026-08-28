@@ -333,10 +333,14 @@ async def test_openai_turn_drops_frames_lost_while_shrinking_the_item():
 
     async def _fake_enqueue(**kwargs):
         captured.append(kwargs["events_before_response"][0])
-        ticket = SimpleNamespace(
-            sent=asyncio.sleep(0), done=asyncio.sleep(0)
-        )
-        return ticket
+        # 用已完成的 future 而不是 asyncio.sleep(0)：submit_multimodal_turn 只
+        # await ticket.sent，`done` 那个协程永远不会被等待，会留一条
+        # RuntimeWarning（warnings-as-errors 下直接失败）。
+        loop = asyncio.get_running_loop()
+        sent, done = loop.create_future(), loop.create_future()
+        sent.set_result(None)
+        done.set_result(None)
+        return SimpleNamespace(sent=sent, done=done)
 
     _arbiter = SimpleNamespace(
         enqueue=_fake_enqueue,
