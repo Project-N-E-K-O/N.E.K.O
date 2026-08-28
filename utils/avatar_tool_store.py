@@ -442,7 +442,9 @@ class AvatarToolStore:
             # 除此之外的 backup 只是上一次成功更新的残留，绝不能拿它覆盖一个还
             # 在盘上的 final，否则就是把用户的最新版本回滚掉。
             final_present = final.is_dir() and not final.is_symlink()
-            interrupted = updating.exists() and not updating.is_symlink()
+            # 必须是真正的暂存目录：一个同名的普通文件（同步客户端、手工操作
+            # 都可能留下）不构成「更新没走完」的证据，不能凭它放行回滚。
+            interrupted = updating.is_dir() and not updating.is_symlink()
             may_restore = interrupted or not final_present
             final_condemned = False
 
@@ -534,7 +536,11 @@ class AvatarToolStore:
                     verify_resources=verify_resources,
                 )
             except AvatarToolStoreError as exc:
-                if exc.integrity_mismatch:
+                # 被证伪的不只是「摘要对不上」：闭包不符、JSON 非法、schema 不符、
+                # 大小越界都是同一类 —— 记录已经被推翻，不是这一轮读不到。判据用
+                # record_invalid + 非 transient，而不是更窄的 integrity_mismatch，
+                # 否则这些道具会一直挂在配额上，而用户在界面上既看不到也删不掉。
+                if exc.code == "record_invalid" and not exc.transient:
                     logger.warning(
                         "Quarantining local avatar tool %s: %s", tool_id, exc
                     )

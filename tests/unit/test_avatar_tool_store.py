@@ -21,6 +21,22 @@ from utils.avatar_tool_store import (
 from utils.cloudsave_runtime import MaintenanceModeError
 
 
+@pytest.fixture(autouse=True)
+def _isolate_store_process_state():
+    """Keep the module-level quarantine / pending sets from leaking across tests."""
+    import utils.avatar_tool_store as store_module
+
+    quarantined = dict(store_module._QUARANTINED_TOOL_IDS)
+    pending = set(store_module._RECOVERY_PENDING_ROOTS)
+    try:
+        yield
+    finally:
+        store_module._QUARANTINED_TOOL_IDS.clear()
+        store_module._QUARANTINED_TOOL_IDS.update(quarantined)
+        store_module._RECOVERY_PENDING_ROOTS.clear()
+        store_module._RECOVERY_PENDING_ROOTS.update(pending)
+
+
 class _ConfigManager:
     def __init__(self, root: Path):
         self.avatar_tools_dir = root
@@ -1925,12 +1941,17 @@ def test_record_read_is_bounded_yet_fits_the_largest_legal_record(tmp_path, monk
         record_path.read_bytes() + b" " * (cap * 2)
     )
 
-    with pytest.raises(AvatarToolStoreError) as raised:
-        store.read_record(tool["id"])
+    try:
+        with pytest.raises(AvatarToolStoreError) as raised:
+            store.read_record(tool["id"])
+    finally:
+        pass
     assert raised.value.code == "record_invalid"
-    # 文件过大不等于内容损坏，不该触发隔离。
-    assert raised.value.integrity_mismatch is False
-    assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(store._root_key(), set())
+    # 超限是确定性的不合法（不是这一轮读不到），所以要被隔离 —— 否则它既进不了
+    # 公开目录，也没有任何界面入口能删掉，却一直挂着名额和配额。
+    assert raised.value.transient is False
+    assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[store._root_key()]
+    avatar_tool_store._QUARANTINED_TOOL_IDS.pop(store._root_key(), None)
 
 
 @pytest.mark.unit
@@ -2478,3 +2499,142 @@ def test_restoring_a_backup_clears_the_quarantine_it_set(tmp_path, monkeypatch):
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
         avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+# --- 恢复状态空间穷举 ---
+# 之前每一轮都是被 review 指出一个组合、修一个组合。这里把 final × backup ×
+# .updating 的全部组合钉死，剩余缺陷一次暴露，而不是继续一条条等人喂。
+
+
+def _condemn(directory):
+    """Break the closure so the record is provably invalid (not merely unreadable)."""
+    (directory / "intruder.txt").write_bytes(b"closure violation")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("updating_present", (True, False))
+@pytest.mark.parametrize("backup_state", ("valid", "condemned", "missing"))
+@pytest.mark.parametrize("final_state", ("valid", "condemned", "missing"))
+def test_recovery_state_matrix(tmp_path, monkeypatch, final_state, backup_state, updating_present):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Matrix",
+        change_mode="press-swap",
+        change_meanings=["published"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    tool_id = tool["id"]
+    final = store.root / tool_id
+    backup = store.root / f".{tool_id}.backup"
+    updating = store.root / f".{tool_id}.updating"
+    root_key = store._root_key()
+
+    if backup_state != "missing":
+        shutil.copytree(final, backup)
+        if backup_state == "condemned":
+            _condemn(backup)
+    if final_state == "condemned":
+        _condemn(final)
+    elif final_state == "missing":
+        shutil.rmtree(final)
+    if updating_present:
+        updating.mkdir()
+
+    # 该道具只有留下 .updating 或 .backup 才会被恢复遍历到。
+    visited = updating_present or backup_state != "missing"
+    # 可以回滚，当且仅当没有 final 会被牺牲，或有 .updating 这个中断证据。
+    may_restore = updating_present or final_state == "missing"
+    restorable = backup_state == "valid" and may_restore
+
+    try:
+        store.initialize()
+
+        assert not updating.exists(), "an interrupted staging directory was left behind"
+
+        if final_state == "valid":
+            # 有效的已发布目录任何情况下都不许被顶掉。
+            assert final.is_dir()
+            assert not (final / "intruder.txt").exists()
+            assert [item["id"] for item in store.list_items()] == [tool_id]
+            assert tool_id not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
+        elif restorable:
+            # 只有「没有 final 可牺牲」或「有中断证据」时才回滚，且回滚出来的
+            # 那一份必须是干净的、不带隔离标记。
+            assert final.is_dir()
+            assert not (final / "intruder.txt").exists()
+            assert tool_id not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
+            assert [item["id"] for item in store.list_items()] == [tool_id]
+        elif final_state == "condemned":
+            # 被证伪但仍在盘上：保留用户的文件，只登记隔离。
+            assert final.is_dir()
+            assert (final / "intruder.txt").is_file(), "recovery destroyed the user's file"
+            if visited:
+                assert tool_id in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
+            assert store.list_items() == []
+        else:
+            assert not final.exists()
+            assert store.list_items() == []
+
+        if visited:
+            # 没被用于回滚的 backup 一律清掉：它进不了公开目录、UI 也删不掉。
+            assert not backup.exists(), "an unusable backup kept occupying the quota"
+
+        # 配额不能被「看不见又删不掉」的东西挂住。即便恢复的遍历入口
+        # （.updating / .backup）都不在，list_items 的轻量闭包核验也会把被证伪的
+        # 道具隔离掉，所以这里一律归零。
+        visible = store.list_items()
+        expected_bytes = store._directory_bytes(final) if visible else 0
+        assert store._current_storage_bytes() == expected_bytes
+        if final_state == "condemned" and not restorable:
+            # 没被回滚掉的被证伪 final 必须进隔离；被回滚的那份已经是有效版本。
+            assert tool_id in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+@pytest.mark.unit
+def test_a_missing_tool_is_not_quarantined(tmp_path, monkeypatch):
+    """Only proven-invalid records are quarantined; absence is not invalidity."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.ensure()
+    absent = "local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.read_record(absent, verify_resources=True)
+    assert raised.value.code == "tool_not_found"
+    assert absent not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(store._root_key(), set())
+
+
+@pytest.mark.unit
+def test_a_plain_file_named_updating_does_not_authorize_a_rollback(tmp_path, monkeypatch):
+    """Only a real staging directory proves an update was interrupted."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Latest",
+        change_mode="press-swap",
+        change_meanings=["the newest version"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    final = store.root / tool["id"]
+    backup = store.root / f".{tool['id']}.backup"
+    shutil.copytree(final, backup)
+    (final / "synced-note.txt").write_bytes(b"added by a sync client")
+    # 不是暂存目录，只是一个同名的普通文件。
+    (store.root / f".{tool['id']}.updating").write_bytes(b"not a staging directory")
+
+    root_key = store._root_key()
+    store.initialize()
+
+    # 不得据此把 final 回滚成旧版本，也不得删掉用户放进去的文件。
+    assert final.is_dir()
+    assert (final / "synced-note.txt").is_file()
+    assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
+    assert not backup.exists()
