@@ -3689,6 +3689,11 @@ class IndependentAsrRuntime:
                     if self._asr_pending_speech_onset_at is not None
                     else time.monotonic()
                 )
+                # 与 _restart_transport 的补确认块同序：确认一落地就把挂起状态
+                # 清掉。真实开口时刻已经装进 _asr_turn_onset_at，下面那个 await
+                # 无论怎么返回都不会把它丢掉。
+                self._asr_pending_speech_confirmed = False
+                self._asr_pending_speech_onset_at = None
                 self._asr_turn_audio_started_at = time.monotonic()
                 self._asr_first_partial_recorded = False
                 confirm_identity = self._capture_runtime_identity(
@@ -3705,14 +3710,15 @@ class IndependentAsrRuntime:
                     or epoch != self._asr_session_epoch
                     or self._asr_lifecycle is not lifecycle
                 ):
-                    # ⚠️ 挂起状态**只在广播成功之后**才清。广播是 await，失败时
-                    # 若已经清掉，那笔挂起确认与它保存的真实开口时刻就一起没了：
-                    # 后续任何一次确认都只能退回用新的 detected_at，把用户真实
-                    # 开口以来的帧全排除掉，而排在 FIFO 里的 endpoint/final 也
-                    # 再没有可恢复的所有权边界。
+                    # delivered 为假只可能是运行时身份漂移：_send_asr_lifecycle_state
+                    # 吞掉回调异常之后，返回的就是 _runtime_identity_matches。而
+                    # _restart_transport / _close_transport_only 换掉 _asr_session 与
+                    # transport_generation 时都不走 _reset_asr_turn_state，所以这里留下
+                    # 的挂起状态没人回收：上面 transition(SPEECH_CONFIRMED) 已经把它兑付
+                    # 进 _asr_turn_onset_at，两个兑付点又都以 PREWARMING 为闸、ACTIVE 下
+                    # 一律跳过。残留下去会被后面某个不相干的回合当成自己的开口时刻，还会
+                    # 把补偿门 not pending_before 恒假化，让重叠补偿此后静默失效。
                     return
-                self._asr_pending_speech_confirmed = False
-                self._asr_pending_speech_onset_at = None
             if lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE:
                 # 没唤醒。credit 原样留着等下一次兑付；借出去的 onset 也要收回，
                 # 免得它被后面某个不相干的回合当成自己的起点。
@@ -4275,6 +4281,10 @@ class IndependentAsrRuntime:
                 if self._asr_pending_speech_onset_at is not None
                 else time.monotonic()
             )
+            # 与 credit 兑付那条路同序（见 _handle_independent_asr_endpoint）：
+            # 确认一落地就清挂起状态，真实开口时刻已经装进 _asr_turn_onset_at。
+            self._asr_pending_speech_confirmed = False
+            self._asr_pending_speech_onset_at = None
             self._asr_turn_audio_started_at = time.monotonic()
             self._asr_first_partial_recorded = False
             confirm_identity = self._capture_runtime_identity(
@@ -4291,11 +4301,15 @@ class IndependentAsrRuntime:
                 or epoch != self._asr_session_epoch
                 or self._asr_lifecycle is not lifecycle_ref
             ):
-                # 同 credit 兑付那处：挂起状态只在广播成功之后才清，否则广播失败
-                # 时那笔挂起确认与它保存的真实开口时刻一起丢失。
+                # delivered 为假只可能是运行时身份漂移：_send_asr_lifecycle_state
+                # 吞掉回调异常之后，返回的就是 _runtime_identity_matches。而
+                # _restart_transport / _close_transport_only 换掉 _asr_session 与
+                # transport_generation 时都不走 _reset_asr_turn_state，所以这里留下
+                # 的挂起状态没人回收：上面 transition(SPEECH_CONFIRMED) 已经把它兑付
+                # 进 _asr_turn_onset_at，两个兑付点又都以 PREWARMING 为闸、ACTIVE 下
+                # 一律跳过。残留下去会被后面某个不相干的回合当成自己的开口时刻，还会
+                # 把补偿门 not pending_before 恒假化，让重叠补偿此后静默失效。
                 return
-            self._asr_pending_speech_confirmed = False
-            self._asr_pending_speech_onset_at = None
         if lifecycle_ref.snapshot.state is not VoiceLifecycleState.ACTIVE:
             # 没醒起来（Smart Turn 租约没就绪，或 lifecycle 广播没送达）。借出去的
             # onset 必须收回：留着的话，后面某个**不相干**的发声会把这个陈旧时刻

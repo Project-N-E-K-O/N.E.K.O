@@ -12204,17 +12204,22 @@ async def test_a_stale_onset_does_not_evict_the_prerecord_buffer() -> None:
 
 
 @pytest.mark.unit
-async def test_replay_keeps_the_pending_onset_when_the_active_broadcast_fails() -> None:
-    """A failed ACTIVE broadcast must not consume the recovery state.
+async def test_replay_drops_the_pending_slot_when_the_transport_identity_moves_on() -> None:
+    """A drifted runtime identity must not strand the pending confirmation.
 
-    The compensation force-confirms the successor and only then broadcasts
-    ACTIVE. Clearing the pending confirmation and its preserved onset before
-    that await means a failed broadcast destroys both: any later confirmation
-    falls back to a fresh detected_at, excluding every frame since the user
-    actually started speaking, and the endpoint/final already queued in the
-    FIFO is left without a recoverable ownership boundary.
+    _send_asr_lifecycle_state() swallows delivery exceptions and returns
+    _runtime_identity_matches(), so a false return means the runtime identity
+    moved on -- and _restart_transport / _close_transport_only swap
+    _asr_session and bump transport_generation without bumping the epoch or
+    running _reset_asr_turn_state(). Holding the pending confirmation across
+    that return strands it: the compensation already transitioned to ACTIVE,
+    and both redemption sites gate on PREWARMING, so nothing ever collects it.
+    The next unrelated utterance then adopts the stale onset as its visual
+    ownership boundary, and the poisoned flag pins pending_before True so the
+    overlap compensation silently stops firing.
 
-    So the pending state is cleared only after the broadcast succeeds.
+    The real onset is already committed to _asr_turn_onset_at before the
+    broadcast, so clearing the slot on confirmation loses nothing.
     """
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")
@@ -12229,28 +12234,147 @@ async def test_replay_keeps_the_pending_onset_when_the_active_broadcast_fails() 
         SpeechActivityEvent.SPEECH_RESUMED,
         epoch,
     )
-    recorded_onset = component._asr_overlap_onset_at
-    assert recorded_onset is not None
+    assert component._asr_overlap_onset_at is not None
     await runtime._handle_independent_asr_endpoint(epoch)
 
+    # monotonic 在这台机器上一整个测试跑下来只走一格，靠时钟自然推进区分不了
+    # 「陈旧 onset」和「新回合 onset」。按仓库既有做法直接注入一个明显靠前的
+    # 时刻，后面那条继承断言才有分辨力。
+    recorded_onset = time.monotonic() - 5.0
+    component._asr_overlap_onset_at = recorded_onset
+
     component._asr_session.is_ready = False
-    # ACTIVE 那条广播送不出去（websocket 断了 / 身份已变）。
-    _real_send = component._send_asr_lifecycle_state
+    lifecycle_ref = runtime._asr_lifecycle
 
-    async def _fail_active_broadcast(state, **kwargs):
-        if state is VoiceLifecycleState.ACTIVE:
-            return False
-        return await _real_send(state, **kwargs)
+    # ACTIVE 广播飞在半空时来一次「仅关传输」：换掉 _asr_session、bump
+    # transport_generation，epoch 与 lifecycle 对象都不动 —— 这正是
+    # _close_transport_only 干的事，也是唯一能让 delivered 为假的那条腿。
+    real_on_lifecycle = component._callbacks.on_lifecycle
+    drifted = False
 
-    component._send_asr_lifecycle_state = _fail_active_broadcast
+    async def _drift_transport_midflight(note: AsrLifecycleNotification) -> None:
+        nonlocal drifted
+        if note.state == VoiceLifecycleState.ACTIVE.value and not drifted:
+            drifted = True
+            component._asr_session = None
+            lifecycle_ref.invalidate_transport()
+        await real_on_lifecycle(note)
+
+    component._callbacks = replace(
+        component._callbacks,
+        on_lifecycle=_drift_transport_midflight,
+    )
 
     await runtime._handle_independent_asr_final("first", epoch, "openai")
     await runtime._wait_asr_transcript_dispatch_idle()
 
-    # 广播失败了，但那笔挂起确认和它保存的真实开口时刻必须还在，
-    # 后续确认才能拿到用户真正开口的时刻。
-    assert component._asr_pending_speech_confirmed is True
-    assert component._asr_pending_speech_onset_at == recorded_onset
+    assert drifted is True
+    # 走的确实是「传输身份漂移」这条腿，不是 detach / fail-closed 那条
+    # （那两条会 bump epoch、换 lifecycle，并且自己会跑 _reset_asr_turn_state）。
+    assert runtime._asr_session_epoch == epoch
+    assert runtime._asr_lifecycle is lifecycle_ref
+
+    # 挂起槽必须已经腾空 —— 没人会再来兑付它。
+    assert component._asr_pending_speech_confirmed is False
+    assert component._asr_pending_speech_onset_at is None
+    # 而用户真实开口的时刻一点没丢：它在 await 之前就装进了 _asr_turn_onset_at。
+    assert component._asr_turn_onset_at == recorded_onset
+
+    # 行为层：走完这一轮，下一次**不相干**的开口不能继承那个陈旧时刻。
+    component._asr_session = type("Asr", (), {"is_ready": True})()
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+    fresh_floor = time.monotonic()
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    assert component._asr_turn_onset_at != recorded_onset
+    assert component._asr_turn_onset_at >= fresh_floor
+
+
+@pytest.mark.unit
+async def test_credit_redemption_drops_the_pending_slot_when_the_transport_identity_moves_on() -> None:
+    """Dual of the direct-replay case for the completed-overlap credit path.
+
+    Both compensation blocks force-confirm the same way, so both strand the
+    pending slot the same way when the runtime identity drifts across the
+    ACTIVE broadcast. Covering only one leaves the other free to regress.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+    component = runtime._asr_runtime
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    # 后继在上一轮还 ACTIVE 时开口又停顿：攒下一张 completed-overlap credit。
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_overlap_completed_turns == 1
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+    # 同上：注入一个明显靠前的时刻，后面那条继承断言才有分辨力。
+    recorded_onset = time.monotonic() - 5.0
+    component._asr_overlap_completed_onsets[0] = recorded_onset
+
+    component._asr_session.is_ready = False
+    lifecycle_ref = runtime._asr_lifecycle
+    real_on_lifecycle = component._callbacks.on_lifecycle
+    drifted = False
+
+    async def _drift_transport_midflight(note: AsrLifecycleNotification) -> None:
+        nonlocal drifted
+        if note.state == VoiceLifecycleState.ACTIVE.value and not drifted:
+            drifted = True
+            component._asr_session = None
+            lifecycle_ref.invalidate_transport()
+        await real_on_lifecycle(note)
+
+    component._callbacks = replace(
+        component._callbacks,
+        on_lifecycle=_drift_transport_midflight,
+    )
+
+    # 后继自己的 endpoint 兑付这张 credit，重放停在 PREWARMING 后就地补确认。
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    assert drifted is True
+    assert runtime._asr_session_epoch == epoch
+    assert runtime._asr_lifecycle is lifecycle_ref
+    assert component._asr_pending_speech_confirmed is False
+    assert component._asr_pending_speech_onset_at is None
+    assert component._asr_turn_onset_at == recorded_onset
+
+    # 身份漂移让这一轮停在 ACTIVE（那次 return 越过了随后的封口）。恢复身份、
+    # 把它正常走完，才谈得上「下一次不相干的开口」。
+    component._asr_session = type("Asr", (), {"is_ready": True})()
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+    fresh_floor = time.monotonic()
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    assert component._asr_turn_onset_at != recorded_onset
+    assert component._asr_turn_onset_at >= fresh_floor
 
 
 @pytest.mark.unit
