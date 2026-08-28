@@ -238,6 +238,40 @@ async def test_description_mode_rejected_cue_image_keeps_the_snapshot_armed():
 
 
 @pytest.mark.unit
+async def test_description_mode_stops_when_the_cue_image_is_rejected_early():
+    """Do not narrate a picture the provider already refused.
+
+    The raw cue image rides a WebSocket event, so its error.event_id can land
+    before the text inject. Sending the text anyway makes her describe a screen
+    that never entered the model's context. Same handling as the native
+    delivery branch's `if delivery_rejected:` guard.
+    """
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+
+    real_stream_image = client.stream_image
+
+    async def _reject_right_after_send(image_b64, **kwargs):
+        result = await real_stream_image(image_b64, **kwargs)
+        handler = client._inject_rejection_handlers.get(kwargs.get("event_id"))
+        if handler is not None:
+            handler("image rejected by provider")
+        return result
+
+    client.stream_image = _reject_right_after_send
+
+    delivered = await client.prompt_ephemeral("describe what you notice")
+
+    assert delivered is False
+    # 图发出去了，但拒绝已经到达——不能再投这一轮的文字。
+    input_texts = _input_texts(_sent_events(client))
+    assert not any("describe what you notice" in text for text in input_texts)
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_description_mode_snapshot_is_consumed_when_activity_wins_the_race():
     """A raw frame already in provider context must not be re-sent later.
 

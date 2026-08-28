@@ -2044,6 +2044,16 @@ class _ResponseMixin:
                 and _stage_mode == VisualDeliveryMode.NATIVE.value
             ):
                 _raw_frame_sent = True
+                if delivery_rejected:
+                    # provider 在这一轮的文字注入之前就已经把这张图拒了（原始图
+                    # 走 WebSocket 事件，error.event_id 可能比写返回还早到）。
+                    # 照常投文字等于让她描述一张根本没进上下文的画面。与上面原生
+                    # 投递分支的 `if delivery_rejected:` 同一处置。
+                    _remove_visual_rejection_handler()
+                    logger.info(
+                        "prompt_ephemeral: raw cue image rejected before proactive text inject"
+                    )
+                    return False
                 # 图已经原样送进去了（描述模式下的一次性 cue 图走原生通道）。
                 # 只补一句简单引导告诉模型这是什么，不再为它单独跑一次
                 # VISION_MODEL 注释——省一次付费调用，也少一层转述失真。
