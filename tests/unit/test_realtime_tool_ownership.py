@@ -3983,3 +3983,85 @@ async def test_identified_speech_start_does_not_arm_the_idless_marker() -> None:
     assert socket.sent == []
     socket.finish()
     await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_proactive_waits_for_a_tool_response_still_being_written(
+    monkeypatch,
+) -> None:
+    """A sealed batch whose write is in flight still holds the inject back.
+
+    Sealing marks "this batch has decided its answer", and there is no await
+    between it and the provider write -- so by the time anything else can
+    observe `sealed`, the write has already started and cannot be recalled.
+    What keeps the ordering is that the collector task is still PENDING while
+    it writes, so the settle waits for it exactly like any other unsettled
+    tool work, within the same budget. This pins that; its bounded twin is
+    ``test_a_wedged_abandoned_reply_still_lets_the_proactive_message_out``.
+    """
+
+    import main_logic.omni_realtime_client._responses as responses
+
+    monkeypatch.setattr(responses, "_GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS", 5.0)
+    write_entered = asyncio.Event()
+    release_write = asyncio.Event()
+    order: list[str] = []
+
+    async def handler(call):
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    class _SlowWriteSession(_GeminiSession):
+        async def send_tool_response(self, *, function_responses) -> None:
+            write_entered.set()
+            await release_write.wait()
+            order.append("tool_response")
+
+        async def send_client_content(self, *, turns, turn_complete) -> None:
+            order.append("proactive")
+
+    monkeypatch.setattr(
+        __import__(
+            "main_logic.omni_realtime_client._gemini_support",
+            fromlist=["types"],
+        ),
+        "types",
+        SimpleNamespace(FunctionResponse=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gemini-live",
+        api_type="gemini",
+        on_tool_call=handler,
+    )
+    session = _SlowWriteSession()
+    client._gemini_session = session
+    client.ws = session
+    client._on_connection_attached()
+
+    collector = client._process_gemini_response(
+        _gemini_response(calls=(("call-a", "lookup"),)),
+        provider_session=session,
+        connection_generation=client._connection_generation,
+    )
+    await collector
+    await asyncio.wait_for(write_entered.wait(), timeout=1)
+
+    # Premise: the batch really is sealed already -- there was no window
+    # between sealing and the write in which anything could have suppressed it.
+    batch = next(iter(client._tool_batch_collector_tasks.values()))
+    assert batch.sealed is True
+
+    inject = asyncio.create_task(
+        client.inject_text_and_request_response("proactive body")
+    )
+    await asyncio.sleep(0.05)
+    assert order == [], "the inject must not overtake a tool response mid-write"
+
+    release_write.set()
+    await asyncio.wait_for(inject, timeout=2)
+    await _wait_for_tool_tasks(client)
+
+    assert order == ["tool_response", "proactive"]
