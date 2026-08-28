@@ -773,8 +773,25 @@ class StreamingMixin:
 
                         if _agent_cb_images:
                             stream_text_kwargs["system_prefix_images"] = _agent_cb_images
-                            # 本次调用自己的「已进 history」标记。不能拿全局 history 长
-                            # 度判断：并发的另一条文本请求同样会追加。
+                        if _agent_cb_media_drained:
+                            # 装载判据必须跟下面回滚的判据**是同一个**。回滚看的是
+                            # _agent_cb_media_drained（带图且已出队的 callback），
+                            # 按 _agent_cb_images 装的话，两者一旦分叉，那一轮就没
+                            # 人置 _cb_turn_committed：stream_text 把文字写进
+                            # history 之后再抛，外层回滚会认定"没提交过"而把
+                            # callback 放回队列，下一轮重复投递同一条通知。
+                            #
+                            # 今天这两个集合在 Offline 上是同进同出的——staging 的
+                            # _renderable 截断、预算延后标志、drain 的 STOP 判据三
+                            # 者对齐，凡是被 drain 摘走的带图 callback 都拿得到图，
+                            # 所以现在**构造不出**上面那个分叉（Codex P2 提的场景
+                            # 我没能复现）。改成按回滚判据装，是不让这个"同进同出"
+                            # 变成隐式前提：它由三处独立代码共同维持，任一处以后
+                            # 松动，分叉就会以"重复投递"的形式出现在用户面前，而
+                            # 那时没有任何断言会先红。
+                            #
+                            # 本次调用自己的「已进 history」标记。不能拿全局 history
+                            # 长度判断：并发的另一条文本请求同样会追加。
                             stream_text_kwargs["on_turn_committed"] = (
                                 _mark_cb_turn_committed
                             )

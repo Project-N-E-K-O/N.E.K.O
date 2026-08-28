@@ -34,6 +34,7 @@ from main_logic.provider_failure_signals import (
 )
 from main_logic.proactive_delivery import (
     DELIVERY_RETRACTED_KEY,
+    PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
     resolve_callback_delivery_ack,
 )
@@ -2822,15 +2823,26 @@ class LifecycleMixin:
         selected: list,
     ) -> tuple:
         """Render the media-ready subset of one pre-staging swap snapshot."""
-        ready = [
-            callback
-            for callback in selected
-            if not callback.get(DELIVERY_RETRACTED_KEY)
-            and self._callback_media_ready_for_session(
+        ready = []
+        for callback in selected:
+            if callback.get(PASSIVE_MEDIA_BUDGET_DEFERRED_KEY):
+                # 本轮图片预算没轮到它。STOP 而不是 skip，也不是只挡带图的那些：
+                # split_callbacks_by_image_budget 是**严格 FIFO**，预算耗尽之后
+                # 整条后缀（包括其中的纯文本 callback）都被标上这个键。而
+                # _callback_media_ready_for_session 对纯文本 callback 恒为真，
+                # 只按它过滤的话，排在被延后的带图 cue **后面**的那条纯文本会被
+                # 这次 swap 抢先投出去并摘出队列，模型听到的顺序就反了。
+                # 与 drain_agent_callbacks_for_llm 同一判据（那边是第一个消费点，
+                # 这里是第二个）。
+                break
+            if callback.get(DELIVERY_RETRACTED_KEY):
+                continue
+            if not self._callback_media_ready_for_session(
                 callback,
                 getattr(self, "pending_session", None),
-            )
-        ]
+            ):
+                continue
+            ready.append(callback)
         ready_obj_ids = {id(callback) for callback in ready}
         self._release_swap_prime_passive_claims(
             [callback for callback in selected if id(callback) not in ready_obj_ids]

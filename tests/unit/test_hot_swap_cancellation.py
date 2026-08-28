@@ -53,6 +53,7 @@ from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
+    PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
 )
 
@@ -449,6 +450,50 @@ def test_swap_prime_render_excludes_retracted_claimed_callback():
     assert ready == []
     assert rendered == ""
     assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in callback
+
+
+def test_swap_prime_render_stops_at_a_budget_deferred_callback():
+    """预算延后的那条之后，整条后缀都不许被这次 swap 抢跑。
+
+    ``split_callbacks_by_image_budget`` 是严格 FIFO，预算耗尽后**整条后缀**都被
+    标上 PASSIVE_MEDIA_BUDGET_DEFERRED_KEY——包括其中的纯文本 callback。而
+    ``_callback_media_ready_for_session`` 对纯文本 callback 恒为真，所以只按它
+    过滤的话，排在被延后的带图 cue 后面那条纯文本会被 swap 抢先投出去并摘出队列，
+    模型听到的顺序就反了（带图那条还在队列里等下一轮）。
+
+    断言落在"后面那条纯文本没被渲染"，而不是"带图那条没被渲染"——后者只按
+    media_ready 过滤也能过，抓不住这个 bug。
+    """
+    mgr = _make_swap_manager()
+    deferred_media = _passive_callback("带图的，预算没轮到它")
+    deferred_media["media_images"] = ["img-b64"]
+    deferred_media[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+    deferred_media[PASSIVE_MEDIA_BUDGET_DEFERRED_KEY] = True
+    deferred_text = _passive_callback("排在它后面的纯文本")
+    deferred_text[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+    deferred_text[PASSIVE_MEDIA_BUDGET_DEFERRED_KEY] = True
+
+    ready, rendered = mgr._render_claimed_passive_callbacks_for_swap_prime(
+        [deferred_media, deferred_text]
+    )
+
+    assert ready == []
+    assert "排在它后面的纯文本" not in rendered
+    # 两条都留在队列里等下一轮，claim 也都要还回去。
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in deferred_media
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in deferred_text
+
+
+def test_swap_prime_render_still_takes_an_undeferred_text_callback():
+    """对偶：没被标延后的纯文本照常渲染，别把闸门开成"凡纯文本都拦"。"""
+    mgr = _make_swap_manager()
+    plain = _passive_callback("正常的纯文本通知")
+    plain[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+
+    ready, rendered = mgr._render_claimed_passive_callbacks_for_swap_prime([plain])
+
+    assert ready == [plain]
+    assert "正常的纯文本通知" in rendered
 
 
 def _install_passive_prime_barrier(session, *, expected_text):

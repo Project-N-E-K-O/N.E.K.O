@@ -612,6 +612,12 @@ class AsrRuntimeMixin:
         # live 字段在 PROVIDER_FINAL 时被清，所以它只可能描述**在飞的那一轮**，
         # 用 started_at 当下界就够。保留副本则是跨轮存活的，必须更严 —— 见下。
         live_endpoint = isinstance(endpointed_at, (int, float))
+        # 三类来源要分开，不能只分 live / 非 live：
+        #   live     —— 在飞那一轮的字段，PROVIDER_FINAL 会清；
+        #   retained —— 跨轮存活的保留副本，可能是**上一轮**的；
+        #   observed —— 两者都没有时按 DRAINING 当场取的 monotonic，它必然属于
+        #               本轮（就是此刻），不该套跨轮那条更严的判据。
+        retained_endpoint = False
         if not live_endpoint:
             # PROVIDER_FINAL 会把上面那个清掉，而 Core 要到 transcript 派发之后
             # 才冻结这一轮 —— 冻结时读到的必然是 None。所以再读一个不随 final
@@ -621,6 +627,7 @@ class AsrRuntimeMixin:
                 "_asr_last_turn_endpointed_at",
                 None,
             )
+            retained_endpoint = isinstance(endpointed_at, (int, float))
         if not isinstance(endpointed_at, (int, float)):
             lifecycle = getattr(runtime, "_asr_lifecycle", None)
             state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
@@ -640,8 +647,25 @@ class AsrRuntimeMixin:
             # 保留副本跨轮存活，所以要求它晚于 record **注册**的时刻：上一轮的封口
             # 必然发生在本轮 record 建立之前。live 字段只描述在飞那一轮，仍用
             # started_at，免得极短发声里 seal 抢在注册之前时反而绑不上。
-            floor = record.started_at if live_endpoint else record.registered_at
-            if sealed_at >= floor:
+            if retained_endpoint:
+                # 保留副本跨轮存活，可能是上一轮的，所以要求它**严格晚于**本轮
+                # record 注册的时刻。不能用 >=：monotonic 在 Windows 上是 ~15ms
+                # 粒度（本文件 _begin_core_multimodal_turn 里已经为同一个原因退
+                # 回过生成号判据），上一轮的封口和后继 record 的注册完全可能落在
+                # 同一个 tick 上而相等。判等号的话，上一轮的封口会被盖到后继回合
+                # 头上，本轮之后拍的每一帧都过不了 accepts()，稍长一点的发声等开
+                # 头那张过期就整轮退化成纯文本。相等归上一轮——上一轮的封口必然
+                # 发生在本轮 record 建立之前，而本轮自己的封口会由 live 字段那条
+                # 分支绑上，不会因为这里收严而漏。
+                floor_ok = sealed_at > record.registered_at
+            elif live_endpoint:
+                # live 字段只描述在飞的那一轮，用 started_at 当下界；取 >= 是为了
+                # 极短发声里 seal 抢在注册之前时仍绑得上。
+                floor_ok = sealed_at >= record.started_at
+            else:
+                # 当场观测：这个值就是此刻，必然属于本轮，沿用原判据即可。
+                floor_ok = sealed_at >= record.registered_at
+            if floor_ok:
                 record.endpoint_at = sealed_at
 
     def _track_independent_visual_validation_task(

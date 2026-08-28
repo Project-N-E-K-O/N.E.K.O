@@ -10794,6 +10794,113 @@ async def test_endpoint_cutoff_uses_the_recorded_seal_instant() -> None:
 
 
 @pytest.mark.unit
+async def test_live_seal_between_onset_and_registration_still_binds() -> None:
+    """在飞字段的下界是 started_at，不是 registered_at——这个区别本来没人测。
+
+    started_at 会被回拨到语音起点（重叠发声的后继甚至早于上一轮封口），所以
+    "封口 → 注册"之间存在一段真实窗口：极短的一句话完全可能在 record 建立之前
+    就被 ASR 封口。把在飞字段的下界收到 registered_at 的话，这种回合永远绑不上
+    截止点，之后拍的每一帧都会被当成本轮的，把用户停口之后的屏幕折进这一轮。
+
+    （变异验证发现的覆盖缺口：把 live 分支的 started_at 改成 registered_at，
+    原先整个测试文件都不会红。）
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    # 把语音起点回拨，制造 started_at < registered_at 的真实窗口。
+    onset = time.monotonic() - 0.5
+    runtime._asr_turn_onset_at = onset
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=99)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert record.started_at < record.registered_at, "夹具没造出那段窗口"
+
+    # 在飞字段：封口发生在开口之后、record 建立之前。
+    sealed_at = record.started_at + 0.1
+    assert sealed_at < record.registered_at
+    runtime._asr_turn_endpointed_at = sealed_at
+
+    runtime._stage_independent_visual_frame(
+        "post-seal-frame",
+        source="screen",
+        request_id="screen-post-seal",
+        captured_at=sealed_at + 0.05,
+    )
+
+    assert record.endpoint_at == sealed_at
+
+
+@pytest.mark.unit
+async def test_previous_turn_seal_in_the_same_tick_is_not_this_turn_cutoff() -> None:
+    """同一个 monotonic tick 里的上一轮封口，不算这一轮的截止点。
+
+    monotonic 在 Windows 上是 ~15ms 粒度（本文件 _begin_core_multimodal_turn
+    里已经为同一个原因退回过生成号判据），上一轮的封口和后继 record 的注册完全
+    可能落在同一 tick 上而**相等**。若按 >= 判，上一轮的封口会被盖到后继回合
+    头上：这一轮之后拍的每一帧都过不了 accepts()，稍长一点的发声等开头那张过期
+    就整轮退化成纯文本——用户看到的是"她只看见了我刚开口那一瞬"。
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=97)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 上一轮的封口副本，时刻与本轮 record 的注册时刻**相等**（同一个 tick）。
+    # live 字段是空的——PROVIDER_FINAL 已经把它清掉了，这正是保留副本存在的原因。
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = record.registered_at
+
+    assert runtime._stage_independent_visual_frame(
+        "opening-frame",
+        source="screen",
+        request_id="screen-opening",
+        captured_at=record.started_at,
+    )
+    # 发声中段拍的帧——如果上一轮的封口被误绑成本轮截止点，它会被 accepts() 拒掉。
+    assert runtime._stage_independent_visual_frame(
+        "middle-frame",
+        source="screen",
+        request_id="screen-middle",
+        captured_at=record.registered_at + 1.0,
+    )
+
+    assert record.endpoint_at is None, (
+        "上一轮的封口被盖到了后继回合上：相等必须归上一轮"
+    )
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "这是什么")
+
+    assert turn is not None
+    assert "middle-frame" in turn.images
+
+
+@pytest.mark.unit
+async def test_a_seal_after_this_record_registered_still_becomes_its_cutoff() -> None:
+    """对偶：真正晚于本轮注册的封口照旧要绑上，别把闸门收成"保留副本一律不认"。"""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=98)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    sealed_at = record.registered_at + 1.0
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = sealed_at
+
+    runtime._stage_independent_visual_frame(
+        "late-frame",
+        source="screen",
+        request_id="screen-late",
+        captured_at=sealed_at + 0.5,
+    )
+
+    assert record.endpoint_at == sealed_at
+
+
+@pytest.mark.unit
 async def test_stale_seal_instant_from_a_previous_turn_is_not_this_turn_cutoff() -> None:
     """A leftover timestamp predates this record and must not seal it early."""
     runtime = _Runtime()
