@@ -427,61 +427,59 @@ class AvatarToolStore:
             final = self.root / tool_id
             updating = self.root / f".{tool_id}.updating"
             backup = self.root / f".{tool_id}.backup"
+
+            def defer(reason: object) -> None:
+                logger.warning(
+                    "Deferring avatar tool recovery for %s: %s", tool_id, reason
+                )
+
+            # 什么时候可以拿 backup 覆盖：
+            #   * final 根本不在 —— 没有东西会被牺牲。update_tool 回滚时会先删
+            #     updating 再把 backup 挪回 final，如果最后那步也失败，就正是这个
+            #     状态，不恢复道具就真丢了。
+            #   * .updating 还在 —— 这是「更新没走完」的证据（先 final→backup，
+            #     再 updating→final，最后删 backup），backup 才是该回到的状态。
+            # 除此之外的 backup 只是上一次成功更新的残留，绝不能拿它覆盖一个还
+            # 在盘上的 final，否则就是把用户的最新版本回滚掉。
+            final_present = final.is_dir() and not final.is_symlink()
+            interrupted = updating.exists() and not updating.is_symlink()
+            may_restore = interrupted or not final_present
             final_condemned = False
-            if final.is_dir() and not final.is_symlink():
+
+            if final_present:
                 try:
                     self._read_record_from_directory(
-                        tool_id,
-                        final,
-                        verify_resources=True,
+                        tool_id, final, verify_resources=True
                     )
                 except AvatarToolStoreError as exc:
                     if exc.transient:
-                        # 这一轮读不出 final 不代表它坏了。此时若拿 backup 覆盖，
-                        # 就是用旧版本抹掉用户刚更新好的那一份。保留现场，让这个
-                        # 存储根留在待恢复状态，下次再判。
-                        logger.warning(
-                            "Deferring avatar tool recovery for %s: %s", tool_id, exc
-                        )
+                        # 读不出来不等于坏了；此时拿 backup 覆盖就是用旧版本抹掉
+                        # 用户刚保存的那一份。保留现场，留在待恢复状态下次再判。
+                        defer(exc)
                         complete = False
                         continue
-                    # 被证伪的 final 不删 —— 「闭包不符」也算证伪，可能只是用户往
-                    # 目录里放了别的文件，删掉会连带丢掉他的原图。登记隔离即可：
-                    # 它本来就进不了公开目录，隔离后也不再占名额和存储预算。
                     final_condemned = True
                 except OSError as exc:
-                    logger.warning(
-                        "Deferring avatar tool recovery for %s: %s", tool_id, exc
-                    )
+                    defer(exc)
                     complete = False
                     continue
                 else:
                     remove_owned_directory(updating)
                     remove_owned_directory(backup)
                     continue
-            if final_condemned:
-                self.quarantine(tool_id)
-            backup_condemned = False
-            if backup.is_dir() and not backup.is_symlink():
+
+            if may_restore and backup.is_dir() and not backup.is_symlink():
                 try:
                     self._read_record_from_directory(
-                        tool_id,
-                        backup,
-                        verify_resources=True,
+                        tool_id, backup, verify_resources=True
                     )
                 except AvatarToolStoreError as exc:
                     if exc.transient:
-                        # backup 也只是暂时读不出来：两边都还没被证伪，什么都别动。
-                        logger.warning(
-                            "Deferring avatar tool recovery for %s: %s", tool_id, exc
-                        )
+                        defer(exc)
                         complete = False
                         continue
-                    backup_condemned = True
                 except OSError as exc:
-                    logger.warning(
-                        "Deferring avatar tool recovery for %s: %s", tool_id, exc
-                    )
+                    defer(exc)
                     complete = False
                     continue
                 else:
@@ -490,18 +488,24 @@ class AvatarToolStore:
                     elif final.is_dir():
                         shutil.rmtree(final)
                     os.replace(backup, final)
+                    # 回滚出来的这一份刚刚通过了完整核验，别让它背着隔离标记。
+                    self._release_quarantine(tool_id)
                     remove_owned_directory(updating)
                     continue
-            remove_owned_directory(updating)
-            if backup_condemned:
-                # 被证伪的 backup 是内部目录：进不了公开目录，UI 也删不掉，却一直
-                # 算在 _current_storage_bytes 里。不清掉它，一个足够大的坏备份会
-                # 让后续创建永久 storage_limit_reached。final 不同 —— 它是用户可见
-                # 的道具，用户自己能删，所以这里不碰。
+
+            if final_condemned:
+                # 不动 final：证伪也包括「闭包不符」，那可能只是用户往道具目录里
+                # 放了别的文件，删掉会连带丢他的原图。登记隔离就够了 —— 它本来
+                # 就进不了公开目录，隔离后也不再占名额和配额。
                 logger.warning(
-                    "Removing a provably invalid avatar tool backup for %s", tool_id
+                    "Quarantining a provably invalid avatar tool final for %s", tool_id
                 )
-                remove_owned_directory(backup)
+                self.quarantine(tool_id)
+            remove_owned_directory(updating)
+            # 走到这里的 backup 要么被证伪，要么属于已完成的更新（残留）。两种都
+            # 清掉：它进不了公开目录、UI 也删不掉，却一直算在 _current_storage_bytes
+            # 里，足够大就会让后续创建永久 storage_limit_reached。
+            remove_owned_directory(backup)
 
         for candidate in self.root.iterdir():
             if not (

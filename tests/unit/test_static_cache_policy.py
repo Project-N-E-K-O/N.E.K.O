@@ -77,7 +77,7 @@ async def test_avatar_tool_static_files_accepts_windows_normalized_resource_path
         "method": "GET",
         "path": f"/{tool_id}/default.png",
         "root_path": "",
-        "query_string": b"",
+        "query_string": f"v={hashlib.sha256(b'png').hexdigest()}".encode("ascii"),
         "headers": [],
     }
 
@@ -121,6 +121,15 @@ async def test_avatar_tool_static_files_recognizes_exact_sha256_versions(
         "query_string": query_string,
         "headers": [],
     }
+
+    if expected_cache_control is None:
+        # 生成的 URL 只会带一个精确的小写 64 位摘要。其余形式（大写、多带参数、
+        # 非摘要串）都不是本应用发出的请求，直接拒绝，而不是放它走未经核验、
+        # 也不受管理大小上限约束的通道。
+        with pytest.raises(StarletteHTTPException) as raised:
+            await static_files.get_response(f"{tool_id}/default.png", scope)
+        assert raised.value.status_code == 404
+        return
 
     response = await static_files.get_response(f"{tool_id}/default.png", scope)
 
@@ -253,7 +262,8 @@ async def test_avatar_tool_verified_response_rejects_excessive_range_specs(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_avatar_tool_unversioned_response_rejects_excessive_range_specs(tmp_path):
+async def test_avatar_tool_rejects_an_unversioned_request_outright(tmp_path):
+    """No generated URL lacks a digest, so an unversioned request is never ours."""
     tool_id = "local-12345678-1234-4123-8123-123456789abc"
     static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
     content = bytes(range(64))
@@ -270,11 +280,11 @@ async def test_avatar_tool_unversioned_response_rejects_excessive_range_specs(tm
         "headers": [(b"range", f"bytes={ranges}".encode("ascii"))],
     }
 
-    response = await static_files.get_response(f"{tool_id}/normal.mp3", scope)
-    messages = await _render_response(response, scope)
-
-    assert messages[0]["status"] == 416
-    assert dict(messages[0]["headers"])[b"content-range"] == b"bytes */64"
+    # 未版本化的请求会绕开受管理的大小上限与内容核验，直接由 StaticFiles 流出
+    # 任意字节；range 上限的兜底同理只存在于已核验的那条路径上。
+    with pytest.raises(StarletteHTTPException) as raised:
+        await static_files.get_response(f"{tool_id}/normal.mp3", scope)
+    assert raised.value.status_code == 404
 
 
 def _publish_avatar_tool(root, tool_id, *, default_bytes, recorded_default_bytes=None):
@@ -455,7 +465,7 @@ async def test_public_path_check_runs_off_the_event_loop(tmp_path, monkeypatch):
         "method": "GET",
         "path": f"/{tool_id}/default.png",
         "root_path": "",
-        "query_string": b"",
+        "query_string": f"v={hashlib.sha256(b'payload').hexdigest()}".encode("ascii"),
         "headers": [],
     }
     await static_files.get_response(f"{tool_id}/default.png", scope)

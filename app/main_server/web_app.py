@@ -180,18 +180,11 @@ class AvatarToolStaticFiles(CustomStaticFiles):
             scope.get("query_string", b"")
         )
         if requested_digest is None:
-            response = await StaticFiles.get_response(self, normalized_path, scope)
-            range_header = Headers(scope=scope).get("range", "")
-            if (
-                range_header.split("=", 1)[-1].count(",") + 1
-                > _VerifiedAssetFileResponse._MAX_RANGE_SPECS
-            ):
-                file_size = getattr(getattr(response, "stat_result", None), "st_size", "*")
-                return Response(
-                    status_code=416,
-                    headers={"Content-Range": f"bytes */{file_size}"},
-                )
-            return response
+            # 生成的每个 URL 都恰好带一个 64 位十六进制摘要（见 _asset_url）。
+            # 没有摘要、摘要畸形、或者多带了参数，都不是本应用发出的请求；放它
+            # 走 StaticFiles 会绕过大小上限和内容核验，把手工改动过或同步坏掉的
+            # 存储根里的任意字节直接流出去。
+            raise StarletteHTTPException(status_code=404)
         try:
             full_path, stat_result = await asyncio.to_thread(
                 self.lookup_path,

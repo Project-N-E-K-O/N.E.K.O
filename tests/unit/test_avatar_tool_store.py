@@ -2404,3 +2404,77 @@ def test_recovery_quarantines_a_condemned_final_without_deleting_it(tmp_path, mo
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
         avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+@pytest.mark.unit
+def test_a_stale_backup_never_rolls_back_a_condemned_but_present_final(tmp_path, monkeypatch):
+    """Without .updating the backup is leftover, not a rollback target."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Latest",
+        change_mode="press-swap",
+        change_meanings=["the newest version"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    final = store.root / tool["id"]
+    # 上一次更新已经成功，只是清理 backup 失败，留下了旧版本。注意没有 .updating。
+    backup = store.root / f".{tool['id']}.backup"
+    shutil.copytree(final, backup)
+    # 同步客户端往已发布目录里塞了个文件，闭包被破坏 —— final 因此被证伪。
+    (final / "synced-note.txt").write_bytes(b"added by a sync client")
+
+    root_key = store._root_key()
+    try:
+        store.initialize()
+        # final 必须原样保留：既不能回滚成旧版本，也不能连带删掉用户的文件。
+        assert final.is_dir()
+        assert (final / "synced-note.txt").is_file()
+        assert (final / "default.png").is_file()
+        assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
+        # 残留的 backup 该清掉，否则它一直占配额又没有任何入口能删。
+        assert not backup.exists()
+        assert store._current_storage_bytes() == 0
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+@pytest.mark.unit
+def test_restoring_a_backup_clears_the_quarantine_it_set(tmp_path, monkeypatch):
+    """An interrupted update that rolls back must not leave the tool quarantined."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Rolled back",
+        change_mode="press-swap",
+        change_meanings=["the version to restore"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    final = store.root / tool["id"]
+    backup = store.root / f".{tool['id']}.backup"
+    shutil.copytree(final, backup)  # 破坏之前先留下有效副本
+    root_key = store._root_key()
+
+    # 先让消费点核验发现损坏并把它隔离 —— 这才是恢复时需要解除的那个标记。
+    (final / "default.png").write_bytes(b"truncated")
+    try:
+        with pytest.raises(AvatarToolStoreError):
+            store.get_detail(tool["id"])
+        assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
+
+        # 中断证据：更新没走完，backup 才是该回到的状态。
+        (store.root / f".{tool['id']}.updating").mkdir()
+        store.initialize()
+        assert final.is_dir()
+        assert not backup.exists()
+        # 回滚出来的这一份刚通过完整核验，不该背着隔离标记继续被列表跳过。
+        assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
+        assert [item["id"] for item in store.list_items()] == [tool["id"]]
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
