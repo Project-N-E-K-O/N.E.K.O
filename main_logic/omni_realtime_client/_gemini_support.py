@@ -735,6 +735,12 @@ class _GeminiMixin:
                 was_interrupted = bool(
                     getattr(server_content, 'interrupted', False)
                 )
+                # 一个 server event 可能**同时**带 turn_complete 和 interrupted，
+                # 下面两条终结分支都会跑。欠账是「每个事件一笔」，不是「每条分支
+                # 一笔」：分别去消费的话，第一条拿到 True 跳过结算，第二条拿到
+                # False 就用旧那一轮的终结把新铸的 token 结算掉了 —— 会话显得空闲
+                # 而外部回合还活着，正是这笔欠账要防的事。算一次，两处共用。
+                _owed_to_cancelled = self._consume_cancelled_terminal()
                 # ⚠️ 这里刻意【不】触发 on_audio_done（issue #1566 的音频完结信号，
                 # 见 _transport.py 的 response.audio.done 分支）。Gemini（原生 +
                 # lanlan.app free 代理）唯一的结束信号就是 turn_complete，而它会
@@ -757,7 +763,6 @@ class _GeminiMixin:
                     except Exception:
                         pass
                     self._is_responding = False
-                    _owed_to_cancelled = self._consume_cancelled_terminal()
                     if (
                         not _owed_to_cancelled
                         and external_outcome_token is not None
@@ -779,7 +784,6 @@ class _GeminiMixin:
 
                 # 检查是否被中断
                 if was_interrupted:
-                    _owed_to_cancelled = self._consume_cancelled_terminal()
                     if (
                         not _owed_to_cancelled
                         and external_outcome_token is not None

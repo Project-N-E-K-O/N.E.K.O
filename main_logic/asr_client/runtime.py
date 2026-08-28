@@ -3483,8 +3483,14 @@ class IndependentAsrRuntime:
             if lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE:
                 # 没唤醒。credit 原样留着等下一次兑付；借出去的 onset 也要收回，
                 # 免得它被后面某个不相干的回合当成自己的起点。
+                # ⚠️ 只有在**没有**挂起的确认时才收回。session 未就绪时
+                # _handle_independent_asr_activity 会停在 PREWARMING、置上
+                # _asr_pending_speech_confirmed 并**特意留着**这个 onset 等重连后
+                # 的确认去取；此时收回等于让那次确认退回用新的 detected_at，把用户
+                # 真实开口以来的帧全排除掉。
                 if (
                     _lent_pending_onset
+                    and not self._asr_pending_speech_confirmed
                     and self._asr_pending_speech_onset_at == replay_onset_at
                 ):
                     self._asr_pending_speech_onset_at = None

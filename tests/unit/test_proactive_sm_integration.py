@@ -3963,3 +3963,54 @@ async def test_budget_deferral_holds_text_only_callbacks_behind_it_too():
     assert "text cue behind it" not in rendered
     assert text_only in mgr.pending_agent_callbacks
     assert trailing in mgr.pending_agent_callbacks
+
+
+async def test_staging_stops_where_the_drain_stops():
+    """Never stage an image the drain will not deliver the text for.
+
+    The drain halts at a media-bearing PROACTIVE cue (that one waits for the
+    proactive path). Staging past it still attaches its image to
+    ``system_prefix_images``, and the passive cue in front of it renders text --
+    so the Offline turn carries the proactive cue's image with somebody else's
+    words, while the cue itself stays queued and sends the same image again next
+    time.
+    """
+    session = _FakeOmniOffline(delivered=True)
+    session.stream_image = AsyncMock(return_value=None)
+    mgr = _make_mgr(session=session)
+    passive = {
+        "_callback_delivery_id": "id-passive-first",
+        "status": "completed",
+        "summary": "passive cue",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["passive-img"],
+    }
+    proactive_media = {
+        "_callback_delivery_id": "id-proactive-media",
+        "status": "completed",
+        "summary": "proactive cue",
+        "delivery_mode": "proactive",
+        "origin": "event",
+        "media_images": ["proactive-img"],
+    }
+    callbacks = [passive, proactive_media]
+    mgr.pending_agent_callbacks = list(callbacks)
+
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        callbacks,
+        session,
+    )
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(
+        mgr,
+        callbacks,
+    )
+
+    # 只有 passive 那条的图被挂上；proactive 的图没有脱离它的文字漏出去。
+    assert outcome["system_prefix_images"] == ["passive-img"]
+    assert "proactive-img" not in outcome["system_prefix_images"]
+    assert "passive cue" in rendered
+    assert "proactive cue" not in rendered
+    # 它仍在队列里等 proactive 那条路。
+    assert proactive_media in mgr.pending_agent_callbacks

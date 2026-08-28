@@ -986,3 +986,43 @@ async def test_external_submit_establishes_a_new_user_turn():
     # 用户比 AI 更晚发声 → _is_new_turn 会为真，欠账才有机会被作废。
     assert client._user_recent_activity_time > client._ai_recent_activity_time
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_one_event_with_both_terminal_flags_spends_the_debt_once():
+    """The debt is per EVENT, not per branch.
+
+    Gemini can report an interrupted completion with ``turn_complete`` and
+    ``interrupted`` both set, and both terminal branches run for that single
+    event. Consuming separately, the first takes the debt and the second --
+    finding none -- settles the freshly minted token using the OLD response's
+    terminal, which is precisely what the debt exists to prevent.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client._settle_gemini_proactive_inject = MagicMock()
+
+    token = object()
+    client._gemini_external_outcome_token = token
+    client._gemini_cancelled_terminal_pending = True
+    client._is_responding = True
+
+    both_flags = SimpleNamespace(
+        model_turn=None,
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=True,
+        turn_complete=True,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=both_flags, tool_call=None),
+        connection_generation=1,
+    )
+
+    # 这一条事件只该抵掉一笔欠账，token 必须留着。
+    assert client._gemini_external_outcome_token is token
+    assert client._gemini_cancelled_terminal_pending is False
+    await client.close()

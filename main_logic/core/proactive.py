@@ -2628,6 +2628,25 @@ class ProactiveMixin:
             and bool(getattr(session, "_supports_native_image", False))
             and getattr(raw_visual_mode, "value", raw_visual_mode) == "native"
         )
+        # 先截到 drain 真正会渲染的那段 FIFO 前缀再 stage。
+        #
+        # drain 会在「带图的 proactive cue」处 STOP（它等的是 proactive 那条路）。
+        # staging 若越过它继续挂图，而它前面那条 passive 还是会被渲染，Offline
+        # 调用方就会把**整份** system_prefix_images 交给这一轮 —— 那条 proactive
+        # 的图脱离它自己的文字被送出去，而它本身还留在队列里，下次会把同一张图
+        # 再送一遍。预算记账同理：不该为这一轮根本不会投的东西花名额。
+        _renderable = []
+        for _cb in callbacks:
+            if (
+                isinstance(_cb, dict)
+                and _cb.get("media_images")
+                and _cb.get("delivery_mode") != "passive"
+            ):
+                break
+            _renderable.append(_cb)
+        callbacks = _renderable
+        if not callbacks:
+            return outcome
         # 每轮图片预算。#2964 引入的 passive/text 消费点是 main 的
         # split_callbacks_by_image_budget 尚未覆盖的第三个消费点（前两个是
         # proactive 投递和语音路径），判据完全相同，所以直接复用那个共享 helper，

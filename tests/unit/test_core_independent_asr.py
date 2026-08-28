@@ -11466,3 +11466,45 @@ async def test_overlap_credit_survives_a_replay_that_never_activates() -> None:
     assert list(runtime._asr_overlap_completed_onsets) == onset_before
     # 借出去的 onset 也收回了，不会被后面不相干的回合继承。
     assert runtime._asr_pending_speech_onset_at is None
+
+
+@pytest.mark.unit
+async def test_a_pending_confirmation_keeps_the_lent_onset() -> None:
+    """Reclaiming the onset must not rob a confirmation that is still coming.
+
+    When the session is not ready the replay parks in PREWARMING with
+    ``_asr_pending_speech_confirmed`` set and deliberately holds the onset for
+    the confirmation that follows the reconnect. Clearing it there sends that
+    confirmation back to a fresh ``detected_at``, so every frame since the user
+    actually started speaking is excluded and the turn goes text-only.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    # 重放停在 PREWARMING：session 未就绪，确认被挂起、onset 特意留着。
+    async def park_in_prewarming(*_args, **_kwargs):
+        runtime._asr_runtime._asr_pending_speech_confirmed = True
+
+    runtime._asr_runtime._handle_independent_asr_activity = park_in_prewarming
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    # credit 没被扣（回合没醒），而借出去的 onset 也**没有**被收回。
+    assert runtime._asr_overlap_completed_turns == 1
+    assert runtime._asr_pending_speech_onset_at is not None
