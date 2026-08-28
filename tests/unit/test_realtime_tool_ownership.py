@@ -227,7 +227,9 @@ async def test_proactive_inject_does_not_cancel_current_turn_tool_task(
         client._send_tool_result_gemini = AsyncMock()
     else:
         client.ws = _QueueSocket()
-        client._send_tool_result_openai_realtime = AsyncMock()
+        # The plural is what the batch collector calls; the singular is only a
+        # convenience wrapper around it, so patching that one records nothing.
+        client._send_tool_results_openai_realtime = AsyncMock()
     client._on_connection_attached()
     if api_type != "gemini":
         sent = asyncio.get_running_loop().create_future()
@@ -258,7 +260,7 @@ async def test_proactive_inject_does_not_cancel_current_turn_tool_task(
     if api_type == "gemini":
         client._send_tool_result_gemini.assert_awaited_once()
     else:
-        client._send_tool_result_openai_realtime.assert_awaited_once()
+        client._send_tool_results_openai_realtime.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -762,8 +764,14 @@ async def test_raw_tool_cancel_survives_tool_scope_replacement() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_parallel_raw_tool_results_survive_a_sibling_response_created() -> None:
-    """The first result's own response.created must not orphan its siblings."""
+async def test_parallel_raw_tool_results_are_answered_as_one_batch() -> None:
+    """One provider response, one continuation -- no sibling left behind.
+
+    Submitting per result enqueued a response.create with the FIRST output, so
+    the arbiter sent that output and immediately started a continuation while
+    the sibling's ticket was still queued. The provider saw a continuation
+    with a required parallel-call output missing and answered without it.
+    """
 
     host_turn = ["turn-1"]
     started = {"call-1": asyncio.Event(), "call-2": asyncio.Event()}
@@ -788,25 +796,27 @@ async def test_parallel_raw_tool_results_survive_a_sibling_response_created() ->
     client._current_turn_host_id = host_turn[0]
     receive_loop = asyncio.create_task(client.handle_messages())
 
-    socket.feed(_raw_tool_event("call-1"))
-    socket.feed(_raw_tool_event("call-2"))
+    # Same response_id: these are the parallel calls of ONE provider response.
+    socket.feed(_raw_tool_event("call-1", response_id="response-1"))
+    socket.feed(_raw_tool_event("call-2", response_id="response-1"))
     await asyncio.wait_for(started["call-1"].wait(), timeout=1)
     await asyncio.wait_for(started["call-2"].wait(), timeout=1)
 
-    # The faster sibling answers first; its response.create is announced only
-    # after response.done has already rotated the host speech id.
     release["call-1"].set()
-    await _wait_for_socket_sends(socket, 2)
-    host_turn[0] = "turn-2"
-    socket.feed({"type": "response.created", "response": {"id": "tool-response-1"}})
-    socket.feed({"type": "response.done", "response": {"id": "tool-response-1"}})
-    await client._response_arbiter.wait_until_idle(timeout=1)
-    # Premise of this regression: the provider-turn snapshot really did move.
-    assert client._current_turn_host_id == "turn-2"
+    await asyncio.sleep(0.05)
+    assert socket.sent == [], (
+        "the finished sibling must not start a continuation while the other "
+        "call of the same response is still running"
+    )
 
     release["call-2"].set()
     await _wait_for_tool_tasks(client)
 
+    assert [event["type"] for event in socket.sent] == [
+        "conversation.item.create",
+        "conversation.item.create",
+        "response.create",
+    ], "every output first, then exactly one continuation"
     answered = [
         event["item"]["call_id"]
         for event in socket.sent
@@ -814,6 +824,47 @@ async def test_parallel_raw_tool_results_survive_a_sibling_response_created() ->
         and event.get("item", {}).get("type") == "function_call_output"
     ]
     assert answered == ["call-1", "call-2"]
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_raw_tool_call_without_response_identity_still_answers() -> None:
+    """No response_id means no provable siblings -- answer each on its own.
+
+    The degradation the batch key accepts: without response identity there is
+    nothing to group by, and holding a result for a sibling that may never be
+    announced would be worse than the per-result shape it replaced.
+    """
+
+    async def handler(call):
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-realtime",
+        api_type="gpt",
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    event = _raw_tool_event("call-1")
+    event.pop("response_id")
+    socket.feed(event)
+    await _wait_for_socket_sends(socket, 2)
+    await _wait_for_tool_tasks(client)
+
+    assert [item["type"] for item in socket.sent] == [
+        "conversation.item.create",
+        "response.create",
+    ]
+    assert socket.sent[0]["item"]["call_id"] == "call-1"
 
     socket.finish()
     await asyncio.wait_for(receive_loop, timeout=1)
@@ -1076,6 +1127,7 @@ async def test_raw_transcript_does_not_advance_scope_twice_after_speech_started(
     socket.feed({"type": "input_audio_buffer.speech_started"})
     socket.feed(_raw_tool_event())
     await asyncio.wait_for(started.wait(), timeout=1)
+    scope_after_speech_started = client._tool_scope_generation
 
     socket.feed(
         {
@@ -1085,7 +1137,10 @@ async def test_raw_transcript_does_not_advance_scope_twice_after_speech_started(
     )
     await asyncio.wait_for(transcript_seen.wait(), timeout=1)
     assert not cancelled.is_set()
-    assert len(client._tool_tasks) == 1
+    assert client._tool_scope_generation == scope_after_speech_started, (
+        "the transcript of an utterance speech_started already scoped must "
+        "not advance the tool scope a second time"
+    )
 
     release.set()
     await _wait_for_tool_tasks(client)
@@ -3190,3 +3245,284 @@ async def test_cancelled_prompt_ephemeral_leaves_a_new_user_turn_alone() -> None
     assert len(session.client_contents) == sends_after_inject, (
         "the cancellation cleanup interrupted the user's own generation"
     )
+
+
+def _no_server_vad_client(**hooks):
+    """A client whose no-server-VAD transcript fallback is really reachable.
+
+    The lanlan.app host is load-bearing, not decoration: ``_is_free_proxy``
+    keys on it, and that is what makes ``_has_server_vad`` False. With any
+    other host the same ``api_type="free"`` client HAS server VAD and the
+    transcript branch below never reaches the fallback at all.
+    """
+
+    client = OmniRealtimeClient(
+        "wss://www.lanlan.app/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        **hooks,
+    )
+    assert client._has_server_vad is False, (
+        "this helper exists to cover the transcript-only turn boundary"
+    )
+    return client
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transcript_of_a_new_utterance_retires_a_dropped_turns_tool() -> None:
+    """A speech_started whose transcript never arrives must not scope the NEXT turn.
+
+    The proxy shape this covers is inconsistent on purpose, because the real
+    ones are: it announces speech_started for turn N, drops turn N's
+    transcript, then drops speech_started for turn N+1 and delivers ITS
+    transcript. Nothing between those two turns clears a plain pending flag --
+    not speech_stopped, not response.done -- so the new turn's transcript read
+    as already scoped, note_user_turn_started was skipped, and a
+    cancellation-resistant tool from turn N could still answer into turn N+1.
+    """
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    transcript_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(call):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            # Re-raised, not swallowed: a swallowed CancelledError turns a
+            # failing assertion below into a hang at loop teardown instead of
+            # a failure.
+            raise
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    async def on_input_transcript(_transcript: str) -> None:
+        transcript_seen.set()
+
+    client = _no_server_vad_client(
+        on_input_transcript=on_input_transcript,
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    # Turn N: the proxy announces the utterance, then never transcribes it.
+    socket.feed({"type": "input_audio_buffer.speech_started", "item_id": "item-a"})
+    socket.feed(_raw_tool_event())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    scope_after_turn_n = client._tool_scope_generation
+
+    # Turn N+1: no speech_started at all, only the completed transcript -- of a
+    # DIFFERENT utterance.
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-b",
+            "transcript": "the next thing the user said",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+
+    assert client._tool_scope_generation != scope_after_turn_n, (
+        "a transcript for an utterance no speech_started scoped begins a new "
+        "user turn, whatever an earlier utterance left behind"
+    )
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+    release.set()
+    await _wait_for_tool_tasks(client)
+
+    assert socket.sent == []
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transcript_of_its_own_utterance_does_not_rescope_the_turn() -> None:
+    """The healthy no-VAD path: one turn, one note_user_turn_started."""
+
+    transcript_seen = asyncio.Event()
+
+    async def on_input_transcript(_transcript: str) -> None:
+        transcript_seen.set()
+
+    client = _no_server_vad_client(on_input_transcript=on_input_transcript)
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "input_audio_buffer.speech_started", "item_id": "item-a"})
+    await asyncio.sleep(0)
+    scope_after_speech_started = client._tool_scope_generation
+
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-a",
+            "transcript": "what the user just said",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+
+    assert client._tool_scope_generation == scope_after_speech_started
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_late_transcript_does_not_rescope_an_already_started_turn() -> None:
+    """Input transcription is its own job; its output can land out of order.
+
+    Turn N's transcript arriving after turn N+1 has begun must not retire
+    turn N+1's tool work -- which is what expiring the marker on a response
+    lifecycle point would have caused.
+    """
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    transcripts: list[str] = []
+    transcript_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(call):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    async def on_input_transcript(transcript: str) -> None:
+        transcripts.append(transcript)
+        transcript_seen.set()
+
+    client = _no_server_vad_client(
+        on_input_transcript=on_input_transcript,
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "input_audio_buffer.speech_started", "item_id": "item-a"})
+    socket.feed({"type": "input_audio_buffer.speech_started", "item_id": "item-b"})
+    socket.feed(_raw_tool_event())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    scope_after_turn_b = client._tool_scope_generation
+
+    # item-a's transcript only shows up now, a turn late.
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-a",
+            "transcript": "the previous utterance",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+
+    assert transcripts == ["the previous utterance"]
+    assert client._tool_scope_generation == scope_after_turn_b, (
+        "a transcript for an utterance already scoped is not a new user turn"
+    )
+    assert not cancelled.is_set()
+
+    release.set()
+    await _wait_for_tool_tasks(client)
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_proactive_answers_the_calls_it_gave_up_on(monkeypatch) -> None:
+    """A tool the settle budget abandoned still gets a function_call_output.
+
+    The inject that follows interrupts the generation that issued the call, so
+    without this the conversation keeps a function_call nobody ever replied to.
+    The abandoned reply goes out BEFORE the inject, and the call is retired so
+    a result arriving afterwards is dropped instead of landing in the
+    proactive turn.
+    """
+
+    import main_logic.omni_realtime_client._responses as responses
+
+    monkeypatch.setattr(responses, "_GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS", 0.05)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    order: list[str] = []
+
+    async def handler(call):
+        started.set()
+        await release.wait()
+        order.append("tool")
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    class _OrderedSession(_GeminiSession):
+        async def send_client_content(self, *, turns, turn_complete) -> None:
+            order.append("proactive")
+
+        async def send_tool_response(self, *, function_responses) -> None:
+            order.append("tool_response")
+            await super().send_tool_response(function_responses=function_responses)
+
+    monkeypatch.setattr(
+        __import__(
+            "main_logic.omni_realtime_client._gemini_support",
+            fromlist=["types"],
+        ),
+        "types",
+        SimpleNamespace(FunctionResponse=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gemini-live",
+        api_type="gemini",
+        on_tool_call=handler,
+    )
+    session = _OrderedSession()
+    client._gemini_session = session
+    client.ws = session
+    client._on_connection_attached()
+
+    await client._process_gemini_response(
+        _gemini_response(calls=(("call-a", "lookup"),)),
+        provider_session=session,
+        connection_generation=client._connection_generation,
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    await asyncio.wait_for(
+        client.inject_text_and_request_response("proactive body"), timeout=2
+    )
+
+    assert order == ["tool_response", "proactive"], (
+        "the abandoned reply must go out while the generation that issued the "
+        "call is still the current one"
+    )
+    assert len(session.tool_responses) == 1
+    abandoned = session.tool_responses[0]
+    assert [r.id for r in abandoned] == ["call-a"]
+    assert [r.name for r in abandoned] == ["lookup"]
+    assert abandoned[0].response["abandoned"] is True
+
+    # The real result lands late and must be dropped, not injected into the
+    # proactive turn it would now be part of.
+    release.set()
+    await _wait_for_tool_tasks(client)
+    assert len(session.tool_responses) == 1, (
+        "an abandoned call is retired; its late result must not be sent"
+    )
+    assert order == ["tool_response", "proactive", "tool"]

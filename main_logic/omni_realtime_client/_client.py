@@ -163,7 +163,18 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # report the completed input transcript. Track whether server VAD has
         # already advanced this input's tool scope so the transcript can fill
         # that gap without advancing a normal provider's turn twice.
+        #
+        # Two markers, because the providers this covers are inconsistent.
+        # ``_raw_speech_started_scoped_item_ids`` is the real one: the
+        # utterance ids a ``speech_started`` already scoped, so a transcript
+        # is matched against ITS OWN utterance rather than against "some
+        # utterance was scoped at some point". The bool is the fallback for a
+        # proxy that sends neither event an ``item_id``; it is all the
+        # pre-identity shape ever had, and on its own it survives an utterance
+        # whose transcript never arrives -- the next turn's transcript then
+        # reads as already scoped and a stale tool result can cross into it.
         self._raw_speech_started_scope_pending_transcript = False
+        self._raw_speech_started_scoped_item_ids: List[str] = []
         self._tool_tasks: set[asyncio.Task] = set()
         # Tool tasks that can no longer produce a usable result, whatever
         # retired them. Recorded rather than re-derived: see

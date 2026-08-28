@@ -6298,6 +6298,114 @@ async def test_noise_reduction_replacement_waits_for_pipeline_failure_revoke() -
     assert runtime._voice_input_pipeline_failed is False
 
 
+async def test_pipeline_failure_still_revokes_after_a_bare_pipeline_swap() -> None:
+    """A replacement that does not end the route must not skip the revoke.
+
+    The mirror image of the case above. Replacing the pipeline clears
+    ``_voice_input_pipeline_failed`` -- that is all a noise-reduction toggle
+    does -- but it neither unblocks the route nor revokes the lease, so
+    reading it as "someone else owns this failure now" leaves the microphone
+    blocked forever with the lease still held. That is the race commit
+    94c26715 was written for, and it is why the notify phase fences on the
+    failure's own token instead: a replacement that genuinely retires this
+    failure (a start, a close) advances the route operation generation, which
+    ``_fail_closed_voice_route`` checks on its own.
+    """
+
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "glm"
+    assert runtime._begin_voice_input_connection("socket-a") is True
+    runtime._voice_lease_owner = "core"
+    runtime._voice_lease_synchronized = True
+    abort_started = asyncio.Event()
+    release_abort = asyncio.Event()
+
+    async def delayed_abort(_reason: str) -> None:
+        abort_started.set()
+        await release_abort.wait()
+
+    runtime._asr_runtime.abort = AsyncMock(side_effect=delayed_abort)
+    failure = asyncio.create_task(
+        runtime._fail_voice_input_pipeline(
+            ingress_token=runtime._capture_ingress_token(),
+            session_ref=runtime.session,
+            audio_epoch=runtime._audio_stream_epoch,
+            pipeline_ref=runtime._voice_input_audio_pipeline,
+        )
+    )
+    await asyncio.wait_for(abort_started.wait(), 1)
+
+    runtime._voice_input_audio_pipeline = SimpleNamespace(
+        process=AsyncMock(),
+        close=AsyncMock(),
+    )
+    runtime._voice_input_pipeline_failed = False
+
+    release_abort.set()
+    await asyncio.wait_for(failure, 1)
+
+    runtime.send_status.assert_awaited()
+    assert runtime._voice_lease_connection_id == ""
+    assert runtime._voice_lease_owner == "none"
+
+
+async def test_backpressured_status_send_does_not_block_pipeline_transitions() -> None:
+    """The frontend socket is unbounded; the transition lock must not wait on it.
+
+    ``_fail_closed_voice_route`` writes the failure notice to the voice owner,
+    and a throttled or backpressured client can stall that write for as long
+    as it likes. Session restart, independent-ASR close and the
+    noise-reduction toggle all need the same pipeline transition lock, so
+    holding it across the notify phase parked every recovery operation behind
+    one unrelated client write.
+    """
+
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "glm"
+    assert runtime._begin_voice_input_connection("socket-a") is True
+    runtime._voice_lease_owner = "core"
+    runtime._voice_lease_synchronized = True
+    runtime._asr_runtime.abort = AsyncMock()
+    status_started = asyncio.Event()
+    release_status = asyncio.Event()
+
+    async def backpressured_status(_payload) -> None:
+        status_started.set()
+        await release_status.wait()
+
+    runtime.send_status = AsyncMock(side_effect=backpressured_status)
+    failure = asyncio.create_task(
+        runtime._fail_voice_input_pipeline(
+            ingress_token=runtime._capture_ingress_token(),
+            session_ref=runtime.session,
+            audio_epoch=runtime._audio_stream_epoch,
+            pipeline_ref=runtime._voice_input_audio_pipeline,
+        )
+    )
+    await asyncio.wait_for(status_started.wait(), 1)
+
+    source_pipeline = runtime._voice_input_audio_pipeline
+    # The client is still absorbing the notice. A toggle must not queue behind
+    # it: this is the whole point of shrinking the lock.
+    assert await asyncio.wait_for(
+        runtime.apply_voice_input_noise_reduction(False),
+        1,
+    ) is True
+    assert runtime._voice_input_audio_pipeline is not source_pipeline
+
+    release_status.set()
+    await asyncio.wait_for(failure, 1)
+
+    # ...and the failure still finishes fail-closed once the client catches up.
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._voice_lease_connection_id == ""
+    assert runtime._voice_lease_owner == "none"
+
+
 async def test_pipeline_failure_from_replaced_connection_is_silent() -> None:
     runtime = _Runtime()
     runtime.is_active = True
@@ -6350,7 +6458,6 @@ async def test_pipeline_failure_from_replaced_connection_is_silent() -> None:
         "focus_suppression",
         "game_takeover",
         "route_operation",
-        "pipeline",
         "core_session",
     ],
 )
@@ -6398,12 +6505,6 @@ async def test_stale_pipeline_failure_never_reports_to_current_identity(
             "_asr_route_operation_generation",
             runtime._asr_route_operation_generation + 1,
         )
-    elif changed_identity == "pipeline":
-        runtime._voice_input_audio_pipeline = SimpleNamespace(
-            process=AsyncMock(),
-            close=AsyncMock(),
-        )
-        runtime._voice_input_pipeline_failed = False
     elif changed_identity == "core_session":
         runtime.session = SimpleNamespace(stream_audio=AsyncMock())
     else:

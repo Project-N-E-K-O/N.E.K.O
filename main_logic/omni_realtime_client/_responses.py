@@ -759,6 +759,13 @@ class _ResponseMixin:
         removed had no TTL and could block proactive messages forever; here a
         tool that outlives the budget loses its ordering guarantee, never the
         message. Returns whether everything settled -- for the log only.
+
+        What happens to a call that outlives the budget is
+        ``_abandon_tool_calls_for_gemini_proactive``: it is answered with an
+        abandoned ``function_call_output`` and retired, so the conversation
+        never keeps a ``function_call`` nobody replied to and a result landing
+        afterwards is dropped instead of being injected into the proactive
+        turn.
         """
 
         current = asyncio.current_task()
@@ -787,10 +794,11 @@ class _ResponseMixin:
             if remaining <= 0:
                 logger.warning(
                     "Gemini proactive inject proceeding with %d tool call(s) "
-                    "still running after %.1fs; the provider may drop them",
+                    "still running after %.1fs; answering them as abandoned",
                     len(pending),
                     _GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS,
                 )
+                await self._abandon_tool_calls_for_gemini_proactive(pending)
                 return False
             await asyncio.wait(
                 pending,
@@ -799,6 +807,33 @@ class _ResponseMixin:
             )
             poll_interval = min(
                 poll_interval * 2, self._TOOL_BATCH_POLL_CEILING_S
+            )
+
+    async def _abandon_tool_calls_for_gemini_proactive(self, tasks) -> None:
+        """Answer the calls the settle budget gave up on, before injecting.
+
+        The inject that follows is an interruption -- that is how
+        ``cancel_response`` implements Gemini barge-in -- so the generation
+        that issued these calls is about to be discarded. Sent BEFORE the
+        inject, while that generation is still the current one, so the
+        outputs bind to the calls they answer rather than arriving inside the
+        proactive turn.
+
+        Owner-scoped end to end: ``_retire_tool_tasks_as_abandoned`` groups
+        the replies by the owner each call was captured with, and
+        ``_send_tool_result_gemini`` re-checks
+        ``_tool_task_owner_is_current`` before it writes -- an abandoned-call
+        reply must not be the one thing that crosses into a replacement
+        connection.
+        """
+
+        for owner, results in self._retire_tool_tasks_as_abandoned(tasks):
+            if not results:
+                continue
+            await self._send_tool_result_gemini(
+                results,
+                provider_session=owner.provider_session,
+                owner=owner,
             )
 
     def _settle_gemini_proactive_inject(
