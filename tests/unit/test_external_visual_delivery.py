@@ -1026,3 +1026,61 @@ async def test_one_event_with_both_terminal_flags_spends_the_debt_once():
     assert client._gemini_external_outcome_token is token
     assert client._gemini_cancelled_terminal_pending is False
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_non_terminal_content_does_not_spend_the_cancellation_debt():
+    """Only a terminal event pays off the debt.
+
+    A cancelled response keeps emitting content before it ends. Spending the
+    debt on one of those events leaves nothing to absorb the real terminal that
+    follows, so that terminal settles the freshly minted external token and the
+    session reads idle while its response is still live.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client.on_new_message = None
+    client.on_text_delta = None
+    client._settle_gemini_proactive_inject = MagicMock()
+
+    token = object()
+    client._gemini_external_outcome_token = token
+    client._gemini_cancelled_terminal_pending = True
+    client._is_responding = True
+    client._interrupted = True
+    # 短静默且用户没再发声 → late continuation，不会被当成新回合（新回合会作废欠账）。
+    client._user_recent_activity_time = 100.0
+    client._ai_recent_activity_time = time.time()
+
+    late_content = SimpleNamespace(
+        model_turn=SimpleNamespace(parts=[]),
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=False,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=late_content, tool_call=None),
+        connection_generation=1,
+    )
+    # 非终结事件不该动欠账。
+    assert client._gemini_cancelled_terminal_pending is True
+
+    # 旧回合真正的终结到达：它才该抵掉欠账，并且不能结算新 token。
+    real_terminal = SimpleNamespace(
+        model_turn=None,
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=True,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=real_terminal, tool_call=None),
+        connection_generation=1,
+    )
+    assert client._gemini_external_outcome_token is token
+    assert client._gemini_cancelled_terminal_pending is False
+    await client.close()

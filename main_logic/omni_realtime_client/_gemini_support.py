@@ -736,11 +736,20 @@ class _GeminiMixin:
                     getattr(server_content, 'interrupted', False)
                 )
                 # 一个 server event 可能**同时**带 turn_complete 和 interrupted，
-                # 下面两条终结分支都会跑。欠账是「每个事件一笔」，不是「每条分支
-                # 一笔」：分别去消费的话，第一条拿到 True 跳过结算，第二条拿到
-                # False 就用旧那一轮的终结把新铸的 token 结算掉了 —— 会话显得空闲
-                # 而外部回合还活着，正是这笔欠账要防的事。算一次，两处共用。
-                _owed_to_cancelled = self._consume_cancelled_terminal()
+                # 下面两条终结分支都会跑。欠账是「每个**终结**事件一笔」：
+                #   - 不能每条分支各消费一次 —— 第一条拿到 True 跳过结算，第二条
+                #     拿到 False 就用旧那一轮的终结把新铸的 token 结算掉；
+                #   - 也不能每个事件都消费 —— 取消之后的**非终结**迟到内容会把欠账
+                #     提前清掉，随后旧回合真正的终结就把新 token 当成可结算对象。
+                # 所以：先判定这是不是终结事件，是才消费，且只消费一次。
+                _is_terminal_event = bool(
+                    getattr(server_content, 'turn_complete', False)
+                ) or was_interrupted
+                _owed_to_cancelled = (
+                    self._consume_cancelled_terminal()
+                    if _is_terminal_event
+                    else False
+                )
                 # ⚠️ 这里刻意【不】触发 on_audio_done（issue #1566 的音频完结信号，
                 # 见 _transport.py 的 response.audio.done 分支）。Gemini（原生 +
                 # lanlan.app free 代理）唯一的结束信号就是 turn_complete，而它会
