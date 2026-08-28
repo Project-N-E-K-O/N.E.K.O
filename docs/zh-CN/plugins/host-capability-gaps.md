@@ -4,11 +4,12 @@
 > （音频可借前端播放器，见下文），但那替代不了原生通道，视频则连替代都没有。
 > 结论均在本页引用的源码中
 > 核实：宿主行为看 `app/main_server/character_runtime.py` 与
-> `plugin/server/messaging/proactive_bridge.py`，wire 负载看
-> `plugin/core/context.py` + `plugin/settings.py`，临时媒体存储看
-> `plugin/server/routes/media.py` + `plugin/sdk/shared/core/images.py`，
-> 前端播放器看 `static/jukebox/music_ui.js`。为避免行号漂移，下文只引用函数名
-> 与常量名。
+> `plugin/server/messaging/proactive_bridge.py`，`respond` 推送的图片如何投递看
+> `main_logic/core/proactive.py`，wire 负载与其上限看 `plugin/core/context.py` +
+> `plugin/settings.py` + `plugin/message_plane/ingest_server.py`，临时媒体存储看
+> `plugin/server/routes/media.py` + `plugin/sdk/shared/core/images.py`，part
+> schema 看 `plugin/sdk/shared/core/push_message_schema.py`，前端播放器看
+> `static/jukebox/music_ui.js`。为避免行号漂移，下文只引用函数名与常量名。
 >
 > **状态（2026-08-28 复核）**：本页最初提出的「问题一：图片 parts 没有用户
 > 可见通道」已由 #2835（`1d654e302`，2026-08-28 合并）落地，改写为下方

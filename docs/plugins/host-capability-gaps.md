@@ -6,11 +6,14 @@
 > video has none at all. Every claim is verified against the sources it cites:
 > `app/main_server/character_runtime.py` and
 > `plugin/server/messaging/proactive_bridge.py` for host behaviour,
-> `plugin/core/context.py` + `plugin/settings.py` for the wire payload,
+> `main_logic/core/proactive.py` for how a `respond` push's images are
+> delivered, `plugin/core/context.py` + `plugin/settings.py` +
+> `plugin/message_plane/ingest_server.py` for the wire payload and its ceiling,
 > `plugin/server/routes/media.py` + `plugin/sdk/shared/core/images.py` for the
-> temporary media store, and `static/jukebox/music_ui.js` for the frontend
-> player. Only function and constant names are cited, so line drift cannot
-> make the page wrong.
+> temporary media store, `plugin/sdk/shared/core/push_message_schema.py` for
+> the part schema, and `static/jukebox/music_ui.js` for the frontend player.
+> Only function and constant names are cited, so line drift cannot make the
+> page wrong.
 >
 > **Status (re-verified 2026-08-28)**: the "Issue 1: image parts have no
 > user-visible channel" gap this page originally reported was closed by #2835
