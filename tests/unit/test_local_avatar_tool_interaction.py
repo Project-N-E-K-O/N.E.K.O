@@ -486,3 +486,65 @@ async def test_maintenance_mode_during_deferred_recovery_is_absorbed(monkeypatch
     assert result == {"accepted": False, "reason": "invalid_payload"}
     assert harness._last_avatar_interaction_at == 12345
     assert harness.acks == [("local-interaction-1", False, "invalid_payload")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_stalled_local_rejection_ack_does_not_hold_the_gate(monkeypatch):
+    """Local rejection acks ride the socket too; the gate must be released first."""
+    from main_logic.core import greeting
+
+    class ShiftingStore:
+        """Passes the lightweight read, then reports a different revision."""
+
+        def read_record(self, _tool_id, *, verify_resources=False):
+            return SPECIAL_RECORD if verify_resources else RECORD
+
+        record_revision = staticmethod(AvatarToolStore.record_revision)
+
+    class FakeRealtime:
+        pass
+
+    class Harness(greeting.GreetingMixin):
+        lanlan_name = "YUI"
+        _config_manager = object()
+
+        def __init__(self):
+            self.is_active = False
+            self.session = None
+            self._recent_avatar_interaction_ids = deque(maxlen=32)
+            self._recent_avatar_interaction_id_set = set()
+            self._avatar_interaction_gate_lock = asyncio.Lock()
+            self._last_avatar_interaction_at = 0
+            self.avatar_interaction_cooldown_ms = 0
+            self.acks = []
+            self.gate_probe = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def note_user_engagement(self, *, at=None):
+            return None
+
+        async def send_avatar_interaction_ack(self, interaction_id, accepted, reason, **_kwargs):
+            self.acks.append((interaction_id, reason))
+            if reason == "stale_tool_revision" and not self.gate_probe.is_set():
+                self.gate_probe.set()
+                await self.release.wait()
+
+    monkeypatch.setattr(greeting, "get_avatar_tool_store", lambda _m: ShiftingStore())
+    monkeypatch.setattr(greeting, "OmniRealtimeClient", FakeRealtime)
+    harness = Harness()
+
+    stalled = asyncio.create_task(harness.handle_avatar_interaction(_payload()))
+    await asyncio.wait_for(harness.gate_probe.wait(), 2)
+    follower = asyncio.create_task(
+        harness.handle_avatar_interaction(_payload(interactionId="local-interaction-2"))
+    )
+    # 这条路径里有 asyncio.to_thread，得给真正的线程调度留时间；若 follower 被
+    # 挡在闸门上，它会一直等到 stalled 放行，也就等到超时。
+    done, _pending = await asyncio.wait({follower}, timeout=2)
+
+    assert follower in done, "a stalled local rejection ack still blocks the interaction gate"
+
+    harness.release.set()
+    results = await asyncio.gather(stalled, follower)
+    assert {result["reason"] for result in results} == {"stale_tool_revision"}

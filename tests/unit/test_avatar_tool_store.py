@@ -2107,3 +2107,63 @@ def test_digest_stops_reading_when_a_file_grows_past_the_fstat_snapshot(tmp_path
         assert consumed["bytes"] <= 1024 * 1024 + store.limits["maxImageBytes"], consumed["bytes"]
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+@pytest.mark.unit
+def test_a_temporarily_unreadable_tool_still_holds_its_slot(tmp_path, monkeypatch):
+    """List absence is not proof of absence: a locked record must keep its slot."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.limits["maxTools"] = 1
+    existing = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+
+    real_open = Path.open
+
+    def locked_record(self, *args, **kwargs):
+        if self.name == "record.json" and existing["id"] in self.parts:
+            raise OSError("record.json is locked by another process")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", locked_record)
+    # 这一轮它读不出来，所以不会出现在列表里……
+    assert store.list_items() == []
+    # ……但它还在盘上，名额必须照占，否则上限会被悄悄突破。
+    with pytest.raises(AvatarToolStoreError) as raised:
+        _create_tool(
+            store,
+            name="Second",
+            change_mode="press-swap",
+            change_meanings=["meaning"],
+            default_image=_png(),
+            change_images=[_png()],
+        )
+    assert raised.value.code == "tool_limit_reached"
+
+
+@pytest.mark.unit
+def test_a_provably_corrupt_record_does_not_hold_a_slot(tmp_path, monkeypatch):
+    """The dual of the above: a record proven invalid must free its slot."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.ensure()
+    store.limits["maxTools"] = 1
+    corrupt = store.root / "local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    corrupt.mkdir()
+    (corrupt / "record.json").write_bytes(b"not-json")
+
+    created = _create_tool(
+        store,
+        name="Visible",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    assert [item["id"] for item in store.list_items()] == [created["id"]]

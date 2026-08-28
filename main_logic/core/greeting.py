@@ -227,6 +227,7 @@ class GreetingMixin:
         # 冷却窗口结束后第一个本该被接受的互动。判定与去重登记留在锁内保持原子，
         # ack 挪到锁外发。
         cooldown_hit = False
+        gate_rejection: tuple[str, str] | None = None
         async with self._avatar_interaction_gate_lock:
             now_ms = int(time.time() * 1000)
             if now_ms - self._last_avatar_interaction_at < self.avatar_interaction_cooldown_ms:
@@ -244,13 +245,11 @@ class GreetingMixin:
                         verify_resources=True,
                     )
                     if raw["tool_revision"] != local_store.record_revision(local_record):
-                        await self.send_avatar_interaction_ack(
-                            raw_interaction_id, False, "stale_tool_revision"
+                        gate_rejection = (raw_interaction_id, "stale_tool_revision")
+                    else:
+                        local_prompt_record = self._resolve_local_avatar_tool_prompt_record(
+                            raw, local_record
                         )
-                        return {"accepted": False, "reason": "stale_tool_revision"}
-                    local_prompt_record = self._resolve_local_avatar_tool_prompt_record(
-                        raw, local_record
-                    )
                 except (
                     AvatarToolStoreError,
                     MaintenanceModeError,
@@ -264,14 +263,18 @@ class GreetingMixin:
                         self.lanlan_name,
                         raw["tool_id"],
                     )
-                    await self.send_avatar_interaction_ack(
-                        raw_interaction_id, False, "invalid_payload"
-                    )
-                    return {"accepted": False, "reason": "invalid_payload"}
+                    gate_rejection = (raw_interaction_id, "invalid_payload")
 
-            if not cooldown_hit:
+            if not cooldown_hit and gate_rejection is None:
                 self._remember_avatar_interaction_id(interaction_id)
                 self._last_avatar_interaction_at = now_ms
+
+        # 闸门里不留任何 await：拒绝的 ack 走 WebSocket，下行一有背压就会把后面
+        # 每一次互动堵在锁上。判定与去重登记在锁内保持原子，回执一律出锁再发。
+        if gate_rejection is not None:
+            rejected_id, reason = gate_rejection
+            await self.send_avatar_interaction_ack(rejected_id, False, reason)
+            return {"accepted": False, "reason": reason}
 
         if cooldown_hit:
             logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)

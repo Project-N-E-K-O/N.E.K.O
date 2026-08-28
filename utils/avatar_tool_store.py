@@ -102,12 +102,16 @@ class AvatarToolStoreError(ValueError):
         field: str | None = None,
         index: int | None = None,
         integrity_mismatch: bool = False,
+        transient: bool = False,
     ):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
         self.field = field
         self.index = index
+        # 与 integrity_mismatch 对偶：这次失败是 IO 层的偶发问题（文件被占用、
+        # 网络盘抖动），记录本身没被证伪，重试可能就好了。
+        self.transient = transient
         # 只有「读到了字节、但和 record 里的摘要对不上」才置位。OSError 这类
         # 瞬时失败不算，否则一次文件占用就会把好道具永久隔离。
         self.integrity_mismatch = integrity_mismatch
@@ -508,7 +512,15 @@ class AvatarToolStore:
             payload = json.loads(raw.decode("utf-8"))
         except AvatarToolStoreError:
             raise
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except OSError as exc:
+            # 读不出来不等于记录坏了。
+            raise AvatarToolStoreError(
+                "record_invalid",
+                "Avatar tool record is invalid",
+                status_code=404,
+                transient=True,
+            ) from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404) from exc
         return self._validate_record(
             payload,
@@ -666,7 +678,12 @@ class AvatarToolStore:
         except AvatarToolStoreError:
             raise
         except OSError as exc:
-            raise AvatarToolStoreError("record_invalid", "Avatar tool resource is invalid", status_code=404) from exc
+            raise AvatarToolStoreError(
+                "record_invalid",
+                "Avatar tool resource is invalid",
+                status_code=404,
+                transient=True,
+            ) from exc
         if actual_entries != expected_entries:
             raise AvatarToolStoreError("record_invalid", "Avatar tool resource closure is invalid", status_code=404)
         return {
@@ -845,6 +862,31 @@ class AvatarToolStore:
                     logger.warning("Skipping invalid local avatar tool %s: %s", candidate.name, exc)
                     continue
             return items
+
+    def _occupied_tool_slots(self) -> int:
+        """Count published tools that hold a slot, corrupt records excluded."""
+        # 不能直接用 len(list_items())：那会把「这一轮读不出来」的道具一并漏掉，
+        # 于是 64 个道具里有一个 record.json 被占用，就能再建出第 65 个。只有
+        # 被证伪的记录（JSON 非法、schema 不符、闭包不符）才不占名额。
+        occupied = 0
+        for candidate in self.root.iterdir():
+            if (
+                candidate.is_symlink()
+                or not candidate.is_dir()
+                or not is_local_avatar_tool_id(candidate.name)
+            ):
+                continue
+            try:
+                self._read_record_from_directory(
+                    candidate.name, candidate, verify_resources=False
+                )
+            except AvatarToolStoreError as exc:
+                if not exc.transient:
+                    continue
+            except OSError:
+                pass
+            occupied += 1
+        return occupied
 
     def _current_storage_bytes(self) -> int:
         total = 0
@@ -1158,7 +1200,7 @@ class AvatarToolStore:
                     )
                 self._release_quarantine(tool_id)
                 return self._public_item(current)
-            if len(self.list_items()) >= self.limits["maxTools"]:
+            if self._occupied_tool_slots() >= self.limits["maxTools"]:
                 raise AvatarToolStoreError("tool_limit_reached", "Avatar tool limit reached", status_code=409)
             temporary = self.root / f".{tool_id}.uploading"
             try:
