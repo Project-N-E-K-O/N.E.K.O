@@ -6,6 +6,10 @@ from types import MethodType
 from unittest.mock import AsyncMock
 import pytest
 
+from main_logic.omni_realtime_client._response_arbiter import (
+    ResponseAdmissionRejected,
+)
+
 from main_logic.omni_realtime_client import OmniRealtimeClient
 import main_logic.omni_realtime_client._response_arbiter as arbiter_module
 from main_logic.omni_realtime_client._protocol_capabilities import (
@@ -272,8 +276,12 @@ async def test_response_arbiter_deletes_committed_item_after_admission_invalidat
 
     # 提交后被 admission 拒绝仍抛普通 RuntimeError：补偿删除是 fire-and-forget，
     # provider 可能异步拒绝，已提交的 item 未必真的没了，因此不承诺可安全重投。
-    with pytest.raises(RuntimeError, match="interrupted"):
+    # 类型也要断言：ResponseAdmissionRejected 是 RuntimeError 的子类，光靠消息
+    # 匹配锁不住契约 —— 有人把消息改成带 "interrupted" 的那个子类，用例照样绿，
+    # 而 Core 会据此重复投递用户回合。
+    with pytest.raises(RuntimeError, match="interrupted") as admission_excinfo:
         await asyncio.wait_for(ticket.done, 0.2)
+    assert not isinstance(admission_excinfo.value, ResponseAdmissionRejected)
     assert [event["type"] for event in sent] == [
         "conversation.item.create",
         "conversation.item.delete",
@@ -325,8 +333,12 @@ async def test_response_arbiter_deletes_all_committed_prefix_items_after_invalid
 
     # 提交后被 admission 拒绝仍抛普通 RuntimeError：补偿删除是 fire-and-forget，
     # provider 可能异步拒绝，已提交的 item 未必真的没了，因此不承诺可安全重投。
-    with pytest.raises(RuntimeError, match="interrupted"):
+    # 类型也要断言：ResponseAdmissionRejected 是 RuntimeError 的子类，光靠消息
+    # 匹配锁不住契约 —— 有人把消息改成带 "interrupted" 的那个子类，用例照样绿，
+    # 而 Core 会据此重复投递用户回合。
+    with pytest.raises(RuntimeError, match="interrupted") as admission_excinfo:
         await asyncio.wait_for(ticket.done, 0.2)
+    assert not isinstance(admission_excinfo.value, ResponseAdmissionRejected)
     assert [event["type"] for event in sent] == [
         "conversation.item.create",
         "conversation.item.delete",
