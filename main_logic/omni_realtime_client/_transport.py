@@ -2114,6 +2114,12 @@ class _TransportMixin:
 
         # Mark as interrupted to suppress any remaining output until next response
         self._interrupted = True
+        # 这一轮被取消了，但 provider 仍然欠它一个终结事件（Gemini 是
+        # interrupted / turn_complete）。记一笔「欠账」：那条终结属于**这一轮**，
+        # 不能让它去结算之后才铸造的 external turn token —— 逐事件捕获的实现会
+        # 让它捕获到新 token 并清掉，会话随即显得空闲而外部回合还活着。
+        # 一次性的：由下一个到达的终结消费掉，或在真正的新回合开始时作废。
+        self._gemini_cancelled_terminal_pending = True
 
         # 1. Cancel the current response
         # Presence, not truthiness — the third site in this file where a

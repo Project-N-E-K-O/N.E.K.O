@@ -592,6 +592,18 @@ class _ResponseMixin:
                 raise
         return self._connection_generation != connection_generation
 
+    def _consume_cancelled_terminal(self) -> bool:
+        """Take the terminal owed to a response ``handle_interruption`` cancelled.
+
+        One-shot: the first terminal after the cancellation is that response's,
+        no matter what has been minted since. Returns whether this terminal was
+        the owed one.
+        """
+        if not getattr(self, "_gemini_cancelled_terminal_pending", False):
+            return False
+        self._gemini_cancelled_terminal_pending = False
+        return True
+
     def _external_token_belongs_to_current_turn(self) -> bool:
         """Whether the turn now ending is the one that owns the external token.
 
@@ -602,6 +614,10 @@ class _ResponseMixin:
         """
         token = getattr(self, "_gemini_external_outcome_token", None)
         if token is None:
+            return False
+        if getattr(self, "_gemini_cancelled_terminal_pending", False):
+            # provider 还欠着被 handle_interruption 取消的那一轮一个终结事件；
+            # 现在到达的这条就是它，不该动这个 token。
             return False
         minted_at = getattr(self, "_gemini_external_token_epoch", None)
         if minted_at is None:

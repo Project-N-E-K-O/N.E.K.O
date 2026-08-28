@@ -680,6 +680,11 @@ class _GeminiMixin:
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch
                     self._current_turn_host_id = self._read_host_turn_id()
+                    if _is_new_turn:
+                        # 新回合开始就说明旧回合已经收场：欠账作废，免得旧回合
+                        # 永不终结时把下一条**合法**终结也吃掉，让 token 永远结算
+                        # 不掉、会话被钉成「忙」而主动搭话彻底哑掉。
+                        self._gemini_cancelled_terminal_pending = False
                     if _is_new_turn and _can_clear_interrupted:
                         # Gemini has no response.created event; clear stale interrupt state only
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.
@@ -752,8 +757,10 @@ class _GeminiMixin:
                     except Exception:
                         pass
                     self._is_responding = False
+                    _owed_to_cancelled = self._consume_cancelled_terminal()
                     if (
-                        external_outcome_token is not None
+                        not _owed_to_cancelled
+                        and external_outcome_token is not None
                         and self._still_owns_connection(connection_generation)
                         and self._external_token_belongs_to_current_turn()
                     ):
@@ -773,8 +780,10 @@ class _GeminiMixin:
 
                 # 检查是否被中断
                 if was_interrupted:
+                    _owed_to_cancelled = self._consume_cancelled_terminal()
                     if (
-                        external_outcome_token is not None
+                        not _owed_to_cancelled
+                        and external_outcome_token is not None
                         and self._still_owns_connection(connection_generation)
                         and self._external_token_belongs_to_current_turn()
                     ):

@@ -506,6 +506,22 @@ class AsrRuntimeMixin:
             self._retain_prerecord_visual_frame(frame)
         return supersedes_latest_cache or observed
 
+    def _current_turn_onset_for_prerecord(self) -> float | None:
+        """This turn's speech onset, when it is recent enough to be trusted.
+
+        Same trust window the record uses, so the buffer and the record agree
+        on where the turn began. Returns None when no usable onset exists --
+        then every retained frame stays a candidate, which is the old behaviour.
+        """
+        runtime = getattr(self, "_asr_runtime", None)
+        onset = getattr(runtime, "_asr_turn_onset_at", None)
+        if not isinstance(onset, (int, float)):
+            return None
+        age = time.monotonic() - float(onset)
+        if not 0.0 <= age <= _ONSET_TRUST_WINDOW_S:
+            return None
+        return float(onset)
+
     def _retain_prerecord_visual_frame(
         self,
         frame: _IndependentVisualFrame,
@@ -513,6 +529,18 @@ class AsrRuntimeMixin:
         """Keep one already-validated frame until the onset-owned record exists."""
 
         frames = self._prerecord_visual_frames
+        # 先按**本轮 onset** 裁掉开口之前的帧，再做有界抽稀。
+        #
+        # 这个缓冲会在屏幕/摄像头共享着、用户还没开口时就被闲置帧填满（8 张）。
+        # 抽稀刻意保留跨度大的两端，于是那些闲置帧很占位；等用户真开口、确认到
+        # 注册之间拍的几张挤进来时，它们和整段闲置历史一起被抽稀，随后建记录时
+        # 的 onset 过滤又把开口之前的全丢掉 —— 最后只剩最新那一张，这一轮的开头
+        # 和中间视图就没了。开口之前的帧本来就不属于这一轮，不该占它的名额。
+        onset = self._current_turn_onset_for_prerecord()
+        if onset is not None:
+            stale = [item for item in frames if item.captured_at < onset]
+            if stale:
+                frames[:] = [item for item in frames if item.captured_at >= onset]
         # 按拍摄时间维护，不按落地顺序 —— 并发校验下两者不是一回事（这条判据在
         # middle_candidates 上已经栽过一次，这里是同一个坑）。否则下面按"相邻跨度"
         # 抽稀时，列表两端根本不是时间上的首尾，还可能删掉真正最早/最晚的那帧。

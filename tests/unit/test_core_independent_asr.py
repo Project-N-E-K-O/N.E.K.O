@@ -15,8 +15,15 @@ import pytest
 
 from main_logic.asr_client import VoiceIdentityActivationResult
 from main_logic.core import LLMSessionManager
-from main_logic.core.asr_runtime import AsrRuntimeMixin, _HotSwapAudioFrame
-from main_logic.core.multimodal_turn import _MAX_LIVE_TURN_RECORDS
+from main_logic.core.asr_runtime import (
+    AsrRuntimeMixin,
+    _HotSwapAudioFrame,
+    _ONSET_TRUST_WINDOW_S,
+)
+from main_logic.core.multimodal_turn import (
+    _MAX_LIVE_TURN_RECORDS,
+    _MAX_PRERECORD_VISUAL_VALIDATIONS,
+)
 from main_logic.asr_client.runtime import (
     AsrRuntimeCallbacks,
     AsrStartResult,
@@ -11335,4 +11342,80 @@ async def test_a_late_registration_still_adopts_its_real_onset() -> None:
     # 那一刻以来的帧被采纳了，而不是整轮退化成纯文本。
     assert [f.image_b64 for f in record.sampled_frames()] == [
         "frame-from-the-real-onset"
+    ]
+
+
+@pytest.mark.unit
+async def test_idle_frames_do_not_consume_the_prerecord_budget() -> None:
+    """Frames from before the user spoke are not this turn's to keep.
+
+    Screen sharing fills the eight-slot buffer while nobody is talking. The
+    sampler deliberately preserves widely spaced endpoints, so those idle
+    frames hold their slots; the few captured between speech confirmation and
+    record creation then get sampled together with the whole idle history, and
+    the onset filter at record creation discards all of them -- leaving only
+    the newest frame and losing this turn's opening and middle views.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    now = time.monotonic()
+
+    # 共享着但没人说话：闲置帧铺满缓冲。
+    runtime._asr_runtime._asr_turn_onset_at = None
+    for i in range(_MAX_PRERECORD_VISUAL_VALIDATIONS):
+        assert runtime._stage_independent_visual_frame(
+            f"idle-{i}",
+            source="screen",
+            request_id=f"screen-idle-{i}",
+            captured_at=now - 60.0 + i * 5.0,
+        )
+    assert len(runtime._prerecord_visual_frames) == _MAX_PRERECORD_VISUAL_VALIDATIONS
+
+    # 用户开口。确认到注册之间又拍了三张。
+    onset = now - 2.0
+    runtime._asr_runtime._asr_turn_onset_at = onset
+    for i in range(3):
+        assert runtime._stage_independent_visual_frame(
+            f"speech-{i}",
+            source="screen",
+            request_id=f"screen-speech-{i}",
+            captured_at=onset + 0.2 * (i + 1),
+        )
+
+    kept = [f.image_b64 for f in runtime._prerecord_visual_frames]
+    # 开口之前的一张都不占名额了，这一轮自己的三张全在。
+    assert kept == ["speech-0", "speech-1", "speech-2"]
+
+
+@pytest.mark.unit
+async def test_a_stale_onset_does_not_evict_the_prerecord_buffer() -> None:
+    """Trimming is only safe against an onset this turn actually owns.
+
+    A leftover value from an older turn would otherwise look like "speech began
+    long ago" and evict every frame captured since -- the opposite of what the
+    trim exists for. The buffer uses the same trust window as the record, so
+    the two agree on where the turn began.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    now = time.monotonic()
+
+    # 不可信的 onset。取**未来**时刻这一侧：那是真正危险的方向 —— 拿它去裁，
+    # 每一帧都「早于开口」，整个缓冲会被清空。（过去那一侧的残值只会裁掉比它
+    # 更早的帧，多数情况下是空操作，判别不出这条守卫。）
+    runtime._asr_runtime._asr_turn_onset_at = now + 30.0
+
+    for i in range(3):
+        assert runtime._stage_independent_visual_frame(
+            f"frame-{i}",
+            source="screen",
+            request_id=f"screen-{i}",
+            captured_at=now - 1.0 + i * 0.2,
+        )
+
+    # onset 不可信 → 不裁，三张都留着（若采信，三张会被全部清掉）。
+    assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
+        "frame-0",
+        "frame-1",
+        "frame-2",
     ]
