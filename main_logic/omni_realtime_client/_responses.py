@@ -554,6 +554,30 @@ class _ResponseMixin:
             len(staged_images),
             text_hash,
         )
+        # 送进 arbiter 之前的最后一道视觉所有权复查，与 Gemini 那条路对偶。
+        #
+        # 上面的重压/摘帧是 asyncio.to_thread，真实让出点。后继回合的
+        # _begin_core_multimodal_turn 是**同步**把本轮 record invalidated 的，
+        # 但它随后的 prepare_external_voice_turn 可能还堵在 turn-admission 锁上、
+        # 尚未更新 _external_voice_turn_pause_id —— 于是下面那条 admission_check
+        # 拿着没变的 pause id 照样放行，过期的帧就进了 provider 历史。两个判据的
+        # 时机不同，admission_check 覆盖不了这一段。
+        #
+        # 就地摘掉图片、保留 transcript，而不是让 admission_check 去拒整条：
+        # 那是**提交之后**才拒，需要一次未经确认的补偿删除（见 issue #2982），
+        # 比在提交前把帧摘掉贵得多。丢帧只降级成纯文本，话照送。
+        if visual_still_owned is not None and not visual_still_owned():
+            _content = item_event["item"]["content"]
+            _kept = [
+                part for part in _content if part.get("type") != "input_image"
+            ]
+            if len(_kept) != len(_content):
+                logger.info(
+                    "external multimodal turn %s lost visual ownership before "
+                    "dispatch; submitting text-only",
+                    stable_turn_id,
+                )
+                item_event["item"]["content"] = _kept
         arbiter = self._ensure_response_arbiter()
         ticket = await arbiter.enqueue(
             source="external_asr_multimodal",

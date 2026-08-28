@@ -304,6 +304,77 @@ async def test_gemini_turn_drops_frames_lost_while_fitting_the_image_budget():
 
 
 @pytest.mark.asyncio
+async def test_openai_turn_drops_frames_lost_while_shrinking_the_item():
+    """Dual of the Gemini path for the WebSocket branch.
+
+    An oversized item is recompressed on a worker thread -- a real yield point.
+    The successor's _begin_core_multimodal_turn() invalidates this record
+    synchronously, but its prepare_external_voice_turn() may still be blocked on
+    the shared turn-admission lock and not yet have updated
+    _external_voice_turn_pause_id, so the ticket's admission_check still passes
+    on the unchanged pause id and superseded frames reach provider history.
+
+    Images are dropped in place rather than letting admission_check reject the
+    whole ticket: that rejection happens AFTER the item is committed and needs
+    an unconfirmed compensating delete (issue #2982).
+    """
+    client = _make_client("openai", "gpt-4o-realtime-preview")
+    client.ws = AsyncMock()
+    client.handle_interruption = AsyncMock()
+    client._analyze_image_with_vision_model = AsyncMock()
+
+    owned = [True]
+    captured: list = []
+
+    async def _shrink_and_lose_ownership(_fn, item_event, _payload):
+        # 重压这一步是真实让出点：后继发声在这里拿走了视觉所有权。
+        owned[0] = False
+        return "shrunk"
+
+    async def _fake_enqueue(**kwargs):
+        captured.append(kwargs["events_before_response"][0])
+        ticket = SimpleNamespace(
+            sent=asyncio.sleep(0), done=asyncio.sleep(0)
+        )
+        return ticket
+
+    _arbiter = SimpleNamespace(
+        enqueue=_fake_enqueue,
+        resume_dispatch=lambda: None,
+        pause_dispatch=lambda: None,
+        cancel_ticket=AsyncMock(),
+        cancel_current=AsyncMock(),
+    )
+    client._ensure_response_arbiter = lambda: _arbiter
+    asyncio_to_thread = asyncio.to_thread
+    asyncio.to_thread = _shrink_and_lose_ownership
+    _real_limit = responses_module.OMNI_WS_FRAME_LIMIT_BYTES
+    # 把帧上限压到必然超限，逼它走重压那条路（那才是本用例要覆盖的让出点）。
+    responses_module.OMNI_WS_FRAME_LIMIT_BYTES = 8
+    try:
+        await client.prepare_external_voice_turn(turn_id="turn-ws")
+        assert owned[0] is True
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            [DUMMY_IMAGE_B64] * 3,
+            turn_id="turn-ws",
+            visual_still_owned=lambda: owned[0],
+        )
+    finally:
+        asyncio.to_thread = asyncio_to_thread
+        responses_module.OMNI_WS_FRAME_LIMIT_BYTES = _real_limit
+
+    assert owned[0] is False, "夹具没走到重压那一步"
+    assert captured, "item 没被送进 arbiter"
+    content = captured[0]["item"]["content"]
+    # 帧被摘掉了……
+    assert all(part["type"] != "input_image" for part in content)
+    # ……但用户那句话照送。
+    assert any(part.get("text") == "看一下这张图" for part in content)
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_gemini_turn_drops_frames_lost_during_the_quarantine_wait():
     """Ownership can still flip after the budget fit, inside the quarantine wait.
 
