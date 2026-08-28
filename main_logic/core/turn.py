@@ -152,8 +152,8 @@ class TurnMixin:
         # ``_tts_done_queued_for_turn=True`` 直接 early-return，下一轮的 TTS
         # flush sentinel 永远不入队，server 拿不到 ``tts.flush`` 句尾音频
         # 可能挂在 buffer 里、长句 utterance 不会 finalize。``handle_new_message``
-        # 在 speech_stopped 路径也是这样 reset 的（[core.py:1214](main_logic/core.py:1214)），
-        # 这里和它对偶。
+        # 在 speech_stopped 路径也是这样 reset 的（本文件同名方法；上帝文件
+        # main_logic/core.py 拆包后两者同住 main_logic/core/turn.py），这里和它对偶。
         self._tts_done_queued_for_turn = False
         self._tts_done_pending_until_ready = False
         async with self.lock:

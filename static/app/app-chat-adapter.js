@@ -792,8 +792,12 @@
             emitCompactCaptionUpdate(streamingText);
         }
 
-        // Plugin chat passthrough can carry an image URL alongside text. It
-        // still participates in the normal assistant turn lifecycle, but the
+        // Reached only by a gemini_response frame carrying `blocks`, which
+        // today is emitted solely by LLMSessionManager.passthrough_to_chat_bubble
+        // — a helper with no production caller (see main_logic/core/turn.py).
+        // Plugin chat pushes render through chat_blocks / appendReactChatBlocks
+        // as system messages instead, so this branch is test-only for now.
+        // It still participates in the normal assistant turn lifecycle, and the
         // React host receives the already-structured blocks directly instead
         // of forcing them through the text sentence/markdown pipeline.
         if (sender === 'gemini' && structuredResponseBlocks.length > 0) {
