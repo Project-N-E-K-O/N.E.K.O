@@ -1253,7 +1253,14 @@ class _TransportMixin:
                             )
                             != delivery_mode
                             or (
-                                getattr(
+                                # 与本函数入口那道闸门同口径：描述模式是被明确
+                                # 豁免的（set_visual_delivery_mode 进这个模式时
+                                # 会顺手把 _raw_visual_delivery_blocked 置上，
+                                # 所以只看这个标志会把描述模式下的一次性 cue 图
+                                # 一起拦掉——Gemini 的主动搭话原始图投递整条断掉）。
+                                delivery_mode
+                                != VisualDeliveryMode.EXTERNAL_DESCRIPTION
+                                and getattr(
                                     self,
                                     "_raw_visual_delivery_blocked",
                                     False,

@@ -1783,6 +1783,9 @@ class _ResponseMixin:
         rejection_message = ""
         visual_event_id: str | None = None
         events_before_text: tuple[Dict[str, Any], ...] = ()
+        # 这一轮有没有真的把原始帧写进 provider context。竞态早退时要靠它决定
+        # 快照该不该记成已消费。
+        _raw_frame_sent = False
         external_visual_delivery = getattr(
             self,
             "_visual_delivery_mode",
@@ -1930,8 +1933,10 @@ class _ResponseMixin:
         if (
             has_vision
             and not self._is_gemini
-            and not external_visual_delivery
             and (
+                # 描述模式下的一次性 cue 图现在也走原始 WebSocket 事件，同样会被
+                # 异步拒绝，所以同样需要这个关联句柄——否则拒绝到达时
+                # _on_visual_rejected() 找不到人，快照不会被重新武装。
                 (self._supports_native_image and snapshot_image_b64)
                 or (
                     not self._supports_native_image
@@ -2000,6 +2005,7 @@ class _ResponseMixin:
                     request_id=f"proactive-{snapshot_image_generation}",
                     bypass_rate_limit=True,
                     cache_latest=False,
+                    event_id=visual_event_id,
                 )
             except asyncio.CancelledError:
                 raise
@@ -2022,6 +2028,7 @@ class _ResponseMixin:
                 bool(getattr(stage_result, "accepted", False))
                 and _stage_mode == VisualDeliveryMode.NATIVE.value
             ):
+                _raw_frame_sent = True
                 # 图已经原样送进去了（描述模式下的一次性 cue 图走原生通道）。
                 # 只补一句简单引导告诉模型这是什么，不再为它单独跑一次
                 # VISION_MODEL 注释——省一次付费调用，也少一层转述失真。
@@ -2116,15 +2123,20 @@ class _ResponseMixin:
         ):
             if (
                 has_vision
-                and not external_visual_delivery
-                and self._supports_native_image
                 and snapshot_image_b64
+                and self._supports_native_image
+                and (not external_visual_delivery or _raw_frame_sent)
             ):
                 # The raw frame is already persistent provider context and may
                 # be consumed by the turn that won this race. Account for it
                 # now to avoid resending duplicate/stale visual context. Keep
                 # the exact rejection handler alive so a late provider error
                 # can re-arm the snapshot.
+                #
+                # 判据是"这一轮到底送没送出原始帧"，不是"处在哪个投递模式"：描述
+                # 模式下的一次性 cue 图现在也走原始通道，按模式判会漏掉它——那张
+                # 图已经在 provider context 里，快照却还武装着，下一次主动搭话会
+                # 把同一张图再发一遍。
                 _mark_snapshot_consumed_if_current()
             else:
                 # Step's description is only queued below, so no visual event

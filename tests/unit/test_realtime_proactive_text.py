@@ -190,6 +190,84 @@ async def test_description_mode_proactive_still_sends_its_image_with_a_lead_in()
     assert any("上面这张图是此刻的屏幕画面。" in text for text in input_texts)
     assert any("describe what you notice" in text for text in input_texts)
     client._analyze_image_with_vision_model.assert_not_awaited()
+    # 原始图走 WebSocket 事件，拒绝可能晚于写成功才到——必须留下关联句柄，
+    # 否则 _on_visual_rejected() 找不到人，快照不会被重新武装。
+    image_event = next(
+        event
+        for event in events
+        if event.get("type") == "input_image_buffer.append"
+    )
+    assert image_event.get("event_id") in client._inject_rejection_handlers
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_description_mode_snapshot_is_consumed_when_activity_wins_the_race():
+    """A raw frame already in provider context must not be re-sent later.
+
+    The image goes out before the pre-inject activity re-check. If a user or AI
+    turn wins that race we bail out -- but the frame is already persistent
+    provider context, so leaving the snapshot armed makes the NEXT proactive
+    nudge send the very same picture again.
+
+    The consumption gate therefore keys on whether this turn actually wrote a
+    raw frame, not on which delivery mode we are in: description mode now sends
+    one too, and a mode-based test skips exactly this case.
+    """
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+
+    # 活动只在图送出去**之后**才抢跑：让复查恰好落在那道窗口里。
+    def user_turn_active() -> bool:
+        return any(
+            event.get("type") == "input_image_buffer.append"
+            for event in _sent_events(client)
+        )
+
+    delivered = await client.prompt_ephemeral(
+        "describe what you notice",
+        user_turn_active=user_turn_active,
+    )
+
+    assert delivered is False
+    events = _sent_events(client)
+    assert any(
+        event.get("type") == "input_image_buffer.append" for event in events
+    ), "夹具没造出那道窗口：图根本没送出去"
+    assert client._proactive_image_consumed is True, (
+        "原始帧已在 provider context 里，快照却还武装着——下一次主动搭话会重发同一张图"
+    )
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_description_mode_gemini_cue_image_is_not_fenced_out():
+    """Gemini's one-shot cue image must clear the inner fence too.
+
+    set_visual_delivery_mode(EXTERNAL_DESCRIPTION) also raises
+    _raw_visual_delivery_blocked, and the Gemini send path re-checks it. Testing
+    only the flag there rejects the very image the entry gate just exempted, so
+    Gemini lost raw proactive visual delivery entirely in this mode.
+    """
+    client = _make_client(api_type="gemini", model="gemini-live")
+    session = AsyncMock()
+    client._gemini_session = session
+    client.ws = session
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    assert client._raw_visual_delivery_blocked is True
+
+    result = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source="proactive",
+        request_id="gemini-cue",
+        bypass_rate_limit=True,
+        cache_latest=False,
+    )
+
+    assert getattr(result, "accepted", False) is True
+    session.send_realtime_input.assert_awaited_once()
     await client.close()
 
 
