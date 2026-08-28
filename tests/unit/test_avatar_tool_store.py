@@ -2056,3 +2056,54 @@ def test_record_rejects_non_file_entries_in_the_tool_directory(tmp_path, monkeyp
     with pytest.raises(AvatarToolStoreError) as raised:
         store.read_record(tool["id"])
     assert raised.value.code == "record_invalid"
+
+
+@pytest.mark.unit
+def test_digest_stops_reading_when_a_file_grows_past_the_fstat_snapshot(tmp_path, monkeypatch):
+    """fstat is only a snapshot; an appending writer must not make the read unbounded."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png(size=(9, 9))],
+    )
+    asset = store.root / tool["id"] / "default.png"
+    asset.write_bytes(b"x" * (6 * 1024 * 1024))
+    store.limits["maxImageBytes"] = 1024
+
+    class _SmallSnapshot:
+        st_size = 0
+
+    # 谎报快照，等价于「fstat 之后外部写者又往文件里追加」。
+    monkeypatch.setattr(avatar_tool_store.os, "fstat", lambda _fd: _SmallSnapshot())
+
+    consumed = {"bytes": 0}
+    real_open = Path.open
+
+    def counting_open(self, *args, **kwargs):
+        stream = real_open(self, *args, **kwargs)
+        if self.name == "default.png":
+            real_read = stream.read
+
+            def counting_read(size=-1):
+                chunk = real_read(size)
+                consumed["bytes"] += len(chunk)
+                return chunk
+
+            stream.read = counting_read
+        return stream
+
+    monkeypatch.setattr(Path, "open", counting_open)
+    root_key = store._root_key()
+    try:
+        with pytest.raises(AvatarToolStoreError) as raised:
+            store.read_record(tool["id"], verify_resources=True)
+        assert raised.value.integrity_mismatch is True
+        # 读取必须在越限后立刻停下，而不是一路读到 6 MiB 的 EOF。
+        assert consumed["bytes"] <= 1024 * 1024 + store.limits["maxImageBytes"], consumed["bytes"]
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)

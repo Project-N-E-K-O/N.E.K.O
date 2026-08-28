@@ -699,7 +699,19 @@ class AvatarToolStore:
                     status_code=404,
                     integrity_mismatch=True,
                 )
+            # fstat 只是打开那一刻的快照：外部写者仍可能在之后往同一个 fd 指向的
+            # 文件追加，读到 EOF 就绕过了上限。所以边读边累计，超了立刻停 —— 这条
+            # 循环全程持有 _STORE_LOCK，不能让它跑成无界读取。
+            consumed = 0
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                consumed += len(chunk)
+                if consumed > maximum:
+                    raise AvatarToolStoreError(
+                        "record_invalid",
+                        "Avatar tool resource integrity is invalid",
+                        status_code=404,
+                        integrity_mismatch=True,
+                    )
                 digest.update(chunk)
         return digest.hexdigest()
 
