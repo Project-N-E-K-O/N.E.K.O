@@ -73,9 +73,15 @@ Both image sources work:
 
 Implementation path: `_ordered_plugin_chat_blocks` / `_build_plugin_chat_blocks`
 build the blocks → `LLMSessionManager.render_chat_blocks` emits a `chat_blocks`
-WS frame → the frontend's `appendReactChatBlocks` renders the system chip. The
-model side resolves base64 through `_resolve_plugin_model_image` /
-`_fetch_plugin_image_base64` and hands it to `stream_image`.
+WS frame → the frontend's `appendReactChatBlocks` renders the system chip.
+
+On the model side both `read` and `respond` first resolve base64 through
+`_resolve_plugin_model_image` / `_fetch_plugin_image_base64`, but they deliver
+it differently — worth knowing if you go looking for the image in a log:
+`read` hands it straight to the session's `stream_image`, while `respond`
+defers it onto the callback (`media_images`) so it arrives together with the
+proactive response — in voice mode via `_stream_cb_media` → `stream_image`, in
+text mode as the `images=` argument of `prompt_ephemeral`.
 
 ### Limits that still apply
 
@@ -180,7 +186,8 @@ from shipping them.
    a system-chip image bubble labelled with the plugin's name appears in the
    chat window, and the image is absent from the model's context.
 2. Same payload with `ai_behavior="respond"`: the same image bubble appears
-   AND the image reaches the model (`stream_image`), so she replies about it.
+   AND the image reaches the model (carried on the callback — `prompt_ephemeral`
+   in text mode, `stream_image` in voice mode), so she replies about it.
 3. Replace the part with `{"type": "image", "url": "https://example.com/cat.png"}`
    and keep `ai_behavior="respond"` (the model path is what logs here; `blind`
    never enters the media loop): the external URL is rejected — nothing renders

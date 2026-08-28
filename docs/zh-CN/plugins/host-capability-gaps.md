@@ -60,9 +60,13 @@ push_message(
 
 实现路径：`_ordered_plugin_chat_blocks` / `_build_plugin_chat_blocks` 生成
 blocks → `LLMSessionManager.render_chat_blocks` 发出 `chat_blocks` WS 帧 →
-前端 `appendReactChatBlocks` 渲染成 system chip。模型侧则由
-`_resolve_plugin_model_image` / `_fetch_plugin_image_base64` 解出 base64 后
-交给 `stream_image`。
+前端 `appendReactChatBlocks` 渲染成 system chip。
+
+模型侧 `read` 与 `respond` 都先由 `_resolve_plugin_model_image` /
+`_fetch_plugin_image_base64` 解出 base64，但投递方式不同——去日志里找图时值得
+知道：`read` 直接交给会话的 `stream_image`；`respond` 则把图挂在 callback 上
+（`media_images`），随主动搭话一起投递——语音模式经 `_stream_cb_media` →
+`stream_image`，文本模式作为 `prompt_ephemeral` 的 `images=` 参数。
 
 ### 仍存在的限制
 
@@ -148,7 +152,8 @@ push_message(
    `push_message(visibility=["chat"], ai_behavior="blind", parts=[{"type": "image", "data": <png bytes>, "mime": "image/png"}])`：
    用户聊天窗出现带插件名标签的 system chip 图片气泡；模型上下文里没有这张图。
 2. 同一 payload 换 `ai_behavior="respond"`：聊天窗同样出现图片气泡，且图片进入
-   模型上下文（`stream_image`），她会就这张图回一句。
+   模型上下文（随 callback 投递，文本模式走 `prompt_ephemeral`、语音模式走
+   `stream_image`），她会就这张图回一句。
 3. 把图片换成 `{"type": "image", "url": "https://example.com/cat.png"}`，并保持
    `ai_behavior="respond"`（打这条日志的是模型路径，`blind` 根本不进媒体循环）：
    外部 URL 被拒——聊天窗无图，宿主日志出现
