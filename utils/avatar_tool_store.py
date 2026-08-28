@@ -583,12 +583,28 @@ class AvatarToolStore:
             ) from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404) from exc
-        return self._validate_record(
-            payload,
-            expected_id=tool_id,
-            directory=directory,
-            verify_resources=verify_resources,
-        )
+        try:
+            return self._validate_record(
+                payload,
+                expected_id=tool_id,
+                directory=directory,
+                verify_resources=verify_resources,
+            )
+        except AvatarToolStoreError as exc:
+            if exc.code == "record_invalid":
+                raise
+            # 落盘记录里的字段校验失败（name_invalid、meaning_too_long、
+            # special_probability_invalid 之类）同样是「这条记录被证伪」，只是
+            # 复用了表单校验器的错误码。归一化成 record_invalid，隔离判据才认得
+            # 它 —— 否则列表会隐藏这个道具，配额却继续计费，而界面上没有任何
+            # 入口能把它回收。field/index 只对创建与修改的表单有意义，读取路径
+            # 不需要。
+            raise AvatarToolStoreError(
+                "record_invalid",
+                "Avatar tool record is invalid",
+                status_code=404,
+                transient=exc.transient,
+            ) from exc
 
     def _validate_record(
         self,

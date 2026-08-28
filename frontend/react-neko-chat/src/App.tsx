@@ -1132,6 +1132,10 @@ function CompactChatApp({
   const activeToolItem = avatarToolRuntime.activeTool;
   const effectiveAvatarToolVariant = avatarToolRuntime.effectiveVariant;
   const clearActiveAvatarToolSelection = avatarToolRuntime.clearTool;
+  // 删除要 await，期间对话框可以被关掉、用户可以去快捷栏换一个道具。若用闭包
+  // 捕获的旧值判断，就会在删除返回时把用户刚选中的另一个道具清掉。
+  const activeAvatarToolIdRef = useRef(activeAvatarToolId);
+  activeAvatarToolIdRef.current = activeAvatarToolId;
   const handleAvatarQuickbarToolClick = avatarToolRuntime.selectTool;
 
   const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
@@ -1146,10 +1150,10 @@ function CompactChatApp({
 
   const handleLocalAvatarToolDelete = useCallback(async (toolId: `local-${string}`) => {
     await localAvatarToolCatalog.remove(toolId);
-    if (activeAvatarToolId === toolId) clearActiveAvatarToolSelection();
+    if (activeAvatarToolIdRef.current === toolId) clearActiveAvatarToolSelection();
     setActiveAvatarToolIds(current => current.filter(candidate => candidate !== toolId));
     forgetPersistedAvatarToolId(toolId);
-  }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.remove]);
+  }, [clearActiveAvatarToolSelection, localAvatarToolCatalog.remove]);
 
   useEffect(() => {
     if (!avatarToolManagerOpen) return;

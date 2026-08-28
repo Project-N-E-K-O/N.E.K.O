@@ -648,7 +648,13 @@ def test_read_enforces_current_v2_text_limits(tmp_path, monkeypatch, field, expe
     with pytest.raises(AvatarToolStoreError) as raised:
         store.read_record(item["id"])
 
-    assert raised.value.code == expected_code
+    # 落盘记录的字段校验复用了表单校验器，但读取路径会把它归一化成
+    # record_invalid —— 只有这样隔离判据才认得它，超限的道具才不会一边被列表
+    # 隐藏、一边继续占着配额。原始字段码保留在异常链里。
+    assert raised.value.code == "record_invalid"
+    assert raised.value.transient is False
+    assert isinstance(raised.value.__cause__, AvatarToolStoreError)
+    assert raised.value.__cause__.code == expected_code
 
 
 def test_create_counts_record_in_total_storage_limit(tmp_path, monkeypatch):
@@ -2638,3 +2644,49 @@ def test_a_plain_file_named_updating_does_not_authorize_a_rollback(tmp_path, mon
     assert (final / "synced-note.txt").is_file()
     assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
     assert not backup.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("name", "!!!"),
+        ("name", "x" * 100),
+        ("meaning", "x" * 500),
+    ),
+)
+def test_a_field_level_record_failure_still_quarantines_and_frees_the_quota(
+    tmp_path, monkeypatch, field, value
+):
+    """Persisted-record validation reuses form error codes; they are still proof."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    record_path = store.root / tool["id"] / "record.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    if field == "name":
+        record["name"] = value
+    else:
+        record["imageChange"]["items"][0]["meaning"] = value
+    record_path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+    root_key = store._root_key()
+    try:
+        with pytest.raises(AvatarToolStoreError) as raised:
+            store.get_detail(tool["id"])
+        # 归一化之后隔离判据才认得它。
+        assert raised.value.code == "record_invalid"
+        assert raised.value.transient is False
+        assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
+        assert store.list_items() == []
+        # 界面上既看不到也删不掉，所以配额必须释放。
+        assert store._current_storage_bytes() == 0
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
