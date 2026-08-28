@@ -579,6 +579,19 @@ class AvatarToolStore:
                     complete = False
                     continue
                 else:
+                    # 上面那次校验要把 backup 的每个资源逐字节 hash 一遍，慢到
+                    # 足够让同步客户端在这期间发布一个新的正式目录。拿授权时的
+                    # 旧观察去删它，就是把用户刚同步下来的新版本抹掉。动手之前
+                    # 重新确认前提还成立。
+                    recheck_kind, _, probe_error = _probe_entry(final)
+                    if probe_error is not None or recheck_kind != final_kind:
+                        defer(
+                            probe_error
+                            if probe_error is not None
+                            else f"final changed from {final_kind} to {recheck_kind}"
+                        )
+                        complete = False
+                        continue
                     if final.is_symlink() or final.is_file():
                         final.unlink()
                     elif final.is_dir():
@@ -1690,17 +1703,30 @@ class AvatarToolStore:
                 os.replace(updating, final)
             except BaseException:
                 self._cleanup_failed_staging(updating)
-                if published_backup and not final.exists() and backup.exists():
-                    try:
-                        os.replace(backup, final)
-                    except OSError:
+                if published_backup:
+                    final_kind, _, final_probe = _probe_entry(final)
+                    backup_kind, _, backup_probe = _probe_entry(backup)
+                    if final_probe is not None or backup_probe is not None:
+                        # 正式目录已经改名成 backup，此刻它是这个道具仅存的副本。
+                        # 探测不确定就当作「不用回滚」的话，道具会在本进程内一直
+                        # 消失，要等下次启动恢复才回来。留在待恢复状态。
                         _RECOVERY_PENDING_ROOTS.add(self._root_key())
                         logger.warning(
-                            "Could not restore avatar tool update backup %s",
-                            backup,
+                            "Could not determine avatar tool rollback state for %s",
+                            tool_id,
                             exc_info=True,
                         )
-                        raise
+                    elif final_kind == "absent" and backup_kind == "dir":
+                        try:
+                            os.replace(backup, final)
+                        except OSError:
+                            _RECOVERY_PENDING_ROOTS.add(self._root_key())
+                            logger.warning(
+                                "Could not restore avatar tool update backup %s",
+                                backup,
+                                exc_info=True,
+                            )
+                            raise
                 raise
             try:
                 shutil.rmtree(backup)

@@ -95,8 +95,13 @@ class InboundBodySizeLimitMiddleware:
             elif lowered == b"content-type":
                 content_type = value
 
-        bounded_multipart = self._is_bounded_multipart(scope, content_type)
-        if bounded_multipart and self.multipart_preflight is not None:
+        configured_route = self._matches_configured_route(scope)
+        bounded_multipart = configured_route and self._is_bounded_multipart(content_type)
+        # preflight 按路由触发，不按 content-type：这些路由的 handler 声明了
+        # Form/File 参数，FastAPI 会在进入 handler（也就是路由内部那套同样的
+        # 本地访问 / CSRF 校验）之前就把 body 解析掉。只对 multipart 跑 preflight
+        # 的话，跨域客户端换个 content-type 就能反复让服务器解析大 body 再被拒。
+        if configured_route and self.multipart_preflight is not None:
             rejected = self.multipart_preflight(scope)
             if rejected is not None:
                 await rejected(scope, receive, send)
@@ -135,17 +140,23 @@ class InboundBodySizeLimitMiddleware:
         if overflowed:
             await self._reject(send, maximum)
 
-    def _is_bounded_multipart(self, scope, content_type: bytes) -> bool:
+    def _matches_configured_route(self, scope) -> bool:
+        """Path/method match for the guarded routes, independent of content type."""
         if (
-            self.max_multipart_body_bytes is None
-            or not self.multipart_path_prefix
+            not self.multipart_path_prefix
             or scope.get("method", "").upper() not in self.multipart_methods
-            or not content_type.strip().lower().startswith(b"multipart/")
         ):
             return False
         path = str(scope.get("path") or "").rstrip("/")
         return path == self.multipart_path_prefix or path.startswith(
             f"{self.multipart_path_prefix}/"
+        )
+
+    def _is_bounded_multipart(self, content_type: bytes) -> bool:
+        """Whether the multipart-specific size policy applies to this body."""
+        return (
+            self.max_multipart_body_bytes is not None
+            and content_type.strip().lower().startswith(b"multipart/")
         )
 
     def _exceeds_limit(

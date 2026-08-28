@@ -3209,3 +3209,129 @@ def test_a_foreign_occupant_at_the_final_path_defers_instead_of_being_deleted(
     finally:
         avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
 
+
+def test_recovery_rechecks_the_final_before_replacing_it_with_a_backup(tmp_path, monkeypatch):
+    """Validating a backup is slow enough for a sync client to publish a new final."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Original",
+        change_mode="press-swap",
+        change_meanings=["the version the backup holds"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    final = store.root / tool["id"]
+    backup = store.root / f".{tool['id']}.backup"
+    shutil.copytree(final, backup)
+
+    # 起点：正式目录不在（一次失败的回滚留下的状态），backup 是唯一副本 ——
+    # 恢复据此获得「可以回滚」的授权。
+    newest = tmp_path / "newest"
+    shutil.copytree(final, newest)
+    (newest / "record.json").write_text(
+        (newest / "record.json").read_text(encoding="utf-8").replace(
+            "the version the backup holds", "what the sync client just published"
+        ),
+        encoding="utf-8",
+    )
+    fresh = json.loads((newest / "record.json").read_text(encoding="utf-8"))
+    fresh["resourceDigests"] = {
+        name: AvatarToolStore._file_digest(newest / name, 32 * 1024 * 1024)
+        for name in fresh["resourceDigests"]
+    }
+    (newest / "record.json").write_text(json.dumps(fresh, ensure_ascii=False), encoding="utf-8")
+    shutil.rmtree(final)
+
+    real_digest = AvatarToolStore.__dict__["_file_digest"].__func__
+    raced = []
+
+    def digest_and_race(path, maximum):
+        # 校验 backup 的中途，别的进程把正式目录建了出来。
+        if not raced:
+            raced.append(True)
+            shutil.copytree(newest, final)
+        return real_digest(path, maximum)
+
+    monkeypatch.setattr(AvatarToolStore, "_file_digest", staticmethod(digest_and_race))
+    root_key = store._root_key()
+    try:
+        store.initialize()
+        assert raced, "the race never happened; this test proves nothing"
+
+        # 授权是基于「正式目录不在」发出的。前提在校验期间变了，这一轮就必须弃权：
+        # 既不能删掉刚出现的正式目录，也不能消耗掉 backup。
+        assert backup.is_dir(), "the backup was consumed on a stale authorization"
+        assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+        monkeypatch.undo()
+        monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+        # 下一次操作重新确认前提：正式目录这次是有效的，于是它说了算，
+        # 而 backup 退化成残留被清掉 —— 新发布的那一版没有被旧 backup 抹掉。
+        assert store.get_detail(tool["id"])["changeItems"][0]["meaning"] == (
+            "what the sync client just published"
+        )
+        assert not backup.exists()
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+def test_a_failed_rollback_probe_keeps_the_root_recovery_pending(tmp_path, monkeypatch):
+    """After final was renamed to .backup, that backup is the tool's only copy."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="First",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    final = store.root / tool["id"]
+    base_revision = store.record_revision(store.read_record(tool["id"]))
+    root_key = store._root_key()
+
+    real_replace, real_lstat = os.replace, os.lstat
+    replaces = []
+    in_rollback_window = []
+
+    def failing_replace(src, dst, **kwargs):
+        replaces.append((str(src), str(dst)))
+        # 精确命中发布那一步（.updating -> final），不能按调用次序数：
+        # atomic_write_json 写 record.json 时自己也会调 os.replace。
+        # 让它在这里失败，正式目录已经改名成 .backup，只剩那一份副本。
+        if str(dst) == str(final) and str(src).endswith(".updating"):
+            in_rollback_window.append(True)
+            raise OSError(errno.EIO, "publish failed")
+        return real_replace(src, dst, **kwargs)
+
+    def flaky_lstat(path, *args, **kwargs):
+        # 只在回滚窗口里抖，否则更新还没走到那一步就被打断了。
+        if in_rollback_window and str(path) == str(final):
+            raise OSError(errno.EBUSY, "metadata temporarily unavailable")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    monkeypatch.setattr(os, "lstat", flaky_lstat)
+    try:
+        with pytest.raises(OSError):
+            store.update_tool(
+                tool["id"],
+                base_revision=base_revision,
+                name="Renamed",
+                change_mode="press-swap",
+                change_meanings=["meaning"],
+                default_resource=None,
+                default_image=_png(size=(9, 9)),
+                change_resources=[""],
+                change_images=[_png(size=(10, 10))],
+            )
+        assert in_rollback_window, "the failure did not land in the rollback window"
+        # 回滚该不该做判不出来时，不能当成「不用回滚」——那样道具会在本进程内
+        # 一直消失，要等下次启动恢复才回来。
+        assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+

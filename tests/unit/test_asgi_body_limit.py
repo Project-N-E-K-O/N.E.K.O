@@ -327,8 +327,8 @@ def test_bounded_route_still_uses_the_global_cap_when_not_multipart():
     assert sent[0]["status"] == 413
 
 
-def test_preflight_is_not_invoked_for_unbounded_requests():
-    """The preflight hook must never run outside the configured multipart route."""
+def test_preflight_is_not_invoked_outside_the_configured_route():
+    """The preflight hook must never run for another path or an unguarded method."""
     calls = []
 
     def preflight(scope):
@@ -338,14 +338,48 @@ def test_preflight_is_not_invoked_for_unbounded_requests():
     for method, path, content_type in (
         ("POST", "/api/memory", b"multipart/form-data; boundary=x"),
         ("GET", "/api/avatar-tools", b"multipart/form-data; boundary=x"),
-        ("POST", "/api/avatar-tools", b"application/json"),
+        ("DELETE", "/api/avatar-tools/local-1", b"multipart/form-data; boundary=x"),
     ):
         middleware = _make_bounded(max_bytes=64, preflight=preflight)
         _run(_drive(middleware, _scope(method, path, [
             (b"content-type", content_type),
             (b"content-length", b"8"),
         ])))
-    assert calls == [], f"preflight leaked into unbounded requests: {calls}"
+    assert calls == [], f"preflight leaked outside the configured route: {calls}"
+
+
+def test_preflight_runs_on_the_configured_route_whatever_the_content_type():
+    """These handlers declare Form/File, so FastAPI parses the body before the handler.
+
+    Gating the preflight on ``multipart/`` let a cross-origin client switch content
+    type and repeatedly force that parse before the in-handler check rejected it.
+    """
+    for content_type in (
+        b"application/x-www-form-urlencoded",
+        b"application/json",
+        b"text/plain",
+        b"",
+    ):
+        calls = []
+
+        def preflight(scope):
+            calls.append(scope.get("path"))
+            return _forbidden
+
+        hit, sent = _run(_drive(_make_bounded(max_bytes=10_000_000, preflight=preflight),
+                                _scope("POST", "/api/avatar-tools", [
+                                    (b"content-type", content_type),
+                                    (b"content-length", b"8"),
+                                ])))
+        assert calls == ["/api/avatar-tools"], content_type
+        # 被 preflight 拒掉的请求绝不能到达下游，否则 body 还是会被解析。
+        assert hit is False, content_type
+        assert sent[0]["status"] == 403, content_type
+
+
+async def _forbidden(scope, receive, send):
+    await send({"type": "http.response.start", "status": 403, "headers": []})
+    await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
 def test_unbounded_requests_get_the_untouched_receive_and_send():
