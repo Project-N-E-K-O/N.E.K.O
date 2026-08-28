@@ -3495,6 +3495,11 @@ async def test_gemini_proactive_answers_the_calls_it_gave_up_on(monkeypatch) -> 
     session = _OrderedSession()
     client._gemini_session = session
     client.ws = session
+    # Long enough that the batch collector can only wake by its call
+    # COMPLETING, never by a poll timeout. That pins the ordering the retired
+    # set alone cannot survive: the task finishes, its done callback drops it
+    # from the retired registry, and only then does the collector look.
+    client._TOOL_TASK_CANCEL_TIMEOUT_S = 5.0
     client._on_connection_attached()
 
     await client._process_gemini_response(
