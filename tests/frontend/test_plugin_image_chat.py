@@ -139,13 +139,17 @@ def test_display_only_plugin_image_uses_existing_host_retry(
 
     assert result["accepted"] is True
     assert result["beforeRestore"] == 0
+    # Plugin pushes queue in their own bucket while the host is unmounted:
+    # _PENDING_HOST_PLUGIN_MAX = 20 in static/app/app-chat-adapter.js (a burst
+    # of plugin pushes must not evict a waiting assistant message, so the two
+    # sources get separate caps). 55 pushes therefore keep the newest 20.
     mock_page.wait_for_function(
-        "window.reactChatWindowHost.getState().messages.length === 50"
+        "window.reactChatWindowHost.getState().messages.length === 20"
     )
     messages = mock_page.evaluate(
         "window.reactChatWindowHost.getState().messages"
     )
-    assert "host-startup-race-5" in messages[0]["id"]
+    assert "host-startup-race-35" in messages[0]["id"]
     assert "host-startup-race-54" in messages[-1]["id"]
     assert messages[0]["blocks"] == [
         {"type": "image", "url": _ONE_PIXEL_PNG}

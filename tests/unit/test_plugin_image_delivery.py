@@ -2662,3 +2662,77 @@ def test_per_source_quotas_alone_can_exceed_the_request_ceiling() -> None:
         USER_PENDING_IMAGE_MAX_BYTES + PLUGIN_PENDING_IMAGE_MAX_BYTES
         > TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES
     )
+
+
+# ---------------------------------------------------------------------------
+# HUD toasts render text and nothing else.
+#
+# The gate above the delivery block widened from `if text:` to
+# `if text or deferred_callback_images:` so image-only pushes could reach the
+# LLM channel. The HUD branch shares that gate but has no image sink, so an
+# image-only push started emitting an agent_notification with text "".
+# ---------------------------------------------------------------------------
+
+
+def _notifications(manager) -> list:
+    return [
+        call.args[0]
+        for call in manager.websocket.send_json.call_args_list
+        if isinstance(call.args[0], dict)
+        and call.args[0].get("type") == "agent_notification"
+    ]
+
+
+async def _push_image_only_with_hud(monkeypatch, *, text: str):
+    from app import main_server
+
+    manager = _manager()
+    manager.websocket = MagicMock()
+    manager.websocket.send_json = AsyncMock()
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._is_websocket_connected",
+        lambda _ws: True,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=base64.b64encode(b"img").decode("ascii")),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": text,
+        "channel": "plugin:demo",
+        "delivery_mode": "proactive",
+        "ai_behavior": "respond",
+        "visibility": ["hud"],
+        "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
+    })
+    return manager
+
+
+@pytest.mark.asyncio
+async def test_image_only_push_does_not_emit_an_empty_hud_toast(monkeypatch) -> None:
+    manager = await _push_image_only_with_hud(monkeypatch, text="")
+
+    assert _notifications(manager) == [], "HUD has no image sink; an empty toast carries nothing"
+    # The image is NOT lost -- it rides the proactive callback, which is the
+    # whole reason the shared gate was widened. Suppressing the toast must not
+    # suppress delivery.
+    manager.submit_proactive_callback.assert_called_once()
+    assert manager.submit_proactive_callback.call_args.args[0]["media_images"]
+
+
+@pytest.mark.asyncio
+async def test_push_with_text_and_images_still_emits_its_hud_toast(monkeypatch) -> None:
+    """Dual: the fix must key on empty text, not on "this push carried images"."""
+    manager = await _push_image_only_with_hud(monkeypatch, text="有人送了礼物")
+
+    notifs = _notifications(manager)
+    assert len(notifs) == 1
+    assert notifs[0]["text"] == "有人送了礼物"
+    manager.submit_proactive_callback.assert_called_once()

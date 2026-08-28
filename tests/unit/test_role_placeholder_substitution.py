@@ -10,8 +10,9 @@ same substitution helper:
    hot-swap rendering into ``prime_context``.
 3. ``app/main_server/character_runtime.py`` direct_reply — plugin text bypassing the LLM and
    going verbatim to TTS via ``send_lanlan_response``.
-4. ``app/main_server/character_runtime.py`` ``passthrough_to_chat_bubble`` — ``visibility=["chat"]``
-   + ``ai_behavior="blind"`` blind chat-bubble passthrough.
+4. ``app/main_server/character_runtime.py`` ``render_chat_blocks`` — the text
+   blocks of a ``visibility=["chat"]`` push, rendered as a system message for
+   every ``ai_behavior`` (blind included).
 5. ``app/main_server/character_runtime.py`` HUD ``agent_notification`` — ``visibility=["hud"]``
    toast text.
 
@@ -252,8 +253,8 @@ async def test_main_server_direct_reply_substitutes_master_name(monkeypatch, cap
 @pytest.mark.unit
 async def test_main_server_chat_passthrough_substitutes_master_name(monkeypatch):
     """visibility=["chat"] + ai_behavior="blind" → text goes verbatim to
-    ``passthrough_to_chat_bubble`` (skipping the LLM). Without substitution
-    the literal placeholder renders in the chat bubble. This is the codex
+    ``render_chat_blocks`` (skipping the LLM). Without substitution the
+    literal placeholder renders in the chat bubble. This is the codex
     P2 finding on PR #1422."""
     from app import main_server
 

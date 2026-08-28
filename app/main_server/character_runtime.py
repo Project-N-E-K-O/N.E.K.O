@@ -685,7 +685,8 @@ async def join_sync_connector_tasks(timeout: float = 3.0) -> list[str]:
     return pending
 
 
-# 兼容别名：旧名 join_sync_connector_threads 在文件内有调用，先保留 alias 减小 diff
+# 兼容别名：旧名 join_sync_connector_threads 仍被 app/main_server/__init__.py 引用
+# （上帝文件拆包时调用点搬走了，别名留在定义侧），删名字前先改那边
 join_sync_connector_threads = join_sync_connector_tasks
 
 
@@ -1029,8 +1030,9 @@ async def _handle_agent_event(event: dict):
             return
         if event_type in ("task_result", "proactive_message"):
             raw_text = event.get("text") or ""
-            # Why: chat-blind passthrough must preserve verbatim whitespace;
-            # only the empty-check / log / callback paths use the stripped form.
+            # Why: the chat render must preserve verbatim whitespace (the
+            # plugin authored the text, indentation included); only the
+            # empty-check / log / callback paths use the stripped form.
             text = raw_text.strip()
 
             # v2 push_message: media parts (image/audio/video) ride on the
@@ -1386,8 +1388,10 @@ async def _handle_agent_event(event: dict):
                 # internal deadline on the receiving host instead.
                 expires_at_monotonic = _resolve_callback_expiry(event, origin)
                 # Proactive-delivery hints from push_message (priority +
-                # coalesce_key). Lower priority = more urgent; unspecified
-                # (0) is normalised to a neutral band by the manager.
+                # coalesce_key). HIGHER number = more important; a missing or
+                # unparseable priority falls back to 0 = least important. The
+                # manager does not rescale it (effective_priority just int()s
+                # the value and sorts by (-priority, seq)).
                 try:
                     # OverflowError: JSON Infinity/-Infinity → float → int() raises;
                     # must not let a malformed priority drop the whole callback.
@@ -1453,21 +1457,27 @@ async def _handle_agent_event(event: dict):
                         event_type,
                     )
 
-                # v2 chat+blind passthrough: render verbatim into chat
-                # bubble WITHOUT entering chat-LLM context. Distinct from
-                # mirror_assistant_output (which writes to sync_message_queue
-                # so cross_server may add an AIMessage). Both this branch
-                # and the HUD agent_notification below can fire when
-                # visibility=["chat","hud"] — they're orthogonal sinks.
+                # Visibility, read once for the HUD gate below. Chat
+                # rendering of the plugin's own parts already happened
+                # further up, for every ai_behavior; what is left here is the
+                # orthogonal question of whether a HUD toast also fires, so
+                # visibility=["chat","hud"] lights both sinks and
+                # visibility=["chat"] only the chat one.
                 #
-                # Gated on visibility containing "chat" AND ai_behavior=="blind"
-                # because non-blind ai_behavior already enqueues the LLM
-                # callback above and the AI's own response is what the
-                # user should see in the chat bubble.
+                # ai_behavior is deliberately NOT read here. It used to be:
+                # a local `_ai_behavior` fed a chat branch gated on
+                # visibility=="chat" AND ai_behavior=="blind", which #2835
+                # removed when chat rendering moved above and stopped caring
+                # about ai_behavior. The variable outlived that branch as a
+                # dead assignment and is now gone. If you find yourself adding
+                # it back, check first whether the thing you want actually
+                # belongs in the chat-render block above -- the HUD gate is
+                # visibility-only by design, and reintroducing an ai_behavior
+                # read here would silently re-couple two axes the v2 schema
+                # defines as orthogonal.
                 _vis_raw = event.get("visibility")
                 _vis_present = isinstance(_vis_raw, list)
                 _vis = _vis_raw if _vis_present else []
-                _ai_behavior = (event.get("ai_behavior") or "").strip()
                 # Plugin chat output is rendered above, as a system message,
                 # for every ai_behavior. It used to go through
                 # passthrough_to_chat_bubble here, which wore the assistant's
@@ -1489,6 +1499,23 @@ async def _handle_agent_event(event: dict):
                         "[EventBus] agent_notification suppressed by visibility=%s (no 'hud') for lanlan=%s",
                         _vis,
                         lanlan,
+                    )
+                elif not text:
+                    # The HUD toast renders TEXT and nothing else -- it has no
+                    # image sink. The gate above this block used to be
+                    # ``if text:``; widening it to ``text or
+                    # deferred_callback_images`` was for the LLM delivery
+                    # channel, which genuinely treats images as payload. This
+                    # branch shares that gate but not that property, so an
+                    # image-only push started arriving here and emitting an
+                    # agent_notification whose text is "".
+                    #
+                    # Restoring the precondition locally rather than narrowing
+                    # the shared gate: the callback path must keep accepting
+                    # image-only pushes. The image is not lost either way --
+                    # it rides the proactive callback built above.
+                    logger.debug(
+                        "[EventBus] agent_notification skipped: push carried images but no text",
                     )
                 elif _is_websocket_connected(ws):
                     try:

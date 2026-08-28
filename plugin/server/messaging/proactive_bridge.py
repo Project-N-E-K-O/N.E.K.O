@@ -33,10 +33,17 @@ except Exception:  # pragma: no cover
 logger = get_logger("server.messaging.proactive_bridge")
 
 
-# Map (visibility, ai_behavior) → legacy delivery_mode the existing
-# main_server proactive_message handler understands.  ``visibility`` is
-# treated as a set; we only consult ``"hud"`` membership because
-# proactive_message always also fires the agent_notification HUD path.
+# Map ai_behavior → the legacy delivery_mode the existing main_server
+# proactive_message handler understands: respond → "proactive", read →
+# "passive", blind → "silent" (LLM channel skipped).
+#
+# ``visibility`` is NOT consulted here, despite the signature: it decides
+# where the plugin's own parts render, which is a separate question the
+# host answers on its own. Chat rendering is gated on "chat" membership in
+# ``_handle_agent_event``; the HUD agent_notification is gated on "hud"
+# membership there too, so a proactive_message no longer implies a HUD
+# toast. The parameter is kept so the call site reads as the full
+# (visibility, ai_behavior) pair the schema defines.
 def _resolve_delivery_mode(visibility: list[str], ai_behavior: str) -> str:
     if ai_behavior == "respond":
         return "proactive"
@@ -59,7 +66,13 @@ def _aggregate_text_parts(parts: list[dict[str, Any]]) -> str:
 
 
 def _media_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Filter for image/audio/video parts (passed through to the AI session)."""
+    """Filter for image/audio/video parts.
+
+    The result is only used to decide whether this push carries a payload
+    worth forwarding (``has_ai_payload``). The canonical ``parts`` list is
+    what actually rides on the event; the host derives its own model and
+    chat views from it.
+    """
     out: list[dict[str, Any]] = []
     for p in parts:
         if not isinstance(p, dict):
@@ -216,8 +229,12 @@ class ProactiveBridge:
         parts = payload.get("parts") if isinstance(payload.get("parts"), list) else []
         # Proactive-delivery hints (priority ordering + coalescing). Carried
         # through to the main_server callback so ProactiveDeliveryManager can
-        # order/coalesce. Lower priority = more urgent; unspecified (0) is
-        # normalised to a neutral band downstream.
+        # order/coalesce. Repo-wide convention: HIGHER number = more
+        # important (bilibili gift/SC=9, memo reminder=8). A missing or
+        # unparseable priority falls back to 0 = least important, so a cue
+        # that never set one cannot preempt a cue that did. Nothing rescales
+        # it downstream — main_logic.proactive_delivery.effective_priority
+        # just int()s the value and the queue sorts by (-priority, seq).
         try:
             # OverflowError: plugin payload is boundary input; JSON
             # Infinity/-Infinity → non-finite float → int() raises. Must not
@@ -329,10 +346,12 @@ class ProactiveBridge:
                 "priority": priority,
                 "coalesce_key": coalesce_key,
             }
-            # When ai_behavior=blind we still want the HUD agent_notification
-            # to fire (handled by main_server's existing branch).  Setting
-            # delivery_mode="silent" tells the proactive_message handler to
-            # skip the LLM injection but keep the WS notif.
+            # delivery_mode="silent" (ai_behavior=blind) tells the
+            # proactive_message handler to skip the LLM injection. Whether a
+            # HUD agent_notification still fires is decided separately, by
+            # "hud" membership in visibility — blind + visibility=["chat"]
+            # renders the parts in chat and stays out of the HUD, and
+            # blind + visibility=[] produces no user-facing output at all.
             events_out.append(proactive_event)
 
         if not events_out:
