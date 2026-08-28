@@ -351,14 +351,15 @@ class AvatarToolStore:
             if not recovery_pending:
                 return
             try:
-                self._recover_interrupted_mutations()
+                recovered = self._recover_interrupted_mutations()
             except OSError as exc:
                 raise AvatarToolStoreError(
                     "avatar_tools_directory_unavailable",
                     "Avatar tool storage is unavailable",
                     status_code=503,
                 ) from exc
-            _RECOVERY_PENDING_ROOTS.discard(root_key)
+            if recovered:
+                _RECOVERY_PENDING_ROOTS.discard(root_key)
 
     def initialize(self) -> None:
         """Prepare the store once and recover interrupted mutations."""
@@ -375,7 +376,7 @@ class AvatarToolStore:
                 return
             try:
                 self._ensure_directory()
-                self._recover_interrupted_mutations()
+                recovered = self._recover_interrupted_mutations()
             except AvatarToolStoreError:
                 _RECOVERY_PENDING_ROOTS.add(root_key)
                 raise
@@ -386,7 +387,10 @@ class AvatarToolStore:
                     "Avatar tool storage is unavailable",
                     status_code=503,
                 ) from exc
-            _RECOVERY_PENDING_ROOTS.discard(root_key)
+            if recovered:
+                _RECOVERY_PENDING_ROOTS.discard(root_key)
+            else:
+                _RECOVERY_PENDING_ROOTS.add(root_key)
 
     def quarantine(self, tool_id: str) -> None:
         # 消费点（详情页、静态资源、互动）逐字节校验时发现内容和 record 里的
@@ -401,7 +405,8 @@ class AvatarToolStore:
         if quarantined is not None:
             quarantined.discard(tool_id)
 
-    def _recover_interrupted_mutations(self) -> None:
+    def _recover_interrupted_mutations(self) -> bool:
+        """Resolve interrupted mutations; False when some candidate must wait."""
         def remove_owned_directory(directory: Path) -> None:
             if directory.is_symlink() or not directory.is_dir():
                 return
@@ -417,6 +422,7 @@ class AvatarToolStore:
             for pattern in (LOCAL_AVATAR_TOOL_UPDATE_PATTERN, LOCAL_AVATAR_TOOL_BACKUP_PATTERN)
             if (match := pattern.fullmatch(candidate.name)) is not None
         }
+        complete = True
         for tool_id in tool_ids:
             final = self.root / tool_id
             updating = self.root / f".{tool_id}.updating"
@@ -428,8 +434,22 @@ class AvatarToolStore:
                         final,
                         verify_resources=True,
                     )
-                except AvatarToolStoreError:
-                    pass
+                except AvatarToolStoreError as exc:
+                    if exc.transient:
+                        # 这一轮读不出 final 不代表它坏了。此时若拿 backup 覆盖，
+                        # 就是用旧版本抹掉用户刚更新好的那一份。保留现场，让这个
+                        # 存储根留在待恢复状态，下次再判。
+                        logger.warning(
+                            "Deferring avatar tool recovery for %s: %s", tool_id, exc
+                        )
+                        complete = False
+                        continue
+                except OSError as exc:
+                    logger.warning(
+                        "Deferring avatar tool recovery for %s: %s", tool_id, exc
+                    )
+                    complete = False
+                    continue
                 else:
                     remove_owned_directory(updating)
                     remove_owned_directory(backup)
@@ -441,8 +461,20 @@ class AvatarToolStore:
                         backup,
                         verify_resources=True,
                     )
-                except AvatarToolStoreError:
-                    pass
+                except AvatarToolStoreError as exc:
+                    if exc.transient:
+                        # backup 也只是暂时读不出来：两边都还没被证伪，什么都别动。
+                        logger.warning(
+                            "Deferring avatar tool recovery for %s: %s", tool_id, exc
+                        )
+                        complete = False
+                        continue
+                except OSError as exc:
+                    logger.warning(
+                        "Deferring avatar tool recovery for %s: %s", tool_id, exc
+                    )
+                    complete = False
+                    continue
                 else:
                     if final.is_symlink() or final.is_file():
                         final.unlink()
@@ -462,6 +494,7 @@ class AvatarToolStore:
             if candidate.is_symlink() or not candidate.is_dir():
                 continue
             remove_owned_directory(candidate)
+        return complete
 
     def read_record(
         self,
@@ -869,12 +902,17 @@ class AvatarToolStore:
         # 于是 64 个道具里有一个 record.json 被占用，就能再建出第 65 个。只有
         # 被证伪的记录（JSON 非法、schema 不符、闭包不符）才不占名额。
         occupied = 0
+        quarantined = _QUARANTINED_TOOL_IDS.get(self._root_key(), frozenset())
         for candidate in self.root.iterdir():
             if (
                 candidate.is_symlink()
                 or not candidate.is_dir()
                 or not is_local_avatar_tool_id(candidate.name)
             ):
+                continue
+            if candidate.name in quarantined:
+                # 隔离只认确定性损坏（内容与摘要不符），这类记录已经被证伪，
+                # 和 JSON 非法一样不该占名额 —— 否则用户看不见它却建不了新的。
                 continue
             try:
                 self._read_record_from_directory(

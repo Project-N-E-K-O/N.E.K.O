@@ -2167,3 +2167,108 @@ def test_a_provably_corrupt_record_does_not_hold_a_slot(tmp_path, monkeypatch):
         change_images=[_png()],
     )
     assert [item["id"] for item in store.list_items()] == [created["id"]]
+
+
+@pytest.mark.unit
+def test_recovery_never_lets_a_stale_backup_overwrite_an_unreadable_final(tmp_path, monkeypatch):
+    """A transiently unreadable final must not be replaced by the old backup."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Updated",
+        change_mode="press-swap",
+        change_meanings=["the version the user just saved"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    final = store.root / tool["id"]
+    current_revision = store.record_revision(store.read_record(tool["id"]))
+
+    # 上一次更新已经发布了新 final，但清理 backup 失败，残留了旧版本。
+    backup = store.root / f".{tool['id']}.backup"
+    shutil.copytree(final, backup)
+    (backup / "record.json").write_text(
+        (backup / "record.json").read_text(encoding="utf-8").replace(
+            "the version the user just saved", "the stale backup"
+        ),
+        encoding="utf-8",
+    )
+    # 让 backup 自洽（摘要对得上），否则它本来就会被判损坏而与本用例无关。
+    stale = json.loads((backup / "record.json").read_text(encoding="utf-8"))
+    stale["resourceDigests"] = {
+        name: AvatarToolStore._file_digest(backup / name, 32 * 1024 * 1024)
+        for name in stale["resourceDigests"]
+    }
+    (backup / "record.json").write_text(json.dumps(stale, ensure_ascii=False), encoding="utf-8")
+
+    real_open = Path.open
+
+    def unreadable_final(self, *args, **kwargs):
+        if self.name == "record.json" and str(final) in str(self):
+            raise OSError("final record is locked by another process")
+        return real_open(self, *args, **kwargs)
+
+    root_key = store._root_key()
+    monkeypatch.setattr(Path, "open", unreadable_final)
+    try:
+        store.initialize()
+        # final 必须原样保留，绝不能被旧 backup 顶掉。
+        assert final.is_dir()
+        assert backup.is_dir(), "the backup was consumed despite an unproven final"
+        # 恢复没走完，存储根必须留在待恢复状态。
+        assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+        monkeypatch.undo()
+        monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+        store.initialize()
+
+        # 锁一放开，final 被证明有效，残留 backup 才被清掉。
+        assert not backup.exists()
+        assert store.record_revision(store.read_record(tool["id"])) == current_revision
+        assert store.get_detail(tool["id"])["changeItems"][0]["meaning"] == (
+            "the version the user just saved"
+        )
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+@pytest.mark.unit
+def test_a_quarantined_tool_stops_holding_its_slot(tmp_path, monkeypatch):
+    """Quarantine means proven corruption, so it must free the slot like bad JSON."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.limits["maxTools"] = 1
+    damaged = _create_tool(
+        store,
+        name="Damaged",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    root_key = store._root_key()
+    try:
+        # 名额被占满，此时建不了第二个。
+        with pytest.raises(AvatarToolStoreError) as raised:
+            _create_tool(
+                store, name="Second", change_mode="press-swap", change_meanings=["m"],
+                default_image=_png(), change_images=[_png()],
+            )
+        assert raised.value.code == "tool_limit_reached"
+
+        # 内容被篡改，消费点核验时证伪并隔离它。
+        (store.root / damaged["id"] / "default.png").write_bytes(b"truncated")
+        with pytest.raises(AvatarToolStoreError):
+            store.get_detail(damaged["id"])
+        assert damaged["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
+
+        # 被证伪之后就不该再占着名额。
+        replacement = _create_tool(
+            store, name="Second", change_mode="press-swap", change_meanings=["m"],
+            default_image=_png(), change_images=[_png()],
+        )
+        assert replacement["name"] == "Second"
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
