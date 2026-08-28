@@ -434,6 +434,9 @@ export default function AvatarToolItemManager({
   const suppressClickRef = useRef(false);
   const wasOpenRef = useRef(false);
   const editRequestRef = useRef(0);
+  // 保存请求在途时对话框仍可关闭。用户关掉再开、开始新一轮编辑后，旧请求完成
+  // 时若无条件收尾，就会把新会话切回库页并丢掉他正在填的表单。
+  const managerSessionRef = useRef(0);
 
   useEffect(() => {
     if (!open) {
@@ -450,6 +453,7 @@ export default function AvatarToolItemManager({
     setNotice('');
     setNoticeIsError(false);
     editRequestRef.current += 1;
+    managerSessionRef.current += 1;
     setDragSession(null);
     setDialogDragSession(null);
     suppressClickRef.current = false;
@@ -709,7 +713,9 @@ export default function AvatarToolItemManager({
 
   const deleteEditedTool = async () => {
     if (!onDelete || !editDetail) return;
+    const session = managerSessionRef.current;
     await onDelete(editDetail.id);
+    if (session !== managerSessionRef.current) return;
     setDraftSlots(slots => slots.map(toolId => toolId === editDetail.id ? null : toolId));
     setEditDetail(null);
     setCreateSpecialEnabled(false);
@@ -890,11 +896,13 @@ export default function AvatarToolItemManager({
               setView('library');
             }}
             onSave={async (input) => {
+              const session = managerSessionRef.current;
               if (view === 'edit' && editDetail && onUpdate) {
                 try {
                   await onUpdate(editDetail.id, input as UpdateLocalAvatarToolInput);
                 } catch (cause) {
                   if (cause instanceof LocalAvatarToolRevisionConflictError) {
+                    if (session !== managerSessionRef.current) return;
                     setEditDetail(cause.currentDetail);
                     setCreateSpecialEnabled(!!cause.currentDetail.special);
                     const fallback = 'This tool changed in another window. The latest version has been loaded.';
@@ -910,6 +918,8 @@ export default function AvatarToolItemManager({
               } else if (view === 'create' && onCreate) {
                 await onCreate(input as CreateLocalAvatarToolInput);
               }
+              // 对话框已经被关掉又重开过：这次收尾属于上一个会话，别去动新会话。
+              if (session !== managerSessionRef.current) return;
               setCreateSpecialEnabled(false);
               setEditDetail(null);
               setView('library');

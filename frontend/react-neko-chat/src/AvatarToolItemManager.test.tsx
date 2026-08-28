@@ -479,6 +479,52 @@ describe('AvatarToolItemManager local creation', () => {
     expect(onSave).toHaveBeenCalledWith(['lollipop', 'fist']);
   });
 
+  it('ignores a save that lands after the manager was closed and reopened', async () => {
+    let releaseCreate: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => { releaseCreate = resolve; });
+
+    function Harness() {
+      const [open, setOpen] = useState(true);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(value => !value)}>toggle</button>
+          <AvatarToolItemManager
+            open={open}
+            activeToolIds={['lollipop'] as AvatarToolId[]}
+            availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+            onSave={() => undefined}
+            onCancel={() => undefined}
+            createLimits={LIMITS}
+            onCreate={async () => { await pending; }}
+          />
+        </>
+      );
+    }
+
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Slow One' } });
+    const inputs = document.querySelectorAll<HTMLInputElement>('input[type="file"]');
+    fireEvent.change(inputs[0], { target: { files: [new File(['d'], 'default.png', { type: 'image/png' })] } });
+    fireEvent.change(inputs[1], { target: { files: [new File(['p'], 'pressed.png', { type: 'image/png' })] } });
+    fireEvent.change(document.querySelector('.avatar-tool-create-item-meaning textarea')!, {
+      target: { value: 'A gentle touch' },
+    });
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+    // 请求还在途中，用户关掉对话框、重开、开始新一轮创建。
+    fireEvent.click(screen.getByRole('button', { name: 'toggle' }));
+    fireEvent.click(screen.getByRole('button', { name: 'toggle' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Second Session' } });
+
+    await act(async () => { releaseCreate(); await pending; });
+
+    // 上一轮的收尾不得把新会话切回库页，也不得清掉他正在填的表单。
+    expect(screen.getByRole('dialog', { name: 'Create custom tool' })).toBeTruthy();
+    expect(screen.getByLabelText('Tool name')).toHaveValue('Second Session');
+  });
+
   it('keeps the anchored dialog position when create content grows and desktop layout updates', () => {
     const desktopWindow = window as typeof window & {
       __nekoDesktopCompactLayout?: unknown;
