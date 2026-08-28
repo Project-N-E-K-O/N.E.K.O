@@ -741,7 +741,13 @@ class _StreamingMixin:
             # takes a prefix, and the proactive screenshot is that prefix's
             # first element, so it survives exactly when nothing was dropped.
             _img_count = len(_attached_images)
-            _proactive_attached = bool(proactive_image) and _dropped_images == 0
+            # 直接问「它在不在最终附上的那批里」。原来算的是「有没有丢过东西」，
+            # 那个近似在只有丢弃时成立；现在预算阶梯还会**抽样**（只留头/中/尾），
+            # 队头同样可能不在结果里，成员判断才是准的。
+            _proactive_attached = (
+                bool(proactive_image)
+                and proactive_image in _attached_images
+            )
             logger.info(
                 f"Sending multi-modal message with {_img_count} image(s)"
                 f"{' (incl. proactive screen)' if _proactive_attached else ''}"
