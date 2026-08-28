@@ -514,7 +514,14 @@ class AsrRuntimeMixin:
         then every retained frame stays a candidate, which is the old behaviour.
         """
         runtime = getattr(self, "_asr_runtime", None)
-        onset = getattr(runtime, "_asr_turn_onset_at", None)
+        # 重叠期间优先读 _asr_pending_turn_onset_at：后继发声在前一轮还 DRAINING
+        # 时开口，它的边界先记在 pending 槽里，要等前一轮的 provider final 把那一
+        # 轮激活了才拷进 _asr_turn_onset_at。只读后者的话，整个重叠窗口里拿到的都
+        # 是**前一轮**的 onset —— 封口之后、后继开口之前的帧照样算「本轮的」，占满
+        # 有界缓冲，把后继真正的开头/中间帧挤掉。
+        onset = getattr(runtime, "_asr_pending_turn_onset_at", None)
+        if not isinstance(onset, (int, float)):
+            onset = getattr(runtime, "_asr_turn_onset_at", None)
         if not isinstance(onset, (int, float)):
             return None
         age = time.monotonic() - float(onset)

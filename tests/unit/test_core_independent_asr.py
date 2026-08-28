@@ -11508,3 +11508,47 @@ async def test_a_pending_confirmation_keeps_the_lent_onset() -> None:
     # credit 没被扣（回合没醒），而借出去的 onset 也**没有**被收回。
     assert runtime._asr_overlap_completed_turns == 1
     assert runtime._asr_pending_speech_onset_at is not None
+
+
+@pytest.mark.unit
+async def test_overlap_prerecord_trims_against_the_pending_turn_onset() -> None:
+    """During an overlap the successor's boundary lives in the pending slot.
+
+    Speech that starts while the previous turn is still DRAINING records its
+    onset in ``_asr_pending_turn_onset_at``; it is only copied into
+    ``_asr_turn_onset_at`` once the previous provider final activates that turn.
+    Reading only the latter means the whole overlap window is judged against the
+    PRECEDING turn's onset, so frames from after its endpoint still count as
+    "this turn's" and fill the bounded buffer, evicting the successor's real
+    opening and middle views.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    now = time.monotonic()
+
+    # 前一轮的 onset 很早；后继在它还没收场时开口，边界记在 pending 槽。
+    runtime._asr_runtime._asr_turn_onset_at = now - 40.0
+    runtime._asr_runtime._asr_pending_turn_onset_at = now - 2.0
+
+    # 前一轮封口之后、后继开口之前的帧。
+    for i in range(3):
+        assert runtime._stage_independent_visual_frame(
+            f"between-{i}",
+            source="screen",
+            request_id=f"screen-between-{i}",
+            captured_at=now - 30.0 + i,
+        )
+    # 后继自己的帧。
+    for i in range(2):
+        assert runtime._stage_independent_visual_frame(
+            f"successor-{i}",
+            source="screen",
+            request_id=f"screen-successor-{i}",
+            captured_at=now - 1.5 + i * 0.3,
+        )
+
+    # 只有后继自己的帧留下，中间那些没占名额。
+    assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
+        "successor-0",
+        "successor-1",
+    ]
