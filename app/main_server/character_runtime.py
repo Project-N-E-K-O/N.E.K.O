@@ -1490,6 +1490,23 @@ async def _handle_agent_event(event: dict):
                         _vis,
                         lanlan,
                     )
+                elif not text:
+                    # The HUD toast renders TEXT and nothing else -- it has no
+                    # image sink. The gate above this block used to be
+                    # ``if text:``; widening it to ``text or
+                    # deferred_callback_images`` was for the LLM delivery
+                    # channel, which genuinely treats images as payload. This
+                    # branch shares that gate but not that property, so an
+                    # image-only push started arriving here and emitting an
+                    # agent_notification whose text is "".
+                    #
+                    # Restoring the precondition locally rather than narrowing
+                    # the shared gate: the callback path must keep accepting
+                    # image-only pushes. The image is not lost either way --
+                    # it rides the proactive callback built above.
+                    logger.debug(
+                        "[EventBus] agent_notification skipped: push carried images but no text",
+                    )
                 elif _is_websocket_connected(ws):
                     try:
                         # HUD agent_notification renders verbatim to the user;
