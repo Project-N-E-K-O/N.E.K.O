@@ -207,6 +207,47 @@ async def test_user_attachments_outlive_ambient_frames_under_the_budget():
     assert sent.index("user-attachment") > sent.index("frame-last")
 
 
+async def test_the_budget_actually_keeps_the_attachment_and_drops_a_frame():
+    """Position is the means; survival after trimming is the actual claim.
+
+    The test above only asserts the attachment sits last, which is a necessary
+    condition, not the conclusion. This one feeds the order
+    submit_multimodal_turn really hands over into the real
+    trim_images_to_turn_budget, with a budget it is bound to exceed, and
+    asserts that what got dropped is the oldest ambient frame while the image
+    the user dragged in survives.
+
+    Only the two together prove "a user attachment must not be the first thing
+    the budget drops".
+    """
+    from main_logic import proactive_delivery as pd
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    # 各占预算一半 → 三张必然超额，至少要裁掉最旧的一张。
+    half = pd.TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES // 2
+    frame_a = "a" * (half * 4 // 3)
+    frame_b = "b" * (half * 4 // 3)
+    attachment = "u" * (half * 4 // 3)
+    client._pending_images = [attachment]
+    client.stream_text = AsyncMock()
+
+    assert await client.submit_multimodal_turn(
+        "look",
+        (frame_a, frame_b),
+        turn_id="turn-1",
+    ) is True
+
+    ordered = list(client.stream_text.await_args.kwargs["turn_images"])
+    # 三张各占预算三分之一多一点 → 必然要裁掉最旧的那张。
+    kept, dropped = pd.trim_images_to_turn_budget(ordered)
+
+    assert dropped >= 1, "夹具没造出超额，这条用例测不到裁剪"
+    assert attachment in kept, (
+        "用户拖进来的附件被裁掉了——顺序反了才会这样"
+    )
+    assert frame_a not in kept, "被裁掉的应该是最旧的那张环境帧"
+
+
 async def test_failed_asr_turn_returns_the_attachment_to_the_queue():
     """A failed turn must not eat an image the user deliberately sent."""
     client = OmniOfflineClient.__new__(OmniOfflineClient)
