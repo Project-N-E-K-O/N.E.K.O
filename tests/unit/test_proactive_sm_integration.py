@@ -3900,3 +3900,66 @@ async def test_budget_deferred_callbacks_keep_their_images_for_the_next_turn():
         assert len(cb["media_images"]) == 3
         # 没有吃掉瞬时失败的重试额度 —— 它压根没尝试过。
         assert PASSIVE_MEDIA_RETRY_KEY not in cb
+
+
+async def test_budget_deferral_holds_text_only_callbacks_behind_it_too():
+    """The split is strict FIFO, so text-only cues get deferred as well.
+
+    Checking the deferral marker only when a callback carries media lets a
+    text-only cue queued BEHIND an over-budget one jump ahead of it, which is
+    exactly the ordering the strict-FIFO split exists to preserve. A deferred
+    queue made up only of text cues would be consumed outright.
+    """
+    from main_logic.proactive_delivery import PASSIVE_MEDIA_BUDGET_DEFERRED_KEY
+
+    session = _FakeOmniOffline(delivered=True)
+    session.stream_image = AsyncMock(return_value=None)
+    mgr = _make_mgr(session=session)
+    # 队头把预算占满，后面跟一条纯文本、再跟一条带图。
+    heavy = {
+        "_callback_delivery_id": "id-heavy",
+        "status": "completed",
+        "summary": "heavy media cue",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": [f"heavy-{i}" for i in range(8)],
+    }
+    text_only = {
+        "_callback_delivery_id": "id-text",
+        "status": "completed",
+        "summary": "text cue behind it",
+        "delivery_mode": "passive",
+        "origin": "event",
+    }
+    trailing = {
+        "_callback_delivery_id": "id-trailing",
+        "status": "completed",
+        "summary": "trailing media cue",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["trailing-a"],
+    }
+    # 顺序要紧：纯文本只有在**排在它前面的那条已经溢出**时才会被延后，那正是
+    # 严格 FIFO 的定义。所以先让 trailing 溢出，text_only 跟在它后面。
+    callbacks = [heavy, trailing, text_only]
+    mgr.pending_agent_callbacks = list(callbacks)
+
+    await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        callbacks,
+        session,
+    )
+    assert text_only.get(PASSIVE_MEDIA_BUDGET_DEFERRED_KEY) is True
+
+    # 只拿那条**纯文本**的去 drain：这是 CodeRabbit 指出的第二种情况 ——
+    # 延后队列里只剩纯文本时它会被整条错误消费。用整串 drain 判别不出来，因为
+    # 排在前面的带图 cue 会先 STOP，把差异掩盖掉。
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(
+        mgr,
+        [text_only],
+    )
+
+    # 它被预算推到了下一轮，这一轮不该消费它。
+    assert "text cue behind it" not in rendered
+    assert text_only in mgr.pending_agent_callbacks
+    assert trailing in mgr.pending_agent_callbacks

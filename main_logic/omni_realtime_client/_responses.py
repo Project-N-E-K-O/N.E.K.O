@@ -33,6 +33,10 @@ from ._shared import (
 from typing import Sequence
 
 from config import MAX_MULTIMODAL_TURN_IMAGES
+from main_logic.proactive_delivery import (
+    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+    fit_images_to_turn_budget,
+)
 from config.prompts.prompts_proactive import (
     REALTIME_PROACTIVE_GENERAL_TRIGGER_PROMPTS,
     REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS,
@@ -404,6 +408,32 @@ class _ResponseMixin:
         )
 
         if self._is_gemini:
+            # 上面只管了**张数**和**单张**上限；三张各自合规的帧加起来仍可能逼近
+            # 30 MB。WebSocket 分支后面还有按聚合大小重压/摘帧那一步，Offline 走
+            # fit_images_to_turn_budget —— 只有 Gemini 这条直接把 bytes 交给
+            # send_client_content()，没有任何聚合闸。超限时 provider 整条请求拒收，
+            # 用户这一轮就没了。
+            #
+            # 用与 Offline 同一条阶梯：先抽样、再压缩、都不行才丢，并且至少留一张。
+            _fitted, _notice = await fit_images_to_turn_budget(
+                list(staged_images),
+                TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+            )
+            if _notice:
+                logger.warning(
+                    "Gemini multimodal turn over the %d-byte aggregate budget: "
+                    "%d -> %d image(s) (sampled=%s compressed=%s dropped=%d)",
+                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+                    _notice["original_count"],
+                    _notice["final_count"],
+                    _notice["sampled"],
+                    _notice["compressed"],
+                    _notice["dropped"],
+                )
+                images_bytes = tuple(
+                    self._decode_multimodal_turn_image(image)
+                    for image in _fitted
+                )
             await self._submit_external_gemini_turn(
                 clean,
                 images_bytes=images_bytes,
@@ -772,6 +802,12 @@ class _ResponseMixin:
         if getattr(self, "_gemini_external_outcome_token", None) is not None:
             self._start_gemini_external_submit_quarantine()
             await self._await_gemini_external_quarantine()
+        # 外部 ASR 回合**就是**一次新的用户发声，但这条路径不经过
+        # _transport 里更新 _user_recent_activity_time 的那些点（音频没走 provider）。
+        # 不更新的话 _is_new_turn 会把这一轮的首个内容判成「迟到续帧」：内容被
+        # _interrupted 抑制、欠账不作废，随后它自己的终结把欠账消费掉、跳过结算
+        # —— token 永远挂着，会话被钉成「忙」，她再也不会主动开口。
+        self._user_recent_activity_time = time.time()
         outcome_token = object()
         self._gemini_external_submit_task = submit_task
         self._gemini_external_outcome_token = outcome_token

@@ -3453,22 +3453,24 @@ class IndependentAsrRuntime:
             # credit: replay the onset so the lifecycle is ACTIVE and prepared,
             # then fall through to seal immediately, letting the queued final
             # right behind this endpoint find a DRAINING turn.
-            self._asr_overlap_completed_turns -= 1
+            # ⚠️ 先重放、确认真的醒过来了，**再**记账。重放可能唤不醒这一轮
+            # （会话暂时不可用时停在 PREWARMING）；此时若 credit 已经扣掉，这张
+            # credit 对应的 endpoint 就再也封不了口，紧随其后的 final 会被整条
+            # 丢弃，而被弹出的 onset 还会被更晚的回合继承（拿错视觉窗口）。
             replay_onset_at = (
-                self._asr_overlap_completed_onsets.popleft()
+                self._asr_overlap_completed_onsets[0]
                 if self._asr_overlap_completed_onsets
                 else None
             )
-            if self._asr_overlap_completed_turns == 0:
-                self._asr_overlap_completed_token = None
-                self._asr_overlap_completed_onsets.clear()
             # 把真实开口时刻交给重放：直接确认分支会优先取 pending onset，于是
             # SPEECH_CONFIRMED 打上的是用户当初开口的时刻，而不是这次重放的时刻。
+            _lent_pending_onset = False
             if (
                 replay_onset_at is not None
                 and self._asr_pending_speech_onset_at is None
             ):
                 self._asr_pending_speech_onset_at = replay_onset_at
+                _lent_pending_onset = True
             await self._handle_independent_asr_activity(
                 SpeechActivityEvent.SPEECH_RESUMED,
                 epoch,
@@ -3478,6 +3480,22 @@ class IndependentAsrRuntime:
                 or self._asr_lifecycle is not lifecycle
             ):
                 return
+            if lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE:
+                # 没唤醒。credit 原样留着等下一次兑付；借出去的 onset 也要收回，
+                # 免得它被后面某个不相干的回合当成自己的起点。
+                if (
+                    _lent_pending_onset
+                    and self._asr_pending_speech_onset_at == replay_onset_at
+                ):
+                    self._asr_pending_speech_onset_at = None
+                return
+            # 确认 ACTIVE 之后才记账。
+            self._asr_overlap_completed_turns -= 1
+            if self._asr_overlap_completed_onsets:
+                self._asr_overlap_completed_onsets.popleft()
+            if self._asr_overlap_completed_turns == 0:
+                self._asr_overlap_completed_token = None
+                self._asr_overlap_completed_onsets.clear()
         if lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE:
             if not self._asr_turn_prepared:
                 # A rejected preparation keeps the lifecycle ACTIVE so the

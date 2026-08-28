@@ -11419,3 +11419,50 @@ async def test_a_stale_onset_does_not_evict_the_prerecord_buffer() -> None:
         "frame-1",
         "frame-2",
     ]
+
+
+@pytest.mark.unit
+async def test_overlap_credit_survives_a_replay_that_never_activates() -> None:
+    """Spend the credit on a successful wake-up, not on the attempt.
+
+    The replay can leave the lifecycle short of ACTIVE when the session is
+    momentarily unavailable. Deducting the credit first strands that turn: its
+    endpoint can no longer seal, the final queued right behind it is discarded,
+    and the popped onset goes on to be inherited by an unrelated later turn.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    assert runtime._asr_overlap_completed_turns == 1
+    onset_before = list(runtime._asr_overlap_completed_onsets)
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+    # 重放唤不醒这一轮（会话暂时不可用）。
+    async def refuse_to_wake(*_args, **_kwargs):
+        return None
+
+    runtime._asr_runtime._handle_independent_asr_activity = refuse_to_wake
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    # credit 和 onset 都原样留着，等下一次兑付。
+    assert runtime._asr_overlap_completed_turns == 1
+    assert list(runtime._asr_overlap_completed_onsets) == onset_before
+    # 借出去的 onset 也收回了，不会被后面不相干的回合继承。
+    assert runtime._asr_pending_speech_onset_at is None

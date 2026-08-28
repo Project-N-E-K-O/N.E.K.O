@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import MethodType
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -957,4 +958,31 @@ async def test_a_genuine_new_turn_voids_a_stale_owed_terminal():
     )
 
     assert client._gemini_cancelled_terminal_pending is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_external_submit_establishes_a_new_user_turn():
+    """An external ASR turn IS a user turn; the client has to be told.
+
+    The audio never reaches the provider, so none of the transport-side points
+    that advance ``_user_recent_activity_time`` fire for it. Left stale, the
+    turn's first content is judged a late continuation: it stays suppressed by
+    ``_interrupted``, the owed-terminal credit is never voided, and that turn's
+    own terminal spends the credit instead of settling its token -- which pins
+    ``is_active_response()`` busy for the rest of the session.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._gemini_send_user_turn = AsyncMock()
+    client._start_gemini_external_submit_quarantine = MagicMock()
+    client._await_gemini_external_quarantine = AsyncMock()
+    client._gemini_external_outcome_token = None
+    # AI 刚说过话；用户活动时间戳停在更早。
+    client._ai_recent_activity_time = time.time() - 10.0
+    client._user_recent_activity_time = client._ai_recent_activity_time - 10.0
+
+    await client._submit_external_gemini_turn("用户插话")
+
+    # 用户比 AI 更晚发声 → _is_new_turn 会为真，欠账才有机会被作废。
+    assert client._user_recent_activity_time > client._ai_recent_activity_time
     await client.close()

@@ -3545,7 +3545,11 @@ class ProactiveMixin:
             )
             if _has_media and callback.get("delivery_mode") != "passive":
                 break
-            if _has_media and callback.get(PASSIVE_MEDIA_BUDGET_DEFERRED_KEY):
+            # 无条件检查：split_callbacks_by_image_budget 是**严格 FIFO** 的，预算
+            # 耗尽之后连纯文本 callback 也会被延后。只在 _has_media 时检查的话，
+            # 队列形如「带图(占满预算) → 纯文本 → 带图」时那条纯文本会先被消费掉，
+            # 顺序就反了；而如果溢出队列里只有纯文本，它会被整条错误消费。
+            if callback.get(PASSIVE_MEDIA_BUDGET_DEFERRED_KEY):
                 # 这一轮的图片预算根本没轮到它 —— 它没有「尝试失败」，所以既不套
                 # 重试上限，也不退化成 text-only（退化 = 把它的图永久丢掉，而预算
                 # 延后正是为了避免这个）。保序 STOP，整条留到下一轮。
