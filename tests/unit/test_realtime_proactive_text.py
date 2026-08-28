@@ -5,7 +5,7 @@ import os
 import sys
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -18,6 +18,7 @@ from config.prompts.prompts_proactive import (
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
 from main_logic.omni_realtime_client import _responses as responses_module
 from main_logic.omni_realtime_client import _transport as transport_module
+from main_logic.omni_realtime_client._shared import VisualDeliveryMode
 
 
 DUMMY_IMAGE_B64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP/Z"
@@ -148,6 +149,72 @@ async def test_prompt_ephemeral_selects_screen_prompt_when_visual_context_exists
     assert any("屏幕主动搭话触发" in text for text in input_texts)
     assert any("画面中的具体内容" in text for text in input_texts)
     assert not any("不要假设刚刚看到了新的画面或事件" in text for text in input_texts)
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_description_mode_proactive_still_sends_its_image_with_a_lead_in():
+    """Description mode must not silently burn the proactive snapshot.
+
+    EXTERNAL_DESCRIPTION is a ROUTING decision (independent ASR owns the
+    multimodal handoff), not a provider capability. The handoff itself belongs
+    to an ASR turn, and a proactive nudge has no such turn to hand off to, so
+    returning "handoff_required" left prompt_ephemeral with nothing: it treated
+    the empty result as a terminal analysis failure, retired the exact snapshot
+    via _mark_snapshot_consumed_if_current() and dropped to text-only. Every
+    proactive turn in this mode lost its visual context -- not a race, the
+    steady state.
+
+    The image now goes out raw on the native channel with a short lead-in, and
+    no separate VISION_MODEL annotation is spent on it.
+    """
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+    client._analyze_image_with_vision_model = AsyncMock(
+        side_effect=AssertionError("must not pay for an annotation call here")
+    )
+
+    delivered = await _prompt_and_complete(client, "describe what you notice")
+
+    events = _sent_events(client)
+    event_types = [event.get("type") for event in events]
+    input_texts = _input_texts(events)
+    assert delivered is True
+    # 图真的送出去了，而且排在文字之前。
+    assert event_types.index("input_image_buffer.append") < event_types.index(
+        "conversation.item.create"
+    )
+    # 补了一句引导，明示这不是用户说的话。
+    assert any("上面这张图是此刻的屏幕画面。" in text for text in input_texts)
+    assert any("describe what you notice" in text for text in input_texts)
+    client._analyze_image_with_vision_model.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_description_mode_ambient_frame_still_goes_to_the_handoff():
+    """Dual: only the one-shot cue changes; ambient frames keep staging.
+
+    cache_latest=True is an ambient screen/camera frame, and in description
+    mode those belong to the independent-ASR multimodal turn. Widening the
+    change to them would let ambient frames cross the routing boundary.
+    """
+    client = _make_client()
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+    staged = MagicMock(return_value="staged-result")
+    client.stage_multimodal_frame = staged
+
+    result = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source="screen",
+        request_id="ambient-1",
+        cache_latest=True,
+    )
+
+    assert result == "staged-result"
+    staged.assert_called_once()
     await client.close()
 
 

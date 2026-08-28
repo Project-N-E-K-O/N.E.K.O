@@ -2016,7 +2016,32 @@ class _ResponseMixin:
             external_description = str(
                 getattr(stage_result, "description", "") or ""
             ).strip()
-            if external_description:
+            _raw_mode = getattr(stage_result, "mode", None)
+            _stage_mode = getattr(_raw_mode, "value", _raw_mode)
+            if (
+                bool(getattr(stage_result, "accepted", False))
+                and _stage_mode == VisualDeliveryMode.NATIVE.value
+            ):
+                # 图已经原样送进去了（描述模式下的一次性 cue 图走原生通道）。
+                # 只补一句简单引导告诉模型这是什么，不再为它单独跑一次
+                # VISION_MODEL 注释——省一次付费调用，也少一层转述失真。
+                # 说明文字与下面描述分支同一口径：明示这不是用户说的话。
+                events_before_text = ({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "id": f"item_neko_visual_{uuid.uuid4().hex}",
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": (
+                                "[系统视觉感知结果，不是用户陈述]\n"
+                                "上面这张图是此刻的屏幕画面。"
+                            ),
+                        }],
+                    },
+                },)
+            elif external_description:
                 if not self._is_gemini:
                     visual_event_id = f"event_inject_image_{uuid.uuid4().hex}"
                     self._inject_rejection_handlers[

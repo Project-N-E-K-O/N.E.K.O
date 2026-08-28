@@ -642,6 +642,12 @@ class _TransportMixin:
                 # 是不是当前所有者」，raw-vision fence 管「这一帧还符不符合当前
                 # 路由模式」。等信号量、重压缩超大图都是让出点，两者都可能在这
                 # 期间翻转。
+                #
+                # 注意 expected_visual_mode 是**送出时的那个模式**，不是写死的
+                # NATIVE：fence 要拦的是"帧在准入之后跨过了模式边界"，不是"只准
+                # 在 native 模式下发原始帧"。描述模式下主动搭话的那张一次性 cue
+                # 图就是照原样送的（见 stream_image 里 cache_latest=False 的分支），
+                # 写死 NATIVE 会把它一并拦掉。
                 if send_guard is not None and not send_guard():
                     raise _RealtimeEventOwnerRetired(
                         "realtime event owner is no longer current"
@@ -1119,19 +1125,27 @@ class _TransportMixin:
                 )
             if delivery_mode == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
                 if not cache_latest:
-                    return ImageStageResult(
-                        accepted=False,
-                        mode="handoff_required",
-                        generation=getattr(self, "_latest_image_generation", 0),
-                        rejection_reason="multimodal_handoff_required",
+                    # 一次性 cue 图（主动搭话的那张截图），不是环境帧。
+                    #
+                    # 这里**不**返回 handoff_required：多模态 handoff 是给独立 ASR
+                    # 回合准备的，主动搭话没有那样一个回合可以交接，调用方
+                    # (prompt_ephemeral) 拿不到东西就会把快照判成终局失败、
+                    # _mark_snapshot_consumed_if_current() 永久退休它——于是描述
+                    # 模式下每一次主动搭话都静默丢掉自己的视觉上下文。
+                    #
+                    # 直接落到下面的原生发送路径把图原样送出去，调用方补一句简单
+                    # 引导即可，不再为它单独跑一次 VISION_MODEL 注释。
+                    # 原始帧闸门在上面已经明确豁免了描述模式，所以这里不越权。
+                    # 收不了原始图的 provider（标准 StepFun，_supports_native_image
+                    # 为假）会继续走下面那条 VISION_MODEL 分支——对它们那是唯一通道。
+                    pass
+                else:
+                    return self.stage_multimodal_frame(
+                        image_b64,
+                        source=source,
+                        request_id=request_id,
+                        captured_at=captured_at,
                     )
-
-                return self.stage_multimodal_frame(
-                    image_b64,
-                    source=source,
-                    request_id=request_id,
-                    captured_at=captured_at,
-                )
 
             if not self._supports_native_image and not cache_latest:
                 description = await self._analyze_image_with_vision_model(
@@ -1237,7 +1251,7 @@ class _TransportMixin:
                                 "_visual_delivery_mode",
                                 VisualDeliveryMode.NATIVE,
                             )
-                            != VisualDeliveryMode.NATIVE
+                            != delivery_mode
                             or (
                                 getattr(
                                     self,
@@ -1294,7 +1308,7 @@ class _TransportMixin:
                 sent = await self.send_event(
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
-                    expected_visual_mode=VisualDeliveryMode.NATIVE,
+                    expected_visual_mode=delivery_mode,
                     callback_owned_visual=callback_owned_raw_image,
                 )
                 if not sent and rejection_event_id is not None:
@@ -1401,7 +1415,7 @@ class _TransportMixin:
                 sent = await self.send_event(
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
-                    expected_visual_mode=VisualDeliveryMode.NATIVE,
+                    expected_visual_mode=delivery_mode,
                     callback_owned_visual=callback_owned_raw_image,
                 )
                 if not sent and rejection_event_id is not None:
