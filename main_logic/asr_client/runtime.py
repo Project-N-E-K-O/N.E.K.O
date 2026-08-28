@@ -3586,6 +3586,16 @@ class IndependentAsrRuntime:
             if self._asr_partial_turn_token == turn_token:
                 self._asr_partial_turn_token = None
 
+    def _consume_overlap_completed_credit(self) -> None:
+        """Retire one redeemed completed-overlap credit and its onset."""
+
+        self._asr_overlap_completed_turns -= 1
+        if self._asr_overlap_completed_onsets:
+            self._asr_overlap_completed_onsets.popleft()
+        if self._asr_overlap_completed_turns == 0:
+            self._asr_overlap_completed_token = None
+            self._asr_overlap_completed_onsets.clear()
+
     async def _handle_independent_asr_endpoint(self, epoch: int) -> None:
         """Seal the current turn immediately at its semantic endpoint."""
 
@@ -3638,6 +3648,7 @@ class IndependentAsrRuntime:
                 self._asr_pending_speech_onset_at = replay_onset_at
                 _lent_pending_onset = True
             pending_before = self._asr_pending_speech_confirmed
+            credit_consumed = False
             await self._handle_independent_asr_activity(
                 SpeechActivityEvent.SPEECH_RESUMED,
                 epoch,
@@ -3694,6 +3705,13 @@ class IndependentAsrRuntime:
                 # 无论怎么返回都不会把它丢掉。
                 self._asr_pending_speech_confirmed = False
                 self._asr_pending_speech_onset_at = None
+                # 这张 credit 就是被这次确认兑走的，账要跟着确认一起落。留到
+                # 下面记的话，身份漂移那条 return 会把它跳过：这一轮照常在替换后的
+                # 传输上封口，而陈旧的 credit 与 onset 还压在队列里 —— 后面真实的
+                # overlap 排在它后面，兑付时拿到错的 onset，多出来的那张还会让某个
+                # endpoint 重放到不属于它的回合上，把一条 final 丢掉。
+                self._consume_overlap_completed_credit()
+                credit_consumed = True
                 self._asr_turn_audio_started_at = time.monotonic()
                 self._asr_first_partial_recorded = False
                 confirm_identity = self._capture_runtime_identity(
@@ -3734,13 +3752,9 @@ class IndependentAsrRuntime:
                 ):
                     self._asr_pending_speech_onset_at = None
                 return
-            # 确认 ACTIVE 之后才记账。
-            self._asr_overlap_completed_turns -= 1
-            if self._asr_overlap_completed_onsets:
-                self._asr_overlap_completed_onsets.popleft()
-            if self._asr_overlap_completed_turns == 0:
-                self._asr_overlap_completed_token = None
-                self._asr_overlap_completed_onsets.clear()
+            # 确认 ACTIVE 之后才记账（补确认那条路已经在上面记过了）。
+            if not credit_consumed:
+                self._consume_overlap_completed_credit()
         if lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE:
             if not self._asr_turn_prepared:
                 # A rejected preparation keeps the lifecycle ACTIVE so the

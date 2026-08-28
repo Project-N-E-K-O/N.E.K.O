@@ -12359,6 +12359,11 @@ async def test_credit_redemption_drops_the_pending_slot_when_the_transport_ident
     assert component._asr_pending_speech_confirmed is False
     assert component._asr_pending_speech_onset_at is None
     assert component._asr_turn_onset_at == recorded_onset
+    # 确认已经落地（lifecycle 是 ACTIVE，这一轮会照常封口），所以那张 credit
+    # 必须跟着确认一起记掉，不能被身份漂移那条 return 跳过。
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._asr_overlap_completed_turns == 0
+    assert not component._asr_overlap_completed_onsets
 
     # 身份漂移让这一轮停在 ACTIVE（那次 return 越过了随后的封口）。恢复身份、
     # 把它正常走完，才谈得上「下一次不相干的开口」。
@@ -12375,6 +12380,27 @@ async def test_credit_redemption_drops_the_pending_slot_when_the_transport_ident
     )
     assert component._asr_turn_onset_at != recorded_onset
     assert component._asr_turn_onset_at >= fresh_floor
+
+    # 行为层：后面一次**真实**的 overlap 兑付必须拿到它自己的 onset。credit 若
+    # 被漏记，这张陈旧的会按 FIFO 排在前面先被兑走，这一轮就拿错了开口时刻。
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("third", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_overlap_completed_turns == 1
+    later_onset = component._asr_overlap_completed_onsets[0]
+    assert later_onset != recorded_onset
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    assert component._asr_turn_onset_at == later_onset
+    assert runtime._asr_overlap_completed_turns == 0
 
 
 @pytest.mark.unit
