@@ -8,6 +8,9 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (
   import.meta.env.DEV ? '' : window.location.origin
 )
 export const API_TIMEOUT = 30000 // 30秒
+// 插件后端的启动超时为 30 秒；前端留出传输和错误序列化余量，
+// 使后端的明确启动错误能先于 Axios 超时返回。
+export const PLUGIN_LIFECYCLE_TIMEOUT = 45000
 
 // 插件状态
 export enum PluginStatus {

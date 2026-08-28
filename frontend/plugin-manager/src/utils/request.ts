@@ -16,6 +16,8 @@ export type ErrorDisplayRequestConfig = AxiosRequestConfig & {
   /** Suppress only the expected stopped-plugin response for panel probes. */
   suppressPluginNotRunningMessage?: boolean
   preserveMessagesOn404?: boolean
+  /** i18n key used when Axios, rather than the server, times this request out. */
+  timeoutErrorMessageKey?: string
 }
 
 type HeaderBag = Record<string, unknown> & {
@@ -123,6 +125,26 @@ export function shouldSuppressErrorMessage(error: AxiosError): boolean {
     || shouldSuppressPluginNotRunningMessage(error)
 }
 
+export function isRequestTimeout(error: AxiosError): boolean {
+  return error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT'
+}
+
+let pendingHealthProbe: Promise<boolean> | null = null
+
+/** Verify the server independently of the failed request, without re-entering this interceptor. */
+export function probeServerHealth(): Promise<boolean> {
+  if (pendingHealthProbe) return pendingHealthProbe
+  pendingHealthProbe = axios.get('/health', {
+    baseURL: API_BASE_URL,
+    timeout: 5000,
+  }).then((response) => response.status >= 200 && response.status < 300)
+    .catch(() => false)
+    .finally(() => {
+      pendingHealthProbe = null
+    })
+  return pendingHealthProbe
+}
+
 // 创建 axios 实例
 const service: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -168,6 +190,7 @@ service.interceptors.response.use(
     }
 
     let message = i18n.global.t('messages.requestFailed')
+    let confirmedDisconnected = false
     
     if (error.response) {
       try {
@@ -207,20 +230,35 @@ service.interceptors.response.use(
         default:
           message = formatHttpError(error) || i18n.global.t('messages.requestFailedWithStatus', { status })
       }
+    } else if (error.request && isRequestTimeout(error)) {
+      // Axios 超时只说明当前请求未按时完成，不能据此标记服务器断连。
+      const timeoutMessageKey = (error.config as ErrorDisplayRequestConfig | undefined)
+        ?.timeoutErrorMessageKey || 'messages.requestTimeout'
+      message = i18n.global.t(timeoutMessageKey)
     } else if (error.request) {
-      // 请求已发出，但没有收到响应
-      message = i18n.global.t('messages.networkError')
+      // 只有独立健康检查也失败时，才将无响应请求归类为断网。
+      const serverHealthy = await probeServerHealth()
+      message = serverHealthy
+        ? i18n.global.t('messages.requestFailed')
+        : i18n.global.t('messages.networkError')
+      confirmedDisconnected = !serverHealthy
+      let wasDisconnected = false
       try {
         const connectionStore = useConnectionStore()
-        const wasDisconnected = connectionStore.disconnected
-        connectionStore.markDisconnected()
-        const now = Date.now()
-        if (!suppressErrorMessage && !wasDisconnected && now - lastNetworkErrorShownAt > 15000) {
-          lastNetworkErrorShownAt = now
-          ElMessage.error(message)
+        if (serverHealthy) {
+          connectionStore.markConnected()
+        } else {
+          wasDisconnected = connectionStore.disconnected
+          connectionStore.markDisconnected()
         }
       } catch (err) {
         console.debug('Connection store not available:', err)
+      }
+      const now = Date.now()
+      if (confirmedDisconnected && !suppressErrorMessage && !wasDisconnected
+        && now - lastNetworkErrorShownAt > 15000) {
+        lastNetworkErrorShownAt = now
+        ElMessage.error(message)
       }
     } else {
       // 其他错误
@@ -232,7 +270,7 @@ service.interceptors.response.use(
       return Promise.reject(error)
     }
     
-    if (error.request && !error.response) {
+    if (confirmedDisconnected) {
       return Promise.reject(error)
     }
 
