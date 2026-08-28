@@ -454,6 +454,7 @@ class AvatarToolStore:
                     remove_owned_directory(updating)
                     remove_owned_directory(backup)
                     continue
+            backup_condemned = False
             if backup.is_dir() and not backup.is_symlink():
                 try:
                     self._read_record_from_directory(
@@ -469,6 +470,7 @@ class AvatarToolStore:
                         )
                         complete = False
                         continue
+                    backup_condemned = True
                 except OSError as exc:
                     logger.warning(
                         "Deferring avatar tool recovery for %s: %s", tool_id, exc
@@ -484,6 +486,15 @@ class AvatarToolStore:
                     remove_owned_directory(updating)
                     continue
             remove_owned_directory(updating)
+            if backup_condemned:
+                # 被证伪的 backup 是内部目录：进不了公开目录，UI 也删不掉，却一直
+                # 算在 _current_storage_bytes 里。不清掉它，一个足够大的坏备份会
+                # 让后续创建永久 storage_limit_reached。final 不同 —— 它是用户可见
+                # 的道具，用户自己能删，所以这里不碰。
+                logger.warning(
+                    "Removing a provably invalid avatar tool backup for %s", tool_id
+                )
+                remove_owned_directory(backup)
 
         for candidate in self.root.iterdir():
             if not (
@@ -683,10 +694,13 @@ class AvatarToolStore:
                 except AvatarToolStoreError:
                     raise
                 except OSError as exc:
+                    # 打不开资源不等于资源坏了。不标 transient 的话，恢复会把
+                    # 「这一轮读不到」当成 final 已损坏，拿旧 backup 顶掉它。
                     raise AvatarToolStoreError(
                         "record_invalid",
                         "Avatar tool resource integrity is invalid",
                         status_code=404,
+                        transient=True,
                     ) from exc
                 if actual_digest != resource_digests[filename]:
                     raise AvatarToolStoreError(
@@ -1352,6 +1366,7 @@ class AvatarToolStore:
                         "Retained resource could not be read",
                         status_code=503,
                         field=field,
+                        transient=True,
                     ) from exc
                 expected_digest = current["resourceDigests"].get(resource)
                 if (

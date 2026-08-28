@@ -2272,3 +2272,73 @@ def test_a_quarantined_tool_stops_holding_its_slot(tmp_path, monkeypatch):
         assert replacement["name"] == "Second"
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+@pytest.mark.unit
+def test_recovery_defers_when_a_resource_file_is_unreadable_not_just_the_record(tmp_path, monkeypatch):
+    """The dual of the record.json case: an unreadable asset must not condemn final."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Updated",
+        change_mode="press-swap",
+        change_meanings=["the version the user just saved"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    final = store.root / tool["id"]
+    backup = store.root / f".{tool['id']}.backup"
+    shutil.copytree(final, backup)
+
+    real_open = Path.open
+
+    def unreadable_asset(self, *args, **kwargs):
+        # 这次挡的是资源文件，不是 record.json。
+        if self.name == "default.png" and str(final) in str(self):
+            raise OSError("asset is locked by another process")
+        return real_open(self, *args, **kwargs)
+
+    root_key = store._root_key()
+    monkeypatch.setattr(Path, "open", unreadable_asset)
+    try:
+        store.initialize()
+        assert backup.is_dir(), "the backup was consumed despite an unproven final"
+        assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+        monkeypatch.undo()
+        monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+        store.initialize()
+
+        assert not backup.exists()
+        assert store.get_detail(tool["id"])["changeItems"][0]["meaning"] == (
+            "the version the user just saved"
+        )
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+@pytest.mark.unit
+def test_recovery_removes_a_provably_invalid_backup_so_it_stops_eating_the_quota(tmp_path, monkeypatch):
+    """A condemned backup is invisible and undeletable in the UI; recovery owns it."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.ensure()
+    tool_id = "local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+    # 中断的更新没有留下有效 final，而 .backup 本身是确定性损坏的。
+    backup = store.root / f".{tool_id}.backup"
+    backup.mkdir()
+    (backup / "record.json").write_bytes(b"not-json")
+    (backup / "default.png").write_bytes(b"x" * 4096)
+    assert store._current_storage_bytes() >= 4096
+
+    root_key = store._root_key()
+    try:
+        store.initialize()
+        assert not backup.exists(), "a condemned backup kept occupying the quota"
+        assert store._current_storage_bytes() == 0
+        assert root_key not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
