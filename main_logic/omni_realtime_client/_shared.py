@@ -107,6 +107,11 @@ class ImageStageResult:
     generation: int | None = None
     description: str | None = None
     rejection_reason: str | None = None
+    # 成功送出后仍然注册着的拒绝回调的 event_id。拒绝可能晚于 send 返回才到，所以
+    # stream_image 不能自己摘掉它；但一旦调用方拿到「provider 已处理」的更强证据
+    # （例如 session.updated 屏障），这个 handler 就无关了，而它的闭包扣着整条
+    # callback（可能有数张 ~13MB 的 base64）。把 id 交出去，让那个证据点去摘。
+    rejection_event_id: str | None = None
 
 
 # Opt-in escape hatch for the response arbiter's escalation policy (issue

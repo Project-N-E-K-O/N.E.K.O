@@ -26,7 +26,7 @@ from typing import Any, Optional
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
-from utils.screenshot_utils import MAX_BASE64_SIZE
+from utils.screenshot_utils import validate_inline_image_b64
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
 from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY
@@ -606,18 +606,21 @@ async def _handle_agent_event(event: dict):
                         # 单张大小也不限张数，而这些图会一直挂在 callback 上等待
                         # 投递（队列本身只限条目数，不限条目内的字节）。用的是仓
                         # 库既有的两个判据，不是新发明的预算：
-                        #   - MAX_BASE64_SIZE：stream_image / stage_multimodal_frame
-                        #     拒绝超大帧用的同一个上限；
+                        #   - validate_inline_image_b64：与 process_screen_data
+                        #     同一条「大小 → 解码 → PIL 打开」判据；
                         #   - MAX_MULTIMODAL_TURN_IMAGES：每轮图片数上限。这些图
                         #     最终会作为同一轮的前缀一起送进去，所以就是那个预算。
                         # 超出的按「多余丢弃」处理，并留一行 warning 让插件作者看见
                         # ——与上面 audio/video、url 两处未支持分支的处理一致。
-                        if len(b64) > MAX_BASE64_SIZE:
+                        # 长度检查挡不住「短的垃圾字符串」：它会被原样插进
+                        # data:image/jpeg;base64,... 里送给 provider，足以让
+                        # provider 拒收**承载它的那一整轮用户发言**。所以必须真的
+                        # 解码并打开一次，判据与 process_screen_data 一致。
+                        if not await validate_inline_image_b64(b64):
                             logger.warning(
-                                "[EventBus] image media_part dropped: %d bytes "
-                                "exceeds the %d-byte per-image limit",
+                                "[EventBus] image media_part dropped: not a "
+                                "decodable image (%d chars)",
                                 len(b64),
-                                MAX_BASE64_SIZE,
                             )
                             continue
                         bucket = (

@@ -1390,6 +1390,7 @@ class _TransportMixin:
                         and not callback_owned_raw_image
                         else None
                     ),
+                    rejection_event_id=rejection_event_id,
                 )
             return ImageStageResult(
                 accepted=False,

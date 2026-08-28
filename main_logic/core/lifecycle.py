@@ -3352,6 +3352,15 @@ class LifecycleMixin:
                     )
                 finally:
                     _passive_media_outcome["settled"] = True
+                    # 屏障已经落地，晚到的图片拒绝回调再没有意义了。它们的闭包
+                    # 扣着整条 callback（可能数张 ~13MB base64），不摘的话要等
+                    # 60 秒过期，连续几次成功的图片 callback 就能压着几百 MB。
+                    for _image_event_id in _passive_media_outcome.get(
+                        "rejection_event_ids", ()
+                    ):
+                        getattr(
+                            new_session, "_inject_rejection_handlers", {}
+                        ).pop(_image_event_id, None)
                     new_session.discard_session_update_ack(session_update_ack)
                     if not rejection_wait.done():
                         rejection_wait.cancel()

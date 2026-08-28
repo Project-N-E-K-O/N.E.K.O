@@ -17,6 +17,7 @@ Screenshot analysis utility library
 Provides screenshot analysis, including screenshots sent from the frontend browser and screen-share data stream handling
 """
 import base64
+from binascii import Error as BinasciiError
 import sys
 from typing import Optional, Dict
 from utils.logger_config import get_module_logger
@@ -104,6 +105,31 @@ def decode_and_compress_screenshot_b64(
         img = img.convert("RGB")
     jpg_bytes = compress_screenshot(img, target_h=target_h, quality=quality)
     return base64.b64encode(jpg_bytes).decode("utf-8")
+
+
+async def validate_inline_image_b64(b64: str) -> bool:
+    """Check that a caller-supplied base64 string really is a decodable image.
+
+    For payloads that arrive from an untrusted producer (a plugin's inline
+    ``binary_base64``) and are later interpolated verbatim into a
+    ``data:image/...;base64,`` URL. A string that merely looks non-empty gets
+    sent to the provider as an image and can make it reject the entire turn
+    carrying it, so it has to be decoded and opened before being retained.
+
+    Mirrors the size -> decode -> ``_validate_image_data`` sequence
+    ``process_screen_data`` uses; the PIL work runs off the event loop.
+    """
+    if not isinstance(b64, str) or not b64:
+        return False
+    if len(b64) > MAX_BASE64_SIZE:
+        return False
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (ValueError, BinasciiError):
+        return False
+    if not raw:
+        return False
+    return await asyncio.to_thread(_validate_image_data, raw) is not None
 
 
 async def process_screen_data(data: str) -> Optional[str]:

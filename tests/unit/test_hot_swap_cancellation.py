@@ -1792,3 +1792,68 @@ async def test_passive_native_session_update_ack_commits_callback():
     assert mgr.session is new_session
     assert mgr.pending_agent_callbacks == []
     assert callback_ack.result() is True
+
+
+@pytest.mark.asyncio
+async def test_settled_media_barrier_releases_image_rejection_handlers():
+    """A settled barrier makes late image rejections moot; free their closures.
+
+    ``stream_image`` deliberately leaves each image's rejection handler
+    registered after a successful send, because a provider rejection can arrive
+    later than the send returns. Once the ``session.updated`` barrier proves the
+    provider processed the whole prefix, those handlers are dead weight -- and
+    each closure pins the entire callback, which can hold several multi-megabyte
+    base64 images, until the 60-second expiry.
+    """
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _make_fake_realtime_session("pending")
+    new_session._is_gemini = False
+    new_session._inject_rejection_handlers = {}
+    new_session.instructions = "prompt"
+    _ack_waiters = []
+
+    def _expect_session_update_ack(_instructions):
+        fut = asyncio.get_running_loop().create_future()
+        _ack_waiters.append(fut)
+        # provider 立刻确认：屏障落地，晚到的图片拒绝就无关了。
+        fut.set_result(True)
+        return fut
+
+    new_session.expect_session_update_ack = _expect_session_update_ack
+    new_session.discard_session_update_ack = lambda _fut: None
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+
+    big_payload = "x" * 4096
+    staged_ids = ["evt-callback-image-1", "evt-callback-image-2"]
+    for staged in staged_ids:
+        new_session._inject_rejection_handlers[staged] = (
+            lambda _msg, _held=big_payload: None
+        )
+    # 一个不属于本次媒体投递的 handler，必须原样留着。
+    new_session._inject_rejection_handlers["evt-unrelated"] = lambda _msg: None
+
+    callback = _passive_callback("camera frame delivered")
+    mgr.pending_agent_callbacks = [callback]
+    mgr._select_passive_callbacks_for_swap_prime = (
+        lambda **_kwargs: ([callback], "")
+    )
+    mgr._stage_passive_callback_media = AsyncMock(return_value={
+        "safe_to_continue": True,
+        "native_prefix_committed": True,
+        "native_rejection_pending": True,
+        "rejected": False,
+        "rejection_observed": asyncio.Event(),
+        "settled": False,
+        "rejection_event_ids": list(staged_ids),
+    })
+    mgr._render_claimed_passive_callbacks_for_swap_prime = MagicMock(
+        return_value=([callback], "camera frame delivered")
+    )
+
+    await _run_swap_as_final_swap_task(mgr)
+
+    remaining = set(new_session._inject_rejection_handlers)
+    assert remaining == {"evt-unrelated"}, remaining

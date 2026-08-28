@@ -30,6 +30,25 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+def _tiny_jpeg_b64(colour=(1, 2, 3)) -> str:
+    """A real, decodable JPEG. The ingestion boundary now validates payloads,
+    so placeholder strings are (correctly) rejected as not-an-image."""
+    import base64
+    import io as _io
+
+    from PIL import Image
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (4, 4), colour).save(buf, "JPEG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+_RESPOND_IMG = _tiny_jpeg_b64((10, 20, 30))
+_READ_IMG = _tiny_jpeg_b64((40, 50, 60))
+_RETRY_IMG = _tiny_jpeg_b64((70, 80, 90))
+
+
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.core import LLMSessionManager  # noqa: E402
@@ -413,7 +432,7 @@ async def test_image_only_respond_defers_callback_owned_media(monkeypatch):
             "media_parts": [
                 {
                     "type": "image",
-                    "binary_base64": "respond-image-b64",
+                    "binary_base64": _RESPOND_IMG,
                     "mime": "image/png",
                 }
             ],
@@ -423,7 +442,7 @@ async def test_image_only_respond_defers_callback_owned_media(monkeypatch):
     fake_mgr.session.stream_image.assert_not_awaited()
     fake_mgr.submit_proactive_callback.assert_called_once()
     callback = fake_mgr.submit_proactive_callback.call_args.args[0]
-    assert callback["media_images"] == ["respond-image-b64"]
+    assert callback["media_images"] == [_RESPOND_IMG]
     fake_mgr.enqueue_agent_callback.assert_not_called()
 
 
@@ -470,7 +489,7 @@ async def test_read_image_defers_media_until_passive_callback_consumption(
             "media_parts": [
                 {
                     "type": "image",
-                    "binary_base64": "read-image-b64",
+                    "binary_base64": _READ_IMG,
                     "mime": "image/png",
                 }
             ],
@@ -480,7 +499,7 @@ async def test_read_image_defers_media_until_passive_callback_consumption(
     fake_mgr.session.stream_image.assert_not_awaited()
     fake_mgr.enqueue_agent_callback.assert_called_once()
     callback = fake_mgr.enqueue_agent_callback.call_args.args[0]
-    assert callback["media_images"] == ["read-image-b64"]
+    assert callback["media_images"] == [_READ_IMG]
     assert callback["detail"] == "学习状态更新"
     fake_mgr.submit_proactive_callback.assert_not_called()
 
@@ -526,7 +545,7 @@ async def test_read_image_does_not_probe_current_session_before_enqueue(monkeypa
             "media_parts": [
                 {
                     "type": "image",
-                    "binary_base64": "retry-image-b64",
+                    "binary_base64": _RETRY_IMG,
                     "mime": "image/png",
                 }
             ],
@@ -536,7 +555,7 @@ async def test_read_image_does_not_probe_current_session_before_enqueue(monkeypa
     fake_mgr.enqueue_agent_callback.assert_called_once()
     fake_mgr.session.stream_image.assert_not_awaited()
     callback = fake_mgr.enqueue_agent_callback.call_args.args[0]
-    assert callback["media_images"] == ["retry-image-b64"]
+    assert callback["media_images"] == [_RETRY_IMG]
     fake_mgr.submit_proactive_callback.assert_not_called()
 
 
@@ -1077,9 +1096,19 @@ async def test_plugin_images_are_bounded_at_the_ingestion_boundary(monkeypatch):
     memory and push an unbounded number of images into a single turn's prefix.
     Both limits already exist in the repo -- this boundary just skipped them.
     """
+    import base64 as _b64
+    import io as _io
+
+    from PIL import Image
+
     from app import main_server
     from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
     from utils.screenshot_utils import MAX_BASE64_SIZE
+
+    def _jpeg(colour):
+        buf = _io.BytesIO()
+        Image.new("RGB", (4, 4), colour).save(buf, "JPEG")
+        return _b64.b64encode(buf.getvalue()).decode()
 
     fake_mgr = MagicMock()
     fake_mgr.session = MagicMock()
@@ -1098,11 +1127,15 @@ async def test_plugin_images_are_bounded_at_the_ingestion_boundary(monkeypatch):
     )
 
     oversized = "x" * (MAX_BASE64_SIZE + 1)
+    # 短的垃圾串也必须被拒：它会被原样插进 data:image URL 送给 provider。
+    malformed = "img-0"
+    valid = [_jpeg((i, i, i)) for i in range(MAX_MULTIMODAL_TURN_IMAGES + 4)]
     parts = [
         {"type": "image", "binary_base64": oversized, "mime": "image/png"},
+        {"type": "image", "binary_base64": malformed, "mime": "image/png"},
     ] + [
-        {"type": "image", "binary_base64": f"img-{i}", "mime": "image/png"}
-        for i in range(MAX_MULTIMODAL_TURN_IMAGES + 4)
+        {"type": "image", "binary_base64": b64, "mime": "image/jpeg"}
+        for b64 in valid
     ]
 
     await main_server._handle_agent_event(
@@ -1123,8 +1156,7 @@ async def test_plugin_images_are_bounded_at_the_ingestion_boundary(monkeypatch):
 
     fake_mgr.submit_proactive_callback.assert_called_once()
     retained = fake_mgr.submit_proactive_callback.call_args.args[0]["media_images"]
-    # 超大的那张整张丢掉，其余按每轮上限截断，保留最早的几张。
+    # 超大的和非法的都整张丢掉，其余按每轮上限截断，保留最早的几张。
     assert oversized not in retained
-    assert retained == [
-        f"img-{i}" for i in range(MAX_MULTIMODAL_TURN_IMAGES)
-    ]
+    assert malformed not in retained
+    assert retained == valid[:MAX_MULTIMODAL_TURN_IMAGES]

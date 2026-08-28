@@ -2437,6 +2437,11 @@ class ProactiveMixin:
             # in OmniOfflineClient._pending_images, whose session-global
             # next-consumer semantics let a concurrent text task steal it.
             "system_prefix_images": [],
+            # 送出成功后仍挂着的图片拒绝回调。拒绝可能晚于 send 返回才到，所以
+            # stream_image 不会自己摘；但拿到 session.updated 屏障这种「provider
+            # 已处理」的更强证据之后它们就无关了，而每个闭包扣着整条 callback
+            # （可能数张 ~13MB base64）。交给屏障那一侧按 id 摘掉。
+            "rejection_event_ids": [],
         }
 
         if session is None:
@@ -2617,6 +2622,9 @@ class ProactiveMixin:
                             outcome["safe_to_continue"] = False
                     break
 
+                staged_event_id = getattr(stage_result, "rejection_event_id", None)
+                if staged_event_id:
+                    outcome["rejection_event_ids"].append(staged_event_id)
                 structured = hasattr(stage_result, "accepted")
                 accepted = (
                     bool(stage_result.accepted) if structured else True
