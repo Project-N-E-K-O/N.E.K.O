@@ -222,6 +222,61 @@ async def test_response_arbiter_rejects_cancelled_admission_before_item_send():
 
 
 @pytest.mark.asyncio
+async def test_response_arbiter_runs_pre_commit_right_before_the_write():
+    """pre_commit is the caller's last chance to rewrite an event in place.
+
+    admission_check can only answer "send or not". Some predicates -- visual
+    ownership is the live one -- want "send a downgraded item" instead, because
+    rejecting happens only AFTER the item is committed and then needs an
+    unconfirmed compensating delete. The hook therefore runs after the
+    admission recheck and immediately before the transport write, so it also
+    covers the arbiter's own waits between enqueue() and dispatch.
+    """
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    seen_before_write = []
+
+    def _strip_images(event):
+        # 断言钩子确实跑在写之前：此刻这条 item 还没出现在 sent 里。
+        seen_before_write.append(len(sent))
+        item = event.get("item")
+        item["content"] = [
+            part for part in item["content"] if part.get("type") != "input_image"
+        ]
+
+    ticket = await arbiter.enqueue(
+        source="external_asr_multimodal",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": "data:image/jpeg;base64,x"},
+                        {"type": "input_text", "text": "look"},
+                    ],
+                },
+            },
+        ),
+        pre_commit=_strip_images,
+    )
+    await asyncio.wait_for(ticket.sent, 1.0)
+
+    assert seen_before_write == [0], "钩子必须在这条 item 写出去之前跑"
+    item_events = [e for e in sent if e.get("type") == "conversation.item.create"]
+    assert item_events, "item 没被发出去"
+    content = item_events[0]["item"]["content"]
+    # 图被摘掉了，文字照发。
+    assert all(part["type"] != "input_image" for part in content)
+    assert any(part.get("text") == "look" for part in content)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_response_arbiter_deletes_committed_item_after_admission_invalidates():
     sent = []
     item_write_started = asyncio.Event()

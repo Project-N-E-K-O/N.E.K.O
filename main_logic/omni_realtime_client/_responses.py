@@ -566,18 +566,38 @@ class _ResponseMixin:
         # 就地摘掉图片、保留 transcript，而不是让 admission_check 去拒整条：
         # 那是**提交之后**才拒，需要一次未经确认的补偿删除（见 issue #2982），
         # 比在提交前把帧摘掉贵得多。丢帧只降级成纯文本，话照送。
-        if visual_still_owned is not None and not visual_still_owned():
-            _content = item_event["item"]["content"]
+        def _downgrade_if_visual_ownership_lost(event: Dict[str, Any]) -> None:
+            if visual_still_owned is None or visual_still_owned():
+                return
+            _item = event.get("item")
+            if not isinstance(_item, dict):
+                return
+            _content = _item.get("content")
+            if not isinstance(_content, list):
+                return
             _kept = [
-                part for part in _content if part.get("type") != "input_image"
+                part
+                for part in _content
+                if not (
+                    isinstance(part, dict) and part.get("type") == "input_image"
+                )
             ]
             if len(_kept) != len(_content):
                 logger.info(
-                    "external multimodal turn %s lost visual ownership before "
-                    "dispatch; submitting text-only",
+                    "external multimodal turn %s lost visual ownership; "
+                    "submitting text-only",
                     stable_turn_id,
                 )
-                item_event["item"]["content"] = _kept
+                _item["content"] = _kept
+
+        # 跑两次，位置不同、作用也不同：
+        #   这里（enqueue 之前）—— 覆盖上面重压/摘帧那段 to_thread 让出点，并且
+        #     能在还没占用 arbiter 名额时就把负载降下来；
+        #   pre_commit（dispatch、_worker_send 之前）—— 覆盖 arbiter 内部的等待
+        #     （等活跃响应结束、等发送信号量），那段窗口调用方够不着。
+        # 两次都只摘图、保留 transcript，不走"整条拒"：拒是**提交之后**才发生的，
+        # 要付一次未经确认的补偿删除（issue #2982）。
+        _downgrade_if_visual_ownership_lost(item_event)
         arbiter = self._ensure_response_arbiter()
         ticket = await arbiter.enqueue(
             source="external_asr_multimodal",
@@ -592,6 +612,7 @@ class _ResponseMixin:
                 "_external_voice_turn_pause_id",
                 None,
             ) in (None, stable_turn_id),
+            pre_commit=_downgrade_if_visual_ownership_lost,
         )
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:

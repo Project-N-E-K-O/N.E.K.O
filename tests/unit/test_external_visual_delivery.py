@@ -379,6 +379,68 @@ async def test_openai_turn_drops_frames_lost_while_shrinking_the_item():
 
 
 @pytest.mark.asyncio
+async def test_openai_turn_drops_frames_lost_between_enqueue_and_dispatch():
+    """The pre-enqueue check cannot cover the arbiter's own waits.
+
+    Between enqueue() and the transport write the arbiter still waits on an
+    active response and on the send semaphore. A successor onset invalidates
+    the record synchronously while its prepare_external_voice_turn() is blocked
+    on the Core swap/admission lock, so the ticket's admission_check -- which
+    reads only _external_voice_turn_pause_id -- still passes and the superseded
+    images get committed.
+
+    The pre_commit hook runs immediately before _worker_send, which is the
+    actual transport boundary. It downgrades the item rather than rejecting the
+    ticket: a rejection happens AFTER the item is committed and needs an
+    unconfirmed compensating delete (issue #2982).
+    """
+    client = _make_client("openai", "gpt-4o-realtime-preview")
+    client.ws = AsyncMock()
+    client.handle_interruption = AsyncMock()
+
+    owned = [True]
+    captured: list = []
+
+    async def _fake_enqueue(**kwargs):
+        # 模拟 arbiter：enqueue 返回之后、真正提交之前还有等待，后继回合就在
+        # 这段窗口里拿走了视觉所有权。
+        event = kwargs["events_before_response"][0]
+        owned[0] = False
+        kwargs["pre_commit"](event)
+        captured.append(event)
+        loop = asyncio.get_running_loop()
+        sent, done = loop.create_future(), loop.create_future()
+        sent.set_result(None)
+        done.set_result(None)
+        return SimpleNamespace(sent=sent, done=done)
+
+    _arbiter = SimpleNamespace(
+        enqueue=_fake_enqueue,
+        resume_dispatch=lambda: None,
+        pause_dispatch=lambda: None,
+        cancel_ticket=AsyncMock(),
+        cancel_current=AsyncMock(),
+    )
+    client._ensure_response_arbiter = lambda: _arbiter
+
+    await client.prepare_external_voice_turn(turn_id="turn-late")
+    # 前提自证：送进 arbiter 的那一刻仍然持有所有权（否则测的是上一条的窗口）。
+    assert owned[0] is True
+    await client.submit_multimodal_turn(
+        "看一下这张图",
+        DUMMY_IMAGE_B64,
+        turn_id="turn-late",
+        visual_still_owned=lambda: owned[0],
+    )
+
+    assert captured, "item 没被送进 arbiter"
+    content = captured[0]["item"]["content"]
+    assert all(part["type"] != "input_image" for part in content)
+    assert any(part.get("text") == "看一下这张图" for part in content)
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_gemini_turn_drops_frames_lost_during_the_quarantine_wait():
     """Ownership can still flip after the budget fit, inside the quarantine wait.
 

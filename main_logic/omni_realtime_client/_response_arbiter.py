@@ -179,6 +179,13 @@ class _QueuedResponse:
     cancel_timeout: float = field(compare=False)
     ticket: ResponseTicket = field(compare=False)
     admission_check: Callable[[], bool] | None = field(default=None, compare=False)
+    # 提交前的最后一次就地改写机会。admission_check 只能答"发不发"，而有些判据
+    # （比如视觉所有权）的正确处置是"降级这条 item 再发"，不是整条拒——拒是**提交
+    # 之后**才发生的，要付一次未经确认的补偿删除。回调在 _worker_send 之前、
+    # admission 复查之后逐事件调用，就地改 event。
+    pre_commit: Callable[[dict[str, Any]], None] | None = field(
+        default=None, compare=False
+    )
     item_ack: asyncio.Future[None] | None = field(default=None, compare=False)
     terminal: asyncio.Future[None] | None = field(default=None, compare=False)
     terminal_error: BaseException | None = field(default=None, compare=False)
@@ -359,6 +366,7 @@ class RealtimeResponseArbiter:
         response_done_timeout: float = _DEFAULT_RESPONSE_DONE_TIMEOUT,
         cancel_timeout: float = 3.0,
         admission_check: Callable[[], bool] | None = None,
+        pre_commit: Callable[[dict[str, Any]], None] | None = None,
     ) -> ResponseTicket:
         loop = asyncio.get_running_loop()
         ticket = ResponseTicket(
@@ -412,6 +420,7 @@ class RealtimeResponseArbiter:
             cancel_timeout=cancel_timeout,
             ticket=ticket,
             admission_check=admission_check,
+            pre_commit=pre_commit,
             event_ids=frozenset(ids),
             completed=loop.create_future(),
         )
@@ -2123,6 +2132,12 @@ class RealtimeResponseArbiter:
                     # 于是这条已提交的 item 完全可能还留在会话历史里。此时让调用方
                     # 降级重投就会变成重复的用户回合，还配着过期的视觉上下文。
                     raise RuntimeError("response dispatch interrupted")
+                if queued.pre_commit is not None:
+                    # 提交前的最后一刻，让调用方按自己的判据就地降级这条 event。
+                    # 位置在 admission 复查之后、_worker_send 之前：arbiter 在
+                    # enqueue 与这里之间还有等活跃响应、等发送信号量等多段等待，
+                    # 调用方在 enqueue 前做的检查覆盖不到那段窗口。
+                    queued.pre_commit(event)
                 queued.item_committed = True
                 # main(#2837) 起 _worker_send 按 ticket 路由（queued.event_sender），
                 # 多一个 queued 形参；本轮的提交记账仍留在调用点两侧。
