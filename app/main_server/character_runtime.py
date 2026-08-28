@@ -1463,6 +1463,18 @@ async def _handle_agent_event(event: dict):
                 # orthogonal question of whether a HUD toast also fires, so
                 # visibility=["chat","hud"] lights both sinks and
                 # visibility=["chat"] only the chat one.
+                #
+                # ai_behavior is deliberately NOT read here. It used to be:
+                # a local `_ai_behavior` fed a chat branch gated on
+                # visibility=="chat" AND ai_behavior=="blind", which #2835
+                # removed when chat rendering moved above and stopped caring
+                # about ai_behavior. The variable outlived that branch as a
+                # dead assignment and is now gone. If you find yourself adding
+                # it back, check first whether the thing you want actually
+                # belongs in the chat-render block above -- the HUD gate is
+                # visibility-only by design, and reintroducing an ai_behavior
+                # read here would silently re-couple two axes the v2 schema
+                # defines as orthogonal.
                 _vis_raw = event.get("visibility")
                 _vis_present = isinstance(_vis_raw, list)
                 _vis = _vis_raw if _vis_present else []
