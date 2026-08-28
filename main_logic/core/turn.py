@@ -1648,6 +1648,31 @@ class TurnMixin:
         This is a generic SessionManager capability; it does not assume
         any particular consumer.
 
+        .. warning::
+           **NO PRODUCTION CALLER remains.** That chat-blind push was the
+           only one, and it now renders through :meth:`render_chat_blocks`
+           as a source-labelled SYSTEM message instead — a plugin bubble
+           must not wear the assistant's identity, and a ``chat_blocks``
+           frame opens no assistant turn, so it needs no matching turn-end.
+
+           Two consequences for anyone touching this:
+
+           * The ``blocks`` parameter, ``message["blocks"]``, and the whole
+             ``gemini_response.blocks`` consumer chain on the frontend
+             (``hasStructuredResponseBlocks`` in ``app-websocket.js``, the
+             ``structuredResponseBlocks`` branch in ``app-chat-adapter.js``)
+             are reachable ONLY from tests. A regression there is invisible
+             in production.
+           * The turn-lifecycle contract below is likewise only a contract
+             on paper right now. Honour it if you add a caller back, but do
+             not assume it is being exercised today.
+
+           Kept, rather than deleted, because it is the only way to render
+           verbatim text *as the assistant* without touching chat history —
+           a capability with no other spelling. If nothing claims it,
+           delete it together with the frontend branch above; leaving one
+           half is worse than either.
+
         Returns ``True`` iff a ``gemini_response`` frame was actually
         handed to ``send_json`` without raising. ``False`` covers every
         no-op path: no visible text or structured blocks, websocket missing
