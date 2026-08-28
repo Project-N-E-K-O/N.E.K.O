@@ -61,14 +61,10 @@ from main_logic.voice_turn.audio_input import (
 from main_logic import core as _core_facade
 
 from ._shared import logger
-# onset 可信窗口。判据是「一个回合从确认到建记录最长能等多久」，不是帧的新鲜度：
-# 重叠发声要排在上一轮的 provider final 后面，而 registry 里最长的
-# provider_final_timeout_ms 是 40 秒。留一倍余量。
-_ONSET_TRUST_WINDOW_S = 80.0
-
 from .multimodal_turn import (
     _MAX_PRERECORD_VISUAL_VALIDATIONS,
     _MAX_LIVE_TURN_RECORDS,
+    _ONSET_TRUST_WINDOW_S,
     MultimodalTurn,
     _CoreMultimodalTurnRecord,
     _IndependentVisualFrame,

@@ -10795,15 +10795,17 @@ async def test_endpoint_cutoff_uses_the_recorded_seal_instant() -> None:
 
 @pytest.mark.unit
 async def test_live_seal_between_onset_and_registration_still_binds() -> None:
-    """在飞字段的下界是 started_at，不是 registered_at——这个区别本来没人测。
+    """The live field floors on started_at, not registered_at.
 
-    started_at 会被回拨到语音起点（重叠发声的后继甚至早于上一轮封口），所以
-    "封口 → 注册"之间存在一段真实窗口：极短的一句话完全可能在 record 建立之前
-    就被 ASR 封口。把在飞字段的下界收到 registered_at 的话，这种回合永远绑不上
-    截止点，之后拍的每一帧都会被当成本轮的，把用户停口之后的屏幕折进这一轮。
+    started_at is rolled back to the speech onset (an overlapping successor can
+    even predate the previous turn's seal), so a real window exists between the
+    seal and the registration: a very short utterance can be sealed by ASR
+    before its record is built. Flooring the live field on registered_at would
+    leave such a turn without a cutoff forever, folding everything captured
+    after the user stopped talking into this turn.
 
-    （变异验证发现的覆盖缺口：把 live 分支的 started_at 改成 registered_at，
-    原先整个测试文件都不会红。）
+    Found by mutation: flipping the live branch to registered_at turned nothing
+    red in this whole file before this case existed.
     """
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
@@ -10833,13 +10835,17 @@ async def test_live_seal_between_onset_and_registration_still_binds() -> None:
 
 @pytest.mark.unit
 async def test_previous_turn_seal_in_the_same_tick_is_not_this_turn_cutoff() -> None:
-    """同一个 monotonic tick 里的上一轮封口，不算这一轮的截止点。
+    """A previous turn's seal in the same tick is not this turn's cutoff.
 
-    monotonic 在 Windows 上是 ~15ms 粒度（本文件 _begin_core_multimodal_turn
-    里已经为同一个原因退回过生成号判据），上一轮的封口和后继 record 的注册完全
-    可能落在同一 tick 上而**相等**。若按 >= 判，上一轮的封口会被盖到后继回合
-    头上：这一轮之后拍的每一帧都过不了 accepts()，稍长一点的发声等开头那张过期
-    就整轮退化成纯文本——用户看到的是"她只看见了我刚开口那一瞬"。
+    monotonic is ~15ms coarse on Windows (_begin_core_multimodal_turn in this
+    same module already falls back to a generation criterion for exactly this
+    reason), so the previous turn's seal and the successor record's
+    registration can land in one tick and compare equal. Stamping it onto the
+    successor makes every later frame fail accepts(); once the opening frame
+    expires, a slightly longer utterance degrades to text-only and the user
+    sees "she only caught the instant I started talking".
+
+    The criterion is turn identity, not the timestamp -- see the dual below.
     """
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
@@ -10881,14 +10887,17 @@ async def test_previous_turn_seal_in_the_same_tick_is_not_this_turn_cutoff() -> 
 
 @pytest.mark.unit
 async def test_this_turn_seal_in_the_same_tick_is_still_its_cutoff() -> None:
-    """同 tick 的另一个方向：本轮自己的封口不能因为"撞上注册时刻"被丢掉。
+    """The other direction: this turn's own seal must survive a tick collision.
 
-    很短的一句话完全可能在 record 注册的同一个 ~15ms tick 里就封口；
-    PROVIDER_FINAL 之后 live 字段被清，只剩保留副本。纯按时间戳判的话，往哪个
-    方向猜都会错一半——这里就是"猜相等归上一轮"会错的那一半：本轮的截止点丢了，
-    用户停口之后拍的帧会被折进这条 transcript。
+    A very short utterance can seal inside the same ~15ms tick its record was
+    registered in; PROVIDER_FINAL then clears the live field, leaving only the
+    retained copy. A pure timestamp test is wrong in one direction or the
+    other, and this is the half where "equality belongs to the previous turn"
+    is wrong: this turn loses its cutoff and post-speech frames get folded into
+    its transcript.
 
-    判据因此不是时间戳而是回合身份：runtime 封口时把回合键一并记下。
+    Hence the criterion is turn identity, not the timestamp -- the runtime
+    records which turn the retained seal belongs to.
     """
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
@@ -10916,7 +10925,10 @@ async def test_this_turn_seal_in_the_same_tick_is_still_its_cutoff() -> None:
 
 @pytest.mark.unit
 async def test_a_seal_after_this_record_registered_still_becomes_its_cutoff() -> None:
-    """对偶：真正晚于本轮注册的封口照旧要绑上，别把闸门收成"保留副本一律不认"。"""
+    """Dual: a retained seal that really belongs to this turn still binds.
+
+    Guards against over-tightening the gate into "never trust a retained copy".
+    """
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
     token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=98)
@@ -12226,18 +12238,21 @@ async def test_overlap_credit_survives_a_replay_that_never_activates() -> None:
 
 @pytest.mark.unit
 async def test_an_unwoken_redemption_still_seals_and_delivers_the_queued_final() -> None:
-    """重放没唤醒会话时，endpoint 仍要封口——那条 final 已经在路上了。
+    """An unwoken replay must still seal: its final is already on the way.
 
-    ⚠️ 本用例**取代**了上一轮的 test_a_pending_confirmation_keeps_the_lent_onset，
-    并有意推翻它"留着 onset 等重连后的确认来取"的理由。重连救不回这条 final：
-    _restart_transport() 先把 _asr_session 置 None 再 close，之后 provider 回调
-    全被 is_adopted_candidate() 丢掉。而能走到这里说明老 session 还被认领着，
-    也就是重连还没开始、那条 final 就排在有序 FIFO 里马上到——就地补完确认，
-    让它找得到一个 DRAINING 的回合，才是不丢这句话的唯一办法。
+    This test REPLACES test_a_pending_confirmation_keeps_the_lent_onset and
+    deliberately overturns its reasoning ("hold the onset for the confirmation
+    that follows the reconnect"). The reconnect cannot recover this final:
+    _restart_transport() nulls _asr_session before closing it, after which
+    every provider callback is dropped by is_adopted_candidate(). Reaching this
+    point proves the old session is still adopted -- the reconnect has not
+    started and the final is right behind this endpoint in the ordered FIFO.
+    Completing the confirmation in place, so that final finds a DRAINING turn,
+    is the only way not to lose the utterance.
 
-    HEAD 上的真实回显是：state=PREWARMING、credit 仍为 1、sealed_token=None、
-    warm_expiry 与 final watchdog **两个定时器都是 None**，transcripts 只有
-    ["first"]——既丢了整句话，又留下一个没有任何兜底的忙标志。
+    Measured on HEAD: state=PREWARMING, credit still 1, sealed_token=None, both
+    the warm-expiry and provider-final timers None, transcripts only ["first"]
+    -- the whole sentence lost AND a busy flag left with no timer behind it.
     """
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")
@@ -12298,10 +12313,12 @@ async def test_an_unwoken_redemption_still_seals_and_delivers_the_queued_final()
 
 @pytest.mark.unit
 async def test_an_unwoken_redemption_never_parks_in_an_untimed_busy_state() -> None:
-    """不变量：忙标志必须有定时器兜底，不论实现怎么变。
+    """Invariant: a busy state must always carry a timer, whatever the fix is.
 
-    断的是"不存在 忙态 且 两个定时器都为 None"这个组合，而不是某个具体实现，
-    所以将来换别的补偿方式也依然成立。HEAD 正好落在这个禁止组合里。
+    Asserts the absence of the combination "busy state AND both timers None"
+    rather than any particular implementation, so it survives a different
+    compensation strategy later. HEAD lands squarely in that forbidden
+    combination.
     """
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")

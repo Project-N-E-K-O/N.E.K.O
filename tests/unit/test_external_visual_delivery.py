@@ -796,15 +796,18 @@ async def test_successive_gemini_external_turns_quarantine_the_live_predecessor(
 
 @pytest.mark.asyncio
 async def test_cancelled_external_submit_keeps_its_token_and_arms_quarantine():
-    """取消只结束我们的 await，Gemini 可能已经收下这一轮。
+    """Cancellation only ends our await; Gemini may already have taken the turn.
 
-    TranscriptDispatcher.invalidate_all() 会把取消沿 worker 一路传到这里，而那时
-    send 早就交给 SDK 了。按"没送成"结算 token，等于对外宣称没有在飞的回合：下一
-    轮 prepare 便不会起隔离，那一轮的迟到 transcript / 响应会串进后继回合。
+    TranscriptDispatcher.invalidate_all() propagates cancellation down the
+    worker to here, long after send was handed to the SDK. Settling the token
+    as "never sent" announces that no turn is in flight, so the next prepare
+    starts no quarantine and that turn's late transcript/response bleeds into
+    its successor.
 
-    所以取消路径必须保住 token 并武装隔离。两个断言缺一不可——只断言"token 还在"
-    的话，一个永久挂住 token、把会话钉成"忙"（is_active_response() 读的就是它）的
-    实现也能过；只断言"隔离起了"则漏掉提前结算。
+    Both assertions are needed. Asserting only "the token survives" would also
+    pass for an implementation that pins the token forever and wedges the
+    session busy (is_active_response() reads exactly that token); asserting
+    only "a quarantine was armed" would miss the premature settle.
     """
     client = _make_client("gemini", "gemini-2.0-flash-live-001")
     send_started = asyncio.Event()
@@ -846,9 +849,10 @@ async def test_cancelled_external_submit_keeps_its_token_and_arms_quarantine():
 
 @pytest.mark.asyncio
 async def test_synchronous_external_send_failure_still_settles_immediately():
-    """对偶：provider 当场拒收就是真的没送成，token 要立刻结算。
+    """Dual: a synchronous refusal really did not send, so settle right away.
 
-    否则会话被一张永远等不到终结事件的 token 钉成"忙"，她再也不会主动开口。
+    Otherwise a token that can never receive a terminal event pins the session
+    busy and she never speaks on her own again.
     """
     client = _make_client("gemini", "gemini-2.0-flash-live-001")
     client._gemini_send_user_turn = AsyncMock(

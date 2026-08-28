@@ -36,6 +36,15 @@ _MAX_PRERECORD_VISUAL_VALIDATIONS = 8
 # 兜底，取一个真实场景摸不到的数（同时在飞的 ASR final 不会有这么多）。
 _MAX_LIVE_TURN_RECORDS = 8
 
+# onset 可信窗口。判据是「一个回合从确认到建记录最长能等多久」，不是帧的新鲜度：
+# 重叠发声要排在上一轮的 provider final 后面，而 registry 里最长的
+# provider_final_timeout_ms 是 40 秒。留一倍余量。
+#
+# 放在这里而不是 asr_runtime.py：那是 mixin 模块，顶层只允许 docstring / import /
+# class（scripts/check_core_contracts.py 的 CORE_MIXIN_SHAPE），常量一律落在本模块
+# 再导入过去，与上面两个上限同一处置。
+_ONSET_TRUST_WINDOW_S = 80.0
+
 
 @dataclass(frozen=True, slots=True)
 class _IndependentVisualFrame:

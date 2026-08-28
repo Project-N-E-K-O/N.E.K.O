@@ -453,16 +453,19 @@ def test_swap_prime_render_excludes_retracted_claimed_callback():
 
 
 def test_swap_prime_render_stops_at_a_budget_deferred_callback():
-    """预算延后的那条之后，整条后缀都不许被这次 swap 抢跑。
+    """Nothing after a budget-deferred callback may jump ahead in this swap.
 
-    ``split_callbacks_by_image_budget`` 是严格 FIFO，预算耗尽后**整条后缀**都被
-    标上 PASSIVE_MEDIA_BUDGET_DEFERRED_KEY——包括其中的纯文本 callback。而
-    ``_callback_media_ready_for_session`` 对纯文本 callback 恒为真，所以只按它
-    过滤的话，排在被延后的带图 cue 后面那条纯文本会被 swap 抢先投出去并摘出队列，
-    模型听到的顺序就反了（带图那条还在队列里等下一轮）。
+    ``split_callbacks_by_image_budget`` is strictly FIFO, so once the budget is
+    spent the ENTIRE suffix is marked with PASSIVE_MEDIA_BUDGET_DEFERRED_KEY --
+    including the text-only callbacks in it. ``_callback_media_ready_for_session``
+    returns True for any callback without images, so filtering on it alone lets
+    the text-only entry queued BEHIND a deferred media cue be injected and
+    dequeued by this swap, and the model hears them out of order (the media cue
+    is still queued for the next turn).
 
-    断言落在"后面那条纯文本没被渲染"，而不是"带图那条没被渲染"——后者只按
-    media_ready 过滤也能过，抓不住这个 bug。
+    The assertion is that the trailing text-only callback was not rendered, not
+    that the media one was not: the latter passes under a media_ready-only
+    filter too and would not catch this.
     """
     mgr = _make_swap_manager()
     deferred_media = _passive_callback("带图的，预算没轮到它")
@@ -485,7 +488,10 @@ def test_swap_prime_render_stops_at_a_budget_deferred_callback():
 
 
 def test_swap_prime_render_still_takes_an_undeferred_text_callback():
-    """对偶：没被标延后的纯文本照常渲染，别把闸门开成"凡纯文本都拦"。"""
+    """Dual: an undeferred text-only callback still renders.
+
+    Guards against widening the gate into "hold back every text-only callback".
+    """
     mgr = _make_swap_manager()
     plain = _passive_callback("正常的纯文本通知")
     plain[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True

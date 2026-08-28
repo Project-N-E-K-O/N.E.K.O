@@ -803,18 +803,23 @@ async def test_gemini_outcome_ttl_closes_session_before_releasing_token(monkeypa
 async def test_external_voice_turn_interrupts_before_it_claims_the_new_turn(
     monkeypatch,
 ):
-    """开外部 ASR 回合前，必须真的打断还在生成的那条主动搭话。
+    """Opening an external ASR turn must really interrupt the live proactive one.
 
-    这里是两条加固的交汇点，顺序一错就静默失效：
-    ``note_user_turn_started()`` 会推进 ``_tool_scope_generation``，而隔离的第一
-    道闸 ``scope_still_ours()`` 拿 owner 里记下的 scope 跟它比。若先宣告新回合，
-    该判据恒不相等，隔离每次都走 retire 分支、一次 ``client_content`` 打断都不
-    发；那条已被 SDK 收下、还在生成的主动搭话回合于是毫发无损，外部 ASR 回合直接
-    压在同一个 unscoped SDK session 上，两个回合的音频/文本交错。
+    This is where two hardenings meet, and the wrong order silently disables
+    one of them: ``note_user_turn_started()`` advances
+    ``_tool_scope_generation``, while the quarantine's first gate,
+    ``scope_still_ours()``, compares the scope recorded on the owner against
+    it. Claim the new turn first and that test can never match, so the
+    quarantine always takes its retire branch and sends no ``client_content``
+    interrupt at all -- the proactive turn the SDK already accepted keeps
+    generating, and the external ASR turn piles onto the same unscoped SDK
+    session with the two turns' audio and text interleaved.
 
-    断言的是两件事的**先后**，不是各自发生过。只断言「打断发了」会漏掉「新回合
-    没宣告」；只断言 scope 前进了同样漏——隔离退休 session 时自己也会推一格，
-    把 ``note_user_turn_started()`` 整个删掉，单看 scope 依然在涨。
+    The assertion is the ORDER of the two, not that each happened. Asserting
+    only "an interrupt was sent" would miss "the new turn was never claimed";
+    asserting only that the scope advanced would miss it too, because retiring
+    the session inside the quarantine advances the scope by itself -- delete
+    ``note_user_turn_started()`` entirely and the scope still moves.
     """
     events: list[str] = []
 
