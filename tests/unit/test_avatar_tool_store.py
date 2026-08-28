@@ -1857,3 +1857,65 @@ def test_update_maps_a_retained_read_failure_to_a_controlled_error(tmp_path, mon
         assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+@pytest.mark.unit
+def test_record_read_is_bounded_yet_fits_the_largest_legal_record(tmp_path, monkeypatch):
+    """A damaged multi-GB record must not be pulled into memory on every focus."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    cap = avatar_tool_store.AVATAR_TOOL_MAX_RECORD_BYTES
+
+    # 上限必须从 limits 推出来，而不是拍脑袋：改大 maxChangeImages /
+    # maxMeaningChars / maxNameChars 而忘了调上限，这里要先红。
+    worst_case = {
+        "recordVersion": 2,
+        "id": "local-00000000-0000-4000-8000-000000000000",
+        "name": "羽" * store.limits["maxNameChars"],
+        "defaultImage": "default.png",
+        "imageChange": {
+            "mode": "click-advance",
+            "items": [
+                {"image": f"change-{index:03d}.png", "meaning": "描" * store.limits["maxMeaningChars"]}
+                for index in range(store.limits["maxChangeImages"])
+            ],
+        },
+        "interaction": {
+            "normalSound": "normal.mp3",
+            "special": {
+                "probability": 0.1,
+                "image": "special.png",
+                "meaning": "彩" * store.limits["maxMeaningChars"],
+                "sound": "special.mp3",
+            },
+        },
+        "resourceDigests": {
+            name: "a" * 64
+            for name in ["default.png", "normal.mp3", "special.png", "special.mp3"]
+            + [f"change-{index:03d}.png" for index in range(store.limits["maxChangeImages"])]
+        },
+    }
+    encoded = json.dumps(worst_case, ensure_ascii=False, indent=2).encode("utf-8")
+    assert len(encoded) < cap, f"cap {cap} leaves no room for a legal record of {len(encoded)} bytes"
+
+    tool = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    record_path = store.root / tool["id"] / "record.json"
+    # 合法 record 后面缀上大量空白：JSON 依然可解析、schema 依然通过，所以只有
+    # 「读取有上限」这一条能让它出局 —— 否则断言分不清是被大小拒的还是被结构拒的。
+    record_path.write_bytes(
+        record_path.read_bytes() + b" " * (cap * 2)
+    )
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.read_record(tool["id"])
+    assert raised.value.code == "record_invalid"
+    # 文件过大不等于内容损坏，不该触发隔离。
+    assert raised.value.integrity_mismatch is False
+    assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(store._root_key(), set())

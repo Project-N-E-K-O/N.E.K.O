@@ -72,6 +72,12 @@ AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES = (
     + 1024 * 1024
 )
 
+# record.json 最坏情况：16 条 change item（meaning 各 100 字符）、special、
+# 20 条资源摘要，按 indent=2 落盘也就十几 KB。给到 64 KiB 是四倍余量，同时
+# 让同步盘冲突或磁盘损坏产生的畸形大文件在读进内存之前就被拦下 —— list_items
+# 会对每个道具读一遍 record，而前端每次窗口聚焦都会拉列表。
+AVATAR_TOOL_MAX_RECORD_BYTES = 64 * 1024
+
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MEANING_CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _NAME_SPACES_PATTERN = re.compile(r" +")
@@ -489,7 +495,19 @@ class AvatarToolStore:
         if path.is_symlink() or not path.is_file():
             raise AvatarToolStoreError("tool_not_found", "Avatar tool does not exist", status_code=404)
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            # 有界读取：畸形的多 GB record 只会被读走 64 KiB + 1 字节就出局，
+            # 不会在列表刷新／详情／启动恢复时把内存吃光。
+            with path.open("rb") as stream:
+                raw = stream.read(AVATAR_TOOL_MAX_RECORD_BYTES + 1)
+            if len(raw) > AVATAR_TOOL_MAX_RECORD_BYTES:
+                raise AvatarToolStoreError(
+                    "record_invalid",
+                    "Avatar tool record is invalid",
+                    status_code=404,
+                )
+            payload = json.loads(raw.decode("utf-8"))
+        except AvatarToolStoreError:
+            raise
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404) from exc
         return self._validate_record(
