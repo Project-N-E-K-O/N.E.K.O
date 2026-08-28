@@ -616,13 +616,10 @@ async def _handle_agent_event(event: dict):
                         # data:image/jpeg;base64,... 里送给 provider，足以让
                         # provider 拒收**承载它的那一整轮用户发言**。所以必须真的
                         # 解码并打开一次，判据与 process_screen_data 一致。
-                        if not await validate_inline_image_b64(b64):
-                            logger.warning(
-                                "[EventBus] image media_part dropped: not a "
-                                "decodable image (%d chars)",
-                                len(b64),
-                            )
-                            continue
+                        # 先判名额再校验：校验要 base64 解码 + PIL 全量解像素
+                        # （还占一个 worker 线程），而 push-message schema 对
+                        # parts 的条数没有上限。名额满了之后这些工作全是白做的，
+                        # 一个事件塞几十张接近上限的合法图就能把它串行地耗掉。
                         bucket = (
                             deferred_proactive_images
                             if ai_behavior_v2 == "respond"
@@ -633,6 +630,13 @@ async def _handle_agent_event(event: dict):
                                 "[EventBus] image media_part dropped: already "
                                 "retained %d image(s), the per-turn cap",
                                 MAX_MULTIMODAL_TURN_IMAGES,
+                            )
+                            continue
+                        if not await validate_inline_image_b64(b64):
+                            logger.warning(
+                                "[EventBus] image media_part dropped: not a "
+                                "decodable image (%d chars)",
+                                len(b64),
                             )
                             continue
                         if ai_behavior_v2 == "respond":

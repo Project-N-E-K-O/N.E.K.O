@@ -2501,15 +2501,15 @@ class ProactiveMixin:
         # 标记 → _callback_media_ready_for_session 为假 → drain 不会摘走它），
         # 留给下一轮，而不是丢掉。
         reserved = 0
-        if offline_session:
-            for callback in callbacks:
-                if not isinstance(callback, dict):
-                    continue
-                ready_images = list(callback.get("media_images") or [])
-                if ready_images and self._callback_media_ready_for_session(
-                    callback, session
-                ):
-                    reserved += len(ready_images)
+        committed = 0
+        for callback in callbacks:
+            if not isinstance(callback, dict):
+                continue
+            ready_images = list(callback.get("media_images") or [])
+            if ready_images and self._callback_media_ready_for_session(
+                callback, session
+            ):
+                reserved += len(ready_images)
         for callback in callbacks:
             if not isinstance(callback, dict):
                 continue
@@ -2521,22 +2521,28 @@ class ProactiveMixin:
             if self._callback_media_ready_for_session(callback, session):
                 if offline_session:
                     outcome["system_prefix_images"].extend(images)
-                    reserved -= len(images)
+                committed += len(images)
+                reserved -= len(images)
                 continue
+            # 预算判据与传输无关：不管是 offline 的 system_prefix_images 前缀，
+            # 还是 DIRECT_ATOMIC Realtime 逐张 stream_image 送出去的原生帧，这些图
+            # 最终都落在**同一轮**里。之前只在 offline 分支判，Realtime 那条整个
+            # 绕过去了。
+            if (
+                committed + max(reserved, 0) + len(images)
+                > MAX_MULTIMODAL_TURN_IMAGES
+            ):
+                logger.info(
+                    "[%s] passive callback media deferred: %d image(s) would "
+                    "exceed the %d-image per-turn budget; keeping it queued",
+                    self.lanlan_name,
+                    len(images),
+                    MAX_MULTIMODAL_TURN_IMAGES,
+                )
+                continue
+            # 名额在这里就记账：部分投递失败只会让实际用量更少，偏保守的方向。
+            committed += len(images)
             if offline_session:
-                already = len(outcome["system_prefix_images"])
-                if (
-                    already + max(reserved, 0) + len(images)
-                    > MAX_MULTIMODAL_TURN_IMAGES
-                ):
-                    logger.info(
-                        "[%s] passive callback media deferred: %d image(s) would "
-                        "exceed the %d-image per-turn budget; keeping it queued",
-                        self.lanlan_name,
-                        len(images),
-                        MAX_MULTIMODAL_TURN_IMAGES,
-                    )
-                    continue
                 # Offline stream_image only appends to the session-global
                 # _pending_images queue; it performs no validation.  Mark this
                 # exact session as the owner, then carry the already-validated

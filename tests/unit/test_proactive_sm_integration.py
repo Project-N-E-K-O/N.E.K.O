@@ -3893,3 +3893,53 @@ async def test_per_turn_image_budget_holds_across_the_whole_drained_batch():
     assert [cb["_callback_delivery_id"] for cb in mgr.pending_agent_callbacks] == [
         f"id-batch-{i}" for i in range(1, 6)
     ]
+
+
+async def test_per_turn_image_budget_also_binds_the_direct_atomic_realtime_path():
+    """The budget is a property of the turn, not of the transport.
+
+    Offline carries callback images as a ``system_prefix_images`` prefix;
+    DIRECT_ATOMIC Realtime streams them natively one by one. Both land in the
+    same turn, so a check written inside the offline branch leaves the Realtime
+    path completely unbounded.
+    """
+    from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
+
+    session = _make_voice_sess()
+    session._is_gemini = True
+    session._supports_native_image = True
+    session._visual_delivery_mode = "native"
+    sent = []
+
+    async def stream_image(image_b64, **_kwargs):
+        sent.append(image_b64)
+        return ImageStageResult(accepted=True, mode="native")
+
+    session.stream_image = AsyncMock(side_effect=stream_image)
+    mgr = _make_mgr(session=session)
+    callbacks = [
+        {
+            "_callback_delivery_id": f"id-native-batch-{i}",
+            "status": "completed",
+            "summary": f"camera event {i}",
+            "delivery_mode": "passive",
+            "origin": "event",
+            "media_images": [f"native-{i}-a", f"native-{i}-b"],
+        }
+        for i in range(5)
+    ]
+    mgr.pending_agent_callbacks = list(callbacks)
+
+    await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        callbacks,
+        session,
+    )
+
+    assert len(sent) <= MAX_MULTIMODAL_TURN_IMAGES
+    # 整条整条地放：第一条的两张都送了，后面的一张都没送。
+    assert sent == ["native-0-a", "native-0-b"]
+    # 放不下的留在队列里等下一轮。
+    assert [cb["_callback_delivery_id"] for cb in mgr.pending_agent_callbacks][1:] == [
+        f"id-native-batch-{i}" for i in range(1, 5)
+    ]

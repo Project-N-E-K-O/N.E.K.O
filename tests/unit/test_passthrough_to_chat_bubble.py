@@ -1138,6 +1138,18 @@ async def test_plugin_images_are_bounded_at_the_ingestion_boundary(monkeypatch):
         for b64 in valid
     ]
 
+    validated = {"count": 0}
+    real_validate = main_server.character_runtime.validate_inline_image_b64
+
+    async def counting_validate(b64):
+        validated["count"] += 1
+        return await real_validate(b64)
+
+    monkeypatch.setattr(
+        "app.main_server.character_runtime.validate_inline_image_b64",
+        counting_validate,
+    )
+
     await main_server._handle_agent_event(
         {
             "event_type": "proactive_message",
@@ -1160,3 +1172,5 @@ async def test_plugin_images_are_bounded_at_the_ingestion_boundary(monkeypatch):
     assert oversized not in retained
     assert malformed not in retained
     assert retained == valid[:MAX_MULTIMODAL_TURN_IMAGES]
+    # 名额判在校验之前：超量的那些不该白跑一次 base64 解码 + PIL 全量解像素。
+    assert validated["count"] == MAX_MULTIMODAL_TURN_IMAGES + 2
