@@ -168,8 +168,20 @@ def resolve_user_plugin_base() -> str:
     """The plugin server's ACTUAL loopback origin, right now.
 
     ``USER_PLUGIN_BASE`` is the configured origin. It is not always the live
-    one: when the preferred port is busy the plugin server binds elsewhere and
-    publishes the real port in ``NEKO_USER_PLUGIN_SERVER_PORT``.
+    one: when the preferred port is busy, the LAUNCHER picks a free one and
+    publishes it in ``NEKO_USER_PLUGIN_SERVER_PORT`` before spawning anything,
+    so every child inherits the same answer.
+
+    The launcher is named deliberately. An earlier version of this docstring
+    said "the plugin server binds elsewhere and publishes the real port", which
+    reads as though the server arbitrates its own port and announces it
+    afterwards. It does not, and the difference matters to anyone auditing this
+    path: a server that re-bound on its own could only publish into its OWN
+    environment, which no sibling process would ever see. Port arbitration
+    happens exactly once, in ``launcher_core.runtime.apply_port_strategy``,
+    ahead of every consumer; the plugin HTTP app is hosted in-process by
+    agent_server (``_start_embedded_user_plugin_server``) and merely binds the
+    port it is given, failing loudly if it cannot.
 
     This lives in config, at the bottom of the layering, because four separate
     layers need the same answer -- the process that MINTS media URLs, the main
