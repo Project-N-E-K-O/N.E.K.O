@@ -205,7 +205,7 @@ function moveSlotTool(
   if (sourceIndex === targetIndex) return slots;
   const movingToolId = slots[sourceIndex];
   if (!movingToolId) return slots;
-  const ids = compactSlots(slots, validIds).filter(toolId => toolId !== movingToolId);
+  const ids = compactSlots(slots).filter(toolId => toolId !== movingToolId);
   ids.splice(Math.min(targetIndex, ids.length), 0, movingToolId);
   return createSlots(ids);
 }

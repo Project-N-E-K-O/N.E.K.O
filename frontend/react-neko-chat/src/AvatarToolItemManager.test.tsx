@@ -75,6 +75,31 @@ describe('AvatarToolItemManager local creation', () => {
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled();
   });
 
+  it('reorders slots by drag without crashing', () => {
+    // moveSlotTool 只在拖拽路径上跑，此前没有任何用例覆盖，所以它引用一个不存在
+    // 的标识符也一路绿着 —— 类型检查当时是空转的，vitest 又不做类型检查。
+    const onSave = vi.fn();
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={['lollipop', 'fist', 'hammer'] as AvatarToolId[]}
+        availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+        onSave={onSave}
+        onCancel={() => undefined}
+      />,
+    );
+
+    const slots = document.querySelectorAll<HTMLElement>('[data-avatar-tool-drop-slot]');
+    const source = slots[0].querySelector('.avatar-tool-manager-slot-card') as HTMLElement;
+    fireEvent.pointerDown(source, { pointerType: 'mouse', button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(source, { clientX: 40, clientY: 0 });
+    fireEvent.pointerUp(slots[2], { clientX: 40, clientY: 0 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave.mock.calls[0][0]).toHaveLength(3);
+  });
+
   it('reuses a draft slot whose local tool disappeared from the authoritative catalog', () => {
     const onSave = vi.fn();
     const localTool: AvatarToolItem = {

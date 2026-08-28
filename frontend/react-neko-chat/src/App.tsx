@@ -1132,10 +1132,6 @@ function CompactChatApp({
   const activeToolItem = avatarToolRuntime.activeTool;
   const effectiveAvatarToolVariant = avatarToolRuntime.effectiveVariant;
   const clearActiveAvatarToolSelection = avatarToolRuntime.clearTool;
-  // 删除要 await，期间对话框可以被关掉、用户可以去快捷栏换一个道具。若用闭包
-  // 捕获的旧值判断，就会在删除返回时把用户刚选中的另一个道具清掉。
-  const activeAvatarToolIdRef = useRef(activeAvatarToolId);
-  activeAvatarToolIdRef.current = activeAvatarToolId;
   const handleAvatarQuickbarToolClick = avatarToolRuntime.selectTool;
 
   const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
@@ -1150,10 +1146,15 @@ function CompactChatApp({
 
   const handleLocalAvatarToolDelete = useCallback(async (toolId: `local-${string}`) => {
     await localAvatarToolCatalog.remove(toolId);
-    if (activeAvatarToolIdRef.current === toolId) clearActiveAvatarToolSelection();
+    // 这里读的是闭包捕获值，当前是安全的：管理器入口在快捷栏里，而快捷栏只在
+    // 没有选中道具时才展开（点道具按钮的第一下是退出选择），所以发起删除时
+    // activeAvatarToolId 必然为 null，这个判断恒为假。将来如果新增「选中状态下
+    // 直接删除」的入口，就必须改读运行时的同步当前 ID —— 但别在 render 阶段
+    // 往 ref 里写，那样会把未提交的 render 结果泄进共享状态。
+    if (activeAvatarToolId === toolId) clearActiveAvatarToolSelection();
     setActiveAvatarToolIds(current => current.filter(candidate => candidate !== toolId));
     forgetPersistedAvatarToolId(toolId);
-  }, [clearActiveAvatarToolSelection, localAvatarToolCatalog.remove]);
+  }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.remove]);
 
   useEffect(() => {
     if (!avatarToolManagerOpen) return;

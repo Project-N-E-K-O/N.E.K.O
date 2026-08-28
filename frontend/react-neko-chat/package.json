@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build && npm run sync-css",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "sync-css": "node scripts/sync-css.mjs"
   },
