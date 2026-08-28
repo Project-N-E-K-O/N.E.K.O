@@ -538,8 +538,13 @@
             }
         } else if (window.appButtons && typeof window.appButtons.captureScreenshotToPendingList === 'function') {
             try {
-                window.appButtons.captureScreenshotToPendingList();
-                handled = true;
+                var screenshotCaptureToken = typeof window.appButtons.mintTrustedScreenshotCaptureToken === 'function'
+                    ? window.appButtons.mintTrustedScreenshotCaptureToken(event)
+                    : '';
+                if (screenshotCaptureToken) {
+                    window.appButtons.captureScreenshotToPendingList(screenshotCaptureToken);
+                    handled = true;
+                }
             } catch (error) {
                 console.error('[ReactChatWindow] captureScreenshotToPendingList failed:', error);
                 handled = false;

@@ -29,8 +29,8 @@
 
     function hasTrustedScreenshotActivation(event) {
         var nativeEvent = event && event.nativeEvent ? event.nativeEvent : event;
-        if (nativeEvent) {
-            return nativeEvent.isTrusted === true;
+        if (nativeEvent && nativeEvent.isTrusted === true) {
+            return true;
         }
         try {
             return !!(window.navigator
@@ -81,6 +81,8 @@
         trustedScreenshotCaptureToken = '';
         return true;
     }
+
+    mod.mintTrustedScreenshotCaptureToken = mintTrustedScreenshotCaptureToken;
 
     function wrapScreenshotProxy(proxy) {
         if (!proxy || typeof proxy !== 'object' || proxy[SCREENSHOT_PROXY_GUARD_MARKER] === true) {

@@ -5,33 +5,41 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'app/app-buttons.js'), 'utf8');
+const messageSource = fs.readFileSync(
+    path.join(__dirname, 'app/app-react-chat-window/message-bundle-actions-and-prompts.js'),
+    'utf8'
+);
 
-function extractFunction(name) {
+function extractFunctionFrom(script, name) {
     const marker = `function ${name}(`;
-    let start = source.indexOf(marker);
+    let start = script.indexOf(marker);
     assert.notEqual(start, -1, `missing ${name}`);
-    if (source.slice(Math.max(0, start - 6), start) === 'async ') {
+    if (script.slice(Math.max(0, start - 6), start) === 'async ') {
         start -= 6;
     }
-    const bodyStart = source.indexOf('{', start);
+    const bodyStart = script.indexOf('{', start);
     let depth = 0;
-    for (let index = bodyStart; index < source.length; index += 1) {
-        if (source[index] === '{') depth += 1;
-        if (source[index] === '}') {
+    for (let index = bodyStart; index < script.length; index += 1) {
+        if (script[index] === '{') depth += 1;
+        if (script[index] === '}') {
             depth -= 1;
-            if (depth === 0) return source.slice(start, index + 1);
+            if (depth === 0) return script.slice(start, index + 1);
         }
     }
     throw new AssertionError(`unbalanced ${name}`);
 }
 
-function createScreenshotAuthHarness(cryptoApi) {
+function extractFunction(name) {
+    return extractFunctionFrom(source, name);
+}
+
+function createScreenshotAuthHarness(cryptoApi, userActivationIsActive = false) {
     const context = {
         Uint8Array,
         console: { warn() {} },
         window: {
             crypto: cryptoApi,
-            navigator: { userActivation: { isActive: false } },
+            navigator: { userActivation: { isActive: userActivationIsActive } },
         },
     };
     vm.runInNewContext(`
@@ -83,6 +91,19 @@ test('screenshot authorization requires a trusted activation and a Web Crypto to
     assert.equal(auth.consumeTrustedScreenshotCaptureToken(token), false);
 });
 
+test('screenshot authorization accepts a synthetic forward while user activation is active', () => {
+    const auth = createScreenshotAuthHarness({
+        getRandomValues(bytes) {
+            bytes.fill(0xef);
+            return bytes;
+        },
+    }, true);
+
+    const token = auth.mintTrustedScreenshotCaptureToken({ nativeEvent: { isTrusted: false } });
+    assert.match(token, /^[0-9a-f]{64}$/);
+    assert.equal(auth.consumeTrustedScreenshotCaptureToken(token), true);
+});
+
 test('screenshot capture rejects forged tokens before touching capture dependencies', async () => {
     const context = {
         console: { warn() {} },
@@ -122,4 +143,37 @@ test('screenshot authorization rejects missing crypto and untrusted proxy reques
     assert.equal(proxy.request('forged-token'), false);
     assert.equal(proxy.request(token), 'forwarded');
     assert.equal(forwarded, 1);
+});
+
+test('composer screenshot fallback mints and forwards its activation token', () => {
+    let mintedEvent = null;
+    let capturedToken = null;
+    const context = {
+        console: { error() {}, warn() {} },
+        window: {
+            appButtons: {
+                mintTrustedScreenshotCaptureToken(event) {
+                    mintedEvent = event;
+                    return 'fallback-token';
+                },
+                captureScreenshotToPendingList(token) {
+                    capturedToken = token;
+                    return true;
+                },
+            },
+        },
+        I: {
+            state: {},
+            dispatchHostEvent() {},
+        },
+    };
+    vm.runInNewContext(`
+        ${extractFunctionFrom(messageSource, 'handleComposerScreenshot')}
+        I.handleComposerScreenshot = handleComposerScreenshot;
+    `, context);
+
+    const event = { isTrusted: true };
+    assert.equal(context.I.handleComposerScreenshot(event), true);
+    assert.equal(mintedEvent, event);
+    assert.equal(capturedToken, 'fallback-token');
 });
