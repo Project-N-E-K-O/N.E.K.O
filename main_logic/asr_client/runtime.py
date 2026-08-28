@@ -1057,7 +1057,7 @@ class IndependentAsrRuntime:
             if event.kind == "continuous":
                 lifecycle.mark_pending_turn_speech()
                 if self._asr_pending_turn_onset_at is None:
-                    self._asr_pending_turn_onset_at = time.monotonic()
+                    self._asr_pending_turn_onset_at = detected_at
                 self._asr_pending_detector_candidate = event.candidate
             return
         if state in {
@@ -1249,7 +1249,7 @@ class IndependentAsrRuntime:
         if state is VoiceLifecycleState.DRAINING:
             lifecycle.mark_pending_turn_speech()
             if self._asr_pending_turn_onset_at is None:
-                self._asr_pending_turn_onset_at = time.monotonic()
+                self._asr_pending_turn_onset_at = detected_at
             return wake_is_current()
         if state in {
             VoiceLifecycleState.LOCAL_LISTEN,
@@ -3387,7 +3387,7 @@ class IndependentAsrRuntime:
         ):
             lifecycle.mark_pending_turn_speech()
             if self._asr_pending_turn_onset_at is None:
-                self._asr_pending_turn_onset_at = time.monotonic()
+                self._asr_pending_turn_onset_at = detected_at
             return
         if (
             lifecycle is not None

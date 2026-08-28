@@ -11254,6 +11254,34 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
                 f"line {back + 1} is {stripped!r}"
             )
 
+    # 暂存的 pending turn onset 也必须用进函数时刻。函数入口已经存了 detected_at
+    # （上面那条规则保证它在任何 await 之前），DRAINING 分支再读一次时钟等于把
+    # 「进函数 → 走到这一行」之间拍的帧排除在这段发声之外，而这个字段正是后面
+    # begin_pending_turn 那处 _asr_turn_onset_at 的来源。
+    for index, line in enumerate(source):
+        stripped = line.strip()
+        if not stripped.startswith("self._asr_pending_turn_onset_at = "):
+            continue
+        rhs = stripped.split(" = ", 1)[1]
+        if rhs == "None":
+            continue
+        captures_detected_at = False
+        for back in range(index, -1, -1):
+            # 只在**方法**定义处收边（4 空格缩进）。这些函数里 detected_at 与
+            # DRAINING 分支之间隔着 event_is_current / wake_is_current 这类嵌套
+            # def，按 "任意 def" 收边会提前停下，规则对这两处直接失效。
+            if source[back].startswith(("    def ", "    async def ")):
+                break
+            if source[back].strip() == "detected_at = time.monotonic()":
+                captures_detected_at = True
+                break
+        if not captures_detected_at:
+            continue
+        assert rhs == "detected_at", (
+            f"line {index + 1}: the pending turn onset must carry the entry "
+            f"timestamp its function already captured, got: {rhs!r}"
+        )
+
 
 @pytest.mark.unit
 async def test_reconnect_listener_join_is_bounded() -> None:
