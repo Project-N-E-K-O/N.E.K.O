@@ -3531,3 +3531,98 @@ async def test_gemini_proactive_answers_the_calls_it_gave_up_on(monkeypatch) -> 
         "an abandoned call is retired; its late result must not be sent"
     )
     assert order == ["tool_response", "proactive", "tool"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_proactive_gives_up_a_pending_collectors_whole_batch(
+    monkeypatch,
+) -> None:
+    """A finished-but-unflushed sibling is as abandoned as the running one.
+
+    At the settle deadline the only unsettled task of a batch can be its
+    COLLECTOR -- the calls are done, their results just have not been flushed
+    yet. A collector owns no call, so retiring it answers nothing and does not
+    stop it from sending those results, which after the inject below land in
+    the proactive turn: the cross-turn injection this path exists to prevent.
+    Whatever the collector has not flushed by the deadline is given up with
+    the rest of its batch.
+    """
+
+    import main_logic.omni_realtime_client._responses as responses
+
+    monkeypatch.setattr(responses, "_GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS", 0.05)
+    started_slow = asyncio.Event()
+    release_slow = asyncio.Event()
+    order: list[str] = []
+
+    async def handler(call):
+        if call.call_id == "call-fast":
+            return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+        started_slow.set()
+        await release_slow.wait()
+        order.append("slow tool")
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    class _OrderedSession(_GeminiSession):
+        async def send_client_content(self, *, turns, turn_complete) -> None:
+            order.append("proactive")
+
+        async def send_tool_response(self, *, function_responses) -> None:
+            order.append("tool_response")
+            await super().send_tool_response(function_responses=function_responses)
+
+    monkeypatch.setattr(
+        __import__(
+            "main_logic.omni_realtime_client._gemini_support",
+            fromlist=["types"],
+        ),
+        "types",
+        SimpleNamespace(FunctionResponse=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gemini-live",
+        api_type="gemini",
+        on_tool_call=handler,
+    )
+    session = _OrderedSession()
+    client._gemini_session = session
+    client.ws = session
+    client._on_connection_attached()
+
+    await client._process_gemini_response(
+        _gemini_response(calls=(("call-fast", "alpha"), ("call-slow", "beta"))),
+        provider_session=session,
+        connection_generation=client._connection_generation,
+    )
+    await asyncio.wait_for(started_slow.wait(), timeout=1)
+
+    # Premise: the fast call really did finish, and its result is sitting in
+    # the collector unflushed because its sibling has not settled.
+    entries = client._tool_batch_by_collector_task()[
+        next(iter(client._tool_batch_collector_tasks))
+    ].entries
+    fast_entry = next(e for e in entries if e.call.call_id == "call-fast")
+    await asyncio.wait_for(fast_entry.task, timeout=1)
+    assert session.tool_responses == []
+
+    await asyncio.wait_for(
+        client.inject_text_and_request_response("proactive body"), timeout=2
+    )
+
+    assert len(session.tool_responses) == 1
+    abandoned = session.tool_responses[0]
+    assert sorted(r.id for r in abandoned) == ["call-fast", "call-slow"]
+    assert all(r.response["abandoned"] is True for r in abandoned), (
+        "the finished sibling's real result must not be flushed after the "
+        "inject interrupted the generation that issued it"
+    )
+    assert order == ["tool_response", "proactive"]
+
+    release_slow.set()
+    await _wait_for_tool_tasks(client)
+    assert len(session.tool_responses) == 1
+    assert order == ["tool_response", "proactive", "slow tool"]

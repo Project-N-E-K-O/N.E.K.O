@@ -6406,6 +6406,106 @@ async def test_backpressured_status_send_does_not_block_pipeline_transitions() -
     assert runtime._voice_lease_owner == "none"
 
 
+async def test_pipeline_toggle_during_failure_notify_keeps_ingress_closed() -> None:
+    """A toggle must not reopen the microphone while the route is failing.
+
+    `_voice_input_pipeline_failed` is the ingress gate, and ANY pipeline
+    replacement clears it -- a noise-reduction toggle included. Once the
+    notify phase left the transition lock, such a toggle can land while a
+    backpressured status send is still in flight, i.e. while this failure
+    still owns a blocked route whose lease has not been revoked. Frames would
+    then be parsed, queued and run through the replacement DSP until the route
+    discards them: bounded queue refilled, preprocessing burnt, ingress
+    backpressure tripped, all during what must stay a fail-closed interval.
+    """
+
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime.is_hot_swap_imminent = False
+    runtime.is_flushing_hot_swap_cache = False
+    runtime.session.stream_audio = AsyncMock()
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "glm"
+    assert runtime._begin_voice_input_connection("socket-a") is True
+    runtime._voice_lease_owner = "core"
+    runtime._voice_lease_synchronized = True
+    runtime._asr_runtime.abort = AsyncMock()
+    runtime._asr_runtime.submit = AsyncMock()
+    token = runtime._capture_ingress_token()
+    status_started = asyncio.Event()
+    release_status = asyncio.Event()
+
+    async def backpressured_status(_payload) -> None:
+        status_started.set()
+        await release_status.wait()
+
+    runtime.send_status = AsyncMock(side_effect=backpressured_status)
+    failure = asyncio.create_task(
+        runtime._fail_voice_input_pipeline(
+            ingress_token=token,
+            session_ref=runtime.session,
+            audio_epoch=runtime._audio_stream_epoch,
+            pipeline_ref=runtime._voice_input_audio_pipeline,
+        )
+    )
+    await asyncio.wait_for(status_started.wait(), 1)
+
+    assert await asyncio.wait_for(
+        runtime.apply_voice_input_noise_reduction(False),
+        1,
+    ) is True
+    # Premise: the toggle really did clear the old gate, so anything still
+    # holding ingress closed is the committed failure's own latch.
+    assert runtime._voice_input_pipeline_failed is False
+    replacement = runtime._voice_input_audio_pipeline
+    replacement.process = AsyncMock()
+
+    # Captured HERE, not before the failure. A live client keeps sending PCM
+    # with a current token, so `_ingress_token_matches` passes and the frame
+    # reaches the DSP without any lease check in between -- which is the whole
+    # point. A token snapshotted before the route was blocked would be dropped
+    # by the token fence instead, and this test would prove nothing.
+    live_token = runtime._capture_ingress_token()
+    assert runtime._ingress_token_matches(live_token) is True
+
+    await runtime._process_microphone_stream_data(
+        {"input_type": "audio", "sample_rate_hz": 48_000, "data": [1] * 480},
+        ingress_token=live_token,
+    )
+
+    replacement.process.assert_not_awaited()
+    runtime._asr_runtime.submit.assert_not_awaited()
+    runtime.session.stream_audio.assert_not_awaited()
+
+    release_status.set()
+    await asyncio.wait_for(failure, 1)
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._voice_lease_connection_id == ""
+
+
+async def test_a_live_route_releases_the_pipeline_failure_ingress_latch() -> None:
+    """The latch is fail-closed, not permanent: a live route clears it."""
+
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "glm"
+    runtime._asr_runtime.abort = AsyncMock()
+    runtime._voice_input_audio_pipeline.process = AsyncMock(
+        side_effect=RuntimeError("soxr failed")
+    )
+    token = runtime._capture_ingress_token()
+    await runtime._process_microphone_stream_data(
+        {"input_type": "audio", "sample_rate_hz": 48_000, "data": [1] * 480},
+        ingress_token=token,
+    )
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._voice_input_pipeline_failure_token is not None
+
+    runtime._set_microphone_route("independent")
+    assert runtime._voice_input_pipeline_failure_token is None
+
+
 async def test_pipeline_failure_from_replaced_connection_is_silent() -> None:
     runtime = _Runtime()
     runtime.is_active = True

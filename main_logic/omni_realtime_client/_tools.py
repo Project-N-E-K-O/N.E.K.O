@@ -193,6 +193,7 @@ class _ToolingMixin:
             tool_tasks.discard(completed)
             self._retired_tool_task_registry().discard(completed)
             self._tool_batch_entries_by_task().pop(completed, None)
+            self._tool_batch_by_collector_task().pop(completed, None)
             for call_id in tracked_ids:
                 tasks = tasks_by_call_id.get(call_id)
                 if tasks is None:
@@ -235,6 +236,32 @@ class _ToolingMixin:
             registry = {}
             self._tool_batch_entry_by_task = registry
         return registry
+
+    def _tool_batch_by_collector_task(self) -> Dict[asyncio.Task, _ToolBatch]:
+        """Which batch a collector task speaks for.
+
+        A collector owns no call of its own, so without this it is invisible
+        to anything reasoning about calls. That gap had teeth: when a tool
+        finished just before the proactive settle deadline but its collector
+        had not flushed yet, the only unsettled task was the collector --
+        retiring it answered nothing and did not stop it from sending the
+        real result straight into the proactive turn.
+        """
+
+        registry = getattr(self, "_tool_batch_collector_tasks", None)
+        if registry is None:
+            registry = {}
+            self._tool_batch_collector_tasks = registry
+        return registry
+
+    def _register_tool_batch_collector(
+        self,
+        batch: _ToolBatch,
+        task: asyncio.Task,
+    ) -> asyncio.Task:
+        batch.collector = task
+        self._tool_batch_by_collector_task()[task] = batch
+        return task
 
     def _tool_batch_registry(self) -> Dict[Any, _ToolBatch]:
         """Open raw batches, keyed by the provider response that issued them."""
@@ -384,18 +411,31 @@ class _ToolingMixin:
         """
 
         entries_by_task = self._tool_batch_entries_by_task()
+        batches_by_collector = self._tool_batch_by_collector_task()
         retired = self._retired_tool_task_registry()
         grouped: List[tuple[_ToolTaskOwner, List[ToolResult]]] = []
         slot_by_owner: Dict[int, int] = {}
+        giving_up: List[_ToolBatchEntry] = []
         for task in tasks:
             if task.done():
                 continue
-            entry = entries_by_task.get(task)
             retired.add(task)
-            if entry is None or entry.abandoned:
-                # The collector task of a batch has no entry of its own. It is
-                # retired all the same so nothing else waits on it, but there
-                # is no call to answer for it.
+            entry = entries_by_task.get(task)
+            if entry is not None:
+                giving_up.append(entry)
+            batch = batches_by_collector.get(task)
+            if batch is not None and not batch.sealed:
+                # A pending collector gives up its WHOLE batch, including
+                # calls that already finished but whose result it has not
+                # flushed yet. Retiring the collector alone answers nothing --
+                # it owns no call -- and does not stop it from sending that
+                # finished result, which after the inject below would land in
+                # the proactive turn: exactly the cross-turn injection this
+                # path exists to prevent. A sealed batch is already committed
+                # to its own answer and is left alone.
+                giving_up.extend(batch.entries)
+        for entry in giving_up:
+            if entry.abandoned:
                 continue
             entry.abandoned = True
             slot = slot_by_owner.get(id(entry.owner))
@@ -560,8 +600,9 @@ class _ToolingMixin:
         batch = self._open_raw_tool_batch(owner, response_id)
         self._register_tool_batch_entry(batch, call, owner, task)
         if batch.collector is None:
-            batch.collector = self._create_tool_task(
-                self._answer_raw_tool_batch(batch, owner)
+            self._register_tool_batch_collector(
+                batch,
+                self._create_tool_task(self._answer_raw_tool_batch(batch, owner)),
             )
         return task
 
@@ -604,8 +645,10 @@ class _ToolingMixin:
                     owner=owner,
                 )
 
-        batch.collector = self._create_tool_task(_collect())
-        return batch.collector
+        return self._register_tool_batch_collector(
+            batch,
+            self._create_tool_task(_collect()),
+        )
 
     def _tools_for_openai_realtime(self) -> List[Dict[str, Any]]:
         """OpenAI Realtime / GLM Realtime schema — flat (type/name/

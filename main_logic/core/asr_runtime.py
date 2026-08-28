@@ -508,6 +508,12 @@ class AsrRuntimeMixin:
         if mode != self._asr_route_mode:
             self._microphone_route_generation += 1
         if mode != "blocked":
+            # A live route means no committed pipeline failure owns it any
+            # more, so release the ingress fail-closed latch here -- the one
+            # place that decides the route is usable again. Leaving it to the
+            # pipeline replacement instead is what let an unrelated toggle
+            # reopen ingress mid-failure.
+            self._voice_input_pipeline_failure_token = None
             # Re-arm the one-shot text-mode notice for the next episode, and
             # the lease-resync signal now that a live route exists again.
             self._blocked_text_mode_microphone_signal_state = None
@@ -1921,7 +1927,21 @@ class AsrRuntimeMixin:
             ingress_sequence = self._reserve_hot_swap_ingress_sequence()
         if audio_stream_epoch is None:
             audio_stream_epoch = self._audio_stream_epoch
-        if self._voice_input_pipeline_failed:
+        if (
+            self._voice_input_pipeline_failed
+            # The flag alone stopped being the whole answer once the notify
+            # phase left the transition lock. ANY pipeline replacement clears
+            # it -- a noise-reduction toggle included -- and a toggle can now
+            # land while a backpressured status send is still in flight, i.e.
+            # while this failure still owns a blocked route whose lease has
+            # not been revoked yet. Frames would then be parsed, queued and
+            # run through the replacement DSP until _route_microphone_audio
+            # discards them, refilling the bounded queue and tripping ingress
+            # backpressure during what must stay a fail-closed interval.
+            # The token is cleared only when the route is live again.
+            or getattr(self, "_voice_input_pipeline_failure_token", None)
+            is not None
+        ):
             if sequence_owned:
                 self._complete_hot_swap_ingress_sequence(ingress_sequence)
             return
