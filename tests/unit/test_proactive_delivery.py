@@ -1220,3 +1220,128 @@ def test_submit_reports_nothing_when_nothing_was_evicted():
     delivered = []
     mgr = _make(delivered)
     assert mgr.submit({"text": "fits"}, coalesce_key="k") == []
+
+
+# ---------------------------------------------------------------------------
+# Byte-axis eviction must not eat text-only cues.
+#
+# Both axes drop "the cue that would go out last". For DEPTH that always makes
+# progress -- every cue holds a slot. For BYTES only image-bearing cues hold
+# budget, so the global maximum sort_key is almost always a text cue whose
+# eviction frees nothing, and the loop keeps going until it happens to reach
+# the image cues. The lowest priority in the system is first-party text
+# (topic hooks submit at -20), so the wrong victim is picked by default.
+# ---------------------------------------------------------------------------
+
+
+def _img_cue_payload(decoded_bytes: int, filler: str) -> dict:
+    """A callback whose media_images decode to roughly ``decoded_bytes``."""
+    return {"text": "img", "media_images": [filler * ((decoded_bytes * 4 // 3) // len(filler))]}
+
+
+def test_byte_axis_evicts_image_cues_not_text_cues():
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+
+    # ORDER IS LOAD-BEARING. The text cues must already be queued when the byte
+    # budget blows, because _enforce_queue_budget runs on every submit: if the
+    # image cues are submitted first they are trimmed into budget before any
+    # text cue exists, and a shared victim pool would look identical to a split
+    # one. Submitting text first is what makes the two versions diverge --
+    # verified by mutation (reverting to a shared pool must turn this red).
+    #
+    # priority=-20 is the value first-party topic hooks really submit at
+    # (main_logic/topic/delivery.py), which is BELOW the 0 an unspecified
+    # plugin priority normalises to -- so these are the first cues a shared
+    # pool would reach for.
+    for i in range(10):
+        mgr.submit({"text": f"hook-{i}"}, priority=-20, coalesce_key=f"hook{i}")
+
+    # Now overflow the 32 MiB queue ceiling: 8 MiB each, the per-push model
+    # budget a single cue can carry.
+    per_cue = pd.CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    for i in range(5):
+        mgr.submit(_img_cue_payload(per_cue, "I"), priority=9, coalesce_key=f"img{i}")
+
+    survivors = [c.callback.get("text") for c in mgr._queue]
+    # Every text cue survives: they never held a single byte of the budget.
+    for i in range(10):
+        assert f"hook-{i}" in survivors, f"text cue hook-{i} was evicted by the byte axis"
+    # And the budget is actually enforced -- this is not "the loop did nothing".
+    assert sum(mgr._cue_image_bytes(c) for c in mgr._queue) <= pd.QUEUED_IMAGE_MAX_TOTAL_BYTES
+    # Which means image cues DID get dropped.
+    assert sum(1 for c in mgr._queue if mgr._cue_image_bytes(c) > 0) < 5
+
+
+def test_byte_axis_keeps_the_queue_within_the_depth_ceiling_too():
+    """The shared-pool version cut a 56-cue burst down to 4 against a 50 ceiling.
+
+    Enforcing the byte budget must not collapse the queue far below the depth
+    limit it also advertises.
+    """
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    per_cue = pd.CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    # Text first -- see the ordering note in the test above.
+    for i in range(40):
+        mgr.submit({"text": f"plain-{i}"}, priority=0, coalesce_key=f"p{i}")
+    for i in range(8):
+        mgr.submit(_img_cue_payload(per_cue, "I"), priority=9, coalesce_key=f"img{i}")
+
+    assert len(mgr._queue) > 40, f"queue collapsed to {len(mgr._queue)}"
+    assert len(mgr._queue) <= pd.QUEUED_CUE_MAX_COUNT
+    assert sum(mgr._cue_image_bytes(c) for c in mgr._queue) <= pd.QUEUED_IMAGE_MAX_TOTAL_BYTES
+
+
+def test_byte_axis_victim_is_the_last_image_cue_to_release():
+    """Ordering rule is unchanged -- only the candidate pool narrowed."""
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    per_cue = pd.CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    # Same priority, so FIFO decides: the newest image cue goes first.
+    for i in range(5):
+        cb = _img_cue_payload(per_cue, "I")
+        cb["tag"] = f"img{i}"
+        mgr.submit(cb, priority=5, coalesce_key=f"img{i}")
+
+    remaining = [c.callback.get("tag") for c in mgr._queue]
+    assert "img0" in remaining, "the longest-waiting image cue must survive"
+    assert "img4" not in remaining, "the newest image cue must be the first evicted"
+
+
+def test_depth_axis_victim_rule_is_unchanged():
+    """Guards the half of the loop that was NOT supposed to change."""
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    mgr.submit({"text": "important"}, priority=9, coalesce_key="imp")
+    for i in range(pd.QUEUED_CUE_MAX_COUNT):
+        mgr.submit({"text": f"noise-{i}"}, priority=0, coalesce_key=f"n{i}")
+
+    survivors = [c.callback.get("text") for c in mgr._queue]
+    assert len(survivors) == pd.QUEUED_CUE_MAX_COUNT
+    # High-priority waiter survives; the newest low-priority cue is the victim.
+    assert "important" in survivors
+    assert f"noise-{pd.QUEUED_CUE_MAX_COUNT - 1}" not in survivors
+    assert "noise-0" in survivors
+
+
+def test_byte_axis_still_acks_the_cues_it_drops():
+    """Dropped cues must be told, same as a TTL drop."""
+    from main_logic import proactive_delivery as pd
+
+    delivered = []
+    mgr = _make(delivered)
+    per_cue = pd.CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    keys = []
+    for i in range(6):
+        keys.append(mgr.submit(_img_cue_payload(per_cue, "I"), priority=5, coalesce_key=f"img{i}"))
+
+    assert any(k for k in keys), "byte-axis eviction must report evicted keys"

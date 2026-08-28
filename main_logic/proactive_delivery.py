@@ -412,11 +412,29 @@ class ProactiveDeliveryManager:
     def _enforce_queue_budget(self) -> list[str]:
         """Bound what the queue holds, by cue count and by queued image bytes.
 
-        Drops in REVERSE release order -- the cue that would have gone out last
-        goes first -- so an over-budget burst sheds its own least important,
-        most recent tail instead of the important cue that has waited longest.
-        Release order is (priority DESC, FIFO), so that victim is simply the
-        maximum sort_key.
+        Both axes drop in REVERSE release order -- the cue that would have gone
+        out last goes first -- so an over-budget burst sheds its own least
+        important, most recent tail instead of the important cue that has
+        waited longest. Release order is (priority DESC, FIFO), so that victim
+        is simply the maximum sort_key.
+
+        The two axes do NOT share a candidate pool, and that is the whole point
+        of splitting the loop. "Shed your own tail" holds for the DEPTH axis,
+        where every cue occupies exactly one slot, so evicting any cue makes
+        progress. It does not hold for the BYTE axis, where only image-bearing
+        cues occupy budget: picking the global maximum sort_key there selects a
+        text-only cue with a near-certain probability -- text cues outnumber
+        image cues and the lowest priority in the system belongs to first-party
+        text (topic hooks submit at -20). Evicting it frees zero bytes, the
+        loop does not terminate, and it keeps eating text cues until the image
+        cues it was supposed to bound finally come into range. Measured on the
+        shared-pool version: a burst of 48 text cues plus 8 full-size image
+        cues left a queue of 4, against a depth ceiling of 50, with all 48 text
+        cues acked False.
+
+        That ack is not a silent drop -- topic hooks resolve a delivery future
+        on it and burn their one-shot quota -- so the cost of picking the wrong
+        victim lands on first-party features that never touched an image.
 
         Dropped cues are acked False, the same as a TTL drop: the producer is
         told its cue will not be delivered rather than being left waiting.
@@ -424,22 +442,48 @@ class ProactiveDeliveryManager:
         evicted_keys: list[str] = []
         if not self._queue:
             return evicted_keys
-        queued_bytes = sum(self._cue_image_bytes(c) for c in self._queue)
-        while self._queue and (
-            len(self._queue) > QUEUED_CUE_MAX_COUNT
-            or queued_bytes > QUEUED_IMAGE_MAX_TOTAL_BYTES
-        ):
-            victim = max(self._queue, key=lambda c: c.sort_key)
+
+        def _evict(victim: "_QueuedCue", reason: str, remaining_bytes: int) -> int:
             self._queue.remove(victim)
-            queued_bytes -= self._cue_image_bytes(victim)
+            freed = self._cue_image_bytes(victim)
             if victim.coalesce_key:
                 evicted_keys.append(victim.coalesce_key)
             resolve_callback_delivery_ack(victim.callback, False)
             logger.info(
-                "[proactive%s] dropping queued cue key=%r reason=queue_budget "
+                "[proactive%s] dropping queued cue key=%r reason=%s "
                 "(depth=%d bytes=%d)",
-                self._suffix(), victim.coalesce_key, len(self._queue), queued_bytes,
+                self._suffix(), victim.coalesce_key, reason,
+                len(self._queue), remaining_bytes - freed,
             )
+            return freed
+
+        queued_bytes = sum(self._cue_image_bytes(c) for c in self._queue)
+
+        # Depth axis: every cue occupies a slot, so any cue is a valid victim
+        # and the rule is unchanged from the shared-pool version.
+        while len(self._queue) > QUEUED_CUE_MAX_COUNT:
+            victim = max(self._queue, key=lambda c: c.sort_key)
+            queued_bytes -= _evict(victim, "queue_depth", queued_bytes)
+
+        # Byte axis: same ordering rule, but only among cues that actually hold
+        # bytes. Run second because freeing bytes can only shrink the queue --
+        # it can never push the depth axis back over its ceiling, so no loop
+        # back to the first pass is needed.
+        while queued_bytes > QUEUED_IMAGE_MAX_TOTAL_BYTES:
+            carriers = [c for c in self._queue if self._cue_image_bytes(c) > 0]
+            if not carriers:
+                # Unreachable while the running total is accurate: bytes can
+                # only come from carriers. Kept as an accounting backstop so a
+                # future bookkeeping bug degrades to "budget not enforced"
+                # instead of spinning forever.
+                logger.warning(
+                    "[proactive%s] byte budget over (%d) with no image-bearing "
+                    "cue to evict; leaving queue as-is",
+                    self._suffix(), queued_bytes,
+                )
+                break
+            victim = max(carriers, key=lambda c: c.sort_key)
+            queued_bytes -= _evict(victim, "queue_bytes", queued_bytes)
         return evicted_keys
 
     def retract(self, callback: dict) -> bool:
