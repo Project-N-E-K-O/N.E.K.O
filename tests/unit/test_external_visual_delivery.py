@@ -304,6 +304,52 @@ async def test_gemini_turn_drops_frames_lost_while_fitting_the_image_budget():
 
 
 @pytest.mark.asyncio
+async def test_gemini_turn_drops_frames_lost_during_the_quarantine_wait():
+    """Ownership can still flip after the budget fit, inside the quarantine wait.
+
+    _submit_external_gemini_turn() awaits _await_gemini_external_quarantine()
+    when a previous turn's token is still outstanding, and a successor can
+    invalidate this record inside that wait. Checking only after the budget fit
+    therefore misses it -- and checking there at all only ran when the budget
+    actually trimmed something. The check belongs immediately before the SDK
+    send.
+
+    The sentence still goes out; only the frames are dropped.
+    """
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    session = AsyncMock()
+    client._gemini_session = session
+    client.ws = session
+    client.handle_interruption = AsyncMock()
+    client._analyze_image_with_vision_model = AsyncMock()
+
+    owned = [True]
+
+    async def _lose_ownership_in_quarantine():
+        owned[0] = False
+
+    client._await_gemini_external_quarantine = _lose_ownership_in_quarantine
+    # 让 _submit_external_gemini_turn 头部走进隔离等待那条分支。
+    client._gemini_external_outcome_token = object()
+
+    await client.prepare_external_voice_turn(turn_id="turn-quarantine")
+    await client.submit_multimodal_turn(
+        "看一下这张图",
+        DUMMY_IMAGE_B64,
+        turn_id="turn-quarantine",
+        visual_still_owned=lambda: owned[0],
+    )
+
+    # 前提自证：预算拟合那一刻仍然持有（否则测的不是隔离窗口这条路）。
+    assert owned[0] is False
+    session.send_client_content.assert_awaited_once()
+    content = session.send_client_content.await_args.kwargs["turns"][0]
+    assert all(part.inline_data is None for part in content.parts)
+    assert any(part.text == "看一下这张图" for part in content.parts)
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_gemini_multimodal_turn_carries_the_sampled_span_in_one_content():
     """The sampled span shares one Content and still triggers one reply."""
     from config import MAX_MULTIMODAL_TURN_IMAGES

@@ -478,15 +478,17 @@ class _ResponseMixin:
                 # 把这一轮误降级。
                 #
                 # 丢帧只降级成纯文本，话照送 —— 与本 PR 其它三处所有权判据一致。
-                if visual_still_owned is not None and not visual_still_owned():
-                    logger.info(
-                        "Gemini multimodal turn lost visual ownership while "
-                        "fitting the image budget; submitting text-only"
-                    )
-                    images_bytes = ()
+                #
+                # ⚠️ 复查**不**放在这里，而是穿到 _submit_external_gemini_turn 里
+                # 紧贴 SDK 送出的那一刻。理由有二：
+                #   1. 放这里会被关在 `if _notice:` 之内，不裁剪时根本不跑；
+                #   2. 这之后还有一个让出点——_submit_external_gemini_turn 头部的
+                #      _await_gemini_external_quarantine()，后继回合可以在那段等待
+                #      里让本轮 record 失效。
             await self._submit_external_gemini_turn(
                 clean,
                 images_bytes=images_bytes,
+                visual_still_owned=visual_still_owned,
             )
             return None
         if self.ws is None or self._fatal_error_occurred:
@@ -848,6 +850,7 @@ class _ResponseMixin:
         text: str,
         *,
         images_bytes: tuple[bytes, ...] = (),
+        visual_still_owned=None,
     ) -> None:
         """Submit one external-ASR turn through the owned Gemini lifecycle."""
 
@@ -868,6 +871,20 @@ class _ResponseMixin:
         # 不更新的话 _is_new_turn 会把这一轮的首个内容判成「迟到续帧」：内容被
         # _interrupted 抑制、欠账不作废，随后它自己的终结把欠账消费掉、跳过结算
         # —— token 永远挂着，会话被钉成「忙」，她再也不会主动开口。
+        # 送出前的最后一道视觉所有权复查。上面的
+        # _await_gemini_external_quarantine() 是一个真实让出点（前一轮的 token
+        # 还挂着时要等隔离跑完），后继回合可以在那段等待里让本轮 record 失效。
+        # 与图片预算那一步同一判据：丢帧只降级成纯文本，话照送。
+        if (
+            images_bytes
+            and visual_still_owned is not None
+            and not visual_still_owned()
+        ):
+            logger.info(
+                "Gemini external turn lost visual ownership before the SDK "
+                "send; submitting text-only"
+            )
+            images_bytes = ()
         self._user_recent_activity_time = time.time()
         outcome_token = object()
         self._gemini_external_submit_task = submit_task
