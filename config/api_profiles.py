@@ -210,8 +210,6 @@ DEFAULT_ASSIST_API_PROFILES = {
         'AGENT_MODEL': "openai/gpt-4.1",
     },
     'orcarouter': {
-        # OrcaRouter：Anthropic 兼容网关的 OpenAI 兼容端点（/v1/chat/completions），
-        # 模型 id 带 anthropic/ 前缀。纯 OpenAI 兼容通道，无需 provider_type 特判。
         'OPENROUTER_URL': "https://api.orcarouter.ai/v1",
         'CONVERSATION_MODEL': "anthropic/claude-sonnet-5",
         'SUMMARY_MODEL': "anthropic/claude-haiku-4.5",

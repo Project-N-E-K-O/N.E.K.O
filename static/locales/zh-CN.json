@@ -1084,6 +1084,7 @@
             "claude": "Claude（Anthropic，国内无法使用）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter（模型聚合，国内无法使用）",
+            "orcarouter": "OrcaRouter（Claude 网关，国内无法使用）",
             "vllm_omni": "vLLM-Omni（TTS）",
             "gptsovits": "GPT-SoVITS（自部署）"
         },
@@ -1134,6 +1135,7 @@
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter",
+            "orcarouter": "OrcaRouter",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "免费版无需API Key",

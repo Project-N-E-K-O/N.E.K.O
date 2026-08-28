@@ -799,6 +799,7 @@ class TestProviderExclusion:
             'grok',
             'claude',
             'openrouter',
+            'orcarouter',
             'elevenlabs',
             'qwen_intl',
             'minimax_intl',

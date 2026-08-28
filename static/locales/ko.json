@@ -1084,6 +1084,7 @@
             "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)",
             "openrouter": "OpenRouter(모델 통합 플랫폼)",
+            "orcarouter": "OrcaRouter(Claude 게이트웨이)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (자체 호스팅)"
         },
@@ -1134,6 +1135,7 @@
             "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)",
             "openrouter": "OpenRouter",
+            "orcarouter": "OrcaRouter",
             "vllm_omni": "vLLM-Omni(TTS)"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",

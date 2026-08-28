@@ -294,7 +294,7 @@
     "orcarouter": {
       "key": "orcarouter",
       "name": "OrcaRouter",
-      "description": "Anthropic 兼容网关：OpenAI 兼容端点直通 Claude 全系模型",
+      "description": "第三方 Claude 中转网关，国内版不支持",
       "openrouter_url": "https://api.orcarouter.ai/v1",
       "conversation_model": "anthropic/claude-sonnet-5",
       "summary_model": "anthropic/claude-haiku-4.5",
@@ -445,7 +445,7 @@
     },
     "orcarouter": {
       "config_field": "assistApiKeyOrcarouter",
-      "restricted": false
+      "restricted": true
     },
     "vllm_omni": {
       "config_field": "ttsModelApiKey",
