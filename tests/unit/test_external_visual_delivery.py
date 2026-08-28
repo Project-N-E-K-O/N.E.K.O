@@ -324,15 +324,24 @@ async def test_gemini_turn_drops_frames_lost_during_the_quarantine_wait():
     client._analyze_image_with_vision_model = AsyncMock()
 
     owned = [True]
+    quarantine_waits = [0]
 
-    async def _lose_ownership_in_quarantine():
-        owned[0] = False
+    async def _lose_ownership_on_the_submit_wait():
+        # 隔离等待会被调两次：prepare_external_voice_turn 一次，
+        # _submit_external_gemini_turn 头部一次。只在**第二次**丢所有权，
+        # 否则 submit_multimodal_turn 还没开始就已经失去，这条用例就退化成
+        # "复查放哪都能过"，钉不住它要钉的窗口。
+        quarantine_waits[0] += 1
+        if quarantine_waits[0] >= 2:
+            owned[0] = False
 
-    client._await_gemini_external_quarantine = _lose_ownership_in_quarantine
+    client._await_gemini_external_quarantine = _lose_ownership_on_the_submit_wait
     # 让 _submit_external_gemini_turn 头部走进隔离等待那条分支。
     client._gemini_external_outcome_token = object()
 
     await client.prepare_external_voice_turn(turn_id="turn-quarantine")
+    # 前提自证：进入被测函数时仍然持有所有权。
+    assert owned[0] is True
     await client.submit_multimodal_turn(
         "看一下这张图",
         DUMMY_IMAGE_B64,
@@ -340,7 +349,8 @@ async def test_gemini_turn_drops_frames_lost_during_the_quarantine_wait():
         visual_still_owned=lambda: owned[0],
     )
 
-    # 前提自证：预算拟合那一刻仍然持有（否则测的不是隔离窗口这条路）。
+    # 前提自证：所有权确实是在**第二次**（submit 内部那次）等待里丢的。
+    assert quarantine_waits[0] >= 2
     assert owned[0] is False
     session.send_client_content.assert_awaited_once()
     content = session.send_client_content.await_args.kwargs["turns"][0]
