@@ -2690,3 +2690,131 @@ def test_a_field_level_record_failure_still_quarantines_and_frees_the_quota(
         assert store._current_storage_bytes() == 0
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+# --- 隔离判据的输入空间穷举 ---
+# 「什么算被证伪」最近连着出了两次边界（闭包不符、字段错误码）。这里把落盘记录
+# 的各种损坏形态一次列全：被证伪的必须隔离并释放配额，读不出来的必须原样保留。
+
+def _corrupt_record(directory, mutate):
+    path = directory / "record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    mutate(record)
+    path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+
+_PROVEN_INVALID = {
+    "json-not-parseable": lambda d: (d / "record.json").write_bytes(b"{not json"),
+    "record-too-large": lambda d: (d / "record.json").write_bytes(
+        (d / "record.json").read_bytes() + b" " * (128 * 1024)
+    ),
+    "unknown-version": lambda d: _corrupt_record(d, lambda r: r.__setitem__("recordVersion", 3)),
+    "extra-key": lambda d: _corrupt_record(d, lambda r: r.__setitem__("surprise", 1)),
+    "missing-key": lambda d: _corrupt_record(d, lambda r: r.pop("interaction")),
+    "id-mismatch": lambda d: _corrupt_record(
+        d, lambda r: r.__setitem__("id", "local-00000000-0000-4000-8000-000000000000")
+    ),
+    "name-illegal": lambda d: _corrupt_record(d, lambda r: r.__setitem__("name", "!!!")),
+    "name-too-long": lambda d: _corrupt_record(d, lambda r: r.__setitem__("name", "n" * 999)),
+    "meaning-blank": lambda d: _corrupt_record(
+        d, lambda r: r["imageChange"]["items"][0].__setitem__("meaning", "   ")
+    ),
+    "mode-illegal": lambda d: _corrupt_record(
+        d, lambda r: r["imageChange"].__setitem__("mode", "teleport")
+    ),
+    "digest-format": lambda d: _corrupt_record(
+        d, lambda r: r["resourceDigests"].__setitem__("default.png", "nope")
+    ),
+    "digest-key-mismatch": lambda d: _corrupt_record(
+        d, lambda r: r["resourceDigests"].pop("default.png")
+    ),
+    "closure-extra-file": lambda d: (d / "stray.txt").write_bytes(b"x"),
+    "resource-missing": lambda d: (d / "change-000.png").unlink(),
+    "content-tampered": lambda d: (d / "default.png").write_bytes(b"truncated"),
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("flavour", sorted(_PROVEN_INVALID))
+def test_every_proven_invalid_record_is_quarantined_and_frees_the_quota(
+    tmp_path, monkeypatch, flavour
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    root_key = store._root_key()
+    _PROVEN_INVALID[flavour](store.root / tool["id"])
+
+    try:
+        with pytest.raises(AvatarToolStoreError) as raised:
+            store.get_detail(tool["id"])
+        assert raised.value.code == "record_invalid", flavour
+        assert raised.value.transient is False, flavour
+        assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key], flavour
+        assert store.list_items() == [], flavour
+        # 被证伪的道具在界面上看不到也删不掉，名额和配额都必须放开。
+        assert store._current_storage_bytes() == 0, flavour
+        assert store._occupied_tool_slots() == 0, flavour
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("locked", ("record.json", "default.png", "directory"))
+def test_a_transient_read_failure_never_quarantines_whatever_is_locked(
+    tmp_path, monkeypatch, locked
+):
+    """The dual of the matrix above: unreadable must never be mistaken for invalid."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    root_key = store._root_key()
+    final = store.root / tool["id"]
+    occupied = store._current_storage_bytes()
+
+    real_open = Path.open
+    real_iterdir = Path.iterdir
+
+    def locked_open(self, *args, **kwargs):
+        if self.name == locked and str(final) in str(self):
+            raise OSError("locked by another process")
+        return real_open(self, *args, **kwargs)
+
+    def locked_iterdir(self):
+        if str(self) == str(final):
+            raise OSError("directory listing failed")
+        return real_iterdir(self)
+
+    if locked == "directory":
+        monkeypatch.setattr(Path, "iterdir", locked_iterdir)
+    else:
+        monkeypatch.setattr(Path, "open", locked_open)
+
+    try:
+        with pytest.raises(AvatarToolStoreError) as raised:
+            store.get_detail(tool["id"])
+        assert raised.value.transient is True, locked
+        assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set()), locked
+
+        monkeypatch.undo()
+        monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+        # 锁一放开，道具原样回到列表，名额和配额都还在。
+        assert [item["id"] for item in store.list_items()] == [tool["id"]], locked
+        assert store._current_storage_bytes() == occupied, locked
+        assert store._occupied_tool_slots() == 1, locked
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
