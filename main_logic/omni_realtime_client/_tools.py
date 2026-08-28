@@ -570,6 +570,9 @@ class _ToolingMixin:
                         timeout=self._TOOL_TASK_CANCEL_TIMEOUT_S,
                     )
                 except asyncio.TimeoutError:
+                    # The grace expired with no sibling and no terminal.
+                    # Answering what is in hand is the intended fallback, so
+                    # there is nothing to handle -- fall through and send.
                     pass
                 continue
             # Deliberately NOT a total budget. Bailing out after a fixed

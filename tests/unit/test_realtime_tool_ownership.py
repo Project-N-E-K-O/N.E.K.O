@@ -4041,12 +4041,11 @@ async def test_gemini_proactive_waits_for_a_tool_response_still_being_written(
     client.ws = session
     client._on_connection_attached()
 
-    collector = client._process_gemini_response(
+    await client._process_gemini_response(
         _gemini_response(calls=(("call-a", "lookup"),)),
         provider_session=session,
         connection_generation=client._connection_generation,
     )
-    await collector
     await asyncio.wait_for(write_entered.wait(), timeout=1)
 
     # Premise: the batch really is sealed already -- there was no window
