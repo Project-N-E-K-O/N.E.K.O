@@ -224,3 +224,88 @@ def test_entry_runtime_internal_dump_and_injection_helpers() -> None:
 
     signature = entry_runtime.inspect.signature(lambda *items, model: None)
     assert entry_runtime._resolve_model_injection_name(signature, object, {"name": "alice"}) == "model"
+
+
+def _no_params_meta() -> EventMeta:
+    """A meta shaped like `@plugin_entry(input_schema=...)` — no params model."""
+    return EventMeta(event_type="plugin_entry", id="run", params=None)
+
+
+@pytest.mark.parametrize("meta_factory", [lambda: None, _no_params_meta], ids=["no_meta", "no_params_model"])
+def test_prepare_entry_kwargs_drops_host_ctx_for_handlers_that_cannot_take_it(meta_factory) -> None:
+    """宿主给每次调用都塞 `_ctx`，没声明它的 handler 不该因此 TypeError。"""
+
+    async def handler(danmaku_texts: list[str]) -> list[str]:
+        return danmaku_texts
+
+    kwargs = prepare_entry_kwargs(
+        plugin_id="demo",
+        entry_id="run",
+        handler=handler,
+        meta=meta_factory(),
+        args={"danmaku_texts": ["hi"], "_ctx": {"run_id": "r1"}},
+    )
+
+    assert kwargs == {"danmaku_texts": ["hi"]}
+    # 真正的判据是调用点：过滤后的 kwargs 必须能直接展开给 handler。
+    handler(**kwargs).close()
+
+
+@pytest.mark.parametrize("meta_factory", [lambda: None, _no_params_meta], ids=["no_meta", "no_params_model"])
+def test_prepare_entry_kwargs_keeps_host_ctx_for_handlers_that_opt_in(meta_factory) -> None:
+    """显式声明 `_ctx` 或 `**kwargs` 的 handler 仍然收得到。"""
+
+    async def named(name: str, _ctx: dict | None = None) -> str:
+        return name
+
+    async def var_keyword(name: str, **kwargs: object) -> str:
+        return name
+
+    args = {"name": "alice", "_ctx": {"run_id": "r1"}}
+    for handler in (named, var_keyword):
+        kwargs = prepare_entry_kwargs(
+            plugin_id="demo",
+            entry_id="run",
+            handler=handler,
+            meta=meta_factory(),
+            args=args,
+        )
+        assert kwargs["_ctx"] == {"run_id": "r1"}
+        handler(**kwargs).close()
+
+
+@pytest.mark.parametrize("meta_factory", [lambda: None, _no_params_meta], ids=["no_meta", "no_params_model"])
+def test_prepare_entry_kwargs_drops_host_ctx_for_positional_only_parameter(meta_factory) -> None:
+    """宿主永远按关键字传 `_ctx`，positional-only 的同名形参接不住。"""
+
+    async def positional_only(_ctx, /) -> object:
+        return _ctx
+
+    kwargs = prepare_entry_kwargs(
+        plugin_id="demo",
+        entry_id="run",
+        handler=positional_only,
+        meta=meta_factory(),
+        args={"_ctx": {"run_id": "r1"}},
+    )
+
+    # 与旁边既有的 _filter_supported_kwargs 判据保持一致：只认
+    # POSITIONAL_OR_KEYWORD / KEYWORD_ONLY，否则 method(**call_args) 照样 TypeError。
+    assert kwargs == {}
+
+
+def test_prepare_entry_kwargs_keeps_host_ctx_when_signature_is_unavailable() -> None:
+    """拿不到签名时保持旧行为，不要凭猜测删参数。"""
+
+    class _NoSignature:
+        __call__ = None
+
+    kwargs = prepare_entry_kwargs(
+        plugin_id="demo",
+        entry_id="run",
+        handler=_NoSignature(),
+        meta=None,
+        args={"_ctx": {"run_id": "r1"}},
+    )
+
+    assert kwargs == {"_ctx": {"run_id": "r1"}}

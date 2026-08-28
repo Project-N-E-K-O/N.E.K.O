@@ -71,7 +71,9 @@ class PluginCliInstallPlanRequest(BaseModel):
 
 
 class PluginCliInstallPlanResponse(BaseModel):
-    action: str = Field(pattern="^(install|upgrade|blocked)$")
+    action: str = Field(
+        pattern="^(install|upgrade|reinstall|downgrade|override_builtin|blocked)$"
+    )
     package_type: str = Field(pattern="^(plugin|bundle)$")
     plugin_id: str
     directory_name: str
@@ -80,6 +82,8 @@ class PluginCliInstallPlanResponse(BaseModel):
     confirmation_token: str = ""
     reason: str = ""
     legacy_plugin_ids: list[str] = Field(default_factory=list)
+    current_source: str = ""
+    target_source: str = ""
 
 
 class PluginCliAnalyzeRequest(BaseModel):
@@ -197,6 +201,7 @@ class PluginCliInstallResponse(BaseModel):
     profiles_root: str | None = None
     installed_plugins: list[PluginCliInstalledPluginResponse]
     profile_dir: str | None = None
+    profile_reused: bool = False
     metadata_found: bool
     payload_hash: str = ""
     payload_hash_verified: bool | None = None
@@ -238,6 +243,12 @@ class PluginCliUploadResponse(BaseModel):
     path: str
     size_bytes: int
     modified_at: str
+
+
+class PluginCliDiscardUploadResponse(BaseModel):
+    success: bool
+    removed: bool
+    name: str
 
 
 class PluginCliUploadAndInstallResponse(BaseModel):
@@ -375,16 +386,28 @@ async def plugin_cli_upload(
     passed to ``/plugin-cli/install`` or ``/plugin-cli/inspect``.
     """
     try:
-        content = await file.read()
-        return await service.save_uploaded_package(
+        await file.seek(0)
+        return await service.save_uploaded_file(
             filename=file.filename or "unknown.neko-plugin",
-            content=content,
+            source_file=file.file,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
     except Exception:
         logger.exception("Unexpected error during plugin package upload")
         raise HTTPException(status_code=500, detail="Internal server error during upload")
+
+
+@router.delete("/plugin-cli/upload", response_model=PluginCliDiscardUploadResponse)
+async def plugin_cli_discard_upload(
+    package: str = Query(...),
+    _: str = require_admin,
+) -> dict[str, object]:
+    """Discard one package uploaded by an abandoned local import workflow."""
+    try:
+        return await service.discard_uploaded_package(package=package)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.post("/plugin-cli/upload-and-install", response_model=PluginCliUploadAndInstallResponse)
@@ -398,10 +421,14 @@ async def plugin_cli_upload_and_install(
     Combines upload + install into a single request for convenience.
     """
     try:
-        content = await file.read()
-        return await service.upload_and_install(
+        await file.seek(0)
+        uploaded = await service.save_uploaded_file(
             filename=file.filename or "unknown.neko-plugin",
-            content=content,
+            source_file=file.file,
+        )
+        return await service.upload_and_install(
+            filename=str(uploaded["name"]),
+            package_path=str(uploaded["path"]),
             on_conflict=on_conflict,
         )
     except ServerDomainError as error:

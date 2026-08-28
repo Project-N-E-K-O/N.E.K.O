@@ -4,6 +4,7 @@
     :class="{
       'plugin-workbench--market-open': marketPanelVisible,
       'plugin-workbench--package-open': packagePanelVisible,
+      'plugin-workbench--mirror-open': mirrorPanelVisible,
     }"
     data-yui-guide-id="plugin-list-workbench"
   >
@@ -143,18 +144,11 @@
                 class="header-btn header-btn--accent"
                 :disabled="importing"
                 data-yui-guide-id="plugin-list-import"
-                @click="triggerImportFile"
+                @click="openImportDialog"
               >
                 <el-icon><Upload /></el-icon>
                 <span>{{ importing ? $t('plugins.importing') : $t('plugins.import') }}</span>
               </button>
-              <input
-                ref="importFileInputRef"
-                type="file"
-                accept=".neko-plugin,.neko-bundle"
-                class="import-file-input"
-                @change="handleImportFileChange"
-              />
               <button
                 class="header-btn"
                 :class="{ 'header-btn--active': packagePanelVisible }"
@@ -163,6 +157,15 @@
               >
                 <el-icon><Box /></el-icon>
                 <span>{{ packagePanelVisible ? $t('plugins.closePackageManager') : $t('plugins.openPackageManager') }}</span>
+              </button>
+              <button
+                class="header-btn"
+                :class="{ 'header-btn--active': mirrorPanelVisible }"
+                data-yui-guide-id="plugin-list-mirror-source-toggle"
+                @click="toggleMirrorPanel"
+              >
+                <el-icon><Connection /></el-icon>
+                <span>{{ mirrorPanelVisible ? $t('plugins.closeMirrorSource') : $t('plugins.openMirrorSource') }}</span>
               </button>
               <button
                 class="header-btn"
@@ -258,8 +261,10 @@
               :selected-plugin-ids="selectedPluginIds"
               :show-metrics="showMetrics"
               :show-source-detail="showSourceDetail"
+              :identity-plugin-ids="duplicateDisplayNamePluginIds"
               :variant="section.variant"
               @item-click="handlePluginPrimaryAction"
+              @item-open-ui="handlePluginUiAction"
               @item-contextmenu="handlePluginContextMenu"
               @toggle-selection="togglePluginSelection"
             />
@@ -280,6 +285,20 @@
           embedded
           :external-selected-plugin-ids="selectedPluginIds"
           @close="closePackagePanel"
+        />
+      </div>
+    </aside>
+
+    <aside
+      class="plugin-workbench__rail plugin-workbench__rail--mirror"
+      :aria-hidden="!mirrorPanelVisible"
+      :inert="!mirrorPanelVisible"
+    >
+      <div class="plugin-workbench__rail-inner">
+        <GithubMirrorSourcePanel
+          v-if="mirrorPanelEverOpened"
+          v-show="mirrorPanelVisible"
+          @close="closeMirrorPanel"
         />
       </div>
     </aside>
@@ -393,6 +412,62 @@
       @close="closeDangerDialog"
       @confirm="handleDangerActionConfirm"
     />
+
+    <el-dialog
+      v-model="importDialogVisible"
+      class="plugin-import-dialog"
+      :title="t('plugins.importDialogTitle')"
+      width="min(520px, calc(100vw - 32px))"
+      :close-on-click-modal="!importing"
+      :close-on-press-escape="!importing"
+      :show-close="!importing"
+      @closed="clearSelectedImportFile"
+    >
+      <div
+        class="plugin-import-dropzone"
+        :class="{
+          'plugin-import-dropzone--active': importDropActive,
+          'plugin-import-dropzone--selected': selectedImportFile,
+          'plugin-import-dropzone--disabled': importing,
+        }"
+        role="button"
+        :tabindex="importing ? -1 : 0"
+        :aria-disabled="importing"
+        @click="triggerImportFile"
+        @keydown.enter.prevent="triggerImportFile"
+        @keydown.space.prevent="triggerImportFile"
+        @dragenter.prevent="importDropActive = true"
+        @dragover.prevent="importDropActive = true"
+        @dragleave.prevent="importDropActive = false"
+        @drop.prevent="handleImportDrop"
+      >
+        <el-icon class="plugin-import-dropzone__icon"><Upload /></el-icon>
+        <template v-if="selectedImportFile">
+          <strong class="plugin-import-dropzone__filename">{{ selectedImportFile.name }}</strong>
+          <span>{{ formatImportFileSize(selectedImportFile.size) }}</span>
+        </template>
+        <template v-else>
+          <strong>{{ t('plugins.importDropHint') }}</strong>
+          <span>{{ t('plugins.importDropSubHint') }}</span>
+        </template>
+      </div>
+      <input
+        ref="importFileInputRef"
+        type="file"
+        accept=".neko-plugin,.neko-bundle"
+        class="import-file-input"
+        @change="handleImportFileChange"
+      />
+      <p class="plugin-import-dialog__limit">{{ t('plugins.importFileLimit') }}</p>
+
+      <template #footer>
+        <el-button :disabled="importing" @click="importDialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button :disabled="importing" @click="triggerImportFile">{{ t('plugins.importChooseFile') }}</el-button>
+        <el-button type="primary" :disabled="!selectedImportFile" :loading="importing" @click="importSelectedPluginPackage">
+          {{ importing ? t('plugins.importing') : t('plugins.import') }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -403,11 +478,12 @@ import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, C
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
-import { useMarketVersionsStore } from '@/stores/marketVersions'
+import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marketVersions'
 import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
 import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
+import GithubMirrorSourcePanel from '@/components/plugin/GithubMirrorSourcePanel.vue'
 import MarketPanel from '@/components/plugin/MarketPanel.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -429,9 +505,17 @@ import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import { formatHttpError } from '@/utils/request'
+import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
+import { findDuplicatePluginDisplayNameIds } from '@/utils/pluginDisplay'
+import { openExternalUrl } from '@/utils/openExternal'
+import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
 import { useI18n } from 'vue-i18n'
-import type { PluginMeta } from '@/types/api'
+import type {
+  PluginInstallSourceDetailMarket,
+  PluginListAction,
+  PluginMeta,
+} from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -446,8 +530,13 @@ const reloadingAll = ref(false)
 const batchBusy = ref(false)
 const importing = ref(false)
 const importFileInputRef = ref<HTMLInputElement | null>(null)
+const importDialogVisible = ref(false)
+const selectedImportFile = ref<File | null>(null)
+const importDropActive = ref(false)
 const packagePanelVisible = ref(false)
 const packagePanelEverOpened = ref(false)
+const mirrorPanelVisible = ref(false)
+const mirrorPanelEverOpened = ref(false)
 const marketPanelVisible = ref(false)
 const marketPanelEverOpened = ref(false)
 const contextMenuVisible = ref(false)
@@ -513,6 +602,9 @@ const dangerDialogMessage = computed(() => {
 
 const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
 const rawNormalPlugins = computed(() => pluginStore.normalPlugins)
+const duplicateDisplayNamePluginIds = computed(() => [
+  ...findDuplicatePluginDisplayNameIds(rawPlugins.value, locale.value),
+])
 const {
   filterText,
   useRegex,
@@ -544,16 +636,49 @@ let metricsRefreshTimer: number | null = null
 const showSourceDetail = ref(false)
 const marketVersionsStore = useMarketVersionsStore()
 
+function installedMarketVersionTargets(): MarketVersionTarget[] {
+  const targets: MarketVersionTarget[] = []
+  for (const plugin of pluginStore.pluginsWithStatus) {
+    const installSource = plugin.install_source
+    if (installSource?.source !== 'market') continue
+    const detail = installSource.source_detail as PluginInstallSourceDetailMarket | null
+    const pluginId = String(detail?.plugin_market_id || '').trim()
+    if (!/^\d+$/.test(pluginId)) continue
+    targets.push({
+      pluginId,
+      channel: detail?.channel === 'beta' ? 'beta' : 'stable',
+    })
+  }
+  return targets
+}
+
+function refreshInstalledMarketVersions(): void {
+  // Fire-and-forget; if Market is unreachable the badge simply won't appear.
+  // ``ensureFresh`` compares the target signature, so status-only updates do
+  // not cause a network request while a newly installed Market plugin does.
+  marketVersionsStore.ensureFresh(installedMarketVersionTargets()).catch((err) => {
+    console.warn('Failed to refresh market versions:', err)
+  })
+}
+
 async function toggleSourceDetail() {
   showSourceDetail.value = !showSourceDetail.value
   if (showSourceDetail.value) {
-    // Fire-and-forget; if Market is unreachable the badge simply won't
-    // appear, which is a fine degraded state.
-    marketVersionsStore.ensureFresh().catch((err) => {
-      console.warn('Failed to refresh market versions:', err)
-    })
+    refreshInstalledMarketVersions()
   }
 }
+
+// The initial plugin fetch and a Market install can both finish after source
+// details become visible. Recompute the target set on either change so update
+// badges are not held to the empty/stale snapshot from the original toggle.
+watch(
+  () => pluginStore.plugins,
+  () => {
+    if (showSourceDetail.value) refreshInstalledMarketVersions()
+  },
+  { deep: true },
+)
+
 const pluginSections = computed(() => [
   {
     key: 'plugin',
@@ -718,6 +843,47 @@ function handlePluginPrimaryAction(pluginId: string) {
   handlePluginClick(pluginId)
 }
 
+async function handlePluginUiAction(plugin: PluginMeta, action: PluginListAction) {
+  const resolvedAction = buildActions(plugin).find((candidate) => (
+    candidate.source === 'plugin'
+      && isOpenUiNavigationAction(candidate)
+      && candidate.id === action.id
+  ))
+  if (!resolvedAction || resolvedAction.disabled) return
+
+  if (shouldUseHoldConfirm(resolvedAction)) {
+    openDangerDialog(resolvedAction, plugin)
+    return
+  }
+
+  const target = action.target?.trim() || ''
+  if (target) {
+    await executeAction(resolvedAction, plugin)
+    return
+  }
+
+  const confirmMessage = resolveLocalizedText(action.confirm_message, locale.value, '')
+  if (confirmMessage) {
+    try {
+      await ElMessageBox.confirm(confirmMessage, t('common.confirm'), {
+        type: action.danger ? 'warning' : 'info',
+      })
+    } catch {
+      return
+    }
+  }
+
+  const fallback = {
+    path: `/plugins/${encodeURIComponent(plugin.id)}`,
+    query: { tab: 'ui' },
+  }
+  if (action.open_in === 'same_tab') {
+    await router.push(fallback)
+  } else {
+    openExternalUrl(router.resolve(fallback).href)
+  }
+}
+
 function toggleMultiSelectMode() {
   toggleMultiSelect()
 }
@@ -728,6 +894,7 @@ function togglePackagePanel() {
   if (next) {
     packagePanelEverOpened.value = true
     marketPanelVisible.value = false
+    mirrorPanelVisible.value = false
   }
 }
 
@@ -735,10 +902,25 @@ function openPackagePanel() {
   packagePanelVisible.value = true
   packagePanelEverOpened.value = true
   marketPanelVisible.value = false
+  mirrorPanelVisible.value = false
 }
 
 function closePackagePanel() {
   packagePanelVisible.value = false
+}
+
+function toggleMirrorPanel() {
+  const next = !mirrorPanelVisible.value
+  mirrorPanelVisible.value = next
+  if (next) {
+    mirrorPanelEverOpened.value = true
+    packagePanelVisible.value = false
+    marketPanelVisible.value = false
+  }
+}
+
+function closeMirrorPanel() {
+  mirrorPanelVisible.value = false
 }
 
 function toggleMarketPanel() {
@@ -747,6 +929,7 @@ function toggleMarketPanel() {
   if (next) {
     marketPanelEverOpened.value = true
     packagePanelVisible.value = false
+    mirrorPanelVisible.value = false
   }
 }
 
@@ -907,30 +1090,81 @@ const runningPlugins = computed(() => {
 
 // ── Import (upload + install) ─────────────────────────────────────────
 
+const PLUGIN_PACKAGE_MAX_BYTES = 500 * 1024 * 1024
+const PLUGIN_PACKAGE_SUFFIXES = ['.neko-plugin', '.neko-bundle']
+
+function openImportDialog() {
+  clearSelectedImportFile()
+  importDialogVisible.value = true
+}
+
 function triggerImportFile() {
+  if (importing.value) return
   importFileInputRef.value?.click()
 }
 
-async function handleImportFileChange(event: Event) {
+function clearSelectedImportFile() {
+  selectedImportFile.value = null
+  importDropActive.value = false
+}
+
+function formatImportFileSize(size: number): string {
+  const sizeInMiB = size / 1024 / 1024
+  return `${Number.isInteger(sizeInMiB) ? sizeInMiB : sizeInMiB.toFixed(size >= 10 * 1024 * 1024 ? 1 : 2)} MiB`
+}
+
+function selectImportFile(file: File) {
+  if (importing.value) return
+  const filename = file.name.toLowerCase()
+  if (!PLUGIN_PACKAGE_SUFFIXES.some((suffix) => filename.endsWith(suffix))) {
+    selectedImportFile.value = null
+    ElMessage.error(t('plugins.importUnsupportedFile'))
+    return
+  }
+  if (file.size > PLUGIN_PACKAGE_MAX_BYTES) {
+    selectedImportFile.value = null
+    ElMessage.error(t('plugins.importFileTooLarge', { limit: formatImportFileSize(PLUGIN_PACKAGE_MAX_BYTES) }))
+    return
+  }
+  selectedImportFile.value = file
+}
+
+function handleImportFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
-  if (!file) return
-
   // Reset input so the same file can be re-selected
   input.value = ''
+  if (importing.value) return
+  if (file) selectImportFile(file)
+}
 
+function handleImportDrop(event: DragEvent) {
+  importDropActive.value = false
+  if (importing.value) return
+  const file = event.dataTransfer?.files?.[0]
+  if (file) selectImportFile(file)
+}
+
+async function importSelectedPluginPackage() {
+  const file = selectedImportFile.value
+  if (!file) return
+
+  importDropActive.value = false
   importing.value = true
   try {
     const upload = await uploadPluginPackage(file)
-    const result = await installImportedPackage(upload.path, { installSource: 'imported' })
+    const result = await installImportedPackage(upload.path, {
+      installSource: 'imported',
+      discardOnFailure: true,
+    })
     if (!result) return
     const count = result.installed_plugin_count ?? 0
     ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
+    importDialogVisible.value = false
     await refreshAfterPluginChange()
   } catch (error: any) {
     console.error('Failed to import plugin package:', error)
-    const detail = formatHttpError(error)
-    ElMessage.error(detail ? t('plugins.importFailed') + ': ' + detail : t('plugins.importFailed'))
+    ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'upload'))
   } finally {
     importing.value = false
   }
@@ -1077,13 +1311,26 @@ async function handleBatchDelete() {
 
   batchBusy.value = true
   let ok = 0; let fail = 0
+  const restartWarnings: string[] = []
   for (const p of plugins) {
-    try { await deletePlugin(p.id); ok++ } catch { fail++ }
+    try {
+      const result = await deletePlugin(p.id)
+      ok++
+      if (result.restored_builtin_restart_error) {
+        restartWarnings.push(t('messages.pluginDeletedBuiltinRestartFailed', {
+          plugin: p.name,
+          error: result.restored_builtin_restart_error.message,
+        }))
+      }
+    } catch { fail++ }
   }
   batchBusy.value = false
   clearSelection()
-  if (fail === 0) ElMessage.success(t('plugins.batchDeleteSuccess', { count: ok }))
-  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
+  if (restartWarnings.length > 0) ElMessage.warning(restartWarnings.join('; '))
+  if (fail > 0) ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
+  else if (restartWarnings.length === 0) {
+    ElMessage.success(t('plugins.batchDeleteSuccess', { count: ok }))
+  }
   await refreshAfterPluginChange()
 }
 
@@ -1148,6 +1395,7 @@ watch(
       if (shouldOpen) {
         packagePanelEverOpened.value = true
         marketPanelVisible.value = false
+        mirrorPanelVisible.value = false
       }
     }
   },
@@ -1224,9 +1472,11 @@ onUnmounted(() => {
 /* 收起时取消它那一侧的 gap，避免主列表多出一条空白 */
 .plugin-workbench__rail--market { margin-right: -20px; }
 .plugin-workbench__rail--package { margin-left: -20px; }
+.plugin-workbench__rail--mirror { margin-left: -20px; }
 
 .plugin-workbench--market-open .plugin-workbench__rail--market,
-.plugin-workbench--package-open .plugin-workbench__rail--package {
+.plugin-workbench--package-open .plugin-workbench__rail--package,
+.plugin-workbench--mirror-open .plugin-workbench__rail--mirror {
   flex-basis: var(--drawer-width);
   width: var(--drawer-width);
   margin: 0;
@@ -1253,8 +1503,14 @@ onUnmounted(() => {
   transform: translate3d(100%, 0, 0);
 }
 
+.plugin-workbench__rail--mirror .plugin-workbench__rail-inner {
+  right: 0;
+  transform: translate3d(100%, 0, 0);
+}
+
 .plugin-workbench--market-open .plugin-workbench__rail--market .plugin-workbench__rail-inner,
-.plugin-workbench--package-open .plugin-workbench__rail--package .plugin-workbench__rail-inner {
+.plugin-workbench--package-open .plugin-workbench__rail--package .plugin-workbench__rail-inner,
+.plugin-workbench--mirror-open .plugin-workbench__rail--mirror .plugin-workbench__rail-inner {
   transform: translate3d(0, 0, 0);
 }
 
@@ -1518,6 +1774,66 @@ onUnmounted(() => {
 
 .import-file-input {
   display: none;
+}
+
+.plugin-import-dropzone {
+  display: flex;
+  min-height: 190px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  border: 1.5px dashed color-mix(in srgb, var(--el-color-primary) 46%, var(--el-border-color));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--el-color-primary) 4%, var(--el-bg-color));
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.18s ease, background-color 0.18s ease, transform 0.18s ease;
+}
+
+.plugin-import-dropzone:hover,
+.plugin-import-dropzone--active {
+  border-color: var(--el-color-primary);
+  background: color-mix(in srgb, var(--el-color-primary) 10%, var(--el-bg-color));
+  transform: translateY(-1px);
+}
+
+.plugin-import-dropzone--selected {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--el-color-success) 62%, var(--el-border-color));
+  background: color-mix(in srgb, var(--el-color-success) 7%, var(--el-bg-color));
+}
+
+.plugin-import-dropzone--disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+  pointer-events: none;
+  transform: none;
+}
+
+.plugin-import-dropzone strong {
+  color: var(--el-text-color-primary);
+}
+
+.plugin-import-dropzone__icon {
+  font-size: 34px;
+  color: var(--el-color-primary);
+}
+
+.plugin-import-dropzone__filename {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-import-dialog__limit {
+  margin: 12px 2px 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  text-align: center;
 }
 
 /* ── Export button in batch row ── */

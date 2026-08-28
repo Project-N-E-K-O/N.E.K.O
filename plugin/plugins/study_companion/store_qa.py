@@ -211,6 +211,7 @@ def list_wrong_questions(
     *,
     limit: int = 20,
     topic_id: str | None = None,
+    topic_ids: list[str] | set[str] | tuple[str, ...] | None = None,
     statuses: tuple[str, ...] = ("active", "retrying", "resolved"),
 ) -> list[dict[str, Any]]:
     status_values = tuple(str(item) for item in statuses if str(item))
@@ -219,6 +220,12 @@ def list_wrong_questions(
     status_json = self._json_dumps(list(status_values))
     safe_limit = max(1, int(limit))
     topic_key = str(topic_id or "").strip()
+    topic_keys = list(
+        dict.fromkeys(str(item or "").strip() for item in (topic_ids or ()))
+    )
+    topic_keys = [item for item in topic_keys if item]
+    if topic_ids is not None and not topic_key and not topic_keys:
+        return []
     if topic_key:
         query = """
             SELECT *
@@ -233,6 +240,24 @@ def list_wrong_questions(
             LIMIT ?
             """
         params: tuple[Any, ...] = (status_json, topic_key, safe_limit)
+    elif topic_ids is not None:
+        query = """
+            SELECT *
+            FROM wrong_questions
+            WHERE status IN (SELECT value FROM json_each(?))
+                AND topic_id IN (SELECT value FROM json_each(?))
+            ORDER BY
+                CASE WHEN status = 'retrying' THEN 1 ELSE 0 END DESC,
+                last_retry_at DESC,
+                created_at DESC,
+                id DESC
+            LIMIT ?
+            """
+        params = (
+            status_json,
+            self._json_dumps(topic_keys),
+            safe_limit,
+        )
     else:
         query = """
             SELECT *

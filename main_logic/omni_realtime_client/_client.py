@@ -33,11 +33,13 @@ from ._shared import (
 
 
 
+from ._shared import canonical_realtime_dialect
 from ._tools import _ToolingMixin
 from ._audio import _AudioMixin
 from ._transport import _TransportMixin
 from ._responses import _ResponseMixin
 from ._response_arbiter import RealtimeResponseArbiter
+from ._protocol_capabilities import resolve_realtime_protocol_capabilities
 from ._gemini_support import _GeminiMixin
 
 
@@ -122,6 +124,19 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.api_key = api_key
         self.model = model
         self._model_lower = model.lower() if model else ''
+        _base_url_lower = (base_url or '').lower()
+        _known_lanlan_free_route = (
+            'lanlan.tech' in _base_url_lower
+            or 'lanlan.app' in _base_url_lower
+            or bool(livestream_mode)
+        )
+        _effective_api_type = api_type or ""
+        if (
+            not _effective_api_type
+            and 'free' in self._model_lower
+            and _known_lanlan_free_route
+        ):
+            _effective_api_type = "free"
         self.voice = voice
         self.ws = None
         self.instructions = None
@@ -156,6 +171,12 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # scalars, the shared audio processor, the Gemini session) belongs to
         # whoever attached last.
         self._connection_generation = 0
+        # ``(generation, reason)`` armed when a local component aborts the
+        # attached transport out from under the receive loop, so the loop can
+        # still request manager recovery for a socket it no longer owns.
+        # Cleared by an ordinary close() (the manager already knows) and by a
+        # replacement attach (a successor never inherits this).
+        self._local_failure_recovery: tuple[int, str] | None = None
 
         # Track current response state
         self._current_response_id = None
@@ -183,11 +204,19 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # here (``handle_new_message`` off a text input or independent ASR), so
         # on those the epoch is unchanged and only the speech id moves. #2612.
         self._current_turn_host_id: str | None = None
+        self._realtime_protocol_capabilities = (
+            resolve_realtime_protocol_capabilities(
+                _effective_api_type,
+                base_url,
+                livestream_mode=bool(livestream_mode),
+            )
+        )
         self._response_arbiter = RealtimeResponseArbiter(
             self.send_event,
             abort_transport=self._abort_failed_transport,
             fail_open=response_arbiter_fail_open_enabled(),
             on_stuck_release=self._on_arbiter_stuck_release,
+            protocol_capabilities=self._realtime_protocol_capabilities,
         )
         # Track printing state for input and output transcripts
         self._is_first_text_chunk = False
@@ -364,25 +393,12 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
 
         # Gemini Live API specific attributes
         self._is_gemini = self._api_type.lower() == 'gemini'
-        _base_url_lower = (base_url or '').lower()
-        _known_lanlan_free_route = (
-            'lanlan.tech' in _base_url_lower
-            or 'lanlan.app' in _base_url_lower
-            or bool(livestream_mode)
-        )
         # ``api_type`` is the provider-ownership signal. The model name is
         # user-configurable, so an arbitrary local model such as
         # ``freeform-realtime`` must not inherit Lanlan's image wire protocol.
         # Keep a narrow compatibility fallback only for old callers that omit
         # api_type while targeting a known Lanlan/livestream route.
-        self._is_free_provider = (
-            self._api_type.lower() == 'free'
-            or (
-                not self._api_type
-                and 'free' in self._model_lower
-                and _known_lanlan_free_route
-            )
-        )
+        self._is_free_provider = _effective_api_type.lower() == 'free'
 
         # Only the international/livestream free routes proxy Gemini. This flag
         # remains about VAD/lifecycle behaviour, not image capability: every
@@ -436,7 +452,12 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         #   qwen  → no custom tool calling per Aliyun docs (only enable_search)
         #   gemini → genai SDK config.tools, response.tool_call.function_calls
         # The provider-side flags below let event handlers cheaply route.
-        self._supports_tools_wire = self._api_type.lower() in ('gpt', 'glm', 'qwen', 'step', 'free', 'gemini', 'grok')
+        # 与 apply_tools_to_session 共用同一套方言词表：这里原来直接比 api_type，
+        # 而 'gpt' 从来不是 api_type 的合法取值（真实值是 'openai'），'qwen_intl'
+        # 也进不了 'qwen'。该字段当前没有读者，但错的判据留着迟早被人接上。
+        self._supports_tools_wire = canonical_realtime_dialect(self._api_type) in (
+            'gpt', 'glm', 'qwen', 'step', 'free', 'gemini', 'grok'
+        )
         # Per-call accumulator for OpenAI-Realtime / StepFun delta arguments
         # keyed by call_id. cleared on response.done.
         self._inflight_tool_args: Dict[str, Dict[str, Any]] = {}

@@ -11,7 +11,10 @@ from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
+from plugin.server.application.install_source import StartupReconciler, get_install_source_manager
 from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
+from plugin.server.application.plugins.layout_migration import migrate_legacy_plugin_layout
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import start_bridge, stop_bridge
@@ -163,6 +166,53 @@ class ServerLifecycleService:
                     str(exc),
                 )
 
+    @serialized_plugin_operation
+    async def _migrate_layout_and_reconcile_install_sources(self) -> None:
+        """Run startup layout mutations under the shared plugin operation lock."""
+
+        try:
+            migration_result = await migrate_legacy_plugin_layout()
+            if migration_result.migrated:
+                logger.info(
+                    "legacy plugin layout migration completed: migrated={}",
+                    list(migration_result.migrated),
+                )
+            for issue in migration_result.blocked:
+                logger.warning(
+                    "legacy plugin layout migration blocked: code={}, plugin_id={}, path={}, error={}",
+                    issue.code,
+                    issue.plugin_id,
+                    issue.path,
+                    issue.message,
+                )
+        except Exception as exc:
+            # Migration is safety infrastructure, but a damaged legacy plugin
+            # must not prevent the server from starting in read-only/degraded
+            # mode. Registry refresh below may still discover valid roots.
+            logger.error(
+                "legacy plugin layout migration failed: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            return
+
+        # In embedded-agent mode the HTTP lifespan starts before the
+        # externally managed plugin lifecycle. Its install-source manager has
+        # therefore already reconciled the pre-migration layout and may have
+        # soft-deleted entries that the migration just restored. Replay it
+        # while the same operation lock remains held.
+        try:
+            install_source_manager = get_install_source_manager()
+            if install_source_manager is not None:
+                await StartupReconciler(install_source_manager).run()
+        except Exception as exc:
+            logger.error(
+                "install-source reconciliation after layout migration failed: "
+                "err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+
     async def startup(self) -> None:
         try:
             emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
@@ -171,7 +221,20 @@ class ServerLifecycleService:
 
         self._clear_runtime_state()
 
+        await self._migrate_layout_and_reconcile_install_sources()
+
         await ensure_plugin_messaging_started()
+
+        try:
+            cleaned_profiles = await self._plugin_lifecycle_service.retry_deferred_profile_cleanup()
+            if cleaned_profiles:
+                logger.info("retried deferred package profile cleanup: cleaned={}", cleaned_profiles)
+        except Exception as exc:
+            logger.warning(
+                "deferred package profile cleanup retry failed at startup: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
 
         try:
             await self._start_message_plane()

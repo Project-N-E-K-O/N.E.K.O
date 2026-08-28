@@ -673,6 +673,8 @@
     <script src="/static/app/app-settings.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-agent.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-character.js?v={{ static_asset_version }}"></script>
+    <!-- Match index.html: install the adapter before app.js opens the WebSocket. -->
+    <script src="/static/app/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-websocket.js?v={{ static_asset_version }}"></script>
     <script src="/static/vrm/motion/bridge.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-telemetry.js?v={{ static_asset_version }}"></script>
@@ -694,7 +696,6 @@
     <script src="/static/app/app-react-chat-window/cat-local-chat-lexicon.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/cat-local-chat.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/resize-drag-and-api.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-chat-export.js?v={{ static_asset_version }}"></script>
 
     <script>

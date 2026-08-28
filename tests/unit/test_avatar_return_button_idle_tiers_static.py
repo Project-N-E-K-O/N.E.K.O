@@ -1290,11 +1290,84 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     )
     assert "if (!container || !_isNekoIdleCat1EdgePeekEligible(container)) return false;" in edge_apply_block
     assert "_getNekoIdleCat1EdgePeekPlacement(left, top, w, h, viewportWidth, viewportHeight)" in edge_apply_block
+    assert "EDGE_PEEK_AFTER_DRAG" not in edge_apply_block
+    assert "_dispatchNekoIdleCat1EdgePeekAfterDragObservation" not in edge_apply_block
     assert "function _isNekoIdleCat1EdgePeekActive(containerOrButton)" in source
+    assert "function _isNekoIdleCat1TransferredPeekAnchorActive(containerOrButton)" in source
+    assert "function _isNekoIdleCat1MovementAnchored(containerOrButton)" in source
     assert "function _getNekoIdleCat1EdgePeekActiveEdge(containerOrButton)" in source
     assert "function _reclampNekoIdleCat1EdgePeekToViewport(containerOrButton)" in source
     assert "return button.classList.contains(className);" in source
     assert "function _clearNekoIdleCat1EdgePeekForTierExit(container)" in source
+
+    clear_edge_block = _source_slice_between(
+        source,
+        "function _clearNekoIdleCat1EdgePeek(containerOrButton)",
+        "function _isNekoIdleCat1EdgePeekActive(containerOrButton)",
+        "cat1 edge peek clear",
+    )
+    _assert_source_order(
+        clear_edge_block,
+        "cat1 edge peek clear owns the visual shift lifecycle",
+        "button.classList.remove(className);",
+        "button.querySelector('.neko-idle-return-art');",
+        "art.style.removeProperty('--neko-idle-return-edge-visual-shift-y');",
+        "_syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton(button);",
+    )
+
+    edge_active_block = _source_slice_between(
+        source,
+        "function _isNekoIdleCat1EdgePeekActive(containerOrButton)",
+        "function _getNekoIdleCat1EdgePeekActiveEdge(containerOrButton)",
+        "cat1 edge peek active predicate",
+    )
+    assert "_NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.some" in edge_active_block
+    assert "data-neko-live2d-peek-anchor" not in edge_active_block
+
+    transferred_anchor_block = _source_slice_between(
+        source,
+        "function _isNekoIdleCat1TransferredPeekAnchorActive(containerOrButton)",
+        "function _isNekoIdleCat1MovementAnchored(containerOrButton)",
+        "transferred live2d peek anchor predicate",
+    )
+    assert "data-neko-live2d-peek-anchor" in transferred_anchor_block
+    assert "_NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES" not in transferred_anchor_block
+
+    movement_anchor_block = _source_slice_between(
+        source,
+        "function _isNekoIdleCat1MovementAnchored(containerOrButton)",
+        "function _dispatchNekoIdleCat1EdgePeekAfterDragObservation(containerOrButton)",
+        "cat1 movement anchor predicate",
+    )
+    _assert_source_order(
+        movement_anchor_block,
+        "cat1 movement anchor combines but does not merge edge states",
+        "_isNekoIdleCat1EdgePeekActive(containerOrButton)",
+        "_isNekoIdleCat1TransferredPeekAnchorActive(containerOrButton)",
+    )
+    assert source.count("_isNekoIdleCat1MovementAnchored(") == 8
+    assert source.count("_isNekoIdleCat1TransferredPeekAnchorActive(") == 2
+
+    edge_observation_block = _source_slice_between(
+        source,
+        "function _dispatchNekoIdleCat1EdgePeekAfterDragObservation(containerOrButton)",
+        "function _isNekoIdleCat1EdgePeekEligible(containerOrButton)",
+        "cat1 edge peek drag observation",
+    )
+    _assert_source_order(
+        edge_observation_block,
+        "cat1 edge peek drag observation retains its detail contract",
+        "const edge = _getNekoIdleCat1EdgePeekActiveEdge(button);",
+        "if (!button || !edge) return false;",
+        "_NEKO_CAT_IDLE_OBSERVATION_TYPES.EDGE_PEEK_AFTER_DRAG",
+        "source: 'return-ball'",
+        "tier: button.getAttribute('data-neko-idle-tier')",
+        "reason: 'drag-edge-peek'",
+        "edge: edge",
+        "return true;",
+    )
+    assert "data-neko-live2d-peek-anchor" not in edge_observation_block
+    assert source.count("_dispatchNekoIdleCat1EdgePeekAfterDragObservation(") == 2
 
     apply_edge_block = _source_slice_between(
         source,
@@ -1376,9 +1449,9 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     )
     _assert_source_order(
         journey_sync_block,
-        "cat1 edge peek blocks automatic walk",
+        "cat1 movement anchors block automatic walk",
         "if (!button) return;",
-        "if (_isNekoIdleCat1EdgePeekActive(button)) {",
+        "if (_isNekoIdleCat1MovementAnchored(button)) {",
         "_cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });",
         "if (_isNekoIdleCompactSurfaceDragging()) return;",
     )
@@ -1397,9 +1470,9 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     )
     _assert_source_order(
         walk_start_block,
-        "cat1 edge peek blocks already queued walk start",
+        "cat1 movement anchors block already queued walk start",
         "if (!state) return;",
-        "if (_isNekoIdleCat1EdgePeekActive(button)) {",
+        "if (_isNekoIdleCat1MovementAnchored(button)) {",
         "_cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });",
     )
     assert (
@@ -1417,9 +1490,9 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     )
     _assert_source_order(
         schedule_walk_block,
-        "cat1 edge peek blocks new walk scheduling",
+        "cat1 movement anchors block new walk scheduling",
         "if (!state || state.paused) return;",
-        "if (_isNekoIdleCat1EdgePeekActive(button)) {",
+        "if (_isNekoIdleCat1MovementAnchored(button)) {",
         "_cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });",
     )
     assert (
@@ -1429,6 +1502,20 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
         "    const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;"
     ) in schedule_walk_block
 
+    pair_move_prepare_block = _source_slice_between(
+        source,
+        "function _prepareNekoIdleCat1PairMoveStart(button, state)",
+        "function _canScheduleNekoIdleCat1PairMove(button, state)",
+        "cat1 pair move preparation gate",
+    )
+    _assert_source_order(
+        pair_move_prepare_block,
+        "cat1 movement anchors block pair move preparation",
+        "if (!button || !state || state.paused || state.pairMovePlan || state.pairMoveFrame) return;",
+        "if (_isNekoIdleCat1MovementAnchored(button)) return;",
+        "if (_isNekoIdleCat1IndependentActionActive(button)) return;",
+    )
+
     pair_move_gate_block = _source_slice_between(
         source,
         "function _canScheduleNekoIdleCat1PairMove(button, state)",
@@ -1437,9 +1524,9 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     )
     _assert_source_order(
         pair_move_gate_block,
-        "cat1 edge peek blocks random pair move scheduling",
+        "cat1 movement anchors block random pair move scheduling",
         "if (!button || !state || state.paused || state.pairMovePlan || state.pairMoveFrame) return false;",
-        "if (_isNekoIdleCat1EdgePeekActive(button)) return false;",
+        "if (_isNekoIdleCat1MovementAnchored(button)) return false;",
         "const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;",
     )
 
@@ -1451,11 +1538,11 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     )
     _assert_source_order(
         start_pair_move_block,
-        "cat1 edge peek blocks already queued pair move",
+        "cat1 movement anchors block already queued pair move",
         "const isCatMindRun = catMindRunOptions.source === 'cat_mind';",
         "if (!isCatMindRun) return false;",
         "const state = _getNekoIdleCat1Journey(button);",
-        "if (_isNekoIdleCat1EdgePeekActive(button)) {",
+        "if (_isNekoIdleCat1MovementAnchored(button)) {",
         "_cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });",
     )
     assert (
@@ -1473,7 +1560,8 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     )
     _assert_source_order(
         journey_schedule_block,
-        "cat1 edge peek reclamps before blocking queued journey sync",
+        "cat1 movement anchors block queued journey sync while only cat edge peek reclamps",
+        "if (_isNekoIdleCat1MovementAnchored(button)) {",
         "if (_isNekoIdleCat1EdgePeekActive(button)) {",
         "_reclampNekoIdleCat1EdgePeekToViewport(button);",
         "_cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });",
@@ -1481,7 +1569,10 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
         "if (!state || state.syncFrame) return;",
     )
     assert (
-        "_reclampNekoIdleCat1EdgePeekToViewport(button);\n"
+        "if (_isNekoIdleCat1MovementAnchored(button)) {\n"
+        "        if (_isNekoIdleCat1EdgePeekActive(button)) {\n"
+        "            _reclampNekoIdleCat1EdgePeekToViewport(button);\n"
+        "        }\n"
         "        _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });\n"
         "        return;\n"
         "    }\n"
@@ -1489,6 +1580,7 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
         "    if (!state || state.syncFrame) return;\n"
         "    if (_isNekoIdleCompactSurfaceDragging() || _nekoIdleCompactSurfaceSettleTimer) return;"
     ) in journey_schedule_block
+    assert journey_schedule_block.count("_reclampNekoIdleCat1EdgePeekToViewport(button);") == 1
 
     drag_start_block = _source_slice_between(
         source,
@@ -1540,15 +1632,23 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     )
     _assert_source_order(
         manual_move_block,
-        "cat1 edge peek skips drag-end recheck",
+        "cat1 edge peek dispatches one shared drag-end observation before cancelling movement",
         "if (detail.reason === 'return-ball-drag-end') {",
         "_finishNekoIdleReturnDragActionForContainer(detail.container);",
         "if (_isNekoIdleCat1EdgePeekActive(detail.container)) {",
+        "const dragMoved = [",
+        "detail.movedDistancePx,",
+        "detail.displacementPx,",
+        "detail.pathDistancePx",
+        "].some((distance) => Number(distance) > 0);",
+        "if (detail.dragCancelled !== true && dragMoved) {",
+        "_dispatchNekoIdleCat1EdgePeekAfterDragObservation(detail.container);",
         "_cancelNekoIdleCat1JourneyForContainer(detail.container, {",
         "resetArt: false,",
         "preserveObservers: true",
         "_updateNekoIdleCat1CompactTopEdgeRearmAfterManualMove(detail.container);",
     )
+    assert manual_move_block.count("_dispatchNekoIdleCat1EdgePeekAfterDragObservation(detail.container);") == 1
     assert (
         "_cancelNekoIdleCat1JourneyForContainer(detail.container, {\n"
         "                    resetArt: false,\n"
@@ -3604,7 +3704,10 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_settleNekoIdleReturnSubactionToIdle' not in source
     assert '_NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS' in source
     assert 'containerObserver' in source
-    assert "attributeFilter: ['style', 'data-dragging']" in source
+    assert (
+        "attributeFilter: ['style', 'data-dragging', 'data-neko-live2d-peek-anchor']"
+        in source
+    )
     assert '_scheduleNekoIdleCat1JourneySyncForContainer' in source
     assert '_shouldRecheckNekoIdleCat1AfterManualMove' in source
     assert '_getNekoIdleRectCenterMoveDistance' in source
@@ -3959,9 +4062,17 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
 
     container_observer = _source_slice_between(
         source,
-        "state.containerObserver = new MutationObserver(() => {",
+        "state.containerObserver = new MutationObserver((mutations) => {",
         "state.containerObserver.observe(container",
         "cat1 container observer",
+    )
+    _assert_source_order(
+        container_observer,
+        "transferred anchor interrupts a running walk through the existing sync gate",
+        "const transferredAnchorChanged = mutations.some((mutation) =>",
+        "mutation.attributeName === 'data-neko-live2d-peek-anchor');",
+        "if (currentState.substate === currentState.profile.walkingSubstate && !transferredAnchorChanged) return;",
+        "_scheduleNekoIdleCat1JourneySync(button);",
     )
     _assert_source_contains(
         container_observer,
@@ -3971,6 +4082,11 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     _assert_source_contains(
         container_observer,
         "if (observerDragging && observerDragging !== 'false') return;",
+        "cat1 container observer",
+    )
+    _assert_source_contains(
+        source,
+        "attributeFilter: ['style', 'data-dragging', 'data-neko-live2d-peek-anchor']",
         "cat1 container observer",
     )
 
@@ -4137,7 +4253,7 @@ def test_live2d_renderer_ignores_and_recovers_return_ball_viewport_size():
 
     save_block = _source_slice_between(
         interaction_source,
-        "Live2DManager.prototype._savePositionAfterInteraction = async function () {",
+        "Live2DManager.prototype._savePositionAfterInteraction = async function (options = {}) {",
         "// 防抖动保存位置的辅助函数",
         "live2d save position",
     )

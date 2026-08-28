@@ -1094,6 +1094,10 @@ class TurnMixin:
         pending_images = getattr(self.session, "_pending_images", None)
         if hasattr(pending_images, "clear"):
             pending_images.clear()
+        # 插件 read 图片的独立暂存位同为「待发视觉上下文」，走同一个失效判据。
+        pending_plugin_images = getattr(self.session, "_pending_plugin_images", None)
+        if hasattr(pending_plugin_images, "clear"):
+            pending_plugin_images.clear()
         # 走 magic-command 等绕过 stream_text 的 text 输入时，主动搭话暂存的屏幕
         # 截图也不再是"下一条回复的背景"——这些路径不经 stream_text 消费它，残留
         # 会被注进后续不相关消息。一并清掉（与 _pending_images 同为"用户做了别的
@@ -1623,6 +1627,7 @@ class TurnMixin:
         self,
         text: str,
         *,
+        blocks: list[dict[str, Any]] | None = None,
         request_id: str | None = None,
         turn_id: str | None = None,
         source: str = "passthrough",
@@ -1643,10 +1648,35 @@ class TurnMixin:
         This is a generic SessionManager capability; it does not assume
         any particular consumer.
 
+        .. warning::
+           **NO PRODUCTION CALLER remains.** That chat-blind push was the
+           only one, and it now renders through :meth:`render_chat_blocks`
+           as a source-labelled SYSTEM message instead — a plugin bubble
+           must not wear the assistant's identity, and a ``chat_blocks``
+           frame opens no assistant turn, so it needs no matching turn-end.
+
+           Two consequences for anyone touching this:
+
+           * The ``blocks`` parameter, ``message["blocks"]``, and the whole
+             ``gemini_response.blocks`` consumer chain on the frontend
+             (``hasStructuredResponseBlocks`` in ``app-websocket.js``, the
+             ``structuredResponseBlocks`` branch in ``app-chat-adapter.js``)
+             are reachable ONLY from tests. A regression there is invisible
+             in production.
+           * The turn-lifecycle contract below is likewise only a contract
+             on paper right now. Honour it if you add a caller back, but do
+             not assume it is being exercised today.
+
+           Kept, rather than deleted, because it is the only way to render
+           verbatim text *as the assistant* without touching chat history —
+           a capability with no other spelling. If nothing claims it,
+           delete it together with the frontend branch above; leaving one
+           half is worse than either.
+
         Returns ``True`` iff a ``gemini_response`` frame was actually
         handed to ``send_json`` without raising. ``False`` covers every
-        no-op path: empty/whitespace text, websocket missing or
-        disconnected, and ``send_json`` failures swallowed below. Callers
+        no-op path: no visible text or structured blocks, websocket missing
+        or disconnected, and ``send_json`` failures swallowed below. Callers
         that open an assistant-turn lifecycle on the frontend (e.g.
         ``main_server`` chat-blind) MUST gate their turn-end emit on this
         flag — a swallowed send means the frontend never opened a turn,
@@ -1657,7 +1687,8 @@ class TurnMixin:
         # leading/trailing whitespace, newlines, and indentation render
         # exactly as the plugin authored them.
         raw = str(text or "")
-        if not raw or not raw.strip():
+        structured_blocks = [dict(block) for block in blocks or [] if isinstance(block, dict)]
+        if (not raw or not raw.strip()) and not structured_blocks:
             return False
         effective_turn_id = turn_id or request_id or str(uuid4())
         message = {
@@ -1668,6 +1699,8 @@ class TurnMixin:
             "request_id": request_id,
             "metadata": {"source": source, "passthrough": True},
         }
+        if structured_blocks:
+            message["blocks"] = structured_blocks
         if not (
             self.websocket
             and hasattr(self.websocket, "client_state")
@@ -1680,6 +1713,56 @@ class TurnMixin:
             logger.warning(
                 "[%s] passthrough_to_chat_bubble WS send failed: %s",
                 self.lanlan_name, e,
+            )
+            return False
+        return True
+
+    async def render_chat_blocks(
+        self,
+        blocks: list[dict[str, Any]],
+        *,
+        request_id: str | None = None,
+        source: str = "plugin",
+        source_name: str | None = None,
+    ) -> bool:
+        """Render structured blocks as a SYSTEM message.
+
+        Not the assistant and not the user. Content pushed by a plugin is
+        neither, and rendering it as either is a claim the reader has no way to
+        check: an assistant bubble the assistant has no memory of producing, or
+        a user bubble the user never wrote.
+
+        Opens no assistant turn, so callers must NOT emit a turn-end for it.
+
+        ``source_name`` is the plugin's own display name when it supplied one;
+        the frontend labels the bubble with it so the origin is visible rather
+        than inferred.
+        """
+        structured_blocks = [dict(block) for block in blocks if isinstance(block, dict)]
+        if not structured_blocks:
+            return False
+        if not (
+            self.websocket
+            and hasattr(self.websocket, "client_state")
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        ):
+            return False
+        try:
+            await self.websocket.send_json({
+                "type": "chat_blocks",
+                "blocks": structured_blocks,
+                "request_id": request_id,
+                "metadata": {
+                    "source": source,
+                    "source_name": source_name or "",
+                    "passthrough": True,
+                },
+            })
+        except Exception as e:
+            logger.warning(
+                "[%s] render_chat_blocks WS send failed: %s",
+                self.lanlan_name,
+                e,
             )
             return False
         return True

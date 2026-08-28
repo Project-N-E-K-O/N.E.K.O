@@ -459,6 +459,7 @@ class InstallResult(_BaseModel):
     profiles_root: OptionalResolvedPath = None
     installed_plugins: list[InstalledPlugin] = Field(default_factory=list)
     profile_dir: OptionalResolvedPath = None
+    profile_reused: bool = False
     metadata_found: bool = False
     payload_hash: OptionalPayloadHashValue = ""
     payload_hash_verified: bool | None = None

@@ -3,18 +3,56 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
+  discardUploadedPluginPackage,
   installPluginPackage,
   planPluginInstall,
   type PluginCliInstallRequest,
   type PluginCliInstallPlanResponse,
   type PluginCliInstallResponse,
 } from '@/api/pluginCli'
-import { formatHttpError } from '@/utils/request'
+import {
+  readPluginPackageErrorCode,
+  resolvePluginPackageErrorMessage,
+} from '@/utils/pluginPackageError'
+import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
 
 export type InstallPackagePathOptions = {
   pluginsRoot?: string
   profilesRoot?: string
   installSource?: 'imported'
+  discardOnFailure?: boolean
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null
+    ? value as Record<string, unknown>
+    : null
+}
+
+function isConfirmedSafeInstallFailure(error: unknown): boolean {
+  const response = asRecord(asRecord(error)?.response)
+  if (!response) return false
+
+  const data = asRecord(response.data)
+  const detail = asRecord(data?.detail)
+  const code = readPluginPackageErrorCode(error)
+  const details = asRecord(data?.details) ?? asRecord(detail?.details)
+  const rollbackStatus = details?.rollback_status
+
+  if (code === 'PLUGIN_UPGRADE_ROLLED_BACK') {
+    return rollbackStatus === 'completed'
+  }
+  if (rollbackStatus === 'incomplete') return false
+  if (rollbackStatus === 'completed') return true
+
+  const status = response.status
+  const isDomainFailure = typeof code === 'string' && code.startsWith('PLUGIN_')
+  const isAmbiguousTimeout = status === 408 || status === 425 || status === 429
+  return isDomainFailure
+    && typeof status === 'number'
+    && status >= 400
+    && status < 500
+    && !isAmbiguousTimeout
 }
 
 export function usePluginPackageInstaller() {
@@ -34,6 +72,8 @@ export function usePluginPackageInstaller() {
 
     const pluginsRoot = options.pluginsRoot?.trim() || undefined
     const profilesRoot = options.profilesRoot?.trim() || undefined
+    let installRequested = false
+    let installFailureConfirmed = false
     installing.value = true
     installPlan.value = null
     try {
@@ -59,6 +99,12 @@ export function usePluginPackageInstaller() {
         )
         return null
       }
+      if (plan.action === 'override_builtin') {
+        // Builtin source switching is intentionally Market-only because the
+        // backend must bind the transaction to a Market-verified SHA256.
+        ElMessage.error(t('market.autoUpgradeBlocked'))
+        return null
+      }
 
       const request: PluginCliInstallRequest = {
         package: packagePath,
@@ -67,48 +113,56 @@ export function usePluginPackageInstaller() {
         on_conflict: 'fail',
         install_source: options.installSource,
       }
-      if (plan.action === 'upgrade') {
+      if (plan.action === 'upgrade' || plan.action === 'reinstall' || plan.action === 'downgrade') {
+        const messagePrefix = plan.action
         try {
           await ElMessageBox.confirm(
-            t('package.install.upgradeBody', {
+            t(`package.install.${messagePrefix}Body`, {
               current: plan.current_version || '-',
               target: plan.target_version || '-',
             }),
-            t('package.install.upgradeTitle', {
+            t(`package.install.${messagePrefix}Title`, {
               plugin: plan.plugin_id || plan.directory_name,
             }),
             {
               type: 'warning',
-              confirmButtonText: t('package.install.upgradeConfirm'),
+              confirmButtonText: t(`package.install.${messagePrefix}Confirm`),
               cancelButtonText: t('common.cancel'),
             },
           )
         } catch {
-          ElMessage.info(t('package.install.upgradeCancelled'))
+          ElMessage.info(t(`package.install.${messagePrefix}Cancelled`))
           return null
         }
         request.confirm_upgrade = true
         request.confirmation_token = plan.confirmation_token
       }
 
+      installRequested = true
       return await installPluginPackage(request)
     } catch (error) {
-      const errorCode = (error as any)?.response?.data?.detail?.code
-        || (error as any)?.response?.data?.code
-      if (errorCode === 'PLUGIN_UPGRADE_ROLLED_BACK') {
-        const rollbackStatus = (error as any)?.response?.data?.detail?.details?.rollback_status
-        ElMessage.error(t(
-          rollbackStatus === 'completed'
-            ? 'package.install.rollbackCompleted'
-            : 'package.install.rollbackIncomplete',
-        ))
-      } else if (!installPlan.value) {
-        ElMessage.error(t('package.install.planFailed'))
+      installFailureConfirmed = installRequested && isConfirmedSafeInstallFailure(error)
+      const errorCode = readPluginPackageErrorCode(error)
+      const isPackageFailure = errorCode === 'PLUGIN_UPGRADE_ROLLED_BACK'
+        || errorCode.startsWith('PLUGIN_PACKAGE_')
+      if (installPlan.value && errorCode && !isPackageFailure) {
+        ElMessage.error(t(resolvePluginInstallErrorKey(errorCode)))
       } else {
-        ElMessage.error(t('package.install.installFailed', { error: formatHttpError(error) }))
+        ElMessage.error(resolvePluginPackageErrorMessage(
+          error,
+          t,
+          installPlan.value ? 'install' : 'plan',
+        ))
       }
       return null
     } finally {
+      if (options.discardOnFailure && (!installRequested || installFailureConfirmed)) {
+        try {
+          await discardUploadedPluginPackage(packagePath)
+        } catch (cleanupError) {
+          console.warn('Failed to discard abandoned plugin package upload', cleanupError)
+        }
+      }
       installing.value = false
     }
   }

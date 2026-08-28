@@ -88,3 +88,55 @@ describe('MessageList image fallback', () => {
     expect(img).not.toHaveAttribute('data-neko-image-load-failed-sticker');
   });
 });
+
+describe('plugin system bubble', () => {
+  const pluginMessage = parseChatMessage({
+    id: 'plugin-1',
+    role: 'system',
+    author: 'LifeKit',
+    time: '10:05',
+    createdAt: 2,
+    blocks: [{ type: 'text', text: '哇你被打下来了！' }],
+    status: 'sent',
+  });
+
+  it('names its source instead of wearing the character identity', () => {
+    const { container } = render(<MessageList messages={[pluginMessage]} />);
+
+    // A plugin may phrase its text in her voice — warthunder does, for
+    // latency — so the source label is the only thing telling the reader
+    // these words are not hers. For blind pushes she has no memory of them.
+    const source = container.querySelector('.system-chip-source');
+    expect(source?.textContent).toBe('LifeKit');
+    expect(container.querySelector('.system-chip-content')?.textContent).toContain(
+      '哇你被打下来了！',
+    );
+
+    // None of the character's identity may leak in.
+    expect(container.querySelector('.avatar-assistant')).toBeNull();
+    expect(container.querySelector('.message-bubble-assistant')).toBeNull();
+    expect(container.querySelector('.message-row-system')).not.toBeNull();
+  });
+
+  it('falls back to the source kind when the plugin gave no name', () => {
+    const unlabelled = parseChatMessage({
+      id: 'plugin-2',
+      role: 'system',
+      // The schema requires a NON-EMPTY author, so the adapter substitutes the
+      // source kind rather than leaving it blank — every plugin bubble is
+      // labelled, none silently fails validation.
+      author: 'plugin',
+      time: '10:06',
+      createdAt: 3,
+      blocks: [{ type: 'text', text: 'session started' }],
+      status: 'sent',
+    });
+
+    const { container } = render(<MessageList messages={[unlabelled]} />);
+
+    expect(
+      container.querySelector('.system-chip-source')?.textContent,
+    ).toBe('plugin');
+    expect(container.querySelector('.system-chip')).not.toBeNull();
+  });
+});

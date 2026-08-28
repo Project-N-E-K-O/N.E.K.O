@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { usePluginPackageInstaller } from './usePluginPackageInstaller'
 import {
+  discardUploadedPluginPackage,
   installPluginPackage,
   planPluginInstall,
   type PluginCliInstallPlanResponse,
@@ -16,6 +17,7 @@ vi.mock('vue-i18n', () => ({
 }))
 
 vi.mock('@/api/pluginCli', () => ({
+  discardUploadedPluginPackage: vi.fn(),
   installPluginPackage: vi.fn(),
   planPluginInstall: vi.fn(),
 }))
@@ -39,8 +41,8 @@ const replacePlan: PluginCliInstallPlanResponse = {
   package_type: 'plugin',
   plugin_id: 'demo',
   directory_name: 'demo',
-  current_version: '2.0.0',
-  target_version: '1.0.0',
+  current_version: '1.0.0',
+  target_version: '2.0.0',
   confirmation_token: 'a'.repeat(64),
   reason: '',
   legacy_plugin_ids: [],
@@ -69,6 +71,175 @@ beforeEach(() => {
 })
 
 describe('usePluginPackageInstaller', () => {
+  it('discards an owned upload when the install plan is blocked', async () => {
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...replacePlan,
+      action: 'blocked',
+      reason: 'directory_identity_conflict',
+    })
+    vi.mocked(discardUploadedPluginPackage).mockResolvedValue({
+      success: true,
+      removed: true,
+      name: 'demo.neko-plugin',
+    })
+    const installer = usePluginPackageInstaller()
+
+    const response = await installer.installPackagePath('/packages/demo.neko-plugin', {
+      discardOnFailure: true,
+    })
+
+    expect(response).toBeNull()
+    expect(discardUploadedPluginPackage).toHaveBeenCalledWith('/packages/demo.neko-plugin')
+  })
+
+  it('keeps the upload when the server completed install but the response was lost', async () => {
+    let serverCompleted = false
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...replacePlan,
+      action: 'install',
+    })
+    vi.mocked(installPluginPackage).mockImplementation(async () => {
+      serverCompleted = true
+      throw new Error('response lost after commit')
+    })
+    const installer = usePluginPackageInstaller()
+
+    const response = await installer.installPackagePath('/packages/demo.neko-plugin', {
+      discardOnFailure: true,
+    })
+
+    expect(serverCompleted).toBe(true)
+    expect(response).toBeNull()
+    expect(discardUploadedPluginPackage).not.toHaveBeenCalled()
+  })
+
+  it('discards the upload after a confirmed HTTP install failure', async () => {
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...replacePlan,
+      action: 'install',
+    })
+    vi.mocked(installPluginPackage).mockRejectedValue({
+      response: {
+        status: 409,
+        data: { code: 'PLUGIN_PACKAGE_PROFILE_OWNERSHIP_CONFLICT' },
+      },
+    })
+    vi.mocked(discardUploadedPluginPackage).mockResolvedValue({
+      success: true,
+      removed: true,
+      name: 'demo.neko-plugin',
+    })
+    const installer = usePluginPackageInstaller()
+
+    const response = await installer.installPackagePath('/packages/demo.neko-plugin', {
+      discardOnFailure: true,
+    })
+
+    expect(response).toBeNull()
+    expect(discardUploadedPluginPackage).toHaveBeenCalledWith('/packages/demo.neko-plugin')
+  })
+
+  it('discards the upload when the plugin domain code is carried by a response header', async () => {
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...replacePlan,
+      action: 'install',
+    })
+    vi.mocked(installPluginPackage).mockRejectedValue({
+      response: {
+        status: 409,
+        data: { detail: 'existing profile ownership does not match' },
+        headers: { 'x-error-code': 'PLUGIN_PACKAGE_PROFILE_OWNERSHIP_CONFLICT' },
+      },
+    })
+    const installer = usePluginPackageInstaller()
+
+    await installer.installPackagePath('/packages/demo.neko-plugin', {
+      discardOnFailure: true,
+    })
+
+    expect(discardUploadedPluginPackage).toHaveBeenCalledWith('/packages/demo.neko-plugin')
+  })
+
+  it.each([
+    {
+      name: 'an incomplete rollback response',
+      error: {
+        response: {
+          status: 409,
+          data: {
+            code: 'PLUGIN_UPGRADE_ROLLED_BACK',
+            details: { rollback_status: 'incomplete' },
+          },
+        },
+      },
+    },
+    {
+      name: 'an unknown server error',
+      error: {
+        response: {
+          status: 500,
+          data: { code: 'INTERNAL_SERVER_ERROR' },
+        },
+      },
+    },
+    {
+      name: 'an ambiguous proxy timeout',
+      error: {
+        response: {
+          status: 408,
+          data: { code: 'PLUGIN_INSTALL_TIMEOUT' },
+        },
+      },
+    },
+    {
+      name: 'a 4xx response without a plugin domain code',
+      error: {
+        response: {
+          status: 409,
+          data: { code: 'PROXY_CONFLICT' },
+        },
+      },
+    },
+  ])('keeps the upload after $name', async ({ error }) => {
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...replacePlan,
+      action: 'install',
+    })
+    vi.mocked(installPluginPackage).mockRejectedValue(error)
+    const installer = usePluginPackageInstaller()
+
+    const response = await installer.installPackagePath('/packages/demo.neko-plugin', {
+      discardOnFailure: true,
+    })
+
+    expect(response).toBeNull()
+    expect(discardUploadedPluginPackage).not.toHaveBeenCalled()
+  })
+
+  it('discards the upload after a completed rollback response', async () => {
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...replacePlan,
+      action: 'upgrade',
+    })
+    vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as any)
+    vi.mocked(installPluginPackage).mockRejectedValue({
+      response: {
+        status: 409,
+        data: {
+          code: 'PLUGIN_UPGRADE_ROLLED_BACK',
+          details: { rollback_status: 'completed' },
+        },
+      },
+    })
+    const installer = usePluginPackageInstaller()
+
+    await installer.installPackagePath('/packages/demo.neko-plugin', {
+      discardOnFailure: true,
+    })
+
+    expect(discardUploadedPluginPackage).toHaveBeenCalledWith('/packages/demo.neko-plugin')
+  })
+
   it('plans and confirms an uploaded package path before replacing an installed plugin', async () => {
     vi.mocked(planPluginInstall).mockResolvedValue(replacePlan)
     vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as any)
@@ -95,4 +266,40 @@ describe('usePluginPackageInstaller', () => {
     })
     expect(response).toEqual(replaceResponse)
   })
+
+  it.each([
+    ['upgrade', 'upgradeTitle', 'upgradeBody', 'upgradeConfirm'],
+    ['reinstall', 'reinstallTitle', 'reinstallBody', 'reinstallConfirm'],
+    ['downgrade', 'downgradeTitle', 'downgradeBody', 'downgradeConfirm'],
+  ] as const)(
+    'uses operation-specific confirmation copy for %s',
+    async (action, titleKey, bodyKey, confirmKey) => {
+      vi.mocked(planPluginInstall).mockResolvedValue({
+        ...replacePlan,
+        action,
+      })
+      vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as any)
+      vi.mocked(installPluginPackage).mockResolvedValue({
+        ...replaceResponse,
+        operation: action,
+      })
+      const installer = usePluginPackageInstaller()
+
+      await installer.installPackagePath('/packages/demo.neko-plugin')
+
+      expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+        expect.stringContaining(`package.install.${bodyKey}`),
+        expect.stringContaining(`package.install.${titleKey}`),
+        expect.objectContaining({
+          confirmButtonText: `package.install.${confirmKey}`,
+        }),
+      )
+      expect(installPluginPackage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          confirm_upgrade: true,
+          confirmation_token: 'a'.repeat(64),
+        }),
+      )
+    },
+  )
 })

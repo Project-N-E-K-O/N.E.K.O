@@ -567,6 +567,157 @@ body.neko-game-active [id$="-lock-icon"] {
     animation: nekoIdleCat1CompactDrop 360ms cubic-bezier(0.22, 0.72, 0.2, 1) both;
 }
 
+.neko-idle-return-button-container.is-cat1-desktop-window-top-edge-dropping > .neko-idle-return-btn {
+    animation: nekoIdleCat1DesktopWindowTopEdgeDrop 360ms cubic-bezier(0.22, 0.72, 0.2, 1) both;
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peeking {
+    pointer-events: none;
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peeking > .neko-idle-return-btn {
+    pointer-events: auto;
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-left {
+    --neko-desktop-window-edge-peek-clip: polygon(-100% -100%, 50% -100%, 50% 200%, -100% 200%);
+    --neko-desktop-window-edge-peek-cycle-clip: polygon(-100% -100%, 58% -100%, 58% 200%, -100% 200%);
+    --neko-desktop-window-edge-peek-cycle-shift: translate3d(-8%, 0, 0);
+    clip-path: var(--neko-desktop-window-edge-peek-clip);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-right {
+    --neko-desktop-window-edge-peek-clip: polygon(50% -100%, 200% -100%, 200% 200%, 50% 200%);
+    --neko-desktop-window-edge-peek-cycle-clip: polygon(42% -100%, 200% -100%, 200% 200%, 42% 200%);
+    --neko-desktop-window-edge-peek-cycle-shift: translate3d(8%, 0, 0);
+    clip-path: var(--neko-desktop-window-edge-peek-clip);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-bottom {
+    --neko-desktop-window-edge-peek-clip: polygon(-100% 56%, 200% 56%, 200% 200%, -100% 200%);
+    --neko-desktop-window-edge-peek-cycle-clip: polygon(-100% 48%, 200% 48%, 200% 200%, -100% 200%);
+    --neko-desktop-window-edge-peek-cycle-shift: translate3d(0, 8%, 0);
+    clip-path: var(--neko-desktop-window-edge-peek-clip);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-left > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-right > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(60deg);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-bottom > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(180deg);
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-cycle-active > .neko-idle-return-btn {
+    animation: nekoIdleCat1DesktopWindowEdgePeekCycle
+        var(--neko-desktop-window-edge-peek-cycle-duration, 850ms)
+        cubic-bezier(0.45, 0, 0.25, 1) both;
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-facing-right > .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+.neko-idle-return-btn.is-cat1-facing-right.is-cat1-desktop-window-edge-peek-walking:not(.is-cat1-desktop-window-edge-peek-facing-right) > .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(1);
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-leaving > .neko-idle-return-btn {
+    animation: nekoIdleCat1DesktopWindowEdgePeekLeave 360ms cubic-bezier(0.22, 0.72, 0.2, 1) both;
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-cue-active::after {
+    content: "";
+    position: absolute;
+    width: 18px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255, 190, 86, 0.95);
+    box-shadow:
+        5px 8px 0 rgba(255, 190, 86, 0.82),
+        -1px 16px 0 rgba(255, 190, 86, 0.68);
+    filter: drop-shadow(0 1px 1px rgba(73, 43, 18, 0.28));
+    pointer-events: none;
+    z-index: 4;
+    animation: nekoIdleCat1DesktopWindowEdgePeekCue 700ms ease-out both;
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-door-clipped {
+    clip-path: var(--neko-desktop-window-door-clip, inset(0));
+}
+
+.neko-desktop-window-door-layer {
+    display: contents;
+    pointer-events: none;
+}
+
+.neko-desktop-window-door-opening,
+.neko-desktop-window-door-frame {
+    position: fixed;
+    pointer-events: none;
+}
+
+.neko-desktop-window-door-opening {
+    z-index: 99998;
+    background: radial-gradient(ellipse at center, rgba(72, 61, 102, 0.9), rgba(17, 15, 25, 0.98));
+}
+
+.neko-desktop-window-door-frame {
+    z-index: 100000;
+    box-sizing: border-box;
+    border: 4px solid rgba(237, 204, 139, 0.98);
+    box-shadow:
+        inset 0 0 0 2px rgba(102, 65, 54, 0.82),
+        0 0 0 1px rgba(57, 38, 44, 0.8),
+        0 5px 5px rgba(24, 19, 33, 0.35);
+}
+
+.neko-desktop-window-door.is-left .neko-desktop-window-door-frame {
+    border-left-width: 7px;
+    border-right-width: 2px;
+    border-radius: 12px 3px 3px 12px;
+}
+
+.neko-desktop-window-door.is-right .neko-desktop-window-door-frame {
+    border-left-width: 2px;
+    border-right-width: 7px;
+    border-radius: 3px 12px 12px 3px;
+}
+
+.neko-desktop-window-door.is-top .neko-desktop-window-door-frame {
+    border-top-width: 7px;
+    border-bottom-width: 2px;
+    border-radius: 12px 12px 3px 3px;
+}
+
+.neko-desktop-window-door.is-bottom .neko-desktop-window-door-frame {
+    border-top-width: 2px;
+    border-bottom-width: 7px;
+    border-radius: 3px 3px 12px 12px;
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-left::after {
+    left: -8px;
+    top: 20%;
+    transform: rotate(-18deg);
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-right::after {
+    right: -8px;
+    top: 20%;
+    transform: rotate(198deg);
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-bottom::after {
+    left: 52%;
+    bottom: -4px;
+    transform: rotate(90deg);
+}
+
 .neko-idle-return-button-container.is-cat1-compact-mirror-active {
     pointer-events: none;
 }
@@ -706,6 +857,25 @@ body.neko-game-active [id$="-lock-icon"] {
 }
 
 .neko-idle-return-btn.is-cat1-facing-right > .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+/*
+ * Settled desktop-window peeks own their edge composition. The generic walk
+ * facing class may legitimately remain on the button, but it must not mirror
+ * the already-rotated peek back into the sensed window.
+ */
+.neko-idle-return-btn.is-cat1-facing-right.is-cat1-desktop-window-edge-peek-left > .neko-idle-return-art,
+.neko-idle-return-btn.is-cat1-facing-right.is-cat1-desktop-window-edge-peek-right > .neko-idle-return-art,
+.neko-idle-return-btn.is-cat1-facing-right.is-cat1-desktop-window-edge-peek-bottom > .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(1);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-top-edge-active > .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(1);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-top-edge-active.is-cat1-desktop-window-top-edge-facing-right > .neko-idle-return-art {
     --neko-idle-return-facing-transform: scaleX(-1);
 }
 
@@ -871,6 +1041,9 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-btn.is-drag-action-pending .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-drag-action .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-walking .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-desktop-window-top-edge-walking .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-walking .neko-idle-thought-bubble,
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peeking .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-eating:not(.is-thought-bubble-popping) .neko-idle-thought-bubble,
@@ -941,10 +1114,64 @@ body.neko-game-active [id$="-lock-icon"] {
     }
 }
 
+@keyframes nekoIdleCat1DesktopWindowTopEdgeDrop {
+    0% {
+        transform: translate3d(0, -52px, 0) rotate(0deg);
+    }
+    70% {
+        transform: translate3d(0, 3px, 0) rotate(-2deg);
+    }
+    100% {
+        transform: translate3d(0, 0, 0) rotate(0deg);
+    }
+}
+
+@keyframes nekoIdleCat1DesktopWindowEdgePeekLeave {
+    0% {
+        transform: translate3d(0, -52px, 0) rotate(0deg);
+    }
+    70% {
+        transform: translate3d(0, 3px, 0) rotate(2deg);
+    }
+    100% {
+        transform: translate3d(0, 0, 0) rotate(0deg);
+    }
+}
+
+@keyframes nekoIdleCat1DesktopWindowEdgePeekCue {
+    0% {
+        opacity: 0;
+    }
+    28% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 0;
+    }
+}
+
+@keyframes nekoIdleCat1DesktopWindowEdgePeekCycle {
+    0%, 100% {
+        transform: translate3d(0, 0, 0);
+        clip-path: var(--neko-desktop-window-edge-peek-clip);
+    }
+    46% {
+        transform: var(--neko-desktop-window-edge-peek-cycle-shift);
+        clip-path: var(--neko-desktop-window-edge-peek-cycle-clip);
+    }
+}
+
 @media (prefers-reduced-motion: reduce) {
     .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art,
     .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art-next,
-    .neko-idle-return-button-container.is-cat1-dropping-from-compact-top-edge > .neko-idle-return-btn {
+    .neko-idle-return-button-container.is-cat1-dropping-from-compact-top-edge > .neko-idle-return-btn,
+    .neko-idle-return-button-container.is-cat1-desktop-window-top-edge-dropping > .neko-idle-return-btn,
+    .neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-leaving > .neko-idle-return-btn,
+    .neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-cue-active::after {
+        animation: none;
+    }
+
+    .neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-cycle-active > .neko-idle-return-btn {
         animation: none;
     }
 }
@@ -1719,21 +1946,6 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll-content,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-message {
     pointer-events: none;
-}
-
-/* 主动分享表情包 overlay 的图片区域保持点击穿透；关闭叉是唯一可交互 hit region。
-   它注册了 data-compact-geometry-owner="surface"，会被上面那条把 surface 子树重新开成 auto 的通用规则命中；
-   这里用同优先级、靠后定义的规则把透明包装和图片区压回 none，再单独保留关闭按钮 auto。
-   React styles.css 那条单 class 规则赢不了 host 的 ID 选择器。 */
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay img,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay-frame,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay-close-icon {
-    pointer-events: none;
-}
-
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-meme-overlay-close {
-    pointer-events: auto;
 }
 
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-bubble,

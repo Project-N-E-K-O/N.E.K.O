@@ -464,6 +464,14 @@
         } catch (error) {
             console.warn('[NewUserIcebreaker] storage bridge failed:', action, error);
         }
+        try {
+            var electronBridge = window.nekoElectronIcebreakerBridge;
+            if (electronBridge && typeof electronBridge.send === 'function') {
+                electronBridge.send(message);
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] Electron bridge failed:', action, error);
+        }
     }
 
     function broadcastIcebreakerAppendMessage(message) {

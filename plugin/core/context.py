@@ -20,7 +20,7 @@ import functools
 import itertools
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, cast
@@ -159,6 +159,15 @@ class PluginContext:
     _res_queue: Optional[Any] = None  # 结果队列（用于在等待期间处理响应）
     _response_queue: Optional[Any] = None
     _response_pending: Optional[Dict[str, Any]] = None
+    _direct_response_waiters: Optional[Dict[str, Any]] = None
+    _direct_response_lock: Any = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+    )
+    _image_transport: Optional[Any] = None
+    _images: Optional[Any] = None
+    _image_uploads_blocked: bool = False
     _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
     _entry_meta_map: Optional[Dict[str, Any]] = None  # entry_id -> EventMeta
     _instance: Optional[Any] = None  # 插件实例（用于处理命令）
@@ -179,11 +188,167 @@ class PluginContext:
             self._bus_hub = hub
         return cast("BusHubProtocol", hub)
 
+    @property
+    def images(self) -> Any:
+        images = self._images
+        if images is None:
+            from plugin.sdk.shared.core.images import PluginImages
+
+            images = PluginImages(self)
+            self._images = images
+        return images
+
+    async def _upload_image(
+        self,
+        data: bytes,
+        *,
+        mime: str,
+        deadline: float | None = None,
+        timeout: float,
+    ) -> dict[str, object]:
+        """Upload one image within ``timeout`` TOTAL.
+
+        ``deadline`` is a monotonic instant established by the caller before it
+        began any work on this upload. Without it the legs each got a fresh
+        ``timeout`` — send, then wait — so an upload could take past twice its
+        advertised budget and overrun a timer or entry handler's own deadline.
+        The decode gate widened that further, since queueing for a slot happens
+        before the transport is even touched (Codex).
+        """
+        self._ensure_image_upload_available()
+        transport = self._image_transport
+        if transport is None:
+            raise RuntimeError("temporary image transport is not available")
+        if timeout <= 0:
+            raise ValueError("image upload timeout must be positive")
+
+        request_id = str(uuid.uuid4())
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        with self._direct_response_lock:
+            waiters = self._direct_response_waiters
+            if waiters is None:
+                waiters = {}
+                self._direct_response_waiters = waiters
+            waiters[request_id] = (loop, future)
+        try:
+            def _remaining() -> float:
+                if deadline is None:
+                    return timeout
+                return deadline - asyncio.get_running_loop().time()
+
+            # The host starts timer and custom-event handler threads BEFORE the
+            # downlink loop begins reading, and _on_command_loop_start can await
+            # for as long as it likes in between. An upload launched in that
+            # window is sent to nobody: the reply has no reader, so it can only
+            # time out (Codex).
+            #
+            # Waiting is the honest answer rather than refusing, because those
+            # handlers are legitimate uploaders the moment the loop is up -- a
+            # refusal keyed on handler NAME would also reject them afterwards.
+            # The wait is charged to the SAME deadline, so it is never a second
+            # budget stacked on the caller's: a plugin that asked for three
+            # seconds still gets an answer within three seconds.
+            ready = getattr(self, "_downlink_ready", None)
+            while ready is not None and not ready.is_set():
+                remaining = _remaining()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"image upload timed out after {timeout}s "
+                        "(plugin downlink not ready)"
+                    )
+                await asyncio.sleep(min(0.02, remaining))
+
+            send_budget = _remaining()
+            if send_budget <= 0:
+                raise TimeoutError(f"image upload timed out after {timeout}s")
+            await transport.send_image(
+                request_id,
+                mime=mime,
+                data=data,
+                timeout=send_budget,
+            )
+            wait_budget = _remaining()
+            if wait_budget <= 0:
+                raise TimeoutError(f"image upload timed out after {timeout}s")
+            try:
+                response = await asyncio.wait_for(future, timeout=wait_budget)
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"image upload timed out after {timeout}s") from None
+            return self._unwrap_image_upload_response(response)
+        finally:
+            with self._direct_response_lock:
+                waiters.pop(request_id, None)
+
+    def _ensure_image_upload_available(self) -> None:
+        if self._image_uploads_blocked:
+            raise RuntimeError("ctx.images.upload() is not available while the plugin is freezing")
+
+    def _dispatch_direct_response(self, response: Any) -> bool:
+        """Resolve SDK-owned response futures before the legacy shared inbox."""
+        if not isinstance(response, dict) or response.get("type") != "IMAGE_UPLOAD_RESULT":
+            return False
+        request_id = response.get("request_id")
+        with self._direct_response_lock:
+            waiters = self._direct_response_waiters
+            waiter = waiters.get(request_id) if waiters and request_id else None
+        if waiter is not None:
+            loop, future = waiter
+            try:
+                loop.call_soon_threadsafe(
+                    self._resolve_direct_response,
+                    future,
+                    response,
+                )
+            except RuntimeError:
+                pass
+        # A late image result is owned by this path too; don't leak it into the
+        # plugin-to-plugin response inbox where it can confuse correlation.
+        return True
+
+    @staticmethod
+    def _resolve_direct_response(
+        future: asyncio.Future[Any],
+        response: dict[str, Any],
+    ) -> None:
+        if not future.done():
+            future.set_result(response)
+
+    @staticmethod
+    def _cancel_direct_response(future: asyncio.Future[Any]) -> None:
+        if not future.done():
+            future.cancel()
+
+    @staticmethod
+    def _unwrap_image_upload_response(response: dict[str, Any]) -> dict[str, object]:
+        error = response.get("error")
+        if error:
+            if isinstance(error, dict):
+                message = error.get("message") or error.get("code") or "image upload failed"
+            else:
+                message = str(error)
+            raise RuntimeError(str(message))
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("image upload returned no image part")
+        return dict(result)
+
     def close(self) -> None:
         """Release per-context resources such as the ZeroMQ push batcher.
 
         This is safe to call multiple times.
         """
+        with self._direct_response_lock:
+            waiters = getattr(self, "_direct_response_waiters", None)
+            pending = tuple(waiters.values()) if waiters else ()
+            if waiters:
+                waiters.clear()
+        for loop, future in pending:
+            try:
+                loop.call_soon_threadsafe(self._cancel_direct_response, future)
+            except RuntimeError:
+                pass
+
         batcher = getattr(self, "_push_batcher", None)
         if batcher is not None:
             try:

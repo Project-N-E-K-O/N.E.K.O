@@ -14,6 +14,8 @@ Scope:
    ``_persist_intent=False`` (restore replay) does not re-write intent
 6. Restore: ``_maybe_restore_agent_intent`` once-flag + escape hatch +
    permanent error short-circuit
+7. User-plugin readiness: transient registry failures preserve the ON intent;
+   only confirmed empty registries auto-disable the sub-switch
 """
 
 from __future__ import annotations
@@ -530,6 +532,7 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
     backup_analyzer_enabled = srv.Modules.analyzer_enabled
     backup_analyzer_profile = dict(srv.Modules.analyzer_profile)
     backup_agent_flags = dict(srv.Modules.agent_flags)
+    backup_user_plugin_lifecycle_seq = srv.Modules.user_plugin_lifecycle_seq
     backup_capability = {
         k: dict(v) for k, v in srv.Modules.capability_cache.items()
     }
@@ -546,9 +549,18 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
         # False and create a race against the test's assertions.
         return True
 
+    async def _user_plugin_registry_ready(*args, **kwargs):
+        return {
+            "status": "ready",
+            "plugin_count": 1,
+            "empty_responses": 0,
+            "last_error": "",
+        }
+
     monkeypatch.setattr(srv, "_emit_agent_status_update", _noop_async)
     monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_stopped", _noop_async)
     monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_started", _plugin_lifecycle_started_ok)
+    monkeypatch.setattr(srv, "_check_user_plugin_registry_readiness", _user_plugin_registry_ready)
     monkeypatch.setattr(srv, "admin_control", _noop_admin)
     monkeypatch.setattr(srv, "_cancel_openclaw_enable_probe", lambda: None)
     monkeypatch.setattr(srv, "_try_refresh_computer_use_adapter", lambda force=False: False)
@@ -560,6 +572,7 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
     srv.Modules.analyzer_enabled = backup_analyzer_enabled
     srv.Modules.analyzer_profile = backup_analyzer_profile
     srv.Modules.agent_flags = backup_agent_flags
+    srv.Modules.user_plugin_lifecycle_seq = backup_user_plugin_lifecycle_seq
     srv.Modules.capability_cache = backup_capability
 
 
@@ -625,6 +638,98 @@ async def test_set_agent_enabled_on_reprobes_openclaw_when_intent_survives(
         })
 
     assert started == ["lanlan-test"]
+
+
+@pytest.mark.asyncio
+async def test_master_on_restarts_preserved_user_plugin_lifecycle(
+    agent_state_isolation,
+    isolated_intent_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    srv = agent_state_isolation
+    starts: list[bool] = []
+
+    async def _record_start(*, should_start=None):
+        if should_start is not None and not should_start():
+            return False
+        starts.append(True)
+        return True
+
+    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_started", _record_start)
+    srv.Modules.analyzer_enabled = False
+    srv.Modules.agent_flags["user_plugin_enabled"] = True
+    before = set(srv.Modules._persistent_tasks)
+
+    with patch.object(
+        srv,
+        "_check_agent_api_gate",
+        return_value={"ready": True, "reasons": [], "is_free_version": False},
+    ):
+        await srv.agent_command({
+            "command": "set_agent_enabled",
+            "enabled": True,
+            "_persist_intent": False,
+        })
+
+    await _await_new_agent_tasks(srv, before)
+
+    assert srv.Modules.analyzer_enabled is True
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert starts == [True]
+
+
+@pytest.mark.asyncio
+async def test_stale_master_off_cannot_stop_reenabled_master_lifecycle(
+    agent_state_isolation,
+    isolated_intent_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    srv = agent_state_isolation
+    admin_waiting = asyncio.Event()
+    release_admin = asyncio.Event()
+    stops: list[bool] = []
+
+    async def _delayed_admin(*args, **kwargs):
+        admin_waiting.set()
+        await release_admin.wait()
+        return {"success": True}
+
+    async def _conditional_stop(*, should_stop=None):
+        if should_stop is not None and not should_stop():
+            return
+        stops.append(True)
+
+    monkeypatch.setattr(srv, "admin_control", _delayed_admin)
+    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_stopped", _conditional_stop)
+    srv.Modules.analyzer_enabled = True
+    srv.Modules.agent_flags["user_plugin_enabled"] = True
+
+    master_off = asyncio.create_task(srv.agent_command({
+        "command": "set_agent_enabled",
+        "enabled": False,
+        "_persist_intent": False,
+    }))
+    await admin_waiting.wait()
+
+    before_enable = set(srv.Modules._persistent_tasks)
+    with patch.object(
+        srv,
+        "_check_agent_api_gate",
+        return_value={"ready": True, "reasons": [], "is_free_version": False},
+    ):
+        await srv.agent_command({
+            "command": "set_agent_enabled",
+            "enabled": True,
+            "_persist_intent": False,
+        })
+    await _await_new_agent_tasks(srv, before_enable)
+
+    release_admin.set()
+    await master_off
+
+    assert srv.Modules.analyzer_enabled is True
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert stops == []
 
 
 @pytest.mark.asyncio
@@ -755,6 +860,425 @@ async def test_gate_fail_preserves_user_plugin_enabled(
     # user_plugin was let through (in-memory flag set to True by handler,
     # background _bg_plugin_enable runs but we don't care about its outcome here).
     assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+
+
+class _UserPluginRegistryResponse:
+    def __init__(self, status_code: int, payload: object):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _UserPluginRegistryClient:
+    outcomes: list[object] = []
+    instances = 0
+
+    def __init__(self, *args, **kwargs):
+        type(self).instances += 1
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url: str):
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+@pytest.mark.asyncio
+async def test_user_plugin_registry_check_does_not_treat_timeouts_as_empty(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import api_routes as srv
+
+    timeout_error = srv.httpx.ReadTimeout("plugin registry busy")
+    _UserPluginRegistryClient.outcomes = [
+        _UserPluginRegistryResponse(200, {"plugins": []}),
+        timeout_error,
+        srv.httpx.ReadTimeout("plugin registry busy"),
+        srv.httpx.ReadTimeout("plugin registry busy"),
+    ]
+    _UserPluginRegistryClient.instances = 0
+    monkeypatch.setattr(srv.httpx, "AsyncClient", _UserPluginRegistryClient)
+    monkeypatch.setattr(srv, "_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S", 0)
+
+    result = await srv._check_user_plugin_registry_readiness()
+
+    assert result["status"] == "unavailable"
+    assert result["empty_responses"] == 1
+    assert _UserPluginRegistryClient.instances == 1
+
+
+@pytest.mark.asyncio
+async def test_user_plugin_registry_check_requires_repeated_valid_empty_responses(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import api_routes as srv
+
+    _UserPluginRegistryClient.outcomes = [
+        _UserPluginRegistryResponse(200, {"plugins": []})
+        for _ in range(srv._USER_PLUGIN_EMPTY_CONFIRMATIONS)
+    ]
+    monkeypatch.setattr(srv.httpx, "AsyncClient", _UserPluginRegistryClient)
+    monkeypatch.setattr(srv, "_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S", 0)
+
+    result = await srv._check_user_plugin_registry_readiness()
+
+    assert result["status"] == "empty"
+    assert result["empty_responses"] == srv._USER_PLUGIN_EMPTY_CONFIRMATIONS
+
+
+@pytest.mark.asyncio
+async def test_user_plugin_registry_check_has_an_overall_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import api_routes as srv
+
+    never_responds = asyncio.Event()
+
+    class _HangingUserPluginRegistryClient(_UserPluginRegistryClient):
+        async def get(self, url: str):
+            await never_responds.wait()
+
+    monkeypatch.setattr(srv.httpx, "AsyncClient", _HangingUserPluginRegistryClient)
+    monkeypatch.setattr(srv, "_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S", 0)
+    monkeypatch.setattr(srv, "_USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S", 0.01)
+
+    result = await srv._check_user_plugin_registry_readiness()
+
+    assert result["status"] == "unavailable"
+    assert result["last_error"] == "overall timeout (0.01s)"
+
+
+async def _await_new_agent_tasks(srv, before: set[asyncio.Task]) -> None:
+    tasks = set(srv.Modules._persistent_tasks) - before
+    assert tasks
+    await asyncio.gather(*tasks)
+
+
+@pytest.mark.asyncio
+async def test_user_plugin_registry_unavailable_keeps_switch_enabled(
+    agent_state_isolation,
+    isolated_intent_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    srv = agent_state_isolation
+
+    async def _registry_unavailable():
+        return {
+            "status": "unavailable",
+            "plugin_count": 0,
+            "empty_responses": 0,
+            "last_error": "ReadTimeout",
+        }
+
+    monkeypatch.setattr(srv, "_check_user_plugin_registry_readiness", _registry_unavailable)
+    srv.Modules.analyzer_enabled = True
+    srv.Modules.agent_flags["user_plugin_enabled"] = False
+    before = set(srv.Modules._persistent_tasks)
+
+    await srv.set_agent_flags({
+        "user_plugin_enabled": True,
+        "_persist_intent": False,
+    })
+    await _await_new_agent_tasks(srv, before)
+
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert json.loads(srv.Modules.notification)["code"] == "AGENT_PLUGIN_SERVER_ERROR"
+    assert srv.Modules.capability_cache["user_plugin"]["ready"] is True
+
+
+@pytest.mark.asyncio
+async def test_user_plugin_confirmed_empty_registry_disables_switch(
+    agent_state_isolation,
+    isolated_intent_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    srv = agent_state_isolation
+    stopped: list[bool] = []
+
+    async def _registry_empty():
+        return {
+            "status": "empty",
+            "plugin_count": 0,
+            "empty_responses": srv._USER_PLUGIN_EMPTY_CONFIRMATIONS,
+            "last_error": "empty plugin list",
+        }
+
+    async def _record_stop(*args, **kwargs):
+        stopped.append(True)
+
+    monkeypatch.setattr(srv, "_check_user_plugin_registry_readiness", _registry_empty)
+    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_stopped", _record_stop)
+    srv.Modules.analyzer_enabled = True
+    srv.Modules.agent_flags["user_plugin_enabled"] = False
+    before = set(srv.Modules._persistent_tasks)
+
+    await srv.set_agent_flags({
+        "user_plugin_enabled": True,
+        "_persist_intent": False,
+    })
+    await _await_new_agent_tasks(srv, before)
+
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is False
+    assert json.loads(srv.Modules.notification)["code"] == "AGENT_NO_PLUGINS_FOUND"
+    assert stopped == [True]
+
+
+@pytest.mark.asyncio
+async def test_stale_user_plugin_empty_result_cannot_disable_newer_enable(
+    agent_state_isolation,
+    isolated_intent_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    srv = agent_state_isolation
+    first_probe_started = asyncio.Event()
+    release_first_probe = asyncio.Event()
+    probe_calls = 0
+    stopped: list[bool] = []
+
+    async def _sequenced_registry_check():
+        nonlocal probe_calls
+        probe_calls += 1
+        if probe_calls == 1:
+            first_probe_started.set()
+            await release_first_probe.wait()
+            return {
+                "status": "empty",
+                "plugin_count": 0,
+                "empty_responses": srv._USER_PLUGIN_EMPTY_CONFIRMATIONS,
+                "last_error": "empty plugin list",
+            }
+        return {
+            "status": "ready",
+            "plugin_count": 19,
+            "empty_responses": 0,
+            "last_error": "",
+        }
+
+    async def _record_stop(*args, **kwargs):
+        stopped.append(True)
+
+    monkeypatch.setattr(srv, "_check_user_plugin_registry_readiness", _sequenced_registry_check)
+    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_stopped", _record_stop)
+    srv.Modules.analyzer_enabled = True
+    srv.Modules.agent_flags["user_plugin_enabled"] = False
+
+    before_first = set(srv.Modules._persistent_tasks)
+    await srv.set_agent_flags({
+        "user_plugin_enabled": True,
+        "_persist_intent": False,
+    })
+    first_tasks = set(srv.Modules._persistent_tasks) - before_first
+    assert first_tasks
+    await first_probe_started.wait()
+
+    before_second = set(srv.Modules._persistent_tasks)
+    await srv.set_agent_flags({
+        "user_plugin_enabled": True,
+        "_persist_intent": False,
+    })
+    second_tasks = set(srv.Modules._persistent_tasks) - before_second
+    assert second_tasks
+    await asyncio.gather(*second_tasks)
+
+    release_first_probe.set()
+    await asyncio.gather(*first_tasks)
+
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert srv.Modules.user_plugin_lifecycle_seq >= 2
+    assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_pending_user_plugin_enable_cannot_restart_after_master_off(
+    agent_state_isolation,
+    isolated_intent_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    srv = agent_state_isolation
+    start_waiting = asyncio.Event()
+    release_start = asyncio.Event()
+    lifecycle_started: list[bool] = []
+
+    async def _delayed_start(*, should_start=None):
+        start_waiting.set()
+        await release_start.wait()
+        if should_start is not None and not should_start():
+            return False
+        lifecycle_started.append(True)
+        return True
+
+    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_started", _delayed_start)
+    srv.Modules.agent_flags["user_plugin_enabled"] = False
+    srv.Modules.analyzer_enabled = True
+    before = set(srv.Modules._persistent_tasks)
+
+    await srv.set_agent_flags({
+        "user_plugin_enabled": True,
+        "_persist_intent": False,
+    })
+    enable_tasks = set(srv.Modules._persistent_tasks) - before
+    assert enable_tasks
+    await start_waiting.wait()
+
+    await srv.agent_command({
+        "command": "set_agent_enabled",
+        "enabled": False,
+        "_persist_intent": False,
+    })
+    release_start.set()
+    await asyncio.gather(*enable_tasks)
+
+    assert srv.Modules.analyzer_enabled is False
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert lifecycle_started == []
+
+
+@pytest.mark.asyncio
+async def test_user_plugin_enable_is_deferred_while_master_is_off(
+    agent_state_isolation,
+    isolated_intent_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    srv = agent_state_isolation
+    starts: list[bool] = []
+
+    async def _record_start(*args, **kwargs):
+        starts.append(True)
+        return True
+
+    monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_started", _record_start)
+    srv.Modules.analyzer_enabled = False
+    srv.Modules.agent_flags["user_plugin_enabled"] = False
+    before = set(srv.Modules._persistent_tasks)
+
+    await srv.set_agent_flags({
+        "user_plugin_enabled": True,
+        "_persist_intent": False,
+    })
+    await _await_new_agent_tasks(srv, before)
+
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert starts == []
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_start_waits_for_in_progress_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import plugin_host
+    from plugin.server import lifecycle
+
+    shutdown_entered = asyncio.Event()
+    release_shutdown = asyncio.Event()
+    startup_calls: list[bool] = []
+    backup_started = plugin_host._shared.Modules.plugin_lifecycle_started
+    backup_lock = plugin_host._shared.Modules._plugin_lifecycle_lock
+
+    async def _delayed_shutdown():
+        shutdown_entered.set()
+        await release_shutdown.wait()
+
+    async def _record_startup():
+        startup_calls.append(True)
+
+    monkeypatch.setattr(lifecycle, "shutdown", _delayed_shutdown)
+    monkeypatch.setattr(lifecycle, "startup", _record_startup)
+    plugin_host._shared.Modules.plugin_lifecycle_started = True
+    plugin_host._shared.Modules._plugin_lifecycle_lock = asyncio.Lock()
+    stopping: asyncio.Task | None = None
+    starting: asyncio.Task | None = None
+
+    try:
+        stopping = asyncio.create_task(
+            plugin_host._ensure_plugin_lifecycle_stopped()
+        )
+        await shutdown_entered.wait()
+
+        starting = asyncio.create_task(
+            plugin_host._ensure_plugin_lifecycle_started()
+        )
+        await asyncio.sleep(0)
+        assert startup_calls == []
+
+        release_shutdown.set()
+        await asyncio.gather(stopping, starting)
+
+        assert startup_calls == [True]
+        assert plugin_host._shared.Modules.plugin_lifecycle_started is True
+    finally:
+        release_shutdown.set()
+        pending = [
+            task for task in (stopping, starting)
+            if task is not None and not task.done()
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        plugin_host._shared.Modules.plugin_lifecycle_started = backup_started
+        plugin_host._shared.Modules._plugin_lifecycle_lock = backup_lock
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_stop_waits_for_in_progress_startup(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.agent_server import plugin_host
+    from plugin.server import lifecycle
+
+    startup_entered = asyncio.Event()
+    release_startup = asyncio.Event()
+    shutdown_calls: list[bool] = []
+    backup_started = plugin_host._shared.Modules.plugin_lifecycle_started
+    backup_lock = plugin_host._shared.Modules._plugin_lifecycle_lock
+
+    async def _delayed_startup():
+        startup_entered.set()
+        await release_startup.wait()
+
+    async def _record_shutdown():
+        shutdown_calls.append(True)
+
+    monkeypatch.setattr(lifecycle, "startup", _delayed_startup)
+    monkeypatch.setattr(lifecycle, "shutdown", _record_shutdown)
+    plugin_host._shared.Modules.plugin_lifecycle_started = False
+    plugin_host._shared.Modules._plugin_lifecycle_lock = asyncio.Lock()
+    starting: asyncio.Task | None = None
+    stopping: asyncio.Task | None = None
+
+    try:
+        starting = asyncio.create_task(
+            plugin_host._ensure_plugin_lifecycle_started()
+        )
+        await startup_entered.wait()
+
+        stopping = asyncio.create_task(
+            plugin_host._ensure_plugin_lifecycle_stopped()
+        )
+        await asyncio.sleep(0)
+        assert shutdown_calls == []
+
+        release_startup.set()
+        await asyncio.gather(starting, stopping)
+
+        assert shutdown_calls == [True]
+        assert plugin_host._shared.Modules.plugin_lifecycle_started is False
+    finally:
+        release_startup.set()
+        pending = [
+            task for task in (starting, stopping)
+            if task is not None and not task.done()
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        plugin_host._shared.Modules.plugin_lifecycle_started = backup_started
+        plugin_host._shared.Modules._plugin_lifecycle_lock = backup_lock
 
 
 # ---------------------------------------------------------------------------

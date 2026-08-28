@@ -1009,12 +1009,11 @@ def test_raw_config_gate_ignores_an_explicit_lanlan_app_endpoint():
 @pytest.mark.unit
 @pytest.mark.parametrize('rel_path', [
     'plugin/plugins/qq_auto_reply/session_bootstrap_service.py',
-    'plugin/plugins/bilibili_dm/__init__.py',
 ])
 def test_plugin_session_paths_settle_the_region(rel_path):
     """Plugin sessions cache an OmniOfflineClient too — same base-URL freeze.
 
-    Both plugins keep the client in a session-keyed dict, so a route picked before
+    The plugin keeps the client in a session-keyed dict, so a route picked before
     the verdict lands sticks for the life of that session.
 
     Checked per enclosing function and by line order, not by whole-file counts: a

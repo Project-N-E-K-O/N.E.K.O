@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import PurePosixPath
+from collections.abc import Iterator
 import zipfile
 
 from plugin._types.plugin_types import require_supported_plugin_type
@@ -20,16 +21,191 @@ except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
 
-def read_archive_toml(archive: zipfile.ZipFile, member_name: str, *, required: bool) -> dict[str, object] | None:
-    archive_name = getattr(archive, "filename", None) or "<archive>"
+MAX_ARCHIVE_ENTRIES = 10_000
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
+MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
+MAX_ARCHIVE_COMPRESSION_RATIO = 200
+MAX_ARCHIVE_TOML_BYTES = 2 * 1024 * 1024
+MAX_ARCHIVE_DISTRIBUTION_METADATA_BYTES = 2 * 1024 * 1024
+ARCHIVE_READ_CHUNK_BYTES = 1024 * 1024
+
+
+def validate_archive_structure(archive: zipfile.ZipFile) -> None:
+    """Reject package layouts that cannot be extracted consistently.
+
+    This deliberately keeps the policy small: a package gets a global entry
+    and uncompressed-size budget, and paths must describe one unambiguous tree
+    on case-insensitive, Unicode-normalizing filesystems.
+    """
+
+    infos = archive.infolist()
+    if len(infos) > MAX_ARCHIVE_ENTRIES:
+        raise ValueError(
+            f"package archive contains too many entries: {len(infos)} "
+            f"(max {MAX_ARCHIVE_ENTRIES})"
+        )
+
+    total_size = sum(info.file_size for info in infos if not info.is_dir())
+    if total_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+        raise ValueError(
+            f"package archive expands to {total_size} bytes, exceeding the "
+            f"{MAX_ARCHIVE_UNCOMPRESSED_BYTES}-byte package limit"
+        )
+
+    for info in infos:
+        if info.is_dir():
+            continue
+        if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+            raise ValueError(
+                f"package archive member {info.filename!r} expands to "
+                f"{info.file_size} bytes, exceeding the "
+                f"{MAX_ARCHIVE_MEMBER_BYTES}-byte single-member limit"
+            )
+        compressed_size = max(info.compress_size, 1)
+        if info.file_size > MAX_ARCHIVE_COMPRESSION_RATIO * compressed_size:
+            raise ValueError(
+                f"package archive member {info.filename!r} has an unsafe "
+                f"compression ratio greater than {MAX_ARCHIVE_COMPRESSION_RATIO}:1"
+            )
+
+    files: set[str] = set()
+    directories: set[str] = set()
+    original_names: dict[str, str] = {}
+    original_directories: dict[str, str] = {}
+    for info in infos:
+        path = safe_archive_path(info.filename)
+        canonical = normalize_archive_key(path.as_posix()).rstrip("/").casefold()
+        if not canonical:
+            continue
+        previous = original_names.get(canonical)
+        if previous is not None:
+            raise ValueError(
+                "package archive contains paths that are equivalent on common "
+                f"filesystems: {previous!r} and {info.filename!r}"
+            )
+        original_names[canonical] = info.filename
+        (directories if info.is_dir() else files).add(canonical)
+
+        directory_depth = len(path.parts) if info.is_dir() else len(path.parts) - 1
+        for depth in range(1, directory_depth + 1):
+            original_directory = "/".join(path.parts[:depth])
+            canonical_directory = normalize_archive_key(original_directory).casefold()
+            previous_directory = original_directories.get(canonical_directory)
+            if previous_directory is not None and previous_directory != original_directory:
+                raise ValueError(
+                    "package archive contains directory paths that are equivalent "
+                    "on common filesystems: "
+                    f"{previous_directory!r} and {original_directory!r}"
+                )
+            original_directories[canonical_directory] = original_directory
+
+    for entry_path in files | directories:
+        parts = entry_path.split("/")
+        for index in range(1, len(parts)):
+            parent = "/".join(parts[:index])
+            if parent in files:
+                raise ValueError(
+                    "package archive contains a file/directory path conflict: "
+                    f"{original_names[parent]!r} and {original_names[entry_path]!r}"
+                )
+    for file_path in files:
+        if file_path in directories:
+            raise ValueError(
+                "package archive contains a file/directory path conflict at "
+                f"{original_names[file_path]!r}"
+            )
+
+    names = {info.filename for info in infos}
+    if "manifest.toml" not in names:
+        nested_manifests = sorted(
+            name
+            for name in names
+            if PurePosixPath(name).name == "manifest.toml"
+            and len(PurePosixPath(name).parts) > 1
+        )
+        if nested_manifests:
+            raise FileNotFoundError(
+                "package manifest.toml is inside an extra parent folder; "
+                "rebuild the package so manifest.toml is at the archive root"
+            )
+
+
+def _iter_archive_member_chunks(
+    archive: zipfile.ZipFile,
+    member_name: str,
+    *,
+    max_bytes: int,
+) -> Iterator[bytes]:
     try:
-        raw = archive.read(member_name)
+        info = archive.getinfo(member_name)
+    except KeyError:
+        raise
+    if info.is_dir():
+        raise ValueError(f"archive member {member_name!r} is a directory, not a file")
+    if info.file_size > max_bytes:
+        raise ValueError(
+            f"archive member {member_name!r} exceeds the {max_bytes}-byte read limit"
+        )
+
+    total = 0
+    with archive.open(info, "r") as source:
+        while True:
+            chunk = source.read(min(ARCHIVE_READ_CHUNK_BYTES, max_bytes - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(
+                    f"archive member {member_name!r} exceeds the "
+                    f"{max_bytes}-byte read limit"
+                )
+            yield chunk
+    if total != info.file_size:
+        raise ValueError(
+            f"archive member {member_name!r} size changed while it was being read"
+        )
+
+
+def read_archive_member_limited(
+    archive: zipfile.ZipFile,
+    member_name: str,
+    *,
+    required: bool,
+    max_bytes: int,
+) -> bytes | None:
+    try:
+        return b"".join(
+            _iter_archive_member_chunks(
+                archive,
+                member_name,
+                max_bytes=max_bytes,
+            )
+        )
     except KeyError:
         if required:
+            archive_name = getattr(archive, "filename", None) or "<archive>"
             raise FileNotFoundError(
-                f"required file '{member_name}' not found in package archive '{archive_name}'. "
-                f"The archive may be corrupted or was not created by neko_plugin_cli."
+                f"required file '{member_name}' not found in package archive "
+                f"'{archive_name}'. The archive may be corrupted or was not "
+                "created by neko_plugin_cli."
             ) from None
+        return None
+
+
+def read_archive_toml(
+    archive: zipfile.ZipFile,
+    member_name: str,
+    *,
+    required: bool,
+) -> dict[str, object] | None:
+    archive_name = getattr(archive, "filename", None) or "<archive>"
+    raw = read_archive_member_limited(
+        archive,
+        member_name,
+        required=required,
+        max_bytes=MAX_ARCHIVE_TOML_BYTES,
+    )
+    if raw is None:
         return None
 
     data = load_toml_from_bytes(raw, source_name=member_name, archive_name=archive_name)
@@ -146,6 +322,18 @@ def validate_plugin_layout(archive: zipfile.ZipFile, plugin_folders: list[str]) 
             f"Every plugin directory under payload/plugins/ must contain a plugin.toml file."
         )
 
+    for folder in plugin_folders:
+        member_name = f"payload/plugins/{folder}/plugin.toml"
+        manifest = read_archive_toml(archive, member_name, required=True)
+        assert manifest is not None
+        plugin_table = manifest.get("plugin")
+        manifest_id = plugin_table.get("id") if isinstance(plugin_table, dict) else None
+        if not isinstance(manifest_id, str) or manifest_id.strip() != folder:
+            raise ValueError(
+                f"plugin folder {folder!r} does not match plugin.toml id "
+                f"{manifest_id!r}"
+            )
+
 
 def validate_plugin_manifest_types(
     archive: zipfile.ZipFile,
@@ -258,8 +446,15 @@ def _collect_archive_vendor_distribution_versions(
         if not path.parts[-2].endswith(".dist-info"):
             continue
 
+        raw_metadata = read_archive_member_limited(
+            archive,
+            name,
+            required=True,
+            max_bytes=MAX_ARCHIVE_DISTRIBUTION_METADATA_BYTES,
+        )
+        assert raw_metadata is not None
         dist_name, dist_version = _parse_distribution_metadata(
-            archive.read(name),
+            raw_metadata,
             source_name=name,
             archive_name=archive_name,
         )
@@ -322,7 +517,12 @@ def compute_archive_payload_hash(archive: zipfile.ZipFile) -> str:
     for archive_name, canonical in sorted(payload_entries, key=lambda item: item[1]):
         digest.update(canonical.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(archive.read(archive_name))
+        for chunk in _iter_archive_member_chunks(
+            archive,
+            archive_name,
+            max_bytes=MAX_ARCHIVE_MEMBER_BYTES,
+        ):
+            digest.update(chunk)
         digest.update(b"\0")
     return digest.hexdigest()
 

@@ -108,3 +108,26 @@ def response_arbiter_fail_open_enabled() -> bool:
 
     raw = os.getenv(_ARBITER_FAIL_OPEN_ENV_VAR, "").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+# ``api_type`` carries the provider key that ``CORE_API_TYPE`` resolves to
+# ('openai', 'qwen_intl', ...), never a model-name fragment. Several wire
+# branches were written against 'gpt' — a value the config layer has never
+# produced — so an OpenAI session silently missed every mid-session tool
+# update while its connect-time tools still went out (that path matches on
+# the model name, where 'gpt' really does appear). 'qwen_intl' missed the
+# 'qwen' branch the same way. Normalising here keeps the dialect branches
+# keyed on one vocabulary; 'gpt' stays accepted so existing callers and
+# fixtures that pass it keep working.
+_REALTIME_DIALECT_ALIASES = {
+    "openai": "gpt",
+    "gpt": "gpt",
+    "qwen_intl": "qwen",
+}
+
+
+def canonical_realtime_dialect(api_type: object) -> str:
+    """Map a provider key to the wire dialect its session speaks."""
+
+    raw = str(api_type or "").strip().lower()
+    return _REALTIME_DIALECT_ALIASES.get(raw, raw)

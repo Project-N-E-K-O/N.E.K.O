@@ -141,18 +141,26 @@ importlib.import_module(
 
 
 def _resolve_user_plugin_base() -> str:
+    """Delegates to config so this cannot drift from the process that mints
+    plugin media URLs, or from the router that proxies them to the browser."""
+    from config.network import resolve_user_plugin_base
+
+    # Judge the raw value directly. Inferring "it was rejected" from the
+    # resolved origin is wrong: USER_PLUGIN_BASE is itself derived from the
+    # same variable, so a VALID port makes the two match and the warning fires
+    # on correct input.
     raw_port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
     if raw_port:
         try:
             port = int(raw_port)
-            if 0 < port <= 65535:
-                return f"http://127.0.0.1:{port}"
         except ValueError:
+            port = 0
+        if not 0 < port <= 65535:
             logger.warning(
                 "Invalid NEKO_USER_PLUGIN_SERVER_PORT value {!r}; using configured plugin base",
                 raw_port,
             )
-    return USER_PLUGIN_BASE.rstrip("/")
+    return resolve_user_plugin_base()
 
 
 if _IS_MAIN_PROCESS:
@@ -1137,6 +1145,15 @@ async def on_startup():
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
         set_steamworks_initializer(ensure_steamworks_initialized)
+        try:
+            from .voice_identity_runtime import initialize_voice_identity_runtime
+
+            await initialize_voice_identity_runtime(_config_manager)
+        except Exception as _e:
+            # Voice identity is optional and fail-open. Startup and normal
+            # speech must remain available even when secure storage or model
+            # wiring cannot initialize.
+            logger.warning("voice identity startup degraded: %s", _e)
         # GeoIP 预热已移到 _ensure_main_server_runtime_initialized 末尾——配置到那里
         # 才最终成型（Cloud Save 快照导入 + Steamworks 初始化完成）。
         # asyncio 的慢回调告警只在 loop debug 模式下输出。默认关闭，
@@ -1197,6 +1214,12 @@ async def on_shutdown():
     """Clean up resources at server shutdown"""
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
+        try:
+            from .voice_identity_runtime import close_voice_identity_runtime
+
+            await close_voice_identity_runtime()
+        except Exception as e:
+            logger.debug(f"voice identity cleanup failed: {e}")
         cleanup()
         try:
             # join_sync_connector_threads 内部已经 gather 并行 join，直接 await

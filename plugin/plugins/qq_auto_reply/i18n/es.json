@@ -1,6 +1,6 @@
 {
   "plugin.name": "Integración QQ",
-  "plugin.description": "Conéctate vía NapCat (OneBot WebSocket inverso) o la plataforma abierta oficial de QQ. Soporta análisis de cadenas de respuesta, voz, stickers, toques y otras salidas multimodales.",
+  "plugin.description": "Conéctate vía OneBot v11 (WebSocket directo/inverso, compatible con cualquier backend OneBot como NapCat / LLOneBot / go-cqhttp / Lagrange) o la plataforma abierta oficial de QQ. Soporta atención multi-grupo, buffer de respuestas dinámico, lectura de contenido de archivos (texto / descripción VLM de imágenes), análisis de cadenas de respuesta, voz, stickers, toques y otras salidas multimodales.",
   "entries.init_config.name": "Inicializar configuración de QQ",
   "entries.init_config.description": "Crea una nueva configuración de QQ cuando uses el plugin por primera vez, termines la guía o aún no exista un archivo de configuración.",
   "entries.get_dashboard_state.name": "Obtener estado del panel",

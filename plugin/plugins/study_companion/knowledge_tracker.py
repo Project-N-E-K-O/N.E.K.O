@@ -11,6 +11,8 @@ from typing import Any, Callable
 
 from .fsrs_bridge import (
     FSRSBridge,
+    REVIEW_IS_DUE_AFTER_KEY,
+    REVIEW_WAS_DUE_BEFORE_KEY,
     StudyFsrsCard,
     StudyFsrsRating,
     create_card,
@@ -912,11 +914,24 @@ class KnowledgeTracker:
         }
 
     def get_next_question_params(
-        self, topic_id: str = "", *, record_prompt_usage: bool = True
+        self,
+        topic_id: str = "",
+        *,
+        record_prompt_usage: bool = True,
+        candidate_topic_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+        candidate_limit: int = 5,
+        candidate_topics_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         resolved = self._resolve_topic_id(topic_id)
-        weak_topics = self.get_weak_topics(limit=5)
-        review_queue = self.get_review_queue(limit=5)
+        weak_topics = self.get_weak_topics(
+            limit=candidate_limit,
+            topic_ids=candidate_topic_ids,
+        )
+        review_queue = self.get_review_queue(
+            limit=candidate_limit,
+            topic_ids=candidate_topic_ids,
+            topics_by_id=candidate_topics_by_id,
+        )
         topic = self.store.get_topic(resolved) if resolved else None
         latest = self.store.get_latest_mastery(resolved) if resolved else None
         mastery_value = float((latest or {}).get("mastery") or 0.0)
@@ -950,8 +965,21 @@ class KnowledgeTracker:
             ),
         }
 
-    def preview_next_question_params(self, topic_id: str = "") -> dict[str, Any]:
-        return self.get_next_question_params(topic_id, record_prompt_usage=False)
+    def preview_next_question_params(
+        self,
+        topic_id: str = "",
+        *,
+        candidate_topic_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+        candidate_limit: int = 5,
+        candidate_topics_by_id: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return self.get_next_question_params(
+            topic_id,
+            record_prompt_usage=False,
+            candidate_topic_ids=candidate_topic_ids,
+            candidate_limit=candidate_limit,
+            candidate_topics_by_id=candidate_topics_by_id,
+        )
 
     def record_prompt_usage_for_question_params(
         self, params: dict[str, Any] | None
@@ -1107,7 +1135,9 @@ class KnowledgeTracker:
         if card_row is None:
             raise ValueError("memory card not found")
         selected = self._rating_from_review(rating)
+        was_due_before = bool(self.fsrs.get_due_reviews([card_row["card"]]))
         updated_card, schedule = rate_answer(card_row["card"], selected)
+        is_due_after = bool(self.fsrs.get_due_reviews([updated_card]))
         self.store.upsert_fsrs_card(
             topic_id=resolved, card=updated_card.to_dict(), last_rating=int(selected)
         )
@@ -1127,16 +1157,32 @@ class KnowledgeTracker:
             "answer": str(answer or ""),
             "schedule": schedule,
             "card": self._memory_card_payload(saved),
+            REVIEW_WAS_DUE_BEFORE_KEY: was_due_before,
+            REVIEW_IS_DUE_AFTER_KEY: is_due_after,
         }
 
-    def get_review_queue(self, limit: int = 10) -> list[dict[str, Any]]:
-        rows = self.store.list_fsrs_cards(limit=None)
+    def get_review_queue(
+        self,
+        limit: int = 10,
+        *,
+        topic_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+        topics_by_id: dict[str, dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self.store.list_fsrs_cards(limit=None, topic_ids=topic_ids)
         reviews = self.fsrs.get_due_reviews([row["card"] for row in rows])
+        topic_lookup = dict(topics_by_id or {})
         result: list[dict[str, Any]] = []
         for item in reviews[: max(1, int(limit))]:
-            topic = self.store.get_topic(str(item.get("topic_id") or "")) or {}
+            topic_id = str(item.get("topic_id") or "")
+            topic = topic_lookup.get(topic_id)
+            if topic is None and topics_by_id is None:
+                topic = self.store.get_topic(topic_id)
             result.append(
-                {**item, **self._card_metadata(item.get("card") or {}), "topic": topic}
+                {
+                    **item,
+                    **self._card_metadata(item.get("card") or {}),
+                    "topic": topic or {},
+                }
             )
         return result
 
@@ -1144,8 +1190,17 @@ class KnowledgeTracker:
         rows = self.store.list_fsrs_cards(limit=None)
         return len(self.fsrs.get_due_reviews([row["card"] for row in rows]))
 
-    def get_weak_topics(self, limit: int = 5) -> list[dict[str, Any]]:
-        overview = self.store.list_mastery_overview(limit=1000)
+    def get_weak_topics(
+        self,
+        limit: int = 5,
+        *,
+        topic_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        overview = (
+            self.store.list_latest_mastery_for_topics(topic_ids)
+            if topic_ids is not None
+            else self.store.list_mastery_overview(limit=1000)
+        )
         weak = [
             item
             for item in overview

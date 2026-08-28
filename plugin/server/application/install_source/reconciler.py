@@ -78,8 +78,13 @@ class StartupReconciler:
         """
 
         try:
-            await asyncio.to_thread(self.manager.load)
-            await asyncio.to_thread(self.manager.reconcile)
+            from plugin.server.application.plugins.operation_lock import (
+                plugin_operation_lock,
+            )
+
+            async with plugin_operation_lock.hold():
+                await asyncio.to_thread(self.manager.load)
+                await asyncio.to_thread(self.manager.reconcile)
         except asyncio.CancelledError:
             # A cancellation of the lifespan task is not a subsystem
             # failure — let it bubble so the shutdown path sees it.

@@ -214,35 +214,6 @@ def _assert_simplified_session_init(text: str, her_name: str) -> None:
     [("zh-TW", _assert_traditional_session_init),
      ("zh-CN", _assert_simplified_session_init)],
 )
-def test_bilibili_dm_session_instructions_locale(ui_locale, check):
-    from plugin.plugins.bilibili_dm import BiliDMPlugin
-
-    facade = object.__new__(BiliDMPlugin)
-    facade.logger = MagicMock()
-
-    async def _run():
-        return await facade._build_session_instructions(
-            her_name="喵喵",
-            master_name="小明",
-            character_prompt="角色设定",
-            character_card_fields={},
-            # Non-admin skips the Memory Server round-trip; the init template
-            # lookup under test runs before that branch either way.
-            permission_level="user",
-            sender_uid="42",
-            user_title="朋友",
-        )
-
-    with language_context(ui_locale):
-        prompt = asyncio.run(_run())
-    check(prompt, "喵喵")
-
-
-@pytest.mark.parametrize(
-    ("ui_locale", "check"),
-    [("zh-TW", _assert_traditional_session_init),
-     ("zh-CN", _assert_simplified_session_init)],
-)
 def test_bilibili_danmaku_trusted_write_instructions_locale(
     monkeypatch, ui_locale, check,
 ):

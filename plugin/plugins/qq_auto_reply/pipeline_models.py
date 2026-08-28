@@ -102,7 +102,7 @@ class QQReplyRequest:
     # 群成员权限的接收边界快照。handler 排队/生成期间的升降权不得
     # 追溯改变已经说出的消息是否具有 owner trust 信号权限。
     group_speaker_permission_level_at_receipt: str | None = None
-    # 接收边界的通道观测快照（"napcat" / "open"）。纯诊断：只用于碰撞探测
+    # 接收边界的通道观测快照（"onebot" / "open"）。纯诊断：只用于碰撞探测
     # 与运维诊断，绝不参与任何键、账本分区、bind 判据或权限判定。
     speaker_channel_at_receipt: str | None = None
     # 接收边界的私聊 participant 记忆政策快照（语义同上，作用于非 admin

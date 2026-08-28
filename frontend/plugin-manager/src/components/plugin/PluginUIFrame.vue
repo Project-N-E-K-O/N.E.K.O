@@ -24,6 +24,7 @@
       <p>{{ t('plugins.ui.noUI') }}</p>
     </div>
     
+    <!-- Legacy static plugins may rely on standard browser modal dialogs. -->
     <iframe
       v-show="!loading && !error && hasUI"
       :key="iframeKey"
@@ -32,7 +33,7 @@
       :title="pluginId"
       :data-load-generation="iframeGeneration"
       class="plugin-iframe"
-      sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+      sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals"
       @load="onIframeLoad"
       @error="onIframeError"
     />
@@ -54,7 +55,7 @@ const emit = defineEmits<{
   (e: 'load'): void
   (e: 'error', error: string): void
   (e: 'message', data: any): void
-  (e: 'openSurface', payload: { pluginId?: string; surfaceId: string; kind?: string }): void
+  (e: 'openSurface', payload: { pluginId?: string; surfaceId: string; kind?: string; activationRevision?: number }): void
 }>()
 
 const { t } = useI18n()
@@ -169,10 +170,16 @@ function handleMessage(event: MessageEvent) {
     if (surfaceId) {
       const pluginId = typeof payload.pluginId === 'string' ? payload.pluginId.trim() : ''
       const kind = typeof payload.kind === 'string' ? payload.kind.trim() : ''
+      const activationRevision = typeof payload.activationRevision === 'number'
+        && Number.isSafeInteger(payload.activationRevision)
+        && payload.activationRevision >= 0
+        ? payload.activationRevision
+        : undefined
       emit('openSurface', {
         pluginId: pluginId || undefined,
         surfaceId,
         kind: kind || undefined,
+        ...(activationRevision === undefined ? {} : { activationRevision }),
       })
     }
   }

@@ -24,6 +24,7 @@ SearchResults = List[Dict[str, str]]
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _NO_RETRY_STATUS = frozenset({429})
+_MAX_THROTTLE_WAIT_SECONDS = 3.0
 
 
 def _copy_results(results: SearchResults) -> SearchResults:
@@ -197,10 +198,8 @@ class SearchCoordinator:
     ) -> SearchResults:
         state = self._backends.setdefault(backend, _BackendState(asyncio.Lock()))
         try:
-            await asyncio.wait_for(
-                state.lock.acquire(),
-                timeout=self.queue_wait_seconds,
-            )
+            async with asyncio.timeout(self.queue_wait_seconds):
+                await state.lock.acquire()
         except TimeoutError as error:
             raise SearchBusyError("search backend is busy; retry shortly") from error
         try:
@@ -212,6 +211,10 @@ class SearchCoordinator:
                 )
             wait_seconds = state.next_allowed - now
             if wait_seconds > 0:
+                if wait_seconds > _MAX_THROTTLE_WAIT_SECONDS:
+                    raise SearchBusyError(
+                        "search backend rate-limited; retry shortly"
+                    )
                 await asyncio.sleep(wait_seconds)
             try:
                 results = await fetch()
@@ -319,5 +322,11 @@ class SearchCoordinator:
                     if self._inflight.get(key) is task:
                         self._inflight.pop(key, None)
                     task.cancel()
+                    # Python 3.11 can race cancellation with the internal lock
+                    # waiter. Give it a turn and repeat cancellation so a caller
+                    # timeout remains a hard bound without leaking the fetch.
+                    await asyncio.sleep(0)
+                    if not task.done():
+                        task.cancel()
                     with suppress(asyncio.CancelledError):
                         await task

@@ -693,7 +693,7 @@
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var rect = I.normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
-                var clippedRect = kind === 'musicPlayer' || kind === 'meme'
+                var clippedRect = kind === 'musicPlayer'
                     ? rect
                     : (parentRect ? intersectCompactRects(rect, parentRect) : rect);
                 if (!clippedRect) return null;

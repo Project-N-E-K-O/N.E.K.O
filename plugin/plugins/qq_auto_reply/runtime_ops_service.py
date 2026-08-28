@@ -62,10 +62,10 @@ class QQRuntimeOpsService:
         if not self.plugin.qq_client:
             return Err(SdkError(f"NOT_INITIALIZED: {self.plugin.i18n.t('errors.qq_client_not_initialized', default='QQ 客户端未初始化')}"))
         label = {
-            "napcat": "NapCat",
-            "napcat_forward": "NapCat(正向)",
+            "napcat": "OneBot(反向)",
+            "napcat_forward": "OneBot(正向)",
             "open_platform": "QQ 开放平台",
-        }.get(expected, "NapCat")
+        }.get(expected, "OneBot")
         try:
             self.plugin._emit_log("INFO", f"正在连接 {label}...")
             await self.plugin.qq_client.connect()

@@ -49,6 +49,7 @@ from ..provider_policy import AsrProviderPolicy
 from ..speaker_shadow.contracts import (
     SpeakerShadowCandidateKey,
     SpeakerShadowObserver,
+    SpeakerShadowScope,
 )
 
 
@@ -58,6 +59,7 @@ logger = logging.getLogger(__name__)
 _Identity: TypeAlias = tuple[int, int, int]
 _FallbackReason: TypeAlias = Literal["semantic_incomplete", "semantic_degraded"]
 _COMMIT_DRAIN_ON_CLOSE_SECONDS = 0.5
+_SPEAKER_SHADOW_REPLACEMENT_CLOSE_SECONDS = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1371,6 +1373,26 @@ class SmartTurnLease:
         self._released = True
 
 
+@dataclass(frozen=True, slots=True)
+class DetectorCandidateRejectionLease:
+    """Revocable synchronous authority for one exact detector candidate."""
+
+    candidate: DetectorCandidateKey
+    shadow_candidate: SpeakerShadowCandidateKey
+    turn_token: VoiceTurnToken
+    _runtime: "DetectorRuntime"
+
+    def belongs_to(self, runtime: object) -> bool:
+        """Return whether this lease was issued by ``runtime``."""
+
+        return runtime is self._runtime
+
+    def commit(self) -> bool:
+        """Invalidate candidate authority without yielding the event loop."""
+
+        return self._runtime._commit_candidate_rejection(self)
+
+
 class DetectorRuntime:
     """Serialize Silero loading and inference without owning an ASR session."""
 
@@ -1450,6 +1472,9 @@ class DetectorRuntime:
         self._speaker_shadow = speaker_shadow
         self._speaker_shadow_generation = 0
         self._speaker_shadow_candidate: SpeakerShadowCandidateKey | None = None
+        self._speaker_shadow_suppressed_candidate: (
+            tuple[int, SpeakerShadowScope] | None
+        ) = None
         if (
             provider_policy is not None
             and provider_policy.endpoint_authority == "smart_turn"
@@ -1589,16 +1614,8 @@ class DetectorRuntime:
                 on_activity=activity,
                 on_scoped_commit=scoped_commit,
                 on_scoped_activity=scoped_activity,
-                on_accepted_audio=(
-                    self._observe_smart_turn_speaker_shadow
-                    if self._speaker_shadow is not None
-                    else None
-                ),
-                on_candidate_complete=(
-                    self._finish_smart_turn_speaker_shadow
-                    if self._speaker_shadow is not None
-                    else None
-                ),
+                on_accepted_audio=self._observe_smart_turn_speaker_shadow,
+                on_candidate_complete=self._finish_smart_turn_speaker_shadow,
                 candidate_complete_confirmation_seconds=(
                     candidate_complete_confirmation_seconds
                 ),
@@ -1666,6 +1683,80 @@ class DetectorRuntime:
         if deferred is not None:
             await self._publish_bound_completion(candidate, deferred)
         return bound
+
+    async def prepare_candidate_rejection(
+        self,
+        shadow_candidate: SpeakerShadowCandidateKey,
+    ) -> DetectorCandidateRejectionLease | None:
+        """Map one private speaker observation to current detector authority.
+
+        This is phase one only: it captures a revocable lease under the
+        detector lock but changes no ASR state. The runtime later commits it
+        synchronously inside its final-serialization boundary.
+        """
+
+        if type(shadow_candidate) is not SpeakerShadowCandidateKey:
+            return None
+        async with self._lock:
+            if (
+                self._closed
+                or not self._candidate_open
+                or shadow_candidate != self._speaker_shadow_candidate
+                or shadow_candidate.detector_epoch != self._detector_epoch
+            ):
+                return None
+            candidate = DetectorCandidateKey(
+                self._detector_epoch,
+                self._candidate_generation,
+            )
+            bound = self._bound_turns.get(candidate)
+            if bound is None:
+                return None
+            return DetectorCandidateRejectionLease(
+                candidate=candidate,
+                shadow_candidate=shadow_candidate,
+                turn_token=bound.turn_token,
+                _runtime=self,
+            )
+
+    def _commit_candidate_rejection(
+        self,
+        lease: DetectorCandidateRejectionLease,
+    ) -> bool:
+        """Apply phase two only while no detector coroutine owns its lock."""
+
+        if type(lease) is not DetectorCandidateRejectionLease:
+            return False
+        # A detector coroutine may hold the lock across an await. Mutating its
+        # authority concurrently would violate the lease proof, so ambiguity
+        # always forwards the candidate.
+        if self._lock.locked():
+            return False
+        candidate = lease.candidate
+        bound = self._bound_turns.get(candidate)
+        if (
+            lease._runtime is not self
+            or self._closed
+            or not self._candidate_open
+            or candidate.detector_epoch != self._detector_epoch
+            or candidate.candidate_generation != self._candidate_generation
+            or lease.shadow_candidate != self._speaker_shadow_candidate
+            or bound is None
+            or bound.turn_token != lease.turn_token
+        ):
+            return False
+
+        self._bound_turns.pop(candidate, None)
+        self._deferred_completions.pop(candidate, None)
+        self._candidate_generation += 1
+        self._candidate_open = False
+        self._policy_event_candidate = None
+        self._provider_candidate_fence = None
+        self._throttle_policy.reset_candidate_activity()
+        self._finish_speaker_shadow_candidate(
+            expected_scope=lease.shadow_candidate.scope,
+        )
+        return True
 
     async def _publish_bound_completion(
         self,
@@ -2133,6 +2224,11 @@ class DetectorRuntime:
             self._policy_event_candidate = None
             self._throttle_policy.reset_candidate_activity()
             self._reset_speaker_shadow_identity()
+            if self._speaker_shadow_suppressed_candidate == (
+                self._detector_epoch,
+                "provider_candidate",
+            ):
+                self._speaker_shadow_suppressed_candidate = None
             speaker_shadow = self._speaker_shadow
         await self._reset_speaker_shadow(speaker_shadow)
         return True
@@ -2423,6 +2519,75 @@ class DetectorRuntime:
         finally:
             await self._reset_speaker_shadow(speaker_shadow)
 
+    async def replace_speaker_verifier(
+        self,
+        new_shadow: SpeakerShadowObserver | None,
+    ) -> None:
+        """Atomically replace speaker observation for the next candidate.
+
+        An active candidate is deliberately left unobserved after the swap. Its
+        old observations are invalidated by generation, and the replacement is
+        admitted only after the authoritative provider/SmartTurn boundary.
+        Closing the detached observer happens outside the detector lock and is
+        bounded so verifier cleanup cannot stall endpointing or ASR.
+        """
+
+        detached_shadow: SpeakerShadowObserver | None = None
+        rejected_shadow: SpeakerShadowObserver | None = None
+        async with self._lock:
+            if self._closed:
+                if new_shadow is not self._speaker_shadow:
+                    rejected_shadow = new_shadow
+            elif new_shadow is self._speaker_shadow:
+                return
+            else:
+                suppressed = self._speaker_shadow_suppressed_candidate
+                if suppressed is not None and suppressed[0] != self._detector_epoch:
+                    self._speaker_shadow_suppressed_candidate = None
+                candidate = self._speaker_shadow_candidate
+                if candidate is not None:
+                    self._speaker_shadow_suppressed_candidate = (
+                        self._detector_epoch,
+                        candidate.scope,
+                    )
+                elif (
+                    self._candidate_open
+                    and self._speaker_shadow_suppressed_candidate is None
+                ):
+                    scope: SpeakerShadowScope = (
+                        "smart_turn_turn"
+                        if self._semantic_adapter is not None
+                        else "provider_candidate"
+                    )
+                    self._speaker_shadow_suppressed_candidate = (
+                        self._detector_epoch,
+                        scope,
+                    )
+                self._speaker_shadow_generation += 1
+                self._speaker_shadow_candidate = None
+                detached_shadow, self._speaker_shadow = (
+                    self._speaker_shadow,
+                    new_shadow,
+                )
+
+        cleanup_shadow = (
+            detached_shadow if detached_shadow is not None else rejected_shadow
+        )
+        if cleanup_shadow is None:
+            return
+        try:
+            await asyncio.wait_for(
+                self._close_speaker_shadow(cleanup_shadow),
+                timeout=_SPEAKER_SHADOW_REPLACEMENT_CLOSE_SECONDS,
+            )
+        except TimeoutError:
+            return
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise
+            return
+
     async def release_deferred_turn(self) -> None:
         """Release a deferred SmartTurn completion after the prior final."""
 
@@ -2539,6 +2704,13 @@ class DetectorRuntime:
         self,
         scope: Literal["provider_candidate", "smart_turn_turn"],
     ) -> SpeakerShadowCandidateKey | None:
+        suppressed = self._speaker_shadow_suppressed_candidate
+        if suppressed is not None:
+            suppressed_epoch, suppressed_scope = suppressed
+            if suppressed_epoch != self._detector_epoch or suppressed_scope != scope:
+                self._speaker_shadow_suppressed_candidate = None
+            else:
+                return None
         shadow = self._speaker_shadow
         if shadow is None:
             return None
@@ -2582,6 +2754,12 @@ class DetectorRuntime:
         candidate = self._speaker_shadow_candidate
         self._speaker_shadow_candidate = None
         self._speaker_shadow_generation += 1
+        suppressed = self._speaker_shadow_suppressed_candidate
+        if suppressed is not None and (
+            suppressed[0] != self._detector_epoch
+            or suppressed[1] == expected_scope
+        ):
+            self._speaker_shadow_suppressed_candidate = None
         if candidate is None or candidate.scope != expected_scope:
             return
         shadow = self._speaker_shadow

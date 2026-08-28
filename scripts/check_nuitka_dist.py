@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -109,6 +110,28 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
 # 整体被 ``--include-data-dir`` 包了空壳的情况。
 _PLUGIN_TOML_REQUIRED_PARENT = "plugin/plugins"
 
+# These plugins are distributed exclusively through the plugin marketplace.
+# Shipping one here would recreate a read-only built-in copy that conflicts
+# with market installation and upgrades using the same plugin ID.
+_MARKETPLACE_ONLY_PLUGIN_IDS = frozenset({"neko_warthunder"})
+
+
+def _plugin_manifest_id(manifest_path: Path) -> str | None:
+    try:
+        with manifest_path.open("rb") as file_obj:
+            manifest = tomllib.load(file_obj)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+    plugin = manifest.get("plugin")
+    if not isinstance(plugin, dict):
+        return None
+    plugin_id = plugin.get("id")
+    if not isinstance(plugin_id, str):
+        return None
+    normalized = plugin_id.strip()
+    return normalized or None
+
 
 def _check_asset(dist_root: Path, rel: str, must_contain: str | None) -> str | None:
     p = dist_root / rel
@@ -151,7 +174,17 @@ def _check_plugin_tomls(dist_root: Path) -> list[str]:
     for sub in plugin_subdirs:
         if sub.name.startswith("_"):
             continue
-        if not (sub / "plugin.toml").is_file():
+        manifest_path = sub / "plugin.toml"
+        manifest_id = _plugin_manifest_id(manifest_path)
+        if (
+            sub.name in _MARKETPLACE_ONLY_PLUGIN_IDS
+            or manifest_id in _MARKETPLACE_ONLY_PLUGIN_IDS
+        ):
+            issues.append(
+                f"marketplace-only plugin bundled: {sub.relative_to(dist_root).as_posix()}"
+            )
+            continue
+        if not manifest_path.is_file():
             issues.append(f"plugin missing plugin.toml: {sub.relative_to(dist_root).as_posix()}")
     return issues
 

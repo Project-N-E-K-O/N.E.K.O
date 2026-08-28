@@ -31,10 +31,9 @@ if __package__ in {None, ""}:  # pragma: no cover - exercised by script invocati
         check_cmd,
         deps_cmd,
         init_cmd,
-        inspect_cmd,
         build_cmd,
         install_cmd,
-        verify_cmd,
+        publish_cmd,
     )
     from plugin.neko_plugin_cli.paths import resolve_default_paths  # noqa: E402
 else:
@@ -43,10 +42,9 @@ else:
         check_cmd,
         deps_cmd,
         init_cmd,
-        inspect_cmd,
         build_cmd,
         install_cmd,
-        verify_cmd,
+        publish_cmd,
     )
     from .paths import resolve_default_paths
 
@@ -71,16 +69,17 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=textwrap.dedent(
             """\
             Recommended workflow:
-              neko-plugin init-repo <plugin>       Create a standalone plugin repo
+              neko-plugin init <plugin>            Create plugin source under plugin/plugins / 在源码目录创建插件 / ソースツリーにプラグインを作成
               neko-plugin setup-repo <plugin>      Adopt an existing plugin directory
-              neko-plugin add <plugin> <pkg>...    Add Python dependencies to vendor/
               neko-plugin sync <plugin>            Sync vendor/ from pyproject.toml
               neko-plugin check <plugin>           Diagnose local repo readiness
               neko-plugin build <plugin>           Build a plugin package artifact
               neko-plugin check -r <plugin>        Run the pre-release check used by CI
+              neko-plugin publish <plugin>         Publish on GitHub, then notify Market / 发布并通知 Market / 公開後 Market に通知
 
             Package/debug commands:
-              build, inspect, verify, install, analyze
+              build, analyze
+              install                              Import guidance only; runtime writes go through Plugin Center
             """
         ),
     )
@@ -98,10 +97,9 @@ def build_parser() -> argparse.ArgumentParser:
     check_cmd.register(subparsers, defaults=defaults)
     deps_cmd.register(subparsers, defaults=defaults)
     build_cmd.register(subparsers, defaults=defaults)
-    inspect_cmd.register(subparsers, defaults=defaults)
-    verify_cmd.register(subparsers, defaults=defaults)
     install_cmd.register(subparsers, defaults=defaults)
     analyze_cmd.register(subparsers, defaults=defaults)
+    publish_cmd.register(subparsers, defaults=defaults)
 
     return parser
 

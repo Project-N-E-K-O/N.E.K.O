@@ -49,7 +49,7 @@ describe('resolveLocalizedText', () => {
 
   it('returns the provided fallback when no localized value exists', () => {
     expect(resolveLocalizedText({ 'en-US': 'American English', en: 'English' }, 'fr-FR', 'fallback')).toBe(
-      'English',
+      'American English',
     )
     expect(resolveLocalizedText({ 'en-US': 'American English' }, 'fr-FR', 'fallback')).toBe('American English')
     expect(resolveLocalizedText({ ja: 'Japanese', de: 'German' }, 'fr-FR', 'fallback')).toBe('Japanese')

@@ -19,7 +19,10 @@ import os
 import re
 import sys
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -33,6 +36,7 @@ from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
 )
 from main_logic.session_state import (
     ProactivePhase,
@@ -67,6 +71,25 @@ class _FakeOmniOffline(OmniOfflineClient):
 
     def update_max_response_length(self, *_a, **_kw):
         pass
+
+
+class _CapturingImageOmniOffline(_FakeOmniOffline):
+    def __init__(self):
+        super().__init__(delivered=True)
+        self.image_batches: list[list[str]] = []
+
+    async def prompt_ephemeral(
+        self,
+        instruction: str,
+        *,
+        images=None,
+        on_committed=None,
+    ) -> bool:
+        self.called_with.append(instruction)
+        self.image_batches.append(list(images or []))
+        if on_committed:
+            on_committed()
+        return True
 
 
 def _make_mgr(session=None) -> core_module.LLMSessionManager:
@@ -157,6 +180,25 @@ def test_enqueue_agent_callback_uses_generic_context_source_budget(monkeypatch):
     assert mgr.pending_agent_callbacks[1]["summary"] == "4:proactive summary"
     assert mgr.pending_agent_callbacks[1]["detail"] == "4:proactive detail"
     assert mgr.pending_extra_replies[1]["context_source"] == "proactive.callback"
+
+
+def test_image_only_callback_is_accepted_only_for_proactive_delivery():
+    mgr = _make_mgr()
+    passive = {
+        "status": "completed",
+        "delivery_mode": "passive",
+        "media_images": ["read-image"],
+    }
+    proactive = {
+        "status": "completed",
+        "delivery_mode": "proactive",
+        "media_images": ["respond-image"],
+    }
+
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, passive)
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, proactive)
+
+    assert mgr.pending_agent_callbacks == [proactive]
 
 
 def _make_voice_sess(*, is_responding=False, inject=None):
@@ -873,10 +915,12 @@ async def test_text_mode_success_keeps_late_extra_replies():
     mgr.pending_extra_replies = [initial_extra]
 
     delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
 
     assert delivered is True
     assert mgr.pending_agent_callbacks == [late_cb]
     assert mgr.pending_extra_replies == [late_extra]
+    assert mgr._fired_tasks == []
 
 
 def test_drain_agent_callbacks_purges_retracted_callbacks_and_extras():
@@ -2554,3 +2598,282 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
         assert get_cat_greeting_episode_scene(episode, "en") in name_session.called_with[0]
         if master_name:
             assert master_name in name_session.called_with[0]
+
+
+# ---------------------------------------------------------------------------
+# Per-turn image budget at the two real consumption points
+#
+# Both paths flatten EVERY pending callback into one model turn. Batches build
+# up whenever the proactive claim is denied (user mid-conversation) and release
+# together, so a per-push cap alone does not bound the request. An over-limit
+# request also re-queues its whole snapshot on failure — it would retry forever
+# and wedge every later cue behind it.
+# ---------------------------------------------------------------------------
+
+
+def _budget_cb(name: str, image_count: int) -> dict:
+    return {
+        "_callback_delivery_id": "id-%s" % name,
+        "status": "completed",
+        "summary": "cue %s" % name,
+        "media_images": ["%s-img%d" % (name, i) for i in range(image_count)],
+    }
+
+
+async def test_text_mode_bounds_images_across_one_proactive_turn():
+    from main_logic.proactive_delivery import CALLBACK_IMAGE_MAX_COUNT
+
+    assert CALLBACK_IMAGE_MAX_COUNT == 8
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert len(sess.image_batches) == 1
+    assert sess.image_batches[0] == [
+        "a-img0", "a-img1", "a-img2", "a-img3",
+        "b-img0", "b-img1", "b-img2", "b-img3",
+    ]
+    # The third cue is DEFERRED, not dropped: it goes back on the queue for the
+    # next turn rather than silently losing its images.
+    assert mgr.pending_agent_callbacks == [cbs[2]]
+
+
+async def test_text_mode_under_budget_batch_is_untouched():
+    """The bound must not disturb ordinary multi-cue batches."""
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 1), _budget_cb("b", 2)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert sess.image_batches == [["a-img0", "b-img0", "b-img1"]]
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_voice_mode_bounds_images_across_one_proactive_turn():
+    sess = _make_voice_sess()
+    streamed: list[str] = []
+
+    async def _stream_image(
+        image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        streamed.append(image_b64)
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
+    mgr.pending_extra_replies = []
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert streamed == [
+        "a-img0", "a-img1", "a-img2", "a-img3",
+        "b-img0", "b-img1", "b-img2", "b-img3",
+    ]
+    # Voice prunes pending only after a successful inject, so the deferred cue
+    # is re-queued by construction — it was simply never taken.
+    assert mgr.pending_agent_callbacks == [cbs[2]]
+
+
+def test_text_drain_stops_at_a_held_media_callback():
+    """Holding one back must hold back everything behind it.
+
+    The drain has no channel for media_images, so a proactive media callback
+    waits for the proactive path. Skipping past it to drain a LATER cue would
+    put the later cue in front of the earlier one — the model would hear them
+    out of the order they were queued in.
+    """
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    image_cb = _budget_cb("with-image", 1)
+    later_text = {
+        "_callback_delivery_id": "id-later",
+        "status": "completed",
+        "summary": "queued after the image",
+    }
+    mgr.pending_agent_callbacks = [image_cb, later_text]
+
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert rendered == ""
+    # Neither is consumed: the suffix waits with the cue it queued behind.
+    assert mgr.pending_agent_callbacks == [image_cb, later_text]
+    assert mgr.pending_agent_callbacks[0]["media_images"] == ["with-image-img0"]
+
+
+def test_text_drain_takes_the_prefix_before_a_held_media_callback():
+    """Stopping is not the same as refusing: earlier text still drains."""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    earlier_text = {
+        "_callback_delivery_id": "id-earlier",
+        "status": "completed",
+        "summary": "queued before the image",
+    }
+    image_cb = _budget_cb("with-image", 1)
+    mgr.pending_agent_callbacks = [earlier_text, image_cb]
+
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert "queued before the image" in rendered
+    assert mgr.pending_agent_callbacks == [image_cb]
+
+
+def test_text_drain_returns_empty_when_every_callback_carries_media():
+    """No text to render must not mean the images get dropped either."""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    only_image = _budget_cb("only-image", 2)
+    mgr.pending_agent_callbacks = [only_image]
+
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert rendered == ""
+    assert mgr.pending_agent_callbacks == [only_image]
+
+
+def test_passive_media_callbacks_are_still_drained_not_stranded():
+    """Passive cues are excluded from the proactive path.
+
+    Holding them back from the text drain as well would leave them deliverable
+    by neither, stranded in the queue forever — worse than the image loss the
+    hold-back exists to prevent. They drain (with the loss logged) until a
+    media-capable user-turn path exists.
+    """
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    passive_cb = _budget_cb("passive-image", 1)
+    passive_cb["delivery_mode"] = "passive"
+    proactive_cb = _budget_cb("proactive-image", 1)
+    mgr.pending_agent_callbacks = [passive_cb, proactive_cb]
+
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert "cue passive-image" in rendered
+    # Only the proactively-deliverable one is held back.
+    assert mgr.pending_agent_callbacks == [proactive_cb]
+
+
+async def test_deferred_image_overflow_is_re_driven_on_the_text_path():
+    """A deferred tail must not wait for an unrelated event to wake it.
+
+    The manager's queue is already empty by this point and the text path has no
+    response.done to re-fire trigger, so without an armed retry the ninth cue
+    of a nine-image batch sits in pending indefinitely.
+    """
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
+    cbs = [_budget_cb("c%d" % i, 1) for i in range(9)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert len(sess.image_batches[0]) == 8
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == ["cue c8"]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
+async def test_no_retry_is_armed_when_nothing_was_deferred():
+    """The retry is for a deferred tail only — not every proactive turn."""
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
+    mgr.pending_agent_callbacks = [_budget_cb("a", 2)]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert mgr.pending_agent_callbacks == []
+    mgr._schedule_proactive_retry.assert_not_called()
+
+
+async def test_image_overflow_keeps_fifo_order_when_delivery_fails():
+    """The deferred tail must not overtake the prefix it was split from.
+
+    The exception path re-queues the delivered prefix, so re-queuing the
+    overflow at split time would leave [C, A, B] and the next turn would speak
+    the cues out of order.
+    """
+    sess = _FakeOmniOffline(raise_exc=RuntimeError("provider rejected the request"))
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == [
+        "cue a", "cue b", "cue c",
+    ]
+
+
+async def test_preemption_during_the_hint_cancel_aborts_before_prompting():
+    """The cancel write is a yield point, so it is also a preempt window.
+
+    Re-filtering callbacks after it is not enough: a stale CALLBACK and a stale
+    TURN are different things. Without the re-check the user can take the
+    session during that await and still receive an unrelated proactive prompt.
+    """
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr.topic_hook_delivery_allowed = lambda: True
+    mgr.send_topic_hint = AsyncMock(return_value=True)
+
+    async def _cancel(**_kw):
+        # The user grabs the session while the cancel write is in flight.
+        mgr.current_speech_id = "user-took-over"
+
+    mgr.send_cancel_topic_hint = AsyncMock(side_effect=_cancel)
+    heavy = _budget_cb("heavy", 8)
+    topic = _budget_cb("topic", 1)
+    topic["channel"] = "topic_hook"
+    topic["source_kind"] = "topic"
+    mgr.pending_agent_callbacks = [heavy, topic]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.image_batches == [], "no prompt may go out after preemption"
+    # Nothing is lost: the whole batch goes back for a later turn.
+    assert {cb["summary"] for cb in mgr.pending_agent_callbacks} == {
+        "cue heavy", "cue topic",
+    }
+
+
+async def test_topic_hint_is_retracted_when_its_hook_lands_in_image_overflow():
+    """A teaser must never outlive the opener it promised.
+
+    The hint fires from the pre-split batch, so a topic hook pushed into the
+    overflow would leave "she has something to bring up" on screen while the
+    turn prompts only unrelated cues and the topic slips to a later turn.
+    """
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr.topic_hook_delivery_allowed = lambda: True
+    mgr.send_topic_hint = AsyncMock(return_value=True)
+    mgr.send_cancel_topic_hint = AsyncMock()
+    heavy = _budget_cb("heavy", 8)
+    topic = _budget_cb("topic", 1)
+    topic["channel"] = "topic_hook"
+    topic["source_kind"] = "topic"
+    mgr.pending_agent_callbacks = [heavy, topic]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    mgr.send_topic_hint.assert_awaited_once()
+    mgr.send_cancel_topic_hint.assert_awaited_once()
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == ["cue topic"]
+    assert sess.image_batches == [["heavy-img%d" % i for i in range(8)]]

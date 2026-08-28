@@ -10,7 +10,7 @@ Project N.E.K.O. のドキュメントはプロダクト契約の一部です。
 | アーキテクチャ／API | 現在のコードに基づく契約 | `architecture/`, `modules/`, `api/` |
 | コントリビューター規則 | リポジトリ全体の開発・検証規則 | `contributing/` |
 | プロジェクト記録 | 設計判断、ベンチマークのスナップショット、SDK 変更記録 | `design/`, `benchmarks/`, `changelog/` |
-| コンポーネント所有文書 | 単一コンポーネントと共に保守する詳細文書 | 例: `plugin/plugins/neko_live/docs/` |
+| コンポーネント所有文書 | 単一コンポーネントと共に保守する詳細文書 | 例: `plugin/plugins/mcp_adapter/docs/` |
 
 [プロジェクト記録](/ja/records/)は根拠と背景を残す場所であり、現在のコード、テスト、承認済み issue の代わりではありません。
 

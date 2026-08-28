@@ -46,6 +46,8 @@ dependencies = [
   # explicitly rather than leaning on the Bilibili SDK's transitive pull, so a
   # change upstream can't silently break strategy loading in the packaged build.
   "pyyaml>=6.0",
+  # plugin_cli/install_plan.py parses package versions at module import time.
+  "packaging>=25.0",
   # ⚠ 严禁再加 loguru / structlog / logbook。日志统一走 utils.logger_config。
   # lint 守门：scripts/check_no_loguru.py（CI: .github/workflows/analyze.yml）
   "pyzmq>=27.1.0",

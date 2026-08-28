@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from plugin.plugins.galgame_plugin.context_builder import build_local_scene_summary
 from plugin.plugins.galgame_plugin import llm_prompts
+from plugin.plugins.galgame_plugin.agent_scene_context import AgentSceneContextMixin
 from plugin.plugins.galgame_plugin.llm_prompts import (
     CHARACTER_ANCHOR_CONTEXT_TEMPLATE,
     CONSULT_CAT_CHOICE_QUESTION_TEMPLATE,
@@ -238,6 +239,115 @@ def test_summarize_scene_prompt_uses_pov_without_roleplay() -> None:
     assert "Do not freeform role-play" in system
     assert "relationship shifts" in user
     assert "do not narrate as the character" in user
+
+
+def test_summarize_scene_prompt_separates_cumulative_context_from_new_content() -> None:
+    old_line = {"line_id": "line-1", "speaker": "A", "text": "old fact"}
+    new_line = {"line_id": "line-2", "speaker": "B", "text": "new fact"}
+    selected_choice = {
+        "choice_id": "choice-1",
+        "text": "stay",
+        "choice_state": "selected",
+    }
+    result = build_prompt_messages_with_metadata(
+        "summarize_scene",
+        {
+            "stable_lines": [old_line, new_line],
+            "recent_choices": [selected_choice],
+            "new_stable_lines": [new_line],
+            "new_choices": [selected_choice],
+        },
+    )
+
+    user = result.messages[1]["content"]
+    rendered = json.loads(_rendered_context(result))
+    assert "cumulative memory artifact only" in user
+    assert "Do not write a cat-facing reply" in user
+    assert "cumulative summary" in user
+    assert "older content is continuity background only" in user
+    assert "new_stable_lines" in user
+    assert "new_choices" in user
+    assert rendered["stable_lines"] == [old_line, new_line]
+    assert rendered["new_stable_lines"] == [new_line]
+    assert rendered["new_choices"] == [selected_choice]
+
+
+def test_scene_delta_capsule_only_exposes_latest_confirmed_target() -> None:
+    content = AgentSceneContextMixin._format_scene_delta_for_cat(
+        new_stable_lines=[
+            {"speaker": "A", "text": "earlier delta", "stability": "stable"},
+            {"speaker": "B", "text": "current target", "stability": "stable"},
+        ],
+        new_choices=[
+            {"text": "Stay", "choice_state": "selected"},
+            {"label": "Leave", "choice_state": "visible"},
+        ],
+        continuity_lines=[
+            {"speaker": "A", "text": "too old", "stability": "stable"},
+            {"speaker": "OCR", "text": "tentative leak", "stability": "tentative"},
+            {"speaker": "A", "text": "previous one", "stability": "stable"},
+            {"speaker": "A", "text": "previous two", "stability": "stable"},
+        ],
+    )
+
+    response_target = content.split("本次回应对象：", 1)[1]
+    continuity = content.split("连续性背景（最多 2 条，不是回应对象）：", 1)[1].split(
+        "本次回应对象：", 1
+    )[0]
+    assert "current target" in response_target
+    assert "earlier delta" not in content
+    assert "previous one" in continuity
+    assert "previous two" in continuity
+    assert "too old" not in content
+    assert "tentative leak" not in content
+    assert "Stay" in response_target
+    assert "Leave" in response_target
+    assert "累计剧情" not in content
+    assert "关键变化" not in content
+    assert "当前可关注点" not in content
+
+
+def test_scene_delta_capsule_preserves_complete_visible_choice_group() -> None:
+    choices = [
+        {"text": f"Option {index}", "choice_state": "visible"}
+        for index in range(1, 6)
+    ]
+
+    content = AgentSceneContextMixin._format_scene_delta_for_cat(
+        new_stable_lines=[],
+        new_choices=choices,
+    )
+
+    for choice in choices:
+        assert str(choice["text"]) in content
+
+
+def test_scene_delta_capsule_rejects_tentative_only_delta() -> None:
+    content = AgentSceneContextMixin._format_scene_delta_for_cat(
+        new_stable_lines=[
+            {"speaker": "OCR", "text": "not confirmed", "stability": "tentative"}
+        ],
+        new_choices=[],
+        continuity_lines=[
+            {"speaker": "A", "text": "old context", "stability": "stable"}
+        ],
+    )
+
+    assert content == ""
+
+
+def test_scene_delta_capsule_preserves_legitimate_repeated_line_event() -> None:
+    content = AgentSceneContextMixin._format_scene_delta_for_cat(
+        new_stable_lines=[
+            {"seq": 2, "speaker": "A", "text": "same words", "stability": "stable"}
+        ],
+        new_choices=[],
+        continuity_lines=[
+            {"seq": 1, "speaker": "A", "text": "same words", "stability": "stable"}
+        ],
+    )
+
+    assert content.count("same words") == 2
 
 
 def test_semantic_compression_disabled_keeps_rendered_context_unchanged() -> None:

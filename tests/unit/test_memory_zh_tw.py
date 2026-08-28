@@ -221,6 +221,23 @@ def test_summary_prompt_uses_request_scoped_traditional_locale():
     assert "負面回饋" in prompt
 
 
+def _collect_spawned_operation(sink):
+    """Stub for ``runtime._spawn_background_task``.
+
+    Collects the coroutine instead of running it, but still returns a finished
+    awaitable: the call sites register the returned task in the per-character
+    post-turn registry, and a finished future clears itself from it immediately.
+    """
+
+    def _spawn(operation):
+        sink.append(operation)
+        finished = asyncio.get_running_loop().create_future()
+        finished.set_result(None)
+        return finished
+
+    return _spawn
+
+
 @pytest.mark.asyncio
 async def test_compressed_memo_wrapper_keeps_traditional_locale():
     from memory.recent import CompressedRecentHistoryManager
@@ -949,7 +966,7 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
     monkeypatch.setattr(
         runtime,
         "_spawn_background_task",
-        lambda operation: deferred.append(operation),
+        _collect_spawned_operation(deferred),
     )
 
     with pytest.raises(ReachedContextRead):
@@ -1356,7 +1373,7 @@ async def test_new_dialog_generation_follows_admission_not_validation_order(
     monkeypatch.setattr(
         runtime,
         "_spawn_background_task",
-        lambda operation: spawned.append(operation),
+        _collect_spawned_operation(spawned),
     )
     monkeypatch.setattr(runtime, "_get_settle_lock", lambda _name: StopLock())
     routes._new_dialog_locale_generations.pop(name, None)
@@ -4286,11 +4303,16 @@ async def test_reflect_endpoint_uses_durable_character_locale(monkeypatch, tmp_p
     monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
     monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
     monkeypatch.setattr(gates, "_ais_powerful_memory_enabled", powerful_enabled)
-    monkeypatch.setattr(
-        runtime,
-        "_spawn_background_task",
-        lambda coroutine: coroutine.close(),
-    )
+    def _spawn_stub(coroutine):
+        # 不真起 task（下面手动 await _safe_auto_promote），但仍要返回一个
+        # 已完成的 awaitable：调用点会把它登记进 per-character registry，
+        # 已完成的 future 会立刻触发登记表的自清理回调。
+        coroutine.close()
+        finished = asyncio.get_running_loop().create_future()
+        finished.set_result(None)
+        return finished
+
+    monkeypatch.setattr(runtime, "_spawn_background_task", _spawn_stub)
     locale_state._locale_cache.clear()
     locale_state.record_character_prompt_locale("Neko", "zh-TW")
     locale_state._locale_cache.clear()
@@ -4306,10 +4328,9 @@ async def test_reflect_endpoint_uses_durable_character_locale(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_plugins_without_session_locale_omit_process_fallback(monkeypatch):
+async def test_wechat_plugin_without_session_locale_omits_process_fallback(monkeypatch):
     import httpx
 
-    from plugin.plugins.bilibili_dm import BiliDMPlugin
     from plugin.plugins.wechat_integration import WechatIntegrationPlugin
     from utils import language_utils
 
@@ -4330,16 +4351,6 @@ async def test_plugins_without_session_locale_omit_process_fallback(monkeypatch)
             calls.append((url, kwargs))
             return Response()
 
-    class Logger:
-        def info(self, *_args):
-            return None
-
-        def warning(self, *_args):
-            return None
-
-    class Harness:
-        logger = Logger()
-
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: Client())
     monkeypatch.setattr(language_utils, "get_global_language", lambda: "zh")
     monkeypatch.setattr(
@@ -4348,16 +4359,6 @@ async def test_plugins_without_session_locale_omit_process_fallback(monkeypatch)
         lambda: "zh-TW",
     )
 
-    await BiliDMPlugin._build_session_instructions(
-        Harness(),
-        "Neko",
-        "Master",
-        "character",
-        {},
-        "admin",
-        "123",
-        "Master",
-    )
     assert await WechatIntegrationPlugin._fetch_memory_context("Neko") == "memory"
 
     assert all("params" not in kwargs for _url, kwargs in calls)

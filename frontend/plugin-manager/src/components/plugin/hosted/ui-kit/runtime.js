@@ -578,7 +578,7 @@ function patchProps(dom, oldProps, newProps) {
     if (oldProps[name] !== newProps[name]) setProp(dom, name, oldProps[name], newProps[name]);
   });
 }
-const __hostedUserActionEvents = new Set(['click', 'submit', 'keydown', 'change', 'input']);
+const __hostedUserActionEvents = new Set(['click', 'submit', 'keydown', 'change', 'input', 'drop', 'paste']);
 let __hostedUserActionDepth = 0;
 const __hostedConfirmedActionCredits = [];
 function retainHostedConfirmedAction() {
@@ -1950,28 +1950,66 @@ function refreshHostedPayload(context) {
 }
 
 const __pendingRequests = new Map();
+const __hostedContextParent = parent;
+const __hostedContextOrigin = (() => {
+  try {
+    return new URL(hostedTargetOrigin(), window.location.href).origin;
+  } catch (_) {
+    return window.location.origin;
+  }
+})();
 window.addEventListener('message', (event) => {
   const data = event.data;
-  if (!data || typeof data !== 'object' || data.type !== 'neko-hosted-surface-response') return;
+  if (!data || typeof data !== 'object') return;
+  if (data.type === 'neko-hosted-surface-context') {
+    if (event.source !== __hostedContextParent || event.origin !== __hostedContextOrigin) return;
+    refreshHostedPayload(data.context);
+    return;
+  }
+  if (data.type !== 'neko-hosted-surface-response') return;
   const pending = __pendingRequests.get(data.requestId);
   if (!pending) return;
   __pendingRequests.delete(data.requestId);
+  pending.cleanup();
   if (data.ok) pending.resolve(data.result);
   else pending.reject(createHostedBridgeError(data));
 });
+function createHostedAbortError() {
+  const error = new Error('Hosted surface request was aborted');
+  error.name = 'AbortError';
+  return error;
+}
 function requestHost(method, payload, options) {
   const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
   const requestedTimeoutMs = Number(options && options.timeoutMs);
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000;
+  const signal = options && options.signal;
+  if (signal && signal.aborted) return Promise.reject(createHostedAbortError());
   return new Promise((resolve, reject) => {
-    __pendingRequests.set(requestId, { resolve, reject });
-    const userInitiated = method === 'call' && options && options.userInitiated === true;
-    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs, userInitiated }, hostedTargetOrigin());
-    window.setTimeout(() => {
+    let timeoutId;
+    const cleanup = () => {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      if (signal) signal.removeEventListener('abort', handleAbort);
+    };
+    const handleAbort = () => {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);
-      reject(new Error('Hosted surface request timed out'));
+      cleanup();
+      parent.postMessage({ type: 'neko-hosted-surface-cancel', requestId }, hostedTargetOrigin());
+      reject(createHostedAbortError());
+    };
+    __pendingRequests.set(requestId, { resolve, reject, cleanup });
+    if (signal) signal.addEventListener('abort', handleAbort, { once: true });
+    const userInitiated = (method === 'call' || method === 'parseDocument') && options && options.userInitiated === true;
+    timeoutId = window.setTimeout(() => {
+      if (!__pendingRequests.has(requestId)) return;
+      __pendingRequests.delete(requestId);
+      cleanup();
+      const error = new Error(method === 'parseDocument' ? 'Document parsing timed out' : 'Hosted surface request timed out');
+      if (method === 'parseDocument') error.code = 'document_parse_timeout';
+      reject(error);
     }, timeoutMs);
+    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs, userInitiated }, hostedTargetOrigin());
   });
 }
 const api = {
@@ -1984,6 +2022,20 @@ const api = {
     return requestHost('call', { actionId, args: args || {} }, {
       ...requestOptions,
       userInitiated: requestOptions.userInitiated === true || __hostedUserActionDepth > 0 || confirmedUserAction,
+    });
+  },
+  parseDocument(file, options) {
+    if (typeof File === 'undefined' || !(file instanceof File)) {
+      const error = new TypeError('parseDocument requires a File');
+      error.code = 'unsupported_document';
+      return Promise.reject(error);
+    }
+    const requestOptions = options || {};
+    const confirmedUserAction = consumeHostedConfirmedAction();
+    return requestHost('parseDocument', { file }, {
+      timeoutMs: requestOptions.timeoutMs,
+      signal: requestOptions.signal,
+      userInitiated: __hostedUserActionDepth > 0 || confirmedUserAction,
     });
   },
   async refresh() {

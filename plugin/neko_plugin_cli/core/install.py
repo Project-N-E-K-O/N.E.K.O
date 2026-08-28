@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import shutil
 import zipfile
 
 from .inspect import PackageInspector
@@ -193,7 +194,7 @@ class PackageInstaller:
             return
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with archive.open(info) as src, target_path.open("wb") as dst:
-            dst.write(src.read())
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
 
     def resolve_target_dir(
         self,

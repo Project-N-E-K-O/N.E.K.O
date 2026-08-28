@@ -41,6 +41,8 @@ export interface MarketPlugin {
   name: string
   description: string
   short_description?: string
+  /** 完整详情接口返回的 README；列表接口通常不包含。 */
+  readme?: string
   /** 取自 latest_version.version；latest_version === null 时为 ''。 */
   version: string
   author: {
@@ -57,6 +59,7 @@ export interface MarketPlugin {
   downloads: number
   likes: number
   rating_average?: number
+  rating_count?: number
   created_at: string
   updated_at: string
   is_recommended?: boolean
@@ -140,6 +143,53 @@ export interface MarketPluginVersion {
   created_at: string
 }
 
+/** A compact latest-version row for one installed Market plugin. */
+export interface MarketLatestVersion {
+  plugin_id: number
+  channel: 'stable' | 'beta'
+  version: string
+  published_at: string
+}
+
+/** 已审核版本的 README；由 Market 单独的公开接口提供。 */
+export interface MarketPluginReadme {
+  availability: 'available' | 'unavailable'
+  content?: string | null
+  repository_url?: string
+  source_ref?: string
+}
+
+/** Market public comment thread. Comments are displayed read-only in NEKO. */
+export interface MarketPluginComment {
+  id: number
+  author: {
+    id: number
+    username: string
+    display_name: string | null
+    avatar_url: string | null
+  }
+  reply_to: {
+    id: number
+    author: {
+      id: number
+      username: string
+      display_name: string | null
+      avatar_url: string | null
+    }
+    body: string | null
+    is_hidden: boolean
+  } | null
+  body: string | null
+  format: 'plain'
+  is_hidden: boolean
+  created_at: string
+}
+
+export interface MarketPluginComments {
+  messages: MarketPluginComment[]
+  next_cursor: number | null
+}
+
 const ZONE_BY_ID: Record<number, string> = {
   1: 'game',
   2: 'companion',
@@ -190,6 +240,7 @@ export function normalizeMarketPlugin(raw: MarketPluginRaw): MarketPlugin {
     name: raw.name,
     description,
     short_description: raw.short_description ?? undefined,
+    readme: raw.readme ?? undefined,
     version,
     author: {
       name: authorName,
@@ -204,6 +255,7 @@ export function normalizeMarketPlugin(raw: MarketPluginRaw): MarketPlugin {
     downloads: raw.download_count ?? 0,
     likes: raw.likes ?? 0,
     rating_average: raw.rating_average,
+    rating_count: raw.rating_count,
     created_at: raw.created_at,
     updated_at: raw.updated_at,
     is_recommended: Boolean(raw.is_featured),
@@ -337,6 +389,41 @@ export async function fetchMarketPlugin(
   }
 }
 
+/** 获取 Market 审核快照对应的 README，而不是仓库当前分支的 README。 */
+export async function fetchMarketPluginReadme(
+  pluginId: string | number,
+): Promise<MarketPluginReadme | null> {
+  const client = await getClient()
+  if (!client) return null
+
+  try {
+    const res = await client.get<MarketPluginReadme>(`/plugins/${pluginId}/readme`)
+    return res.data
+  } catch (err) {
+    console.warn('[Market] Failed to fetch plugin README:', err)
+    return null
+  }
+}
+
+/** Fetch the first page of the Market's public plugin comments. */
+export async function fetchMarketPluginComments(
+  pluginId: string | number,
+  afterId?: number,
+): Promise<MarketPluginComments | null> {
+  const client = await getClient()
+  if (!client) return null
+
+  try {
+    const res = await client.get<MarketPluginComments>(`/plugins/${pluginId}/comments`, {
+      params: afterId ? { after_id: afterId } : undefined,
+    })
+    return res.data
+  } catch (err) {
+    console.warn('[Market] Failed to fetch plugin comments:', err)
+    return null
+  }
+}
+
 /** 获取插件版本列表。
  *
  * v2: options 参数让调用方按 channel 过滤 / 决定是否包含 yank 历史。
@@ -361,6 +448,33 @@ export async function fetchMarketPluginVersions(
     return res.data
   } catch (err) {
     console.warn('[Market] Failed to fetch versions:', err)
+    return null
+  }
+}
+
+/**
+ * Fetch latest versions for a bounded group of installed Market plugin ids.
+ *
+ * The public Market endpoint intentionally caps a request at 100 ids.  The
+ * versions store chunks larger sets before calling this helper, avoiding a
+ * full catalog scan merely to render local "update available" badges.
+ */
+export async function fetchMarketLatestVersions(
+  pluginIds: Array<string | number>,
+  channel: 'stable' | 'beta',
+): Promise<MarketLatestVersion[] | null> {
+  if (pluginIds.length === 0) return []
+
+  const client = await getClient()
+  if (!client) return null
+
+  try {
+    const res = await client.get<{ items: MarketLatestVersion[] }>('/plugins/latest-versions', {
+      params: { ids: pluginIds.join(','), channel },
+    })
+    return Array.isArray(res.data?.items) ? res.data.items : null
+  } catch (err) {
+    console.warn('[Market] Failed to fetch latest versions:', err)
     return null
   }
 }

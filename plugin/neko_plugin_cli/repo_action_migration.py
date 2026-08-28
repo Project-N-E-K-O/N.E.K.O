@@ -8,6 +8,8 @@ from enum import StrEnum
 from pathlib import Path
 
 from .templates.generator import (
+    MARKET_ACTIONS_NEKO_REF,
+    MARKET_ACTIONS_NEKO_REPOSITORY,
     MARKET_ACTIONS_MANAGED_HEADER,
     PluginSpec,
     render_release_workflow,
@@ -111,24 +113,27 @@ def _is_known_legacy_template(
     for current, placeholder in (
         (f"  PLUGIN_ID: {spec.plugin_id}", "  PLUGIN_ID: <PLUGIN_ID>"),
         (
-            f"  NEKO_REPOSITORY: {spec.neko_repository}",
+            f"  NEKO_REPOSITORY: {MARKET_ACTIONS_NEKO_REPOSITORY}",
             "  NEKO_REPOSITORY: <NEKO_REPOSITORY>",
         ),
-        (f"  NEKO_REF: {spec.neko_ref}", "  NEKO_REF: <NEKO_REF>"),
+        (f"  NEKO_REF: {MARKET_ACTIONS_NEKO_REF}", "  NEKO_REF: <NEKO_REF>"),
         (
-            f"    uses: {spec.neko_repository}/.github/workflows/"
-            f"plugin-market-verify.yml@{spec.neko_ref}",
+            f"    uses: {MARKET_ACTIONS_NEKO_REPOSITORY}/.github/workflows/"
+            f"plugin-market-verify.yml@{MARKET_ACTIONS_NEKO_REF}",
             "    uses: <NEKO_REPOSITORY>/.github/workflows/"
             "plugin-market-verify.yml@<NEKO_REF>",
         ),
         (
-            f"    uses: {spec.neko_repository}/.github/workflows/"
-            f"plugin-market-release.yml@{spec.neko_ref}",
+            f"    uses: {MARKET_ACTIONS_NEKO_REPOSITORY}/.github/workflows/"
+            f"plugin-market-release.yml@{MARKET_ACTIONS_NEKO_REF}",
             "    uses: <NEKO_REPOSITORY>/.github/workflows/"
             "plugin-market-release.yml@<NEKO_REF>",
         ),
         (f"      plugin-id: {spec.plugin_id}", "      plugin-id: <PLUGIN_ID>"),
-        (f"      neko-ref: {spec.neko_ref}", "      neko-ref: <NEKO_REF>"),
+        (
+            f"      neko-ref: {MARKET_ACTIONS_NEKO_REF}",
+            "      neko-ref: <NEKO_REF>",
+        ),
     ):
         normalized = normalized.replace(current, placeholder)
     fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()

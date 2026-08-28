@@ -117,6 +117,11 @@ class QQConnectionBase(ABC):
         """是否接收群聊全部消息（开放平台仅 @bot）"""
         return True
 
+    @property
+    def supports_ark_cards(self) -> bool:
+        """是否支持 Ark 富卡片（仅开放平台；OneBot 后端不支持，降级文本）"""
+        return False
+
     def is_group_muted(self, group_id: str) -> bool:
         """检查 bot 是否在该群被禁言（含全体禁言）。
 

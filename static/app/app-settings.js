@@ -2763,6 +2763,14 @@
             window.loadSpeakerVolumeSetting();
         }
 
+        // 加载播放设备选择；默认显式使用 Chromium 的 default 多媒体输出，
+        // 不使用 communications 默认语音通话设备。
+        if (typeof window.appAudioPlayback !== 'undefined' && window.appAudioPlayback.loadSelectedSpeaker) {
+            window.appAudioPlayback.loadSelectedSpeaker();
+        } else if (typeof window.loadSelectedSpeaker === 'function') {
+            window.loadSelectedSpeaker();
+        }
+
         // 如果已开启主动搭话且选择了搭话方式，立即启动定时器
         if (S.proactiveChatEnabled && (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled)) {
             // 主动搭话启动自检

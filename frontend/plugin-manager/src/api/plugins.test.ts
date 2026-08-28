@@ -14,6 +14,40 @@ describe('plugin hosted UI API', () => {
     getMock.mockReset()
   })
 
+  it('merges locale with existing plugin list parameters', async () => {
+    const { getPlugins } = await import('./plugins')
+
+    getPlugins('zh-CN', {
+      params: { source: 'local' },
+      timeout: 1000,
+    })
+
+    expect(getMock).toHaveBeenCalledWith('/plugins', {
+      params: { source: 'local', locale: 'zh-CN' },
+      timeout: 1000,
+    })
+  })
+
+  it('preserves URLSearchParams when merging locale', async () => {
+    const { getPlugins } = await import('./plugins')
+    const input = new URLSearchParams([
+      ['source', 'local'],
+      ['tag', 'one'],
+      ['tag', 'two'],
+    ])
+
+    getPlugins('zh-CN', { params: input })
+
+    const requestConfig = getMock.mock.calls[0]?.[1]
+    expect(requestConfig.params).toBeInstanceOf(URLSearchParams)
+    expect(Array.from(requestConfig.params.entries())).toEqual([
+      ['source', 'local'],
+      ['tag', 'one'],
+      ['tag', 'two'],
+      ['locale', 'zh-CN'],
+    ])
+  })
+
   it('silences initial hosted action errors while passing its timeout', async () => {
     postMock.mockResolvedValue({ ok: true })
     const { callPluginHostedSurfaceAction } = await import('./plugins')
@@ -52,6 +86,46 @@ describe('plugin hosted UI API', () => {
       '/plugin/demo/hosted-ui/action/save',
       expect.objectContaining({ timeout_ms: undefined }),
       { suppressPluginNotRunningMessage: false },
+    )
+  })
+
+  it('passes an action abort signal to the HTTP request', async () => {
+    postMock.mockResolvedValue({ ok: true })
+    const { callPluginHostedSurfaceAction } = await import('./plugins')
+    const controller = new AbortController()
+
+    await callPluginHostedSurfaceAction('demo', 'slow', {}, {
+      kind: 'panel',
+      id: 'main',
+      signal: controller.signal,
+    })
+
+    expect(postMock).toHaveBeenCalledWith(
+      '/plugin/demo/hosted-ui/action/slow',
+      expect.any(Object),
+      expect.objectContaining({ signal: controller.signal }),
+    )
+  })
+
+  it('passes the requested locale when loading hosted surface source', async () => {
+    getMock.mockResolvedValue({ source: 'Guide' })
+    const { getPluginHostedSurfaceSource } = await import('./plugins')
+
+    await getPluginHostedSurfaceSource('study companion', {
+      kind: 'docs',
+      id: 'onboarding',
+      locale: 'pt',
+    })
+
+    expect(getMock).toHaveBeenCalledWith(
+      '/plugin/study%20companion/hosted-ui/source',
+      {
+        params: {
+          kind: 'docs',
+          id: 'onboarding',
+          locale: 'pt',
+        },
+      },
     )
   })
 })

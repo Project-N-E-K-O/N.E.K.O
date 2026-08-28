@@ -1130,8 +1130,8 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
     same, and this gate would not see it. That gap is not closed here
     because the cheap closure is not sound: matching ``.lock`` repo-wide
     collides with unrelated locks that legitimately suspend under
-    themselves (measured: ``plugin/plugins/neko_live/core/pipeline_session.py``
-    holds a per-uid ``entry.lock`` by design), and demanding an allowlist
+    themselves (multiple plugins legitimately suspend under plugin-owned
+    locks by design), and demanding an allowlist
     entry from unrelated code makes the gate about the wrong thing. What IS
     closed is the leak path: core cannot hand the lock out, because every
     ``.lock`` mention there must be an ``async with`` context expression, so
@@ -3299,6 +3299,8 @@ def run(root: Path) -> list[Violation]:
                 "resume",
                 "abort",
                 "wait_transcript_idle",
+                "set_speaker_verifier_factory",
+                "request_speaker_candidate_rejection",
                 "start",
                 "submit",
             }

@@ -27,6 +27,7 @@ coverage
 __screenshots__/
 /cypress/videos/
 /cypress/screenshots/
+/test-results/
 
 # Environment variables
 .env

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolvePluginDisplayText } from './pluginDisplay'
+import { findDuplicatePluginDisplayNameIds, resolvePluginDisplayText } from './pluginDisplay'
 import type { PluginMeta } from '@/types/api'
 
 function pluginFixture(): PluginMeta {
@@ -105,5 +105,56 @@ describe('resolvePluginDisplayText', () => {
       description: 'English description',
       shortDescription: '默认短描述',
     })
+  })
+})
+
+describe('findDuplicatePluginDisplayNameIds', () => {
+  it('marks different plugin IDs that resolve to the same localized name', () => {
+    const original = pluginFixture()
+    const renamed = pluginFixture()
+    renamed.id = 'demo_plugin_renamed'
+    renamed.version = '2.0.0'
+
+    expect(findDuplicatePluginDisplayNameIds([original, renamed], 'zh-CN')).toEqual(
+      new Set(['demo_plugin', 'demo_plugin_renamed']),
+    )
+  })
+
+  it('normalizes harmless visual differences but does not flag a repeated copy of one ID', () => {
+    const original = pluginFixture()
+    const visuallyEqual = pluginFixture()
+    visuallyEqual.id = 'another_plugin'
+    visuallyEqual.i18n = undefined
+    visuallyEqual.name = '  中文名称  '
+    const repeatedOriginal = { ...original }
+
+    expect(
+      findDuplicatePluginDisplayNameIds([original, visuallyEqual, repeatedOriginal], 'zh-CN'),
+    ).toEqual(new Set(['demo_plugin', 'another_plugin']))
+  })
+
+  it('leaves ordinary uniquely named plugins uncluttered', () => {
+    const first = pluginFixture()
+    const second = pluginFixture()
+    second.id = 'another_plugin'
+    second.i18n = undefined
+    second.name = 'Another plugin'
+
+    expect(findDuplicatePluginDisplayNameIds([first, second], 'zh-CN')).toEqual(new Set())
+  })
+
+  it('uses the active UI locale when normalizing duplicate names', () => {
+    const capitalI = pluginFixture()
+    capitalI.id = 'capital_i'
+    capitalI.i18n = undefined
+    capitalI.name = 'I'
+    const dotlessI = pluginFixture()
+    dotlessI.id = 'dotless_i'
+    dotlessI.i18n = undefined
+    dotlessI.name = 'ı'
+
+    expect(findDuplicatePluginDisplayNameIds([capitalI, dotlessI], 'tr-TR')).toEqual(
+      new Set(['capital_i', 'dotless_i']),
+    )
   })
 })

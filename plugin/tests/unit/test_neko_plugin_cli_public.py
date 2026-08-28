@@ -7,6 +7,7 @@ import zipfile
 
 import pytest
 
+from plugin.neko_plugin_cli.core import archive_utils
 from plugin.neko_plugin_cli.public import (
     build_bundle,
     build_plugin,
@@ -139,6 +140,27 @@ def _rewrite_package_member(package_path: Path, member_name: str, content: str) 
     with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as dst:
         for info, data in entries:
             dst.writestr(info, data)
+
+
+def _append_package_members(
+    package_path: Path,
+    members: list[tuple[str, bytes]],
+) -> None:
+    with zipfile.ZipFile(package_path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, content in members:
+            archive.writestr(name, content)
+
+
+def _wrap_package_in_parent_folder(package_path: Path) -> None:
+    entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+    with zipfile.ZipFile(package_path) as source:
+        for info in source.infolist():
+            wrapped = zipfile.ZipInfo(f"extra-parent/{info.filename}")
+            wrapped.external_attr = info.external_attr
+            entries.append((wrapped, source.read(info.filename)))
+    with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as target:
+        for info, content in entries:
+            target.writestr(info, content)
 
 
 def test_public_root_exports_legacy_result_aliases() -> None:
@@ -449,6 +471,214 @@ def test_inspect_package_fails_when_manifest_is_missing(tmp_path: Path) -> None:
     _rewrite_package_without_member(package_path, "manifest.toml")
 
     with pytest.raises(FileNotFoundError, match="manifest.toml"):
+        inspect_package(package_path)
+
+
+def test_inspect_package_explains_extra_parent_folder(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "nested.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    _wrap_package_in_parent_folder(package_path)
+
+    with pytest.raises(FileNotFoundError, match="extra parent folder"):
+        inspect_package(package_path)
+
+
+def test_inspect_package_rejects_case_equivalent_paths(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "case-collision.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    _append_package_members(
+        package_path,
+        [("payload/plugins/demo_plugin/RUNTIME.txt", b"shadow")],
+    )
+
+    with pytest.raises(ValueError, match="equivalent on common filesystems"):
+        inspect_package(package_path)
+
+
+def test_inspect_package_rejects_case_equivalent_implicit_directories(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "implicit-directory-collision.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    _append_package_members(
+        package_path,
+        [
+            ("payload/plugins/demo_plugin/Config/a.py", b"a"),
+            ("payload/plugins/demo_plugin/config/b.py", b"b"),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="directory paths that are equivalent"):
+        inspect_package(package_path)
+
+
+def test_inspect_package_rejects_file_directory_prefix_collision(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "prefix-collision.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    _append_package_members(
+        package_path,
+        [
+            ("payload/plugins/demo_plugin/collision", b"file"),
+            ("payload/plugins/demo_plugin/collision/child.txt", b"child"),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="file/directory path conflict"):
+        inspect_package(package_path)
+
+
+def test_inspect_package_rejects_file_explicit_directory_prefix_collision(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "explicit-directory-prefix-collision.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    _append_package_members(
+        package_path,
+        [
+            ("payload/plugins/demo_plugin/collision", b"file"),
+            ("payload/plugins/demo_plugin/collision/empty/", b""),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="file/directory path conflict"):
+        inspect_package(package_path)
+
+
+def test_inspect_package_enforces_global_entry_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_path = tmp_path / "too-many.neko-plugin"
+    with zipfile.ZipFile(package_path, "w") as archive:
+        archive.writestr("manifest.toml", b"x")
+        archive.writestr("other.txt", b"y")
+    monkeypatch.setattr(archive_utils, "MAX_ARCHIVE_ENTRIES", 1)
+
+    with pytest.raises(ValueError, match="too many entries"):
+        inspect_package(package_path)
+
+
+def test_inspect_package_enforces_global_uncompressed_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_path = tmp_path / "too-large.neko-plugin"
+    with zipfile.ZipFile(package_path, "w") as archive:
+        archive.writestr("manifest.toml", b"xx")
+    monkeypatch.setattr(archive_utils, "MAX_ARCHIVE_UNCOMPRESSED_BYTES", 1)
+
+    with pytest.raises(ValueError, match="expands to"):
+        inspect_package(package_path)
+
+
+@pytest.mark.parametrize(
+    ("attack", "expected_detail"),
+    [
+        ("compression_ratio", "compression ratio"),
+        ("oversized_member", "single-member limit"),
+    ],
+)
+def test_public_unpack_rejects_archive_bombs_before_reading_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attack: str,
+    expected_detail: str,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / f"{attack}.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    bomb_member = "payload/plugins/demo_plugin/bomb.bin"
+    if attack == "compression_ratio":
+        content = b"\0" * (256 * 1024)
+        compression = zipfile.ZIP_DEFLATED
+    else:
+        content = b"x" * 2048
+        compression = zipfile.ZIP_STORED
+    with zipfile.ZipFile(package_path, "a") as archive:
+        archive.writestr(bomb_member, content, compress_type=compression)
+
+    if attack == "oversized_member":
+        monkeypatch.setattr(archive_utils, "MAX_ARCHIVE_MEMBER_BYTES", 1024)
+        monkeypatch.setattr(
+            archive_utils,
+            "MAX_ARCHIVE_COMPRESSION_RATIO",
+            1_000_000,
+        )
+    original_open = zipfile.ZipFile.open
+
+    def guarded_open(archive, member, *args, **kwargs):  # type: ignore[no-untyped-def]
+        member_name = member.filename if isinstance(member, zipfile.ZipInfo) else member
+        if member_name == bomb_member:
+            raise AssertionError("archive bomb payload must not be opened")
+        return original_open(archive, member, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", guarded_open)
+
+    with pytest.raises(ValueError, match=expected_detail):
+        unpack_package(
+            package_path,
+            plugins_root=tmp_path / "plugins",
+            profiles_root=tmp_path / "profiles",
+        )
+
+
+def test_inspection_streams_members_without_zipfile_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "streamed.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+
+    def forbidden_read(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("package members must use bounded streaming reads")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", forbidden_read)
+
+    assert inspect_package(package_path).package_id == "demo_plugin"
+
+
+@pytest.mark.parametrize(
+    "limit_name",
+    [
+        "MAX_ARCHIVE_TOML_BYTES",
+        "MAX_ARCHIVE_DISTRIBUTION_METADATA_BYTES",
+    ],
+)
+def test_inspection_bounds_small_metadata_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_name: str,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "bounded-metadata.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    monkeypatch.setattr(archive_utils, limit_name, 16)
+
+    with pytest.raises(ValueError, match="16-byte read limit"):
+        inspect_package(package_path)
+
+
+def test_inspect_package_rejects_folder_manifest_id_mismatch(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "identity-mismatch.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    plugin_toml = (plugin_dir / "plugin.toml").read_text(encoding="utf-8").replace(
+        'id = "demo_plugin"',
+        'id = "different_plugin"',
+    )
+    _rewrite_package_member(
+        package_path,
+        "payload/plugins/demo_plugin/plugin.toml",
+        plugin_toml,
+    )
+
+    with pytest.raises(ValueError, match="does not match plugin.toml id"):
         inspect_package(package_path)
 
 

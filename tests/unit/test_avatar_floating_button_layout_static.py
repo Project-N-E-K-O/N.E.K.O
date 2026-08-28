@@ -19,6 +19,7 @@ def _read_avatar_ui_buttons_source() -> str:
 
 
 LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-ui-buttons.js"
+MODEL_DISPLAY_PATH = PROJECT_ROOT / "static" / "app" / "app-ui" / "model-display.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 
@@ -126,6 +127,145 @@ def test_live2d_lock_icon_tracks_the_floating_toolbar_scale():
     assert "window.getNekoYuiGuideLockIconMaxTop(defaultMaxLockTop, actualLockIconSize)" in lock_icon_block
     assert "right: clampedLeft + actualLockIconSize" in lock_icon_block
     assert "bottom: clampedTop + actualLockIconSize" in lock_icon_block
+
+
+def test_live2d_lock_icon_repair_detaches_an_orphaned_ticker():
+    script = f"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync({json.dumps(str(LIVE2D_UI_BUTTONS_PATH))}, 'utf8');
+const start = source.indexOf('Live2DManager.prototype.setupHTMLLockIcon = function(model) {{');
+const end = source.indexOf('Live2DManager.prototype.setupFloatingButtons = function(model) {{', start);
+const setupSource = source.slice(start, end);
+const elements = new Map();
+const makeElement = (tagName) => ({{
+  tagName,
+  dataset: {{}},
+  style: {{}},
+  appendChild() {{}},
+  addEventListener() {{}},
+  remove() {{ if (this.id) elements.delete(this.id); }},
+}});
+const canvas = makeElement('canvas');
+const document = {{
+  body: {{ appendChild(element) {{ elements.set(element.id, element); }} }},
+  createElement: makeElement,
+  getElementById(id) {{
+    if (id === 'live2d-canvas') return canvas;
+    if (id === 'chat-container') return {{}};
+    return elements.get(id) || null;
+  }},
+  querySelectorAll() {{ return []; }},
+}};
+const removed = [];
+const added = [];
+const oldTicker = () => {{}};
+function Live2DManager() {{}}
+const window = {{ isViewerMode: false }};
+vm.runInNewContext(setupSource, {{ Live2DManager, document, window, console, Date, Object }});
+
+const manager = new Live2DManager();
+manager.isLocked = false;
+manager._lockIconTicker = oldTicker;
+manager.pixi_app = {{ ticker: {{
+  remove(ticker) {{ removed.push(ticker); }},
+  add(ticker) {{ added.push(ticker); }},
+}} }};
+manager.setLocked = () => {{}};
+manager.setupHTMLLockIcon({{ parent: true }});
+
+if (removed.length !== 1 || removed[0] !== oldTicker) {{
+  throw new Error('the orphaned Live2D lock ticker was not removed');
+}}
+if (added.length !== 1 || manager._lockIconTicker !== added[0] || added[0] === oldTicker) {{
+  throw new Error('the replacement Live2D lock ticker was not installed exactly once');
+}}
+if (!document.getElementById('live2d-lock-icon')) {{
+  throw new Error('the Live2D lock icon was not rebuilt');
+}}
+"""
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_model_display_rebuilds_a_missing_lock_icon_when_the_toolbar_survives():
+    source = MODEL_DISPLAY_PATH.read_text(encoding="utf-8")
+    for prefix in ("live2d", "vrm", "mmd", "pngtuber"):
+        assert f"I.ensureActiveModelOverlayControls('{prefix}')" in source
+
+    script = f"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync({json.dumps(str(MODEL_DISPLAY_PATH))}, 'utf8');
+const elements = new Map([
+  ['live2d-floating-buttons', {{ id: 'live2d-floating-buttons' }}],
+  ['vrm-floating-buttons', {{ id: 'vrm-floating-buttons' }}],
+  ['mmd-floating-buttons', {{ id: 'mmd-floating-buttons' }}],
+  ['pngtuber-floating-buttons', {{ id: 'pngtuber-floating-buttons' }}],
+]);
+const calls = {{ live2dToolbar: 0, live2dLock: 0, vrm: 0, mmd: 0, pngToolbar: 0, pngLock: 0 }};
+const document = {{
+  getElementById(id) {{ return elements.get(id) || null; }},
+}};
+const window = {{
+  appUi: {{}},
+  __appUiParts: {{ mod: {{}} }},
+  live2dManager: {{
+    getCurrentModel() {{ return {{ destroyed: false }}; }},
+    setupFloatingButtons() {{ calls.live2dToolbar += 1; }},
+    setupHTMLLockIcon() {{
+      calls.live2dLock += 1;
+      elements.set('live2d-lock-icon', {{ id: 'live2d-lock-icon' }});
+    }},
+  }},
+  vrmManager: {{
+    currentModel: {{ destroyed: false }},
+    setupFloatingButtons() {{
+      calls.vrm += 1;
+      elements.set('vrm-lock-icon', {{ id: 'vrm-lock-icon' }});
+    }},
+  }},
+  mmdManager: {{
+    currentModel: {{ destroyed: false }},
+    setupFloatingButtons() {{
+      calls.mmd += 1;
+      elements.set('mmd-lock-icon', {{ id: 'mmd-lock-icon' }});
+    }},
+  }},
+  pngtuberManager: {{
+    image: {{ destroyed: false }},
+    setupFloatingButtons() {{ calls.pngToolbar += 1; }},
+    setupHTMLLockIcon() {{
+      calls.pngLock += 1;
+      elements.set('pngtuber-lock-icon', {{ id: 'pngtuber-lock-icon' }});
+    }},
+  }},
+}};
+window.window = window;
+window.document = document;
+vm.runInNewContext(source, {{ window, document, console, Object, String }});
+
+for (const prefix of ['live2d', 'vrm', 'mmd', 'pngtuber']) {{
+  const controls = window.__appUiParts.ensureActiveModelOverlayControls(prefix);
+  if (!controls.floatingButtons || !controls.lockIcon) {{
+    throw new Error(prefix + ' overlay controls were not repaired');
+  }}
+}}
+for (const prefix of ['live2d', 'vrm', 'mmd', 'pngtuber']) {{
+  const controls = window.__appUiParts.ensureActiveModelOverlayControls(prefix);
+  if (!controls.floatingButtons || !controls.lockIcon) {{
+    throw new Error(prefix + ' repaired overlay controls were not retained');
+  }}
+}}
+if (calls.live2dToolbar !== 0 || calls.pngToolbar !== 0) {{
+  throw new Error('an intact toolbar should not be rebuilt');
+}}
+if (calls.live2dLock !== 1 || calls.vrm !== 1 || calls.mmd !== 1 || calls.pngLock !== 1) {{
+  throw new Error('repeated checks must not accumulate overlay rebuilds: ' + JSON.stringify(calls));
+}}
+"""
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def test_model_lock_icons_ignore_pointer_input_while_avatar_overlays_overlap():
