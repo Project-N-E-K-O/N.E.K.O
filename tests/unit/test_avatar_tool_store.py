@@ -1826,14 +1826,26 @@ def test_update_maps_a_retained_read_failure_to_a_controlled_error(tmp_path, mon
         change_images=[_png(size=(9, 9))],
     )
 
-    real_read_bytes = Path.read_bytes
+    # 只让 retained_bytes 那次打开失败：update_tool 开头的
+    # read_record(verify_resources=True) 也会打开同一个文件算摘要，得先放行。
+    stage = {"verified": False}
+    real_read_record = AvatarToolStore.read_record
 
-    def locked_read_bytes(self):
-        if self.name == "default.png":
+    def marking_read_record(self, tool_id, *, verify_resources=False):
+        record = real_read_record(self, tool_id, verify_resources=verify_resources)
+        if verify_resources:
+            stage["verified"] = True
+        return record
+
+    real_open = Path.open
+
+    def locked_open(self, *args, **kwargs):
+        if stage["verified"] and self.name == "default.png":
             raise OSError("file locked by another process")
-        return real_read_bytes(self)
+        return real_open(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", locked_read_bytes)
+    monkeypatch.setattr(AvatarToolStore, "read_record", marking_read_record)
+    monkeypatch.setattr(Path, "open", locked_open)
     root_key = store._root_key()
     try:
         with pytest.raises(AvatarToolStoreError) as raised:
@@ -1919,3 +1931,40 @@ def test_record_read_is_bounded_yet_fits_the_largest_legal_record(tmp_path, monk
     # 文件过大不等于内容损坏，不该触发隔离。
     assert raised.value.integrity_mismatch is False
     assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(store._root_key(), set())
+
+
+@pytest.mark.unit
+def test_update_rejects_a_retained_resource_that_outgrew_its_limit(tmp_path, monkeypatch):
+    """An externally swapped-in giant file must be refused before it is read."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png(size=(9, 9))],
+    )
+    stored = (store.root / tool["id"] / "default.png").stat().st_size
+
+    # 等价于「资源被外部换成了超出上限的文件」，但不必真的往盘上写 8 MiB：
+    # 收紧上限让现有文件越界，走的是同一条 fstat 预检分支。摘要仍然匹配，
+    # 所以 update_tool 开头的全量核验会放行，只有大小这一关能拦下它。
+    store.limits["maxImageBytes"] = stored - 1
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.update_tool(
+            tool["id"],
+            base_revision=tool["revision"],
+            name="Feather",
+            change_mode="press-swap",
+            change_meanings=["meaning"],
+            default_resource="default.png",
+            default_image=None,
+            change_resources=["change-000.png"],
+            change_images=[],
+        )
+    assert raised.value.code == "resource_reference_invalid"
+    assert raised.value.field == "default_image"
+    assert raised.value.integrity_mismatch is False

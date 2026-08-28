@@ -1199,8 +1199,33 @@ class AvatarToolStore:
                 # 是两次独立的打开：同步盘 / 网络盘上的外部写者可能在中间把文件
                 # 换掉，于是「保留原图」的 PUT 会静默发布用户没提交过的内容。
                 # 读完立刻对齐 record 里的摘要，把这个窗口关掉。
+                # 摘要比对本身也能挡住被换掉的文件，但那是在读进内存之后。
+                # 先用 fstat 预检大小，超限的直接出局，一个字节都不读 —— 外部
+                # 把资源换成多 GB 文件时不至于把内存吃光。用实际大小而不是上限
+                # 去 read，避免为一张 120 KB 的图预分配 8 MiB 缓冲区。
+                maximum = (
+                    self.limits["maxAudioBytes"]
+                    if resource.endswith(".mp3")
+                    else self.limits["maxImageBytes"]
+                )
                 try:
-                    data = candidate.read_bytes()
+                    with candidate.open("rb") as stream:
+                        if os.fstat(stream.fileno()).st_size > maximum:
+                            raise AvatarToolStoreError(
+                                "resource_reference_invalid",
+                                "Retained resource is invalid",
+                                field=field,
+                            )
+                        data = stream.read(maximum + 1)
+                    if len(data) > maximum:
+                        # fstat 之后又被换大了。
+                        raise AvatarToolStoreError(
+                            "resource_reference_invalid",
+                            "Retained resource is invalid",
+                            field=field,
+                        )
+                except AvatarToolStoreError:
+                    raise
                 except OSError as exc:
                     # 文件锁、同步盘出错、外部删除都会走到这里。update_avatar_tool
                     # 只接 AvatarToolStoreError / MaintenanceModeError，裸 OSError
