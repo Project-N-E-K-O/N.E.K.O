@@ -4065,3 +4065,68 @@ async def test_gemini_proactive_waits_for_a_tool_response_still_being_written(
     await _wait_for_tool_tasks(client)
 
     assert order == ["tool_response", "proactive"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_raw_batch_answers_when_its_response_done_is_stale_filtered() -> None:
+    """A batch whose terminal never reaches the close hook still answers.
+
+    ``close_raw_tool_batch`` sits after the stale-response filter, so a
+    ``response.done`` for A arriving once B is current is dropped before it --
+    A's batch is never explicitly closed. That is survivable because the grace
+    is gated on EVIDENCE rather than on a timer: the collector waits only
+    while the issuing response is still the tracked one, and here it is not.
+    Without that gate this batch would sit out a grace round it can never win.
+    """
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(call):
+        started.set()
+        await release.wait()
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-realtime",
+        api_type="gpt",
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "response-a"}})
+    socket.feed(_raw_tool_event("call-1", response_id="response-a"))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    # B becomes current, then A's terminal finally shows up -- and is dropped
+    # by the stale filter before it can reach the close hook.
+    socket.feed({"type": "response.created", "response": {"id": "response-b"}})
+    socket.feed({"type": "response.done", "response": {"id": "response-a"}})
+    socket.feed({"type": "response.done", "response": {"id": "response-b"}})
+    await client._response_arbiter.wait_until_idle(timeout=1)
+    assert client._current_response_id != "response-a", (
+        "premise: A is no longer the tracked response"
+    )
+
+    release.set()
+    await _wait_for_socket_sends(socket, 2)
+    await _wait_for_tool_tasks(client)
+
+    answered = [
+        event["item"]["call_id"]
+        for event in socket.sent
+        if event.get("type") == "conversation.item.create"
+    ]
+    assert answered == ["call-1"], (
+        "A's tool result must still be sent even though its terminal never "
+        "reached the batch close hook"
+    )
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
