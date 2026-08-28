@@ -4,19 +4,51 @@ import asyncio
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 
 class QQNapcatService:
+    """NapCat 进程/二维码/就绪管理 —— 纯传输层组件，不依赖任何插件对象。
+
+    通过注入 ``get_settings``/``get_qq_client``/``config_dir``/``logger``/``emit_log``
+    解耦；进程与启动错误状态由本服务自持（``_napcat_process``/
+    ``_manages_napcat_process``/``_startup_error``），任何插件都可创建它来管理
+    NapCat，而无需把自己的内部状态暴露给它。
+    """
+
     #: OneBot 连接超时错误——瞬态：NapCat 进程可能仍在启动（QR 登录/慢启动），
     #: 之后会自动连上。它不该被当作硬失败短路后续重试，否则 NapCat 明明在起，
     #: 重试却不再轮询等待迟来的连接。
     TRANSIENT_TIMEOUT_ERROR = "NapCat 已尝试启动，但没有客户端连接到反向 WS 服务器"
     FORWARD_TRANSIENT_TIMEOUT_ERROR = "NapCat 已启动，但正向 WebSocket 连接未建立（NapCat 可能仍在登录，或未开启 WebSocket 服务器）"
 
-    def __init__(self, plugin: Any):
-        self.plugin = plugin
+    def __init__(
+        self,
+        *,
+        get_settings: Callable[[], dict] | None = None,
+        get_qq_client: Callable[[], Any] | None = None,
+        config_dir: str | Path | None = None,
+        logger: Any = None,
+        emit_log: Any = None,
+    ):
+        self._get_settings = get_settings or (lambda: {})
+        self._get_qq_client = get_qq_client or (lambda: None)
+        self._config_dir = Path(config_dir) if config_dir else (Path(__file__).parent / "static")
+        self.logger = logger
+        self._emit_log = emit_log or (lambda level, msg: None)
+        # 传输层自持的进程/错误状态
+        self._napcat_process: asyncio.subprocess.Process | None = None
+        self._manages_napcat_process: bool = False
+        self._startup_error: str | None = None
+
+    @property
+    def napcat_process(self) -> asyncio.subprocess.Process | None:
+        return self._napcat_process
+
+    @property
+    def manages_napcat_process(self) -> bool:
+        return self._manages_napcat_process
 
     def _transient_timeout_errors(self) -> set[str]:
         """所有模式的瞬态超时文案（反向 + 正向）。
@@ -34,7 +66,7 @@ class QQNapcatService:
         正向：我们的正向拨出还没连上 NapCat（进程可能仍在启动/登录，或
         NapCat 未开启 WebSocket 服务器）。两者都是瞬态，不算硬失败。
         """
-        mode = str((self.plugin._qq_settings or {}).get("qq_connection_mode") or "napcat").strip()
+        mode = str((self._get_settings() or {}).get("qq_connection_mode") or "napcat").strip()
         if mode == "napcat_forward":
             return self.FORWARD_TRANSIENT_TIMEOUT_ERROR
         return self.TRANSIENT_TIMEOUT_ERROR
@@ -49,7 +81,7 @@ class QQNapcatService:
         return bool(err) and err not in self._transient_timeout_errors()
 
     def get_configured_napcat_path(self) -> str:
-        return str((self.plugin._qq_settings or {}).get("napcat_directory") or "").strip()
+        return str((self._get_settings() or {}).get("napcat_directory") or "").strip()
 
     def get_napcat_directory(self) -> Path:
         configured = self.get_configured_napcat_path()
@@ -71,7 +103,7 @@ class QQNapcatService:
 
     async def sync_napcat_qrcode_into_static(self) -> bool:
         source = self.get_napcat_qrcode_path()
-        target = self.plugin.config_dir / "static" / "cache" / "qrcode.png"
+        target = self._config_dir / "static" / "cache" / "qrcode.png"
         if not source.is_file():
             return False
         try:
@@ -79,7 +111,8 @@ class QQNapcatService:
             await asyncio.to_thread(shutil.copy2, source, target)
             return True
         except Exception as e:
-            self.plugin.logger.warning(f"Failed to copy NapCat QR code into static cache: {e}")
+            if self.logger:
+                self.logger.warning(f"Failed to copy NapCat QR code into static cache: {e}")
             return False
 
     def find_napcat_launcher(self) -> Path | None:
@@ -98,24 +131,28 @@ class QQNapcatService:
 
     def _build_missing_launcher_error(self) -> str:
         launch_target = self.get_napcat_launch_target()
-        configured = str((self.plugin._qq_settings or {}).get("napcat_directory") or "").strip()
+        configured = str((self._get_settings() or {}).get("napcat_directory") or "").strip()
         if configured:
             return f"NapCat 启动器不存在: {launch_target}，需要指向 launcher-user.bat、launcher.bat 或其所在目录"
         return f"NapCat 启动器不存在: {launch_target}，请先配置 napcat_directory 或确认内置 NapCat.Shell 完整"
 
     def clear_startup_error(self) -> None:
-        self.plugin._startup_error = None
+        self._startup_error = None
 
     def get_startup_error(self) -> str:
-        return str(self.plugin._startup_error or "").strip()
+        return str(self._startup_error or "").strip()
+
+    def set_startup_error(self, message: str | None) -> None:
+        self._startup_error = str(message or "").strip() or None
 
     def _set_startup_error(self, message: str) -> None:
-        self.plugin._startup_error = str(message or "").strip() or None
+        self.set_startup_error(message)
 
     def _extract_onebot_port(self) -> int | None:
-        raw_url = str((self.plugin._qq_settings or {}).get("onebot_url") or "").strip()
-        if not raw_url and self.plugin.qq_client:
-            raw_url = str(getattr(self.plugin.qq_client, "onebot_url", "") or "").strip()
+        raw_url = str((self._get_settings() or {}).get("onebot_url") or "").strip()
+        if not raw_url:
+            qq_client = self._get_qq_client()
+            raw_url = str(getattr(qq_client, "onebot_url", "") or "").strip()
         if not raw_url:
             return None
         if raw_url.startswith("ws://"):
@@ -136,7 +173,8 @@ class QQNapcatService:
         反向 WS 模式下，我们不再主动 TCP 连接外部端口，而是轮询是否有
         OneBot 客户端连接到了我们的服务器。
         """
-        if self.plugin.qq_client and self.plugin.qq_client.is_connected():
+        qq_client = self._get_qq_client()
+        if qq_client and qq_client.is_connected():
             self.clear_startup_error()
             return True
         # 硬失败（目录不存在、启动器缺失、进程拉起失败）时立即返回，不再空轮询
@@ -147,7 +185,8 @@ class QQNapcatService:
             return False
         deadline = asyncio.get_running_loop().time() + max(1.0, float(timeout_seconds or 20.0))
         while asyncio.get_running_loop().time() < deadline:
-            if self.plugin.qq_client and self.plugin.qq_client.is_connected():
+            qq_client = self._get_qq_client()
+            if qq_client and qq_client.is_connected():
                 self.clear_startup_error()
                 return True
             # 轮询期间启动器可能已被判定硬失败：及时短路，避免空等满窗口
@@ -157,7 +196,8 @@ class QQNapcatService:
             # sleep 可能跨过 deadline 返回，期间 OneBot 可能已连上、或硬错误已写入；
             # 回到循环顶再检查会因 while 条件已为 False 而退出，因此这里补一次终检，
             # 避免把就绪误报为超时、或用超时错误覆盖真实启动错误。
-            if self.plugin.qq_client and self.plugin.qq_client.is_connected():
+            qq_client = self._get_qq_client()
+            if qq_client and qq_client.is_connected():
                 self.clear_startup_error()
                 return True
             if self.has_hard_startup_error():
@@ -208,40 +248,41 @@ class QQNapcatService:
             # OneBot 连上来。不能设硬错误，否则手动启动的 OneBot 也无法通过
             # ensure_napcat 完成连接。
             return
-        if self.plugin._napcat_process and self.plugin._napcat_process.returncode is None:
+        if self._napcat_process and self._napcat_process.returncode is None:
             return
         launcher = self.find_napcat_launcher()
         if launcher is None:
-            mode = str((self.plugin._qq_settings or {}).get("qq_connection_mode") or "napcat").strip()
+            mode = str((self._get_settings() or {}).get("qq_connection_mode") or "napcat").strip()
             if mode == "napcat_forward":
                 # 正向模式本地 NapCat 启动是**尽力而为**：启动器缺失只告警、不设硬
                 # 错误——正向仍可连远端/手动启动的 NapCat，bootstrap() 不应因此进入
                 # 失败分支（wait_for_onebot_ready 会轮询正向拨号结果）。
-                self.plugin._emit_log("WARN", self._build_missing_launcher_error())
+                self._emit_log("WARN", self._build_missing_launcher_error())
                 return
             self._set_startup_error(self._build_missing_launcher_error())
             return
         try:
-            show_window = bool(self.plugin._qq_settings.get("show_napcat_window", True))
+            show_window = bool((self._get_settings() or {}).get("show_napcat_window", True))
             creationflags = 0
             if show_window:
                 creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
             else:
                 creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-            self.plugin._napcat_process = await asyncio.create_subprocess_exec(
+            self._napcat_process = await asyncio.create_subprocess_exec(
                 "cmd.exe", "/c", str(launcher),
                 cwd=str(launcher.parent),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 creationflags=creationflags,
             )
-            self.plugin._manages_napcat_process = True
+            self._manages_napcat_process = True
             self.clear_startup_error()
-            pid = self.plugin._napcat_process.pid
-            self.plugin.logger.info(
-                f"Started NapCat: {launcher} (pid={pid}, show_window={show_window})"
-            )
-            self.plugin._emit_log("INFO", f"NapCat 已启动 PID={pid}")
+            pid = self._napcat_process.pid
+            if self.logger:
+                self.logger.info(
+                    f"Started NapCat: {launcher} (pid={pid}, show_window={show_window})"
+                )
+            self._emit_log("INFO", f"NapCat 已启动 PID={pid}")
 
             async def _delayed_sync_qrcode():
                 await asyncio.sleep(1.5)
@@ -250,14 +291,15 @@ class QQNapcatService:
             asyncio.create_task(_delayed_sync_qrcode())
         except Exception as e:
             self._set_startup_error(f"启动 NapCat 失败: {e}")
-            self.plugin.logger.warning(f"Failed to start NapCat launcher {launcher}: {e}")
+            if self.logger:
+                self.logger.warning(f"Failed to start NapCat launcher {launcher}: {e}")
 
     async def stop_managed_napcat(self) -> None:
-        if not self.plugin._manages_napcat_process:
+        if not self._manages_napcat_process:
             return
-        process = self.plugin._napcat_process
-        self.plugin._napcat_process = None
-        self.plugin._manages_napcat_process = False
+        process = self._napcat_process
+        self._napcat_process = None
+        self._manages_napcat_process = False
         if not process or process.returncode is not None:
             return
         pid = process.pid
@@ -268,9 +310,10 @@ class QQNapcatService:
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
             )
             await kill_proc.wait()
-            self.plugin._emit_log("INFO", f"NapCat 进程树已终止 PID={pid}")
+            self._emit_log("INFO", f"NapCat 进程树已终止 PID={pid}")
         except Exception as e:
-            self.plugin.logger.warning(f"Failed to kill NapCat process tree (PID={pid}): {e}")
+            if self.logger:
+                self.logger.warning(f"Failed to kill NapCat process tree (PID={pid}): {e}")
             try:
                 process.kill()
             except ProcessLookupError:

@@ -69,10 +69,19 @@ _SSE_RUN_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "time
 
 
 def _sse_queue_put_best_effort(queue: asyncio.Queue, frame: str) -> None:
+    """往一个 SSE 客户端队列塞一帧；满了丢弃**最旧**、让新帧入队。
+
+    慢客户端读不过来时，保留的是**最新**的帧（丢队首最旧），符合「实时流」直觉 ——
+    而不是丢刚产生的新帧。``asyncio.Queue`` 为 FIFO，``get_nowait()`` 取/删队首。
+    """
     try:
         queue.put_nowait(frame)
     except asyncio.QueueFull:
-        pass  # 慢客户端丢帧，SSE 本来就是尽力而为
+        try:
+            queue.get_nowait()      # 丢弃最旧（队首）一条
+            queue.put_nowait(frame)  # 新帧入队
+        except (asyncio.QueueEmpty, asyncio.QueueFull):
+            pass  # 极端竞态：别崩，尽力而为
 
 
 def _bridge_runs_event(op: str, payload: object) -> None:
@@ -170,6 +179,10 @@ def _parse_push_payload(body: bytes) -> dict:
         msg_type = str(payload.get("type") or "").strip()
         if msg_type:
             result["type"] = msg_type
+        # 可选的结构化数据透传（如 qq_message 的 qq_inbound），供 SSE 订阅者直接取用。
+        data = payload.get("data")
+        if isinstance(data, (dict, list)):
+            result["data"] = data
         style = str(payload.get("style") or "").strip()
         if style in ("catgirl", "narration"):
             result["style"] = style
@@ -469,6 +482,8 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     event: dict = {"text": payload["text"]}
     if payload.get("type"):
         event["type"] = payload["type"]
+    if payload.get("data"):
+        event["data"] = payload["data"]
     if payload.get("style"):
         event["style"] = payload["style"]
     if payload.get("placement"):

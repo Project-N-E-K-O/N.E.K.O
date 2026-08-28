@@ -131,6 +131,64 @@ class QQConnectionBase(ABC):
         return False
 
     @property
+    def self_id(self) -> str:
+        """bot 自己的 user id（未知时为空串）。``_self_id`` 的公开别名。"""
+        return str(getattr(self, "_self_id", "") or "")
+
+    @property
+    def sent_message_ids(self) -> dict[str, float]:
+        """已发送消息 ID → 发送时间戳。``_sent_message_ids`` 的公开别名。"""
+        return getattr(self, "_sent_message_ids", {})
+
+    async def enrich_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        """展开引用/转发/语音/文件 + 注入 VLM 图片描述。
+
+        默认 no-op；``QQClient`` 覆写为真实实现（其 ``needs_attention`` 为 True，
+        由调用方按需触发）。这一方法在 dispatcher 的 eligibility 过滤之后、
+        落 backlog / 复检黑名单之前调用，返回（可能被改写的）消息 dict。
+        """
+        return message
+
+    async def send_group_ark_card(
+        self, group_id: str, ark_obj: dict[str, Any], **_: Any
+    ) -> bool:
+        """发送群聊 Ark 富卡片。仅开放平台支持（``supports_ark_cards`` 为
+        True）；OneBot 后端在调用前已被 ``supports_ark_cards`` 拦截降级，这里
+        直接抛 NotImplementedError 作兜底。"""
+        raise NotImplementedError("Ark 富卡片仅开放平台通道支持")
+
+    # ── 入站消息广播钩子（适配器 → 订阅者）──────────────────────
+    # 任何插件都可用 ``set_inbound_sink`` 挂一个接收器：连接层每收到一条规范化
+    # 消息就调它一次。qq_auto_reply 用它把入站 QQ 消息推给其它插件；其它插件
+    # 若自持连接，也可直接挂自己的 sink 接收。绝对不阻塞消息管线（尽力而为）。
+    _INBOUND_SINK_ATTR = "_inbound_sink"
+
+    @property
+    def inbound_sink(self) -> Any | None:
+        """已注册的入站消息接收器（None = 未注册）。"""
+        return getattr(self, self._INBOUND_SINK_ATTR, None)
+
+    def set_inbound_sink(self, sink: Any | None) -> None:
+        """注册入站消息接收器 ``async sink(message: dict) -> None``。
+
+        每次 ``receive_message()`` 产出一条规范化消息后，连接层会调用它并吞掉
+        一切异常（广播是尽力而为，绝不能拖垮消息管线）。传 ``None`` 取消。
+        """
+        setattr(self, self._INBOUND_SINK_ATTR, sink)
+
+    async def _dispatch_inbound(self, message: dict[str, Any]) -> None:
+        """内部：把一条入站消息交给已注册的 sink（fire-and-forget，容错）。"""
+        sink = self.inbound_sink
+        if sink is None:
+            return
+        try:
+            result = sink(message)
+            if hasattr(result, "__await__"):
+                await result
+        except Exception:
+            pass
+
+    @property
     @abstractmethod
     def onebot_url(self) -> str:
         """反向 WebSocket 监听地址（NapCat 作为 WS Client 连接到此地址）"""

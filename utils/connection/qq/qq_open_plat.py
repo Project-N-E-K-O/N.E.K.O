@@ -414,9 +414,13 @@ class QQOpenPlatformConnection(QQConnectionBase):
 
     async def receive_message(self, timeout: float = 1.0) -> Optional[dict[str, Any]]:
         try:
-            return await asyncio.wait_for(self._message_queue.get(), timeout=timeout)
+            message = await asyncio.wait_for(self._message_queue.get(), timeout=timeout)
         except asyncio.TimeoutError:
             return None
+        # 入站消息广播钩子（可选）：把规范化消息交给已注册的 sink。尽力而为。
+        if isinstance(message, dict):
+            await self._dispatch_inbound(message)
+        return message
 
     # ==========================================
     # 消息发送
@@ -676,6 +680,24 @@ class QQOpenPlatformConnection(QQConnectionBase):
         self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = ""
     ) -> None:
         """发送群聊语音 — 开放平台不支持，返回 None 让上层回退到文本"""
+
+    async def send_group_ark_card(
+        self, group_id: str, ark_obj: dict[str, Any], **_: Any
+    ) -> bool:
+        """发送群聊 Ark 富卡片（开放平台专用）。
+
+        由 ``reply_pipeline`` 在 ``supports_ark_cards`` 为 True 时调用；OneBot
+        后端在调用前已降级为文本，不会走到这里。卡片图片需预解析为 URL 填入
+        ``ark_obj``，无需在此上传。
+        """
+        await self._ensure_token()
+        resp = await self._http.post(
+            f"{self._API_BASE}/v2/groups/{group_id}/messages",
+            json=ark_obj,
+            headers=self._auth_headers(),
+        )
+        data = resp.json()
+        return bool(data.get("id"))
 
     async def get_login_status(self) -> dict[str, Any]:
         if self._ws and self._self_id:

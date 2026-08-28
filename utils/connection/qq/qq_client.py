@@ -1189,6 +1189,109 @@ class QQClient(QQConnectionBase):
         message["raw_message"] = new_raw
         message["content"] = new_raw
 
+    async def enrich_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        """展开引用/转发/语音/文件 + 注入 VLM 图片描述。
+
+        承接 ``_process_incoming`` 打在 ``message`` 上的 ``_pending_*`` 标记，
+        在 dispatcher 的 eligibility 过滤之后、落 backlog / 复检黑名单之前调用。
+        返回（可能被改写的）消息 dict。
+        """
+        reply_ids = message.get("_pending_reply_ids")
+        if isinstance(reply_ids, list) and reply_ids:
+            await self._fetch_reply_content(message, reply_ids)
+            message.pop("_pending_reply_ids", None)
+
+        forward_ids = message.get("_pending_forward_ids")
+        if isinstance(forward_ids, list) and forward_ids:
+            await self._fetch_forward_content(message, forward_ids)
+            message.pop("_pending_forward_ids", None)
+
+        record_files = message.get("_pending_record_files")
+        if isinstance(record_files, list) and record_files:
+            try:
+                await asyncio.wait_for(
+                    self._fetch_record_content(message, record_files),
+                    timeout=60.0,
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                self._emit_log("DEBUG", f"[Voice] 语音转录超时或失败: {type(e).__name__}")
+            message.pop("_pending_record_files", None)
+
+        file_ids = message.get("_pending_file_ids")
+        if isinstance(file_ids, list) and file_ids:
+            try:
+                await asyncio.wait_for(
+                    self._fetch_file_content(message, file_ids),
+                    timeout=60.0,
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                self._emit_log("DEBUG", f"[File] 文件内容拉取超时或失败: {type(e).__name__}")
+            message.pop("_pending_file_ids", None)
+
+        # 主消息图片：调用 VLM 获取描述并注入 content。
+        if self._image_describer:
+            await self._inject_image_descriptions(message)
+        return message
+
+    async def _inject_image_descriptions(self, message: dict[str, Any]) -> None:
+        """调用 VLM 描述主消息中的图片，并把描述注入 content。
+
+        纯图片消息的 raw_message 常为空串、图片在 message 数组里，靠替换文本中的
+        [CQ:image] 注入不进去（回溯补回摘要里图片内容为空）。这里收集所有描述后：
+        - content 为空 → 直接设为 "[Image 描述]" 列表
+        - content 非空 → 按顺序替换其中的 [CQ:image] 占位，替换不到则追加到末尾
+        """
+        import asyncio as _asyncio
+        import re as _re
+
+        raw_msg = message.get("raw") or {}
+        segments = raw_msg.get("message") or message.get("message") or []
+        if not isinstance(segments, list):
+            return
+        img_urls: list[str] = []
+        for seg in segments:
+            if isinstance(seg, dict) and seg.get("type") == "image":
+                sd = seg.get("data") or {}
+                u = str(sd.get("url") or sd.get("file") or "").strip()
+                if u:
+                    img_urls.append(u)
+        if img_urls:
+            self._emit_log("DEBUG", f"[VLM] 检测到 {len(img_urls)} 张主消息图片, 开始描述...")
+        descriptions: list[str] = []
+        for img_url in img_urls:
+            try:
+                desc = await _asyncio.wait_for(
+                    self._image_describer(img_url),
+                    timeout=8.0,
+                )
+                if desc:
+                    descriptions.append(f"[Image {desc}]")
+                    self._emit_log("INFO", f"[VLM] 图片描述: {desc[:40]}")
+                else:
+                    self._emit_log("DEBUG", "[VLM] 图片描述返回为空")
+            except Exception as e:
+                self._emit_log("DEBUG", f"[VLM] 图片描述失败: {type(e).__name__}")
+        if not descriptions:
+            return
+        base = str(message.get("content") or message.get("raw_message") or "").strip()
+        if base:
+            # 非空 content：按序替换其中的 [CQ:image] 占位；CQ 码不够时把
+            # 剩余描述追加到末尾（多图消息的 raw_message 可能只有部分占位）。
+            _it = iter(descriptions)
+
+            def _replace_image(match) -> str:
+                return next(_it, match.group(0))
+
+            new_text = _re.sub(r"\[CQ:image,[^\]]*\]", _replace_image, base)
+            leftover = list(_it)
+            if leftover:
+                new_text = f"{new_text} {' '.join(leftover)}".strip()
+        else:
+            # 纯图片：直接拼描述
+            new_text = " ".join(descriptions)
+        message["raw_message"] = new_text
+        message["content"] = new_text
+
     async def _process_incoming(self, raw_message: str):
         """处理一条来自 OneBot 客户端的消息"""
         message = json.loads(raw_message)
@@ -1334,6 +1437,8 @@ class QQClient(QQConnectionBase):
                 #   - Attention Gate 通过 is_direct_at 区分 @ 和回复
                 result["is_reply_to_bot"] = is_reply_to_bot
 
+            # 入站消息广播钩子（可选）：把规范化消息交给已注册的 sink。尽力而为。
+            await self._dispatch_inbound(result)
             return result
         except asyncio.TimeoutError:
             return None

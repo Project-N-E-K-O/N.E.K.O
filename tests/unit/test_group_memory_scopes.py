@@ -4879,7 +4879,7 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     # delivery layer skipped its text fallback and memory recorded the
     # spoken line the group never received. Reporting None lets the caller
     # fall back to sending the record text itself.
-    from plugin.plugins.qq_auto_reply.qq_open_plat import (
+    from utils.connection.qq.qq_open_plat import (
         QQOpenPlatformConnection,
     )
 
@@ -6428,7 +6428,7 @@ async def test_housekeeping_not_started_when_connect_fails():
         ),
         attention_service=None,
         attention_gate_service=None,
-        napcat_service=SimpleNamespace(get_startup_error=lambda: ""),
+        napcat_service=SimpleNamespace(get_startup_error=lambda: "", clear_startup_error=lambda: None, set_startup_error=lambda *a, **k: None),
         _emit_log=lambda *a, **k: None,
         logger=MagicMock(),
         i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
@@ -9444,6 +9444,11 @@ async def test_concurrent_settings_saves_serialize_the_consent_transaction():
         _startup_error=None,
         _strategy_mode="",
         _ensure_qq_client_initialized=lambda: None,
+        napcat_service=SimpleNamespace(
+            clear_startup_error=lambda: None,
+            get_startup_error=lambda: "",
+            set_startup_error=lambda *a, **k: None,
+        ),
     )
     service = QQSettingsService.__new__(QQSettingsService)
     service.plugin = plugin
@@ -9614,7 +9619,7 @@ async def test_open_platform_keyboard_message_carries_a_markdown_body():
     its text in markdown.content. Leaving the text in `content` produced a
     body-less type-2 message: no message id came back, so the delivery
     layer reported it undelivered and the reply was excluded from memory."""
-    from plugin.plugins.qq_auto_reply.qq_open_plat import (
+    from utils.connection.qq.qq_open_plat import (
         QQOpenPlatformConnection,
     )
 
@@ -9949,7 +9954,7 @@ async def test_napcat_voice_send_failure_is_not_reported_as_delivered():
 @pytest.mark.asyncio
 async def test_record_senders_return_the_segment_result():
     """The wrappers must not swallow the segment API's result."""
-    from plugin.plugins.qq_auto_reply.qq_client import QQClient
+    from utils.connection.qq.qq_client import QQClient
 
     client = QQClient.__new__(QQClient)
     # A returned id must reach the caller (an implicit `return None` would
@@ -10147,7 +10152,7 @@ async def test_private_segments_send_waits_for_the_echo_receipt():
     the same echo round-trip as the group twin."""
     import json as _json
 
-    from plugin.plugins.qq_auto_reply.qq_client import QQClient
+    from utils.connection.qq.qq_client import QQClient
 
     client = QQClient.__new__(QQClient)
     client._pending_actions = {}
@@ -10182,7 +10187,7 @@ async def test_private_segments_send_waits_for_the_echo_receipt():
             sent.append(_json.loads(raw))
 
     client._main_client = _SilentWS()
-    import plugin.plugins.qq_auto_reply.qq_client as qc
+    import utils.connection.qq.qq_client as qc
 
     original_wait_for = qc.asyncio.wait_for
 
@@ -11031,7 +11036,7 @@ async def test_cq_string_senders_wait_for_the_echo_receipt():
     reported as unconfirmed instead of assumed delivered."""
     import json as _json
 
-    from plugin.plugins.qq_auto_reply.qq_client import QQClient
+    from utils.connection.qq.qq_client import QQClient
 
     client = QQClient.__new__(QQClient)
     client._pending_actions = {}
@@ -11068,7 +11073,7 @@ async def test_cq_string_senders_wait_for_the_echo_receipt():
             sent.append(_json.loads(raw))
 
     client._main_client = _SilentWS()
-    import plugin.plugins.qq_auto_reply.qq_client as qc
+    import utils.connection.qq.qq_client as qc
 
     original_wait_for = qc.asyncio.wait_for
 
@@ -11183,6 +11188,11 @@ async def test_opt_outs_apply_immediately_but_opt_ins_wait_for_the_write():
         _startup_error=None,
         _strategy_mode="",
         _ensure_qq_client_initialized=lambda: None,
+        napcat_service=SimpleNamespace(
+            clear_startup_error=lambda: None,
+            get_startup_error=lambda: "",
+            set_startup_error=lambda *a, **k: None,
+        ),
     )
     service = QQSettingsService.__new__(QQSettingsService)
     service.plugin = plugin
@@ -13893,7 +13903,7 @@ async def test_image_message_does_not_carry_a_keyboard_payload():
     user would see neither the options nor the reply."""
     import json as _json
 
-    from plugin.plugins.qq_auto_reply.qq_open_plat import (
+    from utils.connection.qq.qq_open_plat import (
         QQOpenPlatformConnection,
     )
 
