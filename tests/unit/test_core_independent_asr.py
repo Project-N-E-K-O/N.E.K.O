@@ -12204,6 +12204,56 @@ async def test_a_stale_onset_does_not_evict_the_prerecord_buffer() -> None:
 
 
 @pytest.mark.unit
+async def test_replay_keeps_the_pending_onset_when_the_active_broadcast_fails() -> None:
+    """A failed ACTIVE broadcast must not consume the recovery state.
+
+    The compensation force-confirms the successor and only then broadcasts
+    ACTIVE. Clearing the pending confirmation and its preserved onset before
+    that await means a failed broadcast destroys both: any later confirmation
+    falls back to a fresh detected_at, excluding every frame since the user
+    actually started speaking, and the endpoint/final already queued in the
+    FIFO is left without a recoverable ownership boundary.
+
+    So the pending state is cleared only after the broadcast succeeds.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+    component = runtime._asr_runtime
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    recorded_onset = component._asr_overlap_onset_at
+    assert recorded_onset is not None
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    component._asr_session.is_ready = False
+    # ACTIVE 那条广播送不出去（websocket 断了 / 身份已变）。
+    _real_send = component._send_asr_lifecycle_state
+
+    async def _fail_active_broadcast(state, **kwargs):
+        if state is VoiceLifecycleState.ACTIVE:
+            return False
+        return await _real_send(state, **kwargs)
+
+    component._send_asr_lifecycle_state = _fail_active_broadcast
+
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    # 广播失败了，但那笔挂起确认和它保存的真实开口时刻必须还在，
+    # 后续确认才能拿到用户真正开口的时刻。
+    assert component._asr_pending_speech_confirmed is True
+    assert component._asr_pending_speech_onset_at == recorded_onset
+
+
+@pytest.mark.unit
 async def test_direct_overlap_replay_seals_when_the_session_is_not_ready() -> None:
     """The direct replay must complete its confirmation in place too.
 

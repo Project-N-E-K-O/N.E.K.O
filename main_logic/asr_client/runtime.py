@@ -3689,8 +3689,6 @@ class IndependentAsrRuntime:
                     if self._asr_pending_speech_onset_at is not None
                     else time.monotonic()
                 )
-                self._asr_pending_speech_confirmed = False
-                self._asr_pending_speech_onset_at = None
                 self._asr_turn_audio_started_at = time.monotonic()
                 self._asr_first_partial_recorded = False
                 confirm_identity = self._capture_runtime_identity(
@@ -3707,7 +3705,14 @@ class IndependentAsrRuntime:
                     or epoch != self._asr_session_epoch
                     or self._asr_lifecycle is not lifecycle
                 ):
+                    # ⚠️ 挂起状态**只在广播成功之后**才清。广播是 await，失败时
+                    # 若已经清掉，那笔挂起确认与它保存的真实开口时刻就一起没了：
+                    # 后续任何一次确认都只能退回用新的 detected_at，把用户真实
+                    # 开口以来的帧全排除掉，而排在 FIFO 里的 endpoint/final 也
+                    # 再没有可恢复的所有权边界。
                     return
+                self._asr_pending_speech_confirmed = False
+                self._asr_pending_speech_onset_at = None
             if lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE:
                 # 没唤醒。credit 原样留着等下一次兑付；借出去的 onset 也要收回，
                 # 免得它被后面某个不相干的回合当成自己的起点。
@@ -4270,8 +4275,6 @@ class IndependentAsrRuntime:
                 if self._asr_pending_speech_onset_at is not None
                 else time.monotonic()
             )
-            self._asr_pending_speech_confirmed = False
-            self._asr_pending_speech_onset_at = None
             self._asr_turn_audio_started_at = time.monotonic()
             self._asr_first_partial_recorded = False
             confirm_identity = self._capture_runtime_identity(
@@ -4288,7 +4291,11 @@ class IndependentAsrRuntime:
                 or epoch != self._asr_session_epoch
                 or self._asr_lifecycle is not lifecycle_ref
             ):
+                # 同 credit 兑付那处：挂起状态只在广播成功之后才清，否则广播失败
+                # 时那笔挂起确认与它保存的真实开口时刻一起丢失。
                 return
+            self._asr_pending_speech_confirmed = False
+            self._asr_pending_speech_onset_at = None
         if lifecycle_ref.snapshot.state is not VoiceLifecycleState.ACTIVE:
             # 没醒起来（Smart Turn 租约没就绪，或 lifecycle 广播没送达）。借出去的
             # onset 必须收回：留着的话，后面某个**不相干**的发声会把这个陈旧时刻
