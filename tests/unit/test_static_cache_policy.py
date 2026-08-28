@@ -280,8 +280,13 @@ async def test_avatar_tool_rejects_an_unversioned_request_outright(tmp_path):
         "headers": [(b"range", f"bytes={ranges}".encode("ascii"))],
     }
 
-    # 未版本化的请求会绕开受管理的大小上限与内容核验，直接由 StaticFiles 流出
-    # 任意字节；range 上限的兜底同理只存在于已核验的那条路径上。
+    # 拒绝发生在任何 range 解析之前，所以这条路进不了 StaticFiles.get_response()
+    # ——这个 handler 从不调用 super().get_response()，未版本化请求要么 404，要么
+    # 什么都不是。这一点很重要：Starlette 0.46.2 的 FileResponse._parse_range_header
+    # 没有 range 数量上限（max_ranges 是后来才加的），真让它接手，17 条 range 就会
+    # 绕过本模块的 _MAX_RANGE_SPECS，连同受管理的大小上限和内容核验一起绕过。
+    # 已核验的那条路径由 test_avatar_tool_verified_response_rejects_excessive_range_specs
+    # 用同样的 17 条 range 钉住 416。
     with pytest.raises(StarletteHTTPException) as raised:
         await static_files.get_response(f"{tool_id}/normal.mp3", scope)
     assert raised.value.status_code == 404
