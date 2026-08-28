@@ -3842,6 +3842,12 @@ class AsrRuntimeMixin:
                                     multimodal_turn.transcript,
                                     multimodal_turn.images,
                                     turn_id=multimodal_turn.turn_id,
+                                    # Gemini 那条路在真正送出之前还有一段
+                                    # 压缩 await，后继发声可以在其中拿走帧。
+                                    # 与 Offline 交接同源的判据。
+                                    visual_still_owned=(
+                                        lambda: not visual_ownership_lost()
+                                    ),
                                 )
                             except ResponseAdmissionRejected:
                                 # provider 侧的取代判据（后继回合已经 prepare，

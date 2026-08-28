@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from main_logic.omni_realtime_client import _responses as responses_module
 from main_logic.omni_realtime_client import (
     ImageStageResult,
     MultimodalTurnDelivery,
@@ -13,6 +14,9 @@ from main_logic.omni_realtime_client import (
     TurnDetectionMode,
 )
 
+
+
+_REAL_FIT_IMAGES = responses_module.fit_images_to_turn_budget
 
 DUMMY_IMAGE_B64 = (
     "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsL"
@@ -237,6 +241,64 @@ async def test_gemini_multimodal_turn_is_one_content_with_image_and_text():
     assert bytes(content.parts[0].inline_data.data)
     assert content.parts[0].inline_data.mime_type == "image/jpeg"
     assert content.parts[1].text == "看一下这张图"
+    client._analyze_image_with_vision_model.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_gemini_turn_drops_frames_lost_while_fitting_the_image_budget():
+    """Losing visual ownership during compression degrades to text-only.
+
+    Fitting an over-budget turn runs the compressor on a worker thread, which
+    is a real yield point. A successor utterance can complete
+    _begin_core_multimodal_turn (which synchronously invalidates this record),
+    prepare_external_voice_turn and handle_interruption inside that window --
+    the two paths do not exclude each other, since neither takes the other's
+    lock. Sending the frames anyway hands the provider images that no longer
+    belong to this turn, and Core never learns about it, so the existing
+    "degrade to text-only" exit is never reached.
+
+    The sentence still goes out: dropping frames may only downgrade a turn to
+    text-only, never discard what the user said.
+    """
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    session = AsyncMock()
+    client._gemini_session = session
+    client.ws = session
+    client.handle_interruption = AsyncMock()
+    client._analyze_image_with_vision_model = AsyncMock()
+
+    owned = [True]
+
+    async def _fit_and_lose_ownership(images, _budget):
+        # 压缩这一步是真实让出点：后继发声在这里拿走了视觉所有权。
+        owned[0] = False
+        return list(images), {
+            "original_count": len(images),
+            "final_count": len(images),
+            "sampled": False,
+            "compressed": True,
+            "dropped": 0,
+        }
+
+    responses_module.fit_images_to_turn_budget = _fit_and_lose_ownership
+    try:
+        await client.prepare_external_voice_turn(turn_id="turn-lost")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-lost",
+            visual_still_owned=lambda: owned[0],
+        )
+    finally:
+        responses_module.fit_images_to_turn_budget = _REAL_FIT_IMAGES
+
+    session.send_client_content.assert_awaited_once()
+    content = session.send_client_content.await_args.kwargs["turns"][0]
+    # 帧被丢掉了……
+    assert all(part.inline_data is None for part in content.parts)
+    # ……但用户那句话照送。
+    assert any(part.text == "看一下这张图" for part in content.parts)
     client._analyze_image_with_vision_model.assert_not_awaited()
     await client.close()
 

@@ -411,6 +411,7 @@ class _ResponseMixin:
         images: str | Sequence[str],
         *,
         turn_id: str,
+        visual_still_owned=None,
     ):
         """Submit one atomic raw-image + external-ASR user turn.
 
@@ -462,6 +463,27 @@ class _ResponseMixin:
                     self._decode_multimodal_turn_image(image)
                     for image in _fitted
                 )
+                # 上面那步是 asyncio.to_thread 压几张 MB 级截图，是真实耗时的让
+                # 出点。后继发声可以整段跑完 _begin_core_multimodal_turn（同步把
+                # 本轮 record invalidated）+ prepare_external_voice_turn +
+                # handle_interruption —— 这两条路互不互斥（前者不拿 swap lock，
+                # 本函数也不拿 turn admission lock）。不复查的话，我们会把已经不
+                # 属于这一轮的帧发给 provider，而 Core 收不到任何信号，既有的
+                # "降级成纯文本"出口根本走不到。
+                #
+                # 判据用调用方穿进来的 visual_still_owned，与 Offline 交接那条路
+                # 同源（asr_runtime.py 的 lambda: not visual_ownership_lost()）。
+                # 刻意**不**用 _tool_scope_generation 代理：create_response 和
+                # submit_external_text_turn 也会推进它，会在根本没有语音后继时
+                # 把这一轮误降级。
+                #
+                # 丢帧只降级成纯文本，话照送 —— 与本 PR 其它三处所有权判据一致。
+                if visual_still_owned is not None and not visual_still_owned():
+                    logger.info(
+                        "Gemini multimodal turn lost visual ownership while "
+                        "fitting the image budget; submitting text-only"
+                    )
+                    images_bytes = ()
             await self._submit_external_gemini_turn(
                 clean,
                 images_bytes=images_bytes,

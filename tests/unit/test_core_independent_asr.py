@@ -9,7 +9,7 @@ import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -10127,7 +10127,17 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
     runtime.session.get_multimodal_turn_delivery = MagicMock(
         return_value="direct_atomic"
     )
-    runtime.session.submit_multimodal_turn = AsyncMock()
+    # 在**调用发生的那一刻**取一次所有权判据的值。它是个活闭包，事后再调时
+    # 这一轮早已结束、所有权已释放，所以只能在这里记。
+    owned_at_call: list = []
+
+    async def _record_ownership(*_args, **kwargs):
+        cb = kwargs.get("visual_still_owned")
+        owned_at_call.append(cb() if callable(cb) else None)
+
+    runtime.session.submit_multimodal_turn = AsyncMock(
+        side_effect=_record_ownership
+    )
     runtime.session.submit_external_voice_turn = AsyncMock()
     token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
     turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
@@ -10162,7 +10172,11 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
         "look here",
         ("raw-frame",),
         turn_id=turn_id,
+        # Gemini 那条路在真正送出之前还有一段压缩 await，所有权判据必须跟着进去。
+        visual_still_owned=ANY,
     )
+    # 穿进去的必须是活的判据，且在真正调用 provider 的那一刻仍持有所有权。
+    assert owned_at_call == [True]
     runtime.session.submit_external_voice_turn.assert_not_awaited()
     assert turn_id not in runtime._core_multimodal_turns
 
