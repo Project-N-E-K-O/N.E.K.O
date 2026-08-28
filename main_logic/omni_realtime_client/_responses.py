@@ -749,6 +749,17 @@ class _ResponseMixin:
         """Submit one external-ASR turn through the owned Gemini lifecycle."""
 
         submit_task = asyncio.current_task()
+        # 上一轮 external turn 可能还没等到终结事件：重叠发声时 B 的 prepare 会跑
+        # 在 A 的 SDK send **之前**，那一刻还没有 token 可隔离，于是 prepare 里的
+        # 隔离空转。到这里再直接覆盖 A 的活 token，两个回合就并存了——两份响应
+        # 交错，或者 B 的所有权被 A 的终结顺手带走。
+        #
+        # 用与 prepare 相同的隔离，不另立判据：settle 掉旧的并退掉这条连接。
+        # 「连接是能证明旧回合的迟到内容不会串进后继的最小范围」是这个文件已有的
+        # 结论（见 _quarantine_gemini_external_submit）。
+        if getattr(self, "_gemini_external_outcome_token", None) is not None:
+            self._start_gemini_external_submit_quarantine()
+            await self._await_gemini_external_quarantine()
         outcome_token = object()
         self._gemini_external_submit_task = submit_task
         self._gemini_external_outcome_token = outcome_token

@@ -1,6 +1,6 @@
 import asyncio
 from types import MethodType
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -748,4 +748,62 @@ async def test_live_gemini_external_turn_counts_as_an_active_response():
     # 终结边缘落地后重新变空闲。
     client._gemini_external_outcome_token = None
     assert client.is_active_response() is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_successive_gemini_external_turns_quarantine_the_live_predecessor():
+    """A second external turn must not silently overwrite a live one.
+
+    An overlapping utterance is prepared before the previous turn's dispatcher
+    reaches the SDK send, so the prepare-time quarantine finds no outcome token
+    to retire. If this path then mints a fresh token over the live one, two
+    Gemini turns coexist: their responses can interleave, and the newer turn's
+    ownership can be carried off by the older turn's terminal.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    order = []
+
+    async def send_user_turn(_text, *, images_bytes=()):
+        order.append("send")
+
+    async def await_quarantine():
+        order.append("await_quarantine")
+        client._gemini_external_outcome_token = None
+
+    client._gemini_send_user_turn = AsyncMock(side_effect=send_user_turn)
+    client._start_gemini_external_submit_quarantine = MagicMock(
+        side_effect=lambda *a, **k: order.append("start_quarantine")
+    )
+    client._await_gemini_external_quarantine = AsyncMock(
+        side_effect=await_quarantine
+    )
+
+    # 上一轮还挂着（终结事件未到）。
+    stale_token = object()
+    client._gemini_external_outcome_token = stale_token
+
+    await client._submit_external_gemini_turn("第二句")
+
+    assert order == ["start_quarantine", "await_quarantine", "send"]
+    # 新回合拿到的是自己的 token，不是被覆盖的旧的。
+    assert client._gemini_external_outcome_token is not None
+    assert client._gemini_external_outcome_token is not stale_token
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_first_gemini_external_turn_does_not_pay_for_quarantine():
+    """No live predecessor means no connection retirement."""
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._gemini_send_user_turn = AsyncMock()
+    client._start_gemini_external_submit_quarantine = MagicMock()
+    client._await_gemini_external_quarantine = AsyncMock()
+    client._gemini_external_outcome_token = None
+
+    await client._submit_external_gemini_turn("第一句")
+
+    client._start_gemini_external_submit_quarantine.assert_not_called()
+    client._await_gemini_external_quarantine.assert_not_awaited()
+    client._gemini_send_user_turn.assert_awaited_once()
     await client.close()
