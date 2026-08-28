@@ -165,14 +165,46 @@ async def test_asr_turn_takes_a_snapshot_and_leaves_later_attachments_alone():
     ) is True
 
     # 用户开口之前投递的附件属于这次发言，跟本轮帧一起送。
+    # 顺序：本轮抽样帧在前、附件在后。下游 fit/trim 一律「从最旧丢、无条件保住
+    # 最后一张」，附件排前面等于让用户明确拖进来的图先死、环境帧反而活着。
     assert client.stream_text.await_args.kwargs["turn_images"] == (
-        "earlier-attachment",
         "a",
         "b",
         "c",
+        "earlier-attachment",
     )
     # 本轮进行中到达的那张留给下一轮，不被这一轮吞掉；本轮帧一张都没进队列。
     assert client._pending_images == ["late-attachment"]
+
+
+async def test_user_attachments_outlive_ambient_frames_under_the_budget():
+    """A user's own attachment must not be the first thing the budget drops.
+
+    Everything downstream (fit_images_to_turn_budget, trim_images_to_turn_budget)
+    trims from the OLDEST and unconditionally keeps the last image, so position
+    decides survival. Putting attachments first means the picture the user
+    deliberately dragged in dies while ambient screen/camera samples live -- the
+    user sees "she ignored what I showed her and talked about my screen instead".
+
+    The contract matches the one spelled out in _streaming.py: whatever sits
+    closest to the text is what the turn is about, and an attachment is exactly
+    the image the user picked for this sentence.
+    """
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = ["user-attachment"]
+    client.stream_text = AsyncMock()
+
+    assert await client.submit_multimodal_turn(
+        "look",
+        ("frame-first", "frame-mid", "frame-last"),
+        turn_id="turn-1",
+    ) is True
+
+    sent = client.stream_text.await_args.kwargs["turn_images"]
+    assert sent[-1] == "user-attachment", (
+        "附件必须排在最后：下游从最旧丢并保住最后一张，排前面它会先被丢掉"
+    )
+    assert sent.index("user-attachment") > sent.index("frame-last")
 
 
 async def test_failed_asr_turn_returns_the_attachment_to_the_queue():

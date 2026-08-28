@@ -201,7 +201,12 @@ class _MediaMixin:
             if isinstance(pending, list) and pending:
                 attachments = tuple(pending)
                 del pending[:len(attachments)]
-                staged_images = attachments + staged_images
+                # 附件排在本轮抽样帧**之后**，不是之前。下游 fit/trim 一律「从最
+                # 旧丢、无条件保住最后一张」，排前面等于让用户明确拖进来的图先
+                # 死、环境抽样帧反而活着——用户看到的是"我给她的图她没看见，倒是
+                # 讲了屏幕"。顺序契约与 _streaming.py 那条一致：越靠近文本的越该
+                # 保住，而附件正是用户为这句话挑的。
+                staged_images = staged_images + attachments
             # 这一轮的帧作为 invocation-local 数据直接交给 stream_text，不进
             # _pending_images。那条队列是 session 级的"下一个消费者拿走"：一次性
             # 附件（拖图 / 聊天贴图）不拿 _multimodal_submit_lock，完全可能在这里
