@@ -1,9 +1,12 @@
 # 插件宿主能力缺口：audio / video parts 支持
 
-> 本页记录插件侧**无法自行绕过**的宿主能力缺口，结论均在
-> `app/main_server/character_runtime.py` 与
-> `plugin/server/messaging/proactive_bridge.py` 源码中核实。为避免行号漂移，
-> 下文只引用函数名与常量名。
+> 本页记录插件侧**无法自行绕过**的宿主能力缺口，结论均在本页引用的源码中
+> 核实：宿主行为看 `app/main_server/character_runtime.py` 与
+> `plugin/server/messaging/proactive_bridge.py`，wire 负载看
+> `plugin/core/context.py` + `plugin/settings.py`，临时媒体存储看
+> `plugin/server/routes/media.py` + `plugin/sdk/shared/core/images.py`，
+> 前端播放器看 `static/jukebox/music_ui.js`。为避免行号漂移，下文只引用函数名
+> 与常量名。
 >
 > **状态（2026-08-28 复核）**：本页最初提出的「问题一：图片 parts 没有用户
 > 可见通道」已由 #2835（`1d654e302`，2026-08-28 合并）落地，改写为下方
@@ -38,13 +41,20 @@ push_message(
 )
 ```
 
+`read` 有一处例外：它进模型是**尽力而为**。当前会话没有 `stream_image`
+（或根本没有会话）时宿主会清空待注入图片；realtime provider 没有原生视觉时
+同样清空——`read` 没有票据绑定的通道去投递 VISION_MODEL 描述，宿主宁可提前
+退出并在日志里说明。这两种情况下聊天气泡照常渲染。**要保证图片进模型，用
+`ai_behavior="respond"`**：它的图片随 callback 走，不依赖当前会话。
+
 两种图片来源都支持：
 
 - **inline**：`parts=[{"type": "image", "data": <bytes>, "mime": "image/png"}]`，
-  在 wire 上编码为 `binary_base64`；
+  在 wire 上编码为 `binary_base64`。请保持**小图**——见下方 wire 预算；
 - **本地临时 URL**：`await ctx.images.upload(data)` 返回可直接放进 `parts` 的
   image part，其 URL 形如 `http://127.0.0.1:<port>/media/<id>`，由宿主的临时
-  媒体存储（`plugin/server/routes/media.py`）提供。
+  媒体存储（`plugin/server/routes/media.py`）提供。只要图片不是极小，都该走
+  这条路：URL 在 wire 上只占几十字节。
 
 实现路径：`_ordered_plugin_chat_blocks` / `_build_plugin_chat_blocks` 生成
 blocks → `LLMSessionManager.render_chat_blocks` 发出 `chat_blocks` WS 帧 →
@@ -58,12 +68,20 @@ blocks → `LLMSessionManager.render_chat_blocks` 发出 `chat_blocks` WS 帧 �
   回环地址 + `/media/<id>` 路径且无 query/fragment/凭据；不满足时聊天渲染直接
   跳过该 part，模型注入侧记 `plugin image resolve failed; dropped`。想发外部
   图片，先 `ctx.images.upload()` 转成本地临时 URL。
+- **传输层上限比宿主配额先卡住你**。整个 `MESSAGE_PUSH` 信封打包后必须小于
+  `MESSAGE_PLANE_PAYLOAD_MAX_BYTES`（默认 256 KiB，可用
+  `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES` 调整），而 `_build_wire_payload` 至今
+  在 `parts[].binary_base64` 之外还带一份 legacy `binary_data` 拷贝——一张
+  inline 图等于在 wire 上走了两遍，源图明显超过 ~110 KiB 就会在
+  `plugin/message_plane/ingest_server.py` 被拒，根本轮不到宿主配额。更大的图
+  必须走 `ctx.images.upload()`。
 - **聊天与模型两条路径各有独立配额**。聊天路径：最多
   `_PLUGIN_CHAT_IMAGE_MAX_COUNT = 8` 张，inline 图合计
   `_PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES = 8 MiB`；模型路径：单图
   `_PLUGIN_IMAGE_MAX_BYTES = 8 MiB`，每条 push 复用每回合 callback 的
   `_PLUGIN_IMAGE_MAX_COUNT` / `_PLUGIN_IMAGE_TOTAL_MAX_BYTES` 预算。超出的图
-  被丢弃，不影响同一条 push 的其余 parts。
+  被丢弃，不影响同一条 push 的其余 parts。这些 8 MiB 是 push 过了传输层之后
+  宿主愿意收多少——对 inline part 来说，你实际撞到的是上一条的 wire 上限。
 - **`ctx.images.upload()` 不能在 lifecycle handler 里调用**——插件命令循环在
   lifecycle 期间不处理上传响应，会直接抛 `RuntimeError`；请在 entry、timer、
   message 或自定义事件 handler 中调用。
@@ -103,12 +121,15 @@ push_message(
 **影响**：插件无法向会话推送语音 / 视频内容（TTS 音频文件、音乐片段、
 游戏过场视频等）。已核实的替代路径：
 
-- **音频**：`ui_action=media_play_url` 可以让前端音频播放器播一个音频 URL
-  （bridge 把该 action 转成 `music_play_url` 事件，前端走
-  `dispatchMusicPlay`）。**前提**是该 URL 已在播放允许列表上：前端
-  `sendMusicMessageDetailed` 只给 500ms 等 `music-allowlist-updated` 事件，
-  超时仍不在名单上就以 `unsafe_url` 拒绝并弹 toast。稳妥做法是先用
-  `ui_action=media_allowlist_add`（`domains` 或精确 `http_urls`）登记，再推播放。
+- **音频**：`ui_action=media_play_url` 可以让前端音频播放器播一个**可直接播放、
+  非 HLS** 的音频 URL（bridge 把该 action 转成 `music_play_url` 事件，前端走
+  `dispatchMusicPlay`）。两个前提：
+  - URL 已在播放允许列表上。前端 `sendMusicMessageDetailed` 只给 500ms 等
+    `music-allowlist-updated` 事件，超时仍不在名单上就以 `unsafe_url` 拒绝并弹
+    toast。稳妥做法是先用 `ui_action=media_allowlist_add`（`domains` 或精确
+    `http_urls`）登记，再推播放；
+  - URL 不能是 HLS 流。`isUnsupportedMusicStream` 在起播前就跑，`.m3u8` 一律以
+    `unsupported_stream` 拒绝并弹错误 toast，加没加白名单都一样。
 - **视频**：没有替代。`media_play_url` 不能顶替——bridge 转出的
   `music_play_url` 事件不携带 `media_type`，前端固定把它交给音乐 / 音频播放器，
   前端也没有视频事件通道。
@@ -126,8 +147,10 @@ push_message(
    用户聊天窗出现带插件名标签的 system chip 图片气泡；模型上下文里没有这张图。
 2. 同一 payload 换 `ai_behavior="respond"`：聊天窗同样出现图片气泡，且图片进入
    模型上下文（`stream_image`），她会就这张图回一句。
-3. 把图片换成 `{"type": "image", "url": "https://example.com/cat.png"}`：外部 URL
-   被拒——聊天窗无图，宿主日志出现 `plugin image resolve failed; dropped`。改用
+3. 把图片换成 `{"type": "image", "url": "https://example.com/cat.png"}`，并保持
+   `ai_behavior="respond"`（打这条日志的是模型路径，`blind` 根本不进媒体循环）：
+   外部 URL 被拒——聊天窗无图，宿主日志出现
+   `plugin image resolve failed; dropped`。改用
    `await ctx.images.upload(<bytes>)` 返回的 part 则两侧都正常。
 4. 推送 `parts=[{"type": "audio", "data": <wav bytes>, "mime": "audio/wav"}]` +
    `ai_behavior="respond"`：宿主日志出现 `media_part type=audio not yet supported`，

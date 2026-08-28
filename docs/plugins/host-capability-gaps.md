@@ -1,10 +1,14 @@
 # Plugin Host Capability Gaps: audio / video parts
 
 > This page records host-side capability gaps that plugins **cannot work
-> around** themselves. Every claim is verified against
+> around** themselves. Every claim is verified against the sources it cites:
 > `app/main_server/character_runtime.py` and
-> `plugin/server/messaging/proactive_bridge.py`. Only function and constant
-> names are cited, so line drift cannot make the page wrong.
+> `plugin/server/messaging/proactive_bridge.py` for host behaviour,
+> `plugin/core/context.py` + `plugin/settings.py` for the wire payload,
+> `plugin/server/routes/media.py` + `plugin/sdk/shared/core/images.py` for the
+> temporary media store, and `static/jukebox/music_ui.js` for the frontend
+> player. Only function and constant names are cited, so line drift cannot
+> make the page wrong.
 >
 > **Status (re-verified 2026-08-28)**: the "Issue 1: image parts have no
 > user-visible channel" gap this page originally reported was closed by #2835
@@ -45,14 +49,25 @@ push_message(
 )
 ```
 
+One caveat on `read`: reaching the model is **best-effort** there. The host
+clears the pending images when the current session has no `stream_image` (or
+there is no session at all), and again when the realtime provider has no
+native vision — `read` owns no ticket-bound channel to deliver a VISION_MODEL
+description, so the host bails out early and says so in the log. The chat
+bubble still renders in both cases. When the image must reach the model, use
+`ai_behavior="respond"`, whose images ride the callback and need no session
+yet.
+
 Both image sources work:
 
 - **inline**: `parts=[{"type": "image", "data": <bytes>, "mime": "image/png"}]`,
-  encoded as `binary_base64` on the wire;
+  encoded as `binary_base64` on the wire. Keep these **small** — see the wire
+  budget below;
 - **local temporary URL**: `await ctx.images.upload(data)` returns an image
   part you can drop straight into `parts`; its URL looks like
   `http://127.0.0.1:<port>/media/<id>` and is served by the host's temporary
-  media store (`plugin/server/routes/media.py`).
+  media store (`plugin/server/routes/media.py`). This is the right choice for
+  anything that is not tiny: the URL costs a handful of bytes on the wire.
 
 Implementation path: `_ordered_plugin_chat_blocks` / `_build_plugin_chat_blocks`
 build the blocks → `LLMSessionManager.render_chat_blocks` emits a `chat_blocks`
@@ -68,13 +83,24 @@ model side resolves base64 through `_resolve_plugin_model_image` /
   the chat render skips that part and the model path logs
   `plugin image resolve failed; dropped`. To send an external image, run it
   through `ctx.images.upload()` first.
+- **The transport ceiling bites before the host quotas do.** The whole
+  `MESSAGE_PUSH` envelope must pack under
+  `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` (default 256 KiB, overridable via
+  `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES`), and `_build_wire_payload` still
+  carries a legacy `binary_data` copy alongside `parts[].binary_base64` — so
+  one inline image travels roughly twice, and a source image much over
+  ~110 KiB is rejected at `plugin/message_plane/ingest_server.py` before any
+  host-side quota is consulted. Anything larger must go through
+  `ctx.images.upload()`.
 - **The chat path and the model path have separate quotas.** Chat: at most
   `_PLUGIN_CHAT_IMAGE_MAX_COUNT = 8` images and
   `_PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES = 8 MiB` of inline bytes. Model: a
   per-image `_PLUGIN_IMAGE_MAX_BYTES = 8 MiB`, and each push shares the
   per-turn callback budget `_PLUGIN_IMAGE_MAX_COUNT` /
   `_PLUGIN_IMAGE_TOTAL_MAX_BYTES`. Images over budget are dropped without
-  affecting the rest of the push.
+  affecting the rest of the push. These 8 MiB figures bound what the host
+  accepts once a push is through the transport — for inline parts the wire
+  ceiling above is the limit you actually hit.
 - **`ctx.images.upload()` cannot be called from a lifecycle handler** — the
   plugin command loop is not servicing upload responses while those run, so it
   raises `RuntimeError`. Call it from an entry, timer, message, or custom
@@ -119,14 +145,19 @@ push_message(
 **Impact**: plugins cannot push voice or video content into the session (TTS
 audio files, music clips, game cutscenes). Verified workarounds:
 
-- **audio**: `ui_action=media_play_url` plays an audio URL through the
-  frontend audio player (the bridge maps the action to a `music_play_url`
-  event, which the frontend routes to `dispatchMusicPlay`). **Precondition**:
-  the URL must already be on the playback allowlist. `sendMusicMessageDetailed`
-  gives it a 500 ms grace window waiting for a `music-allowlist-updated` event;
-  if the URL is still not allowlisted it rejects with `unsafe_url` and shows a
-  toast. Register it first with `ui_action=media_allowlist_add` (`domains`, or
-  exact `http_urls`), then push the playback action.
+- **audio**: `ui_action=media_play_url` plays a **directly playable, non-HLS**
+  audio URL through the frontend audio player (the bridge maps the action to a
+  `music_play_url` event, which the frontend routes to `dispatchMusicPlay`).
+  Two preconditions:
+  - the URL must already be on the playback allowlist.
+    `sendMusicMessageDetailed` gives it a 500 ms grace window waiting for a
+    `music-allowlist-updated` event; if the URL is still not allowlisted it
+    rejects with `unsafe_url` and shows a toast. Register it first with
+    `ui_action=media_allowlist_add` (`domains`, or exact `http_urls`), then
+    push the playback action;
+  - the URL must not be an HLS stream. `isUnsupportedMusicStream` runs before
+    the player starts and rejects `.m3u8` with `unsupported_stream` plus an
+    error toast, allowlisted or not.
 - **video**: no workaround. `media_play_url` cannot stand in for it: the
   `music_play_url` event the bridge emits carries no `media_type`, the
   frontend always hands it to the music/audio player, and there is no video
@@ -148,10 +179,11 @@ from shipping them.
    chat window, and the image is absent from the model's context.
 2. Same payload with `ai_behavior="respond"`: the same image bubble appears
    AND the image reaches the model (`stream_image`), so she replies about it.
-3. Replace the part with `{"type": "image", "url": "https://example.com/cat.png"}`:
-   the external URL is rejected — nothing renders and the host logs
-   `plugin image resolve failed; dropped`. Using the part returned by
-   `await ctx.images.upload(<bytes>)` works on both sides.
+3. Replace the part with `{"type": "image", "url": "https://example.com/cat.png"}`
+   and keep `ai_behavior="respond"` (the model path is what logs here; `blind`
+   never enters the media loop): the external URL is rejected — nothing renders
+   and the host logs `plugin image resolve failed; dropped`. Using the part
+   returned by `await ctx.images.upload(<bytes>)` works on both sides.
 4. Push `parts=[{"type": "audio", "data": <wav bytes>, "mime": "audio/wav"}]`
    with `ai_behavior="respond"`: the host logs
    `media_part type=audio not yet supported` and produces nothing; with
