@@ -3846,3 +3846,57 @@ async def test_topic_hint_is_retracted_when_its_hook_lands_in_image_overflow():
     mgr.send_cancel_topic_hint.assert_awaited_once()
     assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == ["cue topic"]
     assert sess.image_batches == [["heavy-img%d" % i for i in range(8)]]
+
+
+async def test_budget_deferred_callbacks_keep_their_images_for_the_next_turn():
+    """Overflowing the turn's image budget is not a staging failure.
+
+    A deferred callback never got its attempt, so treating it like unstaged
+    media -- render the text, drop the images, dequeue -- destroys exactly what
+    the deferral was protecting. It stays queued whole, and it does not spend
+    the transient-failure retry allowance either.
+    """
+    from main_logic.proactive_delivery import (
+        PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
+        PASSIVE_MEDIA_RETRY_KEY,
+    )
+
+    session = _FakeOmniOffline(delivered=True)
+    session.stream_image = AsyncMock(return_value=None)
+    mgr = _make_mgr(session=session)
+    callbacks = [
+        {
+            "_callback_delivery_id": f"id-budget-{i}",
+            "status": "completed",
+            "summary": f"camera event {i}",
+            "delivery_mode": "passive",
+            "origin": "event",
+            "media_images": [f"img-{i}-a", f"img-{i}-b", f"img-{i}-c"],
+        }
+        for i in range(5)
+    ]
+    mgr.pending_agent_callbacks = list(callbacks)
+
+    await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        callbacks,
+        session,
+    )
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(
+        mgr,
+        callbacks,
+    )
+
+    deferred = [
+        cb for cb in callbacks if cb.get(PASSIVE_MEDIA_BUDGET_DEFERRED_KEY)
+    ]
+    assert deferred, "预算应当挡下一部分，否则这条用例没测到东西"
+
+    for cb in deferred:
+        # 文字没被消费掉。
+        assert cb["summary"] not in rendered
+        # 还在队列里，图完好。
+        assert cb in mgr.pending_agent_callbacks
+        assert len(cb["media_images"]) == 3
+        # 没有吃掉瞬时失败的重试额度 —— 它压根没尝试过。
+        assert PASSIVE_MEDIA_RETRY_KEY not in cb

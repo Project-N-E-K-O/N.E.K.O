@@ -77,6 +77,10 @@ PASSIVE_MEDIA_TRANSIENT_KEY = "_passive_media_transient_failure"
 # 一开始要避免的。
 PASSIVE_MEDIA_RETRY_KEY = "_passive_media_retries"
 PASSIVE_MEDIA_MAX_RETRIES = 1
+# 这一轮的图片预算装不下它，被推到下一轮。与「瞬时失败」是两回事：那是尝试过
+# 失败了，这是**根本没轮到它尝试**，所以既不该套重试上限，也不该退化成 text-only
+# ——退化就等于把它的图永久丢掉，而这恰恰是预算延后想避免的。
+PASSIVE_MEDIA_BUDGET_DEFERRED_KEY = "_passive_media_budget_deferred"
 
 # Image budget for ONE model turn. A trigger drains every pending proactive
 # callback into a single turn, so a per-push cap alone does not bound what the

@@ -31,6 +31,7 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
 from main_logic.proactive_delivery import (
+    PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
     PASSIVE_MEDIA_MAX_RETRIES,
     PASSIVE_MEDIA_RETRY_KEY,
     PASSIVE_MEDIA_TRANSIENT_KEY,
@@ -2635,6 +2636,14 @@ class ProactiveMixin:
         # 溢出的**留在队列里**等下一轮：不设 staged 标记 →
         # _callback_media_ready_for_session 为假 → drain 不会摘走它。
         callbacks, _image_overflow = split_callbacks_by_image_budget(list(callbacks))
+        for _taken in callbacks:
+            if isinstance(_taken, dict):
+                _taken.pop(PASSIVE_MEDIA_BUDGET_DEFERRED_KEY, None)
+        for _deferred in _image_overflow:
+            if isinstance(_deferred, dict):
+                # 专属状态：drain 要按「保序等下一轮」处理，而不是当成「挂图失败」
+                # 退化成 text-only —— 那会把它的图永久丢掉。
+                _deferred[PASSIVE_MEDIA_BUDGET_DEFERRED_KEY] = True
         if _image_overflow:
             logger.info(
                 "[%s] passive callback media: staging %d cb(s), deferring %d to "
@@ -3535,6 +3544,16 @@ class ProactiveMixin:
                 isinstance(callback, dict) and callback.get("media_images")
             )
             if _has_media and callback.get("delivery_mode") != "passive":
+                break
+            if _has_media and callback.get(PASSIVE_MEDIA_BUDGET_DEFERRED_KEY):
+                # 这一轮的图片预算根本没轮到它 —— 它没有「尝试失败」，所以既不套
+                # 重试上限，也不退化成 text-only（退化 = 把它的图永久丢掉，而预算
+                # 延后正是为了避免这个）。保序 STOP，整条留到下一轮。
+                logger.info(
+                    "[%s] passive callback deferred by the per-turn image "
+                    "budget; keeping it queued whole",
+                    self.lanlan_name,
+                )
                 break
             if _has_media and not self._callback_media_ready_for_session(
                 callback, _session
