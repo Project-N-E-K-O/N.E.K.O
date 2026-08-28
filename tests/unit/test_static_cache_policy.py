@@ -426,3 +426,38 @@ async def test_stale_asset_url_does_not_rehash_the_whole_tool(tmp_path, monkeypa
         assert digests == [], f"stale URL rehashed the tool: {digests}"
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+@pytest.mark.asyncio
+async def test_public_path_check_runs_off_the_event_loop(tmp_path, monkeypatch):
+    """A slow network-backed root must not block the loop during the path check."""
+    import utils.avatar_tool_store as avatar_tool_store
+
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    _publish_avatar_tool(tmp_path, tool_id, default_bytes=b"payload")
+    static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
+
+    loop_thread = __import__("threading").get_ident()
+    seen = {}
+
+    # get_response 是函数级 import，所以要 patch 源模块。
+    real_check = avatar_tool_store.is_public_avatar_tool_resource_path
+
+    def recording_check(root, path):
+        seen["thread"] = __import__("threading").get_ident()
+        return real_check(root, path)
+
+    monkeypatch.setattr(
+        avatar_tool_store, "is_public_avatar_tool_resource_path", recording_check
+    )
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/{tool_id}/default.png",
+        "root_path": "",
+        "query_string": b"",
+        "headers": [],
+    }
+    await static_files.get_response(f"{tool_id}/default.png", scope)
+
+    assert seen["thread"] != loop_thread, "path check still ran on the event loop"

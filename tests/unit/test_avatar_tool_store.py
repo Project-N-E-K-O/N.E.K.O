@@ -1708,9 +1708,9 @@ def test_neither_list_nor_startup_rehashes_but_consumers_do(tmp_path, monkeypatc
     digests = []
     real_digest = AvatarToolStore._file_digest
 
-    def counting_digest(path):
+    def counting_digest(path, maximum):
         digests.append(str(path))
-        return real_digest(path)
+        return real_digest(path, maximum)
 
     monkeypatch.setattr(AvatarToolStore, "_file_digest", staticmethod(counting_digest))
     try:
@@ -1743,7 +1743,7 @@ def test_transient_read_failure_spares_the_tool_but_a_digest_mismatch_quarantine
     )
     root_key = store._root_key()
 
-    def locked_digest(path):
+    def locked_digest(path, maximum):
         raise OSError("file locked by another process")
 
     try:
@@ -1948,10 +1948,18 @@ def test_update_rejects_a_retained_resource_that_outgrew_its_limit(tmp_path, mon
     )
     stored = (store.root / tool["id"] / "default.png").stat().st_size
 
-    # 等价于「资源被外部换成了超出上限的文件」，但不必真的往盘上写 8 MiB：
-    # 收紧上限让现有文件越界，走的是同一条 fstat 预检分支。摘要仍然匹配，
-    # 所以 update_tool 开头的全量核验会放行，只有大小这一关能拦下它。
-    store.limits["maxImageBytes"] = stored - 1
+    # retained_bytes 的预检是第二道防线：update_tool 开头的全量核验里
+    # _file_digest 已经有自己的大小预检，所以只有「核验通过之后资源才变超限」
+    # 这条 TOCTOU 路径能走到它。用收紧上限模拟那一刻，省去往盘上写 8 MiB。
+    real_read_record = AvatarToolStore.read_record
+
+    def shrink_after_verification(self, tool_id, *, verify_resources=False):
+        record = real_read_record(self, tool_id, verify_resources=verify_resources)
+        if verify_resources:
+            self.limits["maxImageBytes"] = stored - 1
+        return record
+
+    monkeypatch.setattr(AvatarToolStore, "read_record", shrink_after_verification)
 
     with pytest.raises(AvatarToolStoreError) as raised:
         store.update_tool(
@@ -1968,3 +1976,83 @@ def test_update_rejects_a_retained_resource_that_outgrew_its_limit(tmp_path, mon
     assert raised.value.code == "resource_reference_invalid"
     assert raised.value.field == "default_image"
     assert raised.value.integrity_mismatch is False
+
+
+@pytest.mark.unit
+def test_verification_refuses_an_oversized_resource_before_hashing_it(tmp_path, monkeypatch):
+    """Hashing runs under _STORE_LOCK, so a swapped-in giant must be refused first."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png(size=(9, 9))],
+    )
+    asset = store.root / tool["id"] / "default.png"
+    stored = asset.stat().st_size
+    consumed = {"bytes": 0}
+    real_open = Path.open
+
+    def counting_open(self, *args, **kwargs):
+        stream = real_open(self, *args, **kwargs)
+        if self.name == "default.png" and "b" in (args[0] if args else kwargs.get("mode", "r")):
+            real_read = stream.read
+
+            def counting_read(size=-1):
+                chunk = real_read(size)
+                consumed["bytes"] += len(chunk)
+                return chunk
+
+            stream.read = counting_read
+        return stream
+
+    store.limits["maxImageBytes"] = stored - 1
+    monkeypatch.setattr(Path, "open", counting_open)
+    root_key = store._root_key()
+    try:
+        with pytest.raises(AvatarToolStoreError) as raised:
+            store.read_record(tool["id"], verify_resources=True)
+        assert raised.value.code == "record_invalid"
+        # 一个字节都不该被读进来。
+        assert consumed["bytes"] == 0, f"hashed {consumed['bytes']} bytes of an oversized asset"
+        # 大小越界是确定性的内容异常，应当隔离。
+        assert raised.value.integrity_mismatch is True
+        assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kind", ("directory", "symlink"))
+def test_record_rejects_non_file_entries_in_the_tool_directory(tmp_path, monkeypatch, kind):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    directory = store.root / tool["id"]
+    assert store.read_record(tool["id"])["id"] == tool["id"]
+
+    intruder = directory / "intruder"
+    if kind == "directory":
+        intruder.mkdir()
+    else:
+        outside = tmp_path / "outside.png"
+        outside.write_bytes(_png())
+        try:
+            intruder.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation requires privileges on this platform")
+
+    # 之前闭包只统计普通文件，塞进来的子目录/符号链接会被无声忽略。
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.read_record(tool["id"])
+    assert raised.value.code == "record_invalid"

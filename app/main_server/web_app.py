@@ -170,7 +170,11 @@ class AvatarToolStaticFiles(CustomStaticFiles):
         )
 
         normalized_path = str(path).replace("\\", "/")
-        if not is_public_avatar_tool_resource_path(Path(self.directory), normalized_path):
+        # is_symlink / resolve / is_file 都是同步 FS 调用；存储根指向慢的或
+        # 暂时不可用的网络位置时，它们会把整个事件循环卡住。
+        if not await asyncio.to_thread(
+            is_public_avatar_tool_resource_path, Path(self.directory), normalized_path
+        ):
             raise StarletteHTTPException(status_code=404)
         requested_digest = _avatar_tool_asset_digest_version(
             scope.get("query_string", b"")

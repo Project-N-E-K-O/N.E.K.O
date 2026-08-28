@@ -51,6 +51,7 @@ from utils.avatar_tool_store import (
     get_avatar_tool_store,
     is_local_avatar_tool_id,
 )
+from utils.cloudsave_runtime import MaintenanceModeError
 from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -169,7 +170,7 @@ class GreetingMixin:
                     raw["tool_id"],
                     verify_resources=False,
                 )
-            except (AvatarToolStoreError, OSError):
+            except (AvatarToolStoreError, MaintenanceModeError, OSError):
                 logger.debug(
                     "[%s] handle_avatar_interaction: missing or invalid local tool=%s",
                     self.lanlan_name,
@@ -246,7 +247,14 @@ class GreetingMixin:
                     local_prompt_record = self._resolve_local_avatar_tool_prompt_record(
                         raw, local_record
                     )
-                except (AvatarToolStoreError, OSError, KeyError, TypeError, ValueError):
+                except (
+                    AvatarToolStoreError,
+                    MaintenanceModeError,
+                    OSError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                ):
                     logger.debug(
                         "[%s] handle_avatar_interaction: local tool changed or failed resource verification=%s",
                         self.lanlan_name,

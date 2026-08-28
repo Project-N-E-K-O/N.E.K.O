@@ -451,3 +451,38 @@ def test_local_prompt_and_memory_never_leak_the_raw_wire_enum(locale, intensity,
             assert not re.search(rf"(?<![A-Za-z]){re.escape(value)}(?![A-Za-z])", text), (
                 f"{locale} {label} leaked the wire value {value!r}: {text}"
             )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_maintenance_mode_during_deferred_recovery_is_absorbed(monkeypatch):
+    """A pending-recovery root must reject the interaction, not raise through it."""
+    from main_logic.core import greeting
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    class FencedStore:
+        def read_record(self, _tool_id, *, verify_resources=False):
+            # 启动时写围栏挡下了 recovery，read_record 会经 ensure() 抛这个。
+            raise MaintenanceModeError("maintenance", operation="recover", target="avatar_tools")
+
+        record_revision = staticmethod(AvatarToolStore.record_revision)
+
+    class Harness(greeting.GreetingMixin):
+        lanlan_name = "YUI"
+        _config_manager = object()
+        _last_avatar_interaction_at = 12345
+
+        def __init__(self):
+            self.acks = []
+
+        async def send_avatar_interaction_ack(self, interaction_id, accepted, reason, **_kwargs):
+            self.acks.append((interaction_id, accepted, reason))
+
+    monkeypatch.setattr(greeting, "get_avatar_tool_store", lambda _manager: FencedStore())
+    harness = Harness()
+
+    result = await harness.handle_avatar_interaction(_payload())
+
+    assert result == {"accepted": False, "reason": "invalid_payload"}
+    assert harness._last_avatar_interaction_at == 12345
+    assert harness.acks == [("local-interaction-1", False, "invalid_payload")]

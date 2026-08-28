@@ -629,7 +629,14 @@ class AvatarToolStore:
                 raise AvatarToolStoreError("record_invalid", "Avatar tool resource is invalid", status_code=404)
             if verify_resources:
                 try:
-                    actual_digest = self._file_digest(resource)
+                    actual_digest = self._file_digest(
+                        resource,
+                        self.limits["maxAudioBytes"]
+                        if filename.endswith(".mp3")
+                        else self.limits["maxImageBytes"],
+                    )
+                except AvatarToolStoreError:
+                    raise
                 except OSError as exc:
                     raise AvatarToolStoreError(
                         "record_invalid",
@@ -645,11 +652,19 @@ class AvatarToolStore:
                     )
         expected_entries = {"record.json", *resource_names}
         try:
-            actual_entries = {
-                entry.name
-                for entry in directory.iterdir()
-                if entry.is_file() and not entry.is_symlink()
-            }
+            actual_entries = set()
+            for entry in directory.iterdir():
+                # 之前只把普通文件计入集合，于是同步盘或手工改动塞进来的子目录、
+                # 符号链接会被无声忽略，闭包照样判过。
+                if entry.is_symlink() or not entry.is_file():
+                    raise AvatarToolStoreError(
+                        "record_invalid",
+                        "Avatar tool resource closure is invalid",
+                        status_code=404,
+                    )
+                actual_entries.add(entry.name)
+        except AvatarToolStoreError:
+            raise
         except OSError as exc:
             raise AvatarToolStoreError("record_invalid", "Avatar tool resource is invalid", status_code=404) from exc
         if actual_entries != expected_entries:
@@ -671,9 +686,19 @@ class AvatarToolStore:
         }
 
     @staticmethod
-    def _file_digest(path: Path) -> str:
+    def _file_digest(path: Path, maximum: int) -> str:
         digest = hashlib.sha256()
         with path.open("rb") as stream:
+            # 在已打开的 fd 上预检，没有额外 syscall 也没有 TOCTOU。资源被外部
+            # 换成多 GB 文件时，这里会一路读到 EOF —— 而且全程持有 _STORE_LOCK，
+            # 会把其它 store 操作一起卡住。
+            if os.fstat(stream.fileno()).st_size > maximum:
+                raise AvatarToolStoreError(
+                    "record_invalid",
+                    "Avatar tool resource integrity is invalid",
+                    status_code=404,
+                    integrity_mismatch=True,
+                )
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
