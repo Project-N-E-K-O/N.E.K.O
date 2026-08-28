@@ -2,7 +2,14 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId } from '../avatarTools';
 import type { AvatarInteractionPayload, AvatarToolStatePayload } from '../message-schema';
+import { buildLocalAvatarToolDefinition, type LocalAvatarToolDto } from './localTools';
 import AvatarToolVisuals from './presentation';
+import {
+  BUILT_IN_AVATAR_TOOL_REGISTRY,
+  createAvatarToolRegistrySnapshot,
+  type AvatarToolItem,
+  type AvatarToolRegistrySnapshot,
+} from './registry';
 import {
   resolveAvatarToolHeadAnchor,
   useAvatarToolRuntime,
@@ -18,6 +25,25 @@ const INITIAL_BOUNDS = {
   width: 100,
   height: 100,
 };
+const LOCAL_TOOL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
+
+function localToolDto(version: number): LocalAvatarToolDto {
+  return {
+    id: LOCAL_TOOL_ID,
+    revision: `2-${version}`,
+    name: 'Feather',
+    changeMode: 'press-swap',
+    defaultUrl: `/user_avatar_tools/${LOCAL_TOOL_ID}/default.png?v=${version}`,
+    changeUrls: [`/user_avatar_tools/${LOCAL_TOOL_ID}/change-000.png?v=${version}`],
+    normalSoundUrl: `/user_avatar_tools/${LOCAL_TOOL_ID}/normal.mp3?v=${version}`,
+  };
+}
+
+function localToolRegistry(version: number): AvatarToolRegistrySnapshot {
+  return createAvatarToolRegistrySnapshot([
+    buildLocalAvatarToolDefinition(localToolDto(version)),
+  ]);
+}
 
 const audioInstances: QuietAudio[] = [];
 
@@ -49,6 +75,8 @@ type HarnessProps = {
   onStateChange?: (payload: AvatarToolStatePayload) => void;
   avatarName?: string;
   renderVisuals?: boolean;
+  registry?: AvatarToolRegistrySnapshot;
+  item?: AvatarToolItem;
 };
 
 function Harness({
@@ -60,6 +88,8 @@ function Harness({
   onStateChange,
   avatarName = 'Yui',
   renderVisuals = false,
+  registry = BUILT_IN_AVATAR_TOOL_REGISTRY,
+  item,
 }: HarnessProps) {
   const runtime = useAvatarToolRuntime({
     composerHidden: false,
@@ -71,8 +101,9 @@ function Harness({
     getToolLabel: item => item.id,
     avatarName,
     providers,
+    registry,
   });
-  const tool = AVAILABLE_COMPACT_AVATAR_TOOLS.find(item => item.id === toolId)!;
+  const tool = item ?? registry.items.find(candidate => candidate.id === toolId)!;
   const confirmedRound = runtime.visualModel.overlayEffect?.kind === 'round-reveal'
     ? runtime.visualModel.overlayEffect.round
     : null;
@@ -84,6 +115,7 @@ function Harness({
       <output aria-label="active tool">{runtime.activeToolId ?? 'inactive'}</output>
       <output aria-label="within avatar range">{String(runtime.visualModel.withinAvatarRange)}</output>
       <output aria-label="effective tool variant">{runtime.effectiveVariant}</output>
+      <output aria-label="image frame index">{runtime.visualModel.imageFrameIndex}</output>
       <output aria-label="avatar gesture phase">
         {runtime.visualModel.roundChoiceAvatarGesture ? 'cycling' : 'hidden'}
       </output>
@@ -712,6 +744,228 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     expect(onInteraction).toHaveBeenCalledTimes(1);
   });
 
+  it('restarts a selected local session only when the same id receives new definition content', async () => {
+    const prepareVisuals = vi.fn(() => undefined);
+    const firstRegistry = localToolRegistry(1);
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders({ prepareVisuals })}
+        toolId={LOCAL_TOOL_ID}
+        registry={firstRegistry}
+      />,
+    );
+    selectTool();
+    await waitFor(() => expect(prepareVisuals).toHaveBeenCalledTimes(1));
+    const firstAudio = audioInstances[0];
+
+    view.rerender(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders({ prepareVisuals })}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(1)}
+      />,
+    );
+    await act(async () => Promise.resolve());
+    expect(prepareVisuals).toHaveBeenCalledTimes(1);
+    expect(firstAudio.pause).not.toHaveBeenCalled();
+
+    view.rerender(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders({ prepareVisuals })}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(2)}
+      />,
+    );
+    await waitFor(() => expect(prepareVisuals).toHaveBeenCalledTimes(2));
+    expect(firstAudio.pause).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent(LOCAL_TOOL_ID);
+  });
+
+  it('binds a local interaction to the revision that produced its visible frame', () => {
+    const onInteraction = vi.fn();
+    render(
+      <Harness
+        onInteraction={onInteraction}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(1)}
+      />,
+    );
+    selectTool();
+    fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+    fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+
+    expect(onInteraction).toHaveBeenCalledWith(expect.objectContaining({
+      toolId: LOCAL_TOOL_ID,
+      toolRevision: '2-1',
+      changeIndex: 0,
+    }));
+  });
+
+  it('keeps a press-swap local tool on its default frame for background presses', () => {
+    const onInteraction = vi.fn();
+    render(
+      <Harness
+        onInteraction={onInteraction}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(1)}
+      />,
+    );
+    selectTool();
+
+    fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 400, clientY: 400 });
+    expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+    fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 400, clientY: 400 });
+    expect(onInteraction).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+    expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('1');
+  });
+
+  it('selects a local tool first loaded after the runtime mounted', async () => {
+    const prepareVisuals = vi.fn(() => undefined);
+    const providers = createProviders({ prepareVisuals });
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={providers}
+        registry={BUILT_IN_AVATAR_TOOL_REGISTRY}
+      />,
+    );
+
+    view.rerender(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={providers}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(1)}
+      />,
+    );
+    selectTool();
+
+    await waitFor(() => expect(prepareVisuals).toHaveBeenCalledWith(LOCAL_TOOL_ID));
+    expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent(LOCAL_TOOL_ID);
+  });
+
+  it('clears a selected local tool when a refreshed registry no longer contains it', async () => {
+    const registry = localToolRegistry(1);
+    const item = registry.items.find(candidate => candidate.id === LOCAL_TOOL_ID)!;
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={registry}
+      />,
+    );
+    selectTool();
+    expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent(LOCAL_TOOL_ID);
+
+    view.rerender(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders()}
+        item={item}
+        registry={BUILT_IN_AVATAR_TOOL_REGISTRY}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent('inactive'));
+  });
+
+  it('publishes the new desktop descriptor without deactivating the selected same-id tool', async () => {
+    (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
+    const onStateChange = vi.fn<(payload: AvatarToolStatePayload) => void>();
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        onStateChange={onStateChange}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(1)}
+      />,
+    );
+    selectTool();
+    await waitFor(() => expect(onStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: LOCAL_TOOL_ID,
+      desktopContract: expect.objectContaining({
+        definition: expect.objectContaining({
+          visual: expect.objectContaining({
+            variants: expect.objectContaining({
+              primary: expect.objectContaining({
+                pointerImagePath: expect.stringContaining('default.png?v=1'),
+              }),
+            }),
+          }),
+        }),
+      }),
+    })));
+    onStateChange.mockClear();
+
+    view.rerender(
+      <Harness
+        onInteraction={vi.fn()}
+        onStateChange={onStateChange}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(2)}
+      />,
+    );
+    await waitFor(() => expect(onStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: LOCAL_TOOL_ID,
+      desktopContract: expect.objectContaining({
+        definition: expect.objectContaining({
+          visual: expect.objectContaining({
+            variants: expect.objectContaining({
+              primary: expect.objectContaining({
+                pointerImagePath: expect.stringContaining('default.png?v=2'),
+              }),
+            }),
+          }),
+        }),
+      }),
+    })));
+    expect(onStateChange.mock.calls.some(([payload]) => payload.active === false)).toBe(false);
+  });
+
+  it('restarts an updated same-id local definition from its default frame', async () => {
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(1)}
+      />,
+    );
+    selectTool();
+    fireEvent.pointerDown(window, {
+      button: 0,
+      pointerId: 7,
+      clientX: 150,
+      clientY: 150,
+    });
+    expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('1');
+
+    view.rerender(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(2)}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+    });
+  });
+
   it('publishes only the selected descriptor without local runtime work in desktop multi-window mode', async () => {
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
     const onInteraction = vi.fn();
@@ -753,6 +1007,13 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
 
     expect(onInteraction).not.toHaveBeenCalled();
+
+    onStateChange.mockClear();
+    act(() => window.dispatchEvent(new Event('neko:republish-avatar-tool-state')));
+    expect(onStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'fist',
+    }));
 
     selectTool();
     await waitFor(() => expect(onStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -1132,6 +1393,25 @@ describe('useAvatarToolRuntime press lifecycle', () => {
 
     selectTool();
 
+    expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent('inactive');
+    expect(onStateChange.mock.calls.some(([payload]) => payload.active)).toBe(false);
+  });
+
+  it('fails closed when a stale catalog item is selected after registry invalidation', () => {
+    const onInteraction = vi.fn();
+    const onStateChange = vi.fn<(payload: AvatarToolStatePayload) => void>();
+    const staleItem = localToolRegistry(1).items.find(item => item.id === LOCAL_TOOL_ID)!;
+    render(
+      <Harness
+        onInteraction={onInteraction}
+        onStateChange={onStateChange}
+        providers={createProviders()}
+        registry={BUILT_IN_AVATAR_TOOL_REGISTRY}
+        item={staleItem}
+      />,
+    );
+
+    expect(() => selectTool()).not.toThrow();
     expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent('inactive');
     expect(onStateChange.mock.calls.some(([payload]) => payload.active)).toBe(false);
   });

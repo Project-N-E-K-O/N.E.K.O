@@ -471,6 +471,7 @@ class LLMSessionManager(
 
         self._recent_avatar_interaction_ids = deque(maxlen=AVATAR_INTERACTION_DEDUPE_MAX_ITEMS)
         self._recent_avatar_interaction_id_set = set()
+        self._avatar_interaction_gate_lock = asyncio.Lock()
         self._last_avatar_interaction_at = 0
         self._last_avatar_interaction_speak_at = 0
         self.avatar_interaction_cooldown_ms = 600

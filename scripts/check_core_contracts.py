@@ -149,6 +149,7 @@ MIXIN_SUPPORT_CLASSES = {
         "_AudioDurationQueue",
         "_HotSwapAudioFrame",
         "_HotSwapAudioBuffer",
+        "_VoiceInputPipelineFailure",
     },
 }
 PATCH_CALL_NAMES = {"setattr", "patch", "delattr"}

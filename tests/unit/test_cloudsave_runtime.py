@@ -289,6 +289,34 @@ def test_bootstrap_imports_legacy_root_after_seed_migration(tmp_path):
 
 
 @pytest.mark.unit
+def test_bootstrap_repairs_seeded_target_when_legacy_root_only_adds_avatar_tools(tmp_path):
+    new_root_base = tmp_path / "new_root_base"
+    legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
+    cm = _make_config_manager(new_root_base)
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    legacy_tool = legacy_root / "avatar_tools" / tool_id
+    legacy_tool.mkdir(parents=True)
+    (legacy_tool / "record.json").write_text('{"recordVersion":2}', encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    atomic_write_json(
+        Path(cm.get_config_path("user_preferences.json")),
+        [{"model_path": "/custom.model3.json"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert result["legacy_import"]["repair_reason"] == "missing_avatar_tools"
+    assert (cm.avatar_tools_dir / tool_id / "record.json").is_file()
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows held-file replacement semantics")
 def test_bootstrap_replaces_runtime_root_while_single_instance_lock_is_held(tmp_path, monkeypatch):
     from utils import single_instance
@@ -652,6 +680,19 @@ def test_runtime_root_summary_ignores_dotfiles_in_memory(tmp_path):
     assert summary["memory_character_names"] == set()
     assert summary["has_user_content"] is False
     assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is False
+
+
+@pytest.mark.unit
+def test_runtime_root_detects_user_created_avatar_tools(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import _runtime_root_has_user_content
+
+    tool_dir = Path(cm.app_docs_dir) / "avatar_tools" / "local-12345678-1234-4123-8123-123456789abc"
+    tool_dir.mkdir(parents=True)
+    (tool_dir / "record.json").write_text('{"recordVersion":2}', encoding="utf-8")
+
+    assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is True
 
 
 @pytest.mark.unit
@@ -3201,3 +3242,63 @@ def test_standard_data_candidates_on_unix_platforms(tmp_path):
         candidates = cm._get_standard_data_directory_candidates()
         assert candidates[0] == fake_home / ".xdg-data"
         assert fake_home / ".local" / "share" in candidates
+
+
+@pytest.mark.unit
+def test_runtime_root_counts_an_interrupted_avatar_transaction_as_content(tmp_path):
+    """An interrupted update may leave `.backup` as a tool's only copy; empty means replaced."""
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import _runtime_root_has_user_content
+
+    avatar_tools = Path(cm.app_docs_dir) / "avatar_tools"
+    backup = avatar_tools / ".local-12345678-1234-4123-8123-123456789abc.backup"
+    backup.mkdir(parents=True)
+    (backup / "record.json").write_text('{"recordVersion":2}', encoding="utf-8")
+
+    assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is True
+
+    # 判据不能放宽成「任何点开头的都算内容」：放宽了会把无关隐藏条目当成用户
+    # 内容，从而拦下本该发生的迁移。名字必须逐字命中该模块的事务命名。
+    shutil.rmtree(backup)
+    for noise in (".DS_Store", ".cache.backup", ".local-not-a-uuid.updating"):
+        entry = avatar_tools / noise
+        entry.mkdir()
+        (entry / "record.json").write_text('{"recordVersion":2}', encoding="utf-8")
+        assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is False, noise
+        shutil.rmtree(entry)
+
+
+@pytest.mark.unit
+def test_transactional_entry_pattern_tracks_the_avatar_tool_store_naming():
+    """Both sides must agree letter for letter, or a sole surviving copy is deleted."""
+    from utils.avatar_tool_store import (
+        LOCAL_AVATAR_TOOL_BACKUP_PATTERN,
+        LOCAL_AVATAR_TOOL_DELETING_PATTERN,
+        LOCAL_AVATAR_TOOL_UPDATE_PATTERN,
+        LOCAL_AVATAR_TOOL_UPLOAD_PATTERN,
+    )
+    from utils.cloudsave_runtime._shared import TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS
+
+    pattern = TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS["avatar_tools"]
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+
+    # 被打断的更新：这两个可能是仅存副本，收紧到认不出就是静默删除。
+    for suffix, owner in (
+        (".backup", LOCAL_AVATAR_TOOL_BACKUP_PATTERN),
+        (".updating", LOCAL_AVATAR_TOOL_UPDATE_PATTERN),
+    ):
+        name = f".{tool_id}{suffix}"
+        assert owner.fullmatch(name) is not None, (
+            "这个用例的样本名已经和 store 的命名脱节，先修样本再看结论"
+        )
+        assert pattern.fullmatch(name) is not None, suffix
+
+    # 创建暂存和删除暂存都不是仅存副本：用户要么还没创建成功，要么就是要删掉它。
+    for suffix, owner in (
+        (".uploading", LOCAL_AVATAR_TOOL_UPLOAD_PATTERN),
+        (".deleting", LOCAL_AVATAR_TOOL_DELETING_PATTERN),
+    ):
+        name = f".{tool_id}{suffix}"
+        assert owner.fullmatch(name) is not None, "样本名和 store 的命名脱节"
+        assert pattern.fullmatch(name) is None, suffix

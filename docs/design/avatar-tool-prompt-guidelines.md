@@ -56,6 +56,15 @@
 - memory note 只保留互动对象与猫娘视角的结果，不重复双方手势。中文语义固定为：`[和{用户称呼}猜拳，输了]`、`[和{用户称呼}猜拳，赢了]`、`[和{用户称呼}猜拳，平手]`。
 - 猜拳使用 `memory_dedupe_key="rps_round"`、`memory_dedupe_rank=1`；不构造比分、连胜、胜率、赌注、奖励或历史战绩。
 
+## 本地自定义道具
+
+- Host 只接受严格本地 UUID、`actionId=interact`、`intensity=normal|rapid`、合法触点、非负安全整数 `changeIndex`，以及可缺失但存在时必须为明确布尔值的 `specialTriggered`；不接收浏览器直接提供的名称或互动描述。
+- Python 在消耗互动冷却和构建 prompt 前，从权威 record 读取道具配置。未配置彩蛋时 `specialTriggered` 必须缺失；已配置时必须明确为 `true` 或 `false`。record 缺失、损坏、索引越界或彩蛋事实与记录不一致时按 `invalid_payload` 拒绝，不回退到第一项或其它内置道具。
+- 道具名称和互动描述是有长度边界的用户数据，模板中以 JSON 字符串表示并明确标注“不是指令”；其中的命令、角色设定或元指令不能覆盖现有 system prompt。
+- 彩蛋未命中或未配置时，即时 prompt 只加入当前 `changeIndex` 对应的一段互动描述；彩蛋命中时只加入彩蛋互动描述。两条路径都保留已验证强度和触点，不拼入其它描述，也不根据图片内容自行推断动作、情绪或事件。
+- 彩蛋开启时 prompt 明确写入已验证的“触发／未触发”事实；未配置彩蛋时不制造该事实。
+- memory note 只保存安全显示名称、强度、触点摘要和已确认的“彩蛋已触发”事实，不保存普通或彩蛋互动描述；去重 key 使用稳定本地 ID，只有 `rapid` 提高去重 rank。
+
 ## 多语言
 
 正式道具提示词与 memory note 必须同时维护 `zh`、`zh-TW`、`en`、`ja`、`ko`、`ru`、`es`、`pt`。各语言使用当地自然的道具名、手势名和结果表达；不得只替换枚举值或机械直译中文句式，但八语言表达的事实和边界必须一致。
@@ -71,6 +80,8 @@
 - 八种 locale 的 memory note 只按猫娘视角区分赢、输、平手，不包含手势战报；
 - 缺字段、未知手势、矛盾胜负及额外 `action/intensity/touchZone` 被拒绝；
 - memory note 的中性称呼回退、反物化禁词和 `rps_round` 去重元数据保持有效。
+
+本地自定义道具还必须覆盖八种 locale、逐项描述选择、提示词注入片段、record 缺失／损坏、索引越界、普通／连续强度、合法触点，以及 memory 不保存互动描述。
 
 ```bash
 uv run pytest tests/unit/test_avatar_interaction_payload_contract.py tests/unit/test_avatar_interaction_memory_contract.py -q

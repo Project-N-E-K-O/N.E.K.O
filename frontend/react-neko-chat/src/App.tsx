@@ -18,6 +18,7 @@ import FullChatSurface from './FullChatSurface';
 import NekoTooltipLayer from './NekoTooltipLayer';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
+import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
 import {
   COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
   COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
@@ -59,11 +60,12 @@ import {
   type ChoicePromptSource,
 } from './message-schema';
 import {
-  AVAILABLE_COMPACT_AVATAR_TOOLS,
   DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
+  forgetPersistedAvatarToolId,
+  getAvatarToolItemLabel,
   persistActiveAvatarToolIds,
   readPersistedActiveAvatarToolIds,
-  sanitizeAvatarToolIds,
+  sanitizeAvatarToolSlots,
   type AvatarToolId,
   type AvatarToolItem,
 } from './avatarTools';
@@ -784,10 +786,8 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
 
 type ToolIconItem = AvatarToolItem;
 
-const toolIconItems = AVAILABLE_COMPACT_AVATAR_TOOLS;
-
 function getToolItemLabel(item: ToolIconItem): string {
-  return i18n(item.labelKey, item.labelFallback);
+  return getAvatarToolItemLabel(item);
 }
 
 const compactToolWheelControlWheelTargetSelector = [
@@ -878,6 +878,7 @@ function CompactChatApp({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
+  userName = '',
   assistantName = '',
   inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
   sendButtonLabel = i18n('chat.send', 'Send'),
@@ -942,6 +943,8 @@ function CompactChatApp({
   _avatarToolDeactivationKey,
 }: ChatWindowProps) {
   useCompactToolWheelAudioPreload();
+  const localAvatarToolCatalog = useLocalAvatarToolCatalog();
+  const toolIconItems = localAvatarToolCatalog.registry.items;
 
   const [draft, setDraft] = useState('');
   const [catDraft, setCatDraft] = useState('');
@@ -1118,6 +1121,7 @@ function CompactChatApp({
     getToolLabel: getToolItemLabel,
     avatarName: assistantName,
     onDeactivate: () => setToolMenuOpen(false),
+    registry: localAvatarToolCatalog.registry,
   });
   const activeAvatarToolId = avatarToolRuntime.activeToolId;
   const activeToolItem = avatarToolRuntime.activeTool;
@@ -1126,14 +1130,31 @@ function CompactChatApp({
   const handleAvatarQuickbarToolClick = avatarToolRuntime.selectTool;
 
   const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
-    const nextToolIds = sanitizeAvatarToolIds(toolIds);
+    const nextToolIds = sanitizeAvatarToolSlots(toolIds);
     setActiveAvatarToolIds(nextToolIds);
     persistActiveAvatarToolIds(nextToolIds);
     setAvatarToolManagerOpen(false);
     if (activeAvatarToolId && !nextToolIds.includes(activeAvatarToolId)) {
       clearActiveAvatarToolSelection();
     }
-  }, [activeAvatarToolId, clearActiveAvatarToolSelection]);
+  }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.registry]);
+
+  const handleLocalAvatarToolDelete = useCallback(async (toolId: `local-${string}`) => {
+    await localAvatarToolCatalog.remove(toolId);
+    // 这里读的是闭包捕获值，当前是安全的：管理器入口在快捷栏里，而快捷栏只在
+    // 没有选中道具时才展开（点道具按钮的第一下是退出选择），所以发起删除时
+    // activeAvatarToolId 必然为 null，这个判断恒为假。将来如果新增「选中状态下
+    // 直接删除」的入口，就必须改读运行时的同步当前 ID —— 但别在 render 阶段
+    // 往 ref 里写，那样会把未提交的 render 结果泄进共享状态。
+    if (activeAvatarToolId === toolId) clearActiveAvatarToolSelection();
+    setActiveAvatarToolIds(current => current.filter(candidate => candidate !== toolId));
+    forgetPersistedAvatarToolId(toolId);
+  }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.remove]);
+
+  useEffect(() => {
+    if (!avatarToolManagerOpen) return;
+    localAvatarToolCatalog.refresh().catch(() => undefined);
+  }, [avatarToolManagerOpen, localAvatarToolCatalog.refresh]);
 
   useEffect(() => {
     if (!activeAvatarToolId) return;
@@ -5827,6 +5848,15 @@ function CompactChatApp({
         anchorRect={avatarToolManagerAnchorRect}
         onSave={handleAvatarToolManagerSave}
         onCancel={() => setAvatarToolManagerOpen(false)}
+        createLimits={localAvatarToolCatalog.limits}
+        userName={userName}
+        assistantName={assistantName}
+        onCreate={localAvatarToolCatalog.create}
+        onLoadDetail={localAvatarToolCatalog.detail}
+        onUpdate={localAvatarToolCatalog.update}
+        onDelete={handleLocalAvatarToolDelete}
+        catalogAuthoritativeLoaded={localAvatarToolCatalog.authoritativeLoaded}
+        catalogRefreshFailed={localAvatarToolCatalog.refreshFailed}
       />
       <AvatarToolVisuals model={avatarToolRuntime.visualModel} />
       <section

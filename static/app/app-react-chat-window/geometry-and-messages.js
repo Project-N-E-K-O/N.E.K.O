@@ -1310,6 +1310,11 @@
         return 'You';
     }
 
+    function getConfiguredUserName() {
+        var currentUserName = I.getCurrentUserName();
+        return currentUserName && currentUserName !== 'You' ? currentUserName : '';
+    }
+
     function getDefaultAuthorByRole(role) {
         return role === 'user' ? I.getCurrentUserName() : getCurrentAssistantName();
     }
@@ -1332,6 +1337,7 @@
         return {
             title: title,
             iconSrc: '/static/icons/chat_icon.png',
+            userName: getConfiguredUserName() || undefined,
             assistantName: getConfiguredAssistantName() || undefined,
             inputPlaceholder: inputPlaceholder,
             sendButtonLabel: sendButtonLabel,
@@ -1520,6 +1526,7 @@
             : [];
         return Object.assign({}, I.ensureViewProps(), {
             messages: I.state.messages.concat(catMessages),
+            userName: getConfiguredUserName() || undefined,
             assistantName: getConfiguredAssistantName() || undefined,
             composerAttachments: I.state.composerAttachments,
             rollbackDraft: I.state.rollbackDraft || undefined,

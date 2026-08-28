@@ -296,7 +296,7 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
-def test_avatar_tool_result_name_tracks_the_current_catgirl():
+def test_avatar_tool_result_names_track_the_current_participants():
     geometry_path = (
         Path(__file__).resolve().parents[2]
         / "static"
@@ -318,6 +318,7 @@ def test_avatar_tool_result_name_tracks_the_current_catgirl():
     assert name_block.index("window.appState && window.appState.lanlan_name") < name_block.index(
         "window.lanlan_config && window.lanlan_config.lanlan_name"
     )
+    assert "userName: getConfiguredUserName() || undefined" in build_render_block
     assert "assistantName: getConfiguredAssistantName() || undefined" in build_render_block
 
 
@@ -1823,7 +1824,7 @@ def test_compact_avatar_tool_manager_uses_desktop_work_area_for_carrier_layout()
     assert "workAreaX - windowX" in manager_source
     assert "workAreaY - windowY" in manager_source
     assert "viewport.compactDesktop" in manager_source
-    assert "getDesktopCompactDialogSize(viewport)" in manager_source
+    assert "getDesktopCompactDialogSize(viewport, preferredHeight)" in manager_source
     assert "neko:desktop-compact-layout-change" in manager_source
     assert "'--avatar-tool-manager-width'" in manager_source
     assert "'--avatar-tool-manager-height'" in manager_source
@@ -1834,9 +1835,9 @@ def test_compact_avatar_tool_manager_uses_desktop_work_area_for_carrier_layout()
         ".avatar-tool-manager-dialog.is-desktop-compact-layout",
         ".avatar-tool-manager-dialog.is-dragging",
     )
-    assert "width: var(--avatar-tool-manager-width, 380px);" in desktop_compact_block
-    assert "height: var(--avatar-tool-manager-height, 600px);" in desktop_compact_block
-    assert "max-height: var(--avatar-tool-manager-max-height, 600px);" in desktop_compact_block
+    assert "width: var(--avatar-tool-manager-width, 460px);" in desktop_compact_block
+    assert "height: var(--avatar-tool-manager-height, 680px);" in desktop_compact_block
+    assert "max-height: var(--avatar-tool-manager-max-height, 680px);" in desktop_compact_block
     assert "100vw" not in desktop_compact_block
     assert "85vh" not in desktop_compact_block
 

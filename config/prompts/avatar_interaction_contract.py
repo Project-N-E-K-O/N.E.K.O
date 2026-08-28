@@ -8,6 +8,7 @@ the runtime validator has one authoritative interaction contract.
 from __future__ import annotations
 
 import math
+import re
 import time
 from collections.abc import Callable
 from typing import Any, Optional
@@ -18,6 +19,10 @@ TextContextSanitizer = Callable[[Any], str]
 AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES = frozenset({"ear", "head", "face", "body"})
 AVATAR_INTERACTION_ROUND_GESTURES = frozenset({"rock", "scissors", "paper"})
 AVATAR_INTERACTION_ROUND_RESULTS = frozenset({"user_win", "avatar_win", "draw"})
+LOCAL_AVATAR_TOOL_ID_PATTERN = re.compile(
+    r"^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+LOCAL_AVATAR_TOOL_REVISION_PATTERN = re.compile(r"^[0-9]+-[0-9]+$")
 AVATAR_INTERACTION_TOOL_CONTRACT = {
     "lollipop": {
         "actions": {
@@ -64,6 +69,8 @@ def normalize_avatar_interaction_intensity(
     tool_id: str, action_id: str, intensity: Any
 ) -> Optional[str]:
     normalized = str(intensity or "").strip().lower()
+    if LOCAL_AVATAR_TOOL_ID_PATTERN.fullmatch(tool_id):
+        return normalized if action_id == "interact" and normalized in {"normal", "rapid"} else None
     tool_contract = AVATAR_INTERACTION_TOOL_CONTRACT.get(tool_id)
     allowed = tool_contract and tool_contract["actions"].get(action_id)
     if not allowed or normalized not in allowed:
@@ -135,9 +142,28 @@ def normalize_avatar_interaction_payload(
     )
     target = str(payload.get("target") or "").strip().lower()
     tool_contract = AVATAR_INTERACTION_TOOL_CONTRACT.get(tool_id)
+    local_tool = LOCAL_AVATAR_TOOL_ID_PATTERN.fullmatch(tool_id) is not None
+    if local_tool:
+        tool_contract = {
+            "actions": {"interact": frozenset({"normal", "rapid"})},
+            "touch_zone": True,
+            "boolean_field": "special_triggered",
+            "round_choice": False,
+        }
 
     if not interaction_id or target != "avatar" or not tool_contract:
         return None
+    if local_tool:
+        allowed_local_keys = {
+            "action", "interaction_id", "interactionId", "tool_id", "toolId",
+            "action_id", "actionId", "target", "pointer", "timestamp",
+            "text_context", "textContext", "intensity", "touch_zone", "touchZone",
+            "change_index", "changeIndex",
+            "tool_revision", "toolRevision",
+            "special_triggered", "specialTriggered",
+        }
+        if any(key not in allowed_local_keys for key in payload):
+            return None
     if tool_contract["round_choice"]:
         allowed_round_keys = {
             "action", "interaction_id", "interactionId", "tool_id", "toolId", "target",
@@ -210,6 +236,29 @@ def normalize_avatar_interaction_payload(
             return None
         touch_zone = ""
 
+    change_index = None
+    tool_revision = None
+    if local_tool:
+        tool_revision = str(get_avatar_interaction_payload_value(
+            payload, "tool_revision", "toolRevision", ""
+        ) or "").strip()
+        if (
+            len(tool_revision) > 128
+            or LOCAL_AVATAR_TOOL_REVISION_PATTERN.fullmatch(tool_revision) is None
+        ):
+            return None
+        raw_change_index = get_avatar_interaction_payload_value(
+            payload, "change_index", "changeIndex", None
+        )
+        if (
+            isinstance(raw_change_index, bool)
+            or not isinstance(raw_change_index, int)
+            or raw_change_index < 0
+            or raw_change_index > 2**53 - 1
+        ):
+            return None
+        change_index = raw_change_index
+
     pointer_payload = payload.get("pointer")
     pointer: Optional[dict[str, float]] = None
     if isinstance(pointer_payload, dict):
@@ -261,8 +310,16 @@ def normalize_avatar_interaction_payload(
         normalized.update({
             "action_id": action_id,
             "intensity": intensity,
-            "reward_drop": reward_drop,
-            "easter_egg": easter_egg,
             "touch_zone": touch_zone,
         })
+        if local_tool:
+            normalized["tool_revision"] = tool_revision
+            normalized["change_index"] = change_index
+            if carries_boolean_field:
+                normalized["special_triggered"] = boolean_value
+        else:
+            normalized.update({
+                "reward_drop": reward_drop,
+                "easter_egg": easter_egg,
+            })
     return normalized

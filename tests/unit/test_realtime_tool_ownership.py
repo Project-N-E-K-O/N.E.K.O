@@ -227,7 +227,9 @@ async def test_proactive_inject_does_not_cancel_current_turn_tool_task(
         client._send_tool_result_gemini = AsyncMock()
     else:
         client.ws = _QueueSocket()
-        client._send_tool_result_openai_realtime = AsyncMock()
+        # The plural is what the batch collector calls; the singular is only a
+        # convenience wrapper around it, so patching that one records nothing.
+        client._send_tool_results_openai_realtime = AsyncMock()
     client._on_connection_attached()
     if api_type != "gemini":
         sent = asyncio.get_running_loop().create_future()
@@ -258,7 +260,7 @@ async def test_proactive_inject_does_not_cancel_current_turn_tool_task(
     if api_type == "gemini":
         client._send_tool_result_gemini.assert_awaited_once()
     else:
-        client._send_tool_result_openai_realtime.assert_awaited_once()
+        client._send_tool_results_openai_realtime.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -762,8 +764,14 @@ async def test_raw_tool_cancel_survives_tool_scope_replacement() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_parallel_raw_tool_results_survive_a_sibling_response_created() -> None:
-    """The first result's own response.created must not orphan its siblings."""
+async def test_parallel_raw_tool_results_are_answered_as_one_batch() -> None:
+    """One provider response, one continuation -- no sibling left behind.
+
+    Submitting per result enqueued a response.create with the FIRST output, so
+    the arbiter sent that output and immediately started a continuation while
+    the sibling's ticket was still queued. The provider saw a continuation
+    with a required parallel-call output missing and answered without it.
+    """
 
     host_turn = ["turn-1"]
     started = {"call-1": asyncio.Event(), "call-2": asyncio.Event()}
@@ -788,25 +796,27 @@ async def test_parallel_raw_tool_results_survive_a_sibling_response_created() ->
     client._current_turn_host_id = host_turn[0]
     receive_loop = asyncio.create_task(client.handle_messages())
 
-    socket.feed(_raw_tool_event("call-1"))
-    socket.feed(_raw_tool_event("call-2"))
+    # Same response_id: these are the parallel calls of ONE provider response.
+    socket.feed(_raw_tool_event("call-1", response_id="response-1"))
+    socket.feed(_raw_tool_event("call-2", response_id="response-1"))
     await asyncio.wait_for(started["call-1"].wait(), timeout=1)
     await asyncio.wait_for(started["call-2"].wait(), timeout=1)
 
-    # The faster sibling answers first; its response.create is announced only
-    # after response.done has already rotated the host speech id.
     release["call-1"].set()
-    await _wait_for_socket_sends(socket, 2)
-    host_turn[0] = "turn-2"
-    socket.feed({"type": "response.created", "response": {"id": "tool-response-1"}})
-    socket.feed({"type": "response.done", "response": {"id": "tool-response-1"}})
-    await client._response_arbiter.wait_until_idle(timeout=1)
-    # Premise of this regression: the provider-turn snapshot really did move.
-    assert client._current_turn_host_id == "turn-2"
+    await asyncio.sleep(0.05)
+    assert socket.sent == [], (
+        "the finished sibling must not start a continuation while the other "
+        "call of the same response is still running"
+    )
 
     release["call-2"].set()
     await _wait_for_tool_tasks(client)
 
+    assert [event["type"] for event in socket.sent] == [
+        "conversation.item.create",
+        "conversation.item.create",
+        "response.create",
+    ], "every output first, then exactly one continuation"
     answered = [
         event["item"]["call_id"]
         for event in socket.sent
@@ -814,6 +824,47 @@ async def test_parallel_raw_tool_results_survive_a_sibling_response_created() ->
         and event.get("item", {}).get("type") == "function_call_output"
     ]
     assert answered == ["call-1", "call-2"]
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_raw_tool_call_without_response_identity_still_answers() -> None:
+    """No response_id means no provable siblings -- answer each on its own.
+
+    The degradation the batch key accepts: without response identity there is
+    nothing to group by, and holding a result for a sibling that may never be
+    announced would be worse than the per-result shape it replaced.
+    """
+
+    async def handler(call):
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-realtime",
+        api_type="gpt",
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    event = _raw_tool_event("call-1")
+    event.pop("response_id")
+    socket.feed(event)
+    await _wait_for_socket_sends(socket, 2)
+    await _wait_for_tool_tasks(client)
+
+    assert [item["type"] for item in socket.sent] == [
+        "conversation.item.create",
+        "response.create",
+    ]
+    assert socket.sent[0]["item"]["call_id"] == "call-1"
 
     socket.finish()
     await asyncio.wait_for(receive_loop, timeout=1)
@@ -1076,6 +1127,7 @@ async def test_raw_transcript_does_not_advance_scope_twice_after_speech_started(
     socket.feed({"type": "input_audio_buffer.speech_started"})
     socket.feed(_raw_tool_event())
     await asyncio.wait_for(started.wait(), timeout=1)
+    scope_after_speech_started = client._tool_scope_generation
 
     socket.feed(
         {
@@ -1085,7 +1137,10 @@ async def test_raw_transcript_does_not_advance_scope_twice_after_speech_started(
     )
     await asyncio.wait_for(transcript_seen.wait(), timeout=1)
     assert not cancelled.is_set()
-    assert len(client._tool_tasks) == 1
+    assert client._tool_scope_generation == scope_after_speech_started, (
+        "the transcript of an utterance speech_started already scoped must "
+        "not advance the tool scope a second time"
+    )
 
     release.set()
     await _wait_for_tool_tasks(client)
@@ -3190,3 +3245,887 @@ async def test_cancelled_prompt_ephemeral_leaves_a_new_user_turn_alone() -> None
     assert len(session.client_contents) == sends_after_inject, (
         "the cancellation cleanup interrupted the user's own generation"
     )
+
+
+def _no_server_vad_client(**hooks):
+    """A client whose no-server-VAD transcript fallback is really reachable.
+
+    The lanlan.app host is load-bearing, not decoration: ``_is_free_proxy``
+    keys on it, and that is what makes ``_has_server_vad`` False. With any
+    other host the same ``api_type="free"`` client HAS server VAD and the
+    transcript branch below never reaches the fallback at all.
+    """
+
+    client = OmniRealtimeClient(
+        "wss://www.lanlan.app/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        **hooks,
+    )
+    assert client._has_server_vad is False, (
+        "this helper exists to cover the transcript-only turn boundary"
+    )
+    return client
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transcript_of_a_new_utterance_retires_a_dropped_turns_tool() -> None:
+    """A speech_started whose transcript never arrives must not scope the NEXT turn.
+
+    The proxy shape this covers is inconsistent on purpose, because the real
+    ones are: it announces speech_started for turn N, drops turn N's
+    transcript, then drops speech_started for turn N+1 and delivers ITS
+    transcript. Nothing between those two turns clears a plain pending flag --
+    not speech_stopped, not response.done -- so the new turn's transcript read
+    as already scoped, note_user_turn_started was skipped, and a
+    cancellation-resistant tool from turn N could still answer into turn N+1.
+    """
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    transcript_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(call):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            # Re-raised, not swallowed: a swallowed CancelledError turns a
+            # failing assertion below into a hang at loop teardown instead of
+            # a failure.
+            raise
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    async def on_input_transcript(_transcript: str) -> None:
+        transcript_seen.set()
+
+    client = _no_server_vad_client(
+        on_input_transcript=on_input_transcript,
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    # Turn N: the proxy announces the utterance, then never transcribes it.
+    socket.feed({"type": "input_audio_buffer.speech_started", "item_id": "item-a"})
+    socket.feed(_raw_tool_event())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    scope_after_turn_n = client._tool_scope_generation
+
+    # Turn N+1: no speech_started at all, only the completed transcript -- of a
+    # DIFFERENT utterance.
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-b",
+            "transcript": "the next thing the user said",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+
+    assert client._tool_scope_generation != scope_after_turn_n, (
+        "a transcript for an utterance no speech_started scoped begins a new "
+        "user turn, whatever an earlier utterance left behind"
+    )
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+    release.set()
+    await _wait_for_tool_tasks(client)
+
+    assert socket.sent == []
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transcript_of_its_own_utterance_does_not_rescope_the_turn() -> None:
+    """The healthy no-VAD path: one turn, one note_user_turn_started."""
+
+    transcript_seen = asyncio.Event()
+
+    async def on_input_transcript(_transcript: str) -> None:
+        transcript_seen.set()
+
+    client = _no_server_vad_client(on_input_transcript=on_input_transcript)
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "input_audio_buffer.speech_started", "item_id": "item-a"})
+    await asyncio.sleep(0)
+    scope_after_speech_started = client._tool_scope_generation
+
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-a",
+            "transcript": "what the user just said",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+
+    assert client._tool_scope_generation == scope_after_speech_started
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_late_transcript_does_not_rescope_an_already_started_turn() -> None:
+    """Input transcription is its own job; its output can land out of order.
+
+    Turn N's transcript arriving after turn N+1 has begun must not retire
+    turn N+1's tool work -- which is what expiring the marker on a response
+    lifecycle point would have caused.
+    """
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    transcripts: list[str] = []
+    transcript_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(call):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    async def on_input_transcript(transcript: str) -> None:
+        transcripts.append(transcript)
+        transcript_seen.set()
+
+    client = _no_server_vad_client(
+        on_input_transcript=on_input_transcript,
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "input_audio_buffer.speech_started", "item_id": "item-a"})
+    socket.feed({"type": "input_audio_buffer.speech_started", "item_id": "item-b"})
+    socket.feed(_raw_tool_event())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    scope_after_turn_b = client._tool_scope_generation
+
+    # item-a's transcript only shows up now, a turn late.
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-a",
+            "transcript": "the previous utterance",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+
+    assert transcripts == ["the previous utterance"]
+    assert client._tool_scope_generation == scope_after_turn_b, (
+        "a transcript for an utterance already scoped is not a new user turn"
+    )
+    assert not cancelled.is_set()
+
+    release.set()
+    await _wait_for_tool_tasks(client)
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_proactive_answers_the_calls_it_gave_up_on(monkeypatch) -> None:
+    """A tool the settle budget abandoned still gets a function_call_output.
+
+    The inject that follows interrupts the generation that issued the call, so
+    without this the conversation keeps a function_call nobody ever replied to.
+    The abandoned reply goes out BEFORE the inject, and the call is retired so
+    a result arriving afterwards is dropped instead of landing in the
+    proactive turn.
+    """
+
+    import main_logic.omni_realtime_client._responses as responses
+
+    monkeypatch.setattr(responses, "_GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS", 0.05)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    order: list[str] = []
+
+    async def handler(call):
+        started.set()
+        await release.wait()
+        order.append("tool")
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    class _OrderedSession(_GeminiSession):
+        async def send_client_content(self, *, turns, turn_complete) -> None:
+            order.append("proactive")
+
+        async def send_tool_response(self, *, function_responses) -> None:
+            order.append("tool_response")
+            await super().send_tool_response(function_responses=function_responses)
+
+    monkeypatch.setattr(
+        __import__(
+            "main_logic.omni_realtime_client._gemini_support",
+            fromlist=["types"],
+        ),
+        "types",
+        SimpleNamespace(FunctionResponse=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gemini-live",
+        api_type="gemini",
+        on_tool_call=handler,
+    )
+    session = _OrderedSession()
+    client._gemini_session = session
+    client.ws = session
+    # Long enough that the batch collector can only wake by its call
+    # COMPLETING, never by a poll timeout. That pins the ordering the retired
+    # set alone cannot survive: the task finishes, its done callback drops it
+    # from the retired registry, and only then does the collector look.
+    client._TOOL_TASK_CANCEL_TIMEOUT_S = 5.0
+    client._on_connection_attached()
+
+    await client._process_gemini_response(
+        _gemini_response(calls=(("call-a", "lookup"),)),
+        provider_session=session,
+        connection_generation=client._connection_generation,
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    await asyncio.wait_for(
+        client.inject_text_and_request_response("proactive body"), timeout=2
+    )
+
+    assert order == ["tool_response", "proactive"], (
+        "the abandoned reply must go out while the generation that issued the "
+        "call is still the current one"
+    )
+    assert len(session.tool_responses) == 1
+    abandoned = session.tool_responses[0]
+    assert [r.id for r in abandoned] == ["call-a"]
+    assert [r.name for r in abandoned] == ["lookup"]
+    assert abandoned[0].response["abandoned"] is True
+
+    # The real result lands late and must be dropped, not injected into the
+    # proactive turn it would now be part of.
+    release.set()
+    await _wait_for_tool_tasks(client)
+    assert len(session.tool_responses) == 1, (
+        "an abandoned call is retired; its late result must not be sent"
+    )
+    assert order == ["tool_response", "proactive", "tool"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_proactive_gives_up_a_pending_collectors_whole_batch(
+    monkeypatch,
+) -> None:
+    """A finished-but-unflushed sibling is as abandoned as the running one.
+
+    At the settle deadline the only unsettled task of a batch can be its
+    COLLECTOR -- the calls are done, their results just have not been flushed
+    yet. A collector owns no call, so retiring it answers nothing and does not
+    stop it from sending those results, which after the inject below land in
+    the proactive turn: the cross-turn injection this path exists to prevent.
+    Whatever the collector has not flushed by the deadline is given up with
+    the rest of its batch.
+    """
+
+    import main_logic.omni_realtime_client._responses as responses
+
+    monkeypatch.setattr(responses, "_GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS", 0.05)
+    started_slow = asyncio.Event()
+    release_slow = asyncio.Event()
+    order: list[str] = []
+
+    async def handler(call):
+        if call.call_id == "call-fast":
+            return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+        started_slow.set()
+        await release_slow.wait()
+        order.append("slow tool")
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    class _OrderedSession(_GeminiSession):
+        async def send_client_content(self, *, turns, turn_complete) -> None:
+            order.append("proactive")
+
+        async def send_tool_response(self, *, function_responses) -> None:
+            order.append("tool_response")
+            await super().send_tool_response(function_responses=function_responses)
+
+    monkeypatch.setattr(
+        __import__(
+            "main_logic.omni_realtime_client._gemini_support",
+            fromlist=["types"],
+        ),
+        "types",
+        SimpleNamespace(FunctionResponse=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gemini-live",
+        api_type="gemini",
+        on_tool_call=handler,
+    )
+    session = _OrderedSession()
+    client._gemini_session = session
+    client.ws = session
+    client._on_connection_attached()
+
+    await client._process_gemini_response(
+        _gemini_response(calls=(("call-fast", "alpha"), ("call-slow", "beta"))),
+        provider_session=session,
+        connection_generation=client._connection_generation,
+    )
+    await asyncio.wait_for(started_slow.wait(), timeout=1)
+
+    # Premise: the fast call really did finish, and its result is sitting in
+    # the collector unflushed because its sibling has not settled.
+    entries = client._tool_batch_by_collector_task()[
+        next(iter(client._tool_batch_collector_tasks))
+    ].entries
+    fast_entry = next(e for e in entries if e.call.call_id == "call-fast")
+    await asyncio.wait_for(fast_entry.task, timeout=1)
+    assert session.tool_responses == []
+
+    await asyncio.wait_for(
+        client.inject_text_and_request_response("proactive body"), timeout=2
+    )
+
+    assert len(session.tool_responses) == 1
+    abandoned = session.tool_responses[0]
+    assert sorted(r.id for r in abandoned) == ["call-fast", "call-slow"]
+    assert all(r.response["abandoned"] is True for r in abandoned), (
+        "the finished sibling's real result must not be flushed after the "
+        "inject interrupted the generation that issued it"
+    )
+    assert order == ["tool_response", "proactive"]
+
+    release_slow.set()
+    await _wait_for_tool_tasks(client)
+    assert len(session.tool_responses) == 1
+    assert order == ["tool_response", "proactive", "slow tool"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_raw_batch_waits_for_a_sibling_announced_after_the_first_finishes() -> None:
+    """A fast tool must not seal the batch out from under a sibling in flight.
+
+    The calls of one provider response arrive as separate events. If the first
+    tool finishes before the receive loop has read the second event, a
+    collector that answered on "nothing of mine is running" would seal a batch
+    of one -- and the sibling would open a second batch, so the provider gets
+    two continuations, each missing the other's parallel output. While the
+    issuing response is still the tracked one, the collector waits.
+    """
+
+    started = {"call-2": asyncio.Event()}
+    release = {"call-2": asyncio.Event()}
+
+    async def handler(call):
+        if call.call_id == "call-1":
+            return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+        started[call.call_id].set()
+        await release[call.call_id].wait()
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-realtime",
+        api_type="gpt",
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "response-1"}})
+    socket.feed(_raw_tool_event("call-1", response_id="response-1"))
+    await asyncio.sleep(0.05)
+    # Premise: the fast call is done and its response is still the tracked
+    # one, so the collector has no proof the batch is complete.
+    assert client._current_response_id == "response-1"
+    # Asserted on the BATCH, not on socket.sent. The arbiter holds a
+    # tool_result ticket for as long as response-1 is live, so nothing has
+    # reached the socket yet either way -- `socket.sent == []` here is true of
+    # the broken behaviour too and would prove nothing. What distinguishes
+    # them is whether the batch is still open for its sibling to join: sealing
+    # it pops it from this registry, and call-2 would then open a second one
+    # and earn its own continuation.
+    assert len(client._open_tool_batches) == 1, (
+        "the batch must stay open while its response can still announce "
+        "another parallel call"
+    )
+
+    socket.feed(_raw_tool_event("call-2", response_id="response-1"))
+    await asyncio.wait_for(started["call-2"].wait(), timeout=1)
+    assert len(client._open_tool_batches) == 1, "both calls share one batch"
+    # Only now does the issuing response terminate. Fed here rather than
+    # earlier because it does two things at once: it closes the batch, and it
+    # frees the arbiter lane this response was holding -- without it the
+    # batch's own ticket would never be sent and the assertions below would
+    # time out instead of failing.
+    socket.feed({"type": "response.done", "response": {"id": "response-1"}})
+    release["call-2"].set()
+    await _wait_for_tool_tasks(client)
+
+    assert [event["type"] for event in socket.sent] == [
+        "conversation.item.create",
+        "conversation.item.create",
+        "response.create",
+    ]
+    answered = [
+        event["item"]["call_id"]
+        for event in socket.sent
+        if event.get("type") == "conversation.item.create"
+    ]
+    assert answered == ["call-1", "call-2"]
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_raw_batch_answers_once_its_response_terminates() -> None:
+    """response.done closes the batch, so the answer is not held for a grace."""
+
+    async def handler(call):
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-realtime",
+        api_type="gpt",
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "response-1"}})
+    socket.feed(_raw_tool_event("call-1", response_id="response-1"))
+    socket.feed({"type": "response.done", "response": {"id": "response-1"}})
+    await _wait_for_socket_sends(socket, 2)
+    await _wait_for_tool_tasks(client)
+
+    assert [event["type"] for event in socket.sent] == [
+        "conversation.item.create",
+        "response.create",
+    ]
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_identified_transcript_does_not_consume_an_idless_utterances_marker() -> None:
+    """An older identified transcript must leave the newer marker alone.
+
+    Transcription is asynchronous, so on a proxy that omitted `item_id` for
+    the NEWER utterance, an older transcript carrying its own id can arrive
+    first. That one is answered from the id list; consuming the id-less
+    fallback marker on the way would make the newer utterance's own transcript
+    read as an unscoped turn and retire tool work that belongs to it.
+    """
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    transcripts: list[str] = []
+    transcript_seen = asyncio.Event()
+
+    async def handler(call):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    async def on_input_transcript(transcript: str) -> None:
+        transcripts.append(transcript)
+        transcript_seen.set()
+
+    client = _no_server_vad_client(
+        on_input_transcript=on_input_transcript,
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    # Utterance A is identified; utterance B is not, so B falls back to the
+    # one-shot marker.
+    socket.feed({"type": "input_audio_buffer.speech_started", "item_id": "item-a"})
+    socket.feed({"type": "input_audio_buffer.speech_started"})
+    socket.feed(_raw_tool_event())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    scope_after_b = client._tool_scope_generation
+    assert client._raw_speech_started_scope_pending_transcript is True
+
+    # A's transcript finally lands, out of order.
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-a",
+            "transcript": "the older utterance",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+    assert client._raw_speech_started_scope_pending_transcript is True, (
+        "an identified transcript is answered from the id list; it must not "
+        "consume the marker that belongs to the id-less utterance"
+    )
+    assert client._tool_scope_generation == scope_after_b
+
+    # Now B's own id-less transcript. It was already scoped by B's
+    # speech_started, so it must not start yet another turn.
+    transcript_seen.clear()
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": "the current utterance",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+
+    assert transcripts == ["the older utterance", "the current utterance"]
+    assert client._tool_scope_generation == scope_after_b, (
+        "the live utterance's own transcript must not retire its own tool"
+    )
+    assert not cancelled.is_set()
+
+    release.set()
+    await _wait_for_tool_tasks(client)
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_wedged_abandoned_reply_still_lets_the_proactive_message_out(
+    monkeypatch,
+) -> None:
+    """The settle budget's promise survives a session that will not accept writes.
+
+    The abandoned-call reply goes to the same session that just proved it can
+    be slow. Awaiting it outright would let a wedged session hold the
+    proactive notification forever -- restoring exactly the unbounded
+    tool-turn gate this path replaced.
+    """
+
+    import main_logic.omni_realtime_client._responses as responses
+
+    monkeypatch.setattr(responses, "_GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS", 0.05)
+    started = asyncio.Event()
+    never = asyncio.Event()
+    order: list[str] = []
+
+    async def handler(call):
+        started.set()
+        await never.wait()
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    class _WedgedSession(_GeminiSession):
+        async def send_tool_response(self, *, function_responses) -> None:
+            order.append("tool_response started")
+            await never.wait()
+
+        async def send_client_content(self, *, turns, turn_complete) -> None:
+            order.append("proactive")
+
+    monkeypatch.setattr(
+        __import__(
+            "main_logic.omni_realtime_client._gemini_support",
+            fromlist=["types"],
+        ),
+        "types",
+        SimpleNamespace(FunctionResponse=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gemini-live",
+        api_type="gemini",
+        on_tool_call=handler,
+    )
+    session = _WedgedSession()
+    client._gemini_session = session
+    client.ws = session
+    client._TOOL_TASK_CANCEL_TIMEOUT_S = 0.05
+    client._on_connection_attached()
+
+    await client._process_gemini_response(
+        _gemini_response(calls=(("call-a", "lookup"),)),
+        provider_session=session,
+        connection_generation=client._connection_generation,
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    await asyncio.wait_for(
+        client.inject_text_and_request_response("proactive body"), timeout=2
+    )
+
+    assert order == ["tool_response started", "proactive"], (
+        "the inject must proceed even though the abandoned reply never "
+        "finished writing"
+    )
+
+    never.set()
+    await _wait_for_tool_tasks(client)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_identified_speech_start_does_not_arm_the_idless_marker() -> None:
+    """An identified turn must not leave the fallback marker armed behind it.
+
+    Identified transcripts are answered from the id list and never consume the
+    marker, so arming it for an identified speech_started would leave it set
+    for the rest of the connection. The next turn that arrives WITHOUT a
+    speech_started and without a transcript id would then read as already
+    scoped -- the original stale-marker bug, rebuilt one turn further along.
+    """
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    transcript_seen = asyncio.Event()
+
+    async def handler(call):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    async def on_input_transcript(_transcript: str) -> None:
+        transcript_seen.set()
+
+    client = _no_server_vad_client(
+        on_input_transcript=on_input_transcript,
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    # A fully identified turn, start to transcript.
+    socket.feed({"type": "input_audio_buffer.speech_started", "item_id": "item-a"})
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-a",
+            "transcript": "the identified turn",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+    assert client._raw_speech_started_scope_pending_transcript is False, (
+        "an identified speech_started is tracked by id; it must not also arm "
+        "the id-less fallback marker"
+    )
+
+    socket.feed(_raw_tool_event())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    scope_before = client._tool_scope_generation
+
+    # The next turn arrives with neither a speech_started nor a transcript id.
+    transcript_seen.clear()
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": "an unidentified new turn",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+
+    assert client._tool_scope_generation != scope_before, (
+        "an id-less transcript with no speech_started of its own is a new "
+        "user turn and must retire the previous turn's tool work"
+    )
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+    release.set()
+    await _wait_for_tool_tasks(client)
+
+    assert socket.sent == []
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_proactive_waits_for_a_tool_response_still_being_written(
+    monkeypatch,
+) -> None:
+    """A sealed batch whose write is in flight still holds the inject back.
+
+    Sealing marks "this batch has decided its answer", and there is no await
+    between it and the provider write -- so by the time anything else can
+    observe `sealed`, the write has already started and cannot be recalled.
+    What keeps the ordering is that the collector task is still PENDING while
+    it writes, so the settle waits for it exactly like any other unsettled
+    tool work, within the same budget. This pins that; its bounded twin is
+    ``test_a_wedged_abandoned_reply_still_lets_the_proactive_message_out``.
+    """
+
+    import main_logic.omni_realtime_client._responses as responses
+
+    monkeypatch.setattr(responses, "_GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS", 5.0)
+    write_entered = asyncio.Event()
+    release_write = asyncio.Event()
+    order: list[str] = []
+
+    async def handler(call):
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    class _SlowWriteSession(_GeminiSession):
+        async def send_tool_response(self, *, function_responses) -> None:
+            write_entered.set()
+            await release_write.wait()
+            order.append("tool_response")
+
+        async def send_client_content(self, *, turns, turn_complete) -> None:
+            order.append("proactive")
+
+    monkeypatch.setattr(
+        __import__(
+            "main_logic.omni_realtime_client._gemini_support",
+            fromlist=["types"],
+        ),
+        "types",
+        SimpleNamespace(FunctionResponse=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gemini-live",
+        api_type="gemini",
+        on_tool_call=handler,
+    )
+    session = _SlowWriteSession()
+    client._gemini_session = session
+    client.ws = session
+    client._on_connection_attached()
+
+    await client._process_gemini_response(
+        _gemini_response(calls=(("call-a", "lookup"),)),
+        provider_session=session,
+        connection_generation=client._connection_generation,
+    )
+    await asyncio.wait_for(write_entered.wait(), timeout=1)
+
+    # Premise: the batch really is sealed already -- there was no window
+    # between sealing and the write in which anything could have suppressed it.
+    batch = next(iter(client._tool_batch_collector_tasks.values()))
+    assert batch.sealed is True
+
+    inject = asyncio.create_task(
+        client.inject_text_and_request_response("proactive body")
+    )
+    await asyncio.sleep(0.05)
+    assert order == [], "the inject must not overtake a tool response mid-write"
+
+    release_write.set()
+    await asyncio.wait_for(inject, timeout=2)
+    await _wait_for_tool_tasks(client)
+
+    assert order == ["tool_response", "proactive"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_raw_batch_answers_when_its_response_done_is_stale_filtered() -> None:
+    """A batch whose terminal never reaches the close hook still answers.
+
+    ``close_raw_tool_batch`` sits after the stale-response filter, so a
+    ``response.done`` for A arriving once B is current is dropped before it --
+    A's batch is never explicitly closed. That is survivable because the grace
+    is gated on EVIDENCE rather than on a timer: the collector waits only
+    while the issuing response is still the tracked one, and here it is not.
+    Without that gate this batch would sit out a grace round it can never win.
+    """
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(call):
+        started.set()
+        await release.wait()
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-realtime",
+        api_type="gpt",
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "response-a"}})
+    socket.feed(_raw_tool_event("call-1", response_id="response-a"))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    # B becomes current, then A's terminal finally shows up -- and is dropped
+    # by the stale filter before it can reach the close hook.
+    socket.feed({"type": "response.created", "response": {"id": "response-b"}})
+    socket.feed({"type": "response.done", "response": {"id": "response-a"}})
+    socket.feed({"type": "response.done", "response": {"id": "response-b"}})
+    await client._response_arbiter.wait_until_idle(timeout=1)
+    assert client._current_response_id != "response-a", (
+        "premise: A is no longer the tracked response"
+    )
+
+    release.set()
+    await _wait_for_socket_sends(socket, 2)
+    await _wait_for_tool_tasks(client)
+
+    answered = [
+        event["item"]["call_id"]
+        for event in socket.sent
+        if event.get("type") == "conversation.item.create"
+    ]
+    assert answered == ["call-1"], (
+        "A's tool result must still be sent even though its terminal never "
+        "reached the batch close hook"
+    )
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)

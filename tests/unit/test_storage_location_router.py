@@ -43,6 +43,7 @@ class _DummyConfigManager:
         self.mmd_dir = self.app_docs_dir / "mmd"
         self.workshop_dir = self.app_docs_dir / "workshop"
         self.chara_dir = self.app_docs_dir / "character_cards"
+        self.avatar_tools_dir = self.app_docs_dir / "avatar_tools"
         self._readable_live2d_dir = None
         self.is_windows_cfa_fallback_active = False
         self._root_state = {
@@ -1001,6 +1002,12 @@ def test_storage_location_diagnostics_reports_runtime_entries_under_effective_ro
     assert payload["runtime_entries"]["config"]["read_roots"] == [str(config_manager.config_dir.resolve())]
     assert payload["runtime_entries"]["config"]["write_root"] == str(config_manager.config_dir.resolve())
     assert payload["runtime_entries"]["config"]["reads_outside_effective_root"] == []
+    assert payload["runtime_entries"]["avatar_tools"]["read_roots"] == [
+        str(config_manager.avatar_tools_dir.resolve())
+    ]
+    assert payload["runtime_entries"]["avatar_tools"]["write_root"] == str(
+        config_manager.avatar_tools_dir.resolve()
+    )
 
 
 @pytest.mark.unit

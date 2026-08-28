@@ -153,10 +153,30 @@ LEGACY_RUNTIME_DIR_NAMES = (
     "workshop",
     "character_cards",
     "card_faces",
+    "avatar_tools",
     "cloudsave",
     "cloudsave_backups",
     ".cloudsave_staging",
 )
+
+
+# 这些运行时目录用点开头的暂存目录做原子更新（如 avatar_tools 的
+# ``.<tool-id>.backup`` / ``.<tool-id>.updating``）。更新被打断时，它们可能是
+# 某个道具仅存的副本，所以扫描「有没有用户内容」时不能因为点开头就跳过 ——
+# 那会让 bootstrap 判定目标根为空，进而不备份就整根替换掉。
+#
+# 模式必须和各模块自己的事务命名逐字一致，两个方向都会出事：放宽了会把无关的
+# 隐藏条目（``.cache.backup`` 之类）当成用户内容，拦下本该发生的迁移；收紧了
+# 会漏掉真正的仅存副本，重新变成静默删除。只收「更新被打断」这一类 ——
+# ``.uploading``（还没创建成功）和 ``.deleting``（用户就是要删）都不算内容。
+_AVATAR_TOOL_ID_PATTERN_SOURCE = (
+    r"local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
+TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS = {
+    "avatar_tools": re.compile(
+        rf"^\.{_AVATAR_TOOL_ID_PATTERN_SOURCE}\.(?:backup|updating)$"
+    ),
+}
 
 
 NON_RUNTIME_CONTENT_DIR_NAMES = {
@@ -193,6 +213,7 @@ RUNTIME_ASSET_DIR_NAMES = (
     "workshop",
     "character_cards",
     "card_faces",
+    "avatar_tools",
 )
 
 

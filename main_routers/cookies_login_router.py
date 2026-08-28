@@ -26,6 +26,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
+import ipaddress
 import re
 import io
 import base64
@@ -60,10 +61,17 @@ SUSPICIOUS_PATTERN = re.compile(
 def verify_local_access(request: Request):
     """🛡️ Defense in depth: block unauthorized access attempts from non-local hosts."""
     client_host = getattr(request.client, "host", None) if request.client else None
-    
-    allowed_hosts = ["127.0.0.1", "::1", "localhost"]
-    
-    if client_host not in allowed_hosts:
+    allowed = client_host == "localhost"
+    if not allowed:
+        try:
+            client_ip = ipaddress.ip_address(str(client_host or ""))
+        except ValueError:
+            client_ip = None
+        if client_ip is not None:
+            mapped = getattr(client_ip, "ipv4_mapped", None)
+            allowed = client_ip.is_loopback or (mapped is not None and mapped.is_loopback)
+
+    if not allowed:
         logger.warning(f"🚨 拦截到非本地主机的越权访问尝试，来源 IP: {client_host}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 

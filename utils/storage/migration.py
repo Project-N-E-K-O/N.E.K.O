@@ -69,6 +69,7 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "character_cards",
     "card_faces",
     "jukebox",
+    "avatar_tools",
 )
 
 

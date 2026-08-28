@@ -162,6 +162,8 @@ function context(overrides: Partial<AvatarToolRuleContext> = {}): AvatarToolRule
     rangeVariant: 'primary',
     outsideVariant: 'primary',
     visibleVariant: 'primary',
+    imageFrameIndex: 0,
+    imageFrameCount: 1,
     interactionLocked: false,
     recordBurst: vi.fn(() => 1),
     random: vi.fn(() => 0.9),

@@ -54,6 +54,12 @@ function createLifecycleHarness(windowOverrides = {}) {
       return now;
     }
   }
+  class FakeCustomEvent {
+    constructor(type, init = {}) {
+      this.type = type;
+      this.detail = init.detail;
+    }
+  }
   const window = {
     appConst: {},
     appState: { socket },
@@ -65,6 +71,10 @@ function createLifecycleHarness(windowOverrides = {}) {
     },
     removeEventListener(type, listener) {
       listeners.set(type, (listeners.get(type) || []).filter(item => item !== listener));
+    },
+    dispatchEvent(event) {
+      for (const listener of listeners.get(event.type) || []) listener(event);
+      return true;
     },
     setTimeout(callback, delayMs) {
       const id = ++nextTimerId;
@@ -80,6 +90,7 @@ function createLifecycleHarness(windowOverrides = {}) {
   const appButtons = loadAppButtons({
     window,
     globals: {
+      CustomEvent: FakeCustomEvent,
       Date: FakeDate,
       WebSocket: { OPEN: 1 },
     },
@@ -324,6 +335,40 @@ test('avatar interaction host normalizer rejects unsupported tools and preserves
   assert.equal(normalized.text_context.length, 80);
   assert.equal(normalized.pointer.clientX, 8.5);
   assert.equal(normalized.pointer.clientY, 9.25);
+});
+
+test('avatar interaction host normalizer accepts the strict local base contract', () => {
+  const { normalizeAvatarInteractionPayload: normalize } = loadAppButtons();
+  const base = {
+    interactionId: 'local-interaction-1',
+    toolId: 'local-12345678-1234-4123-8123-123456789abc',
+    actionId: 'interact',
+    target: 'avatar',
+    pointer: { clientX: 12, clientY: 34 },
+    timestamp: 1234,
+    intensity: 'normal',
+    touchZone: 'head',
+    toolRevision: '2-123',
+    changeIndex: 1,
+  };
+  const minimal = normalize(base);
+  assert.equal(minimal.tool_id, base.toolId);
+  assert.equal(minimal.action_id, 'interact');
+  assert.equal(minimal.tool_revision, '2-123');
+  assert.equal(minimal.change_index, 1);
+  assert.equal(normalize({ ...base, toolRevision: 'stale' }), null);
+  const { toolRevision: _toolRevision, ...withoutToolRevision } = base;
+  assert.equal(normalize(withoutToolRevision), null);
+  assert.equal(normalize({ ...base, changeIndex: -1 }), null);
+  assert.equal(normalize({ ...base, changeIndex: 1.5 }), null);
+  assert.equal(normalize({ ...base, changeIndex: Number.MAX_SAFE_INTEGER + 1 }), null);
+  const { changeIndex: _changeIndex, ...withoutChangeIndex } = base;
+  assert.equal(normalize(withoutChangeIndex), null);
+  assert.equal(normalize({ ...base, specialTriggered: false }).special_triggered, false);
+  assert.equal(normalize({ ...base, unexpected: true }), null);
+  assert.equal(normalize({ ...base, actionId: 'poke' }), null);
+  assert.equal(normalize({ ...base, intensity: 'burst' }), null);
+  assert.equal(normalize({ ...base, toolId: 'local-not-a-uuid' }), null);
 });
 
 test('avatar interaction host normalizer rejects invalid identity fields', () => {

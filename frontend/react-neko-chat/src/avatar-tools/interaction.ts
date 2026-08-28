@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import {
-  getAvatarToolRegistration,
   type AvatarToolEffectId,
   type AvatarToolId,
   type AvatarToolRoundChoiceGesture,
@@ -9,6 +8,10 @@ import {
   type AvatarToolTouchZone,
   type AvatarToolVariantId,
 } from './catalog';
+import {
+  BUILT_IN_AVATAR_TOOL_REGISTRY,
+  type AvatarToolRegistrySnapshot,
+} from './registry';
 import type { AvatarInteractionPayload } from './protocol';
 
 // Shared policy and geometry --------------------------------------------------
@@ -412,6 +415,7 @@ export type AvatarToolRoundChoiceConfirmation = {
 
 export type AvatarToolCommand = {
   commit?: AvatarToolInteractionCommit;
+  imageFrameIndex?: number;
   rangeVariant?: AvatarToolVariantId;
   outsideVariant?: AvatarToolVariantId;
   sound?: AvatarToolSoundId;
@@ -431,6 +435,8 @@ export type AvatarToolRuleContext = {
   rangeVariant: AvatarToolVariantId;
   outsideVariant: AvatarToolVariantId;
   visibleVariant: AvatarToolVariantId;
+  imageFrameIndex: number;
+  imageFrameCount: number;
   interactionLocked: boolean;
   recordBurst(key: string, windowMs: number): number;
   random(): number;
@@ -444,15 +450,24 @@ export type AvatarToolRuleHandlers = {
   pointerRelease: () => AvatarToolCommand;
 };
 
-export function resolveAvatarToolPointerDown(context: AvatarToolRuleContext): AvatarToolCommand {
-  return getAvatarToolRegistration(context.toolId).handlers.pointerDown(context);
+export function resolveAvatarToolPointerDown(
+  context: AvatarToolRuleContext,
+  registry: AvatarToolRegistrySnapshot = BUILT_IN_AVATAR_TOOL_REGISTRY,
+): AvatarToolCommand {
+  return registry.getRegistration(context.toolId).handlers.pointerDown(context);
 }
 
-export function resolveAvatarToolCommit(context: AvatarToolRuleContext): AvatarToolCommand {
+export function resolveAvatarToolCommit(
+  context: AvatarToolRuleContext,
+  registry: AvatarToolRegistrySnapshot = BUILT_IN_AVATAR_TOOL_REGISTRY,
+): AvatarToolCommand {
   if (context.interactionLocked) return {};
-  return getAvatarToolRegistration(context.toolId).handlers.commit(context);
+  return registry.getRegistration(context.toolId).handlers.commit(context);
 }
 
-export function resolveAvatarToolPointerRelease(toolId: AvatarToolId): AvatarToolCommand {
-  return getAvatarToolRegistration(toolId).handlers.pointerRelease();
+export function resolveAvatarToolPointerRelease(
+  toolId: AvatarToolId,
+  registry: AvatarToolRegistrySnapshot = BUILT_IN_AVATAR_TOOL_REGISTRY,
+): AvatarToolCommand {
+  return registry.getRegistration(toolId).handlers.pointerRelease();
 }

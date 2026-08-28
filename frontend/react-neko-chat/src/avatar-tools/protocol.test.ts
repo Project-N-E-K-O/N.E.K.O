@@ -45,7 +45,7 @@ function declaredFacts(profile: AvatarToolInteractionProfile) {
         intensities: [profile.burst.normalIntensity, profile.burst.rapidIntensity],
       }],
       touchZones: profile.touchZones,
-      chanceField: profile.chance.field,
+      chanceField: profile.chance?.field ?? null,
       chanceIntensity: null,
     };
   }
@@ -201,6 +201,7 @@ describe('avatar interaction payload contract', () => {
     type HammerEasterPayload = Extract<HammerPayload, { intensity: 'easter_egg' }>;
     type HammerRegularPayload = Extract<HammerPayload, { easterEgg?: false }>;
     type RpsPayload = Extract<AvatarInteractionPayload, { toolId: 'rps' }>;
+    type LocalPayload = Extract<AvatarInteractionPayload, { toolId: `local-${string}` }>;
 
     expectTypeOf<LollipopPayload['actionId']>().toEqualTypeOf<'offer' | 'tease' | 'tap_soft'>();
     expectTypeOf<LollipopPayload['intensity']>().toEqualTypeOf<'normal' | 'rapid' | 'burst'>();
@@ -218,6 +219,10 @@ describe('avatar interaction payload contract', () => {
     expectTypeOf<RpsPayload['userGesture']>().toEqualTypeOf<'rock' | 'scissors' | 'paper'>();
     expectTypeOf<RpsPayload['avatarGesture']>().toEqualTypeOf<'rock' | 'scissors' | 'paper'>();
     expectTypeOf<RpsPayload['roundResult']>().toEqualTypeOf<'user_win' | 'avatar_win' | 'draw'>();
+    expectTypeOf<LocalPayload['actionId']>().toEqualTypeOf<'interact'>();
+    expectTypeOf<LocalPayload['toolRevision']>().toEqualTypeOf<string>();
+    expectTypeOf<LocalPayload['changeIndex']>().toEqualTypeOf<number>();
+    expectTypeOf<LocalPayload['specialTriggered']>().toEqualTypeOf<boolean | undefined>();
   });
 });
 describe('avatar tool payload builders', () => {

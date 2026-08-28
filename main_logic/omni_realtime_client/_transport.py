@@ -70,6 +70,13 @@ _STUCK_RELEASE_STEP_TIMEOUT = 0.5
 # interleaved between them; it is a leak guard, not a history.
 _USAGE_RECORDED_ID_LIMIT = 32
 
+# How many utterance ids a ``speech_started`` may have scoped and still be
+# recognised when that utterance's transcript arrives. Input transcription is
+# its own job on these providers, so a transcript can land several turns after
+# the speech it describes; anything older than this is indistinguishable from a
+# new user turn, which is also the safe reading -- it retires stale tool work.
+_RAW_SCOPED_UTTERANCE_MEMORY = 8
+
 # `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
 # 过去匹配在 `str(event['error'])` 上，也就是整个 dict 的 repr —— 里面回显着我们自己
 # 生成的客户端相关性 id（`event_user_item_<uuid4().hex>` 之类）。hex 的字符集是
@@ -2072,10 +2079,33 @@ class _TransportMixin:
                                 raw_arguments=raw_args,
                             ),
                             owner,
+                            # Groups this call with the parallel siblings the
+                            # SAME provider response issued, so they are
+                            # answered as one batch with a single
+                            # response.create. Absent on a provider that omits
+                            # response identity -- there is then nothing that
+                            # can prove two calls are siblings, and each is
+                            # answered on its own as before.
+                            response_id=_response_id_text(
+                                event.get("response_id")
+                            ),
                         )
                 elif event_type == "conversation.item.created":
                     self._response_arbiter.notify_item_created(event)
                 elif event_type == "response.done":
+                    # No further function call can name this response, so its
+                    # tool batch may answer as soon as its own calls settle.
+                    # Ahead of the finalize branches below on purpose: several
+                    # of them `continue`, and a stale or non-finalizing
+                    # terminal still proves the response is over.
+                    self.close_raw_tool_batch(
+                        _response_id_text(event.get("response_id"))
+                        or _response_id_text(
+                            (event.get("response") or {}).get("id")
+                            if isinstance(event.get("response"), dict)
+                            else None
+                        )
+                    )
                     finalize_response = (
                         self._response_arbiter.notify_response_terminal(event)
                     )
@@ -2151,7 +2181,7 @@ class _TransportMixin:
                 # Handle interruptions
                 elif event_type == "input_audio_buffer.speech_started":
                     self.note_user_turn_started()
-                    self._raw_speech_started_scope_pending_transcript = True
+                    self._note_raw_speech_started_scope(event.get("item_id"))
                     self._speech_started_total += 1
                     logger.info("Speech detected")
                     self._response_arbiter.notify_server_vad_started()
@@ -2206,16 +2236,15 @@ class _TransportMixin:
                     self._client_vad_last_speech_time = _now
                     self._user_recent_activity_time = _now
                 elif event_type == "conversation.item.input_audio_transcription.completed":
-                    if (
-                        not self._has_server_vad
-                        and not self._raw_speech_started_scope_pending_transcript
-                    ):
+                    already_scoped = self._raw_transcript_was_already_scoped(
+                        event.get("item_id")
+                    )
+                    if not self._has_server_vad and not already_scoped:
                         # Compatibility proxies may omit both server-VAD
                         # boundary events. The completed transcript is then the
                         # first authoritative signal that a new user turn has
                         # begun, so stale tool work must retire here.
                         self.note_user_turn_started()
-                    self._raw_speech_started_scope_pending_transcript = False
                     self._print_input_transcript = True
                     transcript = event.get("transcript", "")
                     if self.on_input_transcript:
@@ -2406,6 +2435,72 @@ class _TransportMixin:
             )
         )
 
+    def _note_raw_speech_started_scope(self, item_id: Any) -> None:
+        """Record that a ``speech_started`` already scoped this utterance."""
+
+        utterance = str(item_id) if item_id else ""
+        if not utterance:
+            # ONLY an id-less speech_started arms the fallback marker. An
+            # identified one is answered from the id list below, and an
+            # identified transcript deliberately does not consume the marker
+            # -- so arming it here would leave it set for the rest of the
+            # connection, and the next id-less transcript would read as
+            # already scoped. That is the original stale-marker bug, rebuilt
+            # one turn further along.
+            self._raw_speech_started_scope_pending_transcript = True
+            return
+        scoped = self._raw_speech_started_scoped_item_ids
+        if utterance in scoped:
+            return
+        scoped.append(utterance)
+        del scoped[:-_RAW_SCOPED_UTTERANCE_MEMORY]
+
+    def _raw_transcript_was_already_scoped(self, item_id: Any) -> bool:
+        """Whether this transcript's OWN utterance already began a turn here.
+
+        The question the no-server-VAD fallback has to answer is per
+        utterance, and the flag alone answers a different one -- "did any
+        ``speech_started`` happen and not get a transcript yet". Those come
+        apart on a proxy that emits ``speech_started`` for one turn, drops
+        that turn's transcript, then drops ``speech_started`` for the NEXT
+        turn: nothing clears the flag between them (neither
+        ``speech_stopped`` nor ``response.done`` touches it), so the next
+        turn's transcript reads as already scoped, ``note_user_turn_started``
+        is skipped, and a cancellation-resistant tool from the previous turn
+        can still inject its result into the new one.
+
+        None of the cheap lifecycle expiry points fix that. The tool scope
+        does not advance between those two turns -- that IS the failure --
+        and ``_turn_epoch`` moves at ``speech_stopped``, before the transcript
+        normally arrives, so keying on either would fire a spurious extra
+        ``note_user_turn_started`` every healthy turn. Clearing at
+        ``speech_stopped`` breaks the same normal order. Clearing at
+        ``response.done`` would only hold if a transcript could never land
+        after it, which is not something these proxies promise: input
+        transcription runs as its own job alongside the response.
+
+        So the marker is scoped by utterance instead of by lifecycle. The
+        remembered ids are bounded and matching one is a no-op, which also
+        makes a transcript that arrives late -- after its successor's turn has
+        already begun -- stop re-advancing the scope.
+        """
+
+        utterance = str(item_id) if item_id else ""
+        if utterance:
+            # Answered from the id list ALONE, and deliberately without
+            # consuming the id-less fallback marker. Transcription is
+            # asynchronous, so on a proxy that omitted `item_id` for the
+            # NEWER utterance an older identified transcript can arrive
+            # first; consuming the marker there would make that newer
+            # utterance's own id-less transcript read as an unscoped turn and
+            # retire tool work that legitimately belongs to it.
+            return utterance in self._raw_speech_started_scoped_item_ids
+        # Neither side carries identity: this is the pre-identity shape, and
+        # the flag is the only answer available. It is one-shot, so consume it.
+        already_pending = self._raw_speech_started_scope_pending_transcript
+        self._raw_speech_started_scope_pending_transcript = False
+        return already_pending
+
     def _on_connection_attached(self) -> None:
         """Mark a replacement connection as live and hand it the teardown latches.
 
@@ -2454,6 +2549,7 @@ class _TransportMixin:
                 expected_outcome_token=retired_outcome_owner[2],
             )
         self._raw_speech_started_scope_pending_transcript = False
+        self._raw_speech_started_scoped_item_ids = []
         # Provider response identity and interruption state belong to the
         # retired connection. Some raw proxies never announce responses, so a
         # stale interrupt would mute the replacement for its entire lifetime,

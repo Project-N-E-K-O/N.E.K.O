@@ -162,6 +162,28 @@ class _AudioDurationQueue:
 
 
 @dataclass(frozen=True, slots=True)
+class _VoiceInputPipelineFailure:
+    """One committed audio-preprocessing failure, as its notify phase sees it.
+
+    Everything the notify/revoke phase fences on, captured at commit time so
+    that phase can run without the pipeline transition lock. ``failure_token``
+    is the identity: it is replaced only by a NEWER commit, unlike
+    ``_voice_input_pipeline_failed``, which any pipeline replacement clears.
+    """
+
+    failure_token: object
+    independent_route: bool
+    provider: str
+    session_epoch: int
+    connection_id: str
+    lease_generation: int
+    transition_generation: int
+    route_operation_generation: int
+    session_ref: object
+    audio_epoch: int
+
+
+@dataclass(frozen=True, slots=True)
 class _HotSwapAudioFrame:
     pcm16: bytes
     token: VoiceIngressToken
@@ -274,6 +296,9 @@ class AsrRuntimeMixin:
         )
         self._core_asr_cleanup_tasks: set[asyncio.Task[Any]] = set()
         self._voice_input_pipeline_failed = False
+        # Identity of the committed pipeline failure that owns the blocked
+        # route, if any. See _VoiceInputPipelineFailure.
+        self._voice_input_pipeline_failure_token: object | None = None
         self._blocked_text_mode_microphone_signal_state: tuple[
             int,
             str,
@@ -362,6 +387,8 @@ class AsrRuntimeMixin:
             self._core_voice_session_swap_barrier_timeout_s = 5.0
         if not hasattr(self, "_voice_input_pipeline_transition_lock"):
             self._voice_input_pipeline_transition_lock = asyncio.Lock()
+        if not hasattr(self, "_voice_input_pipeline_failure_token"):
+            self._voice_input_pipeline_failure_token = None
         if not hasattr(self, "_voice_input_transition_generation"):
             self._voice_input_transition_generation = 0
         if not hasattr(self, "_voice_lease_resync_signal_state"):
@@ -481,6 +508,12 @@ class AsrRuntimeMixin:
         if mode != self._asr_route_mode:
             self._microphone_route_generation += 1
         if mode != "blocked":
+            # A live route means no committed pipeline failure owns it any
+            # more, so release the ingress fail-closed latch here -- the one
+            # place that decides the route is usable again. Leaving it to the
+            # pipeline replacement instead is what let an unrelated toggle
+            # reopen ingress mid-failure.
+            self._voice_input_pipeline_failure_token = None
             # Re-arm the one-shot text-mode notice for the next episode, and
             # the lease-resync signal now that a live route exists again.
             self._blocked_text_mode_microphone_signal_state = None
@@ -1088,8 +1121,28 @@ class AsrRuntimeMixin:
                 self.lanlan_name,
             )
 
-    async def _abort_independent_asr(self, reason: str) -> None:
+    async def _abort_independent_asr(
+        self,
+        reason: str,
+        *,
+        still_current: Callable[[], bool] | None = None,
+    ) -> None:
+        """Abort the independent run and drop the audio that belonged to it.
+
+        ``still_current`` is for callers that no longer hold the pipeline
+        transition lock across this: ``self._asr_runtime.abort`` is an await,
+        and a session restart or route replacement landing inside it installs
+        a NEW route. Invalidating afterwards would then clear the successor's
+        queued and hot-swap audio and drop its microphone input. Re-checked
+        after the await for exactly that reason -- checking only on entry
+        would leave the window this argument exists to close.
+        """
+
+        if still_current is not None and not still_current():
+            return
         await self._asr_runtime.abort(reason)
+        if still_current is not None and not still_current():
+            return
         self._invalidate_voice_pcm_sync(reason)
         await self._voice_input_registry.wait_idle()
 
@@ -1538,6 +1591,21 @@ class AsrRuntimeMixin:
 
     async def _enqueue_audio_stream_data(self, message: dict) -> None:
         self._ensure_asr_runtime_state()
+        if (
+            self._voice_input_pipeline_failed
+            # The same latch the ingress worker checks, one step earlier.
+            # Nothing below this line closes during the failure notice on a
+            # NATIVE route: that route never reaches _abort_independent_asr,
+            # so the voice PCM sync is never invalidated, and
+            # _voice_input_accepts_pcm is lease-only -- it reads neither the
+            # route mode nor this latch. So while a backpressured status send
+            # holds the failure open, the client's PCM kept filling the
+            # bounded queue, and overflowing it takes the QueueFull path,
+            # which aborts the run all over again.
+            or getattr(self, "_voice_input_pipeline_failure_token", None)
+            is not None
+        ):
+            return
         if not self._voice_input_accepts_pcm():
             await self._maybe_signal_voice_lease_resync()
             return
@@ -1697,13 +1765,31 @@ class AsrRuntimeMixin:
         audio_epoch: int,
         pipeline_ref: VoiceInputAudioPipeline,
     ) -> None:
+        """Commit the failure under the lock, notify and revoke outside it.
+
+        The lock is shared with session start, independent-ASR close and the
+        noise-reduction toggle, and the notify/revoke phase below ends in
+        ``_fail_closed_voice_route`` -- which writes to the frontend socket.
+        A backpressured client would otherwise hold every one of those
+        recovery operations behind an unrelated write.
+
+        What the lock still has to cover is the COMMIT: validating that this
+        failure is the live state and stamping it, so two failures cannot both
+        decide they own the route. Everything after that is fenced by the
+        stamp instead, which is why it can leave the lock -- see
+        ``_voice_input_pipeline_failure_token``.
+        """
+
         async with self._voice_input_pipeline_transition_lock:
-            await self._fail_voice_input_pipeline_locked(
+            committed = self._commit_voice_input_pipeline_failure(
                 ingress_token=ingress_token,
                 session_ref=session_ref,
                 audio_epoch=audio_epoch,
                 pipeline_ref=pipeline_ref,
             )
+        if committed is None:
+            return
+        await self._finish_voice_input_pipeline_failure(committed)
 
     async def _fail_voice_input_pipeline_locked(
         self,
@@ -1713,6 +1799,38 @@ class AsrRuntimeMixin:
         audio_epoch: int,
         pipeline_ref: VoiceInputAudioPipeline,
     ) -> None:
+        """Caller already holds the transition lock; commit and finish here.
+
+        Kept as the locked-caller entry point. The finish phase runs with the
+        lock still held, so a caller that needs the whole failure serialized
+        against its own pipeline work still gets that.
+        """
+
+        committed = self._commit_voice_input_pipeline_failure(
+            ingress_token=ingress_token,
+            session_ref=session_ref,
+            audio_epoch=audio_epoch,
+            pipeline_ref=pipeline_ref,
+        )
+        if committed is None:
+            return
+        await self._finish_voice_input_pipeline_failure(committed)
+
+    def _commit_voice_input_pipeline_failure(
+        self,
+        *,
+        ingress_token: VoiceIngressToken,
+        session_ref: object,
+        audio_epoch: int,
+        pipeline_ref: VoiceInputAudioPipeline,
+    ) -> _VoiceInputPipelineFailure | None:
+        """Validate and stamp one pipeline failure. Synchronous on purpose.
+
+        No await between the validation above and the writes below, so this
+        whole step is atomic against the event loop and the lock only has to
+        span the call itself.
+        """
+
         if (
             self._voice_input_pipeline_failed
             or ingress_token != self._capture_ingress_token()
@@ -1721,7 +1839,7 @@ class AsrRuntimeMixin:
             or self._voice_input_audio_pipeline is not pipeline_ref
             or not self.is_active
         ):
-            return
+            return None
         source_session_epoch = ingress_token.session_epoch
         source_connection_id = ingress_token.connection_id
         source_lease_generation = ingress_token.lease_generation
@@ -1729,9 +1847,20 @@ class AsrRuntimeMixin:
         route_operation_generation = self._asr_route_operation_generation
         source_session_ref = session_ref
         source_audio_epoch = audio_epoch
-        source_pipeline_ref = pipeline_ref
         source_route_mode = self._asr_route_mode
         self._voice_input_pipeline_failed = True
+        # The commit's own identity. `_voice_input_pipeline_failed` says
+        # "frames are being dropped right now" and ANY pipeline replacement
+        # clears it -- including a noise-reduction toggle, which does not end
+        # the blocked route or revoke anything. Testing that flag in the
+        # predicate below is what made the notify/revoke phase unable to leave
+        # the lock: a toggle landing in the middle cleared it, the predicate
+        # went False, the revoke was skipped, and the route stayed blocked
+        # with the lease never revoked (commit 94c26715). The token is cleared
+        # by nothing except a NEWER commit, so the predicate can ask about
+        # this failure instead of about the world.
+        failure_token = object()
+        self._voice_input_pipeline_failure_token = failure_token
         independent_route = source_route_mode == "independent"
         source_provider = (
             self._independent_asr_provider
@@ -1741,25 +1870,67 @@ class AsrRuntimeMixin:
         self._set_microphone_route("blocked")
         self._clear_audio_stream_queue("audio_preprocessing_failed")
         self.hot_swap_audio_cache.clear()
-        if independent_route:
-            await self._abort_independent_asr("audio_preprocessing_failed")
+        return _VoiceInputPipelineFailure(
+            failure_token=failure_token,
+            independent_route=independent_route,
+            provider=source_provider,
+            session_epoch=source_session_epoch,
+            connection_id=source_connection_id,
+            lease_generation=source_lease_generation,
+            transition_generation=voice_transition_generation,
+            route_operation_generation=route_operation_generation,
+            session_ref=source_session_ref,
+            audio_epoch=source_audio_epoch,
+        )
+
+    async def _finish_voice_input_pipeline_failure(
+        self,
+        failure: "_VoiceInputPipelineFailure",
+    ) -> None:
+        """Abort the ASR run, tell the client, revoke the lease.
+
+        Runs outside the pipeline transition lock. Everything here is fenced
+        on ``failure.failure_token`` instead, so a concurrent session restart
+        or noise-reduction toggle is free to take the lock while a
+        backpressured frontend socket is still absorbing the status send.
+        """
+
+        if failure.independent_route:
+            await self._abort_independent_asr(
+                "audio_preprocessing_failed",
+                # This phase runs without the pipeline transition lock, so a
+                # restart can install a newer route while the abort is in
+                # flight; its audio is not this failure's to clear.
+                still_current=lambda: self._asr_route_operation_matches(
+                    failure.route_operation_generation
+                ),
+            )
+
         def preprocessing_failure_is_current() -> bool:
             # The route-operation generation is deliberately NOT repeated here:
             # _fail_closed_voice_route fences on it already, with the identical
             # comparison, and re-checks it after the status send too.
+            #
+            # The pipeline REF is not repeated either, for the same reason the
+            # failure flag is not: a noise-reduction toggle replaces the
+            # pipeline without ending the blocked route, and treating that as
+            # "someone else owns this now" is precisely how the revoke went
+            # missing. A start or a close does replace the pipeline and DOES
+            # invalidate this failure -- both advance the route operation
+            # generation, which _fail_closed_voice_route already checks.
             return not (
-                not self._voice_input_pipeline_failed
-                or self._voice_lease_connection_id != source_connection_id
-                or self._voice_lease_generation != source_lease_generation
+                self._voice_input_pipeline_failure_token
+                is not failure.failure_token
+                or self._voice_lease_connection_id != failure.connection_id
+                or self._voice_lease_generation != failure.lease_generation
                 or (
                     self._voice_input_transition_generation
-                    != voice_transition_generation
+                    != failure.transition_generation
                 )
                 or self._capture_ingress_token().session_epoch
-                != source_session_epoch
-                or self.session is not source_session_ref
-                or self._audio_stream_epoch != source_audio_epoch
-                or self._voice_input_audio_pipeline is not source_pipeline_ref
+                != failure.session_epoch
+                or self.session is not failure.session_ref
+                or self._audio_stream_epoch != failure.audio_epoch
                 or not self.is_active
                 or self._asr_route_mode != "blocked"
                 or (
@@ -1767,7 +1938,7 @@ class AsrRuntimeMixin:
                     or self._independent_asr_route_key
                     or "unknown"
                 )
-                != source_provider
+                != failure.provider
             )
 
         # Ingress backstop. _voice_input_pipeline_failed already drops frames,
@@ -1777,12 +1948,12 @@ class AsrRuntimeMixin:
         # would clear the voice socket and leave the notice with no target.
         await self._fail_closed_voice_route(
             "audio_preprocessing_failed",
-            operation_generation=route_operation_generation,
+            operation_generation=failure.route_operation_generation,
             still_current=preprocessing_failure_is_current,
             status=AsrStatusEvent(
                 code="ASR_AUDIO_PREPROCESSING_FAILED",
-                provider=source_provider,
-                session_epoch=source_session_epoch,
+                provider=failure.provider,
+                session_epoch=failure.session_epoch,
             ),
         )
 
@@ -1799,7 +1970,21 @@ class AsrRuntimeMixin:
             ingress_sequence = self._reserve_hot_swap_ingress_sequence()
         if audio_stream_epoch is None:
             audio_stream_epoch = self._audio_stream_epoch
-        if self._voice_input_pipeline_failed:
+        if (
+            self._voice_input_pipeline_failed
+            # The flag alone stopped being the whole answer once the notify
+            # phase left the transition lock. ANY pipeline replacement clears
+            # it -- a noise-reduction toggle included -- and a toggle can now
+            # land while a backpressured status send is still in flight, i.e.
+            # while this failure still owns a blocked route whose lease has
+            # not been revoked yet. Frames would then be parsed, queued and
+            # run through the replacement DSP until _route_microphone_audio
+            # discards them, refilling the bounded queue and tripping ingress
+            # backpressure during what must stay a fail-closed interval.
+            # The token is cleared only when the route is live again.
+            or getattr(self, "_voice_input_pipeline_failure_token", None)
+            is not None
+        ):
             if sequence_owned:
                 self._complete_hot_swap_ingress_sequence(ingress_sequence)
             return

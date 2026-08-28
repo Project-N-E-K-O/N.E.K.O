@@ -37,6 +37,7 @@ from ._shared import (
     LEGACY_RUNTIME_DIR_NAMES,
     NON_RUNTIME_CONTENT_DIR_NAMES,
     ROOT_CONFIG_MERGE_FILES,
+    TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS,
     RUNTIME_ASSET_DIR_NAMES,
     TARGET_OPTIONAL_STATE_FILES,
 )
@@ -108,9 +109,12 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
                 if _runtime_config_dir_has_user_content(config_manager):
                     return True
                 continue
+            transactional_pattern = TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS.get(name)
             try:
                 for child in candidate.iterdir():
-                    if _is_ignorable_runtime_entry(child):
+                    if _is_ignorable_runtime_entry(
+                        child, transactional_pattern=transactional_pattern
+                    ):
                         continue
                     return True
             except StopIteration:
@@ -123,12 +127,17 @@ def runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
     return _runtime_root_has_user_content(root, config_manager=config_manager)
 
 
-def _is_ignorable_runtime_entry(path: Path) -> bool:
+def _is_ignorable_runtime_entry(path: Path, *, transactional_pattern=None) -> bool:
     name = path.name
     if name == ".gitkeep":
         return True
     if name.startswith("."):
-        return True
+        # 事务目录是崩溃恢复的唯一线索，判定「有没有用户内容」时它算内容。
+        # 名字必须逐字命中该目录声明的事务模式，不能只看点前缀和后缀。
+        return not (
+            transactional_pattern is not None
+            and transactional_pattern.fullmatch(name) is not None
+        )
     if name == "__pycache__":
         return True
     return False
