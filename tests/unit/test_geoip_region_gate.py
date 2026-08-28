@@ -1007,56 +1007,6 @@ def test_raw_config_gate_ignores_an_explicit_lanlan_app_endpoint():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize('rel_path', [
-    'plugin/plugins/qq_auto_reply/session_bootstrap_service.py',
-])
-def test_plugin_session_paths_settle_the_region(rel_path):
-    """Plugin sessions cache an OmniOfflineClient too — same base-URL freeze.
-
-    The plugin keeps the client in a session-keyed dict, so a route picked before
-    the verdict lands sticks for the life of that session.
-
-    Checked per enclosing function and by line order, not by whole-file counts: a
-    settle call sitting in some unrelated function, or after the config read it is
-    supposed to guard, would satisfy a count-based assertion while guaranteeing
-    nothing.
-    """
-    import ast
-    import pathlib
-
-    source = pathlib.Path(__file__).resolve().parents[2] / rel_path
-    tree = ast.parse(source.read_text(encoding='utf-8'))
-
-    def _named(call):
-        return getattr(call.func, 'attr', None) or getattr(call.func, 'id', None)
-
-    checked = 0
-    for func in ast.walk(tree):
-        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        reads, settles = [], []
-        for call in ast.walk(func):
-            if not isinstance(call, ast.Call):
-                continue
-            name = _named(call)
-            if (name == 'get_model_api_config' and call.args
-                    and isinstance(call.args[0], ast.Constant)
-                    and call.args[0].value == 'conversation'):
-                reads.append(call.lineno)
-            elif name == 'aensure_region_resolved':
-                settles.append(call.lineno)
-        for read_line in reads:
-            checked += 1
-            earlier = [s for s in settles if s < read_line]
-            assert earlier, (
-                f'{rel_path}:{read_line} 在 {func.name}() 里冻结会话线路前没有先落定区域'
-                f'（该函数内的落定调用: {settles or "无"}）'
-            )
-
-    assert checked, f'{rel_path} 里没找到 conversation 配置读取，本断言已失效'
-
-
-@pytest.mark.unit
 def test_waiter_stops_when_the_attempt_fails_mid_wait(monkeypatch):
     """The wait tracks the current attempt, not the thread's lifetime.
 

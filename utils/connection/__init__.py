@@ -1,7 +1,7 @@
-"""Platform connection adapters (本体共享连接层).
+"""First-party platform connectors (the app's core body).
 
-Each subpackage is a plugin-agnostic transport/connector library: not a plugin,
-not owned by any single plugin — any plugin may ``import`` it, create a
-connection, register a message handler, and send. The QQ connector lives in
-:mod:`utils.connection.qq`.
+Each subpackage is a dependency-light transport/connector library that is
+imported by plugins and run in-process. These are not plugins themselves --
+they are core-maintained infrastructure shipped with the app. The QQ connector
+lives in :mod:`utils.connection.qq`.
 """

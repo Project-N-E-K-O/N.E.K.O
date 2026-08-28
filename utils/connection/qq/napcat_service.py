@@ -9,17 +9,19 @@ from urllib.parse import urlparse
 
 
 class QQNapcatService:
-    """NapCat 进程/二维码/就绪管理 —— 纯传输层组件，不依赖任何插件对象。
+    """NapCat process / QR / readiness management -- a pure transport component that
+    depends on no plugin object.
 
-    通过注入 ``get_settings``/``get_qq_client``/``config_dir``/``logger``/``emit_log``
-    解耦；进程与启动错误状态由本服务自持（``_napcat_process``/
-    ``_manages_napcat_process``/``_startup_error``），任何插件都可创建它来管理
-    NapCat，而无需把自己的内部状态暴露给它。
+    Decoupled by injecting ``get_settings``/``get_qq_client``/``config_dir``/
+    ``logger``/``emit_log``; the process and startup-error state is owned here
+    (``_napcat_process``/``_manages_napcat_process``/``_startup_error``), so any
+    plugin can create it to manage NapCat without exposing its own internals.
     """
 
-    #: OneBot 连接超时错误——瞬态：NapCat 进程可能仍在启动（QR 登录/慢启动），
-    #: 之后会自动连上。它不该被当作硬失败短路后续重试，否则 NapCat 明明在起，
-    #: 重试却不再轮询等待迟来的连接。
+    #: OneBot connect-timeout error -- transient: NapCat may still be starting
+    #: (QR login / slow start) and connect later. It must not be treated as a hard
+    #: failure that short-circuits retry, otherwise a genuinely starting NapCat
+    #: would stop being polled for the late connection.
     TRANSIENT_TIMEOUT_ERROR = "NapCat 已尝试启动，但没有客户端连接到反向 WS 服务器"
     FORWARD_TRANSIENT_TIMEOUT_ERROR = "NapCat 已启动，但正向 WebSocket 连接未建立（NapCat 可能仍在登录，或未开启 WebSocket 服务器）"
 
@@ -37,7 +39,7 @@ class QQNapcatService:
         self._config_dir = Path(config_dir) if config_dir else (Path(__file__).parent / "static")
         self.logger = logger
         self._emit_log = emit_log or (lambda level, msg: None)
-        # 传输层自持的进程/错误状态
+        # Process / error state owned by the transport layer.
         self._napcat_process: asyncio.subprocess.Process | None = None
         self._manages_napcat_process: bool = False
         self._startup_error: str | None = None
@@ -51,20 +53,22 @@ class QQNapcatService:
         return self._manages_napcat_process
 
     def _transient_timeout_errors(self) -> set[str]:
-        """所有模式的瞬态超时文案（反向 + 正向）。
+        """All transient timeout texts, across connection modes (reverse + forward).
 
-        判定「已保存的超时错误是否瞬态」必须**独立于当前连接模式**：正向模式先
-        写入正向超时文案后切到反向，若按当前模式解释，旧文案会被当成硬失败，
-        wait_for_onebot_ready() 提前短路、不再轮询迟来的连接。
+        Deciding whether a saved timeout error is transient must be **independent**
+        of the current mode: a forward-mode timeout written before switching to
+        reverse would otherwise be re-classified as a hard failure and
+        ``wait_for_onebot_ready`` would short-circuit instead of polling the late
+        connection.
         """
         return {self.TRANSIENT_TIMEOUT_ERROR, self.FORWARD_TRANSIENT_TIMEOUT_ERROR}
 
     def _transient_timeout_error(self) -> str:
-        """OneBot 连接超时的文案，按连接模式区分（写入时用的文案）。
+        """OneBot connect-timeout text, chosen by mode (the one written at set time).
 
-        反向：NapCat 没有客户端连到我们的反向 WS 服务器；
-        正向：我们的正向拨出还没连上 NapCat（进程可能仍在启动/登录，或
-        NapCat 未开启 WebSocket 服务器）。两者都是瞬态，不算硬失败。
+        Reverse: no client connected to our reverse WS server;
+        forward: our dial-out has not reached NapCat (process still starting /
+        logging in, or NapCat's WS server is off). Both are transient, not hard.
         """
         mode = str((self._get_settings() or {}).get("qq_connection_mode") or "napcat").strip()
         if mode == "napcat_forward":
@@ -72,10 +76,12 @@ class QQNapcatService:
         return self.TRANSIENT_TIMEOUT_ERROR
 
     def has_hard_startup_error(self) -> bool:
-        """启动失败是否属于「硬失败」——重试无意义（目录缺失/启动器缺失/进程起不来）。
+        """Whether the failure is a "hard failure" -- retry is pointless
+        (missing dir / launcher / process won't start).
 
-        OneBot 连接超时（反向/正向两种文案）都是瞬态，NapCat 可能还在启动，
-        不算硬失败：重试时应继续轮询等待迟来的连接，而不是立即短路。
+        OneBot connect timeouts (reverse/forward texts) are transient -- NapCat may
+        still be starting, so they are not hard: retry keeps polling for the late
+        connection instead of short-circuiting.
         """
         err = self.get_startup_error()
         return bool(err) and err not in self._transient_timeout_errors()
@@ -168,19 +174,20 @@ class QQNapcatService:
             return None
 
     async def wait_for_onebot_ready(self, *, timeout_seconds: float = 20.0, poll_interval: float = 0.5) -> bool:
-        """等待 Napcat 客户端连接到此服务器的反向 WS
+        """Wait for NapCat to connect to this server's reverse WS.
 
-        反向 WS 模式下，我们不再主动 TCP 连接外部端口，而是轮询是否有
-        OneBot 客户端连接到了我们的服务器。
+        In reverse WS mode we don't dial the external port; we poll whether an
+        OneBot client has connected to our server.
         """
         qq_client = self._get_qq_client()
         if qq_client and qq_client.is_connected():
             self.clear_startup_error()
             return True
-        # 硬失败（目录不存在、启动器缺失、进程拉起失败）时立即返回，不再空轮询
-        # 等满 timeout——否则前端会因等待 20 秒而误报 timeout，而实际是 NapCat
-        # 压根没起来。OneBot 连接超时是瞬态（NapCat 可能还在启动），不算硬失败，
-        # 重试必须继续轮询等待迟来的连接。
+        # Hard failure (missing dir / launcher / process won't start) returns
+        # immediately instead of idle-waiting the full timeout -- otherwise the
+        # frontend would report a false timeout while NapCat never started. OneBot
+        # connect timeout is transient (NapCat may still be starting), not hard:
+        # retry keeps polling for the late connection.
         if self.has_hard_startup_error():
             return False
         deadline = asyncio.get_running_loop().time() + max(1.0, float(timeout_seconds or 20.0))
@@ -189,13 +196,15 @@ class QQNapcatService:
             if qq_client and qq_client.is_connected():
                 self.clear_startup_error()
                 return True
-            # 轮询期间启动器可能已被判定硬失败：及时短路，避免空等满窗口
+            # If the launcher gets flagged hard during polling, short-circuit rather
+            # than idling out the whole window.
             if self.has_hard_startup_error():
                 return False
             await asyncio.sleep(max(0.1, float(poll_interval or 0.5)))
-            # sleep 可能跨过 deadline 返回，期间 OneBot 可能已连上、或硬错误已写入；
-            # 回到循环顶再检查会因 while 条件已为 False 而退出，因此这里补一次终检，
-            # 避免把就绪误报为超时、或用超时错误覆盖真实启动错误。
+            # Sleep may cross the deadline; during it OneBot may have connected or a
+            # hard error may have been written. Returning to the loop top would exit
+            # because the while condition is now False, so do one final check here to
+            # avoid reporting a false timeout or overwriting a real startup error.
             qq_client = self._get_qq_client()
             if qq_client and qq_client.is_connected():
                 self.clear_startup_error()
@@ -209,7 +218,7 @@ class QQNapcatService:
         return self.get_napcat_directory() / "logs"
 
     def get_webui_url(self) -> str:
-        """从 NapCat config/webui.json 构造 WebUI URL"""
+        """Build the WebUI URL from NapCat config/webui.json."""
         import json as _json
         napcat_dir = self.get_napcat_directory()
         webui_json = napcat_dir / "config" / "webui.json"
@@ -230,23 +239,24 @@ class QQNapcatService:
             return ""
 
     async def _read_napcat_webui_lines(self) -> list[str]:
-        """返回 NapCat WebUI 访问信息"""
+        """Return NapCat WebUI access info."""
         url = self.get_webui_url()
         if url:
             return [f"NapCat WebUI: {url}"]
         return []
 
     async def ensure_napcat_started(self) -> None:
-        # 硬失败（目录缺失/启动器缺失/进程拉起失败）后不再重试：重试无意义，
-        # 只会重复设错+重复尝试拉起，前端也拿不到明确失败原因。
+        # After a hard failure (missing dir / launcher / process won't start) don't
+        # retry: retrying is pointless and only repeats the error + relaunch attempt,
+        # and the frontend gets no clear failure reason.
         if self.has_hard_startup_error():
             return
         configured_path = self.get_configured_napcat_path()
         if not configured_path:
-            # 未配置 napcat_directory → 不自动启动 NapCat（用户可能手动启动）。
-            # 这不是硬失败：wait_for_onebot_ready 仍会轮询等待手动启动的
-            # OneBot 连上来。不能设硬错误，否则手动启动的 OneBot 也无法通过
-            # ensure_napcat 完成连接。
+            # napcat_directory unset -> don't auto-start NapCat (user may launch it
+            # manually). This is not a hard failure: wait_for_onebot_ready still polls
+            # for a manually started OneBot, so don't set a hard error that would
+            # prevent ensure_napcat from completing that connection.
             return
         if self._napcat_process and self._napcat_process.returncode is None:
             return
@@ -254,9 +264,11 @@ class QQNapcatService:
         if launcher is None:
             mode = str((self._get_settings() or {}).get("qq_connection_mode") or "napcat").strip()
             if mode == "napcat_forward":
-                # 正向模式本地 NapCat 启动是**尽力而为**：启动器缺失只告警、不设硬
-                # 错误——正向仍可连远端/手动启动的 NapCat，bootstrap() 不应因此进入
-                # 失败分支（wait_for_onebot_ready 会轮询正向拨号结果）。
+                # For forward mode, local NapCat launch is **best-effort**: a missing
+                # launcher only warns and doesn't set a hard error -- forward can still
+                # connect to a remote / manually started NapCat, and bootstrap() should
+                # not enter the failure branch (wait_for_onebot_ready polls the forward
+                # dial result).
                 self._emit_log("WARN", self._build_missing_launcher_error())
                 return
             self._set_startup_error(self._build_missing_launcher_error())
@@ -304,7 +316,8 @@ class QQNapcatService:
             return
         pid = process.pid
         try:
-            # 使用 /T 递归杀进程树，确保 NapCat 本体和 cmd 包装一起结束
+            # Use /T to kill the process tree recursively so NapCat and its cmd
+            # wrapper both terminate.
             kill_proc = await asyncio.create_subprocess_exec(
                 "taskkill", "/PID", str(pid), "/T", "/F",
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,

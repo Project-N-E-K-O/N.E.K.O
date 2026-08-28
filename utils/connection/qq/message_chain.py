@@ -1,7 +1,8 @@
-"""消息链模型 — 对齐 KiraAI 的 MessageChain 递归结构。
+"""Message-chain model -- mirrors KiraAI's recursive MessageChain structure.
 
-每个消息元素都有 .repr 属性用于注入 LLM prompt，
-MessageChain 可以嵌套（reply.chain, forward.chains）。"""
+Each message element exposes a ``.repr`` for LLM prompt injection; a
+``MessageChain`` can be nested (``reply.chain``, ``forward.chains``).
+"""
 
 from __future__ import annotations
 
@@ -11,15 +12,15 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Union
 
 
-# ── 基础元素 ──────────────────────────────────────────────
+# ── base elements ──────────────────────────────────────────
 
 class MessageElement(ABC):
-    """消息元素基类。"""
+    """Base class for a message element."""
 
     @property
     @abstractmethod
     def repr(self) -> str:
-        """LLM prompt 中的文本表示。"""
+        """Text form used in the LLM prompt."""
         ...
 
 
@@ -59,7 +60,7 @@ class At(MessageElement):
 class Reply(MessageElement):
     def __init__(self, message_id: str, chain: Optional[MessageChain] = None) -> None:
         self.message_id: str = str(message_id)
-        self.chain: Optional[MessageChain] = chain  # 被引用消息的内容链
+        self.chain: Optional[MessageChain] = chain  # content chain of the quoted message
 
     @property
     def repr(self) -> str:
@@ -128,8 +129,8 @@ class File(MessageElement):
     def __init__(self, name: str = "", bs64: str = "", url: str = "") -> None:
         self.name: str = str(name or "")
         self.bs64: str = str(bs64 or "")
-        # 可选直链 URL（Lagrange 类后端 data.url / NapCat get_*_file_url 换取），
-        # 纯增量：repr / bs64 行为不变。
+        # Optional direct link URL (from Lagrange-style backends via data.url, or
+        # resolved by NapCat get_*_file_url); purely additive -- repr / bs64 unchanged.
         self.url: str = str(url or "")
 
     @property
@@ -138,7 +139,7 @@ class File(MessageElement):
 
 
 class JsonCard(MessageElement):
-    """QQ JSON 卡片消息（小程序/分享卡片等）。"""
+    """QQ JSON card message (mini-app / share card etc.)."""
     def __init__(self, raw_json: str) -> None:
         self.raw: str = str(raw_json or "")
         self.title: str = ""
@@ -173,11 +174,11 @@ class JsonCard(MessageElement):
         return "".join(parts)
 
 
-# ── 消息链 ────────────────────────────────────────────────
+# ── message chain ─────────────────────────────────────────
 
 @dataclass
 class MessageChain:
-    """有序消息元素列表，支持嵌套（reply/forward）。"""
+    """Ordered list of message elements, nestable via reply/forward."""
     elements: list[MessageElement] = field(default_factory=list)
     sender_name: str = ""
     sender_id: str = ""
@@ -190,12 +191,12 @@ class MessageChain:
 
     @property
     def repr(self) -> str:
-        """拼接所有元素的 repr，用于注入 LLM 上下文。"""
+        """Concatenate every element's repr for LLM context injection."""
         return "".join(e.repr for e in self.elements)
 
     @property
     def plain_text(self) -> str:
-        """提取纯文本（仅 Text 元素）。"""
+        """Extract plain text (Text elements only)."""
         return "".join(e.text for e in self.elements if isinstance(e, Text))
 
     @staticmethod
@@ -203,10 +204,10 @@ class MessageChain:
         return MessageChain()
 
 
-# ── 构建工具 ──────────────────────────────────────────────
+# ── builders ───────────────────────────────────────────────
 
 def chain_from_onebot_message(msg: dict[str, Any]) -> MessageChain:
-    """从 OneBot 消息 dict 构建消息链（不含嵌套展开）。"""
+    """Build a message chain from an OneBot message dict (no nested expansion)."""
     chain = MessageChain(
         sender_name=(msg.get("sender") or {}).get("nickname") or str(msg.get("user_id") or ""),
         sender_id=str(msg.get("user_id") or ""),

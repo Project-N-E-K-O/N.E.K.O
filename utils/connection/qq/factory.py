@@ -52,8 +52,8 @@ def create_qq_connection(
         emit_log=emit_log,
         image_describer=image_describer,
         voice_transcriber=voice_transcriber,
-        # napcat_forward = 正向 WS 客户端（主动拨出到 OneBot 实现方的 WS 服务器）；
-        # 其余（含默认）走反向 WS 服务器。
+        # napcat_forward = forward WS client (dials out to the OneBot implementation's WS server);
+        # everything else (incl. the default) uses the reverse WS server.
         direction="forward" if mode == "napcat_forward" else "reverse",
     )
 
