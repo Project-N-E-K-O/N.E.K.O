@@ -9730,6 +9730,89 @@ async def test_dispatch_hands_the_ownership_predicate_to_the_handoff() -> None:
 
 
 @pytest.mark.unit
+async def test_provider_admission_rejection_submits_the_transcript_as_text() -> None:
+    """Losing the provider's admission window must not lose the sentence.
+
+    The arbiter rejects a multimodal ticket once a newer turn has armed its
+    pause, and deletes the committed item on the way out -- nothing of this
+    request survives provider-side. Propagating that error drops the user's
+    whole utterance; the frames are gone but the transcript still has to be
+    answered, exactly as when Core detects the supersession itself.
+    """
+    from main_logic.omni_realtime_client._response_arbiter import (
+        ResponseAdmissionRejected,
+    )
+
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+    runtime.session.submit_multimodal_turn = AsyncMock(
+        side_effect=ResponseAdmissionRejected(
+            "response dispatch admission rejected after commit"
+        )
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    admission_token = runtime._asr_runtime._capture_turn_token(
+        runtime._asr_lifecycle
+    )
+    admission_turn_id = (
+        f"asr-{admission_token.ingress.session_epoch}-{admission_token.turn_id}"
+    )
+    runtime._begin_core_multimodal_turn(admission_turn_id, admission_token)
+    admission_record = runtime._core_multimodal_turns[admission_turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "frame-of-this-turn",
+        source="screen",
+        request_id="screen-1",
+        captured_at=admission_record.started_at,
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=admission_token,
+            provider="openai",
+            text="这句话不能消失",
+        )
+    )
+
+    runtime.session.submit_multimodal_turn.assert_awaited_once()
+    runtime.session.submit_external_voice_turn.assert_awaited_once()
+    assert (
+        "这句话不能消失"
+        in runtime.session.submit_external_voice_turn.await_args.args
+    )
+
+
+@pytest.mark.unit
+async def test_route_close_drops_the_staged_visual_caches() -> None:
+    """Staged originals belong to the route, not to the process.
+
+    Their only other clearing point is the NEXT turn starting, so an episode
+    that ends while screen sharing is on -- with no further utterance -- leaves
+    full-size base64 originals pinned on a long-lived character manager, and the
+    next episode starts with a buffer already full of the previous one's frames.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    assert runtime._stage_independent_visual_frame(
+        "frame-with-no-utterance",
+        source="screen",
+        request_id="screen-1",
+        captured_at=time.monotonic(),
+    )
+    assert runtime._prerecord_visual_frames
+    assert runtime._latest_independent_visual_frame is not None
+
+    await runtime._close_independent_asr(next_route_mode="blocked")
+
+    assert runtime._prerecord_visual_frames == []
+    assert runtime._latest_independent_visual_frame is None
+
+
+@pytest.mark.unit
 async def test_visual_validation_wait_timeout_does_not_cancel_image_task() -> None:
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"

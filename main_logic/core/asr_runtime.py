@@ -50,6 +50,9 @@ from main_logic.voice_turn.contracts import (
     VoiceTranscriptEvent,
     VoiceTurnToken,
 )
+from main_logic.omni_realtime_client._response_arbiter import (
+    ResponseAdmissionRejected,
+)
 from main_logic.voice_turn.activity_evidence import RnnoiseEvidence
 from main_logic.voice_turn.audio_input import (
     ProcessedVoiceFrame,
@@ -1750,6 +1753,13 @@ class AsrRuntimeMixin:
         self._voice_input_pipeline_failed = False
         self._independent_asr_provider = None
         self._independent_asr_route_key = None
+        # 这段发声窗口的原图只对这一条路由有意义。它们此前唯一的清理点是**下一个**
+        # 回合开始时（_begin_core_multimodal_turn），所以屏幕共享着、还没开口就结束
+        # 这一集的话，最多 8 张满尺寸 base64 原图会一直挂在常驻的角色管理器上；下
+        # 一集 ASR 起步时缓冲区里还掺着上一集的帧，把这一集自己开头的帧挤出上限。
+        # 路由身份边界就是它们的生命周期终点。
+        self._prerecord_visual_frames = []
+        self._latest_independent_visual_frame = None
         await self._asr_runtime.close()
         try:
             await pipeline.close()
@@ -3505,11 +3515,33 @@ class AsrRuntimeMixin:
                                 session_ref=session_ref,
                             )
                         else:
-                            await submit_multimodal(
-                                multimodal_turn.transcript,
-                                multimodal_turn.images,
-                                turn_id=multimodal_turn.turn_id,
-                            )
+                            try:
+                                await submit_multimodal(
+                                    multimodal_turn.transcript,
+                                    multimodal_turn.images,
+                                    turn_id=multimodal_turn.turn_id,
+                                )
+                            except ResponseAdmissionRejected:
+                                # provider 侧的取代判据（后继回合已经 prepare，
+                                # arbiter 的 admission 闸把这张 ticket 拒了）比
+                                # Core 的 invalidated 更晚也更权威。被拒时已提交
+                                # 的 item 已经删干净，provider 侧不留痕迹 ——
+                                # 但这一轮的**话**不能跟着帧一起消失。与
+                                # visual_ownership_lost 那三处同一判据：丢帧降级
+                                # 成纯文本，绝不丢用户的句子。
+                                logger.info(
+                                    "[%s] independent ASR turn %s lost its "
+                                    "provider admission window; submitting "
+                                    "transcript without its frames",
+                                    self.lanlan_name,
+                                    external_turn_id,
+                                )
+                                multimodal_turn = None
+                                await self._submit_core_voice_turn(
+                                    event.text,
+                                    turn_id=external_turn_id,
+                                    session_ref=session_ref,
+                                )
                     else:
                         # Candidate connect must happen outside the swap lock so
                         # the healthy Realtime session remains usable until the

@@ -790,7 +790,16 @@ class _ResponseMixin:
         response" against the realtime API's "one active response at a time"
         constraint.
         """
-        return bool(self._is_responding or self._ensure_response_arbiter().is_busy)
+        # Gemini 的 external-ASR 回合在 SDK send 返回之后、第一个模型内容事件到达
+        # 之前，_is_responding 还是 False、arbiter 也已经空闲，但那一轮其实已经被
+        # provider 接下了（_gemini_external_outcome_token 活着，要到 turn_complete
+        # / interrupted 才落地）。这段窗口里不认它，排队的主动搭话就能过掉所有忙检
+        # 查、再插一个不受管辖的 Gemini 回合，两者的终结事件互相顶掉。
+        return bool(
+            self._is_responding
+            or getattr(self, "_gemini_external_outcome_token", None) is not None
+            or self._ensure_response_arbiter().is_busy
+        )
 
     async def inject_text_and_request_response(
         self,

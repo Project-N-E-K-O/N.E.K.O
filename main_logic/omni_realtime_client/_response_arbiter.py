@@ -82,6 +82,16 @@ _WAIT_MARGIN_REPORT_FRACTION = 0.5
 _STUCK_RELEASE_NOTIFY_TIMEOUT = 2.0
 
 
+class ResponseAdmissionRejected(RuntimeError):
+    """This request lost its admission window; it was never (or no longer) sent.
+
+    Distinct from an ordinary interruption: nothing of this request survives on
+    the provider side (a committed item is deleted first), so the caller is free
+    to re-submit an equivalent request in a degraded form. Subclasses
+    ``RuntimeError`` so existing broad handlers keep working.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ResponseDispatchResult:
     item_acknowledged: bool
@@ -1994,7 +2004,9 @@ class RealtimeResponseArbiter:
                 queued.admission_check is not None
                 and not queued.admission_check()
             ):
-                raise RuntimeError("response dispatch admission rejected")
+                raise ResponseAdmissionRejected(
+                    "response dispatch admission rejected"
+                )
             self._idle.clear()
             if queued.ack_expected:
                 queued.item_ack = loop.create_future()
@@ -2013,6 +2025,12 @@ class RealtimeResponseArbiter:
                 if queued.interrupted or admission_rejected:
                     if queued.item_committed and admission_rejected:
                         await self._delete_committed_item(queued)
+                    if admission_rejected and not queued.interrupted:
+                        # 已提交的 item 上面刚删掉，provider 侧不留痕迹；调用方
+                        # 可以安全地改用降级形式重投。真打断走下面那条，语义不同。
+                        raise ResponseAdmissionRejected(
+                            "response dispatch admission rejected after commit"
+                        )
                     raise RuntimeError("response dispatch interrupted")
                 queued.item_committed = True
                 await self._worker_send(event)
@@ -2031,7 +2049,9 @@ class RealtimeResponseArbiter:
             )
             if queued.item_committed and admission_rejected:
                 await self._delete_committed_item(queued)
-                raise RuntimeError("response dispatch interrupted")
+                raise ResponseAdmissionRejected(
+                    "response dispatch admission rejected after commit"
+                )
 
             if queued.item_ack is not None:
                 if queued.item_committed and queued.interrupted:
@@ -2064,7 +2084,9 @@ class RealtimeResponseArbiter:
             )
             if queued.item_committed and admission_rejected:
                 await self._delete_committed_item(queued)
-                raise RuntimeError("response dispatch interrupted")
+                raise ResponseAdmissionRejected(
+                    "response dispatch admission rejected after commit"
+                )
             if queued.interrupted:
                 raise RuntimeError("response dispatch interrupted")
             if not self._connection_available:
@@ -2074,7 +2096,9 @@ class RealtimeResponseArbiter:
                 and not queued.item_committed
                 and not queued.admission_check()
             ):
-                raise RuntimeError("response dispatch admission rejected")
+                raise ResponseAdmissionRejected(
+                    "response dispatch admission rejected"
+                )
             if queued.ticket.started.done():
                 if queued.ticket.started.cancelled():
                     raise RuntimeError(

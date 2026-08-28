@@ -726,3 +726,26 @@ async def test_proactive_nudge_still_speaks_while_raw_frames_are_fenced():
     # 帧没被消费：栅栏解除之后它还能用。
     assert client._proactive_image_consumed is False
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_live_gemini_external_turn_counts_as_an_active_response():
+    """Gemini owns the turn before its first content event arrives.
+
+    Between the SDK send returning and the first model content, ``_is_responding``
+    is still false and the arbiter is idle, yet the provider has already accepted
+    the external-ASR turn (`_gemini_external_outcome_token` stays live until
+    turn_complete/interrupted). A queued proactive callback that passes every
+    busy check in that window submits a second, unscoped Gemini turn.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._is_responding = False
+    assert client.is_active_response() is False
+
+    client._gemini_external_outcome_token = object()
+    assert client.is_active_response() is True
+
+    # 终结边缘落地后重新变空闲。
+    client._gemini_external_outcome_token = None
+    assert client.is_active_response() is False
+    await client.close()

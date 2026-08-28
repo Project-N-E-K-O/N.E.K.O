@@ -6,6 +6,10 @@ from types import MethodType
 from unittest.mock import AsyncMock
 import pytest
 
+from main_logic.omni_realtime_client._response_arbiter import (
+    ResponseAdmissionRejected,
+)
+
 from main_logic.omni_realtime_client import OmniRealtimeClient
 import main_logic.omni_realtime_client._response_arbiter as arbiter_module
 from main_logic.omni_realtime_client._protocol_capabilities import (
@@ -270,7 +274,9 @@ async def test_response_arbiter_deletes_committed_item_after_admission_invalidat
     admitted = False
     release_item_write.set()
 
-    with pytest.raises(RuntimeError, match="interrupted"):
+    # 提交后被 admission 拒绝有专属类型：已提交的 item 已被删除，
+    # provider 侧不留痕迹，调用方可以安全地降级重投；真打断不行。
+    with pytest.raises(ResponseAdmissionRejected):
         await asyncio.wait_for(ticket.done, 0.2)
     assert [event["type"] for event in sent] == [
         "conversation.item.create",
@@ -321,7 +327,9 @@ async def test_response_arbiter_deletes_all_committed_prefix_items_after_invalid
     admitted = False
     release_first_item.set()
 
-    with pytest.raises(RuntimeError, match="interrupted"):
+    # 提交后被 admission 拒绝有专属类型：已提交的 item 已被删除，
+    # provider 侧不留痕迹，调用方可以安全地降级重投；真打断不行。
+    with pytest.raises(ResponseAdmissionRejected):
         await asyncio.wait_for(ticket.done, 0.2)
     assert [event["type"] for event in sent] == [
         "conversation.item.create",
