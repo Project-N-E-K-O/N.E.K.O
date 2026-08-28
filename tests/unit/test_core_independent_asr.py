@@ -6506,6 +6506,69 @@ async def test_a_live_route_releases_the_pipeline_failure_ingress_latch() -> Non
     assert runtime._voice_input_pipeline_failure_token is None
 
 
+async def test_pipeline_failure_stops_accepting_pcm_at_ingress() -> None:
+    """The latch drops frames before the queue, not after the worker dequeues.
+
+    NATIVE route and the fixture's DEFAULT lease state, both load-bearing.
+    The independent route reaches `_abort_independent_asr` on the way here and
+    that invalidates the voice PCM sync, which closes the lease gate one step
+    below the latch; and `_begin_voice_input_connection` also leaves the lease
+    in a state that refuses PCM. Either one makes this test pass without ever
+    exercising the latch -- the first version of it did exactly that, and the
+    mutant survived.
+
+    On the native route with a live lease nothing else stands in the way:
+    `_voice_input_accepts_pcm` is lease-only and reads neither the route mode
+    nor the latch, so a backpressured status send left the client free to fill
+    the bounded queue -- and overflowing it takes the QueueFull path, which
+    aborts the run all over again.
+    """
+
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime._set_microphone_route("native")
+    runtime._asr_runtime.abort = AsyncMock()
+    status_started = asyncio.Event()
+    release_status = asyncio.Event()
+
+    async def backpressured_status(_payload) -> None:
+        status_started.set()
+        await release_status.wait()
+
+    runtime.send_status = AsyncMock(side_effect=backpressured_status)
+    # Keep the worker from draining what the queue accepts, so the depth below
+    # measures what ingress ADMITTED rather than what survived a race with it.
+    runtime._ensure_audio_stream_worker = lambda: None
+
+    failure = asyncio.create_task(
+        runtime._fail_voice_input_pipeline(
+            ingress_token=runtime._capture_ingress_token(),
+            session_ref=runtime.session,
+            audio_epoch=runtime._audio_stream_epoch,
+            pipeline_ref=runtime._voice_input_audio_pipeline,
+        )
+    )
+    await asyncio.wait_for(status_started.wait(), 1)
+
+    # Premise: everything DOWNSTREAM of the latch would still take this PCM.
+    # Without this the test can pass for the wrong reason.
+    assert runtime._voice_input_accepts_pcm() is True
+
+    for _ in range(4):
+        await runtime._enqueue_audio_stream_data(
+            {"input_type": "audio", "sample_rate_hz": 48_000, "data": [1] * 480}
+        )
+
+    assert runtime._audio_stream_queue.qsize() == 0, (
+        "PCM arriving during the failure notice must be dropped at ingress "
+        "rather than queued behind it"
+    )
+
+    release_status.set()
+    await asyncio.wait_for(failure, 1)
+    assert runtime._asr_route_mode == "blocked"
+
+
 async def test_stale_failure_abort_does_not_clear_successor_route_audio() -> None:
     """A restart landing inside the abort keeps its own queued audio.
 

@@ -1591,6 +1591,21 @@ class AsrRuntimeMixin:
 
     async def _enqueue_audio_stream_data(self, message: dict) -> None:
         self._ensure_asr_runtime_state()
+        if (
+            self._voice_input_pipeline_failed
+            # The same latch the ingress worker checks, one step earlier.
+            # Nothing below this line closes during the failure notice on a
+            # NATIVE route: that route never reaches _abort_independent_asr,
+            # so the voice PCM sync is never invalidated, and
+            # _voice_input_accepts_pcm is lease-only -- it reads neither the
+            # route mode nor this latch. So while a backpressured status send
+            # holds the failure open, the client's PCM kept filling the
+            # bounded queue, and overflowing it takes the QueueFull path,
+            # which aborts the run all over again.
+            or getattr(self, "_voice_input_pipeline_failure_token", None)
+            is not None
+        ):
+            return
         if not self._voice_input_accepts_pcm():
             await self._maybe_signal_voice_lease_resync()
             return
