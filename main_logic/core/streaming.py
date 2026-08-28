@@ -782,17 +782,23 @@ class StreamingMixin:
                             stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
                         if memory_text:
                             stream_text_kwargs["history_replacement_text"] = memory_text
-                        if _focus_thinking:
-                            # 凝神 turn runs thinking-on: pre-pulse the frontend so the
-                            # bubble shows up the instant the turn starts (immediate
-                            # feedback), before any reasoning chunk arrives. Idempotent
-                            # and harmless — a non-Focus turn instead pulses lazily from
-                            # OmniOfflineClient.on_thinking_active on its first reasoning
-                            # chunk (handle_thinking_active). Either way the bubble clears
-                            # on the first visible token (send_lanlan_response) or in the
-                            # unconditional finally below.
-                            await self._push_focus_thinking(True)
                         try:
+                            if _focus_thinking:
+                                # 凝神 turn runs thinking-on: pre-pulse the frontend so
+                                # the bubble shows up the instant the turn starts
+                                # (immediate feedback), before any reasoning chunk
+                                # arrives. Idempotent and harmless — a non-Focus turn
+                                # instead pulses lazily from
+                                # OmniOfflineClient.on_thinking_active on its first
+                                # reasoning chunk (handle_thinking_active). Either way
+                                # the bubble clears on the first visible token
+                                # (send_lanlan_response) or in the finally below.
+                                #
+                                # ⚠️ 这个 True 必须在 try **之内**：它自己就会等
+                                # websocket 锁 / send_json，拆除时正好卡在这里被取消
+                                # 的话，_focus_thinking_active 已经置上、通知已经入队，
+                                # 而清理永远不会执行，气泡就一直亮到下一轮偶然把它关掉。
+                                await self._push_focus_thinking(True)
                             await self.session.stream_text(data, **stream_text_kwargs)
                         finally:
                             # Clear unconditionally: a non-Focus turn may have pulsed the

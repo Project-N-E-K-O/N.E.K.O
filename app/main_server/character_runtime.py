@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
+from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
+from utils.screenshot_utils import MAX_BASE64_SIZE
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
 from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY
@@ -600,6 +602,36 @@ async def _handle_agent_event(event: dict):
                         )
                         continue
                     if isinstance(b64, str) and b64:
+                        # 入口校验：这条路径此前照单全收任意非空字符串，既不校验
+                        # 单张大小也不限张数，而这些图会一直挂在 callback 上等待
+                        # 投递（队列本身只限条目数，不限条目内的字节）。用的是仓
+                        # 库既有的两个判据，不是新发明的预算：
+                        #   - MAX_BASE64_SIZE：stream_image / stage_multimodal_frame
+                        #     拒绝超大帧用的同一个上限；
+                        #   - MAX_MULTIMODAL_TURN_IMAGES：每轮图片数上限。这些图
+                        #     最终会作为同一轮的前缀一起送进去，所以就是那个预算。
+                        # 超出的按「多余丢弃」处理，并留一行 warning 让插件作者看见
+                        # ——与上面 audio/video、url 两处未支持分支的处理一致。
+                        if len(b64) > MAX_BASE64_SIZE:
+                            logger.warning(
+                                "[EventBus] image media_part dropped: %d bytes "
+                                "exceeds the %d-byte per-image limit",
+                                len(b64),
+                                MAX_BASE64_SIZE,
+                            )
+                            continue
+                        bucket = (
+                            deferred_proactive_images
+                            if ai_behavior_v2 == "respond"
+                            else deferred_callback_images
+                        )
+                        if len(bucket) >= MAX_MULTIMODAL_TURN_IMAGES:
+                            logger.warning(
+                                "[EventBus] image media_part dropped: already "
+                                "retained %d image(s), the per-turn cap",
+                                MAX_MULTIMODAL_TURN_IMAGES,
+                            )
+                            continue
                         if ai_behavior_v2 == "respond":
                             # Defer: stream when the manager releases this cue so
                             # the image shares the proactive response's context.

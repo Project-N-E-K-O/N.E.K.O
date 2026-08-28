@@ -1065,3 +1065,66 @@ async def test_chat_blind_passthrough_real_helper_swallowed_send_skips_turn_end(
 
     assert real_mgr.websocket.send_json.await_count == 1
     real_mgr.handle_proactive_complete.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_plugin_images_are_bounded_at_the_ingestion_boundary(monkeypatch):
+    """A plugin is an untrusted producer; its inline images need the same limits.
+
+    These strings are retained on a callback until delivery, and the callback
+    queue caps item COUNT, not bytes inside an item. Without a per-image size
+    check and a per-turn count cap, one plugin can pin an arbitrary payload in
+    memory and push an unbounded number of images into a single turn's prefix.
+    Both limits already exist in the repo -- this boundary just skipped them.
+    """
+    from app import main_server
+    from config.model_defaults import MAX_MULTIMODAL_TURN_IMAGES
+    from utils.screenshot_utils import MAX_BASE64_SIZE
+
+    fake_mgr = MagicMock()
+    fake_mgr.session = MagicMock()
+    fake_mgr.session.stream_image = AsyncMock()
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.submit_proactive_callback = MagicMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: fake_mgr,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._is_websocket_connected",
+        lambda _ws: False,
+    )
+
+    oversized = "x" * (MAX_BASE64_SIZE + 1)
+    parts = [
+        {"type": "image", "binary_base64": oversized, "mime": "image/png"},
+    ] + [
+        {"type": "image", "binary_base64": f"img-{i}", "mime": "image/png"}
+        for i in range(MAX_MULTIMODAL_TURN_IMAGES + 4)
+    ]
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "proactive_message",
+            "lanlan_name": "Test",
+            "text": "",
+            "channel": "plugin:camera",
+            "task_id": "flood",
+            "delivery_mode": "proactive",
+            "ai_behavior": "respond",
+            "visibility": [],
+            "source_kind": "plugin",
+            "source_name": "camera",
+            "media_parts": parts,
+        }
+    )
+
+    fake_mgr.submit_proactive_callback.assert_called_once()
+    retained = fake_mgr.submit_proactive_callback.call_args.args[0]["media_images"]
+    # 超大的那张整张丢掉，其余按每轮上限截断，保留最早的几张。
+    assert oversized not in retained
+    assert retained == [
+        f"img-{i}" for i in range(MAX_MULTIMODAL_TURN_IMAGES)
+    ]

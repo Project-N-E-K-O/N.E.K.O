@@ -3218,3 +3218,43 @@ async def test_callback_media_returns_when_cancelled_before_the_stream_begins(
     session.stream_text.assert_not_awaited()
     assert mgr.pending_agent_callbacks == [callback]
     assert callback["media_images"] == ["cb-image-1"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_focus_pulse_is_cleared_when_its_own_send_is_cancelled(monkeypatch):
+    """The pulse that turns the bubble ON must sit inside the scope that turns it OFF.
+
+    ``_push_focus_thinking(True)`` itself awaits the websocket lock and
+    ``send_json``. A teardown that cancels the turn right there has already set
+    the active flag and queued the notification, so leaving it outside the
+    cleanup scope strands the thinking bubble until some later turn happens to
+    clear it.
+    """
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    mgr.pending_agent_callbacks = []
+    session.stream_text = AsyncMock()
+    mgr._focus_inline_decision = AsyncMock(return_value=True)
+    pulses = []
+
+    async def push_focus_thinking(active):
+        pulses.append(active)
+        if active:
+            # 拆除正好卡在这次投递上。
+            raise asyncio.CancelledError()
+
+    mgr._push_focus_thinking = push_focus_thinking
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await core_module.LLMSessionManager._process_stream_data_internal(
+            mgr,
+            {"input_type": "text", "data": "凝神这一句"},
+        )
+
+    session.stream_text.assert_not_awaited()
+    # 关键：亮起之后必须有一次熄灭，否则气泡一直卡着。
+    assert pulses == [True, False]
