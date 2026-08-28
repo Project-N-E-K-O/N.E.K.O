@@ -4230,15 +4230,39 @@ class IndependentAsrRuntime:
         # 把真实开口时刻交给重放 —— 和 credit 兑付那条路一样。少了这一步，这条
         # **直接**重放会用当前时钟当后继发声的起点，把「上一轮排空 + 延迟 final」
         # 整段算进「开口之后」，用户重新开口以来拍的帧全被排除。
+        _lent_pending_onset = False
         if (
             overlap_onset_at is not None
             and self._asr_pending_speech_onset_at is None
         ):
             self._asr_pending_speech_onset_at = overlap_onset_at
+            _lent_pending_onset = True
         await self._handle_independent_asr_activity(
             SpeechActivityEvent.SPEECH_RESUMED,
             epoch,
         )
+        if (
+            epoch != self._asr_session_epoch
+            or self._asr_lifecycle is not lifecycle_ref
+        ):
+            return
+        if lifecycle_ref.snapshot.state is not VoiceLifecycleState.ACTIVE:
+            # 没醒起来（Smart Turn 租约没就绪，或 lifecycle 广播没送达）。借出去的
+            # onset 必须收回：留着的话，后面某个**不相干**的发声会把这个陈旧时刻
+            # 当成自己的起点，视觉所有权窗口整个错位——要么把无关的帧折进来，要么
+            # 把本轮真正的帧判成过期。
+            #
+            # ⚠️ 只有在**没有**挂起确认时才收回，判据与 credit 兑付那条路一字不差：
+            # session 未就绪时 _handle_independent_asr_activity 会停在 PREWARMING、
+            # 置上 _asr_pending_speech_confirmed 并**特意留着**这个 onset 等后续的
+            # 确认去取；此时收回等于让那次确认退回用新的 detected_at，把用户真实
+            # 开口以来的帧全排除掉。
+            if (
+                _lent_pending_onset
+                and not self._asr_pending_speech_confirmed
+                and self._asr_pending_speech_onset_at == overlap_onset_at
+            ):
+                self._asr_pending_speech_onset_at = None
 
     async def _dispatch_asr_transcript_envelope(
         self,

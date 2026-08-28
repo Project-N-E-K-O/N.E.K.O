@@ -12190,6 +12190,90 @@ async def test_a_stale_onset_does_not_evict_the_prerecord_buffer() -> None:
 
 
 @pytest.mark.unit
+async def test_direct_overlap_replay_reclaims_its_lent_onset_when_it_never_wakes() -> None:
+    """A direct replay that never reaches ACTIVE must take its onset back.
+
+    Both overlap replay paths lend the recorded onset to the confirmation
+    branch. The credit-redemption path reclaims it when the wake-up fails; the
+    direct path (driven by the delayed provider final) did not, so the stale
+    timestamp stayed in the pending slot and the NEXT, unrelated utterance
+    adopted it as its visual ownership boundary -- pulling in frames that
+    belong to nobody and rejecting the ones it is actually about.
+
+    The carve-out is identical to the credit path: an onset held for a PENDING
+    confirmation is deliberately kept, because clearing it would send that
+    confirmation back to a fresh detected_at and drop every frame since the
+    user actually started speaking. The dual below pins that half.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    # A successor spoke while the first turn was still ACTIVE and prepared:
+    # its onset is remembered for the direct replay after the delayed final.
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    assert runtime._asr_overlap_onset_at is not None
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    # The replay cannot wake the turn, and leaves no pending confirmation
+    # behind (Smart Turn lease unavailable / lifecycle broadcast undelivered).
+    async def refuse_to_wake(*_args, **_kwargs):
+        return None
+
+    runtime._asr_runtime._handle_independent_asr_activity = refuse_to_wake
+
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert runtime._asr_pending_speech_onset_at is None, (
+        "the lent onset stayed behind and a later unrelated turn will adopt it"
+    )
+
+
+@pytest.mark.unit
+async def test_direct_overlap_replay_keeps_the_onset_for_a_pending_confirmation() -> None:
+    """Dual: an onset held for a pending confirmation must NOT be reclaimed.
+
+    When the session is momentarily unavailable the replay parks in PREWARMING
+    with the confirmation pending and deliberately holds the onset for it.
+    Reclaiming it there sends that confirmation back to a fresh detected_at and
+    every frame since the user started speaking is excluded.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    async def park_with_pending_confirmation(*_args, **_kwargs):
+        runtime._asr_runtime._asr_pending_speech_confirmed = True
+
+    runtime._asr_runtime._handle_independent_asr_activity = (
+        park_with_pending_confirmation
+    )
+
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert runtime._asr_pending_speech_onset_at is not None
+
+
+@pytest.mark.unit
 async def test_overlap_credit_survives_a_replay_that_never_activates() -> None:
     """Spend the credit on a successful wake-up, not on the attempt.
 
