@@ -2025,6 +2025,21 @@ class _ResponseMixin:
             _raw_mode = getattr(stage_result, "mode", None)
             _stage_mode = getattr(_raw_mode, "value", _raw_mode)
             if (
+                hasattr(stage_result, "accepted")
+                and not bool(getattr(stage_result, "accepted", False))
+                and _stage_mode == VisualDeliveryMode.NATIVE.value
+            ):
+                # 原始 cue 图**根本没送出去**：等发送信号量 / 重压缩超大图期间路由
+                # 模式翻转了，或者传输断了，send_event 返回 False。这不是"分析出
+                # 空结果"那种终局失败，不能按它处置——那会把一张从未到达 provider
+                # 的图记成已消费，本轮还降级成纯文本。与上面原生投递分支同一处置：
+                # 摘掉关联句柄、快照留着武装，下一次主动搭话重试。
+                _remove_visual_rejection_handler()
+                logger.info(
+                    "prompt_ephemeral: raw cue image was not delivered; keeping snapshot for retry"
+                )
+                return False
+            if (
                 bool(getattr(stage_result, "accepted", False))
                 and _stage_mode == VisualDeliveryMode.NATIVE.value
             ):

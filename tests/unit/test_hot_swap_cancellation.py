@@ -519,27 +519,40 @@ def test_swap_prime_render_stops_at_a_transient_media_failure():
     assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in later_text
     # 重试记账归 drain，这里不能碰（两处都加会让额度按两倍速烧完）。
     assert PASSIVE_MEDIA_RETRY_KEY not in stuck_media
+    # 判据不是这个标记：终局失败同样 STOP（见下面那条对偶）。
 
 
-def test_swap_prime_render_skips_a_terminal_media_failure():
-    """Dual: a terminal failure keeps the existing skip, not a stop.
+def test_swap_prime_render_stops_at_a_terminal_media_failure_too():
+    """A terminal failure stops the swap as well -- FIFO does not care why.
 
-    It will never become ready, so stopping there would strand every later
-    callback forever. The drain delivers it text-only on its best-effort path.
+    Skipping it lets the later callback be primed and dequeued after promotion
+    while this one stays queued, reversing their order. Stopping does not
+    strand it either: drain_agent_callbacks_for_llm() delivers a terminally
+    unstaged media callback text-only on its best-effort path, so the next user
+    turn releases it together with everything behind it.
+
+    Deliberately NOT classified by PASSIVE_MEDIA_TRANSIENT_KEY: the staging
+    exception path leaves that marker unset on purpose (drain's contract for an
+    exception is text-only delivery, pinned by
+    test_first_native_passive_media_exception_requires_session_retirement), so
+    keying on it here would misread an exception as terminal. Both cases stop,
+    so no classification is needed.
     """
     mgr = _make_swap_manager()
     dead_media = _passive_callback("带图的，终局失败")
     dead_media["media_images"] = ["img-b64"]
     dead_media[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
-    later_text = _passive_callback("后面的纯文本照常渲染")
+    later_text = _passive_callback("排在它后面的纯文本")
     later_text[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
 
     ready, rendered = mgr._render_claimed_passive_callbacks_for_swap_prime(
         [dead_media, later_text]
     )
 
-    assert ready == [later_text]
-    assert "后面的纯文本照常渲染" in rendered
+    assert ready == []
+    assert "排在它后面的纯文本" not in rendered
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in dead_media
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in later_text
 
 
 def test_swap_prime_render_still_takes_an_undeferred_text_callback():

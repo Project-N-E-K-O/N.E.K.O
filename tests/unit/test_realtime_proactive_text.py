@@ -202,6 +202,42 @@ async def test_description_mode_proactive_still_sends_its_image_with_a_lead_in()
 
 
 @pytest.mark.unit
+async def test_description_mode_rejected_cue_image_keeps_the_snapshot_armed():
+    """A cue image that never reached the provider must stay retryable.
+
+    stream_image() returns an unaccepted native result when the route mode
+    flips or the transport dies while it waits on the send semaphore or
+    recompresses an oversized frame. That is not the "analysis came back empty"
+    terminal case: treating it as one marks an image that was never delivered
+    as consumed and drops this nudge to text-only, losing the visual context
+    for good. Same handling as the native delivery branch -- keep the snapshot
+    armed and retry on the next nudge.
+    """
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+    client.stream_image = AsyncMock(
+        return_value=SimpleNamespace(
+            accepted=False,
+            mode="native",
+            description=None,
+            rejection_reason="raw_visual_delivery_blocked",
+            rejection_event_id=None,
+        )
+    )
+
+    delivered = await client.prompt_ephemeral("describe what you notice")
+
+    assert delivered is False
+    # 图从没到过 provider：快照必须还武装着，下一次主动搭话重试。
+    assert client._proactive_image_consumed is False
+    # 也不能退化成纯文本把这一轮讲掉。
+    assert not _sent_events(client)
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_description_mode_snapshot_is_consumed_when_activity_wins_the_race():
     """A raw frame already in provider context must not be re-sent later.
 

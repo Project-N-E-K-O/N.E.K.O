@@ -2749,6 +2749,13 @@ class ProactiveMixin:
                         self.lanlan_name,
                         exc,
                     )
+                    # 刻意**不**打 PASSIVE_MEDIA_TRANSIENT_KEY：drain 对 staging
+                    # 异常的既定处置是"文字照投、图这一轮带不上"（best-effort），
+                    # 由 test_first_native_passive_media_exception_requires_session_
+                    # retirement 等三条用例钉死。打上瞬时标记会让 drain 改为多留
+                    # 一轮，把那条契约推翻。
+                    # swap prime 那边的 FIFO 问题不在这里解——见
+                    # _render_claimed_passive_callbacks_for_swap_prime。
                     callback["media_images"] = images
                     if pending_images_snapshot is not None:
                         # Offline images are only an in-memory queue. Restore

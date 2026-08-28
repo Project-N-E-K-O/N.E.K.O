@@ -2844,23 +2844,20 @@ class LifecycleMixin:
                 callback,
                 getattr(self, "pending_session", None),
             ):
-                if (
-                    callback.get(PASSIVE_MEDIA_TRANSIENT_KEY)
-                    and int(callback.get(PASSIVE_MEDIA_RETRY_KEY, 0) or 0)
-                    < PASSIVE_MEDIA_MAX_RETRIES
-                ):
-                    # 最近一次挂图是**瞬时**失败（网络抖 / provider 临时拒），它
-                    # 还会重试。STOP 而不是 skip：跳过它去渲染更晚那条，promote
-                    # 之后更晚那条被摘出队列、它自己还留着，模型听到的顺序就反了。
-                    # 与预算延后那条同一个 FIFO 论证，也与
-                    # drain_agent_callbacks_for_llm 的瞬时分支同一判据。
-                    #
-                    # 这里**不**递增 PASSIVE_MEDIA_RETRY_KEY：重试次数由 drain 那
-                    # 个消费点记账，两处都加会让额度按两倍速烧完。
-                    break
-                # 终局失败（格式不支持之类）：维持既有处置，跳过它、把 claim 还
-                # 回去，让它按 best-effort 走 drain 那条路。
-                continue
+                # 媒体没就绪就 STOP，**不分**瞬时还是终局。跳过它去渲染更晚那条，
+                # promote 之后更晚那条被摘出队列、它自己还留着，模型听到的顺序就
+                # 反了——与预算延后那条同一个 FIFO 论证。
+                #
+                # 终局失败也 STOP 不会把它永久堵死：drain 那个消费点对终局失败走
+                # best-effort（文字照投、图这一轮带不上），下一个用户回合就把它连
+                # 同后面的一起放行了。所以这里只是"这次 swap 不抢跑"，不是"永远
+                # 不投"。
+                #
+                # 也不在这里按瞬时/终局分类：staging 的异常分支刻意不打
+                # PASSIVE_MEDIA_TRANSIENT_KEY（drain 对它的既定处置是文字照投），
+                # 拿那个标记当判据会把异常误判成终局。既然两种都要 STOP，就不需要
+                # 分类。
+                break
             ready.append(callback)
         ready_obj_ids = {id(callback) for callback in ready}
         self._release_swap_prime_passive_claims(
