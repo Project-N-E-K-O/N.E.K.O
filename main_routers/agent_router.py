@@ -42,6 +42,7 @@ from .pages_router import _static_assets_ctx
 from .shared_state import get_session_manager, get_config_manager, get_templates
 from config import TOOL_SERVER_PORT, USER_PLUGIN_BASE
 from main_logic.agent_event_bus import publish_session_event
+from main_logic.agent_routing import normalize_analyze_route_owner
 from main_logic.activity.system_signals import is_remote_backend_deployment
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -418,6 +419,9 @@ async def post_internal_analyze_request(request: Request):
             "lanlan_name": data.get("lanlan_name"),
             "messages": data.get("messages") or [],
         }
+        route_owner = normalize_analyze_route_owner(data.get("route_owner"))
+        if route_owner:
+            event["route_owner"] = route_owner
         sent = await publish_session_event(event)
         return {"success": bool(sent)}
     except Exception as e:

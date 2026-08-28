@@ -46,7 +46,32 @@ export default {
     adapters: 'アダプター',
     adapterUI: 'アダプターUI',
     packageManager: 'パッケージ管理',
-    market: 'プラグインマーケット'
+    market: 'プラグインマーケット',
+    knowledge: 'ナレッジ'
+  },
+  knowledge: {
+    marketConnected: 'ナレッジマーケットに接続しました。パッケージは検証後にローカルへ保存されます。',
+    openMarket: 'ナレッジマーケットを見る', marketUnavailable: 'プラグインマーケットを利用できません',
+    loginRequired: '先にプラグイン管理画面でマーケットにログインしてください', marketPairFailed: 'ローカルの N.E.K.O と安全にペアリングできませんでした',
+    title: 'ナレッジ管理', subtitle: 'ローカル公開知識、データパック、会話の一致履歴を管理します',
+    marketNotice: 'ナレッジ市場プロトコルの接続口は予約済みです。現在は統合公開ナレッジベースとローカルパックを管理できます。',
+    overview: '概要', ready: '正常', degraded: '異常', entries: '項目', disabled: '無効', packs: 'データパック',
+    autoContext: '自動会話で使用', catalog: '項目管理', searchPlaceholder: 'タイトル、別名、要約、本文を検索',
+    term: '項目', summary: '要約', source: '出典', actions: '操作', details: '詳細', restore: '復元', disable: '無効化',
+    previous: '前へ', next: '次へ', packId: 'パック ID', materialType: 'コンテンツ種別', subscription: '購読元', localImport: 'ローカル導入',
+    importPack: 'ナレッジパックを導入', diagnostics: '最近の一致', time: '時刻', matchMode: '一致方式',
+    delivered: 'カード送信', yes: 'はい', no: 'いいえ', terms: '認識語', titleMatch: '項目タイトル', aliasTerms: '別名', recognitionPhrases: '認識フレーズ', tags: 'タグ', content: '本文',
+    indexStatus: 'ベクトル索引', indexOrigin: '索引元', indexTrust: '信頼状態', indexValidation: '検証状態', indexFallback: 'フォールバック',
+    localEmbeddingState: 'ローカル保守状態', allowLocalEmbedding: 'ローカルでのベクトル保守を許可', enabled: '有効', disabledState: '無効',
+    packageStatus: 'パック稼働状態', sourceDistribution: '出典分布', otherSources: 'その他', inactivePacks: 'オフ', needsAttention: '要確認', materialMix: 'パック種別', noPacks: 'ナレッジパックはありません',
+    vectorReadyPercent: '{percent}% 準備完了', noVectorChunks: 'ベクトルチャンクなし', vectorBuilding: '構築中', vectorComplete: 'すべて準備完了', vectorWaiting: '構築待ち',
+    indexPolicyHint: 'ローカルの CPU とメモリを使用する場合があります。無効時は信頼済み索引が利用できなければ BM25 にフォールバックします。',
+    loadFailed: 'ナレッジデータを読み込めません', operationFailed: 'ナレッジ操作に失敗しました', importSuccess: 'ナレッジパックを導入しました', importQueued: 'ナレッジパックをバックグラウンドで準備中です。完了後に自動で利用可能になります', importStillProcessing: 'ナレッジパックは処理中です。後でもう一度更新して状態を確認してください。',
+    degradedJobs: '隔離されたインポート', degradedJobHint: '破損したジョブは続行できません。ID を確認して破棄すると、新しいインポートを再開できます。', discardJobConfirm: '隔離ジョブ {name} を破棄しますか？ステージングファイルのみ削除されます。', jobDiscarded: '隔離ジョブを破棄しました',
+    importingPacks: 'ナレッジパックをインポート中', importingPackHint: 'ローカルナレッジベースを検証して準備しています。このページを離れて後で戻ることができます。',
+    importStateQueued: '待機中', importStateValidating: '検証中', importStateBuildingFts: '字句インデックスを作成中', importStateVerifyingIndex: 'ベクトルインデックスを確認中', importStateEmbedding: 'ベクトルを準備中',
+    importProgressMeta: '{percent}% 完了 · {entries} 件 · {chunks} チャンク', importPreparingMeta: '{entries} 件 · {chunks} チャンク',
+    invalidPack: 'ナレッジパックが無効です', importTooLarge: 'ナレッジパックが 10 MiB の上限を超えています', removeConfirm: 'ナレッジパック {name} を削除しますか？'
   },
   market: {
     title: '新しいプラグインを取得',

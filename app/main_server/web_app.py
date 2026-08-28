@@ -24,6 +24,10 @@ import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from knowledge.timeouts import (
+    KNOWLEDGE_GET_TIMEOUT_SECONDS,
+    KNOWLEDGE_MAIN_TO_PLUGIN_MUTATION_TIMEOUT_SECONDS,
+)
 
 from ._shared import runtime
 
@@ -186,6 +190,7 @@ from main_routers.icebreaker_router import router as icebreaker_router  # noqa
 from main_routers.jukebox_router import router as jukebox_router  # noqa
 from main_routers.live2d_router import router as live2d_router  # noqa
 from main_routers.memory_router import router as memory_router  # noqa
+from main_routers.public_knowledge_router import router as public_knowledge_router  # noqa
 from main_routers.mmd_router import router as mmd_router  # noqa
 from main_routers.music_router import router as music_router  # noqa
 from main_routers.pages_router import router as pages_router  # noqa
@@ -448,9 +453,21 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         if key.lower() not in hop_by_hop_request
     }
 
+    is_knowledge_path = path == "knowledge" or path.startswith("knowledge/")
+    is_knowledge_mutation = request.method != "GET" and is_knowledge_path
+    proxy_timeout = (
+        KNOWLEDGE_MAIN_TO_PLUGIN_MUTATION_TIMEOUT_SECONDS
+        if is_knowledge_mutation
+        else KNOWLEDGE_GET_TIMEOUT_SECONDS
+        if request.method == "GET" and is_knowledge_path
+        else 30.0
+    )
+
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=3.0), proxy=None, trust_env=False
+            timeout=httpx.Timeout(proxy_timeout, connect=3.0),
+            proxy=None,
+            trust_env=False,
         ) as client:
             upstream = await client.request(
                 request.method,
@@ -458,6 +475,17 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
                 content=await request.body(),
                 headers=headers,
             )
+    except httpx.TimeoutException as exc:
+        logger.warning("Market bridge proxy timed out: target=%s", target)
+        if is_knowledge_mutation:
+            return JSONResponse(
+                status_code=504,
+                content={"detail": {"code": "knowledge_mutation_timeout"}},
+            )
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "Market bridge timeout"},
+        )
     except httpx.HTTPError as exc:
         logger.warning("Market bridge proxy failed: target=%s error=%s", target, exc)
         return JSONResponse(
@@ -495,6 +523,7 @@ app.include_router(pngtuber_router)
 app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
+app.include_router(public_knowledge_router)
 app.include_router(cloudsave_router)
 app.include_router(storage_location_router)
 app.include_router(plugin_media_router)

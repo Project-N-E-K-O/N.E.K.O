@@ -410,16 +410,67 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_knowledge_indexer_start_failure_retries_without_runtime_reinit():
+    from app import main_server
+
+    start_once = Mock(side_effect=[RuntimeError("bind failed"), None])
+    with patch.object(
+        main_server,
+        "_knowledge_indexer_start_retry_task",
+        None,
+    ), patch.object(
+        main_server,
+        "_KNOWLEDGE_INDEXER_START_RETRY_SECONDS",
+        0.0,
+    ), patch.object(
+        main_server,
+        "_start_knowledge_indexer_once",
+        start_once,
+    ):
+        main_server._ensure_knowledge_indexer_start()
+        retry_task = main_server._knowledge_indexer_start_retry_task
+        assert retry_task is not None
+
+        main_server._ensure_knowledge_indexer_start()
+        await retry_task
+
+    assert start_once.call_count == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_snapshot():
     from app import main_server
 
     fake_tracker = SimpleNamespace(save=Mock())
+    cleanup_order: list[str] = []
+    arm_watchdog = Mock()
+    start_config = {
+        "arm_standalone_shutdown_watchdog": arm_watchdog,
+        "shutdown_memory_server_on_exit": False,
+    }
+
+    def request_knowledge_stop():
+        cleanup_order.append("knowledge_cancel")
+        return None
+
+    async def finish_knowledge_stop(_task, *, deadline_monotonic):
+        assert deadline_monotonic > 0
+        cleanup_order.append("knowledge_finish_started")
+        await asyncio.Event().wait()
+
+    async def upload_cloudsave(*_args, **_kwargs):
+        cleanup_order.append("cloudsave")
 
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({})), \
-         patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
+         patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock(side_effect=upload_cloudsave)) as run_cloudsave_action, \
+         patch.object(main_server, "get_start_config", Mock(return_value=start_config)), \
+         patch("knowledge.indexer.SHUTDOWN_TIMEOUT_SECONDS", 0.01), \
+         patch("knowledge.indexer.request_knowledge_indexer_stop", side_effect=request_knowledge_stop), \
+         patch("knowledge.indexer.finish_knowledge_indexer_stop", AsyncMock(side_effect=finish_knowledge_stop)), \
          patch("utils.music_crawlers.close_all_crawlers", AsyncMock(return_value=None)), \
          patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker):
         await main_server.on_shutdown()
@@ -430,6 +481,179 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
         reason="main_server_shutdown_remote_upload",
         budget_seconds=5.0,
     )
+    assert cleanup_order == [
+        "knowledge_cancel",
+        "cloudsave",
+        "knowledge_finish_started",
+    ]
+    arm_watchdog.assert_called_once_with()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_task_if_running_propagates_caller_cancellation():
+    from app import main_server
+
+    child_cancelled = asyncio.Event()
+    child = asyncio.create_task(asyncio.Event().wait())
+
+    async def observe_child():
+        try:
+            await child
+        except asyncio.CancelledError:
+            child_cancelled.set()
+            await asyncio.Event().wait()
+
+    observer = asyncio.create_task(observe_child())
+    cleanup = asyncio.create_task(
+        main_server._cancel_task_if_running(
+            observer,
+            name="fixture",
+            timeout=10.0,
+        )
+    )
+    await child_cancelled.wait()
+    cleanup.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await cleanup
+
+    child.cancel()
+    observer.cancel()
+    await asyncio.gather(child, observer, return_exceptions=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancellation_source", ("voice", "indexer_retry"))
+async def test_main_server_shutdown_defers_cleanup_cancellation(
+    cancellation_source,
+):
+    from app import main_server
+
+    cleanup_order: list[str] = []
+    fake_tracker = SimpleNamespace(
+        save=Mock(side_effect=lambda: cleanup_order.append("token"))
+    )
+
+    def _async_record(name):
+        async def _record(*_args, **_kwargs):
+            cleanup_order.append(name)
+
+        return _record
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
+        stack.enter_context(
+            patch.object(
+                main_server,
+                "_knowledge_indexer_start_retry_task",
+                object() if cancellation_source == "indexer_retry" else None,
+            )
+        )
+        stack.enter_context(patch.object(main_server, "_preload_task", None))
+        stack.enter_context(patch.object(main_server, "_game_cleanup_task", None))
+        stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
+        stack.enter_context(patch.object(main_server, "steamworks", None))
+        stack.enter_context(
+            patch.object(
+                main_server.character_runtime,
+                "role_state",
+                _role_state_from_session_managers({}),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                main_server,
+                "cleanup",
+                Mock(side_effect=lambda: cleanup_order.append("cleanup")),
+            )
+        )
+        for target, name in (
+            ("join_sync_connector_threads", "connectors"),
+            ("_stop_neko_servers_integration_workers", "integration_workers"),
+            ("_run_cloudsave_manager_action", "cloudsave"),
+        ):
+            stack.enter_context(
+                patch.object(
+                    main_server,
+                    target,
+                    AsyncMock(side_effect=_async_record(name)),
+                )
+            )
+        stack.enter_context(
+            patch.object(
+                main_server,
+                "get_start_config",
+                Mock(return_value={"shutdown_memory_server_on_exit": False}),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "app.main_server.voice_identity_runtime.close_voice_identity_runtime",
+                AsyncMock(
+                    side_effect=(
+                        asyncio.CancelledError
+                        if cancellation_source == "voice"
+                        else None
+                    )
+                ),
+            )
+        )
+        if cancellation_source == "indexer_retry":
+            async def _cancel_retry(_task, *, name, timeout):
+                if name == "knowledge indexer start retry":
+                    raise asyncio.CancelledError
+
+            stack.enter_context(
+                patch.object(
+                    main_server,
+                    "_cancel_task_if_running",
+                    side_effect=_cancel_retry,
+                )
+            )
+        stack.enter_context(
+            patch("knowledge.indexer.request_knowledge_indexer_stop", return_value=None)
+        )
+        stack.enter_context(
+            patch(
+                "knowledge.indexer.finish_knowledge_indexer_stop",
+                AsyncMock(return_value=True),
+            )
+        )
+        for target, name in (
+            ("utils.language_utils.aclose_translation_service", "translation"),
+            ("utils.music_crawlers.close_all_crawlers", "music"),
+            ("utils.internal_http_client.aclose_internal_http_client", "internal_http"),
+            ("utils.external_http_client.aclose_external_http_client", "external_http"),
+        ):
+            stack.enter_context(
+                patch(
+                    target,
+                    AsyncMock(side_effect=_async_record(name)),
+                    create=target.startswith("utils.language_utils"),
+                )
+            )
+        stack.enter_context(
+            patch(
+                "utils.token_tracker.TokenTracker.get_instance",
+                return_value=fake_tracker,
+            )
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await main_server.on_shutdown()
+
+    assert cleanup_order == [
+        "cleanup",
+        "connectors",
+        "integration_workers",
+        "translation",
+        "token",
+        "music",
+        "cloudsave",
+        "internal_http",
+        "external_http",
+    ]
 
 
 @pytest.mark.unit

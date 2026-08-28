@@ -159,6 +159,10 @@ class StorageRootsMixin:
         self.docs_dir = self.app_docs_dir.parent
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
+        # Public, regenerable knowledge bases are deliberately separate from
+        # per-character memory.  Their own modules decide which files live
+        # below this ConfigManager-owned root.
+        self.knowledge_dir = self.app_docs_dir / "knowledge"
         self.plugins_dir = self.app_docs_dir / "plugins"
         self.live2d_dir = self.app_docs_dir / "live2d"
         # VRM模型存储在用户文档目录下（与Live2D保持一致）
@@ -656,6 +660,18 @@ class StorageRootsMixin:
             return True
         except Exception as e:
             print(f"Warning: Failed to create memory directory: {e}", file=sys.stderr)
+            return False
+
+    def ensure_knowledge_directory(self):
+        """Ensure the public knowledge-base directory under the runtime root exists."""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+
+            self.knowledge_dir.mkdir(exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create knowledge directory: {e}", file=sys.stderr)
             return False
 
     def ensure_plugins_directory(self):

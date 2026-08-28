@@ -46,7 +46,32 @@ export default {
     adapters: 'Adaptadores',
     adapterUI: 'UI do adaptador',
     packageManager: 'Gerenciador de pacotes',
-    market: 'Mercado de plugins'
+    market: 'Mercado de plugins',
+    knowledge: 'Conhecimento'
+  },
+  knowledge: {
+    marketConnected: 'O mercado de conhecimento está conectado. Os pacotes são verificados antes da instalação local.',
+    openMarket: 'Explorar mercado de conhecimento', marketUnavailable: 'O mercado de plugins está indisponível',
+    loginRequired: 'Entre no mercado pela página de plugins primeiro', marketPairFailed: 'Não foi possível emparelhar com segurança com o cliente N.E.K.O local',
+    title: 'Gerenciador de conhecimento', subtitle: 'Gerencie conhecimento público local, pacotes de dados e correspondências de conversa',
+    marketNotice: 'A conexão do mercado de conhecimento está reservada. A base pública unificada e os pacotes locais já podem ser gerenciados.',
+    overview: 'Visão geral', ready: 'Pronto', degraded: 'Degradado', entries: 'Entradas', disabled: 'Desativadas', packs: 'Pacotes',
+    autoContext: 'Usar na conversa automática', catalog: 'Catálogo', searchPlaceholder: 'Pesquisar títulos, aliases, resumos ou conteúdo',
+    term: 'Entrada', summary: 'Resumo', source: 'Fonte', actions: 'Ações', details: 'Detalhes', restore: 'Restaurar', disable: 'Desativar',
+    previous: 'Anterior', next: 'Próxima', packId: 'ID do pacote', materialType: 'Tipo de conteúdo', subscription: 'Assinatura', localImport: 'Importação local',
+    importPack: 'Importar pacote', diagnostics: 'Correspondências recentes', time: 'Hora', matchMode: 'Modo de correspondência',
+    delivered: 'Cartão enviado', yes: 'Sim', no: 'Não', terms: 'Termos', titleMatch: 'Título', aliasTerms: 'Aliases', recognitionPhrases: 'Frases de reconhecimento', tags: 'Tags', content: 'Conteúdo',
+    indexStatus: 'Índice vetorial', indexOrigin: 'Origem', indexTrust: 'Confiança', indexValidation: 'Validação', indexFallback: 'Modo alternativo',
+    localEmbeddingState: 'Manutenção local', allowLocalEmbedding: 'Permitir manutenção local de vetores', enabled: 'Ativado', disabledState: 'Desativado',
+    packageStatus: 'Estado dos pacotes', sourceDistribution: 'Distribuição de fontes', otherSources: 'Outros', inactivePacks: 'Desativados', needsAttention: 'Precisa de atenção', materialMix: 'Tipo de pacote', noPacks: 'Nenhum pacote',
+    vectorReadyPercent: '{percent}% pronto', noVectorChunks: 'Sem fragmentos vetoriais', vectorBuilding: 'Criando', vectorComplete: 'Tudo pronto', vectorWaiting: 'Aguardando criação',
+    indexPolicyHint: 'Pode usar CPU e memória locais. Se desativado, usa BM25 quando o índice confiável não está disponível.',
+    loadFailed: 'Falha ao carregar os dados', operationFailed: 'A operação falhou', importSuccess: 'Pacote importado', importQueued: 'O pacote está sendo preparado em segundo plano e aparecerá quando estiver pronto', importStillProcessing: 'O pacote ainda está sendo processado. Atualize mais tarde para verificar o estado.',
+    degradedJobs: 'Importações em quarentena', degradedJobHint: 'Tarefas danificadas não podem continuar. Confira o ID e descarte a tarefa para liberar novas importações.', discardJobConfirm: 'Descartar a tarefa em quarentena {name}? Apenas os arquivos temporários serão removidos.', jobDiscarded: 'Tarefa em quarentena descartada',
+    importingPacks: 'Importando pacotes de conhecimento', importingPackHint: 'A base de conhecimento local está sendo verificada e preparada. Você pode sair desta página e voltar depois.',
+    importStateQueued: 'Aguardando', importStateValidating: 'Validando', importStateBuildingFts: 'Criando índice lexical', importStateVerifyingIndex: 'Verificando índice vetorial', importStateEmbedding: 'Preparando vetores',
+    importProgressMeta: '{percent}% concluído · {entries} entradas · {chunks} fragmentos', importPreparingMeta: '{entries} entradas · {chunks} fragmentos',
+    invalidPack: 'Pacote inválido', importTooLarge: 'O pacote de conhecimento excede o limite de 10 MiB', removeConfirm: 'Remover o pacote {name}?'
   },
   market: {
     title: 'Obter novos plugins',

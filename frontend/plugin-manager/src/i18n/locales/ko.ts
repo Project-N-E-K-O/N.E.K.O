@@ -46,7 +46,32 @@ export default {
     adapters: '어댑터',
     adapterUI: '어댑터 UI',
     packageManager: '패키지 관리',
-    market: '플러그인 마켓'
+    market: '플러그인 마켓',
+    knowledge: '지식 저장소'
+  },
+  knowledge: {
+    marketConnected: '지식 마켓이 연결되었습니다. 패키지를 검증한 뒤 로컬에 설치합니다.',
+    openMarket: '지식 마켓 둘러보기', marketUnavailable: '플러그인 마켓을 사용할 수 없습니다',
+    loginRequired: '먼저 플러그인 관리 페이지에서 마켓에 로그인하세요', marketPairFailed: '로컬 N.E.K.O 클라이언트와 안전하게 페어링할 수 없습니다',
+    title: '지식 저장소 관리', subtitle: '로컬 공개 지식, 데이터 팩, 대화 일치 기록을 관리합니다',
+    marketNotice: '지식 팩 마켓 프로토콜 연결 지점이 준비되었습니다. 현재는 통합 공용 지식베이스와 로컬 팩을 관리할 수 있습니다.',
+    overview: '개요', ready: '정상', degraded: '오류', entries: '항목', disabled: '비활성', packs: '데이터 팩',
+    autoContext: '자동 대화에 사용', catalog: '항목 관리', searchPlaceholder: '제목, 별칭, 요약 또는 본문 검색',
+    term: '항목', summary: '요약', source: '출처', actions: '작업', details: '상세', restore: '복원', disable: '비활성화',
+    previous: '이전', next: '다음', packId: '팩 ID', materialType: '콘텐츠 유형', subscription: '구독 출처', localImport: '로컬 가져오기',
+    importPack: '지식 팩 가져오기', diagnostics: '최근 일치', time: '시간', matchMode: '일치 방식',
+    delivered: '카드 전달', yes: '예', no: '아니요', terms: '인식어', titleMatch: '항목 제목', aliasTerms: '별칭', recognitionPhrases: '인식 문구', tags: '태그', content: '본문',
+    indexStatus: '벡터 인덱스', indexOrigin: '인덱스 출처', indexTrust: '신뢰 상태', indexValidation: '검증 상태', indexFallback: '대체 방식',
+    localEmbeddingState: '로컬 유지 상태', allowLocalEmbedding: '로컬 벡터 유지 허용', enabled: '활성화', disabledState: '비활성화',
+    packageStatus: '지식 팩 실행 상태', sourceDistribution: '출처 분포', otherSources: '기타', inactivePacks: '꺼짐', needsAttention: '확인 필요', materialMix: '팩 유형', noPacks: '지식 팩 없음',
+    vectorReadyPercent: '{percent}% 준비됨', noVectorChunks: '벡터 청크 없음', vectorBuilding: '구축 중', vectorComplete: '모두 준비됨', vectorWaiting: '구축 대기 중',
+    indexPolicyHint: '로컬 CPU와 메모리를 사용할 수 있습니다. 끄면 신뢰할 수 있는 인덱스를 사용할 수 없을 때 BM25로 대체됩니다.',
+    loadFailed: '지식 데이터를 불러오지 못했습니다', operationFailed: '지식 작업에 실패했습니다', importSuccess: '지식 팩을 가져왔습니다', importQueued: '지식 팩을 백그라운드에서 준비 중이며 완료되면 자동으로 사용할 수 있습니다', importStillProcessing: '지식 팩이 아직 처리 중입니다. 나중에 새로고침하여 상태를 확인하세요.',
+    degradedJobs: '격리된 가져오기 작업', degradedJobHint: '손상된 작업은 계속할 수 없습니다. ID를 확인한 뒤 폐기하면 새 가져오기를 다시 시작할 수 있습니다.', discardJobConfirm: '격리 작업 {name}을(를) 폐기할까요? 스테이징 파일만 삭제됩니다.', jobDiscarded: '격리 작업을 폐기했습니다',
+    importingPacks: '지식 팩 가져오는 중', importingPackHint: '로컬 지식 베이스를 확인하고 준비하는 중입니다. 이 페이지를 나갔다가 나중에 돌아올 수 있습니다.',
+    importStateQueued: '대기 중', importStateValidating: '확인 중', importStateBuildingFts: '어휘 색인 생성 중', importStateVerifyingIndex: '벡터 색인 확인 중', importStateEmbedding: '벡터 준비 중',
+    importProgressMeta: '{percent}% 완료 · 항목 {entries}개 · 청크 {chunks}개', importPreparingMeta: '항목 {entries}개 · 청크 {chunks}개',
+    invalidPack: '잘못된 지식 팩입니다', importTooLarge: '지식 팩이 10 MiB 크기 제한을 초과했습니다', removeConfirm: '지식 팩 {name}을(를) 제거할까요?'
   },
   market: {
     title: '새 플러그인 받기',

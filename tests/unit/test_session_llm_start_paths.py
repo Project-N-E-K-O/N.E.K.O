@@ -124,7 +124,7 @@ def _make_manager(monkeypatch, *, input_mode):
     mgr._mark_pending_context_appends_delivered_in_start_prompt = lambda *a, **k: None
     mgr._clear_pending_context_start_prompt_marks = lambda *a, **k: None
     mgr._convert_cache_to_str = lambda cache: ""
-    mgr._register_builtin_tools = lambda: None
+    mgr._register_builtin_tools = lambda **_kwargs: None
     mgr._resolve_realtime_voice = lambda cfg: "yui"
     mgr._drop_free_voice_on_route_flip = lambda old, new: False
     mgr._is_livestream_active = lambda: False

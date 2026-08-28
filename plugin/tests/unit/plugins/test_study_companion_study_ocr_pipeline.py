@@ -203,7 +203,8 @@ def test_study_plugin_registration_import_does_not_load_numpy() -> None:
             "-c",
             (
                 "import sys; import plugin.plugins.study_companion; "
-                "raise SystemExit(1 if 'numpy' in sys.modules else 0)"
+                "raise SystemExit(1 if "
+                "{'numpy', 'knowledge.vector_index'} & set(sys.modules) else 0)"
             ),
         ],
         check=True,

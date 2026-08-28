@@ -45,7 +45,10 @@ body into memory before validating its shape.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import tempfile
+from collections.abc import Mapping
 
 # 16 MiB. Comfortably above every non-multipart endpoint's legitimate body
 # (the largest is the recent-chat payload's 2 MB business cap from PR #1585),
@@ -55,11 +58,28 @@ DEFAULT_MAX_INBOUND_BODY_BYTES = 16 * 1024 * 1024
 
 
 class InboundBodySizeLimitMiddleware:
-    """Reject oversized non-multipart request bodies before routers see them."""
+    """Reject oversized request bodies before routers parse them.
 
-    def __init__(self, app, max_body_bytes: int = DEFAULT_MAX_INBOUND_BODY_BYTES):
+    Multipart uploads remain globally exempt, except for exact paths supplied
+    through ``streamed_path_limits``. Those paths are read into a bounded
+    spooled file and replayed to the downstream application only after the
+    actual byte count has passed validation. This closes the gap where an
+    absent or dishonest ``Content-Length`` could otherwise make FastAPI spool
+    an unbounded multipart body before a route-level guard runs.
+    """
+
+    def __init__(
+        self,
+        app,
+        max_body_bytes: int = DEFAULT_MAX_INBOUND_BODY_BYTES,
+        streamed_path_limits: Mapping[str, int] | None = None,
+    ):
         self.app = app
         self.max_body_bytes = int(max_body_bytes)
+        self.streamed_path_limits = {
+            str(path): int(limit)
+            for path, limit in (streamed_path_limits or {}).items()
+        }
 
     async def __call__(self, scope, receive, send):
         # websocket / lifespan scopes carry no Content-Length body to cap.
@@ -76,8 +96,39 @@ class InboundBodySizeLimitMiddleware:
             elif lowered == b"content-type":
                 content_type = value
 
+        streamed_limit = self.streamed_path_limits.get(str(scope.get("path") or ""))
+        if streamed_limit is not None:
+            if self._declared_length_exceeds(content_length, streamed_limit):
+                await self._reject(
+                    send,
+                    max_bytes=streamed_limit,
+                    error_code="knowledge_request_too_large",
+                )
+                return
+            spool, exceeded, disconnected = await self._spool_bounded_body(
+                receive,
+                max_bytes=streamed_limit,
+            )
+            if exceeded:
+                await asyncio.to_thread(spool.close)
+                await self._reject(
+                    send,
+                    max_bytes=streamed_limit,
+                    error_code="knowledge_request_too_large",
+                )
+                return
+            try:
+                await self.app(
+                    scope,
+                    self._replay_receive(spool, disconnected=disconnected),
+                    send,
+                )
+            finally:
+                await asyncio.to_thread(spool.close)
+            return
+
         if self._exceeds_limit(content_length, content_type):
-            await self._reject(send)
+            await self._reject(send, max_bytes=self.max_body_bytes)
             return
 
         await self.app(scope, receive, send)
@@ -91,21 +142,88 @@ class InboundBodySizeLimitMiddleware:
         # their own streaming, much-larger caps.
         if content_type.strip().lower().startswith(b"multipart/"):
             return False
+        return self._declared_length_exceeds(content_length, self.max_body_bytes)
+
+    @staticmethod
+    def _declared_length_exceeds(
+        content_length: bytes | None,
+        max_bytes: int,
+    ) -> bool:
+        if content_length is None:
+            return False
         try:
             length = int(content_length)
         except (TypeError, ValueError):
-            # Malformed Content-Length: let the server / downstream handle it
-            # instead of guessing here.
             return False
-        return length > self.max_body_bytes
+        return length > max_bytes
 
-    async def _reject(self, send) -> None:
+    @staticmethod
+    async def _spool_bounded_body(receive, *, max_bytes: int):
+        spool = tempfile.SpooledTemporaryFile(max_size=min(max_bytes, 1024 * 1024))
+        size = 0
+        disconnected = False
+        try:
+            while True:
+                message = await receive()
+                if message.get("type") == "http.disconnect":
+                    disconnected = True
+                    break
+                if message.get("type") != "http.request":
+                    continue
+                body = message.get("body", b"")
+                size += len(body)
+                if size > max_bytes:
+                    return spool, True, disconnected
+                await asyncio.to_thread(spool.write, body)
+                if not message.get("more_body", False):
+                    break
+            await asyncio.to_thread(spool.seek, 0)
+            return spool, False, disconnected
+        except BaseException:
+            try:
+                await asyncio.shield(asyncio.to_thread(spool.close))
+            except BaseException:
+                pass
+            raise
+
+    @staticmethod
+    def _replay_receive(spool, *, disconnected: bool):
+        finished = False
+
+        async def replay():
+            nonlocal finished
+            if finished:
+                return {"type": "http.disconnect"}
+            chunk = await asyncio.to_thread(spool.read, 64 * 1024)
+            if chunk:
+                more_body = len(chunk) == 64 * 1024
+                if not more_body:
+                    finished = True
+                return {
+                    "type": "http.request",
+                    "body": chunk,
+                    "more_body": more_body,
+                }
+            finished = True
+            if disconnected:
+                return {"type": "http.disconnect"}
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        return replay
+
+    async def _reject(
+        self,
+        send,
+        *,
+        max_bytes: int,
+        error_code: str = "payload_too_large",
+    ) -> None:
         body = json.dumps(
             {
                 "ok": False,
-                "error_code": "payload_too_large",
-                "max_bytes": self.max_body_bytes,
-                "error": "请求体超过全局体积上限。",
+                "error_code": error_code,
+                "max_bytes": max_bytes,
+                "error": "请求体超过允许的体积上限。",
             },
             ensure_ascii=False,
         ).encode("utf-8")

@@ -154,6 +154,7 @@ def _make_manager():
     mgr._tts_done_pending_until_ready = False
     mgr.state = _FakeState()
     mgr._active_text_request_id = None
+    mgr._text_route_owners = {}
     mgr._magic_command_image_drop_request_ids = set()
     mgr._magic_command_image_drop_request_order = deque()
     mgr._pending_turn_meta = None
@@ -2331,18 +2332,139 @@ async def test_takeover_dispatcher_falls_back_when_unhandled(dispatcher_outcome)
 async def test_takeover_response_complete_clears_interrupted_ordinary_turn():
     mgr = _make_manager()
     mgr._active_text_request_id = "req-old"
+    mgr._text_route_owners["req-old"] = "ordinary-owner"
     mgr._pending_turn_meta = {"source": "ordinary"}
     mgr._current_ai_turn_text = "ordinary text before takeover"
+    mgr.current_speech_id = "sid-old"
     mgr.tts_pending_chunks = [("sid-old", "queued text")]
     mgr._takeover_active = True
 
     await core_module.LLMSessionManager.handle_response_complete(mgr)
 
     assert mgr._active_text_request_id is None
+    assert "req-old" not in mgr._text_route_owners
     assert mgr._pending_turn_meta is None
     assert mgr._current_ai_turn_text == ""
     assert mgr.tts_pending_chunks == []
     assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_takeover_cleanup_does_not_clear_request_started_during_tts_await(
+    monkeypatch,
+):
+    mgr = _make_manager()
+    mgr._active_text_request_id = "req-old"
+    mgr._text_route_owners["req-old"] = "ordinary-owner"
+    mgr._pending_turn_meta = {"request_id": "req-old"}
+    mgr._current_ai_turn_text = "old text"
+    mgr.current_speech_id = "sid-old"
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_pending_chunks = [("sid-old", "old pending")]
+    mgr._takeover_active = True
+
+    async def start_new_request_during_interrupt(_seconds):
+        assert mgr._active_text_request_id is None
+        assert "req-old" not in mgr._text_route_owners
+        mgr._active_text_request_id = "req-new"
+        mgr._text_route_owners["req-new"] = "new-owner"
+        mgr._pending_turn_meta = {"request_id": "req-new"}
+        mgr._current_ai_turn_text = "new text"
+        mgr.current_speech_id = "sid-new"
+        mgr.tts_pending_chunks.append(("sid-new", "new pending"))
+        mgr._tts_done_queued_for_turn = True
+        mgr._tts_done_pending_until_ready = True
+
+    monkeypatch.setattr(
+        tts_runtime_module.asyncio,
+        "sleep",
+        start_new_request_during_interrupt,
+    )
+
+    await core_module.LLMSessionManager.handle_response_complete(mgr)
+
+    assert mgr._active_text_request_id == "req-new"
+    assert mgr._text_route_owners == {"req-new": "new-owner"}
+    assert mgr._pending_turn_meta == {"request_id": "req-new"}
+    assert mgr._current_ai_turn_text == "new text"
+    assert mgr.tts_pending_chunks == [("sid-new", "new pending")]
+    assert mgr._tts_done_queued_for_turn is True
+    assert mgr._tts_done_pending_until_ready is True
+    assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_clear_tts_pipeline_drops_chunks_from_sid_rotated_without_clear(
+    monkeypatch,
+):
+    """A sid rotated outside this function must not survive the interrupt.
+
+    ``prepare_proactive_delivery`` / ``handle_avatar_interaction`` assign a fresh
+    ``current_speech_id`` without calling ``_clear_tts_pipeline``.  While the TTS
+    worker is not ready the superseded sid's text stays in ``tts_pending_chunks``,
+    so a later interrupt sees three sids at once.  Dropping only the expected one
+    would leave the orphan behind for ``_flush_tts_pending_chunks`` to speak.
+    """
+    mgr = _make_manager()
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.current_speech_id = "sid-superseded"
+    mgr.tts_pending_chunks = [("sid-orphan", "orphaned text")]
+
+    async def rotate_to_new_turn_during_interrupt(_seconds):
+        mgr.current_speech_id = "sid-new"
+        mgr.tts_pending_chunks.append(("sid-new", "new pending"))
+
+    monkeypatch.setattr(
+        tts_runtime_module.asyncio,
+        "sleep",
+        rotate_to_new_turn_during_interrupt,
+    )
+
+    await core_module.LLMSessionManager._clear_tts_pipeline(
+        mgr,
+        expected_speech_id="sid-superseded",
+    )
+
+    # Only the turn that now owns the pipeline survives.
+    assert mgr.tts_pending_chunks == [("sid-new", "new pending")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_clear_tts_pipeline_clears_deferred_done_when_nothing_stays_pending(
+    monkeypatch,
+):
+    """The deferred-done flag is paired with the chunks that were just dropped.
+
+    Dual of ``test_takeover_cleanup_does_not_clear_request_started_during_tts_await``:
+    there the replacement turn has pending text, so the flag must stay True.  Here
+    the replacement turn queued nothing, so leaving it True would make
+    ``_flush_tts_pending_chunks`` emit a done sentinel for the dead turn.
+    """
+    mgr = _make_manager()
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.current_speech_id = "sid-old"
+    mgr.tts_pending_chunks = [("sid-old", "old pending")]
+    mgr._tts_done_pending_until_ready = True
+
+    async def preempt_without_queueing_text(_seconds):
+        mgr.current_speech_id = "sid-new"
+
+    monkeypatch.setattr(
+        tts_runtime_module.asyncio,
+        "sleep",
+        preempt_without_queueing_text,
+    )
+
+    await core_module.LLMSessionManager._clear_tts_pipeline(
+        mgr,
+        expected_speech_id="sid-old",
+    )
+
+    assert mgr.tts_pending_chunks == []
+    assert mgr._tts_done_pending_until_ready is False
 
 
 @pytest.mark.unit

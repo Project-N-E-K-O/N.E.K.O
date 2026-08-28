@@ -46,7 +46,32 @@ export default {
     adapters: '適配器',
     adapterUI: '適配器介面',
     packageManager: '包管理',
-    market: '外掛市集'
+    market: '外掛市集',
+    knowledge: '知識庫'
+  },
+  knowledge: {
+    marketConnected: '知識包市集已接通；訂閱後會先驗證，再寫入本機知識庫。',
+    openMarket: '瀏覽知識庫市集', marketUnavailable: '外掛市集目前無法使用',
+    loginRequired: '請先在外掛管理頁面登入市集帳號', marketPairFailed: '無法與本機 N.E.K.O 安全配對',
+    title: '知識庫管理', subtitle: '管理本機公共知識、資料包與對話命中情況',
+    marketNotice: '知識包市集協議介面已預留；目前可管理內建知識庫與本機資料包。',
+    overview: '總覽', ready: '正常', degraded: '異常', entries: '詞條', disabled: '已停用', packs: '資料包',
+    autoContext: '參與自動搭話', catalog: '詞條管理', searchPlaceholder: '搜尋標題、別名、摘要或正文',
+    term: '詞條', summary: '摘要', source: '來源', actions: '操作', details: '詳情', restore: '恢復', disable: '停用',
+    previous: '上一頁', next: '下一頁', packId: '資料包 ID', materialType: '內容類型', subscription: '訂閱來源', localImport: '本機匯入',
+    importPack: '匯入知識包', diagnostics: '最近命中', time: '時間', matchMode: '匹配方式',
+    delivered: '已遞卡', yes: '是', no: '否', terms: '識別詞', titleMatch: '詞條標題', aliasTerms: '別名', recognitionPhrases: '識別短語', tags: '標籤', content: '正文',
+    indexStatus: '向量索引', indexOrigin: '索引來源', indexTrust: '信任狀態', indexValidation: '驗證狀態', indexFallback: '降級方式',
+    localEmbeddingState: '本機維護狀態', allowLocalEmbedding: '允許本機維護向量', enabled: '已啟用', disabledState: '已停用',
+    packageStatus: '知識包運行態', sourceDistribution: '來源分布', otherSources: '其他', inactivePacks: '關閉', needsAttention: '需關注', materialMix: '知識包類型', noPacks: '暫無知識包',
+    vectorReadyPercent: '已就緒 {percent}%', noVectorChunks: '暫無向量分塊', vectorBuilding: '建構中', vectorComplete: '全部就緒', vectorWaiting: '等待建構',
+    indexPolicyHint: '可能使用本機 CPU 與記憶體；停用後，可信索引不可用時將降級為 BM25。',
+    loadFailed: '知識庫資料載入失敗', operationFailed: '知識庫操作失敗', importSuccess: '知識包匯入成功', importQueued: '知識包正在背景靜默處理，準備完成後會自動載入', importStillProcessing: '知識包仍在背景處理，請稍後重新整理查看狀態',
+    degradedJobs: '已隔離的匯入工作', degradedJobHint: '損壞的工作無法繼續。核對 ID 後丟棄對應工作，即可恢復新的匯入。', discardJobConfirm: '確定丟棄隔離工作 {name} 嗎？只會刪除它的暫存檔案。', jobDiscarded: '隔離工作已丟棄',
+    importingPacks: '正在匯入知識包', importingPackHint: '正在校驗並準備本機知識庫，可離開此頁面，稍後回來查看。',
+    importStateQueued: '等待處理', importStateValidating: '正在校驗', importStateBuildingFts: '正在建立詞法索引', importStateVerifyingIndex: '正在檢查向量索引', importStateEmbedding: '正在準備向量',
+    importProgressMeta: '已完成 {percent}% · {entries} 詞條 · {chunks} 分塊', importPreparingMeta: '{entries} 詞條 · {chunks} 分塊',
+    invalidPack: '知識包格式無效', importTooLarge: '知識包超過 10 MiB 大小限制', removeConfirm: '確定移除知識包 {name} 嗎？'
   },
   market: {
     title: '取得新外掛',

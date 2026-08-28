@@ -24,6 +24,121 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.asyncio
+async def test_structured_public_knowledge_owner_skips_external_agent(monkeypatch):
+    from app.agent_server import api_runtime as srv
+
+    plan = AsyncMock()
+    monkeypatch.setattr(srv, "_agent_master_enabled", lambda: True)
+    monkeypatch.setattr(srv, "_background_analyze_and_plan", plan)
+    monkeypatch.setattr(srv.Modules, "last_user_turn_fingerprint", {})
+
+    await srv._on_session_event(
+        {
+            "event_type": "analyze_request",
+            "lanlan_name": "YUI",
+            "messages": [{"role": "user", "content": "电车难题是什么？"}],
+            "route_owner": "public_knowledge",
+        }
+    )
+    await asyncio.sleep(0)
+
+    plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "联网搜索本地知识库技术的最新新闻",
+        "解释‘本地知识库’这个概念",
+        "请结合本地知识库并联网核实",
+    ],
+)
+async def test_knowledge_words_without_structured_owner_do_not_skip_agent(
+    monkeypatch, text
+):
+    from app.agent_server import api_runtime as srv
+
+    plan = AsyncMock()
+    monkeypatch.setattr(srv, "_agent_master_enabled", lambda: True)
+    monkeypatch.setattr(srv, "_background_analyze_and_plan", plan)
+    monkeypatch.setattr(srv.Modules, "last_user_turn_fingerprint", {})
+
+    await srv._on_session_event(
+        {
+            "event_type": "analyze_request",
+            "lanlan_name": "YUI",
+            "messages": [{"role": "user", "content": text}],
+        }
+    )
+    await asyncio.sleep(0)
+
+    plan.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_turn_end_carries_and_consumes_request_scoped_route_owner():
+    from main_logic.core.turn import TurnMixin
+
+    queue = MagicMock()
+    manager = SimpleNamespace(
+        _text_route_owners={"req-local": "public_knowledge"},
+        _pending_turn_meta=None,
+        sync_message_queue=queue,
+        websocket=None,
+        _flush_ai_turn_text_to_tracker=MagicMock(),
+    )
+
+    await TurnMixin._emit_turn_end(manager, "req-local")
+
+    queue.put.assert_called_once_with(
+        {
+            "type": "system",
+            "data": "turn end",
+            "route_owner": "public_knowledge",
+            "request_id": "req-local",
+        }
+    )
+    assert manager._text_route_owners == {}
+
+
+def test_analyzer_route_owner_is_bound_to_one_user_turn():
+    from main_logic.cross_server import (
+        _pending_analyze_owner,
+        _pending_owner_after_user_input,
+        _session_end_analyze_owner,
+    )
+
+    pending = _pending_analyze_owner("req-user", "public_knowledge")
+
+    assert pending == {"turn_id": "req-user", "owner": "public_knowledge"}
+    assert _session_end_analyze_owner(
+        pending,
+        [{"role": "user", "content": "query"}],
+    ) == "public_knowledge"
+    assert _pending_analyze_owner("", "public_knowledge") is None
+    assert _pending_analyze_owner("req-next", None) is None
+    assert _pending_owner_after_user_input(pending, "req-user") == pending
+    assert _pending_owner_after_user_input(pending, "req-next") is None
+    assert _pending_owner_after_user_input(pending, "") is None
+
+
+def test_proactive_or_userless_session_end_cannot_inherit_route_owner():
+    from main_logic.cross_server import _session_end_analyze_owner
+
+    stale = {"turn_id": "req-old", "owner": "public_knowledge"}
+
+    assert _session_end_analyze_owner(
+        stale,
+        [{"role": "assistant", "content": "proactive"}],
+    ) is None
+    assert _session_end_analyze_owner(
+        None,
+        [{"role": "user", "content": "new"}],
+    ) is None
+
+
 # ---------------------------------------------------------------------------
 # 1. _patch_usage: explicit nulls must not raise and must be zero-filled
 # ---------------------------------------------------------------------------

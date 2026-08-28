@@ -46,7 +46,32 @@ export default {
     adapters: 'Adapters',
     adapterUI: 'Adapter UI',
     packageManager: 'Package Manager',
-    market: 'Plugin Market'
+    market: 'Plugin Market',
+    knowledge: 'Knowledge'
+  },
+  knowledge: {
+    marketConnected: 'The knowledge market is connected. Packages are verified before local installation.',
+    openMarket: 'Browse knowledge market', marketUnavailable: 'The plugin market is unavailable',
+    loginRequired: 'Sign in to the market from the Plugins page first', marketPairFailed: 'Could not securely pair with the local N.E.K.O client',
+    title: 'Knowledge Manager', subtitle: 'Manage local public knowledge, data packs, and conversation matches',
+    marketNotice: 'The knowledge-market protocol socket is reserved. The unified public knowledge database and local data packs are available now.',
+    overview: 'Overview', ready: 'Ready', degraded: 'Degraded', entries: 'Entries', disabled: 'Disabled', packs: 'Data packs',
+    autoContext: 'Use in automatic conversation', catalog: 'Catalog', searchPlaceholder: 'Search titles, aliases, summaries, or content',
+    term: 'Entry', summary: 'Summary', source: 'Source', actions: 'Actions', details: 'Details', restore: 'Restore', disable: 'Disable',
+    previous: 'Previous', next: 'Next', packId: 'Pack ID', materialType: 'Content type', subscription: 'Subscription', localImport: 'Local import',
+    importPack: 'Import knowledge pack', diagnostics: 'Recent matches', time: 'Time', matchMode: 'Match mode',
+    delivered: 'Card delivered', yes: 'Yes', no: 'No', terms: 'Recognition terms', titleMatch: 'Entry title', aliasTerms: 'Aliases', recognitionPhrases: 'Recognition phrases', tags: 'Tags', content: 'Content',
+    indexStatus: 'Vector index', indexOrigin: 'Origin', indexTrust: 'Trust', indexValidation: 'Validation', indexFallback: 'Fallback',
+    localEmbeddingState: 'Local maintenance', allowLocalEmbedding: 'Allow local vector maintenance', enabled: 'Enabled', disabledState: 'Disabled',
+    packageStatus: 'Package runtime', sourceDistribution: 'Source distribution', otherSources: 'Other', inactivePacks: 'Off', needsAttention: 'Needs attention', materialMix: 'Pack type', noPacks: 'No knowledge packs',
+    vectorReadyPercent: '{percent}% ready', noVectorChunks: 'No vector chunks', vectorBuilding: 'Building', vectorComplete: 'Fully ready', vectorWaiting: 'Waiting to build',
+    indexPolicyHint: 'May use local CPU and memory. If disabled, an unavailable trusted index falls back to BM25.',
+    loadFailed: 'Failed to load knowledge data', operationFailed: 'Knowledge operation failed', importSuccess: 'Knowledge pack imported', importQueued: 'Knowledge pack is being prepared quietly and will appear when ready', importStillProcessing: 'The knowledge pack is still processing. Refresh later to check its status.',
+    degradedJobs: 'Quarantined imports', degradedJobHint: 'Damaged jobs cannot continue. Review the ID, then discard one to unblock new imports.', discardJobConfirm: 'Discard quarantined job {name}? Only its staged files will be removed.', jobDiscarded: 'Quarantined job discarded',
+    importingPacks: 'Importing knowledge packs', importingPackHint: 'The local knowledge base is being verified and prepared. You can leave this page and return later.',
+    importStateQueued: 'Waiting', importStateValidating: 'Validating', importStateBuildingFts: 'Building lexical index', importStateVerifyingIndex: 'Checking vector index', importStateEmbedding: 'Preparing vectors',
+    importProgressMeta: '{percent}% complete · {entries} entries · {chunks} chunks', importPreparingMeta: '{entries} entries · {chunks} chunks',
+    invalidPack: 'Invalid knowledge pack', importTooLarge: 'Knowledge pack exceeds the 10 MiB limit', removeConfirm: 'Remove knowledge pack {name}?'
   },
   market: {
     title: 'Get New Plugins',

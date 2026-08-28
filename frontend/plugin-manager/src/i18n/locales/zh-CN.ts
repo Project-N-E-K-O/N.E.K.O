@@ -46,7 +46,32 @@ export default {
     adapters: '适配器',
     adapterUI: '适配器界面',
     packageManager: '包管理',
-    market: '插件市场'
+    market: '插件市场',
+    knowledge: '知识库'
+  },
+  knowledge: {
+    marketConnected: '知识包市场已经接通；订阅后会先校验，再写入本地知识库。',
+    openMarket: '浏览知识库市场', marketUnavailable: '插件市场当前不可用',
+    loginRequired: '请先在插件管理页面登录市场账号', marketPairFailed: '无法与本机 N.E.K.O 安全配对',
+    title: '知识库管理', subtitle: '管理本地公共知识、数据包和对话命中情况',
+    marketNotice: '知识包市场协议接口已预留；当前可管理内置知识库和本地数据包。',
+    overview: '总览', ready: '正常', degraded: '异常', entries: '词条', disabled: '已禁用', packs: '数据包',
+    autoContext: '参与自动搭话', catalog: '词条管理', searchPlaceholder: '搜索标题、别名、摘要或正文',
+    term: '词条', summary: '摘要', source: '来源', actions: '操作', details: '详情', restore: '恢复', disable: '禁用',
+    previous: '上一页', next: '下一页', packId: '数据包 ID', materialType: '内容类型', subscription: '订阅来源', localImport: '本地导入',
+    importPack: '导入知识包', diagnostics: '最近命中', time: '时间', matchMode: '匹配方式',
+    delivered: '已递卡', yes: '是', no: '否', terms: '识别词', titleMatch: '词条标题', aliasTerms: '别名', recognitionPhrases: '识别短语', tags: '标签', content: '正文',
+    indexStatus: '向量索引', indexOrigin: '索引来源', indexTrust: '信任状态', indexValidation: '校验状态', indexFallback: '降级方式',
+    localEmbeddingState: '本机维护状态', allowLocalEmbedding: '允许本机维护向量', enabled: '已启用', disabledState: '已禁用',
+    packageStatus: '知识包运行态', sourceDistribution: '来源分布', otherSources: '其他', inactivePacks: '关闭', needsAttention: '需关注', materialMix: '知识包类型', noPacks: '暂无知识包',
+    vectorReadyPercent: '已就绪 {percent}%', noVectorChunks: '暂无向量分块', vectorBuilding: '构建中', vectorComplete: '全部就绪', vectorWaiting: '等待构建',
+    indexPolicyHint: '可能占用本机 CPU 和内存；关闭后，可信索引不可用时将降级为 BM25。',
+    loadFailed: '知识库数据加载失败', operationFailed: '知识库操作失败', importSuccess: '知识包导入成功', importQueued: '知识包正在后台静默处理，准备完成后会自动载入', importStillProcessing: '知识包仍在后台处理，请稍后刷新查看状态',
+    degradedJobs: '已隔离的导入任务', degradedJobHint: '损坏的任务无法继续。核对 ID 后丢弃对应任务，即可恢复新的导入。', discardJobConfirm: '确定丢弃隔离任务 {name} 吗？只会删除它的暂存文件。', jobDiscarded: '隔离任务已丢弃',
+    importingPacks: '正在导入知识包', importingPackHint: '正在校验并准备本地知识库，可离开此页面，稍后回来查看。',
+    importStateQueued: '等待处理', importStateValidating: '正在校验', importStateBuildingFts: '正在建立词法索引', importStateVerifyingIndex: '正在检查向量索引', importStateEmbedding: '正在准备向量',
+    importProgressMeta: '已完成 {percent}% · {entries} 词条 · {chunks} 分块', importPreparingMeta: '{entries} 词条 · {chunks} 分块',
+    invalidPack: '知识包格式无效', importTooLarge: '知识包超过 10 MiB 大小限制', removeConfirm: '确定移除知识包 {name} 吗？'
   },
   market: {
     title: '获取新插件',

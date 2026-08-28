@@ -1,0 +1,144 @@
+[
+  {
+    "id": "self_mock_reversal",
+    "category": "self_deprecation",
+    "message": "我以为稳了，结果小丑竟是我自己。",
+    "expected_mode": "strong",
+    "expected_source_tag": "source:chime",
+    "expected_title": "小丑竟是我自己",
+    "intent": "认可预期落空后的自嘲反转，并顺势回应",
+    "forbidden": ["否认自嘲表达", "直接套安慰话术", "只追问发生了什么", "只复述原句"]
+  },
+  {
+    "id": "quoted_melon",
+    "category": "quotation",
+    "message": "你这瓜保熟吗？",
+    "expected_mode": "strong",
+    "expected_source_tag": "source:chime",
+    "expected_title": "这瓜保熟吗",
+    "intent": "识别固定引用，并在当前语境里轻量接话",
+    "forbidden": ["按普通水果质量咨询回答", "询问是不是梗", "编造固定下一句"]
+  },
+  {
+    "id": "cpu_manipulation",
+    "category": "adapted_expression",
+    "message": "他这是在CPU我吧？",
+    "expected_mode": "strong",
+    "expected_source_tag": "source:chime",
+    "expected_title": "他在cpu你",
+    "intent": "理解为精神操控或话术影响，而不是计算机硬件",
+    "forbidden": ["解释计算机CPU", "否认用户感受", "询问是不是新梗"]
+  },
+  {
+    "id": "wordplay_shrimp_heart",
+    "category": "wordplay",
+    "message": "你这句评价真是虾仁猪心啊。",
+    "expected_mode": "strong",
+    "expected_source_tag": "source:chime",
+    "expected_title": "虾仁猪心",
+    "intent": "理解为杀人诛心式的谐音调侃，并轻量呼应",
+    "forbidden": ["解释虾仁和猪心食材", "只复述原句", "主动讲出处"]
+  },
+  {
+    "id": "phenomenon_neijuan",
+    "category": "phenomenon",
+    "message": "大家把日报写得像论文一样，这也太内卷了。",
+    "expected_mode": "none",
+    "intent": "回应无效竞争和被迫加码的评价",
+    "forbidden": ["只说太夸张了", "解释成卷东西", "只复述原句"]
+  },
+  {
+    "id": "phenomenon_shangtou",
+    "category": "phenomenon",
+    "message": "最近做这个方案越改越上头。",
+    "expected_mode": "none",
+    "intent": "理解为越来越投入、兴奋或停不下来",
+    "forbidden": ["解释身体上方", "只复述舍不得停", "主动百科化"]
+  },
+  {
+    "id": "phenomenon_bailan",
+    "category": "phenomenon",
+    "message": "这个需求先摆烂两天再说。",
+    "expected_mode": "none",
+    "intent": "理解为暂时放弃努力或消极处理，并自然回应",
+    "forbidden": ["解释摆放腐烂物品", "只复述原句", "默认严肃说教"]
+  },
+  {
+    "id": "emotion_pofang",
+    "category": "emotion",
+    "message": "看到这个结果我真的破防了。",
+    "expected_mode": "strong",
+    "expected_source_tag": "source:chime",
+    "expected_title": "破防了",
+    "intent": "理解为情绪防线被击穿，并结合结果回应",
+    "forbidden": ["解释物理防御设施", "只重复破防", "询问是不是梗"]
+  },
+  {
+    "id": "explicit_dianzi_zhacai",
+    "category": "explicit_meaning",
+    "message": "电子榨菜到底是指什么？",
+    "expected_mode": "strong",
+    "expected_source_tag": "source:chime",
+    "expected_title": "电子榨菜",
+    "intent": "先直接说明吃饭时用于下饭的内容",
+    "forbidden": ["先玩梗不回答", "询问用户是不是在说梗", "编造出处"]
+  },
+  {
+    "id": "explicit_fanersai",
+    "category": "explicit_distinction",
+    "message": "凡尔赛和普通炫耀有什么区别？",
+    "expected_mode": "strong",
+    "expected_source_tag": "source:chime",
+    "expected_title": "凡尔赛",
+    "intent": "先说明隐晦反向炫耀与直接炫耀的区别",
+    "forbidden": ["只说都在炫耀", "先反问语境", "编造出处"]
+  },
+  {
+    "id": "explicit_weak_shangtou",
+    "category": "explicit_meaning",
+    "message": "上头在这里是什么意思？",
+    "expected_mode": "none",
+    "intent": "直接解释当前网络语境中的投入、兴奋或失去冷静",
+    "forbidden": ["只顺势玩梗不解释", "解释字面方位", "询问是不是梗"]
+  },
+  {
+    "id": "literal_cpu",
+    "category": "ordinary_exit",
+    "message": "这台机器的CPU占用率太高了。",
+    "expected_mode": "none",
+    "intent": "按计算机性能问题正常回应",
+    "forbidden": ["解释精神操控", "声称查到梗", "强行玩梗"]
+  },
+  {
+    "id": "serious_security_pofang",
+    "category": "serious_exit",
+    "message": "服务器防线已经破防，需要立即处理安全事故。",
+    "expected_mode": "none",
+    "intent": "忽略弱卡的网络情绪含义，按安全事故严肃回应",
+    "forbidden": ["调侃情绪破防", "玩梗", "淡化安全风险"]
+  },
+  {
+    "id": "stale_shuilinling",
+    "category": "stale_exit",
+    "message": "她就这么水灵灵地把bug带上线了。",
+    "expected_mode": "none",
+    "intent": "不使用已标记过时的知识卡，按上下文自然回应",
+    "forbidden": ["声称知识库确认了用法", "主动讲旧释义", "询问是不是梗"]
+  },
+  {
+    "id": "ordinary_shangche",
+    "category": "ordinary_exit",
+    "message": "我准备上车了，你到了没有？",
+    "expected_mode": "none",
+    "intent": "按出行和到达语境正常回应",
+    "forbidden": ["解释上车梗", "声称检索知识库", "强行联想到游戏"]
+  },
+  {
+    "id": "serious_food_poisoning",
+    "category": "serious_exit",
+    "message": "我好像食物中毒了，现在很难受。",
+    "expected_mode": "none",
+    "intent": "按健康与安全语境认真回应",
+    "forbidden": ["玩梗", "轻描淡写", "声称知识库命中"]
+  }
+]

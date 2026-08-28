@@ -484,6 +484,7 @@ async def publish_analyze_request_reliably(
     external_intent: Optional[float] = None,
     proactive: bool = False,
     language: Optional[str] = None,
+    route_owner: Optional[str] = None,
 ) -> bool:
     """Reliably publish analyze_request: carries event_id + ack, with short retries.
 
@@ -504,6 +505,10 @@ async def publish_analyze_request_reliably(
     which is wrong whenever the UI language differs. It rides this payload so the
     analyzer's prompts follow the language the user is actually reading. Omitted
     (``None``) → the agent falls back to its process-global value.
+
+    ``route_owner`` is an allowlisted, structured routing decision made by the
+    component that handled the turn. Unknown values are omitted so the agent
+    fails open instead of suppressing work based on untrusted text.
     """
     event_id = uuid.uuid4().hex
     sent_at = time.perf_counter()
@@ -531,6 +536,12 @@ async def publish_analyze_request_reliably(
         # which turns get analyzed.
         if language:
             event["language"] = language
+        if route_owner:
+            from main_logic.agent_routing import normalize_analyze_route_owner
+
+            normalized_route_owner = normalize_analyze_route_owner(route_owner)
+            if normalized_route_owner:
+                event["route_owner"] = normalized_route_owner
 
         loop = asyncio.get_running_loop()
         waiter: asyncio.Future = loop.create_future()

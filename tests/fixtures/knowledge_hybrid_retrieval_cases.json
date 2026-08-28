@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "title": "月光邮局",
+      "terms": {"alias": ["月邮"], "recognition": ["夜间信件站"]},
+      "tags": ["source:fixture", "category:place"],
+      "summary": "一处只在夜晚收取信件的虚构邮局。",
+      "content": "月光邮局在入夜后营业，负责收取写给远方朋友的信。"
+    },
+    {
+      "title": "潮汐图书馆",
+      "terms": {"alias": ["潮图"], "recognition": []},
+      "tags": ["source:fixture", "category:place"],
+      "summary": "随海水涨落开放的虚构图书馆。",
+      "content": "退潮时入口显露，访客可以阅读记录海洋故事的书籍。"
+    },
+    {
+      "title": "灰灯协议",
+      "terms": {"alias": ["GLP"], "recognition": []},
+      "tags": ["source:fixture", "category:protocol"],
+      "summary": "设备离线时使用的安全降级规则。",
+      "content": "网络不可用时停止远程操作，只保留本地只读能力。"
+    },
+    {
+      "title": "禁用样例",
+      "terms": {"alias": ["不可见知识"], "recognition": []},
+      "tags": ["source:fixture", "category:negative"],
+      "summary": "用于验证禁用边界。",
+      "content": "这条记录不应出现在任何检索结果中。"
+    }
+  ],
+  "queries": [
+    {"id": "exact_title", "kind": "exact", "query": "月光邮局", "expected": "月光邮局"},
+    {"id": "exact_alias", "kind": "alias", "query": "月邮", "expected": "月光邮局"},
+    {"id": "semantic_paraphrase", "kind": "semantic", "query": "哪里能在晚上寄出给朋友的信", "expected": "月光邮局"},
+    {"id": "semantic_without_keyword", "kind": "semantic", "query": "海水退去以后才可以进去看书的地方", "expected": "潮汐图书馆"},
+    {"id": "fallback_concept", "kind": "semantic", "query": "断网后禁止远程写入但允许本地查看", "expected": "灰灯协议"},
+    {"id": "disabled_boundary", "kind": "disabled", "query": "不可见知识", "expected": null},
+    {"id": "negative_unrelated", "kind": "negative", "query": "今天中午吃什么", "expected": null}
+  ]
+}

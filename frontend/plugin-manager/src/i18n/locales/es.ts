@@ -46,7 +46,32 @@ export default {
     adapters: 'Adaptadores',
     adapterUI: 'UI del adaptador',
     packageManager: 'Gestor de paquetes',
-    market: 'Mercado de plugins'
+    market: 'Mercado de plugins',
+    knowledge: 'Conocimiento'
+  },
+  knowledge: {
+    marketConnected: 'El mercado de conocimiento está conectado. Los paquetes se validan antes de instalarlos localmente.',
+    openMarket: 'Explorar mercado de conocimiento', marketUnavailable: 'El mercado de plugins no está disponible',
+    loginRequired: 'Inicia sesión en el mercado desde la página de plugins', marketPairFailed: 'No se pudo emparejar de forma segura con el cliente N.E.K.O local',
+    title: 'Gestor de conocimiento', subtitle: 'Gestiona conocimiento público local, paquetes de datos y coincidencias de conversación',
+    marketNotice: 'La conexión del mercado de conocimiento está reservada. Ya se pueden gestionar la base pública unificada y los paquetes locales.',
+    overview: 'Resumen', ready: 'Listo', degraded: 'Degradado', entries: 'Entradas', disabled: 'Desactivadas', packs: 'Paquetes',
+    autoContext: 'Usar en conversación automática', catalog: 'Catálogo', searchPlaceholder: 'Buscar títulos, alias, resúmenes o contenido',
+    term: 'Entrada', summary: 'Resumen', source: 'Fuente', actions: 'Acciones', details: 'Detalles', restore: 'Restaurar', disable: 'Desactivar',
+    previous: 'Anterior', next: 'Siguiente', packId: 'ID del paquete', materialType: 'Tipo de contenido', subscription: 'Suscripción', localImport: 'Importación local',
+    importPack: 'Importar paquete', diagnostics: 'Coincidencias recientes', time: 'Hora', matchMode: 'Modo de coincidencia',
+    delivered: 'Tarjeta enviada', yes: 'Sí', no: 'No', terms: 'Términos', titleMatch: 'Título', aliasTerms: 'Alias', recognitionPhrases: 'Frases de reconocimiento', tags: 'Etiquetas', content: 'Contenido',
+    indexStatus: 'Índice vectorial', indexOrigin: 'Origen', indexTrust: 'Confianza', indexValidation: 'Validación', indexFallback: 'Modo alternativo',
+    localEmbeddingState: 'Mantenimiento local', allowLocalEmbedding: 'Permitir mantenimiento local de vectores', enabled: 'Activado', disabledState: 'Desactivado',
+    packageStatus: 'Estado de paquetes', sourceDistribution: 'Distribución de fuentes', otherSources: 'Otros', inactivePacks: 'Desactivados', needsAttention: 'Requiere atención', materialMix: 'Tipo de paquete', noPacks: 'No hay paquetes',
+    vectorReadyPercent: '{percent}% listo', noVectorChunks: 'Sin fragmentos vectoriales', vectorBuilding: 'Creando', vectorComplete: 'Todo listo', vectorWaiting: 'En espera',
+    indexPolicyHint: 'Puede usar CPU y memoria locales. Si se desactiva, se usa BM25 cuando el índice de confianza no está disponible.',
+    loadFailed: 'No se pudieron cargar los datos', operationFailed: 'La operación falló', importSuccess: 'Paquete importado', importQueued: 'El paquete se está preparando en segundo plano y aparecerá cuando esté listo', importStillProcessing: 'El paquete sigue procesándose. Actualiza más tarde para ver su estado.',
+    degradedJobs: 'Importaciones en cuarentena', degradedJobHint: 'Las tareas dañadas no pueden continuar. Revisa el ID y descarta la tarea para desbloquear nuevas importaciones.', discardJobConfirm: '¿Descartar la tarea en cuarentena {name}? Solo se eliminarán sus archivos temporales.', jobDiscarded: 'Tarea en cuarentena descartada',
+    importingPacks: 'Importando paquetes de conocimiento', importingPackHint: 'La base de conocimiento local se está verificando y preparando. Puedes salir de esta página y volver más tarde.',
+    importStateQueued: 'En espera', importStateValidating: 'Validando', importStateBuildingFts: 'Creando índice léxico', importStateVerifyingIndex: 'Comprobando índice vectorial', importStateEmbedding: 'Preparando vectores',
+    importProgressMeta: '{percent}% completado · {entries} entradas · {chunks} fragmentos', importPreparingMeta: '{entries} entradas · {chunks} fragmentos',
+    invalidPack: 'Paquete no válido', importTooLarge: 'El paquete de conocimiento supera el límite de 10 MiB', removeConfirm: '¿Eliminar el paquete {name}?'
   },
   market: {
     title: 'Obtener nuevos plugins',

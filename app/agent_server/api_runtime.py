@@ -15,6 +15,8 @@
 
 """Analyzer, lifecycle, and task endpoints for the agent server."""
 
+from main_logic.agent_routing import ANALYZE_ROUTE_OWNER_PUBLIC_KNOWLEDGE
+
 from .api_shared import (  # noqa: F401
     AGENT_HISTORY_TURNS,
     AGENT_PROACTIVE_ANALYZE_ENABLED,
@@ -379,6 +381,11 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             # - Cancelled tasks not emitting task_result callbacks
             # - Voice-mode hot-swap sending 'turn end agent_callback'
             Modules.last_user_turn_fingerprint[lanlan_key] = fp
+            if event.get("route_owner") == ANALYZE_ROUTE_OWNER_PUBLIC_KNOWLEDGE:
+                logger.info(
+                    "[AgentAnalyze] skip: public knowledge owns this turn"
+                )
+                return
             # Cheap pre-gate hint from the input-time master-emotion call (rides
             # the analyze_request payload). Absent → None → the gate fails open.
             external_intent = event.get("external_intent")

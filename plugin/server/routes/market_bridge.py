@@ -59,7 +59,20 @@ from plugin.settings import (
     NEKO_AUTH_CLIENT_ID,
     NEKO_AUTH_URL,
 )
+from knowledge.limits import (
+    MAX_PACK_BYTES,
+    MAX_SUBSCRIPTION_ENVELOPE_BYTES,
+)
+from knowledge.timeouts import (
+    KNOWLEDGE_GET_TIMEOUT_SECONDS,
+    KNOWLEDGE_PLUGIN_TO_MAIN_MUTATION_TIMEOUT_SECONDS,
+)
 
+# Kept as a compatibility export for the subscription bridge, which shares the
+# same plugin-to-Main mutation hop.
+KNOWLEDGE_POST_TIMEOUT_SECONDS = (
+    KNOWLEDGE_PLUGIN_TO_MAIN_MUTATION_TIMEOUT_SECONDS
+)
 router = APIRouter(prefix="/market", tags=["market-bridge"])
 logger = get_logger("server.routes.market_bridge")
 
@@ -79,6 +92,7 @@ _TASK_MAX_ENTRIES = 200
 # 短期一次性配对码；成功交换后立即消费。
 _ONE_TIME_CODES: dict[str, float] = {}
 _ONE_TIME_CODE_TTL_SECONDS = 5 * 60
+_PLUGIN_MANAGER_DEV_PORT = 5173
 
 # OAuth 登录状态存储在本机用户目录，仅供本地插件面板使用。
 _OAUTH_CLIENT_ID = NEKO_AUTH_CLIENT_ID
@@ -101,6 +115,25 @@ _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 _DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
 _DOWNLOAD_TIMEOUT = 120.0  # 秒
 _ALLOWED_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
+_KNOWLEDGE_BRIDGE_PATHS = frozenset({
+    "status",
+    "entries",
+    "entry",
+    "entry/disabled",
+    "packs",
+    "packs/jobs",
+    "packs/jobs/discard",
+    "packs/import",
+    "packs/auto-context",
+    "packs/index-policy",
+    "packs/material-type",
+    "packs/remove",
+    "subscriptions/apply",
+    "diagnostics/recent",
+})
+_KNOWLEDGE_JSON_BODY_MAX_BYTES = 64 * 1024
+_KNOWLEDGE_PACK_ENVELOPE_MAX_BYTES = MAX_PACK_BYTES + 64 * 1024
+_KNOWLEDGE_SUBSCRIPTION_ENVELOPE_MAX_BYTES = MAX_SUBSCRIPTION_ENVELOPE_BYTES
 
 # GitHub Release download mirrors exposed by the local plugin-manager UI.
 # Keeping this allowlist server-side means the speed test never accepts an
@@ -141,6 +174,128 @@ def get_bridge_token() -> str:
     return _BRIDGE_TOKEN
 
 
+INVALID_BRIDGE_TOKEN_CODE = "invalid_bridge_token"
+
+
+def invalid_bridge_token_error() -> HTTPException:
+    """Return the stable error contract shared by every local bridge route."""
+    return HTTPException(
+        status_code=403,
+        detail={
+            "code": INVALID_BRIDGE_TOKEN_CODE,
+            "message": "无效的 bridge token",
+        },
+    )
+
+
+@router.api_route("/knowledge/{path:path}", methods=["GET", "POST"])
+async def public_knowledge_bridge(
+    path: str,
+    request: Request,
+    token: str = Query(..., description="Bridge token"),
+):
+    """Bounded same-origin bridge from the manager UI to Main Server."""
+    _require_local_bridge_token_access(request)
+    _verify_token(token)
+    normalized_path = path.strip("/")
+    if normalized_path not in _KNOWLEDGE_BRIDGE_PATHS:
+        raise HTTPException(status_code=404, detail="knowledge endpoint not found")
+    main_port = _main_server_port()
+    target = f"http://127.0.0.1:{main_port}/api/public-knowledge/{normalized_path}"
+    if request.url.query:
+        forwarded = [
+            (key, value)
+            for key, value in request.query_params.multi_items()
+            if key != "token"
+        ]
+    else:
+        forwarded = []
+    headers = {"Accept": "application/json"}
+    body: bytes | None = None
+    if request.method == "POST":
+        import config
+
+        headers.update({
+            "Content-Type": request.headers.get("content-type", "application/json"),
+            "Origin": f"http://127.0.0.1:{main_port}",
+            "X-CSRF-Token": str(config.AUTOSTART_CSRF_TOKEN),
+        })
+        body = await _read_knowledge_body_limited(
+            request,
+            max_bytes=_knowledge_body_limit(normalized_path),
+        )
+    try:
+        request_timeout = (
+            KNOWLEDGE_PLUGIN_TO_MAIN_MUTATION_TIMEOUT_SECONDS
+            if request.method == "POST"
+            else KNOWLEDGE_GET_TIMEOUT_SECONDS
+        )
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(request_timeout, connect=2.0),
+            proxy=None,
+            trust_env=False,
+        ) as client:
+            response = await client.request(
+                request.method,
+                target,
+                params=forwarded,
+                content=body,
+                headers=headers,
+            )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": (
+                    "knowledge_request_timeout"
+                    if request.method == "GET"
+                    else "knowledge_mutation_timeout"
+                )
+            },
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Main Server unavailable") from exc
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        headers={
+            "Content-Type": response.headers.get(
+                "content-type",
+                "application/json",
+            )
+        },
+    )
+
+
+def _knowledge_body_limit(path: str) -> int:
+    if path == "packs/import":
+        return _KNOWLEDGE_PACK_ENVELOPE_MAX_BYTES
+    if path == "subscriptions/apply":
+        return _KNOWLEDGE_SUBSCRIPTION_ENVELOPE_MAX_BYTES
+    return _KNOWLEDGE_JSON_BODY_MAX_BYTES
+
+
+async def _read_knowledge_body_limited(request: Request, *, max_bytes: int) -> bytes:
+    try:
+        declared = int(request.headers.get("content-length", "0"))
+    except ValueError:
+        declared = 0
+    if declared > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "knowledge_request_too_large"},
+        )
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail={"code": "knowledge_request_too_large"},
+            )
+        body.extend(chunk)
+    return bytes(body)
+
+
 def _main_server_port() -> int:
     """返回主服务的运行时端口；按 config.MAIN_SERVER_PORT 动态读取。
 
@@ -161,21 +316,23 @@ def _is_loopback_host(host: str) -> bool:
     return normalized in {"localhost", "127.0.0.1", "::1"}
 
 
-def _is_local_bridge_origin(origin: str, expected_port: int) -> bool:
+def _is_local_bridge_origin(origin: str, expected_ports: Iterable[int]) -> bool:
     try:
         parsed = urlparse(origin)
+        parsed_host = parsed.hostname or ""
+        parsed_port = parsed.port or 80
     except ValueError:
         return False
-    if parsed.scheme != "http" or not parsed.hostname or not _is_loopback_host(parsed.hostname):
+    if parsed.scheme != "http" or not parsed_host or not _is_loopback_host(parsed_host):
         return False
     if parsed.username or parsed.password or parsed.path not in ("", "/"):
         return False
     if parsed.params or parsed.query or parsed.fragment:
         return False
-    return (parsed.port or 80) == expected_port
+    return parsed_port in expected_ports
 
 
-def _require_local_bridge_token_access(request: Request) -> None:
+def _require_local_bridge_token_access(request: Request) -> int:
     """Allow bridge-token only to the local plugin-manager origin.
 
     Remote Market origins are intentionally excluded here even when CORS trusts
@@ -184,16 +341,25 @@ def _require_local_bridge_token_access(request: Request) -> None:
 
     host_header = request.headers.get("host", "")
     try:
-        host = urlparse(f"//{host_header}").hostname or ""
+        parsed_host = urlparse(f"//{host_header}")
+        host = parsed_host.hostname or ""
+        request_port = parsed_host.port or 80
     except ValueError:
         host = ""
+        request_port = 0
     client_host = request.client.host if request.client else ""
     if not _is_loopback_host(client_host) or not _is_loopback_host(host):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
     origin = request.headers.get("origin")
-    if origin and not _is_local_bridge_origin(origin, _main_server_port()):
+    expected_origin_ports = {
+        request_port,
+        _main_server_port(),
+        _PLUGIN_MANAGER_DEV_PORT,
+    }
+    if origin and not _is_local_bridge_origin(origin, expected_origin_ports):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
+    return request_port
 
 
 def write_bridge_token_file(directory: Path) -> Path:
@@ -456,6 +622,12 @@ class MarketBridgeTokenResponse(BaseModel):
     """供同源前端（plugin-manager UI）直接获取 bridge token。"""
     bridge_token: str
     port: int = 48911
+
+
+class MarketPairCodeResponse(BaseModel):
+    one_time_code: str
+    port: int = 48911
+    expires_in: int = _ONE_TIME_CODE_TTL_SECONDS
 
 
 class MarketOAuthStartResponse(BaseModel):
@@ -1290,9 +1462,19 @@ async def market_bridge_token(request: Request):
     不需要走 one-time code 配对。只允许 127.0.0.1 / localhost 来源，避免
     被外部网页拿到 token。
     """
-    _require_local_bridge_token_access(request)
+    request_port = _require_local_bridge_token_access(request)
 
-    return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=_main_server_port())
+    return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=request_port)
+
+
+@router.post("/pair-code", response_model=MarketPairCodeResponse)
+async def market_pair_code(request: Request):
+    """Issue a short-lived code to the local manager for a remote Market page."""
+    request_port = _require_local_bridge_token_access(request)
+    return MarketPairCodeResponse(
+        one_time_code=_issue_one_time_code(),
+        port=request_port,
+    )
 
 
 @router.post("/oauth/start", response_model=MarketOAuthStartResponse)
@@ -1871,7 +2053,7 @@ def _verify_token(
         candidate = (token or "").strip() or None
 
     if not candidate or not secrets.compare_digest(candidate, _BRIDGE_TOKEN):
-        raise HTTPException(status_code=403, detail="无效的 bridge token")
+        raise invalid_bridge_token_error()
 
 
 def _pkce_s256_challenge(code_verifier: str) -> str:

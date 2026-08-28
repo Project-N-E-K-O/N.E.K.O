@@ -121,7 +121,23 @@ class ToolCallingMixin:
     # handler 当前固定返回"没有找到相关记忆"，等真实记忆检索接好后只
     # 替换 ``_handle_recall_memory_call`` 即可，不动注册 / 同步链路。
 
-    def _register_builtin_tools(self) -> None:
+    def _public_knowledge_lookup_enabled(self) -> bool:
+        """Both modes get explicit lookup.
+
+        This used to be realtime-only, on the reasoning that a text turn had
+        already resolved knowledge deterministically before the reply. That
+        holds only when automatic retrieval actually matched: it is threshold
+        gated, so anything below the bar was simply never looked up, and the
+        model had no way to ask. Text sessions now keep the tool as the
+        fallback for exactly that case.
+        """
+        return True
+
+    def _register_builtin_tools(
+        self,
+        *,
+        public_knowledge_lookup_enabled: bool | None = None,
+    ) -> None:
         """Re-register the built-in tools, with description / parameter docs in the current
         ``user_language``. Calls ``tool_registry.register(replace=True)`` directly
         rather than the public ``register_tool``, to avoid firing unnecessary
@@ -166,6 +182,27 @@ class ToolCallingMixin:
             metadata={"source": "builtin"},
         )
         self.tool_registry.register(recall_tool, replace=True)
+        try:
+            from main_logic.knowledge_context import register_public_knowledge_tool
+
+            if public_knowledge_lookup_enabled is None:
+                public_knowledge_lookup_enabled = (
+                    self._public_knowledge_lookup_enabled()
+                )
+            # Automatic (passive) context and this tool are complements, not
+            # alternatives: passive covers the confident matches, the tool covers
+            # everything the threshold rejected. The description tells the model
+            # not to re-query what it can already see.
+            register_public_knowledge_tool(
+                self.tool_registry,
+                language=_lang,
+                lookup_enabled=public_knowledge_lookup_enabled,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[public-knowledge] builtin tool registration failed: %s",
+                type(exc).__name__,
+            )
 
     async def _handle_recall_memory_call(self, arguments: dict) -> str:
         """Handler for ``recall_memory`` — calls memory_server's

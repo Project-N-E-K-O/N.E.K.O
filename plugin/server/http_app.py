@@ -30,6 +30,7 @@ from plugin.server.routes import (
     llm_tools_router,
     logs_router,
     market_bridge_router,
+    knowledge_market_router,
     media_router,
     messages_router,
     metrics_router,
@@ -304,6 +305,10 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
     )
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)
+    app.include_router(knowledge_market_router)
+    # Register concrete subscription endpoints before the generic
+    # /market/knowledge/{path} management bridge so FastAPI does not route
+    # /subscribe, /subscriptions, or /tasks through the catch-all handler.
     app.include_router(market_bridge_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.
