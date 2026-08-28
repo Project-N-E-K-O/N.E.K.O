@@ -3903,3 +3903,83 @@ async def test_a_wedged_abandoned_reply_still_lets_the_proactive_message_out(
 
     never.set()
     await _wait_for_tool_tasks(client)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_identified_speech_start_does_not_arm_the_idless_marker() -> None:
+    """An identified turn must not leave the fallback marker armed behind it.
+
+    Identified transcripts are answered from the id list and never consume the
+    marker, so arming it for an identified speech_started would leave it set
+    for the rest of the connection. The next turn that arrives WITHOUT a
+    speech_started and without a transcript id would then read as already
+    scoped -- the original stale-marker bug, rebuilt one turn further along.
+    """
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    transcript_seen = asyncio.Event()
+
+    async def handler(call):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    async def on_input_transcript(_transcript: str) -> None:
+        transcript_seen.set()
+
+    client = _no_server_vad_client(
+        on_input_transcript=on_input_transcript,
+        on_tool_call=handler,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._on_connection_attached()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    # A fully identified turn, start to transcript.
+    socket.feed({"type": "input_audio_buffer.speech_started", "item_id": "item-a"})
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-a",
+            "transcript": "the identified turn",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+    assert client._raw_speech_started_scope_pending_transcript is False, (
+        "an identified speech_started is tracked by id; it must not also arm "
+        "the id-less fallback marker"
+    )
+
+    socket.feed(_raw_tool_event())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    scope_before = client._tool_scope_generation
+
+    # The next turn arrives with neither a speech_started nor a transcript id.
+    transcript_seen.clear()
+    socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": "an unidentified new turn",
+        }
+    )
+    await asyncio.wait_for(transcript_seen.wait(), timeout=1)
+
+    assert client._tool_scope_generation != scope_before, (
+        "an id-less transcript with no speech_started of its own is a new "
+        "user turn and must retire the previous turn's tool work"
+    )
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+    release.set()
+    await _wait_for_tool_tasks(client)
+
+    assert socket.sent == []
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)

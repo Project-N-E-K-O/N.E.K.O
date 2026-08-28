@@ -2438,9 +2438,16 @@ class _TransportMixin:
     def _note_raw_speech_started_scope(self, item_id: Any) -> None:
         """Record that a ``speech_started`` already scoped this utterance."""
 
-        self._raw_speech_started_scope_pending_transcript = True
         utterance = str(item_id) if item_id else ""
         if not utterance:
+            # ONLY an id-less speech_started arms the fallback marker. An
+            # identified one is answered from the id list below, and an
+            # identified transcript deliberately does not consume the marker
+            # -- so arming it here would leave it set for the rest of the
+            # connection, and the next id-less transcript would read as
+            # already scoped. That is the original stale-marker bug, rebuilt
+            # one turn further along.
+            self._raw_speech_started_scope_pending_transcript = True
             return
         scoped = self._raw_speech_started_scoped_item_ids
         if utterance in scoped:
