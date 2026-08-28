@@ -4237,6 +4237,7 @@ class IndependentAsrRuntime:
         ):
             self._asr_pending_speech_onset_at = overlap_onset_at
             _lent_pending_onset = True
+        pending_before = self._asr_pending_speech_confirmed
         await self._handle_independent_asr_activity(
             SpeechActivityEvent.SPEECH_RESUMED,
             epoch,
@@ -4246,6 +4247,48 @@ class IndependentAsrRuntime:
             or self._asr_lifecycle is not lifecycle_ref
         ):
             return
+        if (
+            not pending_before
+            and self._asr_pending_speech_confirmed
+            and lifecycle_ref.snapshot.state is VoiceLifecycleState.PREWARMING
+        ):
+            # 与 credit 兑付那条路同一处置（见 _handle_independent_asr_endpoint）：
+            # 重放被"传输未就绪"挡住停在 PREWARMING 时，就地补完确认。
+            #
+            # 光留住 onset 不够。这一轮的 provider endpoint / final 已经排在有序
+            # FIFO 里正要到达，而 PREWARMING 封不了口、_handle_independent_asr_final
+            # 又要求 DRAINING —— 那条 final 会被整条丢弃，且没有任何 watchdog 兜底。
+            # 等重连也救不回来：重连换新 session，老队列里的回调全被
+            # is_adopted_candidate() 丢掉（_restart_transport / _close_transport_only
+            # 都是先把 _asr_session 置 None 再 close）。能走到这里说明老 session
+            # 还被认领着，也就是重连还没开始。
+            #
+            # 这一轮不需要传输：它的音频早在上一轮 ACTIVE 时就已经过线。
+            lifecycle_ref.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+            self._asr_turn_onset_at = (
+                self._asr_pending_speech_onset_at
+                if self._asr_pending_speech_onset_at is not None
+                else time.monotonic()
+            )
+            self._asr_pending_speech_confirmed = False
+            self._asr_pending_speech_onset_at = None
+            self._asr_turn_audio_started_at = time.monotonic()
+            self._asr_first_partial_recorded = False
+            confirm_identity = self._capture_runtime_identity(
+                ingress_token=self._asr_current_ingress_token,
+            )
+            delivered = await self._send_asr_lifecycle_state(
+                VoiceLifecycleState.ACTIVE,
+                provider=self._asr_provider or "unknown",
+                session_epoch=epoch,
+                expected_identity=confirm_identity,
+            )
+            if (
+                not delivered
+                or epoch != self._asr_session_epoch
+                or self._asr_lifecycle is not lifecycle_ref
+            ):
+                return
         if lifecycle_ref.snapshot.state is not VoiceLifecycleState.ACTIVE:
             # 没醒起来（Smart Turn 租约没就绪，或 lifecycle 广播没送达）。借出去的
             # onset 必须收回：留着的话，后面某个**不相干**的发声会把这个陈旧时刻

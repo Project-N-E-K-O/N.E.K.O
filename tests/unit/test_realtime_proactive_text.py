@@ -279,6 +279,8 @@ async def test_description_mode_stops_when_the_cue_image_is_rejected_early():
 
     assert delivered is False
     assert sent_image_event_ids, "夹具没走到发送那一步"
+    # 被拒的那张图不算数：快照必须还武装着，下一次主动搭话重试。
+    assert client._proactive_image_consumed is False
     # 图发出去了，但拒绝已经到达——不能再投这一轮的文字。
     input_texts = _input_texts(_sent_events(client))
     assert not any("describe what you notice" in text for text in input_texts)
@@ -352,6 +354,65 @@ async def test_description_mode_gemini_cue_image_is_not_fenced_out():
 
     assert getattr(result, "accepted", False) is True
     session.send_realtime_input.assert_awaited_once()
+    await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expect_sent"),
+    [
+        ("proactive", True),
+        ("callback", False),
+        ("plugin", False),
+        ("unknown", False),
+    ],
+)
+async def test_description_mode_only_the_proactive_cue_goes_out_raw(
+    source: str,
+    expect_sent: bool,
+):
+    """Only the proactive nudge's own cue image bypasses the handoff.
+
+    The maintainer's call was "the proactive nudge may just push its picture".
+    Gating on `not cache_latest` alone would widen that to EVERY one-shot image
+    -- callback media and plugin `read` frames included -- and put raw frames on
+    the realtime connection during an independent-ASR takeover, which the fence
+    exists to prevent.
+
+    It is not only a scope question. Three other `cache_latest=False` callers
+    keep their own "did this attempt a raw WS send" predicates, all hardcoded to
+    `_visual_delivery_mode == "native"`: proactive.py's
+    attempted_websocket_native_delivery / websocket_native_delivery decide
+    whether to retire the session when a half-written send raises, and the
+    passive-callback contract "must reach the answering VLM as raw media" was
+    implemented precisely by this handoff_required return. Widening here
+    silently disables all of them.
+    """
+    client = _make_client()
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+
+    result = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source=source,
+        request_id=f"{source}-cue",
+        bypass_rate_limit=True,
+        cache_latest=False,
+    )
+
+    sent_image = any(
+        event.get("type") == "input_image_buffer.append"
+        for event in _sent_events(client)
+    )
+    assert sent_image is expect_sent
+    if expect_sent:
+        assert bool(getattr(result, "accepted", False)) is True
+    else:
+        assert bool(getattr(result, "accepted", False)) is False
+        assert getattr(result, "mode", None) == "handoff_required"
+        assert (
+            getattr(result, "rejection_reason", None)
+            == "multimodal_handoff_required"
+        )
     await client.close()
 
 

@@ -12190,6 +12190,74 @@ async def test_a_stale_onset_does_not_evict_the_prerecord_buffer() -> None:
 
 
 @pytest.mark.unit
+async def test_direct_overlap_replay_seals_when_the_session_is_not_ready() -> None:
+    """The direct replay must complete its confirmation in place too.
+
+    Dual of the completed-overlap credit path. Parking in PREWARMING and just
+    holding the onset is not enough: this successor's provider endpoint and
+    final are already queued in the ordered FIFO and about to arrive, a
+    PREWARMING lifecycle cannot seal, and _handle_independent_asr_final()
+    requires DRAINING -- so the whole utterance is discarded with no watchdog
+    armed.
+
+    Waiting for the reconnect cannot recover it either: a reconnect swaps in a
+    new session and is_adopted_candidate() drops every callback still queued on
+    the old one (_restart_transport / _close_transport_only both null
+    _asr_session before closing it). Reaching this point proves the old session
+    is still adopted, i.e. the reconnect has not started.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+    component = runtime._asr_runtime
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    # 后继在上一轮还 ACTIVE 时开口：它的 onset 被记下来等直接重放。
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    recorded_onset = component._asr_overlap_onset_at
+    assert recorded_onset is not None
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    # 两条有序回调之间传输掉线：重放会停在 PREWARMING 并挂起确认。
+    component._asr_session.is_ready = False
+
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    # 重放就地补完了确认：回合醒着，后继排在 FIFO 里的 endpoint 才封得了口。
+    # （HEAD 上这里是 PREWARMING，封不了口，那条 final 会被整条丢弃。）
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    # 这一刻还没 prepare 是对的：直接重放只负责唤醒，prepare 由后继自己的
+    # endpoint 完成（_handle_independent_asr_endpoint 的 not _asr_turn_prepared
+    # 分支）。断言它已 prepare 属于对契约的过度主张。
+    # 用的是用户当初真实开口的时刻，不是这次重放的时刻。
+    assert component._asr_turn_onset_at == recorded_onset
+    assert component._asr_pending_speech_onset_at is None
+    # 没走 fail-closed 出口（那条会 bump epoch、拆掉 session）。
+    assert runtime._asr_session_epoch == epoch
+
+    # 后继自己的 endpoint 紧随其后到达 —— 这一步才封口。
+    await runtime._handle_independent_asr_endpoint(epoch)
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+    # 忙窗口有定时器兜底。
+    assert component._asr_final_watchdog_task is not None
+
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["first", "second"]
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+
+@pytest.mark.unit
 async def test_direct_overlap_replay_reclaims_its_lent_onset_when_it_never_wakes() -> None:
     """A direct replay that never reaches ACTIVE must take its onset back.
 

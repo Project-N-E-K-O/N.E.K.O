@@ -1107,6 +1107,11 @@ class _TransportMixin:
             callback_owned_raw_image = bool(
                 not cache_latest and str(source or "").strip() == "callback"
             )
+            # 主动搭话那一张 cue 图。与上面同款谓词并列，别只判 not cache_latest
+            # —— 那覆盖的是所有一次性图（callback media、插件 read 图都算）。
+            proactive_cue_image = bool(
+                not cache_latest and str(source or "").strip() == "proactive"
+            )
             delivery_mode = getattr(
                 self,
                 "_visual_delivery_mode",
@@ -1124,7 +1129,7 @@ class _TransportMixin:
                     rejection_reason="raw_visual_delivery_blocked",
                 )
             if delivery_mode == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
-                if not cache_latest:
+                if proactive_cue_image:
                     # 一次性 cue 图（主动搭话的那张截图），不是环境帧。
                     #
                     # 这里**不**返回 handoff_required：多模态 handoff 是给独立 ASR
@@ -1138,7 +1143,33 @@ class _TransportMixin:
                     # 原始帧闸门在上面已经明确豁免了描述模式，所以这里不越权。
                     # 收不了原始图的 provider（标准 StepFun，_supports_native_image
                     # 为假）会继续走下面那条 VISION_MODEL 分支——对它们那是唯一通道。
+                    #
+                    # ⚠️ 判据必须带 source == "proactive"，只放行主动搭话那一张 cue
+                    # 图。一开始我只判 not cache_latest，那覆盖的是**所有**一次性
+                    # 图：callback media（source="callback"）和插件 read 图
+                    # （source="plugin"）也跟着上了线。后果不止是越权——仓库里另外
+                    # 三个 cache_latest=False 的调用方各自维护着一套"这次有没有走
+                    # 原始 WS 投递"的判据，全都写死 _visual_delivery_mode ==
+                    # "native"：
+                    #   proactive.py 的 attempted_websocket_native_delivery 和
+                    #   websocket_native_delivery —— 它们控制着写到一半抛异常时
+                    #   要不要退掉 session（字节可能已经过界），在描述模式下会
+                    #   静默失效；
+                    #   passive callback 那条"必须以原始媒体到达最终 VLM"的约定，
+                    #   原本正是靠这里回 handoff_required 落实的。
+                    # 收窄到 proactive 之后这些路径回到 handoff_required，那些判据
+                    # 也就不会被绕过。
                     pass
+                elif not cache_latest:
+                    # 其余一次性图（callback media / 插件 read）维持原状：多模态
+                    # handoff 是它们的通道，也是 passive callback"必须以原始媒体
+                    # 到达最终 VLM"那条约定的落实方式。
+                    return ImageStageResult(
+                        accepted=False,
+                        mode="handoff_required",
+                        generation=getattr(self, "_latest_image_generation", 0),
+                        rejection_reason="multimodal_handoff_required",
+                    )
                 else:
                     return self.stage_multimodal_frame(
                         image_b64,
