@@ -35,6 +35,9 @@ from main_logic.provider_failure_signals import (
 from main_logic.proactive_delivery import (
     DELIVERY_RETRACTED_KEY,
     PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
+    PASSIVE_MEDIA_MAX_RETRIES,
+    PASSIVE_MEDIA_RETRY_KEY,
+    PASSIVE_MEDIA_TRANSIENT_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
     resolve_callback_delivery_ack,
 )
@@ -2841,6 +2844,22 @@ class LifecycleMixin:
                 callback,
                 getattr(self, "pending_session", None),
             ):
+                if (
+                    callback.get(PASSIVE_MEDIA_TRANSIENT_KEY)
+                    and int(callback.get(PASSIVE_MEDIA_RETRY_KEY, 0) or 0)
+                    < PASSIVE_MEDIA_MAX_RETRIES
+                ):
+                    # 最近一次挂图是**瞬时**失败（网络抖 / provider 临时拒），它
+                    # 还会重试。STOP 而不是 skip：跳过它去渲染更晚那条，promote
+                    # 之后更晚那条被摘出队列、它自己还留着，模型听到的顺序就反了。
+                    # 与预算延后那条同一个 FIFO 论证，也与
+                    # drain_agent_callbacks_for_llm 的瞬时分支同一判据。
+                    #
+                    # 这里**不**递增 PASSIVE_MEDIA_RETRY_KEY：重试次数由 drain 那
+                    # 个消费点记账，两处都加会让额度按两倍速烧完。
+                    break
+                # 终局失败（格式不支持之类）：维持既有处置，跳过它、把 claim 还
+                # 回去，让它按 best-effort 走 drain 那条路。
                 continue
             ready.append(callback)
         ready_obj_ids = {id(callback) for callback in ready}
