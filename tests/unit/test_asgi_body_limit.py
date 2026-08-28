@@ -272,3 +272,119 @@ def test_websocket_scope_passes_through():
 
 def test_default_cap_is_16_mib():
     assert DEFAULT_MAX_INBOUND_BODY_BYTES == 16 * 1024 * 1024
+
+
+# --- 回归面：配置了 bounded multipart 之后，不匹配的请求必须原样走旧逻辑 ---
+
+
+def _scope(method, path, headers):
+    return {"type": "http", "method": method, "path": path, "headers": list(headers)}
+
+
+def test_bounded_config_leaves_other_multipart_routes_exempt():
+    """A multipart upload elsewhere keeps the pre-existing exemption."""
+    middleware = _make_bounded(max_bytes=64)
+    hit, sent = _run(_drive(middleware, _scope("POST", "/api/memory", [
+        (b"content-type", b"multipart/form-data; boundary=x"),
+        (b"content-length", b"999999"),
+    ])))
+    assert hit is True
+    assert sent[0]["status"] == 200
+
+
+def test_bounded_prefix_does_not_capture_sibling_paths():
+    """Prefix matching must not swallow /api/avatar-toolsX or /api/avatar-tools-foo."""
+    for path in ("/api/avatar-toolsX", "/api/avatar-tools-foo", "/api/avatar-toolsX/create"):
+        middleware = _make_bounded(max_bytes=64)
+        hit, sent = _run(_drive(middleware, _scope("POST", path, [
+            (b"content-type", b"multipart/form-data; boundary=x"),
+            (b"content-length", b"999999"),
+        ])))
+        assert hit is True, f"{path} was wrongly treated as the bounded route"
+        assert sent[0]["status"] == 200
+
+
+def test_bounded_route_ignores_methods_outside_the_configured_set():
+    """Only POST/PUT are bounded; other verbs keep the multipart exemption."""
+    for method in ("GET", "DELETE", "PATCH"):
+        middleware = _make_bounded(max_bytes=64)
+        hit, sent = _run(_drive(middleware, _scope(method, "/api/avatar-tools", [
+            (b"content-type", b"multipart/form-data; boundary=x"),
+            (b"content-length", b"999999"),
+        ])))
+        assert hit is True, f"{method} was wrongly bounded"
+        assert sent[0]["status"] == 200
+
+
+def test_bounded_route_still_uses_the_global_cap_when_not_multipart():
+    """A JSON body on the bounded path is capped by the global limit, not the multipart one."""
+    middleware = _make_bounded(max_bytes=10_000_000)
+    hit, sent = _run(_drive(middleware, _scope("POST", "/api/avatar-tools", [
+        (b"content-type", b"application/json"),
+        (b"content-length", b"2048"),  # > global 1024, < multipart cap
+    ])))
+    assert hit is False
+    assert sent[0]["status"] == 413
+
+
+def test_preflight_is_not_invoked_for_unbounded_requests():
+    """The preflight hook must never run outside the configured multipart route."""
+    calls = []
+
+    def preflight(scope):
+        calls.append(scope.get("path"))
+        return None
+
+    for method, path, content_type in (
+        ("POST", "/api/memory", b"multipart/form-data; boundary=x"),
+        ("GET", "/api/avatar-tools", b"multipart/form-data; boundary=x"),
+        ("POST", "/api/avatar-tools", b"application/json"),
+    ):
+        middleware = _make_bounded(max_bytes=64, preflight=preflight)
+        _run(_drive(middleware, _scope(method, path, [
+            (b"content-type", content_type),
+            (b"content-length", b"8"),
+        ])))
+    assert calls == [], f"preflight leaked into unbounded requests: {calls}"
+
+
+def test_unbounded_requests_get_the_untouched_receive_and_send():
+    """Non-bounded traffic must not be wrapped, so streaming behaviour is unchanged."""
+    seen = {}
+
+    async def downstream(_scope, receive, send):
+        seen["receive"] = receive
+        seen["send"] = send
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    middleware = _make_bounded(max_bytes=64)
+    middleware.app = downstream
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    _run(middleware(_scope("POST", "/api/memory", [
+        (b"content-type", b"application/json"),
+        (b"content-length", b"8"),
+    ]), receive, send))
+
+    assert seen["receive"] is receive, "receive was wrapped for an unbounded request"
+    assert seen["send"] is send, "send was wrapped for an unbounded request"
+
+
+def test_default_construction_never_bounds_any_multipart():
+    """Without the opt-in config the middleware behaves exactly as before."""
+    middleware = _make(max_bytes=64)
+    assert middleware.max_multipart_body_bytes is None
+    hit, sent = _run(_drive(middleware, _scope("POST", "/api/avatar-tools", [
+        (b"content-type", b"multipart/form-data; boundary=x"),
+        (b"content-length", b"999999"),
+    ])))
+    assert hit is True
+    assert sent[0]["status"] == 200

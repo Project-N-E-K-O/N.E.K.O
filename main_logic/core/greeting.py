@@ -221,18 +221,22 @@ class GreetingMixin:
         # Serialize the cooldown decision with strict local-resource
         # verification and cooldown commit. A failed verification releases the
         # gate without consuming the next valid interaction's cooldown slot.
+        #
+        # 冷却命中是连击时的高频分支，它的 ack 走 WebSocket。早先把这次 await
+        # 留在闸门里，一旦下行有背压，后面每一次互动都要排队等它发完 —— 包括
+        # 冷却窗口结束后第一个本该被接受的互动。判定与去重登记留在锁内保持原子，
+        # ack 挪到锁外发。
+        cooldown_hit = False
         async with self._avatar_interaction_gate_lock:
             now_ms = int(time.time() * 1000)
             if now_ms - self._last_avatar_interaction_at < self.avatar_interaction_cooldown_ms:
-                logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
                 self._remember_avatar_interaction_id(interaction_id)
-                await self.send_avatar_interaction_ack(interaction_id, False, "cooldown")
-                return {"accepted": False, "reason": "cooldown", "interaction_id": interaction_id}
+                cooldown_hit = True
 
             # Only an event that can pass the duplicate/cooldown gates pays the
             # full resource-digest cost. Re-read and resolve from the verified
             # record so prompt data never comes from the lightweight first read.
-            if local_store is not None:
+            if not cooldown_hit and local_store is not None:
                 try:
                     local_record = await asyncio.to_thread(
                         local_store.read_record,
@@ -265,8 +269,14 @@ class GreetingMixin:
                     )
                     return {"accepted": False, "reason": "invalid_payload"}
 
-            self._remember_avatar_interaction_id(interaction_id)
-            self._last_avatar_interaction_at = now_ms
+            if not cooldown_hit:
+                self._remember_avatar_interaction_id(interaction_id)
+                self._last_avatar_interaction_at = now_ms
+
+        if cooldown_hit:
+            logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
+            await self.send_avatar_interaction_ack(interaction_id, False, "cooldown")
+            return {"accepted": False, "reason": "cooldown", "interaction_id": interaction_id}
 
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
             logger.debug("[%s] handle_avatar_interaction: voice session active, skipping", self.lanlan_name)
