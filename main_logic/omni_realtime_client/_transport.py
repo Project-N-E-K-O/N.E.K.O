@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from ._shared import (
+    GEMINI_CANCELLED_TERMINAL_TTL_SECONDS,
     Any,
     Callable,
     Dict,
@@ -67,13 +68,6 @@ class _RealtimeEventOwnerRetired(ConnectionError):
 # when the coroutine returns, and the outer budget still reaches the rotation.
 _STUCK_RELEASE_STEP_TIMEOUT = 0.5
 
-# 取消欠账的存活上限。被取消的那一轮欠一条终结事件，而那条终结是一次 provider
-# 往返的量级。与 _ai_recent_activity_window 同为 3.0 秒，但回答的是不同的问题
-# （「provider 还欠不欠我一条终结」而非「AI 静默了多久」），所以不复用那个字段。
-# 取值方向不对称：取小了最多多一次早结算，会话读作空闲，下一轮自愈；取大了会让
-# 陈旧欠账吃掉一条**合法**终结，那一轮的 external token 没人结算，
-# is_active_response() 恒真、主动搭话彻底哑。所以宁可短。
-_GEMINI_CANCELLED_TERMINAL_TTL_SECONDS = 3.0
 
 # How many finished response ids to remember for usage deduplication. A repeat
 # arrives right behind its original, so this only has to outlive the events
@@ -2261,8 +2255,13 @@ class _TransportMixin:
         # AI 内容」时才跑得到；裸 turn_complete 绕过它，此后再无内容的情形也绕过
         # 它。没有期限时，陈旧欠账会一直挂着直到吃掉某一条不属于它的终结。
         self._gemini_cancelled_terminal_deadline = (
-            time.monotonic() + _GEMINI_CANCELLED_TERMINAL_TTL_SECONDS
+            time.monotonic() + GEMINI_CANCELLED_TERMINAL_TTL_SECONDS
         )
+        # 期限的起点要等中断真正送达 provider 才算数。Gemini 没有 response.cancel，
+        # 中断是靠后继内容送出去才生效的，所以 _gemini_send_user_turn 会把它重打
+        # 一次；这里先打是为了让下面任何一条 return 路径都带着期限离开，不至于落进
+        # deadline is None 的 fail-open。只允许重打一次，免得后续每次发送都续命。
+        self._gemini_cancelled_terminal_awaiting_delivery = True
 
         # 1. Cancel the current response
         # Presence, not truthiness — the third site in this file where a
@@ -2273,17 +2272,6 @@ class _TransportMixin:
         if self._current_response_id is not None:
             try:
                 await self.cancel_response(send_guard=connection_still_ours)
-                # provider 是从**取消落地**那一刻起欠这条终结的，不是从我们决定
-                # 取消那一刻。这个 await 会被传输背压拖住，期限若还从上面那次
-                # 打点起算，就可能在这里等着的时候就过期，后继回合拿到一笔已经
-                # 过期的欠账 —— 正好把本次要修的那个回归又放回来。
-                # 上面先武装是为了让任何一条 return 路径都带着期限离开；这里只是
-                # 在真的等过之后把起点校准回来。
-                if self._gemini_cancelled_terminal_pending:
-                    self._gemini_cancelled_terminal_deadline = (
-                        time.monotonic()
-                        + _GEMINI_CANCELLED_TERMINAL_TTL_SECONDS
-                    )
             except ConnectionError:
                 if (
                     connection_still_ours is not None
@@ -3090,6 +3078,7 @@ class _TransportMixin:
         # 之前（_responses.py 的 prepare_external_voice_turn），不会抹掉刚武装的那笔。
         self._gemini_cancelled_terminal_pending = False
         self._gemini_cancelled_terminal_deadline = None
+        self._gemini_cancelled_terminal_awaiting_delivery = False
         self._raw_speech_started_scope_pending_transcript = False
         self._raw_speech_started_scoped_item_ids = []
         # Provider response identity and interruption state belong to the

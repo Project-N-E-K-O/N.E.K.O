@@ -151,6 +151,15 @@ _REALTIME_DIALECT_ALIASES = {
 }
 
 
+# 取消欠账的存活上限。被取消的那一轮欠一条终结事件，而 Gemini 没有
+# response.cancel —— 它是被**后继内容送达**叫停的，所以计时从那一刻起算
+# （_gemini_send_user_turn），不是从 handle_interruption 决定取消那一刻。
+# 取值方向不对称：取小了最多多一次早结算，会话读作空闲，下一轮自愈；取大了会让
+# 陈旧欠账吃掉一条**合法**终结，那一轮的 external token 没人结算，
+# is_active_response() 恒真、主动搭话彻底哑。所以宁可短。
+GEMINI_CANCELLED_TERMINAL_TTL_SECONDS = 3.0
+
+
 def canonical_realtime_dialect(api_type: object) -> str:
     """Map a provider key to the wire dialect its session speaks."""
 

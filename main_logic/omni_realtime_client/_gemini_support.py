@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from ._shared import (
+    GEMINI_CANCELLED_TERMINAL_TTL_SECONDS,
     Any,
     List,
     Path,
@@ -360,6 +361,22 @@ class _GeminiMixin:
             turns=[content],
             turn_complete=True,
         )
+        # Gemini 没有 response.cancel：被打断那一轮是**这条内容送达**才被叫停的，
+        # provider 也是从这一刻起才欠它一条终结。期限若一直按 handle_interruption
+        # 的时刻算，ASR 交接加这次发送（多模态还要压图）一慢就会在 provider 收到
+        # 中断之前就到点，A 的终结随后被当成当前回合去结算了后继的 token —— 正是
+        # 这个改动要修的那个回归。
+        # 只重打一次：每次发送都续命的话，一笔始终没被终结抵掉的欠账会被无限延寿。
+        if (
+            self._gemini_cancelled_terminal_pending
+            and getattr(
+                self, "_gemini_cancelled_terminal_awaiting_delivery", False
+            )
+        ):
+            self._gemini_cancelled_terminal_awaiting_delivery = False
+            self._gemini_cancelled_terminal_deadline = (
+                time.monotonic() + GEMINI_CANCELLED_TERMINAL_TTL_SECONDS
+            )
 
     async def _create_response_gemini(
         self,
@@ -880,6 +897,7 @@ class _GeminiMixin:
                         # 期限跟着欠账一起清：另外两条退路（消费、连接替换）都
                         # 是成对清的，留一个孤儿期限只会让状态读起来有歧义。
                         self._gemini_cancelled_terminal_deadline = None
+                        self._gemini_cancelled_terminal_awaiting_delivery = False
                     if _is_new_turn and _can_clear_interrupted:
                         # Gemini has no response.created event; clear stale interrupt state only
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.

@@ -558,6 +558,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._gemini_external_outcome_token: Optional[object] = None
         self._gemini_cancelled_terminal_pending = False
         self._gemini_cancelled_terminal_deadline: Optional[float] = None
+        self._gemini_cancelled_terminal_awaiting_delivery = False
         self._gemini_external_quarantine_task: Optional[asyncio.Task] = None
         self._gemini_proactive_outcome_owner: Optional[tuple] = None
 

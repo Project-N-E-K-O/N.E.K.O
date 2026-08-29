@@ -761,6 +761,7 @@ class _ResponseMixin:
         self._gemini_cancelled_terminal_pending = False
         deadline = getattr(self, "_gemini_cancelled_terminal_deadline", None)
         self._gemini_cancelled_terminal_deadline = None
+        self._gemini_cancelled_terminal_awaiting_delivery = False
         if deadline is not None and time.monotonic() >= deadline:
             logger.debug(
                 "Gemini: cancelled-terminal debt expired unconsumed; this "

@@ -1608,36 +1608,68 @@ async def test_voiding_the_debt_also_drops_its_deadline():
 
 
 @pytest.mark.asyncio
-async def test_a_slow_cancel_send_restarts_the_debt_deadline():
-    """The provider owes the terminal from when the cancel lands.
+async def test_a_slow_handoff_restarts_the_debt_deadline_at_the_gemini_send():
+    """The clock starts when the provider is actually interrupted.
 
-    ``handle_interruption`` arms the debt before awaiting the cancellation
-    send so every early return carries a deadline. If transport backpressure
-    holds that await for longer than the TTL, a deadline stamped before it
-    is already expired by the time the successor turn is submitted, and the
-    cancelled turn's terminal settles the successor -- the regression this
-    whole change exists to prevent. So the stamp is taken again once the send
-    actually completes.
+    Gemini has no ``response.cancel``: ``handle_interruption`` only marks local
+    state, and the provider learns of the barge-in when the successor's content
+    lands. Timing the debt from the interruption means a slow ASR handoff or a
+    heavy multimodal send burns the whole window before the provider has even
+    been told, so the cancelled turn's terminal is judged current and settles
+    the successor token -- the regression this change exists to prevent.
+
+    Arming still happens at the interruption so every early return carries a
+    deadline; the send re-stamps it, once.
     """
-    client = _make_client("openai", "gpt-4o-realtime-preview")
-    client._is_responding = True
-    client._current_response_id = "resp-1"
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client.on_new_message = None
+    client.on_text_delta = None
+    client._settle_gemini_proactive_inject = MagicMock()
+    client.note_user_turn_started = MagicMock()
 
-    async def _slow_cancel(*_args, **_kwargs):
-        await asyncio.sleep(0)
-        # 模拟被背压拖过了 TTL：此刻已武装的期限早就到点了。
-        assert client._gemini_cancelled_terminal_deadline is not None
-        client._gemini_cancelled_terminal_deadline = time.monotonic() - 1.0
+    sent = []
+    client._gemini_session = SimpleNamespace(
+        send_client_content=AsyncMock(side_effect=lambda **kw: sent.append(kw)),
+    )
 
-    client.cancel_response = _slow_cancel
+    # 打断已经发生，但 ASR 交接 + 压图拖过了 TTL：期限已经到点。
+    client._gemini_cancelled_terminal_pending = True
+    client._gemini_cancelled_terminal_awaiting_delivery = True
+    client._gemini_cancelled_terminal_deadline = time.monotonic() - 1.0
 
-    await client.handle_interruption()
+    await client._gemini_send_user_turn("successor")
 
-    assert client._gemini_cancelled_terminal_pending is True
+    assert sent, "the successor content must actually be sent"
     deadline = client._gemini_cancelled_terminal_deadline
-    assert deadline is not None
-    # 期限从「取消落地」重新起算，不再是过期的那个。
-    assert deadline > time.monotonic()
+    assert deadline is not None and deadline > time.monotonic()
+    # 只续一次：后面每次发送都续命的话，一笔没人抵掉的欠账会被无限延寿。
+    assert client._gemini_cancelled_terminal_awaiting_delivery is False
+    client._gemini_cancelled_terminal_deadline = time.monotonic() - 1.0
+    await client._gemini_send_user_turn("another")
+    assert client._gemini_cancelled_terminal_deadline < time.monotonic()
+
+    # 行为层：续期之后，被取消那一轮的终结仍然抵的是欠账，不碰后继的 token。
+    client._gemini_cancelled_terminal_deadline = time.monotonic() + 60.0
+    token = object()
+    client._gemini_external_outcome_token = token
+    client._is_responding = True
+    client._interrupted = True
+    terminal = SimpleNamespace(
+        model_turn=None,
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=True,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=terminal, tool_call=None),
+        connection_generation=1,
+    )
+    assert client._gemini_external_outcome_token is token
     await client.close()
 
 
