@@ -586,20 +586,34 @@ class ChildTransport:
                 pass
 
     def close(self) -> None:
-        with self._message_batcher_init_lock:
+        # getattr guards throughout: unit tests build this object with
+        # ``__new__`` and populate only the members they exercise, so close()
+        # must not assume every field the real ``__init__`` sets.
+        batcher_init_lock = getattr(self, "_message_batcher_init_lock", None)
+        if batcher_init_lock is None:
+            batcher_init_lock = threading.Lock()
+        with batcher_init_lock:
             if self._closed:
                 return
             self._closed = True
-            batcher = self._message_batcher
+            batcher = getattr(self, "_message_batcher", None)
             self._message_batcher = None
         if batcher is not None:
             try:
                 batcher.stop(timeout=2.0)
             except Exception:
                 pass
-        sockets = [self._dl_sock, self._ul_sock]
-        if self._msg_sock is not self._ul_sock:
-            sockets.append(self._msg_sock)
+        sockets = [
+            sock
+            for sock in (
+                getattr(self, "_dl_sock", None),
+                getattr(self, "_ul_sock", None),
+            )
+            if sock is not None
+        ]
+        msg_sock = getattr(self, "_msg_sock", None)
+        if msg_sock is not None and msg_sock is not getattr(self, "_ul_sock", None):
+            sockets.append(msg_sock)
         for sock in sockets:
             try:
                 sock.close(linger=0)
