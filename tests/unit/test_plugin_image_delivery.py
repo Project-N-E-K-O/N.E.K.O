@@ -3582,3 +3582,101 @@ def test_every_budget_notice_log_picks_its_level_from_user_visible() -> None:
         assert not re.search(
             r"logger\.warning\(\s*\n\s*[\"']((prompt_ephemeral )?[Tt]urn )?[Ii]mages fitted", text
         ), f"{path.name}: budget notice is hardcoded to warning again"
+
+
+@pytest.mark.asyncio
+async def test_trim_notice_waits_for_the_proactive_turn_to_actually_speak(
+    monkeypatch,
+) -> None:
+    """No visible output means no trim notice, however much was trimmed.
+
+    The notice used to fire as soon as the ladder ran, i.e. before the LLM was
+    even called. A proactive turn can then be cancelled, exhaust its retries, or
+    come back empty -- all of which prompt_ephemeral deliberately keeps silent,
+    because the user never asked for this turn and never knew it was coming.
+    The result was a lone "images were adjusted" toast attached to nothing: no
+    reply on screen, no way to make sense of it. Worse than saying nothing
+    (Codex).
+
+    Staging it until the first emitted text is what makes the earlier rationale
+    true again -- that rationale rests on "this turn happened", which is only
+    established at that moment.
+
+    The empty stream here stands in for the whole family: cancelled, retried to
+    exhaustion, or answered with nothing. They differ in how they end, not in
+    what the user sees, which is nothing.
+    """
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import normalize_image_for_model
+
+    client, _sent = _offline_client_for_ephemeral()
+
+    async def _silent_stream(messages):
+        # 流正常结束却一个可见字符都没有：emitted_any 保持 False。
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    client._astream_visible_with_tools = _silent_stream
+
+    frames = [_jpeg_b64(1600, 1200) for _ in range(3)]
+    one = len(base64.b64decode(normalize_image_for_model(frames[0])))
+    monkeypatch.setattr(
+        _lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one * 1.5)
+    )
+
+    await client.prompt_ephemeral("======主动搭话======", images=frames)
+
+    # The ladder definitely dropped frames -- otherwise this proves nothing.
+    trims = [
+        call for call in client.on_status_message.await_args_list
+        if "TURN_IMAGES_TRIMMED" in str(call)
+    ]
+    assert trims == [], (
+        "a turn that never spoke must not report what it trimmed: "
+        f"{trims}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_trim_notice_fires_once_across_a_multi_chunk_stream(monkeypatch) -> None:
+    """Staging must clear on send, or every chunk re-fires the toast.
+
+    The send sits inside the per-chunk emit branch, which is the only place
+    that knows the turn has spoken. That branch runs once per delta, so the
+    pending slot has to be cleared as it fires. The single-chunk fixture used
+    by the sibling tests cannot see the difference -- verified: removing the
+    clear failed nothing until this test existed.
+
+    Ten chunks rather than two so an off-by-one in the clearing (say, clearing
+    on the second delta) still shows up as a count, not as a coin flip.
+    """
+    from types import SimpleNamespace
+
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import normalize_image_for_model
+
+    client, _sent = _offline_client_for_ephemeral()
+
+    async def _chatty_stream(messages):
+        for index in range(10):
+            yield SimpleNamespace(content=f"第{index}段喵~")
+
+    client._astream_visible_with_tools = _chatty_stream
+
+    frames = [_jpeg_b64(1600, 1200) for _ in range(3)]
+    one = len(base64.b64decode(normalize_image_for_model(frames[0])))
+    monkeypatch.setattr(
+        _lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one * 1.5)
+    )
+
+    await client.prompt_ephemeral("======主动搭话======", images=frames)
+
+    trims = [
+        call for call in client.on_status_message.await_args_list
+        if "TURN_IMAGES_TRIMMED" in str(call)
+    ]
+    assert len(trims) == 1, (
+        f"the trim notice must be sent exactly once per turn, got {len(trims)}"
+    )
+    # And it did arrive -- a clear that fired too early would also give len 0.
+    assert client.on_text_delta.await_count == 10

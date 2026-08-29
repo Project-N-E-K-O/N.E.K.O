@@ -228,6 +228,10 @@ class _LifecycleMixin:
             # 自己已经能带到 8 张，合批之后没有任何人再看总量。它和用户轮共用同
             # 一个 provider、同一个单请求上限，超了是整条请求被拒——只是这里被拒
             # 的后果更隐蔽：用户根本不知道刚才有一轮主动搭话没发出去。
+            # 在 if 之外初始化：多数轮次根本不产生 notice（图片没超预算，或者
+            # 这一轮压根没带图），那时下面的 if 块整块跳过，而 emit 点无条件要
+            # 读它。
+            _pending_budget_notice = None
             try:
                 _budget_images, _budget_notice = await fit_images_to_turn_budget(
                     images,
@@ -275,17 +279,17 @@ class _LifecycleMixin:
                 #     只会归因于模型变笨的现象。
                 # 判据本身仍然是全仓统一的那条：只有**整张图被丢掉**才打扰用户，
                 # 归一化 / 抽样 / 重压一律只进日志（见 fit_images_to_turn_budget）。
-                if _budget_notice.get("user_visible") and self.on_status_message:
-                    try:
-                        await self.on_status_message(json.dumps({
-                            "code": "TURN_IMAGES_TRIMMED",
-                            "details": _budget_notice,
-                        }))
-                    except Exception as _notice_error:
-                        logger.warning(
-                            "could not report the proactive image trim to the user: %s",
-                            _notice_error,
-                        )
+                #
+                # 但**暂存**，不在这里发。上面那段论证有个它自己没写出来的前提：
+                # 「这一轮发生了」。主动轮可能被取消、也可能 retry 用尽后按既定
+                # 立场静默放弃，这时先发出去的裁剪提示就成了「为一次从未发生的
+                # 回复报告它缺了什么」—— 用户看到一条孤零零的「图片已调整」，
+                # 而屏幕上根本没有与之相关的发言，比不提示更费解（Codex）。
+                # 改为挂起，等真正 emit 出第一段可见文本时再补发；那一刻
+                # 「这一轮发生了」才第一次成立。
+                _pending_budget_notice = (
+                    _budget_notice if _budget_notice.get("user_visible") else None
+                )
             if _budget_images:
                 _ephemeral_content: list = []
                 for img_b64 in _budget_images:
@@ -386,6 +390,26 @@ class _LifecycleMixin:
                                 await self.on_text_delta(emit_content, is_first_chunk)
                             is_first_chunk = False
                             emitted_any = True
+                            # 这一轮确实开口了，挂起的裁剪提示现在才该出现。
+                            # 用「置 None」表示已发而不是另设一个 bool：
+                            # emitted_any 每个 attempt 都归零，跟着它走会在
+                            # retry 后重复弹；而这个变量活在 retry 循环之外，
+                            # 天然只发一次。
+                            if _pending_budget_notice is not None:
+                                _notice_payload = _pending_budget_notice
+                                _pending_budget_notice = None
+                                if self.on_status_message:
+                                    try:
+                                        await self.on_status_message(json.dumps({
+                                            "code": "TURN_IMAGES_TRIMMED",
+                                            "details": _notice_payload,
+                                        }))
+                                    except Exception as _notice_error:
+                                        logger.warning(
+                                            "could not report the proactive image "
+                                            "trim to the user: %s",
+                                            _notice_error,
+                                        )
 
                     # ── flush 前缀缓冲区（流提前结束时） ──
                     if prefix_buffer and not prefix_checked:
