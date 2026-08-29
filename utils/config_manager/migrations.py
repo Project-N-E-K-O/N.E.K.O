@@ -21,6 +21,7 @@ migration of legacy Documents memory directories.
 """
 import os
 import shutil
+import tempfile
 import sys
 import uuid
 from pathlib import Path
@@ -186,8 +187,30 @@ class MigrationsMixin:
         if not self.project_memory_dir.exists():
             return
         
-        # 迁移所有记忆文件
+        # 一次未完成的拷贝不能留下半份目录。旧写法直接 copytree 到目标位置，
+        # 中途断电/进程被杀就会留下一个残缺的 memory/<name>/——而顶层跳过
+        # 看到目录已存在就再也不管它，那些文件从此进不来。没有读者会去看
+        # 项目根（facts、persona、settings、三个 sidecar、时间索引全部经由
+        # ensure_character_dir(memory_dir, name) 解析，项目根只在枚举时被
+        # 扫到），所以那个角色会被列进选择器却分析出一片空白。
+        #
+        # 先拷进同盘的暂存目录、成功后整体 rename 就位：要么目标完整存在，
+        # 要么根本不存在，没有中间态。中断后下次启动因为目标不存在会重新
+        # 完整拷一遍，比事后逐个补空缺更彻底——补空缺无法识别「被截断的
+        # 文件」，它同样满足 exists()。
+        #
+        # 反过来也重要：目标已存在时一律不碰。「文件不在运行时根」不等于
+        # 「它没拷过来」——云端导入会有意删掉受管文件并 unlink，用户也会
+        # 删。往里补会在每次启动复活它们，拿数据搁浅换数据删不掉，是更糟
+        # 的一边。
+        staging_prefix = ".migrating-"
         try:
+            # 上一次中断留下的暂存目录：它从没 rename 就位，所以不是任何
+            # 角色的数据，直接清掉，免得在磁盘上越堆越多。
+            for stale in self.memory_dir.glob(staging_prefix + "*"):
+                if stale.is_dir():
+                    shutil.rmtree(stale, ignore_errors=True)
+
             for item in self.project_memory_dir.iterdir():
                 # 每个条目单独兜底。这个 try 原本只包在整个循环外面，于是
                 # 第一个失败的条目会把它后面所有角色和散文件一起留在项目
@@ -195,10 +218,22 @@ class MigrationsMixin:
                 try:
                     dest_path = self.memory_dir / item.name
 
-                    # 单个文件：目标已存在就跳过，运行时的那份是权威
+                    # 目标已存在（任何类型、包括坏掉的符号链接）就不碰。
+                    # lexists 而不是 exists：断链的 exists() 是 False，
+                    # 而 copy2 会顺着它写到 memory_dir 外面去。
+                    if dest_path.is_symlink() or dest_path.exists():
+                        continue
+
+                    if item.is_symlink():
+                        # 种子目录里的链接不跟：拷它的目标等于把 memory_dir
+                        # 外面的东西搬进来。
+                        print(
+                            f"Warning: skip {item.name}: project entry is a symlink",
+                            file=sys.stderr,
+                        )
+                        continue
+
                     if item.is_file():
-                        if dest_path.exists():
-                            continue
                         shutil.copy2(item, dest_path)
                         print(f"Migrated memory file: {item.name}")
                         continue
@@ -206,53 +241,18 @@ class MigrationsMixin:
                     if not item.is_dir():
                         continue
 
-                    # 开始前打标记、成功后删掉。有标记 = 那一次拷贝没跑完。
-                    marker = self.memory_dir / f".migrating_{item.name}"
-                    if not dest_path.exists():
-                        marker.touch()
-                        shutil.copytree(item, dest_path)
-                        marker.unlink(missing_ok=True)
+                    # 同盘暂存 → 原子 rename。暂存目录用点前缀，且只在这
+                    # 一小段时间内存在；角色枚举只看目录名与已知文件模式，
+                    # 不会把它当成角色。
+                    staging = Path(tempfile.mkdtemp(
+                        prefix=staging_prefix, dir=str(self.memory_dir),
+                    )) / item.name
+                    try:
+                        shutil.copytree(item, staging)
+                        staging.rename(dest_path)
                         print(f"Migrated memory directory: {item.name}")
-                        continue
-
-                    if not dest_path.is_dir():
-                        # 运行时根下同名的是普通文件。补齐会在一个文件底下
-                        # mkdir 而抛异常；而两边都不该为了对方被毁掉，所以
-                        # 记一笔跳过，项目根那份原样留着。
-                        print(
-                            f"Warning: skip {item.name}: runtime path is a file,"
-                            " not a directory",
-                            file=sys.stderr,
-                        )
-                        continue
-
-                    # 只补「那次拷贝被中断」的目录。顶层跳过原本让首次运行中断
-                    # 留下的半份目录永远补不齐，而没有任何读者会去看项目根：
-                    # facts、persona、settings、三个 sidecar 以及时间索引全部经由
-                    # ensure_character_dir(memory_dir, name) 解析，项目根只在枚举
-                    # 时被扫到，于是那个角色会被列进选择器却分析出一片空白。
-                    #
-                    # 但「文件不在运行时根」并不等于「它没拷过来」——云端导入会
-                    # 有意删掉受管文件（operations.py 记录删除并 unlink），用户也
-                    # 会删。无条件补齐会在每次启动把它们复活，用数据搁浅换数据
-                    # 复活，比原来的缺口更糟。标记是唯一能区分两者的东西：它只
-                    # 在拷贝进行中存在，而那时这个角色还从没活过，不可能有人删
-                    # 过它的东西。
-                    if not marker.exists():
-                        continue
-                    filled = 0
-                    for source in item.rglob("*"):
-                        if source.is_dir():
-                            continue
-                        target = dest_path / source.relative_to(item)
-                        if target.exists():
-                            continue
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(source, target)
-                        filled += 1
-                    if filled:
-                        print(f"Filled {filled} missing memory file(s) in: {item.name}")
-                    marker.unlink(missing_ok=True)
+                    finally:
+                        shutil.rmtree(staging.parent, ignore_errors=True)
                 except Exception as exc:
                     print(
                         f"Warning: Failed to migrate memory entry {item.name}: {exc}",

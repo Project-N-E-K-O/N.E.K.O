@@ -322,179 +322,83 @@ def test_get_config_manager_skips_runtime_file_migration_while_recovery_layout_i
         migrate_memory.assert_called_once()
     finally:
         reset_config_manager_cache()
-
-
 @pytest.mark.unit
-def test_a_partial_runtime_directory_does_not_strand_project_memory(tmp_path):
-    """Seeded memory has to reach the runtime root, which is where readers look.
+def test_one_failing_entry_does_not_strand_the_rest(tmp_path):
+    """A single entry blowing up must not decide the fate of the ones after it.
 
-    ``migrate_memory_files`` skips per TOP-LEVEL entry: if ``memory/<name>/``
-    already exists in the runtime root it copies nothing from the project
-    root for that character, however little the runtime copy holds. A
-    directory left behind by an interrupted first run, or holding only a
-    ``recent.json``, is enough to strand the rest.
+    The handler used to wrap the whole loop, so the first failure left every
+    later character and loose file behind in the project root -- worse than the
+    gap this change set out to fix. Each entry now has its own.
 
-    Nothing then reads it. Every store resolves through
-    ``ensure_character_dir(memory_dir, name)`` -- facts, persona, settings,
-    the sidecars, and ``TimeIndexedMemory._resolve_expected_db_path`` -- so
-    the project root is consulted only for enumeration. The character is
-    therefore offered by ``character_memory_exists`` and then analysed to
-    nothing, because its history is in a directory no reader opens.
-
-    The skip has to become per FILE: fill in what is missing, never replace
-    what the runtime already has.
+    The failure is induced rather than staged through a filesystem collision:
+    with the destination-exists rule, a runtime file of the same name is simply
+    skipped and never raises, so a collision no longer exercises this at all.
     """
-    config_manager = _make_config_manager(tmp_path)
+    from utils.config_manager import migrations as migrations_module
 
+    config_manager = _make_config_manager(tmp_path)
     project_root = tmp_path / "project-memory"
     runtime_root = tmp_path / "runtime-memory"
     config_manager.project_memory_dir = project_root
     config_manager.memory_dir = runtime_root
     runtime_root.mkdir(parents=True, exist_ok=True)
 
-    # Seeded under the project root.
-    (project_root / "Carol").mkdir(parents=True)
-    (project_root / "Carol" / "time_indexed.db").write_bytes(b"seeded-db")
-    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
-    (project_root / "Carol" / "recent.json").write_text(
-        "[\"from-project\"]", encoding="utf-8"
-    )
-    # Nested, because a character directory really does hold subdirectories
-    # (the vector store), and a top-level-only fill would leave them behind.
-    (project_root / "Carol" / "semantic_memory").mkdir()
-    (project_root / "Carol" / "semantic_memory" / "chroma.sqlite3").write_bytes(
-        b"seeded-vectors"
-    )
-    # Loose top-level files, the pre-per-character layout. Same rule: fill a
-    # gap, never replace a runtime copy.
-    (project_root / "time_indexed_Erin.db").write_bytes(b"seeded-erin")
-    (project_root / "recent_Frank.json").write_text(
-        '["from-project"]', encoding="utf-8"
-    )
-    (project_root / "Dave").mkdir()
-    (project_root / "Dave" / "facts.json").write_text("[2]", encoding="utf-8")
-
-    # The runtime copy exists but holds only one file, and the marker says
-    # the copy that produced it never finished. Without the marker this is
-    # indistinguishable from a live character whose files were deliberately
-    # removed, and filling would resurrect them -- see the test below.
-    (runtime_root / "Carol").mkdir()
-    (runtime_root / ".migrating_Carol").touch()
-    (runtime_root / "Carol" / "recent.json").write_text(
-        "[\"from-runtime\"]", encoding="utf-8"
-    )
-    (runtime_root / "recent_Frank.json").write_text(
-        '["from-runtime"]', encoding="utf-8"
-    )
-
-    config_manager.migrate_memory_files()
-
-    # CONTROL: a character absent from the runtime root still migrates, so a
-    # failure below is about the partial case and not about the migration
-    # having been skipped wholesale.
-    assert (runtime_root / "Dave" / "facts.json").read_text(
-        encoding="utf-8"
-    ) == "[2]"
-
-    assert (runtime_root / "Carol" / "time_indexed.db").exists(), (
-        "the seeded database never reached the runtime root, so every "
-        "reader will report this character as having no history"
-    )
-    assert (runtime_root / "Carol" / "time_indexed.db").read_bytes() == b"seeded-db"
-    assert (runtime_root / "Carol" / "facts.json").read_text(
-        encoding="utf-8"
-    ) == "[1]", "the other seeded files are stranded by the same skip"
-
-    assert (
-        runtime_root / "Carol" / "semantic_memory" / "chroma.sqlite3"
-    ).read_bytes() == b"seeded-vectors", (
-        "a seeded subdirectory was left behind, so filling only the top "
-        "level is not enough"
-    )
-
-    assert (runtime_root / "time_indexed_Erin.db").read_bytes() == b"seeded-erin", (
-        "a loose seeded file that the runtime root lacks was not copied"
-    )
-    assert (runtime_root / "recent_Frank.json").read_text(
-        encoding="utf-8"
-    ) == '["from-runtime"]', (
-        "a loose seeded file replaced the runtime copy"
-    )
-
-    # The dual: filling gaps must not overwrite what the runtime already has.
-    assert (runtime_root / "Carol" / "recent.json").read_text(
-        encoding="utf-8"
-    ) == '["from-runtime"]', (
-        "the migration replaced live runtime memory with the seed"
-    )
-
-
-@pytest.mark.unit
-def test_one_colliding_entry_does_not_strand_the_rest(tmp_path, capsys):
-    """A directory in the project root, a FILE of the same name in the runtime.
-
-    Filling a directory per file means building paths underneath the
-    destination, and that destination might not be a directory at all. The
-    old top-level skip never noticed, because it skipped the moment
-    anything existed there; filling turns the same collision into a raise
-    from ``mkdir``, and the handler wraps the WHOLE loop -- so one clash
-    would leave every later character and loose file behind in the project
-    root. That is worse than the gap this migration change set out to fix.
-
-    Neither side is destroyed to resolve it: the runtime file stays, the
-    project directory stays, and the migration moves on.
-    """
-    config_manager = _make_config_manager(tmp_path)
-
-    project_root = tmp_path / "project-memory"
-    runtime_root = tmp_path / "runtime-memory"
-    config_manager.project_memory_dir = project_root
-    config_manager.memory_dir = runtime_root
-    runtime_root.mkdir(parents=True, exist_ok=True)
-
-    # "Carol" is a directory in the project root...
-    (project_root / "Carol").mkdir(parents=True)
-    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
-    # ...and a plain file in the runtime root.
-    (runtime_root / "Carol").write_text("not-a-directory", encoding="utf-8")
-
-    # Sorted after "Carol", so it only migrates if the clash did not abort
-    # the loop.
-    (project_root / "Dave").mkdir()
-    (project_root / "Dave" / "facts.json").write_text("[2]", encoding="utf-8")
+    for name in ("Carol", "Dave"):
+        (project_root / name).mkdir(parents=True)
+        (project_root / name / "facts.json").write_text("[1]", encoding="utf-8")
     (project_root / "zz_loose.json").write_text("[3]", encoding="utf-8")
 
-    config_manager.migrate_memory_files()
+    real_copytree = migrations_module.shutil.copytree
 
+    def _fail_for_carol(source, destination, *args, **kwargs):
+        if Path(source).name == "Carol":
+            raise OSError("no space left on device")
+        return real_copytree(source, destination, *args, **kwargs)
+
+    with patch.object(migrations_module.shutil, "copytree", _fail_for_carol):
+        config_manager.migrate_memory_files()
+
+    assert not (runtime_root / "Carol").exists()
     assert (runtime_root / "Dave" / "facts.json").read_text(
         encoding="utf-8"
-    ) == "[2]", (
-        "a type collision on an earlier entry aborted the whole migration"
-    )
+    ) == "[1]", "an earlier entry's failure aborted the whole migration"
     assert (runtime_root / "zz_loose.json").read_text(
         encoding="utf-8"
-    ) == "[3]", "loose files after the collision were stranded too"
+    ) == "[3]", "loose files after the failure were stranded too"
 
-    # Neither side of the clash is destroyed.
+    # And the project side is untouched, so a later start can retry it.
+    assert (project_root / "Carol" / "facts.json").exists()
+
+
+@pytest.mark.unit
+def test_an_existing_destination_of_any_type_is_left_alone(tmp_path):
+    """Whatever is already in the runtime root wins, whatever shape it is.
+
+    A directory in the project root against a plain file of the same name in
+    the runtime root is not a case to resolve -- neither side should be
+    destroyed for the other, and the seed is not authoritative over live data.
+    """
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+    (runtime_root / "Carol").write_text("not-a-directory", encoding="utf-8")
+    (project_root / "Dave").mkdir()
+    (project_root / "Dave" / "facts.json").write_text("[2]", encoding="utf-8")
+
+    config_manager.migrate_memory_files()
+
     assert (runtime_root / "Carol").is_file()
     assert (runtime_root / "Carol").read_text(
         encoding="utf-8"
     ) == "not-a-directory"
     assert (project_root / "Carol" / "facts.json").exists()
-
-    # The collision is reported as a deliberate SKIP, not as a failure.
-    # Isolating each entry already keeps the loop going, so without this
-    # distinction the guard would be doing nothing a reader could observe --
-    # and the log would tell the user something went wrong when the
-    # migration simply declined to touch either side.
-    stderr = capsys.readouterr().err
-    assert "runtime path is a file" in stderr, (
-        "the type collision was not classified -- it surfaced as a generic "
-        "migration failure instead"
-    )
-    assert "Failed to migrate memory entry Carol" not in stderr
-
-
+    assert (runtime_root / "Dave" / "facts.json").exists()
 @pytest.mark.unit
 def test_deliberately_removed_files_are_not_resurrected(tmp_path):
     """A file missing from the runtime root is not proof it was never copied.
@@ -504,11 +408,9 @@ def test_deliberately_removed_files_are_not_resurrected(tmp_path):
     start, every start -- trading data left stranded for data that will not
     stay deleted, which is the worse of the two.
 
-    The marker is what separates them: it exists only while a copy is in
-    progress, and at that point the character has never been live, so
-    nothing of its could have been deleted on purpose. No marker means hands
-    off, including for every installation that migrated before the marker
-    existed.
+    So the rule is simply: if the destination exists at all, do not touch it.
+    The copy is staged and renamed into place, so a directory that exists is
+    a complete one and there is never a gap to be tempted into filling.
     """
     config_manager = _make_config_manager(tmp_path)
 
@@ -538,65 +440,23 @@ def test_deliberately_removed_files_are_not_resurrected(tmp_path):
 
 
 @pytest.mark.unit
-def test_a_completed_copy_clears_its_marker(tmp_path):
-    """The marker has to be written AND cleared, or it re-arms the fill forever.
+def test_an_interrupted_copy_leaves_nothing_and_retries_whole(tmp_path):
+    """An interrupted copy must leave no half-built character behind.
 
-    Left behind after a successful copy, it would tell every later start that
-    the copy had been interrupted -- so anything the user or a cloud import
-    deleted afterwards would come straight back, which is the exact failure
-    the marker exists to prevent.
+    Copying straight into ``memory/<name>/`` meant a crash mid-copy left a
+    partial directory there, and the top-level skip then refused to look at
+    that character ever again -- while no reader consults the project root,
+    so the rest of its memory became unreachable.
 
-    Driven through the real lifecycle: first start copies, then a file is
-    removed the way an import removes one, then a second start must leave it
-    removed.
-    """
-    config_manager = _make_config_manager(tmp_path)
-
-    project_root = tmp_path / "project-memory"
-    runtime_root = tmp_path / "runtime-memory"
-    config_manager.project_memory_dir = project_root
-    config_manager.memory_dir = runtime_root
-    runtime_root.mkdir(parents=True, exist_ok=True)
-
-    (project_root / "Carol").mkdir(parents=True)
-    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
-    (project_root / "Carol" / "recent.json").write_text("[]", encoding="utf-8")
-
-    # First start: nothing in the runtime root yet, so the whole directory
-    # is copied.
-    config_manager.migrate_memory_files()
-    assert (runtime_root / "Carol" / "facts.json").exists()
-    assert not (runtime_root / ".migrating_Carol").exists(), (
-        "the marker survived a completed copy, so every later start would "
-        "treat this character as an interrupted migration"
-    )
-
-    # Then something removes a managed file on purpose.
-    (runtime_root / "Carol" / "facts.json").unlink()
-
-    # Second start: it stays removed.
-    config_manager.migrate_memory_files()
-    assert not (runtime_root / "Carol" / "facts.json").exists(), (
-        "the second start resurrected a file that was deleted on purpose"
-    )
-
-
-@pytest.mark.unit
-def test_an_interrupted_first_copy_is_completed_on_the_next_start(tmp_path):
-    """The case the whole change exists for, driven end to end.
-
-    A first start dies partway through the copy. The old code skipped that
-    character forever afterwards, because its directory existed -- and no
-    reader looks in the project root, so the leftovers were unreachable.
-
-    The marker written before the copy is what makes the next start able to
-    tell this from a live character with deliberately removed files, so this
-    is also the only test where writing it is observable at all.
+    Staging into a sibling directory and renaming makes the outcome binary:
+    the destination is either complete or absent. Absent means the next
+    start copies the whole thing again, which also repairs a file the
+    interrupted run had truncated -- something a gap-filling pass cannot do,
+    because a truncated file still satisfies ``exists()``.
     """
     from utils.config_manager import migrations as migrations_module
 
     config_manager = _make_config_manager(tmp_path)
-
     project_root = tmp_path / "project-memory"
     runtime_root = tmp_path / "runtime-memory"
     config_manager.project_memory_dir = project_root
@@ -605,33 +465,83 @@ def test_an_interrupted_first_copy_is_completed_on_the_next_start(tmp_path):
 
     (project_root / "Carol").mkdir(parents=True)
     (project_root / "Carol" / "recent.json").write_text("[]", encoding="utf-8")
-    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
     (project_root / "Carol" / "time_indexed.db").write_bytes(b"seeded-db")
+
+    real_copytree = migrations_module.shutil.copytree
 
     def _die_partway(source, destination, *args, **kwargs):
         Path(destination).mkdir(parents=True, exist_ok=True)
-        shutil_copy = migrations_module.shutil.copy2
-        shutil_copy(Path(source) / "recent.json", Path(destination) / "recent.json")
+        (Path(destination) / "time_indexed.db").write_bytes(b"trunc")
         raise OSError("interrupted partway through the copy")
 
     with patch.object(migrations_module.shutil, "copytree", _die_partway):
         config_manager.migrate_memory_files()
 
-    assert (runtime_root / "Carol" / "recent.json").exists()
-    assert not (runtime_root / "Carol" / "facts.json").exists()
-    assert (runtime_root / ".migrating_Carol").exists(), (
-        "no marker was left, so the next start cannot tell this half-copied "
-        "directory from a live character and the rest is stranded for good"
+    assert not (runtime_root / "Carol").exists(), (
+        "a half-copied character was published, and the top-level skip would "
+        "then refuse to touch it again"
+    )
+    leftovers = [p.name for p in runtime_root.iterdir()]
+    assert leftovers == [], (
+        "the staging directory was left behind: %s" % leftovers
     )
 
-    # Next start: the marker says finish the job.
+    # Next start, with the copy working again.
+    config_manager.migrate_memory_files()
+    assert (runtime_root / "Carol" / "recent.json").exists()
+    assert (runtime_root / "Carol" / "time_indexed.db").read_bytes() == b"seeded-db", (
+        "the retry kept the truncated file from the interrupted attempt"
+    )
+    assert [p.name for p in runtime_root.iterdir()] == ["Carol"]
+    assert real_copytree is migrations_module.shutil.copytree
+
+
+@pytest.mark.unit
+def test_symlinked_entries_are_left_alone(tmp_path):
+    """Neither side of a link is followed, in either direction.
+
+    A BROKEN link at the destination reports ``exists() is False`` while
+    still being the runtime entry, and copying onto it writes through to
+    wherever it points -- outside ``memory_dir``. A link on the project side
+    is the same hazard mirrored: copying it drags in whatever it targets.
+    """
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    outside = tmp_path / "outside.json"
+    (project_root / "linked.json").write_text("[1]", encoding="utf-8")
+    try:
+        (runtime_root / "linked.json").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform will not create symlinks unprivileged")
+
+    # The mirrored hazard: a link on the PROJECT side. is_file() follows it,
+    # so without a guard the migration would copy whatever it points at into
+    # the runtime root -- content from outside memory_dir entirely.
+    secret = tmp_path / "outside_secret.json"
+    secret.write_text('["from-outside"]', encoding="utf-8")
+    try:
+        (project_root / "seeded_link.json").symlink_to(secret)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform will not create symlinks unprivileged")
+
+    # Sorted after both, so the loop is shown to continue.
+    (project_root / "zz.json").write_text("[2]", encoding="utf-8")
+
     config_manager.migrate_memory_files()
 
-    assert (runtime_root / "Carol" / "facts.json").read_text(
-        encoding="utf-8"
-    ) == "[1]"
-    assert (runtime_root / "Carol" / "time_indexed.db").read_bytes() == b"seeded-db"
-    assert not (runtime_root / ".migrating_Carol").exists(), (
-        "the fill left the marker armed, so a later deletion would be "
-        "resurrected on the start after it"
+    assert not outside.exists(), (
+        "the seeded file was written through a broken link, outside the "
+        "memory root entirely"
     )
+    assert (runtime_root / "linked.json").is_symlink()
+    assert not (runtime_root / "seeded_link.json").exists(), (
+        "a link in the project root was followed, dragging content from "
+        "outside the memory root into it"
+    )
+    assert (runtime_root / "zz.json").read_text(encoding="utf-8") == "[2]"
