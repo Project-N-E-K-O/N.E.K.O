@@ -205,11 +205,16 @@ class MigrationsMixin:
         # 的一边。
         staging_prefix = ".migrating-"
         try:
-            # 上一次中断留下的暂存目录：它从没 rename 就位，所以不是任何
-            # 角色的数据，直接清掉，免得在磁盘上越堆越多。
+            # 上一次中断留下的暂存目录或暂存文件：它从没 rename 就位，所以
+            # 不是任何角色的数据，直接清掉，免得在磁盘上越堆越多。
             for stale in self.memory_dir.glob(staging_prefix + "*"):
                 if stale.is_dir():
                     shutil.rmtree(stale, ignore_errors=True)
+                else:
+                    try:
+                        stale.unlink()
+                    except OSError:
+                        pass
 
             for item in self.project_memory_dir.iterdir():
                 # 每个条目单独兜底。这个 try 原本只包在整个循环外面，于是
@@ -234,7 +239,21 @@ class MigrationsMixin:
                         continue
 
                     if item.is_file():
-                        shutil.copy2(item, dest_path)
+                        # 同样要原子化。散文件这一支原先是裸 copy2，中断会
+                        # 在目标留下一个被截断的文件——而「目标已存在就跳过」
+                        # 会把它永久当成迁移完成，正是目录那支要避免的东西。
+                        staged_file = self.memory_dir / (
+                            staging_prefix + uuid.uuid4().hex + "-" + item.name
+                        )
+                        try:
+                            shutil.copy2(item, staged_file)
+                            os.replace(staged_file, dest_path)
+                        finally:
+                            if staged_file.exists():
+                                try:
+                                    staged_file.unlink()
+                                except OSError:
+                                    pass
                         print(f"Migrated memory file: {item.name}")
                         continue
 

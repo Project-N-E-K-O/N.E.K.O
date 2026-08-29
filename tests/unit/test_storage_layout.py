@@ -545,3 +545,82 @@ def test_symlinked_entries_are_left_alone(tmp_path):
         "outside the memory root into it"
     )
     assert (runtime_root / "zz.json").read_text(encoding="utf-8") == "[2]"
+
+
+@pytest.mark.unit
+def test_an_interrupted_loose_file_copy_publishes_nothing(tmp_path):
+    """The directory branch was made atomic; this one had the same premise.
+
+    A plain ``copy2`` interrupted partway leaves a truncated file at the
+    destination, and "destination exists, leave it alone" then records that
+    damaged file as migrated for good -- exactly what staging fixed for
+    directories, in the sibling branch that was left behind.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    (project_root / "recent_Carol.json").write_text(
+        '["the whole thing"]', encoding="utf-8"
+    )
+
+    real_copy2 = migrations_module.shutil.copy2
+
+    def _die_partway(source, destination, *args, **kwargs):
+        Path(destination).write_text('["trun', encoding="utf-8")
+        raise OSError("interrupted partway through the copy")
+
+    with patch.object(migrations_module.shutil, "copy2", _die_partway):
+        config_manager.migrate_memory_files()
+
+    assert not (runtime_root / "recent_Carol.json").exists(), (
+        "a truncated file was published, and the destination-exists skip "
+        "would record it as migrated for good"
+    )
+    assert [p.name for p in runtime_root.iterdir()] == [], (
+        "the staging file was left behind: %s"
+        % [p.name for p in runtime_root.iterdir()]
+    )
+
+    # Next start, with the copy working again.
+    config_manager.migrate_memory_files()
+    assert (runtime_root / "recent_Carol.json").read_text(
+        encoding="utf-8"
+    ) == '["the whole thing"]'
+    assert real_copy2 is migrations_module.shutil.copy2
+
+
+@pytest.mark.unit
+def test_a_stale_staging_file_is_swept(tmp_path):
+    """A run killed outright leaves staging behind; the sweep must take both.
+
+    The ``finally`` cannot run if the process dies, so the next start clears
+    what is left. It handled directories only, which left staging FILES to
+    accumulate in the memory root where every enumerator would see them.
+    """
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    (runtime_root / ".migrating-deadbeef-recent_Carol.json").write_text(
+        "half", encoding="utf-8"
+    )
+    (runtime_root / ".migrating-deadbeef").mkdir()
+    (runtime_root / "Keep").mkdir()
+
+    config_manager.migrate_memory_files()
+
+    leftovers = sorted(p.name for p in runtime_root.iterdir())
+    assert leftovers == ["Keep"], (
+        "stale staging entries survived the sweep: %s" % leftovers
+    )
