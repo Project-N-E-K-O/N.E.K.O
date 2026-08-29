@@ -590,6 +590,7 @@
         "ERROR_1007_ARREARS": "💥 Nota: Error 1007 detectado. Lo más probable es que esto se deba a un saldo insuficiente.",
         "IMAGE_BLOCKED": "⚠️ Contenido de imagen bloqueado por el sistema de revisión. Pruebe con una imagen o contenido diferente.",
         "SERVER_BUSY_THROTTLE": "⚠️ Servidor ocupado, ajustando automáticamente la velocidad de envío...",
+        "ASR_INGRESS_BACKPRESSURE": "El procesamiento de voz está ocupado. Vuelve a decirlo.",
         "RESPONSE_TIMEOUT": "💥 Tiempo de espera de conexión (Tiempo de espera de respuesta), conversación de voz interrumpida.",
         "CONNECTION_TIMEOUT": "💥 Tiempo de espera de conexión. Por favor verifique su conexión de red.",
         "RESPONSE_TOO_LONG": "Respuesta demasiado larga, resultado descartado (puede aumentar TEXT_GUARD_MAX_LENGTH en la configuración)",

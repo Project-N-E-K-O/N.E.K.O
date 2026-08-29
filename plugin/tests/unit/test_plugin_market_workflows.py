@@ -24,6 +24,10 @@ def test_reusable_verify_workflow_owns_the_market_checks_and_small_evidence() ->
     assert "check -r" in workflow
     assert "market-evidence.json" in workflow
     assert "Upload Market evidence" in workflow
+    assert (
+        '"workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"])'
+        in workflow
+    )
     assert '[[ ! "$PLUGIN_ID" =~ ^[a-z][a-z0-9_]*$ ]]' in workflow
 
 
@@ -44,6 +48,10 @@ def test_reusable_release_workflow_publishes_package_digest_evidence() -> None:
     assert "market-evidence.json" in workflow
     assert '"ref_type": os.environ["GITHUB_REF_TYPE"]' in workflow
     assert '"ref_name": os.environ["GITHUB_REF_NAME"]' in workflow
+    assert (
+        '"workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"])'
+        in workflow
+    )
     assert "softprops/action-gh-release" in workflow
     assert "fail_on_unmatched_files: true" in workflow
     assert '[[ ! "$PLUGIN_ID" =~ ^[a-z][a-z0-9_]*$ ]]' in workflow

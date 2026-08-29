@@ -82,6 +82,23 @@ _WAIT_MARGIN_REPORT_FRACTION = 0.5
 _STUCK_RELEASE_NOTIFY_TIMEOUT = 2.0
 
 
+class ResponseAdmissionRejected(RuntimeError):
+    """This request lost its admission window **before anything was sent**.
+
+    The promise is narrow on purpose: not one byte of this request reached the
+    provider, so the caller may safely re-submit an equivalent request in a
+    degraded form. It is NOT raised once an item has been committed to the
+    transport -- the compensating ``conversation.item.delete`` is fire-and-
+    forget (the provider confirms asynchronously with ``conversation.item.deleted``
+    and may instead answer with an error), so a committed item may well survive
+    and a re-submit would duplicate the user's turn against stale visual
+    context. Those paths keep raising a plain ``RuntimeError``, which callers
+    treat as "this turn is over".
+
+    Subclasses ``RuntimeError`` so existing broad handlers keep working.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ResponseDispatchResult:
     item_acknowledged: bool
@@ -161,6 +178,14 @@ class _QueuedResponse:
     response_done_timeout: float = field(compare=False)
     cancel_timeout: float = field(compare=False)
     ticket: ResponseTicket = field(compare=False)
+    admission_check: Callable[[], bool] | None = field(default=None, compare=False)
+    # 提交前的最后一次就地改写机会。admission_check 只能答"发不发"，而有些判据
+    # （比如视觉所有权）的正确处置是"降级这条 item 再发"，不是整条拒——拒是**提交
+    # 之后**才发生的，要付一次未经确认的补偿删除。回调在 _worker_send 之前、
+    # admission 复查之后逐事件调用，就地改 event。
+    pre_commit: Callable[[dict[str, Any]], None] | None = field(
+        default=None, compare=False
+    )
     item_ack: asyncio.Future[None] | None = field(default=None, compare=False)
     terminal: asyncio.Future[None] | None = field(default=None, compare=False)
     terminal_error: BaseException | None = field(default=None, compare=False)
@@ -170,6 +195,15 @@ class _QueuedResponse:
     completed: asyncio.Future[None] | None = field(default=None, compare=False)
     bypass_count: int = field(default=0, compare=False)
     response_send_started: bool = field(default=False, compare=False)
+    # Once the first pre-response event enters the transport send, the item is
+    # committed to the provider. Admission invalidation after that point must
+    # finish (or cancel) the same response lifecycle rather than orphaning the
+    # persisted conversation item by suppressing response.create.
+    item_committed: bool = field(default=False, compare=False)
+    # Client-assigned item ids that have completed their transport write. This
+    # is narrower than ``events_before_response``: a later prefix event may
+    # still be unsent when admission is invalidated.
+    committed_item_ids: list[str] = field(default_factory=list, compare=False)
     # Evidence this request collected for itself, so both the terminal path
     # and the started-timeout path judge an adoption from the same facts.
     adoption: _AdoptionEvidence = field(
@@ -331,6 +365,8 @@ class RealtimeResponseArbiter:
         response_started_timeout: float = 5.0,
         response_done_timeout: float = _DEFAULT_RESPONSE_DONE_TIMEOUT,
         cancel_timeout: float = 3.0,
+        admission_check: Callable[[], bool] | None = None,
+        pre_commit: Callable[[dict[str, Any]], None] | None = None,
     ) -> ResponseTicket:
         loop = asyncio.get_running_loop()
         ticket = ResponseTicket(
@@ -383,6 +419,8 @@ class RealtimeResponseArbiter:
             response_done_timeout=response_done_timeout,
             cancel_timeout=cancel_timeout,
             ticket=ticket,
+            admission_check=admission_check,
+            pre_commit=pre_commit,
             event_ids=frozenset(ids),
             completed=loop.create_future(),
         )
@@ -428,10 +466,24 @@ class RealtimeResponseArbiter:
         current.interrupted = True
         current.interrupt_event.set()
         if not current.ticket.sent.done():
-            self._wake_current_with_error(
-                current,
-                RuntimeError("response dispatch interrupted before response.create"),
+            admission_rejected = bool(
+                current.admission_check is not None
+                and not current.admission_check()
             )
+            if current.item_committed and admission_rejected:
+                if current.item_ack is not None and not current.item_ack.done():
+                    # Wake the worker so it can issue the compensating item
+                    # delete. Ordinary barge-in must retain the committed user
+                    # item in provider history and follows the error wake-up
+                    # below instead.
+                    current.item_ack.set_result(None)
+            else:
+                self._wake_current_with_error(
+                    current,
+                    RuntimeError(
+                        "response dispatch interrupted before response.create"
+                    ),
+                )
         else:
             await self._send_queued_event(current, {"type": "response.cancel"})
         assert current.completed is not None
@@ -2000,6 +2052,28 @@ class RealtimeResponseArbiter:
                     waiter.cancel()
             await asyncio.gather(*waiters, return_exceptions=True)
 
+    async def _delete_committed_item(self, queued: _QueuedResponse) -> None:
+        """Remove every pre-response item invalidated after transport commit."""
+
+        if not self._connection_available:
+            return
+        item_ids = list(queued.committed_item_ids)
+        if (
+            queued.expected_item_id
+            and queued.expected_item_id not in item_ids
+            and queued.item_committed
+            and not item_ids
+        ):
+            item_ids.append(queued.expected_item_id)
+        for item_id in item_ids:
+            await self._worker_send(
+                queued,
+                {
+                    "type": "conversation.item.delete",
+                    "item_id": item_id,
+                },
+            )
+
     async def _process(self, queued: _QueuedResponse) -> None:
         self._current = queued
         # The disqualifier arms HERE, not after the waits below. From this
@@ -2028,6 +2102,13 @@ class RealtimeResponseArbiter:
                 raise RuntimeError("response dispatch interrupted")
             if not self._connection_available:
                 raise ConnectionError("realtime connection is unavailable")
+            if (
+                queued.admission_check is not None
+                and not queued.admission_check()
+            ):
+                raise ResponseAdmissionRejected(
+                    "response dispatch admission rejected"
+                )
             self._idle.clear()
             if queued.ack_expected:
                 queued.item_ack = loop.create_future()
@@ -2039,34 +2120,91 @@ class RealtimeResponseArbiter:
                 self._adoptable_serial, self._item_created_serial
             )
             for event in queued.events_before_response:
-                if queued.interrupted:
+                admission_rejected = bool(
+                    queued.admission_check is not None
+                    and not queued.admission_check()
+                )
+                if queued.interrupted or admission_rejected:
+                    if queued.item_committed and admission_rejected:
+                        await self._delete_committed_item(queued)
+                    # 这里**不能**抛 ResponseAdmissionRejected：上面那次补偿删除
+                    # 是 fire-and-forget，provider 异步确认、也可能改回一个 error，
+                    # 于是这条已提交的 item 完全可能还留在会话历史里。此时让调用方
+                    # 降级重投就会变成重复的用户回合，还配着过期的视觉上下文。
                     raise RuntimeError("response dispatch interrupted")
+                if queued.pre_commit is not None:
+                    # 提交前的最后一刻，让调用方按自己的判据就地降级这条 event。
+                    # 位置在 admission 复查之后、_worker_send 之前：arbiter 在
+                    # enqueue 与这里之间还有等活跃响应、等发送信号量等多段等待，
+                    # 调用方在 enqueue 前做的检查覆盖不到那段窗口。
+                    queued.pre_commit(event)
+                queued.item_committed = True
+                # main(#2837) 起 _worker_send 按 ticket 路由（queued.event_sender），
+                # 多一个 queued 形参；本轮的提交记账仍留在调用点两侧。
                 await self._worker_send(queued, event)
+                item = event.get("item")
+                item_id = item.get("id") if isinstance(item, dict) else None
+                if (
+                    isinstance(item_id, str)
+                    and item_id
+                    and item_id not in queued.committed_item_ids
+                ):
+                    queued.committed_item_ids.append(item_id)
+
+            admission_rejected = bool(
+                queued.admission_check is not None
+                and not queued.admission_check()
+            )
+            if queued.item_committed and admission_rejected:
+                # 同上：补偿删除未经确认，不承诺「provider 侧不留痕迹」。
+                await self._delete_committed_item(queued)
+                raise RuntimeError("response dispatch interrupted")
 
             if queued.item_ack is not None:
-                try:
-                    # The one bound that was not instrumented, which made
-                    # "no wait spent half its allowance" a claim nothing could
-                    # back for it. It is also the bound I once mis-reported as
-                    # over budget from outside the arbiter, so leaving it
-                    # unmeasured from inside was the worst possible gap.
-                    with self._report_wait_margin(
-                        "conversation item ack", queued.item_ack_timeout
-                    ):
-                        await asyncio.wait_for(
-                            asyncio.shield(queued.item_ack), queued.item_ack_timeout
-                        )
-                    item_acked = True
-                    queued.item_acked = True
-                except asyncio.TimeoutError:
+                if queued.item_committed and queued.interrupted:
                     item_acked = False
                     queued.item_acked = False
-                    queued.item_ack.cancel()
+                else:
+                    try:
+                        # The one bound that was not instrumented, which made
+                        # "no wait spent half its allowance" a claim nothing could
+                        # back for it. It is also the bound I once mis-reported as
+                        # over budget from outside the arbiter, so leaving it
+                        # unmeasured from inside was the worst possible gap.
+                        with self._report_wait_margin(
+                            "conversation item ack", queued.item_ack_timeout
+                        ):
+                            await asyncio.wait_for(
+                                asyncio.shield(queued.item_ack),
+                                queued.item_ack_timeout,
+                            )
+                        item_acked = True
+                        queued.item_acked = True
+                    except asyncio.TimeoutError:
+                        item_acked = False
+                        queued.item_acked = False
+                        queued.item_ack.cancel()
 
+            admission_rejected = bool(
+                queued.admission_check is not None
+                and not queued.admission_check()
+            )
+            if queued.item_committed and admission_rejected:
+                # 同上：补偿删除未经确认，不承诺「provider 侧不留痕迹」。
+                await self._delete_committed_item(queued)
+                raise RuntimeError("response dispatch interrupted")
             if queued.interrupted:
                 raise RuntimeError("response dispatch interrupted")
             if not self._connection_available:
                 raise ConnectionError("realtime connection is unavailable")
+            if (
+                queued.admission_check is not None
+                and not queued.item_committed
+                and not queued.admission_check()
+            ):
+                raise ResponseAdmissionRejected(
+                    "response dispatch admission rejected"
+                )
             if queued.ticket.started.done():
                 if queued.ticket.started.cancelled():
                     raise RuntimeError(

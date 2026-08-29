@@ -104,6 +104,7 @@ def _make_manager(monkeypatch, *, input_mode):
     mgr.session = None
     mgr.current_speech_id = ""
     mgr.lock = asyncio.Lock()
+    mgr._voice_proactive_inject_lock = asyncio.Lock()
     mgr.tool_registry = types.SimpleNamespace(all=lambda: [])
 
     mgr._config_manager = _StubConfigManager(

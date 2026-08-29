@@ -141,6 +141,7 @@ FACADE_MODULE_ALIAS = "_core_facade"
 OWNER_SUBMODULES = {
     "_shared",
     "callback_render",
+    "multimodal_turn",
     "notices",
 }
 MIXIN_SUPPORT_CLASSES = {
@@ -3300,6 +3301,7 @@ def run(root: Path) -> list[Violation]:
                 "resume",
                 "abort",
                 "wait_transcript_idle",
+                "has_pending_transcript_delivery",
                 "set_speaker_verifier_factory",
                 "request_speaker_candidate_rejection",
                 "start",

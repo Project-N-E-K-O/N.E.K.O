@@ -590,6 +590,7 @@
         "ERROR_1007_ARREARS": "💥 참고: 1007 오류가 감지되었습니다. 잔액 부족이 원인일 가능성이 높습니다.",
         "IMAGE_BLOCKED": "⚠️ 이미지 콘텐츠가 검토 시스템에 의해 차단되었습니다. 다른 이미지나 콘텐츠를 시도하세요.",
         "SERVER_BUSY_THROTTLE": "⚠️ 서버가 바쁩니다. 전송 속도를 자동 조절 중...",
+        "ASR_INGRESS_BACKPRESSURE": "음성 처리가 지연되고 있습니다. 다시 말씀해 주세요.",
         "RESPONSE_TIMEOUT": "💥 연결 시간 초과 (Response timeout), 음성 대화가 중단되었습니다.",
         "CONNECTION_TIMEOUT": "💥 연결 시간 초과. 네트워크 연결을 확인하세요.",
         "RESPONSE_TOO_LONG": "응답이 너무 길어 출력이 폐기되었습니다 (설정에서 TEXT_GUARD_MAX_LENGTH를 늘릴 수 있습니다)",

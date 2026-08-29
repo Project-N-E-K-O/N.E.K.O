@@ -9,13 +9,21 @@ import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from main_logic.asr_client import VoiceIdentityActivationResult
 from main_logic.core import LLMSessionManager
-from main_logic.core.asr_runtime import AsrRuntimeMixin, _HotSwapAudioFrame
+from main_logic.core.asr_runtime import (
+    AsrRuntimeMixin,
+    _HotSwapAudioFrame,
+    _ONSET_TRUST_WINDOW_S,
+)
+from main_logic.core.multimodal_turn import (
+    _MAX_LIVE_TURN_RECORDS,
+    _MAX_PRERECORD_VISUAL_VALIDATIONS,
+)
 from main_logic.asr_client.runtime import (
     AsrRuntimeCallbacks,
     AsrStartResult,
@@ -234,6 +242,21 @@ class _TestSmartTurnLease:
         self.released = True
 
 
+async def test_independent_asr_activity_probe_is_provider_neutral() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+
+    assert runtime._independent_asr_user_turn_active() is False
+
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._independent_asr_user_turn_active() is True
+
+    runtime._asr_route_mode = "native"
+    assert runtime._independent_asr_user_turn_active() is False
+
+
 class _ReadyDetector:
     def __init__(self, feed_result: DetectorFeedResult | None = None) -> None:
         self.detector_epoch = 1
@@ -446,6 +469,52 @@ async def _start_and_seal_turn(
         runtime._asr_session_epoch,
     )
     await runtime._handle_independent_asr_endpoint(runtime._asr_session_epoch)
+
+
+async def test_activity_probe_tracks_accepted_final_until_dispatch_completes() -> None:
+    runtime = _Runtime()
+    await _start_and_seal_turn(runtime, "qwen")
+    sealed_token = runtime._asr_sealed_turn_token
+    assert sealed_token is not None
+    release_started = asyncio.Event()
+    release_lease = asyncio.Event()
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    class _BlockingLease:
+        token = sealed_token.turn
+
+        async def release(self) -> None:
+            release_started.set()
+            await release_lease.wait()
+
+    async def block_dispatch(*_args, **_kwargs) -> bool:
+        dispatch_started.set()
+        await release_dispatch.wait()
+        return True
+
+    runtime._asr_smart_turn_lease = _BlockingLease()
+    runtime.handle_input_transcript.side_effect = block_dispatch
+    final_task = asyncio.create_task(
+        runtime._handle_independent_asr_final(
+            "短语音",
+            runtime._asr_session_epoch,
+            "qwen",
+        )
+    )
+
+    await release_started.wait()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert runtime._independent_asr_user_turn_active() is True
+
+    release_lease.set()
+    await dispatch_started.wait()
+    assert runtime._independent_asr_user_turn_active() is True
+
+    release_dispatch.set()
+    await final_task
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._independent_asr_user_turn_active() is False
 
 
 async def test_independent_route_sends_pcm_to_asr_only() -> None:
@@ -1152,6 +1221,7 @@ async def test_game_consumer_accepts_real_pcm_through_pipeline(
             "data": [1] * 160,
         },
         ingress_token=token,
+        captured_at=1234.5,
     )
 
     runtime._voice_input_audio_pipeline.process.assert_awaited_once()
@@ -1162,6 +1232,7 @@ async def test_game_consumer_accepts_real_pcm_through_pipeline(
         rnnoise_available=processed.rnnoise_available,
         rnnoise_evidence=evidence,
         ingress_token=token,
+        captured_at=1234.5,
     )
 
 
@@ -1237,6 +1308,7 @@ async def test_hot_swap_cache_replay_preserves_rnnoise_evidence() -> None:
             "data": [1] * 160,
         },
         ingress_token=token,
+        captured_at=2345.6,
     )
 
     assert len(runtime.hot_swap_audio_cache) == 1
@@ -1251,6 +1323,7 @@ async def test_hot_swap_cache_replay_preserves_rnnoise_evidence() -> None:
         rnnoise_available=processed.rnnoise_available,
         rnnoise_evidence=evidence,
         ingress_token=token,
+        captured_at=2345.6,
     )
 
 
@@ -1475,6 +1548,61 @@ async def test_speech_started_prepares_external_voice_turn() -> None:
         turn_id=f"asr-{runtime._asr_session_epoch}-1"
     )
     runtime.handle_new_message.assert_awaited_once_with()
+
+
+async def test_gemini_prepare_reconnect_replaces_core_receive_task() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    runtime.session.prepare_external_voice_turn = AsyncMock(return_value=True)
+    runtime._restart_message_handler_after_session_reconnect = AsyncMock(
+        return_value=True
+    )
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        runtime._asr_session_epoch,
+    )
+
+    runtime._restart_message_handler_after_session_reconnect.assert_awaited_once_with(
+        runtime.session
+    )
+    runtime.handle_new_message.assert_awaited_once_with()
+
+
+async def test_reconnect_listener_replacement_cancels_retired_receive_task() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lock = asyncio.Lock()
+    manager.is_active = True
+    replacement_started = asyncio.Event()
+
+    class Session:
+        async def handle_messages(self):
+            replacement_started.set()
+            await asyncio.Event().wait()
+
+    session = Session()
+    manager.session = session
+    retired_cancelled = asyncio.Event()
+
+    async def retired_receive_loop():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            retired_cancelled.set()
+            raise
+
+    retired_task = asyncio.create_task(retired_receive_loop())
+    manager.message_handler_task = retired_task
+    await asyncio.sleep(0)
+
+    assert await manager._restart_message_handler_after_session_reconnect(session)
+    await asyncio.wait_for(replacement_started.wait(), 1)
+
+    assert retired_cancelled.is_set()
+    assert retired_task.done()
+    assert manager.message_handler_task is not retired_task
+    manager.message_handler_task.cancel()
+    await asyncio.gather(manager.message_handler_task, return_exceptions=True)
 
 
 async def test_game_takeover_during_core_prepare_drops_stale_message() -> None:
@@ -5405,8 +5533,19 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
 
     runtime = _Runtime()
     runtime.core_api_type = core_type
+    runtime.session.set_visual_delivery_mode = MagicMock()
+    runtime.session.block_raw_visual_delivery = MagicMock()
     asr = type("Asr", (), {})()
-    asr.connect = AsyncMock()
+
+    async def connect_after_visual_fail_closed() -> None:
+        delivered_modes = [
+            getattr(call.args[0], "value", call.args[0])
+            for call in runtime.session.set_visual_delivery_mode.call_args_list
+        ]
+        assert "external_description" not in delivered_modes
+        runtime.session.block_raw_visual_delivery.assert_called()
+
+    asr.connect = AsyncMock(side_effect=connect_after_visual_fail_closed)
     asr.close = AsyncMock()
     factory = MagicMock(return_value=asr)
     monkeypatch.setattr(
@@ -5432,6 +5571,60 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
     assert runtime._asr_route_mode == "independent"
     assert runtime._asr_session is asr
     assert runtime._asr_provider == "qwen"
+
+
+async def test_stale_settings_failure_cannot_refence_replacement_session(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    settings_read_started = asyncio.Event()
+    release_stale_read = asyncio.Event()
+    read_count = 0
+
+    async def load_settings(*, strict: bool = False) -> dict:
+        nonlocal read_count
+        assert strict is True
+        read_count += 1
+        if read_count == 1:
+            settings_read_started.set()
+            await release_stale_read.wait()
+            raise OSError("stale settings read failed")
+        return {"independentAsrEnabled": False}
+
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        load_settings,
+    )
+    stale_start = asyncio.create_task(
+        runtime._start_independent_asr_if_enabled(
+            "audio",
+            handshake_override=True,
+        )
+    )
+    await settings_read_started.wait()
+
+    replacement_session = MagicMock()
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    replacement_session.block_raw_visual_delivery = MagicMock()
+    runtime.session = replacement_session
+    runtime.core_api_type = "gemini"
+    await runtime._start_independent_asr_if_enabled(
+        "audio",
+        handshake_override=False,
+    )
+    assert runtime._asr_route_mode == "native"
+
+    release_stale_read.set()
+    await stale_start
+
+    delivered_modes = [
+        getattr(call.args[0], "value", call.args[0])
+        for call in replacement_session.set_visual_delivery_mode.call_args_list
+    ]
+    assert delivered_modes
+    assert set(delivered_modes) == {"native"}
 
 
 async def test_websocket_core_submits_one_external_turn_after_local_history() -> None:
@@ -5689,6 +5882,62 @@ async def test_hot_swap_does_not_retry_failed_same_core_route() -> None:
     runtime._start_independent_asr_if_enabled.assert_not_awaited()
 
 
+@pytest.mark.parametrize("route_mode", ["independent", "native"])
+async def test_same_core_session_promotion_resyncs_visual_delivery_mode(
+    route_mode: str,
+) -> None:
+    """A promoted session inherits the live route even when provider key is unchanged."""
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    runtime.input_mode = "audio"
+    runtime._asr_route_mode = route_mode
+    runtime._independent_asr_route_key = "qwen"
+    runtime._start_independent_asr_if_enabled = AsyncMock()
+    replacement_session = type("ReplacementOmni", (), {})()
+    replacement_session._supports_native_image = True
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    replacement_session.block_raw_visual_delivery = MagicMock()
+    runtime.session = replacement_session
+
+    await runtime._reconcile_independent_asr_after_core_change()
+
+    if route_mode == "independent":
+        replacement_session.set_visual_delivery_mode.assert_not_called()
+        replacement_session.block_raw_visual_delivery.assert_called_once_with()
+    else:
+        replacement_session.set_visual_delivery_mode.assert_called_once_with("native")
+    runtime._start_independent_asr_if_enabled.assert_not_awaited()
+
+
+async def test_blocked_replacement_session_preserves_external_visual_policy_and_fence() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    runtime._set_microphone_route("blocked")
+    replacement_session = type("ReplacementOmni", (), {})()
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    replacement_session.block_raw_visual_delivery = MagicMock()
+    runtime.session = replacement_session
+
+    runtime._set_microphone_route("blocked")
+
+    replacement_session.set_visual_delivery_mode.assert_not_called()
+    replacement_session.block_raw_visual_delivery.assert_called()
+
+
+async def test_native_to_blocked_fences_raw_frames_during_route_reconciliation() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("native")
+    replacement_session = type("ReplacementOmni", (), {})()
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    replacement_session.block_raw_visual_delivery = MagicMock()
+    runtime.session = replacement_session
+
+    runtime._set_microphone_route("blocked")
+
+    replacement_session.set_visual_delivery_mode.assert_called_once_with("native")
+    replacement_session.block_raw_visual_delivery.assert_called_once_with()
+
+
 async def test_disabled_native_route_key_prevents_same_core_reconcile(
     monkeypatch,
 ) -> None:
@@ -5828,6 +6077,33 @@ async def test_core_passes_only_configured_speaker_shadow_factory(
 
     assert start_mock.await_args.kwargs["speaker_shadow_factory"] is factory
     factory.assert_not_called()
+
+
+async def test_failed_independent_start_preserves_external_visual_route_memory(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.session.set_visual_delivery_mode = MagicMock()
+    runtime.session.block_raw_visual_delivery = MagicMock()
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_CONNECT_FAILED",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._visual_route_mode == "independent"
+    runtime.session.block_raw_visual_delivery.assert_called()
 
 
 async def test_connect_budget_does_not_block_a_free_native_route(
@@ -7421,6 +7697,28 @@ async def test_free_core_uses_native_asr_when_preferences_are_unreadable(
     assert runtime._asr_route_mode == "native"
     start_mock.assert_not_awaited()
     assert "ASR_INDEPENDENT_DISABLED" in runtime.send_status.await_args.args[0]
+
+
+async def test_unreadable_independent_setting_preserves_visual_route_on_hot_swap(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.session.set_visual_delivery_mode = MagicMock()
+    runtime.session.block_raw_visual_delivery = MagicMock()
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(side_effect=OSError("preferences unavailable")),
+    )
+    runtime.set_independent_asr_handshake(True)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+    await runtime._reconcile_independent_asr_after_core_change()
+
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._visual_route_mode == "independent"
+    runtime.session.block_raw_visual_delivery.assert_called()
 
 
 async def test_unknown_core_capability_remains_fail_closed(monkeypatch) -> None:
@@ -9963,6 +10261,2854 @@ async def test_speaker_shadow_abba_cannot_change_provider_authority(
     assert len(disabled_a["finals"]) == 1
 
 
+@pytest.mark.unit
+async def test_microphone_route_syncs_provider_neutral_visual_delivery_mode() -> None:
+    """Independent ASR must fail closed for raw vision during every route state."""
+    runtime = _Runtime()
+    runtime.session._supports_native_image = True
+    runtime.session.set_visual_delivery_mode = MagicMock()
+    runtime.session.block_raw_visual_delivery = MagicMock()
+    runtime.session.allow_raw_visual_delivery = MagicMock()
+
+    runtime._set_microphone_route("independent")
+    runtime._set_microphone_route("blocked")
+    runtime._set_microphone_route("native")
+
+    delivered_modes = [
+        getattr(item.args[0], "value", item.args[0])
+        for item in runtime.session.set_visual_delivery_mode.call_args_list
+    ]
+    assert delivered_modes == ["native"]
+    assert runtime.session.block_raw_visual_delivery.call_count >= 2
+    runtime.session.allow_raw_visual_delivery.assert_called_once_with()
+
+
+@pytest.mark.unit
+async def test_native_route_leaves_provider_capability_routing_inside_session() -> None:
+    """Core selects the ASR strategy, while session capability keeps legacy behavior."""
+    runtime = _Runtime()
+    runtime.session._supports_native_image = False
+    runtime.session.set_visual_delivery_mode = MagicMock()
+
+    runtime._set_microphone_route("native")
+
+    delivered_mode = runtime.session.set_visual_delivery_mode.call_args.args[0]
+    assert getattr(delivered_mode, "value", delivered_mode) == "native"
+
+
+@pytest.mark.unit
+async def test_independent_visual_sync_failure_blocks_raw_images_without_stopping_asr() -> None:
+    runtime = _Runtime()
+    call_order: list[str] = []
+
+    def block_raw_visual_delivery() -> None:
+        call_order.append("block")
+
+    def fail_visual_mode_sync(_mode: str) -> None:
+        call_order.append("sync")
+        raise RuntimeError("stale realtime session")
+
+    runtime.session.block_raw_visual_delivery = block_raw_visual_delivery
+    runtime.session.set_visual_delivery_mode = fail_visual_mode_sync
+
+    runtime._set_microphone_route("independent")
+
+    assert runtime._asr_route_mode == "independent"
+    assert call_order == ["block"]
+
+
+@pytest.mark.unit
+async def test_independent_multimodal_turn_samples_the_utterance_span() -> None:
+    """One utterance carries first/middle/last; identity fields name the last."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=77)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    captured_at = time.monotonic()
+
+    assert runtime._stage_independent_visual_frame(
+        "first-frame",
+        source="screen",
+        request_id="frame-1",
+        captured_at=captured_at,
+    )
+    assert runtime._stage_independent_visual_frame(
+        "latest-frame",
+        source="camera",
+        request_id="frame-2",
+        captured_at=captured_at + 0.1,
+    )
+    assert not runtime._stage_independent_visual_frame(
+        "stale-frame",
+        source="screen",
+        request_id="frame-stale",
+        captured_at=captured_at - 0.1,
+    )
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    # 两帧都在本回合窗口内：开头那张不能因为"不是最新"被丢掉——用户开口时指的
+    # 东西就在那张上。source / request_id 仍然描述最新那张（回合的收尾身份）。
+    assert turn.images == ("first-frame", "latest-frame")
+    assert turn.source == "camera"
+    assert turn.request_id == "frame-2"
+    assert turn.image_generation > turn.start_image_generation
+
+
+@pytest.mark.unit
+async def test_independent_multimodal_turn_never_reuses_prior_turn_frame() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    captured_at = time.monotonic()
+    assert runtime._stage_independent_visual_frame(
+        "prior-turn-frame",
+        source="screen",
+        request_id="screen-prior",
+        captured_at=captured_at,
+    )
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=78)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "new question")
+
+    assert turn is None
+
+
+@pytest.mark.unit
+async def test_independent_multimodal_turn_rejects_delayed_prior_capture() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    captured_before_turn = time.monotonic() - 1.0
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=79)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # Validation completes after prepare, so generation alone looks current;
+    # the ingress capture time must keep this prior image out of the new turn.
+    assert runtime._stage_independent_visual_frame(
+        "delayed-prior-frame",
+        source="screen",
+        request_id="screen-delayed",
+        captured_at=captured_before_turn,
+    )
+    assert record.last_frame is None
+    assert runtime._snapshot_core_multimodal_turn(turn_id, "new question") is None
+
+    assert runtime._stage_independent_visual_frame(
+        "current-turn-frame",
+        source="camera",
+        request_id="camera-current",
+        captured_at=record.started_at,
+    )
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "new question")
+
+    assert turn is not None
+    assert turn.images == ("current-turn-frame",)
+    assert turn.captured_at == record.started_at
+
+
+@pytest.mark.unit
+async def test_independent_multimodal_turn_rejects_owned_frame_expired_at_final() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=80)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "expired-owned-frame",
+        source="screen",
+        request_id="screen-expired",
+        captured_at=record.started_at,
+    )
+
+    with patch(
+        "main_logic.core.asr_runtime.time.monotonic",
+        return_value=(
+            record.started_at + runtime._independent_visual_frame_ttl_s + 1.0
+        ),
+    ):
+        turn = runtime._snapshot_core_multimodal_turn(turn_id, "delayed final")
+
+    assert turn is None
+
+
+@pytest.mark.unit
+async def test_direct_multimodal_final_submits_raw_image_once() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+    # 在**调用发生的那一刻**取一次所有权判据的值。它是个活闭包，事后再调时
+    # 这一轮早已结束、所有权已释放，所以只能在这里记。
+    owned_at_call: list = []
+
+    async def _record_ownership(*_args, **kwargs):
+        cb = kwargs.get("visual_still_owned")
+        owned_at_call.append(cb() if callable(cb) else None)
+
+    runtime.session.submit_multimodal_turn = AsyncMock(
+        side_effect=_record_ownership
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    async def validate_frame() -> None:
+        await asyncio.sleep(0)
+        assert runtime._stage_independent_visual_frame(
+            "raw-frame",
+            source="screen",
+            request_id="screen-1",
+            captured_at=record.started_at,
+        )
+
+    validation_task = asyncio.create_task(validate_frame())
+    assert runtime._track_independent_visual_validation_task(
+        validation_task,
+        captured_at=record.started_at,
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=token,
+            provider="openai",
+            text="look here",
+        )
+    )
+    await validation_task
+
+    runtime.session.submit_multimodal_turn.assert_awaited_once_with(
+        "look here",
+        ("raw-frame",),
+        turn_id=turn_id,
+        # Gemini 那条路在真正送出之前还有一段压缩 await，所有权判据必须跟着进去。
+        visual_still_owned=ANY,
+    )
+    # 穿进去的必须是活的判据，且在真正调用 provider 的那一刻仍持有所有权。
+    assert owned_at_call == [True]
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+    assert turn_id not in runtime._core_multimodal_turns
+
+
+@pytest.mark.unit
+async def test_final_superseded_after_freeze_submits_text_without_frames() -> None:
+    """Freezing the frames is not the last word; the submit is.
+
+    The record is retained past a successor prepare so this final keeps its
+    transcript, which means the route self-check still finds the same record
+    object and passes. But the successor now owns the visuals, so the frozen
+    frames belong to the newer utterance. The sentence still has to be
+    submitted -- as plain text, the ordinary no-image path.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+    runtime.session.submit_multimodal_turn = AsyncMock()
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "frame-of-the-old-turn",
+        source="screen",
+        request_id="screen-1",
+        captured_at=record.started_at,
+    )
+
+    accepted = runtime.handle_input_transcript
+
+    async def accept_then_let_a_successor_start(*args, **kwargs):
+        result = await accepted(*args, **kwargs)
+        # 冻结之后、提交之前：后继发声 prepare，视觉所有权交出去。
+        successor = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(),
+            turn_id=token.turn_id + 1,
+        )
+        runtime._begin_core_multimodal_turn(
+            f"asr-{successor.ingress.session_epoch}-{successor.turn_id}",
+            successor,
+        )
+        return result
+
+    runtime.handle_input_transcript = accept_then_let_a_successor_start
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=token,
+            provider="openai",
+            text="look here",
+        )
+    )
+
+    assert record.invalidated.is_set()
+    runtime.session.submit_multimodal_turn.assert_not_awaited()
+    runtime.session.submit_external_voice_turn.assert_awaited_once()
+    assert "look here" in runtime.session.submit_external_voice_turn.await_args.args
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("delivery", ["direct_atomic", "handoff_required"])
+async def test_ownership_lost_between_the_freeze_check_and_the_provider_call(
+    delivery,
+) -> None:
+    """One check up front is not enough; every await is another window.
+
+    Between the post-freeze check and the actual provider call there is still
+    the transcript send, preview restoration, the swap barrier and (on the
+    handoff path) preparing a replacement session. A successor prepared in any
+    of those windows owns the frames, so the last synchronous point before the
+    call has to look again.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.submit_multimodal_turn = AsyncMock()
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    runtime._handoff_to_offline_vlm_and_submit = AsyncMock(return_value=True)
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "frame-of-the-old-turn",
+        source="screen",
+        request_id="screen-1",
+        captured_at=record.started_at,
+    )
+
+    def _take_ownership_then_report_delivery():
+        # 这一步排在冻结后那次检查**之后**、真正调 provider 之前。
+        successor = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(),
+            turn_id=token.turn_id + 1,
+        )
+        runtime._begin_core_multimodal_turn(
+            f"asr-{successor.ingress.session_epoch}-{successor.turn_id}",
+            successor,
+        )
+        return delivery
+
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        side_effect=_take_ownership_then_report_delivery
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=token,
+            provider="openai",
+            text="look here",
+        )
+    )
+
+    assert record.invalidated.is_set()
+    runtime.session.submit_multimodal_turn.assert_not_awaited()
+    runtime._handoff_to_offline_vlm_and_submit.assert_not_awaited()
+    runtime.session.submit_external_voice_turn.assert_awaited_once()
+    assert "look here" in runtime.session.submit_external_voice_turn.await_args.args
+
+
+@pytest.mark.unit
+async def test_dispatch_hands_the_ownership_predicate_to_the_handoff() -> None:
+    """Checking before the handoff is not enough; it must check inside too.
+
+    Connecting and promoting the Offline candidate, starting TTS and syncing
+    tools are the longest awaits on the path, and the handoff's own
+    ``operation_is_current`` covers route identity only. A guard that merely
+    exercises the predicate in isolation still passes when the dispatch stops
+    handing it over, so assert the call site itself.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="handoff_required"
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    seen: dict = {}
+
+    async def observe_predicate_inside_the_handoff(_turn, **kwargs):
+        still_owned = kwargs["visual_still_owned"]
+        seen["before"] = still_owned()
+        # 后继发声在交接进行中 prepare —— 谓词必须立刻反映出来，而不是停在
+        # 进入交接那一刻的快照。
+        seen["record"].invalidated.set()
+        seen["after"] = still_owned()
+        return True
+
+    runtime._handoff_to_offline_vlm_and_submit = AsyncMock(
+        side_effect=observe_predicate_inside_the_handoff
+    )
+    handoff_token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    handoff_turn_id = (
+        f"asr-{handoff_token.ingress.session_epoch}-{handoff_token.turn_id}"
+    )
+    runtime._begin_core_multimodal_turn(handoff_turn_id, handoff_token)
+    handoff_record = runtime._core_multimodal_turns[handoff_turn_id]
+    seen["record"] = handoff_record
+    assert runtime._stage_independent_visual_frame(
+        "frame-of-this-turn",
+        source="screen",
+        request_id="screen-1",
+        captured_at=handoff_record.started_at,
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=handoff_token,
+            provider="openai",
+            text="look here",
+        )
+    )
+
+    runtime._handoff_to_offline_vlm_and_submit.assert_awaited_once()
+    assert seen["before"] is True
+    assert seen["after"] is False
+
+
+@pytest.mark.unit
+async def test_provider_admission_rejection_submits_the_transcript_as_text() -> None:
+    """Losing the provider's admission window must not lose the sentence.
+
+    The arbiter rejects a multimodal ticket once a newer turn has armed its
+    pause, and deletes the committed item on the way out -- nothing of this
+    request survives provider-side. Propagating that error drops the user's
+    whole utterance; the frames are gone but the transcript still has to be
+    answered, exactly as when Core detects the supersession itself.
+    """
+    from main_logic.omni_realtime_client._response_arbiter import (
+        ResponseAdmissionRejected,
+    )
+
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+    runtime.session.submit_multimodal_turn = AsyncMock(
+        side_effect=ResponseAdmissionRejected(
+            "response dispatch admission rejected after commit"
+        )
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    admission_token = runtime._asr_runtime._capture_turn_token(
+        runtime._asr_lifecycle
+    )
+    admission_turn_id = (
+        f"asr-{admission_token.ingress.session_epoch}-{admission_token.turn_id}"
+    )
+    runtime._begin_core_multimodal_turn(admission_turn_id, admission_token)
+    admission_record = runtime._core_multimodal_turns[admission_turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "frame-of-this-turn",
+        source="screen",
+        request_id="screen-1",
+        captured_at=admission_record.started_at,
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=admission_token,
+            provider="openai",
+            text="这句话不能消失",
+        )
+    )
+
+    runtime.session.submit_multimodal_turn.assert_awaited_once()
+    runtime.session.submit_external_voice_turn.assert_awaited_once()
+    assert (
+        "这句话不能消失"
+        in runtime.session.submit_external_voice_turn.await_args.args
+    )
+
+
+@pytest.mark.unit
+async def test_route_close_drops_the_staged_visual_caches() -> None:
+    """Staged originals belong to the route, not to the process.
+
+    Their only other clearing point is the NEXT turn starting, so an episode
+    that ends while screen sharing is on -- with no further utterance -- leaves
+    full-size base64 originals pinned on a long-lived character manager, and the
+    next episode starts with a buffer already full of the previous one's frames.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    assert runtime._stage_independent_visual_frame(
+        "frame-with-no-utterance",
+        source="screen",
+        request_id="screen-1",
+        captured_at=time.monotonic(),
+    )
+    assert runtime._prerecord_visual_frames
+    assert runtime._latest_independent_visual_frame is not None
+
+    await runtime._close_independent_asr(next_route_mode="blocked")
+
+    assert runtime._prerecord_visual_frames == []
+    assert runtime._latest_independent_visual_frame is None
+
+
+@pytest.mark.unit
+async def test_visual_validation_wait_timeout_does_not_cancel_image_task() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    runtime._independent_visual_frame_ttl_s = 0.01
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=81)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    release = asyncio.Event()
+    validation_task = asyncio.create_task(release.wait())
+    assert runtime._track_independent_visual_validation_task(
+        validation_task,
+        captured_at=record.started_at,
+    )
+
+    await runtime._await_independent_visual_validation_tasks(turn_id)
+
+    assert not validation_task.done()
+    release.set()
+    await validation_task
+
+
+@pytest.mark.unit
+async def test_new_turn_wakes_visual_validation_wait_without_cancelling_task() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    first_token = VoiceTurnToken(
+        ingress=runtime._capture_ingress_token(),
+        turn_id=82,
+    )
+    first_turn_id = (
+        f"asr-{first_token.ingress.session_epoch}-{first_token.turn_id}"
+    )
+    runtime._begin_core_multimodal_turn(first_turn_id, first_token)
+    first_record = runtime._core_multimodal_turns[first_turn_id]
+    release = asyncio.Event()
+    validation_task = asyncio.create_task(release.wait())
+    assert runtime._track_independent_visual_validation_task(
+        validation_task,
+        captured_at=first_record.started_at,
+    )
+    waiting = asyncio.create_task(
+        runtime._await_independent_visual_validation_tasks(first_turn_id)
+    )
+    await asyncio.sleep(0)
+
+    second_token = VoiceTurnToken(
+        ingress=runtime._capture_ingress_token(),
+        turn_id=83,
+    )
+    runtime._begin_core_multimodal_turn(
+        f"asr-{second_token.ingress.session_epoch}-{second_token.turn_id}",
+        second_token,
+    )
+
+    await asyncio.wait_for(waiting, timeout=0.1)
+    assert not validation_task.done()
+    release.set()
+    await validation_task
+
+
+async def test_offline_image_free_voice_turn_retries_tts_after_failure() -> None:
+    runtime = _Runtime()
+    runtime.response_backend = "offline_vlm"
+    runtime.ensure_tts_pipeline_alive = AsyncMock(
+        side_effect=[RuntimeError("tts unavailable"), None]
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="tts unavailable"):
+        await runtime._submit_core_voice_turn(
+            "first",
+            turn_id="turn-1",
+            session_ref=runtime.session,
+        )
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+
+    await runtime._submit_core_voice_turn(
+        "second",
+        turn_id="turn-2",
+        session_ref=runtime.session,
+    )
+
+    assert runtime.ensure_tts_pipeline_alive.await_count == 2
+    runtime.session.submit_external_voice_turn.assert_awaited_once_with(
+        "second",
+        turn_id="turn-2",
+    )
+
+
+@pytest.mark.unit
+async def test_direct_multimodal_failure_reports_status_without_text_fallback() -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "openai"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+    runtime.session.submit_multimodal_turn = AsyncMock(
+        side_effect=RuntimeError("provider rejected image")
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    epoch = runtime._asr_session_epoch
+    await _start_and_seal_turn(runtime, "openai")
+    assert runtime._stage_independent_visual_frame(
+        "raw-frame",
+        source="screen",
+        request_id="screen-1",
+        captured_at=time.monotonic(),
+    )
+
+    await runtime._handle_independent_asr_final(
+        "look here",
+        epoch,
+        "openai",
+    )
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    runtime.session.submit_multimodal_turn.assert_awaited_once()
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+    status_payloads = [call.args[0] for call in runtime.send_status.await_args_list]
+    assert any("ASR_INDEPENDENT_INJECTION_FAILED" in item for item in status_payloads)
+    assert "provider rejected image" not in str(status_payloads)
+
+
+@pytest.mark.unit
+async def test_handoff_failure_never_falls_back_to_transcript_only() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="handoff_required"
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    runtime._handoff_to_offline_vlm_and_submit = AsyncMock(return_value=False)
+    runtime.is_preparing_new_session = True
+    runtime.message_cache_for_new_session = [
+        {"role": "Test", "text": "earlier reply"}
+    ]
+
+    async def cache_current_final(*_args, **_kwargs) -> bool:
+        runtime.message_cache_for_new_session.append(
+            {"role": "master", "text": "what is this"}
+        )
+        return True
+
+    runtime.handle_input_transcript.side_effect = cache_current_final
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    assert runtime._stage_independent_visual_frame(
+        "raw-frame",
+        source="camera",
+        request_id="camera-1",
+        captured_at=time.monotonic(),
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=token,
+            provider="qwen",
+            text="what is this",
+        )
+    )
+
+    runtime._handoff_to_offline_vlm_and_submit.assert_awaited_once()
+    handoff_kwargs = (
+        runtime._handoff_to_offline_vlm_and_submit.await_args.kwargs
+    )
+    assert handoff_kwargs["prepared_session"] is runtime.session
+    assert handoff_kwargs["cached_turns_before_final"] == [
+        {"role": "Test", "text": "earlier reply"}
+    ]
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+    assert "ASR_MULTIMODAL_TURN_FAILED" in str(
+        runtime.send_status.await_args_list
+    )
+
+
+@pytest.mark.unit
+async def test_native_visual_sync_failure_keeps_raw_images_blocked() -> None:
+    runtime = _Runtime()
+    call_order: list[str] = []
+
+    def allow_raw_visual_delivery() -> None:
+        call_order.append("allow")
+
+    def block_raw_visual_delivery() -> None:
+        call_order.append("block")
+
+    def fail_visual_mode_sync(_mode: str) -> None:
+        call_order.append("sync")
+        raise RuntimeError("stale realtime session")
+
+    runtime.session.allow_raw_visual_delivery = allow_raw_visual_delivery
+    runtime.session.block_raw_visual_delivery = block_raw_visual_delivery
+    runtime.session.set_visual_delivery_mode = fail_visual_mode_sync
+
+    runtime._set_microphone_route("native")
+
+    assert runtime._asr_route_mode == "native"
+    assert call_order == ["sync", "block"]
+
+
+@pytest.mark.unit
+async def test_out_of_order_frame_still_joins_the_turn_sample() -> None:
+    """A frame that validates late must not be dropped by the latest-frame guard."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=91)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    base = record.started_at
+
+    assert runtime._stage_independent_visual_frame(
+        "later-frame",
+        source="screen",
+        request_id="screen-later",
+        captured_at=base + 1.0,
+    )
+    # 更早拍摄、更晚校验完：不能顶掉最新帧缓存，但必须进本回合抽样。
+    assert runtime._stage_independent_visual_frame(
+        "earlier-frame",
+        source="camera",
+        request_id="camera-earlier",
+        captured_at=base + 0.1,
+    )
+    assert runtime._latest_independent_visual_frame.image_b64 == "later-frame"
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("earlier-frame", "later-frame")
+
+
+def _seal_utterance(runtime) -> None:
+    runtime._asr_lifecycle = SimpleNamespace(
+        snapshot=SimpleNamespace(state=VoiceLifecycleState.DRAINING)
+    )
+
+
+@pytest.mark.unit
+async def test_frames_captured_after_the_endpoint_are_not_folded_in() -> None:
+    """Screen state from after the user stopped talking is not this turn."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=92)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert runtime._stage_independent_visual_frame(
+        "spoken-frame",
+        source="screen",
+        request_id="screen-spoken",
+        captured_at=record.started_at,
+    )
+
+    _seal_utterance(runtime)
+    runtime._mark_independent_asr_endpoint_if_sealed()
+    assert record.endpoint_at is not None
+    runtime._stage_independent_visual_frame(
+        "post-endpoint-frame",
+        source="screen",
+        request_id="screen-post",
+        captured_at=record.endpoint_at + 0.5,
+    )
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("spoken-frame",)
+
+
+@pytest.mark.unit
+async def test_frame_captured_before_the_endpoint_survives_late_validation() -> None:
+    """Validation finishing after DRAINING must not discard a spoken-window frame."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=93)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    captured_while_speaking = record.started_at
+
+    # 端点先到，这帧的校验任务才跑完 —— 拍摄时它还在说话，必须留下。
+    _seal_utterance(runtime)
+    runtime._mark_independent_asr_endpoint_if_sealed()
+    assert runtime._stage_independent_visual_frame(
+        "late-validated-frame",
+        source="screen",
+        request_id="screen-late",
+        captured_at=captured_while_speaking,
+    )
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("late-validated-frame",)
+
+
+@pytest.mark.unit
+async def test_post_endpoint_cache_frame_cannot_seed_an_empty_turn() -> None:
+    """The empty-record fallback must respect the endpoint cutoff too."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=94)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    _seal_utterance(runtime)
+    runtime._mark_independent_asr_endpoint_if_sealed()
+    runtime._stage_independent_visual_frame(
+        "post-endpoint-frame",
+        source="screen",
+        request_id="screen-post",
+        captured_at=record.endpoint_at + 0.5,
+    )
+    # 缓存里有这一帧（主动搭话观察还要用），但本回合一帧都没收到。
+    assert runtime._latest_independent_visual_frame.image_b64 == "post-endpoint-frame"
+    assert record.last_frame is None
+
+    assert runtime._snapshot_core_multimodal_turn(turn_id, "what is that") is None
+
+
+@pytest.mark.unit
+async def test_endpoint_cutoff_uses_the_recorded_seal_instant() -> None:
+    """A frame captured in the gap before Core looks must still be excluded."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=95)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert runtime._stage_independent_visual_frame(
+        "spoken-frame",
+        source="screen",
+        request_id="screen-spoken",
+        captured_at=record.started_at,
+    )
+
+    # ASR 在这一刻封口，但 Core 要到下一帧 staging 才会去看。
+    sealed_at = record.started_at + 1.0
+    runtime._asr_turn_endpointed_at = sealed_at
+    _seal_utterance(runtime)
+
+    # 这帧拍摄于封口之后、Core 观察之前——按观察时刻当截止值它会被放行。
+    runtime._stage_independent_visual_frame(
+        "gap-frame",
+        source="screen",
+        request_id="screen-gap",
+        captured_at=sealed_at + 0.5,
+    )
+
+    assert record.endpoint_at == sealed_at
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("spoken-frame",)
+
+
+@pytest.mark.unit
+async def test_live_seal_between_onset_and_registration_still_binds() -> None:
+    """The live field floors on started_at, not registered_at.
+
+    started_at is rolled back to the speech onset (an overlapping successor can
+    even predate the previous turn's seal), so a real window exists between the
+    seal and the registration: a very short utterance can be sealed by ASR
+    before its record is built. Flooring the live field on registered_at would
+    leave such a turn without a cutoff forever, folding everything captured
+    after the user stopped talking into this turn.
+
+    Found by mutation: flipping the live branch to registered_at turned nothing
+    red in this whole file before this case existed.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    # 把语音起点回拨，制造 started_at < registered_at 的真实窗口。
+    onset = time.monotonic() - 0.5
+    runtime._asr_turn_onset_at = onset
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=99)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert record.started_at < record.registered_at, "夹具没造出那段窗口"
+
+    # 在飞字段：封口发生在开口之后、record 建立之前。
+    sealed_at = record.started_at + 0.1
+    assert sealed_at < record.registered_at
+    runtime._asr_turn_endpointed_at = sealed_at
+
+    runtime._stage_independent_visual_frame(
+        "post-seal-frame",
+        source="screen",
+        request_id="screen-post-seal",
+        captured_at=sealed_at + 0.05,
+    )
+
+    assert record.endpoint_at == sealed_at
+
+
+@pytest.mark.unit
+async def test_previous_turn_seal_in_the_same_tick_is_not_this_turn_cutoff() -> None:
+    """A previous turn's seal in the same tick is not this turn's cutoff.
+
+    monotonic is ~15ms coarse on Windows (_begin_core_multimodal_turn in this
+    same module already falls back to a generation criterion for exactly this
+    reason), so the previous turn's seal and the successor record's
+    registration can land in one tick and compare equal. Stamping it onto the
+    successor makes every later frame fail accepts(); once the opening frame
+    expires, a slightly longer utterance degrades to text-only and the user
+    sees "she only caught the instant I started talking".
+
+    The criterion is turn identity, not the timestamp -- see the dual below.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=97)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 上一轮的封口副本，时刻与本轮 record 的注册时刻**相等**（同一个 tick），
+    # 但身份是上一轮的。live 字段是空的——PROVIDER_FINAL 已经把它清掉了，这正是
+    # 保留副本存在的原因。
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = record.registered_at
+    runtime._asr_last_turn_endpointed_key = "asr-0-96"
+    assert runtime._asr_last_turn_endpointed_key != record.turn_id
+
+    assert runtime._stage_independent_visual_frame(
+        "opening-frame",
+        source="screen",
+        request_id="screen-opening",
+        captured_at=record.started_at,
+    )
+    # 发声中段拍的帧——如果上一轮的封口被误绑成本轮截止点，它会被 accepts() 拒掉。
+    assert runtime._stage_independent_visual_frame(
+        "middle-frame",
+        source="screen",
+        request_id="screen-middle",
+        captured_at=record.registered_at + 1.0,
+    )
+
+    assert record.endpoint_at is None, (
+        "上一轮的封口被盖到了后继回合上：相等必须归上一轮"
+    )
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "这是什么")
+
+    assert turn is not None
+    assert "middle-frame" in turn.images
+
+
+@pytest.mark.unit
+async def test_this_turn_seal_in_the_same_tick_is_still_its_cutoff() -> None:
+    """The other direction: this turn's own seal must survive a tick collision.
+
+    A very short utterance can seal inside the same ~15ms tick its record was
+    registered in; PROVIDER_FINAL then clears the live field, leaving only the
+    retained copy. A pure timestamp test is wrong in one direction or the
+    other, and this is the half where "equality belongs to the previous turn"
+    is wrong: this turn loses its cutoff and post-speech frames get folded into
+    its transcript.
+
+    Hence the criterion is turn identity, not the timestamp -- the runtime
+    records which turn the retained seal belongs to.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=101)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 本轮自己的封口，恰好与注册落在同一个 tick 上。
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = record.registered_at
+    runtime._asr_last_turn_endpointed_key = record.turn_id
+
+    runtime._stage_independent_visual_frame(
+        "opening-frame",
+        source="screen",
+        request_id="screen-opening",
+        captured_at=record.started_at,
+    )
+
+    assert record.endpoint_at == record.registered_at, (
+        "本轮自己的封口被当成上一轮残值丢掉了：相等时必须靠身份而不是时间戳"
+    )
+
+
+@pytest.mark.unit
+async def test_a_seal_after_this_record_registered_still_becomes_its_cutoff() -> None:
+    """Dual: a retained seal that really belongs to this turn still binds.
+
+    Guards against over-tightening the gate into "never trust a retained copy".
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=98)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    sealed_at = record.registered_at + 1.0
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = sealed_at
+    runtime._asr_last_turn_endpointed_key = record.turn_id
+
+    runtime._stage_independent_visual_frame(
+        "late-frame",
+        source="screen",
+        request_id="screen-late",
+        captured_at=sealed_at + 0.5,
+    )
+
+    assert record.endpoint_at == sealed_at
+
+
+@pytest.mark.unit
+async def test_stale_seal_instant_from_a_previous_turn_is_not_this_turn_cutoff() -> None:
+    """A leftover timestamp predates this record and must not seal it early."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    runtime._asr_turn_endpointed_at = time.monotonic() - 30.0
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=96)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert runtime._stage_independent_visual_frame(
+        "spoken-frame",
+        source="screen",
+        request_id="screen-spoken",
+        captured_at=record.started_at,
+    )
+
+    assert record.endpoint_at is None
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("spoken-frame",)
+
+
+@pytest.mark.unit
+async def test_endpoint_cutoff_survives_provider_final_clearing_the_live_field() -> None:
+    """PROVIDER_FINAL clears the live timestamp before Core freezes the turn."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=97)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert runtime._stage_independent_visual_frame(
+        "spoken-frame",
+        source="screen",
+        request_id="screen-spoken",
+        captured_at=record.started_at,
+    )
+
+    # 封口 -> provider final：runtime 清掉了 live 字段，lifecycle 也已经离开
+    # DRAINING，只剩下不随 final 清除的那个副本。
+    sealed_at = record.started_at + 1.0
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = sealed_at
+    runtime._asr_lifecycle = SimpleNamespace(
+        snapshot=SimpleNamespace(state=VoiceLifecycleState.WARM_IDLE)
+    )
+
+    # 端点之后拍的帧在 final 派发期间才校验完。
+    runtime._stage_independent_visual_frame(
+        "post-endpoint-frame",
+        source="screen",
+        request_id="screen-post",
+        captured_at=sealed_at + 0.5,
+    )
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert record.endpoint_at == sealed_at
+    assert turn is not None
+    assert turn.images == ("spoken-frame",)
+
+
+@pytest.mark.unit
+async def test_frame_validated_during_lifecycle_notification_joins_the_turn() -> None:
+    """Speech onset, not record creation, is the ownership boundary."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    # 刻意只设 _asr_turn_onset_at：_asr_turn_audio_started_at 在两条生产路径上是
+    # 投递完成之后才打的，用它当起点正是被修掉的那个缺陷，所以这条用例不能靠它。
+    runtime._asr_turn_onset_at = onset
+
+    # 语音已确认，Core 还卡在 _send_asr_lifecycle_state 的投递里；这一帧就是这段
+    # 发声的开头（用户开口时指的东西），它先于 record 落地。
+    assert runtime._stage_independent_visual_frame(
+        "onset-frame",
+        source="screen",
+        request_id="screen-onset",
+        captured_at=onset + 0.01,
+    )
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=98)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("onset-frame",)
+
+
+@pytest.mark.unit
+async def test_frame_captured_before_the_onset_is_still_a_prior_turn_frame() -> None:
+    """Widening the window to the onset must not reach into the previous turn."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+
+    assert runtime._stage_independent_visual_frame(
+        "prior-turn-frame",
+        source="screen",
+        request_id="screen-prior",
+        captured_at=onset - 1.0,
+    )
+    runtime._asr_turn_onset_at = onset
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=99)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+
+    assert runtime._snapshot_core_multimodal_turn(turn_id, "new question") is None
+
+
+@pytest.mark.unit
+async def test_prerecord_validation_task_is_attached_to_the_onset_record() -> None:
+    """A frame task created before the record exists must not be dropped."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+
+    gate = asyncio.Event()
+
+    async def pending_validation() -> None:
+        await gate.wait()
+
+    task = asyncio.create_task(pending_validation())
+    await asyncio.sleep(0)
+
+    # record 还没建出来：这一步在旧实现里等于永久丢弃这个任务。
+    assert runtime._track_independent_visual_validation_task(
+        task,
+        captured_at=onset + 0.01,
+    ) is False
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=100)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert task in record.pending_visual_validations
+    assert runtime._prerecord_visual_validations == {}
+
+    gate.set()
+    await task
+
+
+@pytest.mark.unit
+async def test_prerecord_validation_stash_is_bounded() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+    gate = asyncio.Event()
+
+    async def pending_validation() -> None:
+        await gate.wait()
+
+    tasks = [asyncio.create_task(pending_validation()) for _ in range(40)]
+    await asyncio.sleep(0)
+    for task in tasks:
+        runtime._track_independent_visual_validation_task(
+            task,
+            captured_at=onset + 0.01,
+        )
+
+    assert len(runtime._prerecord_visual_validations) <= 8
+
+    gate.set()
+    await asyncio.gather(*tasks)
+
+
+@pytest.mark.unit
+def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
+    """The onset stamp must not sit behind an awaited lifecycle notification.
+
+    Two production SPEECH_CONFIRMED paths stamp ``_asr_turn_audio_started_at``
+    only after awaiting ``_send_asr_lifecycle_state()``. Visual ownership uses
+    the onset as its lower bound, so a stamp taken after that await turns every
+    frame captured during delivery into a "not this utterance" frame. The
+    invariant is syntactic: the stamp follows the transition with no await in
+    between.
+    """
+    import inspect
+
+    from main_logic.asr_client import lifecycle as asr_lifecycle_module
+    from main_logic.asr_client import runtime as asr_runtime_module
+
+    source = inspect.getsource(asr_runtime_module).splitlines()
+
+    # ⚠️ 这个守卫的第一版只扫 runtime.py 里的字面量
+    # `lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)`，因此完全看不见
+    # lifecycle.py 自己的 `self.transition(...)`（begin_pending_turn 里那一处）——
+    # 第五个迁移点就是这么漏掉的，还给了"五处都打点了"的假绿。清单式守卫必须自己
+    # 证明清单是全的：先跨模块把所有迁移点数出来，再逐个查。
+    lifecycle_source = inspect.getsource(asr_lifecycle_module).splitlines()
+    lifecycle_sites = [
+        index
+        for index, line in enumerate(lifecycle_source)
+        if "transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)" in line
+    ]
+    # lifecycle 侧的迁移点没有 runtime 字段可写，只能要求它的**调用方**补打点。
+    for index in lifecycle_sites:
+        owner = None
+        for back in range(index, -1, -1):
+            stripped = lifecycle_source[back].strip()
+            if stripped.startswith("def "):
+                owner = stripped[4:].split("(")[0]
+                break
+        assert owner is not None
+        callers = [
+            i for i, line in enumerate(source) if f"lifecycle.{owner}()" in line
+        ]
+        assert callers, (
+            f"lifecycle.{owner}() performs a SPEECH_CONFIRMED transition but no "
+            f"runtime call site was found to stamp the onset"
+        )
+        for caller in callers:
+            window = chr(10).join(source[caller : caller + 12])
+            assert "self._asr_turn_onset_at" in window, (
+                f"runtime line {caller + 1}: lifecycle.{owner}() transitions to "
+                f"SPEECH_CONFIRMED, so its caller must stamp the onset; got: "
+                f"{window!r}"
+            )
+    transition = "lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)"
+    stamp = "self._asr_turn_onset_at ="
+    sites = [i for i, line in enumerate(source) if transition in line]
+
+    assert sites, "no SPEECH_CONFIRMED transition found"
+    for index in sites:
+        # 赋值必须**紧接**转换那一行开始（注释和空行不算，它们引入不了 await）。
+        # 值本身可以是多行表达式：几条路径都要在"暂存的 onset"和"进函数时刻"之间选。
+        first = next(
+            offset
+            for offset in range(1, 12)
+            if source[index + offset].strip()
+            and not source[index + offset].strip().startswith("#")
+        )
+        assert source[index + first].strip().startswith(stamp), (
+            f"line {index + 1}: SPEECH_CONFIRMED must start stamping the onset "
+            f"before anything else, got: {source[index + first].strip()!r}"
+        )
+
+    # 每一条路径的 onset 赋值都必须**优先取暂存的 pending onset**，只有它为空时才
+    # 用进函数时刻。session 先未就绪、随后又 ready 时，真实开口时刻就是当初记下的
+    # 那个值；就地取时钟会把整段重连等待算成「开口之后」，期间拍的帧全被排除。
+    #
+    # 规则对所有迁移点一视同仁，因此不再需要"哪条是延迟路径"这种启发式识别 ——
+    # 之前那版靠往上扫若干行找条件语句，既会跨函数误标，也挡不住直接分支退化。
+    for index in sites:
+        begin = next(
+            offset
+            for offset in range(1, 12)
+            if source[index + offset].strip()
+            and not source[index + offset].strip().startswith("#")
+        )
+        statement = []
+        depth = 0
+        for offset in range(begin, begin + 9):
+            line = source[index + offset]
+            statement.append(line)
+            depth += line.count("(") - line.count(")")
+            if depth <= 0:
+                break
+        window = chr(10).join(statement)
+        assert "self._asr_pending_speech_onset_at" in window, (
+            f"line {index + 1}: the onset assignment must prefer the pending "
+            f"onset captured before the reconnect, got: {window!r}"
+        )
+
+    # detected_at 本身必须在函数里任何 await 之前捕获。
+    for index, line in enumerate(source):
+        if line.strip() != "detected_at = time.monotonic()":
+            continue
+        for back in range(index, -1, -1):
+            stripped = source[back].strip()
+            if stripped.startswith(("async def ", "def ")):
+                break
+            if stripped.startswith("#"):
+                continue
+            assert not stripped.startswith("await ") and " await " not in stripped, (
+                f"line {index + 1}: detected_at must be captured before any await; "
+                f"line {back + 1} is {stripped!r}"
+            )
+
+    # 暂存的 pending turn onset 也必须用进函数时刻。函数入口已经存了 detected_at
+    # （上面那条规则保证它在任何 await 之前），DRAINING 分支再读一次时钟等于把
+    # 「进函数 → 走到这一行」之间拍的帧排除在这段发声之外，而这个字段正是后面
+    # begin_pending_turn 那处 _asr_turn_onset_at 的来源。
+    for index, line in enumerate(source):
+        stripped = line.strip()
+        if not stripped.startswith("self._asr_pending_turn_onset_at = "):
+            continue
+        rhs = stripped.split(" = ", 1)[1]
+        if rhs == "None":
+            continue
+        captures_detected_at = False
+        for back in range(index, -1, -1):
+            # 只在**方法**定义处收边（4 空格缩进）。这些函数里 detected_at 与
+            # DRAINING 分支之间隔着 event_is_current / wake_is_current 这类嵌套
+            # def，按 "任意 def" 收边会提前停下，规则对这两处直接失效。
+            if source[back].startswith(("    def ", "    async def ")):
+                break
+            if source[back].strip() == "detected_at = time.monotonic()":
+                captures_detected_at = True
+                break
+        if not captures_detected_at:
+            continue
+        assert rhs == "detected_at", (
+            f"line {index + 1}: the pending turn onset must carry the entry "
+            f"timestamp its function already captured, got: {rhs!r}"
+        )
+
+
+@pytest.mark.unit
+async def test_reconnect_listener_join_is_bounded() -> None:
+    """A receive task that swallows cancellation must not wedge the swap lock."""
+    from main_logic.core import LLMSessionManager
+
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager.lock = asyncio.Lock()
+    manager.is_active = True
+    manager._core_voice_listener_cancel_timeout_s = 0.05
+    manager.session_ready = True
+    manager._close_independent_asr = AsyncMock()
+    manager.send_session_ended_by_server = AsyncMock()
+    session = SimpleNamespace(handle_messages=AsyncMock(), close=AsyncMock())
+    manager.session = session
+
+    stuck_release = asyncio.Event()
+
+    async def stuck_listener() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await stuck_release.wait()
+
+    listener = asyncio.create_task(stuck_listener())
+    manager.message_handler_task = listener
+    await asyncio.sleep(0)
+
+    installed = await asyncio.wait_for(
+        manager._restart_message_handler_after_session_reconnect(session),
+        5.0,
+    )
+
+    # fail-closed：停不下来的 listener 还绑在退休会话上，不能在它之上再装一个
+    # receive 循环；调用方都把 False 当成"放弃这次重连"。
+    assert installed is False
+    session.handle_messages.assert_not_called()
+
+    # 而且必须把这条会话**退休**掉：只返回 False 会留下一个看起来还活着、实际没有
+    # receive 循环的 client，之后每一轮都撞上同一个卡死的 task 再超时一次，语音从此
+    # 永远收不到回复。
+    assert manager.session is None
+    assert manager.message_handler_task is None
+    assert manager.is_active is False
+    assert manager.session_ready is False
+
+    # 会话没了，麦克风也必须收掉：否则独立 ASR 继续往一个不存在的回答会话投
+    # transcript，用户说什么都石沉大海。
+    manager._close_independent_asr.assert_awaited_once_with(next_route_mode="blocked")
+    manager.send_session_ended_by_server.assert_awaited_once_with()
+
+    stuck_release.set()
+    await asyncio.gather(listener, return_exceptions=True)
+    for _ in range(50):
+        if session.close.await_count:
+            break
+        await asyncio.sleep(0.01)
+    session.close.assert_awaited_once_with()
+
+
+@pytest.mark.unit
+async def test_pending_turn_does_not_inherit_the_previous_turn_endpoint() -> None:
+    """A turn started while the previous one drained must not be sealed by it.
+
+    ``_asr_turn_onset_at`` survives a normal turn end (only close/abort/error
+    clear it), and ``_asr_last_turn_endpointed_at`` is never cleared. If the
+    pending-turn activation forgets to re-stamp the onset, Core takes the
+    PREVIOUS turn's onset as this record's ``started_at``, the previous seal
+    then satisfies ``sealed_at >= started_at``, and every frame captured for
+    the new utterance is rejected as post-endpoint — a silent text-only turn.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    previous_onset = time.monotonic() - 2.0
+    previous_seal = previous_onset + 1.0
+    runtime._asr_turn_onset_at = previous_onset          # 上一轮遗留，没人清
+    runtime._asr_turn_endpointed_at = None               # PROVIDER_FINAL 已清
+    runtime._asr_last_turn_endpointed_at = previous_seal  # 永不清
+    # pending turn 在上一轮排空期间被标记，之后才激活。
+    runtime._asr_turn_onset_at = previous_seal + 0.2
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=101)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 截止点是在第一次 staging（或 final 冻结）时才认领的，所以要先喂一帧再判。
+    assert runtime._stage_independent_visual_frame(
+        "new-utterance-frame",
+        source="screen",
+        request_id="screen-new",
+        captured_at=record.started_at + 0.1,
+    )
+    assert record.endpoint_at is None, (
+        "the previous turn's seal must not become this turn's cutoff"
+    )
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "and this one?")
+
+    assert turn is not None
+    assert turn.images == ("new-utterance-frame",)
+
+
+@pytest.mark.unit
+async def test_retained_seal_predating_registration_is_not_this_turn_cutoff() -> None:
+    """Second line of defence behind the onset stamp.
+
+    A retained seal survives across turns, so "is it >= started_at" cannot tell
+    whether it belongs to this turn — an overlapping successor's onset is even
+    recorded BEFORE the predecessor sealed. The floor for the retained copy is
+    therefore the moment the record was registered: the previous turn's seal
+    necessarily happened before that.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    previous_onset = time.monotonic() - 1.0
+    previous_seal = previous_onset + 0.5
+    # 模拟"激活 pending turn 时忘了补 onset"：留着上一轮的 onset。
+    runtime._asr_turn_onset_at = previous_onset
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = previous_seal
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=102)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert runtime._stage_independent_visual_frame(
+        "post-seal-frame",
+        source="screen",
+        request_id="screen-post",
+        captured_at=previous_seal + 0.5,
+    )
+    # 即使 onset 是上一轮的残值（第一道防线失效），上一轮的封口也不能成为本轮的
+    # 截止点 —— 它发生在本 record 注册之前。
+    assert record.endpoint_at is None
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "survives")
+
+    assert turn is not None
+    assert turn.images == ("post-seal-frame",)
+
+
+@pytest.mark.unit
+async def test_all_prerecord_frames_join_the_turn_not_just_the_newest() -> None:
+    """Frames validated before the record exists must survive as a span.
+
+    The single-slot cache keeps only the newest frame, and the pending-task
+    stash drops a task the moment it completes. If lifecycle delivery is slow
+    enough for several validations to land first, keeping only the newest one
+    silently loses the actual first/middle frames of the utterance.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+
+    for index in range(3):
+        assert runtime._stage_independent_visual_frame(
+            f"prerecord-{index}",
+            source="screen",
+            request_id=f"screen-{index}",
+            captured_at=onset + 0.01 * (index + 1),
+        )
+    assert len(runtime._prerecord_visual_frames) == 3
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=103)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    # 开头 / 中间 / 结尾都在，而不是只剩最新那张。
+    assert turn.images == ("prerecord-0", "prerecord-1", "prerecord-2")
+    # 消费即清空，不会漏进下一轮。
+    assert runtime._prerecord_visual_frames == []
+
+
+@pytest.mark.unit
+async def test_prerecord_frame_buffer_is_bounded() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+
+    for index in range(40):
+        runtime._stage_independent_visual_frame(
+            f"prerecord-{index}",
+            source="screen",
+            request_id=f"screen-{index}",
+            captured_at=onset + 0.001 * (index + 1),
+        )
+
+    assert len(runtime._prerecord_visual_frames) <= 8
+    # 超限时丢的是"最冗余"的内点，**不是队头** —— 队头正是这段发声的开头。
+    kept = [frame.image_b64 for frame in runtime._prerecord_visual_frames]
+    assert kept[0] == "prerecord-0"
+    assert kept[-1] == "prerecord-39"
+
+
+@pytest.mark.unit
+async def test_prerecord_frames_from_a_previous_route_are_not_adopted() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+
+    assert runtime._stage_independent_visual_frame(
+        "prerecord-frame",
+        source="screen",
+        request_id="screen-0",
+        captured_at=onset + 0.01,
+    )
+    # 路由换代之后，那一帧不再属于这条链路。
+    runtime._voice_input_transition_generation += 1
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=104)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 关键断言打在"有没有被并进 record"上。只断言 snapshot 为 None 是不够的 ——
+    # accepts() 在冻结时还会按 route_generation 再过滤一次，采纳环节即使漏判也照样
+    # 返回 None，那样这条用例就是假绿（实测：去掉采纳侧的 route 过滤仍然通过）。
+    assert record.last_frame is None
+    assert record.first_frame is None
+    assert runtime._snapshot_core_multimodal_turn(turn_id, "lost") is None
+
+
+@pytest.mark.unit
+def test_overlap_replay_carries_the_real_onset_not_the_replay_instant() -> None:
+    """The overlap replay happens long after the user actually resumed speaking.
+
+    A provider-VAD successor utterance can reach Core while the previous turn
+    is still ACTIVE; its onset is remembered and replayed only once the delayed
+    final arrives. Stamping the replay instant as the onset would classify
+    everything captured in between as "after the user spoke", so the successor
+    utterance loses the frames it was actually about.
+    """
+    import inspect
+
+    from main_logic.asr_client import runtime as asr_runtime_module
+
+    source = inspect.getsource(asr_runtime_module).splitlines()
+
+    record = [
+        index
+        for index, line in enumerate(source)
+        if "self._asr_overlap_onset_token = self._asr_current_ingress_token" in line
+    ]
+    assert record, "overlap onset token is never recorded"
+    for index in record:
+        window = chr(10).join(source[index : index + 3])
+        assert "self._asr_overlap_onset_at = detected_at" in window, (
+            f"line {index + 1}: the overlap onset instant must be recorded "
+            f"alongside its token, got: {window!r}"
+        )
+
+    # 只认「把 SPEECH_RESUMED 重放给 _handle_independent_asr_activity」那一处，
+    # 不要把无关的集合字面量里出现的同名枚举也算进来。
+    # 只认 overlap **重放**那一处：它由「兑付一次 completed-overlap credit」的那段
+    # 代码驱动。同名枚举在别处也会被正常派发（那些是真实发生的时刻，用进函数时钟
+    # 是对的），不能一并要求它们交接 onset。
+    # overlap 有**两条**重放路径：credit 兑付那条，和 provider final 到达时的直接
+    # 重放。两条都必须把真实开口时刻交给确认分支 —— 只修其中一条正是上一轮的漏。
+    replay = [
+        index
+        for index, line in enumerate(source)
+        if "await self._handle_independent_asr_activity(" in line
+        and "SpeechActivityEvent.SPEECH_RESUMED," in source[index + 1]
+    ]
+    assert len(replay) >= 2, f"expected both overlap replay paths, got {len(replay)}"
+    for index in replay:
+        window = chr(10).join(source[max(0, index - 30) : index])
+        # credit 兑付那条按队列 popleft（每张 credit 一个时刻），直接重放那条用它
+        # 自己捕获的 overlap_onset_at。两条都必须交接。
+        assert (
+            "self._asr_pending_speech_onset_at = replay_onset_at" in window
+            or "self._asr_pending_speech_onset_at = overlap_onset_at" in window
+        ), (
+            f"line {index + 1}: every overlap replay must hand the recorded "
+            f"onset to the confirmation path, got: {window!r}"
+        )
+
+
+@pytest.mark.unit
+async def test_overlapping_successor_is_not_sealed_by_its_predecessor() -> None:
+    """The successor's onset predates the predecessor's seal — by design.
+
+    A provider-VAD successor utterance begins while the previous turn is still
+    ACTIVE, so its recorded onset is EARLIER than the previous turn's endpoint.
+    Comparing the retained seal against ``started_at`` would therefore bind the
+    predecessor's endpoint to the successor and reject every frame it captures.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    successor_onset = time.monotonic() - 1.0
+    predecessor_seal = successor_onset + 0.3
+    runtime._asr_turn_onset_at = successor_onset
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = predecessor_seal
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=105)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert record.started_at < predecessor_seal
+
+    assert runtime._stage_independent_visual_frame(
+        "successor-frame",
+        source="screen",
+        request_id="screen-successor",
+        captured_at=predecessor_seal + 0.4,
+    )
+    assert record.endpoint_at is None
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "and this?")
+
+    assert turn is not None
+    assert turn.images == ("successor-frame",)
+
+
+@pytest.mark.unit
+async def test_live_endpoint_still_seals_its_own_turn() -> None:
+    """The live field only ever describes the in-flight turn, so keep it loose."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=106)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert runtime._stage_independent_visual_frame(
+        "spoken-frame",
+        source="screen",
+        request_id="screen-spoken",
+        captured_at=record.started_at,
+    )
+    # 极短发声：封口甚至可能早于 record 注册那一刻。live 字段仍然必须绑上。
+    sealed_at = record.started_at
+    runtime._asr_turn_endpointed_at = sealed_at
+    runtime._mark_independent_asr_endpoint_if_sealed()
+
+    assert record.endpoint_at == sealed_at
+
+
+@pytest.mark.unit
+async def test_prerecord_buffer_trims_in_capture_order_not_arrival_order() -> None:
+    """Concurrent validation means arrival order is not capture order.
+
+    The cap evicts the most redundant INTERIOR point and keeps both ends. If the
+    buffer is held in arrival order, those "ends" are not the temporal first and
+    last, so the eviction can drop the actual start of the utterance — the same
+    trap already fixed once for the middle-frame candidates.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+
+    # 落地顺序把两端交替喂进来：0, 19, 1, 18, 2, 17, ...
+    capture_order = [i if i % 2 == 0 else 19 - i for i in range(20)]
+    for generation, index in enumerate(capture_order):
+        runtime._stage_independent_visual_frame(
+            f"f{index}",
+            source="screen",
+            request_id=f"screen-{generation}",
+            captured_at=onset + 0.001 * (index + 1),
+        )
+
+    kept = [frame.image_b64 for frame in runtime._prerecord_visual_frames]
+    assert len(kept) <= 8
+    # 时间上的首尾必须活着，而不是"最先/最后落地的那两帧"。
+    assert kept[0] == "f0"
+    assert kept[-1] == f"f{max(capture_order)}"
+    captured = [frame.captured_at for frame in runtime._prerecord_visual_frames]
+    assert captured == sorted(captured)
+
+
+@pytest.mark.unit
+async def test_prerecord_task_stash_keeps_the_earliest_validation() -> None:
+    """Evicting the oldest task drops the opening frame of the utterance.
+
+    The router registers validation tasks in capture order, so the oldest entry
+    is the earliest capture. If a short utterance reaches final before that
+    evicted task completes, the final freeze cannot wait for it and the record
+    is abandoned before the opening frame lands.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+    gate = asyncio.Event()
+
+    async def pending_validation() -> None:
+        await gate.wait()
+
+    tasks = [asyncio.create_task(pending_validation()) for _ in range(30)]
+    await asyncio.sleep(0)
+    for index, task in enumerate(tasks):
+        runtime._track_independent_visual_validation_task(
+            task,
+            captured_at=onset + 0.001 * index,
+        )
+
+    stash = runtime._prerecord_visual_validations
+    assert len(stash) <= 8
+    kept = sorted(stash.values())
+    # 时间上的首尾都必须活着 —— 淘汰只能发生在中间。
+    assert kept[0] == onset
+    assert kept[-1] == onset + 0.001 * 29
+
+    gate.set()
+    await asyncio.gather(*tasks)
+
+
+@pytest.mark.unit
+async def test_new_prepare_does_not_erase_a_preceding_turn_record() -> None:
+    """An in-flight accepted final must still find its own record.
+
+    The preceding final can still be running in TranscriptDispatcher (for
+    example awaiting the bounded visual-validation join) when the successor is
+    prepared. Clearing every record there makes that dispatch fail its identity
+    self-check and return without recording OR submitting the transcript — the
+    overlapping utterance erases a complete user turn.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    first = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=201)
+    first_id = f"asr-{first.ingress.session_epoch}-{first.turn_id}"
+    runtime._begin_core_multimodal_turn(first_id, first)
+    first_record = runtime._core_multimodal_turns[first_id]
+
+    second = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=202)
+    second_id = f"asr-{second.ingress.session_epoch}-{second.turn_id}"
+    runtime._begin_core_multimodal_turn(second_id, second)
+
+    # 前一条的记录仍在，且仍是同一个对象 —— 身份自检因此不会误判。
+    assert runtime._core_multimodal_turns.get(first_id) is first_record
+    # 但它已被标记作废：图归新回合，旧 final 只是别被整句丢掉。
+    assert first_record.invalidated.is_set()
+    assert runtime._core_multimodal_turns.get(second_id) is not None
+
+
+@pytest.mark.unit
+async def test_retained_turn_records_are_bounded() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    for turn_id in range(210, 230):
+        token = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(), turn_id=turn_id
+        )
+        runtime._begin_core_multimodal_turn(
+            f"asr-{token.ingress.session_epoch}-{token.turn_id}", token
+        )
+
+    # 记录本该由各自 dispatch 的 finally 移除；这个上限只是内存兜底。
+    assert len(runtime._core_multimodal_turns) <= 8
+    # 留下的是最近的那些 —— 淘汰绝不能挑到最新那条（它才是当前在跑的）。
+    kept = sorted(runtime._core_multimodal_turns)
+    assert kept[-1].endswith("-229")
+
+
+@pytest.mark.unit
+async def test_successor_prepares_do_not_evict_a_still_running_final() -> None:
+    """A record is removed by its own dispatch, never by a successor's prepare.
+
+    An accepted final can sit inside handle_input_transcript for a while (bounded
+    visual-validation join, provider submit). Meanwhile provider VAD can prepare
+    several successor utterances. Evicting the oldest record to make room drops
+    the identity that in-flight final needs, so the user's whole sentence is
+    neither stored nor submitted.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    running = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=401)
+    running_id = f"asr-{running.ingress.session_epoch}-{running.turn_id}"
+    runtime._begin_core_multimodal_turn(running_id, running)
+    running_record = runtime._core_multimodal_turns[running_id]
+
+    for turn_id in (402, 403, 404):
+        token = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(), turn_id=turn_id
+        )
+        runtime._begin_core_multimodal_turn(
+            f"asr-{token.ingress.session_epoch}-{token.turn_id}", token
+        )
+
+    assert runtime._core_multimodal_turns.get(running_id) is running_record
+
+    # 它自己的 dispatch 收尾时才该消失。
+    runtime._abandon_core_voice_turn(running_id, session_ref=None)
+    assert running_id not in runtime._core_multimodal_turns
+
+
+@pytest.mark.unit
+async def test_a_dispatching_record_outlives_the_cap() -> None:
+    """The cap must never be the thing that drops an accepted final.
+
+    Raising the limit only moves the failure to a higher overlap count. What
+    decides eviction is whether that record's own dispatch has finished -- the
+    dict is bounded by removals from each dispatch's own finally, and a run of
+    prepares long enough to hit the cap must skip anything mid-dispatch.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    running = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=501)
+    running_id = f"asr-{running.ingress.session_epoch}-{running.turn_id}"
+    runtime._begin_core_multimodal_turn(running_id, running)
+    running_record = runtime._core_multimodal_turns[running_id]
+    running_record.dispatch_started = True
+
+    # 远多于上限的后继 prepare。
+    for turn_id in range(502, 502 + _MAX_LIVE_TURN_RECORDS * 3):
+        token = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(), turn_id=turn_id
+        )
+        runtime._begin_core_multimodal_turn(
+            f"asr-{token.ingress.session_epoch}-{token.turn_id}", token
+        )
+
+    assert runtime._core_multimodal_turns.get(running_id) is running_record
+    # 没在派发的那些仍然有界。
+    assert len(runtime._core_multimodal_turns) <= _MAX_LIVE_TURN_RECORDS
+
+
+@pytest.mark.unit
+async def test_all_records_mid_dispatch_keeps_them_past_the_cap() -> None:
+    """When nothing is evictable the cap yields, it does not pick a victim.
+
+    Every record in the dict belongs to a final that is still being dispatched,
+    so evicting any of them drops a sentence the user already finished. Going
+    over the cap is the lesser failure: unbounded growth would mean a dispatch
+    that never returns, which is a different bug and must not be papered over
+    by discarding speech.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    for turn_id in range(701, 701 + _MAX_LIVE_TURN_RECORDS + 4):
+        token = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(), turn_id=turn_id
+        )
+        record_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        runtime._begin_core_multimodal_turn(record_id, token)
+        # 每一条都立刻进入派发，于是永远没有可淘汰的记录。
+        runtime._core_multimodal_turns[record_id].dispatch_started = True
+
+    assert len(runtime._core_multimodal_turns) == _MAX_LIVE_TURN_RECORDS + 4
+    assert all(
+        record.dispatch_started
+        for record in runtime._core_multimodal_turns.values()
+    )
+    # 各自的 dispatch 收尾时才回落到界内。
+    for record_id in list(runtime._core_multimodal_turns)[:4]:
+        runtime._abandon_core_voice_turn(record_id, session_ref=None)
+    assert len(runtime._core_multimodal_turns) == _MAX_LIVE_TURN_RECORDS
+
+
+@pytest.mark.unit
+async def test_the_real_dispatch_marks_its_record_before_it_can_be_evicted() -> None:
+    """The flag has to be set by the dispatch itself, not only in a test.
+
+    A guard that only checks the eviction predicate passes even when nothing
+    ever sets the flag; this drives the actual final through
+    ``_dispatch_core_asr_transcript`` and lets a long run of successor prepares
+    land while it is suspended.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    accepted = runtime.handle_input_transcript
+    seen_mid_dispatch = {}
+
+    async def accept_then_let_successors_pile_up(*args, **kwargs):
+        result = await accepted(*args, **kwargs)
+        for turn_id_n in range(601, 601 + _MAX_LIVE_TURN_RECORDS * 2):
+            successor = VoiceTurnToken(
+                ingress=runtime._capture_ingress_token(),
+                turn_id=turn_id_n,
+            )
+            runtime._begin_core_multimodal_turn(
+                f"asr-{successor.ingress.session_epoch}-{successor.turn_id}",
+                successor,
+            )
+        seen_mid_dispatch["record"] = runtime._core_multimodal_turns.get(turn_id)
+        return result
+
+    runtime.handle_input_transcript = accept_then_let_successors_pile_up
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=token,
+            provider="openai",
+            text="the sentence that must not be dropped",
+        )
+    )
+
+    assert seen_mid_dispatch["record"] is record
+    runtime.session.submit_external_voice_turn.assert_awaited_once()
+    # 自己的 finally 摘掉它。
+    assert turn_id not in runtime._core_multimodal_turns
+
+
+@pytest.mark.unit
+async def test_validation_tracking_picks_the_active_record_not_a_retained_one() -> None:
+    """Retained records exist only so an in-flight final keeps its transcript.
+
+    They are invalidated; the active turn is the newest live one. Selecting
+    "whichever record happens to be first" binds new frame validations to a
+    superseded turn.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    first = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=301)
+    first_id = f"asr-{first.ingress.session_epoch}-{first.turn_id}"
+    runtime._begin_core_multimodal_turn(first_id, first)
+    first_record = runtime._core_multimodal_turns[first_id]
+
+    second = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=302)
+    second_id = f"asr-{second.ingress.session_epoch}-{second.turn_id}"
+    runtime._begin_core_multimodal_turn(second_id, second)
+    second_record = runtime._core_multimodal_turns[second_id]
+
+    gate = asyncio.Event()
+
+    async def pending_validation() -> None:
+        await gate.wait()
+
+    task = asyncio.create_task(pending_validation())
+    await asyncio.sleep(0)
+    assert runtime._track_independent_visual_validation_task(
+        task,
+        captured_at=second_record.started_at,
+    ) is True
+
+    assert task in second_record.pending_visual_validations
+    assert task not in first_record.pending_visual_validations
+
+    gate.set()
+    await task
+
+
+@pytest.mark.unit
+async def test_invalidated_record_does_not_hand_over_its_frames() -> None:
+    """A superseded turn keeps its words but not the successor's frames."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    first = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=303)
+    first_id = f"asr-{first.ingress.session_epoch}-{first.turn_id}"
+    runtime._begin_core_multimodal_turn(first_id, first)
+    record = runtime._core_multimodal_turns[first_id]
+    assert runtime._stage_independent_visual_frame(
+        "first-turn-frame",
+        source="screen",
+        request_id="screen-first",
+        captured_at=record.started_at,
+    )
+    assert runtime._snapshot_core_multimodal_turn(first_id, "first") is not None
+
+    second = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=304)
+    runtime._begin_core_multimodal_turn(
+        f"asr-{second.ingress.session_epoch}-{second.turn_id}", second
+    )
+
+    # 记录还在（话要留住），但视觉所有权已经交给后继回合 —— 走纯文本提交。
+    assert runtime._core_multimodal_turns.get(first_id) is record
+    assert runtime._snapshot_core_multimodal_turn(first_id, "first") is None
+
+
+@pytest.mark.unit
+async def test_prerecord_stash_still_arms_while_older_records_are_retained() -> None:
+    """The dict is no longer empty between turns, so 'no records' is the wrong test."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    first = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=305)
+    first_id = f"asr-{first.ingress.session_epoch}-{first.turn_id}"
+    runtime._begin_core_multimodal_turn(first_id, first)
+    runtime._core_multimodal_turns[first_id].invalidated.set()
+
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+    assert runtime._stage_independent_visual_frame(
+        "between-turns-frame",
+        source="screen",
+        request_id="screen-between",
+        captured_at=onset,
+    )
+
+    # 当前这一轮还没建起来，这帧必须被暂存下来等它。
+    assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
+        "between-turns-frame"
+    ]
+
+
+@pytest.mark.unit
+async def test_live_onset_replay_waits_behind_queued_overlap_credits() -> None:
+    """FIFO order decides who gets replayed, not who is newest.
+
+    A completed onset/pause cycle (turn 2) and a still-live onset (turn 3) can
+    coexist when turn 1's final is delayed. The provider FIFO still delivers
+    turn 2's endpoint/final first, so replaying turn 3 right now hands turn 2's
+    endpoint a turn-3 record: turn 2's transcript takes turn 3's visual window,
+    and turn 3's own endpoint finds no credit left, dropping its final.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    # Turn 2: a full onset/pause cycle while turn 1 is ACTIVE -> one credit.
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    assert runtime._asr_overlap_completed_turns == 1
+    # Turn 3: onset only -- the user is still speaking, so it stays in the
+    # single slot instead of becoming a credit.
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    assert runtime._asr_overlap_onset_token is not None
+
+    # Turn 1's delayed final. Turn 3 must NOT be replayed here.
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert runtime._asr_overlap_completed_turns == 1
+    assert runtime._asr_overlap_onset_token is not None
+
+    # Turn 2 redeems its own credit, in its own FIFO slot.
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    # Credits are drained, so turn 3's onset finally gets its replay.
+    assert runtime._asr_overlap_completed_turns == 0
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("third", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["first", "second", "third"]
+    assert runtime.handle_new_message.await_count == 3
+    assert runtime._asr_overlap_onset_token is None
+
+
+@pytest.mark.unit
+async def test_endpoint_marking_skips_invalidated_records() -> None:
+    """A successor's seal has no business landing on a superseded record."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    first = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=401)
+    first_id = f"asr-{first.ingress.session_epoch}-{first.turn_id}"
+    runtime._begin_core_multimodal_turn(first_id, first)
+    retained = runtime._core_multimodal_turns[first_id]
+
+    second = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=402)
+    second_id = f"asr-{second.ingress.session_epoch}-{second.turn_id}"
+    runtime._begin_core_multimodal_turn(second_id, second)
+    active = runtime._core_multimodal_turns[second_id]
+
+    runtime._asr_turn_endpointed_at = time.monotonic()
+    runtime._mark_independent_asr_endpoint_if_sealed()
+
+    assert active.endpoint_at is not None
+    assert retained.endpoint_at is None
+
+
+@pytest.mark.unit
+async def test_frames_after_a_sealed_turn_are_kept_for_the_successor() -> None:
+    """A sealed record is done taking frames, so it must not block the buffer.
+
+    Between the endpoint and the provider final, the record is sealed but not
+    yet invalidated -- the successor cannot be prepared until that final lands.
+    Frames captured in that window fail the sealed record's ``accepts()``
+    (they are past its endpoint), so if it still counts as the active record
+    they are neither attached nor retained: the successor turn loses its
+    opening and middle frames and keeps only the latest-frame cache.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=901)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 这一轮说完了：封口，但 provider final 还没回来，所以还没作废。
+    record.endpoint_at = record.started_at + 1.0
+    assert not record.invalidated.is_set()
+    assert runtime._active_multimodal_turn_record() is None
+
+    # 后继开口，帧在封口之后拍到。
+    assert runtime._stage_independent_visual_frame(
+        "successor-opening-frame",
+        source="screen",
+        request_id="screen-successor",
+        captured_at=record.endpoint_at + 0.5,
+    )
+
+    # 它进不了已封口的那条记录，但必须被留住给后继。
+    assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
+        "successor-opening-frame"
+    ]
+
+
+@pytest.mark.unit
+async def test_a_late_registration_still_adopts_its_real_onset() -> None:
+    """Waiting behind a provider final does not make an onset stale.
+
+    An overlapping utterance registers only after the previous turn's final
+    lands, and that provider timeout reaches 40s in the registry. Judging the
+    onset by the FRAME freshness window (5s) rejects it, resets ``started_at``
+    to registration time and drops every frame captured since the user actually
+    started speaking -- the turn goes text-only while the screen was streaming
+    the whole time. Frame freshness is enforced separately, at freeze time.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    now = time.monotonic()
+    real_onset = now - 30.0  # 排在一个 provider final 后面，远超帧的 5s TTL
+    runtime._asr_runtime._asr_turn_onset_at = real_onset
+
+    frame_at = real_onset + 1.0
+    assert runtime._stage_independent_visual_frame(
+        "frame-from-the-real-onset",
+        source="screen",
+        request_id="screen-late",
+        captured_at=frame_at,
+    )
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=902)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 起点是真实开口时刻，不是注册时刻。
+    assert record.started_at == pytest.approx(real_onset, abs=0.01)
+    # 那一刻以来的帧被采纳了，而不是整轮退化成纯文本。
+    assert [f.image_b64 for f in record.sampled_frames()] == [
+        "frame-from-the-real-onset"
+    ]
+
+
+@pytest.mark.unit
+async def test_idle_frames_do_not_consume_the_prerecord_budget() -> None:
+    """Frames from before the user spoke are not this turn's to keep.
+
+    Screen sharing fills the eight-slot buffer while nobody is talking. The
+    sampler deliberately preserves widely spaced endpoints, so those idle
+    frames hold their slots; the few captured between speech confirmation and
+    record creation then get sampled together with the whole idle history, and
+    the onset filter at record creation discards all of them -- leaving only
+    the newest frame and losing this turn's opening and middle views.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    now = time.monotonic()
+
+    # 共享着但没人说话：闲置帧铺满缓冲。
+    runtime._asr_runtime._asr_turn_onset_at = None
+    for i in range(_MAX_PRERECORD_VISUAL_VALIDATIONS):
+        assert runtime._stage_independent_visual_frame(
+            f"idle-{i}",
+            source="screen",
+            request_id=f"screen-idle-{i}",
+            captured_at=now - 60.0 + i * 5.0,
+        )
+    assert len(runtime._prerecord_visual_frames) == _MAX_PRERECORD_VISUAL_VALIDATIONS
+
+    # 用户开口。确认到注册之间又拍了三张。
+    onset = now - 2.0
+    runtime._asr_runtime._asr_turn_onset_at = onset
+    for i in range(3):
+        assert runtime._stage_independent_visual_frame(
+            f"speech-{i}",
+            source="screen",
+            request_id=f"screen-speech-{i}",
+            captured_at=onset + 0.2 * (i + 1),
+        )
+
+    kept = [f.image_b64 for f in runtime._prerecord_visual_frames]
+    # 开口之前的一张都不占名额了，这一轮自己的三张全在。
+    assert kept == ["speech-0", "speech-1", "speech-2"]
+
+
+@pytest.mark.unit
+async def test_a_stale_onset_does_not_evict_the_prerecord_buffer() -> None:
+    """Trimming is only safe against an onset this turn actually owns.
+
+    A leftover value from an older turn would otherwise look like "speech began
+    long ago" and evict every frame captured since -- the opposite of what the
+    trim exists for. The buffer uses the same trust window as the record, so
+    the two agree on where the turn began.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    now = time.monotonic()
+
+    # 不可信的 onset。取**未来**时刻这一侧：那是真正危险的方向 —— 拿它去裁，
+    # 每一帧都「早于开口」，整个缓冲会被清空。（过去那一侧的残值只会裁掉比它
+    # 更早的帧，多数情况下是空操作，判别不出这条守卫。）
+    runtime._asr_runtime._asr_turn_onset_at = now + 30.0
+
+    for i in range(3):
+        assert runtime._stage_independent_visual_frame(
+            f"frame-{i}",
+            source="screen",
+            request_id=f"screen-{i}",
+            captured_at=now - 1.0 + i * 0.2,
+        )
+
+    # onset 不可信 → 不裁，三张都留着（若采信，三张会被全部清掉）。
+    assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
+        "frame-0",
+        "frame-1",
+        "frame-2",
+    ]
+
+
+@pytest.mark.unit
+async def test_replay_drops_the_pending_slot_when_the_transport_identity_moves_on() -> None:
+    """A drifted runtime identity must not strand the pending confirmation.
+
+    _send_asr_lifecycle_state() swallows delivery exceptions and returns
+    _runtime_identity_matches(), so a false return means the runtime identity
+    moved on -- and _restart_transport / _close_transport_only swap
+    _asr_session and bump transport_generation without bumping the epoch or
+    running _reset_asr_turn_state(). Holding the pending confirmation across
+    that return strands it: the compensation already transitioned to ACTIVE,
+    and both redemption sites gate on PREWARMING, so nothing ever collects it.
+    The next unrelated utterance then adopts the stale onset as its visual
+    ownership boundary, and the poisoned flag pins pending_before True so the
+    overlap compensation silently stops firing.
+
+    The real onset is already committed to _asr_turn_onset_at before the
+    broadcast, so clearing the slot on confirmation loses nothing.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+    component = runtime._asr_runtime
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    assert component._asr_overlap_onset_at is not None
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    # monotonic 在这台机器上一整个测试跑下来只走一格，靠时钟自然推进区分不了
+    # 「陈旧 onset」和「新回合 onset」。按仓库既有做法直接注入一个明显靠前的
+    # 时刻，后面那条继承断言才有分辨力。
+    recorded_onset = time.monotonic() - 5.0
+    component._asr_overlap_onset_at = recorded_onset
+
+    component._asr_session.is_ready = False
+    lifecycle_ref = runtime._asr_lifecycle
+
+    # ACTIVE 广播飞在半空时来一次「仅关传输」：换掉 _asr_session、bump
+    # transport_generation，epoch 与 lifecycle 对象都不动 —— 这正是
+    # _close_transport_only 干的事，也是唯一能让 delivered 为假的那条腿。
+    real_on_lifecycle = component._callbacks.on_lifecycle
+    drifted = False
+
+    async def _drift_transport_midflight(note: AsrLifecycleNotification) -> None:
+        nonlocal drifted
+        if note.state == VoiceLifecycleState.ACTIVE.value and not drifted:
+            drifted = True
+            component._asr_session = None
+            lifecycle_ref.invalidate_transport()
+        await real_on_lifecycle(note)
+
+    component._callbacks = replace(
+        component._callbacks,
+        on_lifecycle=_drift_transport_midflight,
+    )
+
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert drifted is True
+    # 走的确实是「传输身份漂移」这条腿，不是 detach / fail-closed 那条
+    # （那两条会 bump epoch、换 lifecycle，并且自己会跑 _reset_asr_turn_state）。
+    assert runtime._asr_session_epoch == epoch
+    assert runtime._asr_lifecycle is lifecycle_ref
+
+    # 挂起槽必须已经腾空 —— 没人会再来兑付它。
+    assert component._asr_pending_speech_confirmed is False
+    assert component._asr_pending_speech_onset_at is None
+    # 而用户真实开口的时刻一点没丢：它在 await 之前就装进了 _asr_turn_onset_at。
+    assert component._asr_turn_onset_at == recorded_onset
+
+    # 行为层：走完这一轮，下一次**不相干**的开口不能继承那个陈旧时刻。
+    component._asr_session = type("Asr", (), {"is_ready": True})()
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+    fresh_floor = time.monotonic()
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    assert component._asr_turn_onset_at != recorded_onset
+    assert component._asr_turn_onset_at >= fresh_floor
+
+
+@pytest.mark.unit
+async def test_credit_redemption_drops_the_pending_slot_when_the_transport_identity_moves_on() -> None:
+    """Dual of the direct-replay case for the completed-overlap credit path.
+
+    Both compensation blocks force-confirm the same way, so both strand the
+    pending slot the same way when the runtime identity drifts across the
+    ACTIVE broadcast. Covering only one leaves the other free to regress.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+    component = runtime._asr_runtime
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    # 后继在上一轮还 ACTIVE 时开口又停顿：攒下一张 completed-overlap credit。
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_overlap_completed_turns == 1
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+    # 同上：注入一个明显靠前的时刻，后面那条继承断言才有分辨力。
+    recorded_onset = time.monotonic() - 5.0
+    component._asr_overlap_completed_onsets[0] = recorded_onset
+
+    component._asr_session.is_ready = False
+    lifecycle_ref = runtime._asr_lifecycle
+    real_on_lifecycle = component._callbacks.on_lifecycle
+    drifted = False
+
+    async def _drift_transport_midflight(note: AsrLifecycleNotification) -> None:
+        nonlocal drifted
+        if note.state == VoiceLifecycleState.ACTIVE.value and not drifted:
+            drifted = True
+            component._asr_session = None
+            lifecycle_ref.invalidate_transport()
+        await real_on_lifecycle(note)
+
+    component._callbacks = replace(
+        component._callbacks,
+        on_lifecycle=_drift_transport_midflight,
+    )
+
+    # 后继自己的 endpoint 兑付这张 credit，重放停在 PREWARMING 后就地补确认。
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    assert drifted is True
+    assert runtime._asr_session_epoch == epoch
+    assert runtime._asr_lifecycle is lifecycle_ref
+    assert component._asr_pending_speech_confirmed is False
+    assert component._asr_pending_speech_onset_at is None
+    assert component._asr_turn_onset_at == recorded_onset
+    # 确认已经落地（lifecycle 是 ACTIVE，这一轮会照常封口），所以那张 credit
+    # 必须跟着确认一起记掉，不能被身份漂移那条 return 跳过。
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._asr_overlap_completed_turns == 0
+    assert not component._asr_overlap_completed_onsets
+
+    # 身份漂移让这一轮停在 ACTIVE（那次 return 越过了随后的封口）。恢复身份、
+    # 把它正常走完，才谈得上「下一次不相干的开口」。
+    component._asr_session = type("Asr", (), {"is_ready": True})()
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+    fresh_floor = time.monotonic()
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    assert component._asr_turn_onset_at != recorded_onset
+    assert component._asr_turn_onset_at >= fresh_floor
+
+    # 行为层：后面一次**真实**的 overlap 兑付必须拿到它自己的 onset。credit 若
+    # 被漏记，这张陈旧的会按 FIFO 排在前面先被兑走，这一轮就拿错了开口时刻。
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("third", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_overlap_completed_turns == 1
+    later_onset = component._asr_overlap_completed_onsets[0]
+    assert later_onset != recorded_onset
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    assert component._asr_turn_onset_at == later_onset
+    assert runtime._asr_overlap_completed_turns == 0
+
+
+@pytest.mark.unit
+async def test_direct_overlap_replay_seals_when_the_session_is_not_ready() -> None:
+    """The direct replay must complete its confirmation in place too.
+
+    Dual of the completed-overlap credit path. Parking in PREWARMING and just
+    holding the onset is not enough: this successor's provider endpoint and
+    final are already queued in the ordered FIFO and about to arrive, a
+    PREWARMING lifecycle cannot seal, and _handle_independent_asr_final()
+    requires DRAINING -- so the whole utterance is discarded with no watchdog
+    armed.
+
+    Waiting for the reconnect cannot recover it either: a reconnect swaps in a
+    new session and is_adopted_candidate() drops every callback still queued on
+    the old one (_restart_transport / _close_transport_only both null
+    _asr_session before closing it). Reaching this point proves the old session
+    is still adopted, i.e. the reconnect has not started.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+    component = runtime._asr_runtime
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    # 后继在上一轮还 ACTIVE 时开口：它的 onset 被记下来等直接重放。
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    recorded_onset = component._asr_overlap_onset_at
+    assert recorded_onset is not None
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    # 两条有序回调之间传输掉线：重放会停在 PREWARMING 并挂起确认。
+    component._asr_session.is_ready = False
+
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    # 重放就地补完了确认：回合醒着，后继排在 FIFO 里的 endpoint 才封得了口。
+    # （HEAD 上这里是 PREWARMING，封不了口，那条 final 会被整条丢弃。）
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    # 这一刻还没 prepare 是对的：直接重放只负责唤醒，prepare 由后继自己的
+    # endpoint 完成（_handle_independent_asr_endpoint 的 not _asr_turn_prepared
+    # 分支）。断言它已 prepare 属于对契约的过度主张。
+    # 用的是用户当初真实开口的时刻，不是这次重放的时刻。
+    assert component._asr_turn_onset_at == recorded_onset
+    assert component._asr_pending_speech_onset_at is None
+    # 没走 fail-closed 出口（那条会 bump epoch、拆掉 session）。
+    assert runtime._asr_session_epoch == epoch
+
+    # 后继自己的 endpoint 紧随其后到达 —— 这一步才封口。
+    await runtime._handle_independent_asr_endpoint(epoch)
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+    # 忙窗口有定时器兜底。
+    assert component._asr_final_watchdog_task is not None
+
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["first", "second"]
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+
+@pytest.mark.unit
+async def test_direct_overlap_replay_reclaims_its_lent_onset_when_it_never_wakes() -> None:
+    """A direct replay that never reaches ACTIVE must take its onset back.
+
+    Both overlap replay paths lend the recorded onset to the confirmation
+    branch. The credit-redemption path reclaims it when the wake-up fails; the
+    direct path (driven by the delayed provider final) did not, so the stale
+    timestamp stayed in the pending slot and the NEXT, unrelated utterance
+    adopted it as its visual ownership boundary -- pulling in frames that
+    belong to nobody and rejecting the ones it is actually about.
+
+    The carve-out is identical to the credit path: an onset held for a PENDING
+    confirmation is deliberately kept, because clearing it would send that
+    confirmation back to a fresh detected_at and drop every frame since the
+    user actually started speaking. The dual below pins that half.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    # A successor spoke while the first turn was still ACTIVE and prepared:
+    # its onset is remembered for the direct replay after the delayed final.
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    assert runtime._asr_overlap_onset_at is not None
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    # The replay cannot wake the turn, and leaves no pending confirmation
+    # behind (Smart Turn lease unavailable / lifecycle broadcast undelivered).
+    async def refuse_to_wake(*_args, **_kwargs):
+        return None
+
+    runtime._asr_runtime._handle_independent_asr_activity = refuse_to_wake
+
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert runtime._asr_pending_speech_onset_at is None, (
+        "the lent onset stayed behind and a later unrelated turn will adopt it"
+    )
+
+
+@pytest.mark.unit
+async def test_direct_overlap_replay_keeps_the_onset_for_a_pending_confirmation() -> None:
+    """Dual: an onset held for a pending confirmation must NOT be reclaimed.
+
+    When the session is momentarily unavailable the replay parks in PREWARMING
+    with the confirmation pending and deliberately holds the onset for it.
+    Reclaiming it there sends that confirmation back to a fresh detected_at and
+    every frame since the user started speaking is excluded.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    async def park_with_pending_confirmation(*_args, **_kwargs):
+        runtime._asr_runtime._asr_pending_speech_confirmed = True
+
+    runtime._asr_runtime._handle_independent_asr_activity = (
+        park_with_pending_confirmation
+    )
+
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert runtime._asr_pending_speech_onset_at is not None
+
+
+@pytest.mark.unit
+async def test_overlap_credit_survives_a_replay_that_never_activates() -> None:
+    """Spend the credit on a successful wake-up, not on the attempt.
+
+    The replay can leave the lifecycle short of ACTIVE when the session is
+    momentarily unavailable. Deducting the credit first strands that turn: its
+    endpoint can no longer seal, the final queued right behind it is discarded,
+    and the popped onset goes on to be inherited by an unrelated later turn.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    assert runtime._asr_overlap_completed_turns == 1
+    onset_before = list(runtime._asr_overlap_completed_onsets)
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+    # 重放唤不醒这一轮（会话暂时不可用）。
+    async def refuse_to_wake(*_args, **_kwargs):
+        return None
+
+    runtime._asr_runtime._handle_independent_asr_activity = refuse_to_wake
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    # credit 和 onset 都原样留着，等下一次兑付。
+    assert runtime._asr_overlap_completed_turns == 1
+    assert list(runtime._asr_overlap_completed_onsets) == onset_before
+    # 借出去的 onset 也收回了，不会被后面不相干的回合继承。
+    assert runtime._asr_pending_speech_onset_at is None
+
+
+@pytest.mark.unit
+async def test_an_unwoken_redemption_still_seals_and_delivers_the_queued_final() -> None:
+    """An unwoken replay must still seal: its final is already on the way.
+
+    This test REPLACES test_a_pending_confirmation_keeps_the_lent_onset and
+    deliberately overturns its reasoning ("hold the onset for the confirmation
+    that follows the reconnect"). The reconnect cannot recover this final:
+    _restart_transport() nulls _asr_session before closing it, after which
+    every provider callback is dropped by is_adopted_candidate(). Reaching this
+    point proves the old session is still adopted -- the reconnect has not
+    started and the final is right behind this endpoint in the ordered FIFO.
+    Completing the confirmation in place, so that final finds a DRAINING turn,
+    is the only way not to lose the utterance.
+
+    Measured on HEAD: state=PREWARMING, credit still 1, sealed_token=None, both
+    the warm-expiry and provider-final timers None, transcripts only ["first"]
+    -- the whole sentence lost AND a busy flag left with no timer behind it.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    component = runtime._asr_runtime
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert component._asr_overlap_completed_turns == 1
+    recorded_onset = component._asr_overlap_completed_onsets[0]
+
+    # 不打桩：跑真实控制流，只让传输在两条有序回调之间掉线。
+    component._asr_session.is_ready = False
+
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    # 仍然封口，那条排在后面的 final 才有 DRAINING 可落。
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+    # 恰好兑付一次，不多不少。
+    assert component._asr_overlap_completed_turns == 0
+    assert list(component._asr_overlap_completed_onsets) == []
+    assert component._asr_overlap_completed_token is None
+    # onset 被本轮消费掉，不会被后面某个不相干的回合当成自己的起点。
+    assert component._asr_pending_speech_onset_at is None
+    # 用的是用户当初真实开口的时刻，不是这次重放的时刻。
+    assert component._asr_turn_onset_at == recorded_onset
+    # 忙窗口有定时器兜底（HEAD 上这里是 None）。
+    assert component._asr_final_watchdog_task is not None
+    # 没走 fail-closed 出口：那条会 bump epoch、拆掉 session、把语音判死。
+    # 只有这组断言能区分两条出口——错误出口也会发同名 status。
+    assert runtime._asr_session_epoch == epoch
+    assert runtime._asr_lifecycle is not None
+
+    await runtime._handle_independent_asr_final("second", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["first", "second"]
+    # 收尾不留忙标志。
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+
+
+@pytest.mark.unit
+async def test_an_unwoken_redemption_never_parks_in_an_untimed_busy_state() -> None:
+    """Invariant: a busy state must always carry a timer, whatever the fix is.
+
+    Asserts the absence of the combination "busy state AND both timers None"
+    rather than any particular implementation, so it survives a different
+    compensation strategy later. HEAD lands squarely in that forbidden
+    combination.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    epoch = runtime._asr_session_epoch
+    component = runtime._asr_runtime
+
+    for event in (
+        SpeechActivityEvent.SPEECH_STARTED,
+        SpeechActivityEvent.SPEECH_RESUMED,
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+    ):
+        await runtime._handle_independent_asr_activity(event, epoch)
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    component._asr_session.is_ready = False
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    state = (
+        runtime._asr_lifecycle.snapshot.state
+        if runtime._asr_lifecycle is not None
+        else None
+    )
+    busy = {
+        VoiceLifecycleState.PREWARMING,
+        VoiceLifecycleState.ACTIVE,
+        VoiceLifecycleState.DRAINING,
+    }
+    assert not (
+        state in busy
+        and component._asr_warm_expiry_task is None
+        and component._asr_final_watchdog_task is None
+    ), "忙标志停在了没有任何定时器兜底的状态上"
+
+
+@pytest.mark.unit
+async def test_overlap_prerecord_trims_against_the_pending_turn_onset() -> None:
+    """During an overlap the successor's boundary lives in the pending slot.
+
+    Speech that starts while the previous turn is still DRAINING records its
+    onset in ``_asr_pending_turn_onset_at``; it is only copied into
+    ``_asr_turn_onset_at`` once the previous provider final activates that turn.
+    Reading only the latter means the whole overlap window is judged against the
+    PRECEDING turn's onset, so frames from after its endpoint still count as
+    "this turn's" and fill the bounded buffer, evicting the successor's real
+    opening and middle views.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    now = time.monotonic()
+
+    # 前一轮的 onset 很早；后继在它还没收场时开口，边界记在 pending 槽。
+    runtime._asr_runtime._asr_turn_onset_at = now - 40.0
+    runtime._asr_runtime._asr_pending_turn_onset_at = now - 2.0
+
+    # 前一轮封口之后、后继开口之前的帧。
+    for i in range(3):
+        assert runtime._stage_independent_visual_frame(
+            f"between-{i}",
+            source="screen",
+            request_id=f"screen-between-{i}",
+            captured_at=now - 30.0 + i,
+        )
+    # 后继自己的帧。
+    for i in range(2):
+        assert runtime._stage_independent_visual_frame(
+            f"successor-{i}",
+            source="screen",
+            request_id=f"screen-successor-{i}",
+            captured_at=now - 1.5 + i * 0.3,
+        )
+
+    # 只有后继自己的帧留下，中间那些没占名额。
+    assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
+        "successor-0",
+        "successor-1",
+    ]
 async def test_lease_resync_does_not_hand_a_successor_the_replaced_episode() -> None:
     """A takeover inside the display send must not reach the new recorder.
 

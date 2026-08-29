@@ -590,6 +590,7 @@
         "ERROR_1007_ARREARS": "💥 注意：1007エラーを検出しました。残高不足が原因である可能性が高いです。",
         "IMAGE_BLOCKED": "⚠️ 画像が審査システムにブロックされました。別の画像またはコンテンツをお試しください。",
         "SERVER_BUSY_THROTTLE": "⚠️ サーバーが混雑しています。送信レートを自動調整中...",
+        "ASR_INGRESS_BACKPRESSURE": "音声処理が混雑しています。もう一度話してください。",
         "RESPONSE_TIMEOUT": "💥 接続タイムアウト (Response timeout)、音声会話が中断されました。",
         "CONNECTION_TIMEOUT": "💥 接続タイムアウト。ネットワーク接続を確認してください。",
         "RESPONSE_TOO_LONG": "回答が長すぎるため、出力を破棄しました（設定で TEXT_GUARD_MAX_LENGTH を増やすことができます）",

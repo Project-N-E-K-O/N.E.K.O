@@ -182,6 +182,37 @@ async def test_retired_receive_loop_drops_buffered_frame_before_dispatch():
 
 
 @pytest.mark.asyncio
+async def test_session_updated_notifies_ack_and_extra_handler_once():
+    handler_called = asyncio.Event()
+    received = []
+
+    async def handle_session_updated(event) -> None:
+        received.append(event)
+        handler_called.set()
+
+    client = _make_client()
+    client.extra_event_handlers["session.updated"] = handle_session_updated
+    waiter = client.expect_session_update_ack("callback context")
+    ws = _ControlledWs()
+    receiver = await _start_receiver(client, ws)
+    event = {
+        "type": "session.updated",
+        "session": {"instructions": "callback context"},
+    }
+    ws._events.put_nowait(json.dumps(event))
+
+    try:
+        await asyncio.wait_for(handler_called.wait(), timeout=0.5)
+    finally:
+        ws.finish_from_peer()
+        await asyncio.wait_for(receiver, timeout=2)
+        await _settle_background_tasks(client)
+
+    assert waiter.done() and waiter.result() is None
+    assert received == [event]
+
+
+@pytest.mark.asyncio
 async def test_retired_handler_exception_cannot_close_the_replacement():
     failures = AsyncMock()
     client = _make_client(on_connection_error=failures)

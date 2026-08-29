@@ -21,6 +21,7 @@ from ._shared import (  # noqa: F401 - preserve the legacy module namespace
     Dict,
     Enum,
     IMAGE_IDLE_RATE_MULTIPLIER,
+    ImageStageResult,
     List,
     NATIVE_IMAGE_MIN_INTERVAL,
     OMNI_RECENT_RESPONSES_MAX,
@@ -32,6 +33,7 @@ from ._shared import (  # noqa: F401 - preserve the legacy module namespace
     ToolDefinition,
     ToolResult,
     TurnDetectionMode,
+    VisualDeliveryMode,
     VISION_ANALYSIS_MAX_TOKENS,
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
     asyncio,
@@ -65,6 +67,7 @@ from ._gemini_support import (  # noqa: F401 - preserve the legacy module namesp
 )
 
 from ._transport import RealtimeImagePayloadTooLargeError  # noqa: F401
+from ._protocol_capabilities import MultimodalTurnDelivery  # noqa: F401
 from ._client import OmniRealtimeClient  # noqa: F401
 
 __import__(

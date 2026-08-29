@@ -267,6 +267,11 @@ class LLMSessionManager(
         
         # 模式标志: 'audio' 或 'text'
         self.input_mode = 'audio'
+        # Input ownership and response backend are independent. Independent ASR
+        # may keep the audio microphone route alive after the answering session
+        # has been promoted from Realtime to an Offline VLM.
+        self.response_backend = 'realtime'
+        self._multimodal_handoff_lock = asyncio.Lock()
         
         # 初始化时创建audio模式的session（默认）
         self.session = None
@@ -328,6 +333,9 @@ class LLMSessionManager(
         self._context_append_inflight_results: dict[tuple[Any, ...], asyncio.Future[ContextAppendResult]] = {}
         self._require_context_append_current_delivery = False
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
+        # Serialize pending-input replay with live input dispatch. The cache
+        # lock cannot span awaits because attachment handoff reacquires it.
+        self._pending_input_flush_active = False
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None

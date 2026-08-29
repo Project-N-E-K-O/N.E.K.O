@@ -590,6 +590,7 @@
         "ERROR_1007_ARREARS": "💥 Note: Error 1007 detected. This is most likely caused by insufficient balance.",
         "IMAGE_BLOCKED": "⚠️ Image content blocked by review system. Please try a different image or content.",
         "SERVER_BUSY_THROTTLE": "⚠️ Server busy, automatically adjusting send rate...",
+        "ASR_INGRESS_BACKPRESSURE": "Voice processing is busy. Please say that again.",
         "RESPONSE_TIMEOUT": "💥 Connection timeout (Response timeout), voice conversation interrupted.",
         "CONNECTION_TIMEOUT": "💥 Connection timeout. Please check your network connection.",
         "RESPONSE_TOO_LONG": "Response too long, output discarded (you can increase TEXT_GUARD_MAX_LENGTH in settings)",

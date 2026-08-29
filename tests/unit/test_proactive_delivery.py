@@ -1222,6 +1222,59 @@ def test_submit_reports_nothing_when_nothing_was_evicted():
     assert mgr.submit({"text": "fits"}, coalesce_key="k") == []
 
 
+def _tiny_jpeg(px: int = 900) -> str:
+    import base64
+    import io as _io
+
+    from PIL import Image
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (px, px), (120, 30, 200)).save(buf, "JPEG", quality=95)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+@pytest.mark.asyncio
+async def test_over_budget_turn_samples_then_compresses_before_dropping():
+    """Going over the request budget must cost redundancy first, content last.
+
+    A rejected request loses the whole turn, so something has to give. The
+    order is deliberate: drop redundant frames (a burst's ends and midpoint
+    carry nearly all of it), then quality, and only then content -- and every
+    step is reported so the user is never silently short an image.
+    """
+    from main_logic.proactive_delivery import (
+        approx_base64_decoded_bytes,
+        fit_images_to_turn_budget,
+    )
+
+    images = [_tiny_jpeg() for _ in range(10)]
+    total = sum(approx_base64_decoded_bytes(i) for i in images)
+
+    # 预算宽松：一张都不动，也不打扰用户。
+    kept, notice = await fit_images_to_turn_budget(images, total * 2)
+    assert kept == images
+    assert notice is None
+
+    # 只需抽样：降到开头/中间/结尾三张，不压缩、不丢弃。
+    kept, notice = await fit_images_to_turn_budget(images, total // 2)
+    assert kept == [images[0], images[len(images) // 2], images[-1]]
+    assert notice["sampled"] is True
+    assert notice["compressed"] is False
+    assert notice["dropped"] == 0
+
+    # 抽样还不够：压缩，仍然一张不丢。
+    kept, notice = await fit_images_to_turn_budget(images, total // 8)
+    assert len(kept) == 3
+    assert notice["compressed"] is True
+    assert notice["dropped"] == 0
+    assert sum(approx_base64_decoded_bytes(i) for i in kept) < total // 8 * 2
+
+    # 压完仍超限才丢内容，且无条件保住至少一张。
+    kept, notice = await fit_images_to_turn_budget(images, 2000)
+    assert len(kept) >= 1
+    assert notice["dropped"] > 0
+    assert notice["final_count"] == len(kept)
+
 # ---------------------------------------------------------------------------
 # Byte-axis eviction must not eat text-only cues.
 #

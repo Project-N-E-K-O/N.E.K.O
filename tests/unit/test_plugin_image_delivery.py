@@ -2736,3 +2736,116 @@ async def test_push_with_text_and_images_still_emits_its_hud_toast(monkeypatch) 
     assert len(notifs) == 1
     assert notifs[0]["text"] == "有人送了礼物"
     manager.submit_proactive_callback.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_offline_turn_with_images_reaches_history_without_crashing():
+    """Drive a real image-bearing turn all the way to the history append.
+
+    Every other test here stops at the pending-image queues. Nothing covered
+    the assembly that reads those queues, builds the HumanMessage and logs what
+    it attached -- so a NameError in that stretch shipped green. This is the
+    end-to-end floor: an ordinary Offline turn carrying an image must reach
+    ``_conversation_history`` and must not raise on the way.
+    """
+    import time
+
+    from main_logic.omni_offline_client._client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = ["user-frame"]
+    client._pending_plugin_images = ["plugin-frame"]
+    client._conversation_history = []
+    client._proactive_image_to_inject = "proactive-frame"
+    client._proactive_image_staged_at = time.monotonic()
+    client._proactive_image_history_len = 0
+    client.vision_model = None
+    client.model = "test-model"
+    client._begin_reasoning_stream = lambda: None
+    client.on_response_discarded = None
+    client.on_status_message = None
+    client.on_input_transcript = None
+    client.on_text_delta = None
+    client.on_thinking_active = None
+    client.on_output_transcript = None
+    client.on_response_done = None
+    client.on_repetition_detected = None
+    client._is_responding = False
+    client._skip_next_response = False
+
+    committed = {}
+
+    async def fake_stream(*_args, **_kwargs):
+        committed["history_len"] = len(client._conversation_history)
+        return
+
+    # 只跑到「装配完、进 history」为止：真正的 provider 调用在这之后。
+    client._stream_from_llm = AsyncMock(side_effect=fake_stream)
+
+    await client.stream_text("这是什么", on_turn_committed=lambda: committed.setdefault("marked", True))
+
+    assert committed.get("marked") is True
+    assert len(client._conversation_history) == 1
+    content = client._conversation_history[0].content
+    attached = [
+        part["image_url"]["url"]
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    ]
+    # 三个来源的图都到齐了，并且没有在装配途中抛异常。
+    assert any("proactive-frame" in url for url in attached)
+    assert any("plugin-frame" in url for url in attached)
+    assert any("user-frame" in url for url in attached)
+    # 消费完就清空，与用户列表同一窗口。
+    assert client._pending_images == []
+    assert client._pending_plugin_images == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_budget_fitting_gives_both_image_queues_back():
+    """Ownership was taken before an await; a death there must give it back.
+
+    The user's attachments are dequeued atomically and the plugin list is
+    cleared at read time, so between that point and the history append nothing
+    else holds those bytes. Budget fitting can suspend there for threaded
+    compression -- a teardown landing on it would otherwise erase both sets
+    from every future turn.
+    """
+    import time
+
+    from main_logic.omni_offline_client._client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = ["user-frame-a", "user-frame-b"]
+    client._pending_plugin_images = ["plugin-frame"]
+    client._conversation_history = []
+    client._proactive_image_to_inject = None
+    client._proactive_image_staged_at = 0.0
+    client._proactive_image_history_len = 0
+    client.vision_model = None
+    client.model = "test-model"
+    client._begin_reasoning_stream = lambda: None
+    for hook in (
+        "on_response_discarded", "on_status_message", "on_input_transcript",
+        "on_text_delta", "on_thinking_active", "on_output_transcript",
+        "on_response_done", "on_repetition_detected",
+    ):
+        setattr(client, hook, None)
+    client._is_responding = False
+    client._skip_next_response = False
+
+    async def cancelled_fit(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    with patch(
+        "main_logic.omni_offline_client._streaming.fit_images_to_turn_budget",
+        cancelled_fit,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await client.stream_text("看看这个")
+
+    # 两条队列都完整还了回来，顺序也没乱。
+    assert client._pending_images == ["user-frame-a", "user-frame-b"]
+    assert client._pending_plugin_images == ["plugin-frame"]
+    # 这一轮什么都没提交。
+    assert client._conversation_history == []

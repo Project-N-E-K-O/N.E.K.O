@@ -25,6 +25,7 @@ from ._shared import (
     Optional,
     ToolDefinition,
     TurnDetectionMode,
+    VisualDeliveryMode,
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
     asyncio,
     response_arbiter_fail_open_enabled,
@@ -119,6 +120,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         tool_definitions: Optional[List[ToolDefinition]] = None,
         livestream_mode: bool = False,
         noise_reduction_enabled: bool = True,
+        turn_admission_lock: Optional[asyncio.Lock] = None,
     ):
         self.base_url = base_url
         self.api_key = api_key
@@ -305,7 +307,21 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
         self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
         self._latest_image_generation = 0  # Distinguishes identical consecutive frames
+        self._latest_image_captured_at = 0.0
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
+        # Native is the backwards-compatible session default. Independent ASR
+        # explicitly switches this to EXTERNAL_DESCRIPTION through the neutral
+        # session API; provider capability remains a separate concern.
+        self._visual_delivery_mode = VisualDeliveryMode.NATIVE
+        self._raw_visual_delivery_blocked = False
+        self._visual_delivery_epoch = 0
+        # Callback-owned native media and user turns share this boundary. Core
+        # passes its voice-proactive lock so the whole callback media+text
+        # transaction is mutually exclusive with both server-VAD and external
+        # ASR turn admission. Standalone clients keep an equivalent local lock.
+        self._turn_admission_lock = turn_admission_lock or asyncio.Lock()
 
         # Silence detection for auto-closing inactive sessions
         # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
@@ -504,6 +520,11 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # was optimistically pruned after send. Entries also self-expire to
         # avoid leaks if the server never acks.
         self._inject_rejection_handlers: Dict[str, Callable[[str], None]] = {}
+        # ``session.updated`` is the ordered Provider acknowledgement used by
+        # hot-swap passive-media delivery barriers. Each waiter names the exact
+        # instructions snapshot sent after its media writes, so an older
+        # connection-setup acknowledgement cannot settle a later handoff.
+        self._session_update_ack_waiters: list[tuple[str, asyncio.Future]] = []
         # One-shot gate for the no-event_id content fallback in
         # ``_route_inject_rejection``. True only between "a proactive inject
         # just sent its ``response.create``" and "that inject's outcome was
@@ -515,6 +536,27 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._proactive_inject_awaiting_outcome = False
         self._proactive_inject_outcome_token: Optional[str] = None
         self._gemini_proactive_outcome: Optional[tuple] = None
+        # The task currently parked inside Gemini's proactive SDK send. A new
+        # independent-ASR turn cancels and joins it before opening its own turn,
+        # closing the post-activity-check race where the stale inject could land
+        # while user speech was already being captured.
+        self._gemini_proactive_submit_task: Optional[asyncio.Task] = None
+        # 那条在飞的 send 属于哪个 SDK session。守卫按它收窄——不能只看"有没有
+        # 在飞的 send"：替换连接attach 之后，卡在**退休** session 上的旧 send
+        # 跟新 session 上的 inject 根本不争同一条链路。
+        self._gemini_proactive_submit_session: object | None = None
+        self._gemini_proactive_quarantine_task: Optional[asyncio.Task] = None
+        # External-ASR Gemini sends have the same accepted-before-cancellation
+        # ambiguity as proactive sends. Keep the submit identity after its
+        # visual record is abandoned so a successor turn can join quarantine
+        # and retire the owning SDK session before reconnecting.
+        self._gemini_external_submit_task: Optional[asyncio.Task] = None
+        # ``send_client_content`` returning only proves that Gemini accepted the
+        # turn; the response still owns this session until its terminal event.
+        # Keep a distinct token because the submit coroutine itself may already
+        # be finished when the next external-ASR utterance starts.
+        self._gemini_external_outcome_token: Optional[object] = None
+        self._gemini_external_quarantine_task: Optional[asyncio.Task] = None
         self._gemini_proactive_outcome_owner: Optional[tuple] = None
 
     def _create_audio_processor(self) -> AudioProcessor:
@@ -532,3 +574,12 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    def _ensure_turn_admission_lock(self) -> asyncio.Lock:
+        """Return the shared callback/user-turn boundary, lazily for doubles."""
+
+        lock = getattr(self, "_turn_admission_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._turn_admission_lock = lock
+        return lock

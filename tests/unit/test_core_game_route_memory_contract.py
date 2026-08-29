@@ -1,7 +1,7 @@
 import asyncio
 from collections import deque
 import queue
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import ANY, AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -699,6 +699,407 @@ async def test_text_mode_live_vision_input_is_mirrored_without_engagement(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["screen", "camera"])
+async def test_voice_live_vision_input_preserves_source_and_request_identity(
+    monkeypatch,
+    input_type,
+):
+    """Realtime staging must keep enough metadata to bind a frame to its owner."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    mgr.session.ws = object()
+    mgr.session.stream_image = AsyncMock(
+        return_value=MagicMock(
+            accepted=True,
+            mode="external_description",
+            generation=17,
+        )
+    )
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    monkeypatch.setattr(
+        core_module,
+        "process_screen_data",
+        AsyncMock(return_value="img-b64"),
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {
+            "input_type": input_type,
+            "data": "raw-image",
+            "request_id": "req-vision-17",
+        },
+    )
+
+    mgr.session.stream_image.assert_awaited_once_with(
+        "img-b64",
+        source=input_type,
+        request_id="req-vision-17",
+        captured_at=ANY,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["screen", "camera"])
+@pytest.mark.parametrize(
+    ("response_backend", "session_type", "stages_adapter_cache"),
+    [
+        ("realtime", core_module.OmniRealtimeClient, True),
+        ("offline_vlm", core_module.OmniOfflineClient, False),
+    ],
+)
+async def test_independent_asr_live_vision_stays_out_of_provider_queues(
+    monkeypatch,
+    input_type,
+    response_backend,
+    session_type,
+    stages_adapter_cache,
+):
+    """Independent live frames remain Core-owned across backend promotion."""
+    mgr = _make_manager()
+    session = object.__new__(session_type)
+    session.stream_image = AsyncMock()
+    session._pending_images = ["existing-user-attachment"]
+    if stages_adapter_cache:
+        session.stage_multimodal_frame = MagicMock()
+    mgr.session = session
+    mgr.response_backend = response_backend
+    mgr._asr_route_mode = "independent"
+    mgr._stage_independent_visual_frame = MagicMock(return_value=True)
+    mgr.is_goodbye_silent = Mock(return_value=False)
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._pending_input_flush_active = False
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    monkeypatch.setattr(
+        core_module,
+        "process_screen_data",
+        AsyncMock(return_value="img-b64"),
+    )
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {
+            "input_type": input_type,
+            "data": "raw-image",
+            "request_id": "req-independent-vision",
+        },
+    )
+
+    mgr._stage_independent_visual_frame.assert_called_once_with(
+        "img-b64",
+        source=input_type,
+        request_id="req-independent-vision",
+        captured_at=ANY,
+    )
+    session.stream_image.assert_not_awaited()
+    assert session._pending_images == ["existing-user-attachment"]
+    assert mgr.pending_input_data == []
+    assert mgr.sync_message_queue.messages == []
+    if stages_adapter_cache:
+        session.stage_multimodal_frame.assert_called_once_with(
+            "img-b64",
+            source=input_type,
+            request_id="req-independent-vision",
+            captured_at=ANY,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_voice_session_hands_one_shot_user_images_to_offline_vision(
+    monkeypatch,
+    input_type,
+):
+    """Attachments leave voice mode and stage on the text/offline vision path."""
+    mgr = _make_manager()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    realtime_session.ws = object()
+    realtime_session.stream_image = AsyncMock()
+    offline_session = object.__new__(core_module.OmniOfflineClient)
+    offline_session.stream_image = AsyncMock()
+    mgr.session = realtime_session
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.session_ready = True
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+
+    async def _end_session(*, by_server=False, reset_starting_count=True, preserve_pending_input=False):
+        assert reset_starting_count is False
+        # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
+        # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
+        assert preserve_pending_input is True
+        # 内部就地替换不能给前端推 CHARACTER_LEFT。
+        assert by_server is True
+        mgr.session = None
+        mgr.is_active = False
+
+    async def _start_session(_websocket, *, new=False, input_mode=None):
+        assert new is False
+        assert input_mode == "text"
+        mgr.session = offline_session
+        mgr.is_active = True
+        mgr.session_ready = True
+
+    mgr.end_session = AsyncMock(side_effect=_end_session)
+    mgr.start_session = AsyncMock(side_effect=_start_session)
+    validate = AsyncMock(return_value="img-b64")
+    monkeypatch.setattr(core_module, "process_screen_data", validate)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {
+            "input_type": input_type,
+            "data": "raw-image",
+            "request_id": "req-one-shot",
+        },
+    )
+
+    realtime_session.stream_image.assert_not_awaited()
+    validate.assert_awaited_once_with("raw-image")
+    offline_session.stream_image.assert_awaited_once_with("img-b64")
+    mgr.end_session.assert_awaited_once_with(
+        by_server=True,
+        reset_starting_count=False,
+        preserve_pending_input=True,
+    )
+    mgr.start_session.assert_awaited_once_with(
+        mgr.websocket,
+        new=False,
+        input_mode="text",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_invalid_one_shot_image_does_not_destroy_voice_session(
+    monkeypatch,
+    input_type,
+):
+    mgr = _make_manager()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    realtime_session.ws = object()
+    mgr.session = realtime_session
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr.end_session = AsyncMock()
+    mgr.start_session = AsyncMock()
+    validate = AsyncMock(return_value=None)
+    monkeypatch.setattr(core_module, "process_screen_data", validate)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": input_type, "data": "invalid-image"},
+    )
+
+    validate.assert_awaited_once_with("invalid-image")
+    mgr.end_session.assert_not_awaited()
+    mgr.start_session.assert_not_awaited()
+    assert mgr.session is realtime_session
+    assert mgr.is_active is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_invalid_text_does_not_destroy_voice_session():
+    mgr = _make_manager()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    mgr.session = realtime_session
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr.end_session = AsyncMock()
+    mgr.start_session = AsyncMock()
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": {"not": "text"}},
+    )
+
+    mgr.end_session.assert_not_awaited()
+    mgr.start_session.assert_not_awaited()
+    assert mgr.session is realtime_session
+    assert mgr.is_active is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_attachment_stages_before_inputs_cached_during_offline_handoff(
+    monkeypatch,
+):
+    mgr = _make_transcript_manager()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    offline_session = object.__new__(core_module.OmniOfflineClient)
+    offline_session._pending_images = []
+    offline_session.update_max_response_length = Mock()
+    delivery_order = []
+
+    async def _stream_image(image_b64):
+        assert mgr.session is offline_session
+        delivery_order.append(("image", image_b64))
+
+    async def _stream_text(text, **_kwargs):
+        assert mgr.session is offline_session
+        delivery_order.append(("text", text))
+
+    offline_session.stream_image = AsyncMock(side_effect=_stream_image)
+    offline_session.stream_text = AsyncMock(side_effect=_stream_text)
+    mgr.session = realtime_session
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+
+    async def _end_session(*, by_server=False, reset_starting_count=True, preserve_pending_input=False):
+        assert reset_starting_count is False
+        # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
+        # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
+        assert preserve_pending_input is True
+        # 内部就地替换不能给前端推 CHARACTER_LEFT。
+        assert by_server is True
+        mgr.session = None
+        mgr.is_active = False
+
+    async def _start_session(_websocket, *, new=False, input_mode=None):
+        assert new is False
+        assert input_mode == "text"
+        mgr.session = offline_session
+        mgr.is_active = True
+        mgr.session_ready = True
+        mgr.pending_input_data.append(
+            {"input_type": "text", "data": "describe this image"}
+        )
+        await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+        assert delivery_order == []
+
+    mgr.end_session = AsyncMock(side_effect=_end_session)
+    mgr.start_session = AsyncMock(side_effect=_start_session)
+    monkeypatch.setattr(
+        core_module,
+        "process_screen_data",
+        AsyncMock(return_value="img-b64"),
+    )
+    monkeypatch.setattr(
+        core_module,
+        "dispatch_text_user_message",
+        lambda _name, _text: None,
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "avatar_drop_image", "data": "raw-image"},
+    )
+
+    assert delivery_order == [
+        ("image", "img-b64"),
+        ("text", "describe this image"),
+    ]
+    assert mgr.pending_input_data == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_initiating_text_submits_before_inputs_cached_during_handoff(
+    monkeypatch,
+):
+    """The message that triggered the handoff must speak first.
+
+    end_session now preserves inputs cached during teardown, and start_session
+    flushes that queue before returning. Without the same owner-before-flush
+    deferral the one-shot attachments use, a text that arrived DURING teardown
+    would enter history and generate first, and the older initiating message
+    would then interrupt it — the user's two turns come out reversed.
+    """
+    mgr = _make_transcript_manager()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    offline_session = object.__new__(core_module.OmniOfflineClient)
+    offline_session._pending_images = []
+    offline_session.update_max_response_length = Mock()
+    delivery_order = []
+
+    async def _stream_text(text, **_kwargs):
+        assert mgr.session is offline_session
+        delivery_order.append(text)
+
+    offline_session.stream_text = AsyncMock(side_effect=_stream_text)
+    mgr.session = realtime_session
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+
+    async def _end_session(*, by_server=False, reset_starting_count=True, preserve_pending_input=False):
+        assert preserve_pending_input is True
+        assert by_server is True
+        mgr.session = None
+        mgr.is_active = False
+
+    async def _start_session(_websocket, *, new=False, input_mode=None):
+        assert input_mode == "text"
+        mgr.session = offline_session
+        mgr.is_active = True
+        mgr.session_ready = True
+        # 拆 session 期间到达的第二条消息被保留了下来。
+        mgr.pending_input_data.append(
+            {"input_type": "text", "data": "second message"}
+        )
+        await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+        # 发起本次 handoff 的那条还没提交，缓存的这条必须被挡住。
+        assert delivery_order == []
+
+    mgr.end_session = AsyncMock(side_effect=_end_session)
+    mgr.start_session = AsyncMock(side_effect=_start_session)
+    monkeypatch.setattr(
+        core_module,
+        "dispatch_text_user_message",
+        lambda _name, _text: None,
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "first message"},
+    )
+
+    assert delivery_order == ["first message", "second message"]
+    assert mgr.pending_input_data == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
 async def test_one_shot_user_image_records_engagement(
     monkeypatch,
@@ -992,28 +1393,120 @@ async def test_cached_text_dropped_for_voice_still_records_engagement():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_live_text_queues_behind_pending_input_flush():
+    """Live input must not overtake the batch currently being replayed."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr._starting_session_count = 0
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._pending_input_flush_active = True
+    mgr.note_stream_input_ingress = Mock()
+    mgr._should_drop_live_vision_stream = Mock(return_value=False)
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "new live text"},
+    )
+
+    assert len(mgr.pending_input_data) == 1
+    assert mgr.pending_input_data[0]["input_type"] == "text"
+    assert mgr.pending_input_data[0]["data"] == "new live text"
+    assert isinstance(mgr.pending_input_data[0]["_user_input_ingress_time"], float)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
-async def test_cached_user_image_dropped_for_voice_still_records_engagement(
+async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
+    monkeypatch,
     input_type,
 ):
-    """A submitted image remains engagement when voice startup discards it."""
-    mgr = _make_transcript_manager()
-    mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    """A cached attachment hands its following text to the offline session."""
+    mgr = _make_manager()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    offline_session = object.__new__(core_module.OmniOfflineClient)
+    offline_session.stream_image = AsyncMock()
+    mgr.session = realtime_session
     mgr.is_active = True
+    mgr.session_ready = True
     mgr.input_cache_lock = asyncio.Lock()
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
     mgr.pending_input_data = [
         {
             "input_type": input_type,
             "data": "raw-image",
             "_user_input_ingress_time": FIXED_TS,
-        }
+        },
+        {
+            "input_type": "text",
+            "data": "describe this image",
+            "_user_input_ingress_time": FIXED_TS + 1,
+        },
     ]
     mgr.last_user_engagement_time = None
+
+    async def _end_session(*, by_server=False, reset_starting_count=True, preserve_pending_input=False):
+        assert reset_starting_count is False
+        # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
+        # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
+        assert preserve_pending_input is True
+        # 内部就地替换不能给前端推 CHARACTER_LEFT。
+        assert by_server is True
+        mgr.session = None
+        mgr.is_active = False
+
+    async def _start_session(_websocket, *, new=False, input_mode=None):
+        assert new is False
+        assert input_mode == "text"
+        mgr.session = offline_session
+        mgr.is_active = True
+        mgr.session_ready = True
+
+    mgr.end_session = AsyncMock(side_effect=_end_session)
+    mgr.start_session = AsyncMock(side_effect=_start_session)
+    validate = AsyncMock(return_value="img-b64")
+    monkeypatch.setattr(core_module, "process_screen_data", validate)
+    deliver_text = AsyncMock()
+    process_pending = core_module.LLMSessionManager._process_stream_data_internal
+
+    async def _process_pending(message):
+        if message.get("input_type") == "text":
+            await deliver_text(message)
+            return
+        await process_pending(mgr, message)
+
+    mgr._process_stream_data_internal = AsyncMock(side_effect=_process_pending)
 
     await core_module.LLMSessionManager._flush_pending_input_data(mgr)
 
     assert mgr.pending_input_data == []
     assert mgr.last_user_engagement_time == FIXED_TS
+    validate.assert_awaited_once_with("raw-image")
+    offline_session.stream_image.assert_awaited_once_with("img-b64")
+    deliver_text.assert_awaited_once_with(
+        {
+            "input_type": "text",
+            "data": "describe this image",
+            "_user_input_ingress_time": FIXED_TS + 1,
+        }
+    )
+    mgr.end_session.assert_awaited_once_with(
+        by_server=True,
+        reset_starting_count=False,
+        preserve_pending_input=True,
+    )
+    mgr.start_session.assert_awaited_once_with(
+        mgr.websocket,
+        new=False,
+        input_mode="text",
+    )
 
 
 @pytest.mark.unit
@@ -1359,6 +1852,82 @@ async def test_bare_openclaw_magic_words_do_not_short_circuit_text_stream(monkey
 
     mgr._fire_task.assert_not_called()
     mgr.session.stream_text.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_passive_callback_media_remains_bound_across_concurrent_focus_wait(
+    monkeypatch,
+):
+    """A later text task must not steal an earlier callback's staged images."""
+    mgr = _make_transcript_manager()
+    offline_session = object.__new__(core_module.OmniOfflineClient)
+    offline_session._pending_images = ["user-image"]
+    offline_session.update_max_response_length = Mock()
+    stream_calls = []
+
+    async def stream_text(text, **kwargs):
+        stream_calls.append((text, kwargs))
+
+    offline_session.stream_text = AsyncMock(side_effect=stream_text)
+    mgr.session = offline_session
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr._fire_task = Mock()
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._push_focus_thinking = AsyncMock()
+    mgr.pending_agent_callbacks = [{
+        "_callback_delivery_id": "id-focus-race",
+        "status": "completed",
+        "summary": "callback context",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image-1", "callback-image-2"],
+    }]
+    first_focus_entered = asyncio.Event()
+    release_first_focus = asyncio.Event()
+
+    async def focus_decision(text):
+        if text == "first text":
+            first_focus_entered.set()
+            await release_first_focus.wait()
+        return False
+
+    mgr._focus_inline_decision = AsyncMock(side_effect=focus_decision)
+    monkeypatch.setattr(
+        core_module,
+        "dispatch_text_user_message",
+        lambda name, text: None,
+    )
+
+    first_task = asyncio.create_task(
+        core_module.LLMSessionManager._process_stream_data_internal(
+            mgr,
+            {"input_type": "text", "data": "first text"},
+        )
+    )
+    await first_focus_entered.wait()
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "second text"},
+    )
+    release_first_focus.set()
+    await first_task
+
+    calls_by_text = {text: kwargs for text, kwargs in stream_calls}
+    assert "system_prefix_images" not in calls_by_text["second text"]
+    assert calls_by_text["first text"]["system_prefix_images"] == [
+        "callback-image-1",
+        "callback-image-2",
+    ]
+    assert "callback context" in calls_by_text["first text"]["system_prefix"]
+    assert offline_session._pending_images == ["user-image"]
+    assert mgr.pending_agent_callbacks == []
 
 
 @pytest.mark.unit
@@ -2453,3 +3022,239 @@ async def test_recovery_losing_ownership_mid_tts_leaves_no_tracker_text_for_b():
 
     assert mgr._current_ai_turn_text == ""
     mgr._emit_turn_end.assert_not_awaited()
+
+
+
+def _media_callback(summary, images):
+    return {
+        "event": "agent_task_callback",
+        "origin": "event",
+        "summary": summary,
+        "detail": summary,
+        "status": "completed",
+        "delivery_mode": "passive",
+        "coalesce_key": "",
+        "media_images": list(images),
+    }
+
+
+def _make_callback_media_manager(offline_session):
+    mgr = _make_transcript_manager()
+    mgr.session = offline_session
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr._fire_task = Mock()
+    mgr.pending_agent_callbacks = []
+    mgr.pending_extra_replies = []
+    mgr.user_language = "zh-CN"
+    return mgr
+
+
+def _make_offline_session_for_callback_media():
+    session = object.__new__(core_module.OmniOfflineClient)
+    session._pending_images = []
+    session.update_max_response_length = Mock()
+    session.stream_image = AsyncMock()
+    return session
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_callback_media_returns_to_the_queue_when_its_turn_never_commits(
+    monkeypatch,
+):
+    """A passive callback carrying images must survive a pre-history failure.
+
+    The drain removes the callback and reports it delivered as soon as its text
+    renders -- the deliberate best-effort contract for a plain notice. Media
+    adds a boundary that contract never covered: the Offline turn still has to
+    switch to its vision model, and a failure there raises before anything is
+    appended to history, so text AND images vanish with no retry left.
+    """
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    callback = _media_callback("agent finished", ["cb-image-b64"])
+    mgr.pending_agent_callbacks = [callback]
+
+    seen_kwargs = {}
+
+    async def _stream_text(_text, **kwargs):
+        seen_kwargs.update(kwargs)
+        raise RuntimeError("switch_model failed: bad credential")
+
+    session.stream_text = AsyncMock(side_effect=_stream_text)
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    # 外层 handler 会把 provider 异常吞成日志，这里不该期待它冒出来。
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "什么情况"},
+    )
+
+    # 这一轮确实是带图的（否则本用例根本没测到回滚路径）。
+    assert seen_kwargs.get("system_prefix_images") == ["cb-image-b64"]
+    assert mgr.pending_agent_callbacks == [callback]
+    assert callback["media_images"] == ["cb-image-b64"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_callback_media_is_not_requeued_once_its_turn_reached_history(
+    monkeypatch,
+):
+    """After the turn commits, the content is in front of the model.
+
+    Rolling back on a later failure would deliver the same callback twice.
+    """
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    callback = _media_callback("agent finished", ["cb-image-b64"])
+    mgr.pending_agent_callbacks = [callback]
+
+    async def _stream_text(_text, **kwargs):
+        kwargs["on_turn_committed"]()
+        raise RuntimeError("provider dropped mid-stream")
+
+    session.stream_text = AsyncMock(side_effect=_stream_text)
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    # 外层 handler 会把 provider 异常吞成日志，这里不该期待它冒出来。
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "什么情况"},
+    )
+
+    assert mgr.pending_agent_callbacks == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_typed_text_cancels_the_in_flight_offline_stream_first(monkeypatch):
+    """Typed text must stop the producer, not just rotate the speech id.
+
+    An Offline session can be mid-stream on an independent-ASR external turn
+    (or an earlier text response). Both turns share ``_is_responding`` and both
+    append to the same history, and rotating ``current_speech_id`` without
+    cancelling leaves the old stream emitting deltas under the new id.
+    """
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    order = []
+    sid_at_interrupt = {}
+
+    async def _handle_interruption():
+        order.append("interrupt")
+        sid_at_interrupt["sid"] = mgr.current_speech_id
+
+    async def _stream_text(_text, **_kwargs):
+        order.append("stream_text")
+
+    session.handle_interruption = AsyncMock(side_effect=_handle_interruption)
+    session.stream_text = AsyncMock(side_effect=_stream_text)
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+    old_sid = mgr.current_speech_id
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "别说了，换个话题"},
+    )
+
+    assert order == ["interrupt", "stream_text"]
+    # 取消要发生在 speech_id 轮换**之前**，否则旧流的 delta 会挂到新 id 上。
+    assert sid_at_interrupt["sid"] == old_sid
+    assert mgr.current_speech_id != old_sid
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_callback_media_returns_when_cancelled_before_the_stream_begins(
+    monkeypatch,
+):
+    """The rollback window is the whole post-drain stretch, not just stream_text.
+
+    The callback leaves the queue and is reported delivered the moment its text
+    renders, but several awaits still stand between that and the turn reaching
+    history -- the Focus decision and the thinking-bubble pulse. A teardown that
+    cancels this input task in there loses the callback's text AND its images
+    with no retry left.
+    """
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    callback = _media_callback("agent finished", ["cb-image-1"])
+    mgr.pending_agent_callbacks = [callback]
+    session.stream_text = AsyncMock()
+
+    async def cancelled_focus_decision(_text):
+        raise asyncio.CancelledError()
+
+    mgr._focus_inline_decision = cancelled_focus_decision
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    # 取消必须继续向上传播（回滚是顺手做的，不是把取消吃掉）。
+    with pytest.raises(asyncio.CancelledError):
+        await core_module.LLMSessionManager._process_stream_data_internal(
+            mgr,
+            {"input_type": "text", "data": "什么情况"},
+        )
+
+    # 这一轮从没到达 stream_text，callback 必须完好回队。
+    session.stream_text.assert_not_awaited()
+    assert mgr.pending_agent_callbacks == [callback]
+    assert callback["media_images"] == ["cb-image-1"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_focus_pulse_is_cleared_when_its_own_send_is_cancelled(monkeypatch):
+    """The pulse that turns the bubble ON must sit inside the scope that turns it OFF.
+
+    ``_push_focus_thinking(True)`` itself awaits the websocket lock and
+    ``send_json``. A teardown that cancels the turn right there has already set
+    the active flag and queued the notification, so leaving it outside the
+    cleanup scope strands the thinking bubble until some later turn happens to
+    clear it.
+    """
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    mgr.pending_agent_callbacks = []
+    session.stream_text = AsyncMock()
+    mgr._focus_inline_decision = AsyncMock(return_value=True)
+    pulses = []
+
+    async def push_focus_thinking(active):
+        pulses.append(active)
+        if active:
+            # 拆除正好卡在这次投递上。
+            raise asyncio.CancelledError()
+
+    mgr._push_focus_thinking = push_focus_thinking
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await core_module.LLMSessionManager._process_stream_data_internal(
+            mgr,
+            {"input_type": "text", "data": "凝神这一句"},
+        )
+
+    session.stream_text.assert_not_awaited()
+    # 关键：亮起之后必须有一次熄灭，否则气泡一直卡着。
+    assert pulses == [True, False]
