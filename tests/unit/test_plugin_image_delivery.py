@@ -2891,16 +2891,22 @@ def _guide_text() -> str:
 
 
 def test_message_plane_payload_ceiling_is_pinned_and_documented() -> None:
-    """The inline push cap is 256 KiB, and the guide must print that number.
+    """The inline push cap is 512 KiB, and the guide must print that number.
 
     The guide used to say "256 KB", which reads as 256000 and is not what the
     ingest server measures against. Pin the shipped default and require the
-    guide to carry the exact byte count, so raising the cap without touching
-    the prose fails here rather than in a plugin author's head.
+    guide to carry the exact byte count, so moving the cap without touching the
+    prose fails here rather than in a plugin author's head.
+
+    512 rather than 256 because the constant budgets ENCODED bytes: an inline
+    image travels base64 at 4/3 of its raw size, so the 256 KiB picture the
+    guide tells authors they may push needs 341 KiB of envelope to fit. This
+    literal is also what keeps the derived figure in the sibling test below
+    honest -- without it, moving the constant would move the assertion with it.
     """
     from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
 
-    assert MESSAGE_PLANE_PAYLOAD_MAX_BYTES == 256 * 1024
+    assert MESSAGE_PLANE_PAYLOAD_MAX_BYTES == 512 * 1024
 
     text = _guide_text()
     assert (
@@ -2910,6 +2916,68 @@ def test_message_plane_payload_ceiling_is_pinned_and_documented() -> None:
     # KiB, spelled out, because the whole point of the correction is that the
     # unit was wrong and not just the formatting.
     assert f"（{MESSAGE_PLANE_PAYLOAD_MAX_BYTES // 1024} **KiB**" in text
+
+
+def test_every_push_reason_the_sdk_can_return_is_documented() -> None:
+    """The guide's `reason` list must be the code's, derived and not retyped.
+
+    ``payload_too_large`` shipped while the guide's list still named three
+    values, which is the failure mode a hand-written list always has: nobody
+    edits prose when they add a branch. So derive the set from the function
+    itself. A checklist copied out of today's code is the same bug one release
+    later; the literal below is only a tripwire that makes "a reason moved"
+    fail loudly enough that someone goes and reads the prose.
+
+    Two shapes carry a reason out of ``push_message``: the ``"reason"`` value
+    of a returned dict, and the ``primary_failure_reason`` local that feeds
+    those returns (the conditional form hides two constants inside one
+    expression, which a regex over ``"reason": "..."`` would miss entirely --
+    that is why this walks the AST).
+
+    Mutation A: delete `payload_too_large` from the guide's reason list -- red
+    on the coverage loop.
+    Mutation B: rename the constant in the SDK, e.g. ``payload_too_large`` ->
+    ``payload_oversize``, without touching the guide -- red on both.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from plugin.core.context import PluginContext
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(PluginContext.push_message)))
+
+    def _string_constants(node) -> set:
+        return {
+            sub.value
+            for sub in ast.walk(node)
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+        }
+
+    reasons: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and key.value == "reason":
+                    reasons |= _string_constants(value)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id == "primary_failure_reason"
+                ):
+                    reasons |= _string_constants(node.value)
+
+    assert reasons == {
+        "backpressure",
+        "transport_error",
+        "transport_unavailable",
+        "payload_too_large",
+    }, "a reason was added, removed or renamed -- fix the guide, then this literal"
+
+    text = _guide_text()
+    for reason in sorted(reasons):
+        assert f"`{reason}`" in text, f"push_message can return {reason}, undocumented"
 
 
 def test_image_upload_ceilings_are_pinned_and_documented() -> None:
@@ -2939,28 +3007,22 @@ def test_image_upload_ceilings_are_pinned_and_documented() -> None:
     assert f"`MAX_SOURCE_IMAGE_PIXELS` = {MAX_SOURCE_IMAGE_PIXELS}" in text
 
 
-def test_an_inline_image_rides_the_wire_envelope_twice(monkeypatch) -> None:
-    """One inline image is carried base64 AND raw in the same envelope.
+def _push_one_inline_image(monkeypatch, raw_len: int):
+    """Push one inline image through the real writer; return (result, payload).
 
-    This is why the guide now says the effective inline ceiling is ~110 KiB
-    rather than the 256 KiB the constant advertises: the v2 part carries the
-    image as base64 (+33%) and the legacy ``binary_data`` field carries the
-    same bytes again, so the envelope costs ~2.34x the picture. An image at
-    half the documented cap already does not fit.
+    ``payload`` is None when the push was refused. No ZMQ endpoint in a unit
+    test, so this falls through to the legacy host queue -- which hands back
+    the very same ``_build_wire_payload`` envelope the ingest server would have
+    measured, which is the whole point of measuring here rather than
+    hand-rolling a dict.
     """
     import logging
     import queue
     from pathlib import Path
 
-    import ormsgpack
-
     from plugin.core import context as context_module
     from plugin.core.context import PluginContext
-    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
 
-    # No ZMQ endpoint in a unit test: fall through to the legacy host queue,
-    # which hands us the very same _build_wire_payload envelope the ingest
-    # server would have measured.
     monkeypatch.setattr(context_module, "zmq", None)
 
     message_queue: "queue.Queue" = queue.Queue()
@@ -2971,28 +3033,119 @@ def test_an_inline_image_rides_the_wire_envelope_twice(monkeypatch) -> None:
         status_queue=queue.Queue(),
         message_queue=message_queue,
     )
-
-    raw = bytes(128 * 1024)
     result = ctx.push_message(
         visibility=["chat"],
         ai_behavior="respond",
         parts=[
             {"type": "text", "text": "look"},
-            {"type": "image", "data": raw, "mime": "image/png"},
+            {"type": "image", "data": bytes(raw_len), "mime": "image/png"},
         ],
     )
+    if not result["submitted"]:
+        assert message_queue.empty(), "a refused push must not reach the transport"
+        return result, None
+    return result, message_queue.get_nowait()
+
+
+def test_an_inline_image_rides_the_wire_envelope_once(monkeypatch) -> None:
+    """One inline image is carried base64, and NOT a second time raw.
+
+    This test used to assert the opposite, and the guide used to print ~110 KiB
+    as the effective ceiling because of it: the envelope carried the picture
+    twice -- base64 in ``parts[].binary_base64`` (+33%) and the same bytes raw
+    in the legacy ``binary_data`` field -- costing ~2.34x the source, so an
+    image at half the advertised cap already did not fit.
+
+    Both halves of the fix are pinned here, because either one alone leaves the
+    guide lying. Dropping the duplicate takes the envelope from ~2.34x to ~4/3,
+    and raising the cap to 512 KiB is what makes 4/3 of a documented 256 KiB
+    image actually fit. The measured figures the guide now prints are asserted
+    against the real writer rather than restated.
+
+    Mutation A: restore the raw ``binary_data`` duplicate in
+    ``_build_wire_payload`` -- the ratio and the acceptance case both fail.
+    Mutation B: put ``MESSAGE_PLANE_PAYLOAD_MAX_BYTES`` back to 256*1024 --
+    the acceptance case and the bracketed ceiling both fail.
+    """
+    import ormsgpack
+
+    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    raw_len = 256 * 1024
+    result, payload = _push_one_inline_image(monkeypatch, raw_len)
     assert result["submitted"] is True
 
-    payload = message_queue.get_nowait()
-    assert base64.b64decode(payload["parts"][1]["binary_base64"]) == raw
-    assert payload["binary_data"] == raw
+    assert base64.b64decode(payload["parts"][1]["binary_base64"]) == bytes(raw_len)
+    # The legacy field is the thing that used to double the bill. It is only
+    # populated now for the one shape where it is the sole carrier (caller
+    # passed binary_data= BESIDE parts=), which is not this shape.
+    assert payload["binary_data"] is None
 
     packed = len(ormsgpack.packb(payload))
-    assert packed > 2.3 * len(raw)
-    # An image at half the advertised cap is already over it, which is the
-    # whole reason the guide prints an effective number.
-    assert packed > MESSAGE_PLANE_PAYLOAD_MAX_BYTES
-    assert "约 110 KiB" in _guide_text()
+    # base64 is 4/3; the envelope adds a few hundred bytes on top of that and
+    # nothing else. The upper bound is what would fail if the duplicate came
+    # back -- 2.34x is nowhere near 1.34x.
+    assert 4 / 3 <= packed / raw_len < 1.34
+    # The acceptance case the guide promises in so many words: a 256 KiB inline
+    # image fits the shipped default. Under either half of the old world it did
+    # not.
+    assert packed <= MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    text = _guide_text()
+    # The effective raw-bytes ceiling, derived from the constant the sibling
+    # test pins to a literal, so the two cannot drift apart quietly.
+    effective_kib = MESSAGE_PLANE_PAYLOAD_MAX_BYTES * 3 // 4 // 1024
+    assert effective_kib == 384
+    assert f"**约 {effective_kib} KiB**" in text
+    # The two concrete measurements the guide quotes, checked against the
+    # writer instead of trusted. A doc number nobody measures is how the
+    # 110 KiB line survived a rewrite of the thing it described.
+    assert f"{packed / 1024:.1f} KiB" == "341.8 KiB"
+    assert "341.8 KiB" in text
+    assert "383.6 KiB" in text
+    # Bracket that last figure rather than bisect for it: at 383 KiB the packed
+    # envelope is still under the cap and at 385 KiB it is over, which is only
+    # true if the cap AND the single carry are both in place.
+    #
+    # The under case is measured on the ENVELOPE, because a push that succeeds
+    # hands the wire payload back and the byte count is the thing the guide
+    # quotes.
+    #
+    # The over case is measured on push_message()'s VERDICT instead, and the
+    # reason it changed is worth recording. It used to read the envelope too,
+    # justified by "the payload_too_large gate sits on the ZMQ branch and this
+    # fixture has no ZMQ, so a verdict would only test which transport happened
+    # to be available". That justification died when the gate was added to the
+    # legacy queue exit as well (CodeRabbit found it missing there): the guard
+    # is now on all three exits, so an oversized push is refused everywhere and
+    # there is no envelope left to read back -- packb(None) is one byte, which
+    # is exactly how this surfaced.
+    #
+    # Asserting the refusal is also the stronger claim. The bracket exists to
+    # pin the ceiling the guide prints, and what a plugin author actually meets
+    # at 385 KiB is a rejection, not a byte count they cannot observe.
+    _, under = _push_one_inline_image(monkeypatch, 383 * 1024)
+    assert len(ormsgpack.packb(under)) <= MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+    over_result, over = _push_one_inline_image(monkeypatch, 385 * 1024)
+    assert over is None
+    assert over_result == {
+        "ok": False,
+        "submitted": False,
+        "reason": "payload_too_large",
+    }
+    # 110 KiB is allowed to survive, but only as history. Banning the number
+    # would be the wrong pin -- the paragraph explaining why the effective
+    # ceiling used to sit below the cap is exactly what makes an author trust
+    # the new figure instead of re-deriving it. So pin the FRAMING: it appears
+    # once, in a paragraph that says it used to be that way and names the
+    # 2.34x double carry as the reason.
+    assert text.count("110 KiB") == 1
+    # Blockquote paragraphs are separated by a bare "> " line, not a blank one.
+    history = next(p for p in text.split("\n>\n") if "110 KiB" in p)
+    assert "曾经" in history and "2.34" in history
+    assert "384 KiB" not in history, (
+        "the current ceiling must not be stated inside the historical paragraph"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3155,14 +3308,18 @@ async def test_proactive_prompt_ephemeral_images_go_through_the_budget_ladder(
 
 
 @pytest.mark.asyncio
-async def test_proactive_prompt_ephemeral_toasts_only_when_images_were_dropped(
+async def test_proactive_prompt_ephemeral_toasts_only_when_frames_left_the_turn(
     monkeypatch,
 ) -> None:
-    """The gate is DROPPED, not "the ladder did something".
+    """The gate is "a frame is gone", not "the ladder did something".
 
     Both directions, because a one-sided assertion here is worth little:
     a turn that silently loses a frame is as bad as one that toasts about
-    routine housekeeping.
+    routine housekeeping. The loud half uses three frames on purpose -- that is
+    ``TURN_IMAGE_SAMPLE_KEEP``, so the sample rung cannot fire and this stays a
+    test of the drop rung specifically; the sampling half of the same gate is
+    covered in test_proactive_delivery.py where the ladder itself is under
+    test.
 
     Mutation A: gate on ``if _budget_notice`` instead of
     ``_budget_notice.get("user_visible")`` -- the quiet case fails.

@@ -74,35 +74,79 @@ def _is_submission_backpressure(error: BaseException) -> bool:
     return isinstance(again_type, type) and isinstance(error, again_type)
 
 
-def _push_payload_carries_inline_bytes(parts: Any, legacy_binary_data: Any) -> bool:
-    """Return whether the wire payload will embed raw bytes rather than a URL.
+# base64 spends 4 wire bytes for every 3 raw bytes, and the rest of the
+# envelope is scalars plus whatever text parts ride along -- a few hundred
+# bytes at most.  So this ratio is what turns MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+# into the raw-bytes budget an author can actually aim at, and it is the number
+# the rejection log prints.  It only holds while an inline payload rides the
+# wire ONCE: the envelope used to carry a raw duplicate in the legacy
+# ``binary_data`` field as well, which put the real ratio at ~2.34x.
+_INLINE_BASE64_WIRE_RATIO = 4.0 / 3.0
 
-    This is the gate that keeps the payload size probe off the hot path.  A
-    push only has a realistic chance of blowing MESSAGE_PLANE_PAYLOAD_MAX_BYTES
-    when it ships its bytes inline; text cues, ui_action cues and url-carrying
-    media parts all stay in the low kilobytes no matter how many of them a
-    plugin emits.  Those are also the overwhelming majority of pushes -- a
-    screenshot notice, a log tail, a per-frame status cue -- and making every
-    one of them pay a second msgpack pack just so the rare image push can be
-    measured would be a permanent tax levied for an exceptional case.
+# Label for the deprecated top-level ``binary_data`` field in the rejection
+# log.  It is not a part type and is deliberately not mapped onto one: it only
+# survives translation when the caller passed it next to an explicit ``parts=``
+# list, and in that shape nothing in the payload says what those bytes are.
+_LEGACY_BINARY_CARRIER = "binary_data"
 
-    Both inline carriers are checked because they can appear independently:
+
+def _inline_binary_carriers(
+    parts: Any, legacy_binary_data: Any
+) -> tuple[tuple[str, int], ...]:
+    """Return ``(carrier label, wire bytes)`` per inline payload, in wire order.
+
+    An empty tuple is the gate that keeps the payload size probe off the hot
+    path.  A push only has a realistic chance of blowing
+    MESSAGE_PLANE_PAYLOAD_MAX_BYTES when it ships its bytes inline; text cues,
+    ui_action cues and url-carrying media parts all stay in the low kilobytes
+    no matter how many of them a plugin emits.  Those are also the
+    overwhelming majority of pushes -- a screenshot notice, a log tail, a
+    per-frame status cue -- and making every one of them pay a second msgpack
+    pack just so the rare image push can be measured would be a permanent tax
+    levied for an exceptional case.
+
+    The labels and sizes exist so the rejection can name the payload that
+    actually blew the cap.  ``ctx.images.upload()`` is the remedy for an image
+    and for nothing else -- there is no audio or video upload helper today --
+    so a rejection that always pointed there sent the author of an inline
+    audio part hunting for an API that does not exist (Codex).
+
+    Both carriers are reported because they can appear independently:
     ``parts[].binary_base64`` is the canonical one, while ``binary_data`` is
     the legacy field that :func:`translate_push_message` leaves untranslated
     when a caller passes v2 ``parts`` and the deprecated ``binary_data=``
     kwarg together.  Either one alone is enough to reach the cap.
     """
+    carriers: list[tuple[str, int]] = []
+    if isinstance(parts, list):
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            blob = part.get("binary_base64")
+            if not isinstance(blob, str) or not blob:
+                continue
+            part_type = part.get("type")
+            label = part_type if isinstance(part_type, str) and part_type else "unknown"
+            carriers.append((label, len(blob)))
     if isinstance(legacy_binary_data, (bytes, bytearray)) and legacy_binary_data:
-        return True
-    if not isinstance(parts, list):
-        return False
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        blob = part.get("binary_base64")
-        if isinstance(blob, str) and blob:
-            return True
-    return False
+        carriers.append((_LEGACY_BINARY_CARRIER, len(legacy_binary_data)))
+    return tuple(carriers)
+
+
+def _inline_carrier_totals(
+    carriers: tuple[tuple[str, int], ...]
+) -> list[tuple[str, int]]:
+    """Aggregate carriers per label, biggest total first.
+
+    Aggregating before ranking is what makes "which one blew the cap" answer
+    the question the author is actually asking: ten thumbnails that together
+    outweigh one voice clip are the thing to fix, even though the clip is the
+    single largest part.  The label breaks ties so the log line is stable.
+    """
+    totals: Dict[str, int] = {}
+    for label, size in carriers:
+        totals[label] = totals.get(label, 0) + size
+    return sorted(totals.items(), key=lambda item: (-item[1], item[0]))
 
 
 def _synthesize_legacy_message_type(canonical: Dict[str, Any]) -> str:
@@ -1140,9 +1184,26 @@ class PluginContext:
         )
         legacy_content = content if isinstance(content, str) else _synthesize_legacy_content(canonical.get("parts") or [])
         legacy_binary_url: Optional[str] = binary_url if isinstance(binary_url, str) else None
-        legacy_binary_data: Optional[bytes] = bytes(binary_data) if isinstance(binary_data, (bytes, bytearray)) else None
+        # The deprecated top-level ``binary_data`` reaches the wire ONLY when the
+        # caller passed it next to an explicit ``parts=`` list.  That is the one
+        # shape translate_push_message leaves untranslated, so those bytes ride
+        # in no part and dropping them here would be silent data loss.  Every
+        # other shape is a duplicate of what ``parts[].binary_base64`` already
+        # carries: either translate_push_message built the part FROM
+        # ``binary_data`` (``parts=None``), or the loop below used to decode the
+        # part's base64 back into raw bytes purely to re-attach them.  Carrying
+        # both put one image on the wire at ~2.34x its raw size, which is what
+        # made a 100 KiB screenshot blow a 256 KiB cap; the base64 copy alone is
+        # ~1.34x, so the cap now means roughly what it says.  query_service is
+        # the only reader of the field and decodes the canonical part on demand
+        # instead.
+        legacy_binary_data: Optional[bytes] = (
+            bytes(binary_data)
+            if isinstance(binary_data, (bytes, bytearray)) and parts is not None
+            else None
+        )
         legacy_mime: Optional[str] = mime if isinstance(mime, str) else None
-        if legacy_binary_url is None or legacy_binary_data is None or legacy_mime is None:
+        if legacy_binary_url is None or legacy_mime is None:
             for part in canonical.get("parts") or []:
                 if not isinstance(part, dict):
                     continue
@@ -1152,18 +1213,11 @@ class PluginContext:
                     url_obj = part.get("url")
                     if isinstance(url_obj, str) and url_obj:
                         legacy_binary_url = url_obj
-                if legacy_binary_data is None:
-                    b64_obj = part.get("binary_base64")
-                    if isinstance(b64_obj, str) and b64_obj:
-                        try:
-                            legacy_binary_data = base64.b64decode(b64_obj, validate=False)
-                        except Exception:
-                            legacy_binary_data = None
                 if legacy_mime is None:
                     mime_obj = part.get("mime")
                     if isinstance(mime_obj, str) and mime_obj:
                         legacy_mime = mime_obj
-                if legacy_binary_url is not None and legacy_binary_data is not None and legacy_mime is not None:
+                if legacy_binary_url is not None and legacy_mime is not None:
                     break
         # ``description`` has no role in v2 (no semantic consumer; only
         # surfaces as a human label in legacy log lines and the
@@ -1255,9 +1309,10 @@ class PluginContext:
             Returns the rejection dict to hand back to the caller, or ``None``
             when the push may proceed.
             """
-            if not _push_payload_carries_inline_bytes(
+            carriers = _inline_binary_carriers(
                 canonical.get("parts"), legacy_binary_data
-            ):
+            )
+            if not carriers:
                 return None
             if ormsgpack is None:
                 return None
@@ -1275,27 +1330,52 @@ class PluginContext:
             limit = int(MESSAGE_PLANE_PAYLOAD_MAX_BYTES)
             if size <= limit:
                 return None
+            totals = _inline_carrier_totals(carriers)
+            dominant = totals[0][0]
+            labels = [label for label, _size in totals]
+            if dominant == "image":
+                remedy = (
+                    "Send large images as a URL part instead: "
+                    "`part = await ctx.images.upload(data, mime=...)` returns a "
+                    "push-ready image part that does not travel inline."
+                )
+            else:
+                # There is no upload helper for audio/video today, so naming one
+                # would send the author after an API that is not there. Say what
+                # IS true: make the payload smaller, or host it and reference it.
+                remedy = (
+                    f"There is no upload helper for an inline {dominant} payload "
+                    "today, so the options are to shrink the payload itself "
+                    "(shorter clip, lower bitrate or resolution) or to host it "
+                    "and push the same part with `url=` instead of `data=`."
+                )
+                if "image" in labels:
+                    remedy += (
+                        " The image part in this push can also be offloaded with "
+                        "`part = await ctx.images.upload(data, mime=...)`."
+                    )
             try:
-                # The author needs three things to act: how far over they are,
-                # what the ceiling is, and why their "100 KiB screenshot" blew a
-                # 256 KiB cap. The last one is the non-obvious part -- the
-                # envelope carries the same image twice, base64 (4/3 of the raw
-                # bytes) in parts[].binary_base64 and raw again in the legacy
-                # binary_data compat field, so ~2.34x -- and without it the
-                # arithmetic looks broken and the fix looks arbitrary.
+                # The author needs four things to act: how far over they are,
+                # what the ceiling is, WHICH payload spent the budget, and why
+                # their "300 KiB screenshot" blew a 512 KiB cap. The last one is
+                # the non-obvious part -- inline bytes travel base64, 4/3 of the
+                # raw size -- and without it the arithmetic looks broken and the
+                # fix looks arbitrary. The per-carrier breakdown is what keeps
+                # the remedy honest when a push carries more than one inline
+                # part: the advice follows the payload that spent the budget.
                 self.logger.error(
                     "[PluginContext] push_message rejected: reason=payload_too_large "
-                    "plugin_id={} size={}B limit={}B. The wire envelope carries every "
-                    "inline image about 2.34x its raw size (base64 in "
-                    "parts[].binary_base64 plus the legacy binary_data compat field), "
-                    "so the effective raw-bytes ceiling is only about {}B. Send large "
-                    "images as a URL part instead: "
-                    "`part = await ctx.images.upload(data, mime=...)` returns a "
-                    "push-ready image part that does not travel inline.",
+                    "plugin_id={} size={}B limit={}B inline={}. Inline bytes travel "
+                    "base64-encoded in parts[].binary_base64, about {}x their raw "
+                    "size, so the effective raw-bytes ceiling for one inline payload "
+                    "is about {}B. {}",
                     self.plugin_id,
                     int(size),
                     limit,
-                    int(limit / 2.34),
+                    " ".join(f"{label}={size_b}B" for label, size_b in totals),
+                    f"{_INLINE_BASE64_WIRE_RATIO:.2f}",
+                    int(limit / _INLINE_BASE64_WIRE_RATIO),
+                    remedy,
                 )
             except Exception:
                 # Diagnostic only. A logging failure (rotation race, bad
@@ -1585,6 +1665,19 @@ class PluginContext:
                     message_id=str(uuid.uuid4()),
                     ts=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 )
+                # Third exit, same guard. This branch is reached when zmq is
+                # unavailable or MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT is set empty,
+                # and it used to enqueue and report submitted=True with no size
+                # check at all -- so on those configurations the synchronous
+                # rejection this release advertises simply did not exist, and an
+                # oversized push went back to vanishing host-side while the
+                # author was told it went out. The cap is a property of the
+                # payload, not of which transport happens to carry it, so the
+                # probe belongs on every exit rather than on the two that were
+                # noticed first (CodeRabbit).
+                oversized = _reject_if_payload_too_large(payload)
+                if oversized is not None:
+                    return oversized
                 self.message_queue.put_nowait(payload)
                 if PLUGIN_LOG_CTX_MESSAGE_PUSH:
                     try:

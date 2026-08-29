@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -527,7 +528,9 @@ def test_oversized_inline_push_is_rejected_before_the_transport(
     reported = repr(logger.records)
     assert "payload_too_large" in reported
     assert "4096" in reported
-    assert "2.34" in reported
+    # 1.33x, not 2.34x: an inline payload travels base64 and nothing else.
+    assert "1.33" in reported
+    assert "image=" in reported
     assert "ctx.images.upload" in reported
 
 
@@ -621,3 +624,338 @@ def test_small_inline_push_still_submits(
     # Probe + envelope, and the probe measured well under the real default cap.
     assert counter.calls == 2
     assert counter.sizes[0] < int(settings.MESSAGE_PLANE_PAYLOAD_MAX_BYTES)
+
+
+# ---------------------------------------------------------------------------
+# Remediation follows the payload that actually spent the budget
+#
+# The probe fires on any part carrying binary_base64, audio and video included,
+# but ctx.images.upload() exists only for images. A rejection that always named
+# it sent the author of an inline audio part after an API that is not there
+# (Codex). What the rejection says now depends on what the envelope carries.
+# ---------------------------------------------------------------------------
+
+
+def _inline_part(part_type: str, raw_bytes: int, mime: str) -> dict[str, object]:
+    return {"type": part_type, "data": b"\x00" * raw_bytes, "mime": mime}
+
+
+def _carrier_summary(logger: _Logger) -> str:
+    """Pull the ``type=NB ...`` breakdown out of the recorded log args."""
+    for _message, args in logger.records:
+        for arg in args:
+            if isinstance(arg, str) and arg[:1].isalpha() and "=" in arg and arg.endswith("B"):
+                return arg
+    raise AssertionError(f"no carrier breakdown was logged: {logger.records!r}")
+
+
+@pytest.mark.plugin_unit
+def test_oversized_inline_audio_is_not_sent_after_the_image_helper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An inline audio part gets advice that exists: shrink it, or send a URL."""
+    socket = _Socket()
+    _install_counting_slow_plane(monkeypatch, socket)
+    monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    ctx, logger = _context(tmp_path)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="read",
+        parts=[_inline_part("audio", 8192, "audio/wav")],
+    )
+
+    assert result == {
+        "ok": False,
+        "submitted": False,
+        "reason": "payload_too_large",
+    }
+    assert socket.sent == []
+    reported = repr(logger.records)
+    # The whole point: no pointer at an upload helper that does not exist for
+    # this part type.
+    assert "images.upload" not in reported
+    # It has to name the offender and offer something an author can act on.
+    assert "audio=" in reported
+    assert "inline audio payload" in reported
+    assert "url=" in reported
+
+
+@pytest.mark.plugin_unit
+def test_oversized_inline_image_is_still_pointed_at_the_upload_helper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The image-specific advice survives: images DO have an upload helper."""
+    socket = _Socket()
+    _install_counting_slow_plane(monkeypatch, socket)
+    monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    ctx, logger = _context(tmp_path)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="respond",
+        parts=[_inline_part("image", 8192, "image/png")],
+    )
+
+    assert result == {
+        "ok": False,
+        "submitted": False,
+        "reason": "payload_too_large",
+    }
+    reported = repr(logger.records)
+    assert "image=" in reported
+    assert "ctx.images.upload" in reported
+    # ...and it must not also hand out the "there is no helper" line.
+    assert "no upload helper" not in reported
+
+
+@pytest.mark.plugin_unit
+def test_remediation_follows_the_biggest_carrier_not_the_first_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tiny leading thumbnail must not claim a rejection an audio clip caused.
+
+    Wire order would name the image, because it is part[0]. The budget was
+    spent by the clip, so that is what the advice has to be about -- while
+    still telling the author the thumbnail can be offloaded too.
+    """
+    socket = _Socket()
+    _install_counting_slow_plane(monkeypatch, socket)
+    monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    ctx, logger = _context(tmp_path)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="read",
+        parts=[
+            _inline_part("image", 64, "image/png"),
+            _inline_part("audio", 8192, "audio/wav"),
+        ],
+    )
+
+    assert result["reason"] == "payload_too_large"
+    reported = repr(logger.records)
+    assert "inline audio payload" in reported
+    # Both carriers are itemised, biggest first, so the arithmetic is checkable.
+    # The stub logger keeps the template and its args apart, so the breakdown is
+    # read out of the args rather than out of a formatted line.
+    summary = _carrier_summary(logger)
+    assert summary.startswith("audio=")
+    assert "image=" in summary
+    # The image is still worth offloading; the advice says so without pretending
+    # it was the cause.
+    assert "ctx.images.upload" in reported
+
+
+# ---------------------------------------------------------------------------
+# The effective ceiling is now a real 256 KiB
+#
+# The envelope used to carry every inline image TWICE -- base64 in
+# parts[].binary_base64 and raw again in the legacy binary_data compat field,
+# ~2.34x the picture -- so a 256 KiB cap really only admitted ~110 KiB. The
+# duplicate is gone (base64 alone is ~1.34x) and the cap is 512 KiB, which is
+# what makes the documented 256 KiB inline image actually fit.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.plugin_unit
+def test_a_256_kib_inline_image_fits_the_real_default_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The acceptance case, measured exactly the way the host ingest measures it.
+
+    No patched cap and no canned pack: the probe here runs real ormsgpack over
+    the real envelope against the real MESSAGE_PLANE_PAYLOAD_MAX_BYTES, which
+    is the same expression the host applies before it drops an item whole.
+    """
+    socket = _Socket()
+    counter = _install_counting_slow_plane(monkeypatch, socket)
+    ctx, logger = _context(tmp_path)
+    raw = b"\x00" * (256 * 1024)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="respond",
+        parts=[
+            {"type": "text", "text": "look at this"},
+            {"type": "image", "data": raw, "mime": "image/png"},
+        ],
+    )
+
+    assert result == {"submitted": True}
+    assert len(socket.sent) == 1
+    assert "payload_too_large" not in repr(logger.records)
+    assert int(settings.MESSAGE_PLANE_PAYLOAD_MAX_BYTES) == 512 * 1024
+    # counter.sizes[0] is the probe: len(ormsgpack.packb(payload)).
+    assert counter.sizes[0] <= int(settings.MESSAGE_PLANE_PAYLOAD_MAX_BYTES)
+    # base64 only. Anything at or above 2x means the raw duplicate came back and
+    # the headroom this test claims is fiction.
+    assert counter.sizes[0] < 1.4 * len(raw)
+
+
+@pytest.mark.plugin_unit
+def test_inline_image_is_not_duplicated_into_the_legacy_binary_data_field(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The canonical part is the only carrier, and no other compat field moved.
+
+    The legacy control-plane queue is used purely as a way to read back the very
+    envelope _build_wire_payload produces; the key set is asserted whole so
+    removing the raw duplicate cannot quietly take a neighbouring compat field
+    with it.
+    """
+    monkeypatch.setattr(context_module, "zmq", None)
+    queue = _Queue()
+    ctx, _logger = _context(tmp_path, message_queue=queue)
+    raw = b"\x89PNG" + b"\x00" * 512
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="respond",
+        parts=[
+            {"type": "text", "text": "look"},
+            {"type": "image", "data": raw, "mime": "image/png"},
+        ],
+    )
+
+    assert result == {"submitted": True}
+    payload = queue.items[0]
+    assert payload["binary_data"] is None
+    assert base64.b64decode(payload["parts"][1]["binary_base64"]) == raw
+    # Every other legacy compat field is still derived and still present.
+    assert payload["mime"] == "image/png"
+    assert payload["binary_url"] is None
+    assert payload["content"] == "look"
+    assert payload["message_type"] == "proactive_notification"
+    assert payload["description"] == ""
+    assert payload["delivery"] == "proactive"
+    assert payload["reply"] is True
+    assert payload["unsafe"] is False
+    assert set(payload) == {
+        "type",
+        "message_id",
+        "plugin_id",
+        "time",
+        "schema",
+        "source",
+        "priority",
+        "coalesce_key",
+        "visibility",
+        "ai_behavior",
+        "parts",
+        "metadata",
+        "target_lanlan",
+        "message_type",
+        "content",
+        "binary_data",
+        "binary_url",
+        "mime",
+        "description",
+        "unsafe",
+        "delivery",
+        "reply",
+    }
+
+
+@pytest.mark.plugin_unit
+def test_binary_data_passed_beside_explicit_parts_still_reaches_the_wire(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one shape where the legacy field is the ONLY carrier keeps it.
+
+    translate_push_message ignores ``binary_data=`` when the caller also passes
+    an explicit ``parts=`` list, so those bytes ride in no part. Dropping the
+    field for this shape too would be silent data loss rather than a saving.
+    """
+    monkeypatch.setattr(context_module, "zmq", None)
+    queue = _Queue()
+    ctx, _logger = _context(tmp_path, message_queue=queue)
+    raw = b"unreferenced-by-any-part"
+
+    with pytest.warns(DeprecationWarning):
+        result = ctx.push_message(
+            visibility=["chat"],
+            ai_behavior="read",
+            parts=[{"type": "text", "text": "look"}],
+            binary_data=raw,
+            mime="image/png",
+        )
+
+    assert result == {"submitted": True}
+    payload = queue.items[0]
+    assert payload["binary_data"] == raw
+    assert all("binary_base64" not in part for part in payload["parts"])
+
+
+@pytest.mark.plugin_unit
+def test_oversized_inline_push_is_rejected_on_the_legacy_queue_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The size guard must hold on the third exit, not just the two ZMQ ones.
+
+    ``push_message`` has three places that accept responsibility for a payload:
+    the batched fast plane, the synchronous plane, and this legacy control-plane
+    queue, reached when zmq is missing or MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT is
+    overridden to empty. The first two grew the probe; this one did not, so on
+    exactly those configurations an oversized push was enqueued and reported as
+    submitted -- the invisible non-delivery the rejection exists to end, still
+    fully intact behind a deployment flag (CodeRabbit on PR #2999).
+
+    The sibling test that also asserts an empty fallback queue does so with the
+    ZMQ plane ACTIVE, where the earlier exit rejects first and this branch is
+    never entered; it therefore cannot see this regression. Hence zmq=None here.
+    """
+    monkeypatch.setattr(context_module, "zmq", None)
+    monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    queue = _Queue()
+    ctx, logger = _context(tmp_path, message_queue=queue)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="respond",
+        parts=[{"type": "text", "text": "look"}, _inline_image_part(8192)],
+    )
+
+    assert result == {
+        "ok": False,
+        "submitted": False,
+        "reason": "payload_too_large",
+    }
+    assert queue.items == []
+    reported = repr(logger.records)
+    assert "payload_too_large" in reported
+    assert "ctx.images.upload" in reported
+
+
+@pytest.mark.plugin_unit
+def test_within_budget_push_still_reaches_the_legacy_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The new guard must not turn the legacy path into a dead end.
+
+    Pins the other side of the branch added above: a payload inside the cap is
+    still enqueued and still reports submitted. Without this, deleting the
+    ``oversized is None`` check -- or widening it to reject everything -- would
+    leave the suite green on the half that matters to every ordinary push.
+    """
+    monkeypatch.setattr(context_module, "zmq", None)
+    monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    queue = _Queue()
+    ctx, _logger = _context(tmp_path, message_queue=queue)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="respond",
+        parts=[{"type": "text", "text": "small enough"}],
+    )
+
+    assert result == {"submitted": True}
+    assert len(queue.items) == 1

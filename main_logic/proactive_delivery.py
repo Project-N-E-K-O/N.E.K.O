@@ -293,6 +293,8 @@ async def fit_images_to_turn_budget(
 
     1. **Sample** down to head/middle/tail. A long burst of frames is mostly
        redundant; its two ends and its midpoint carry nearly all of the signal.
+       The frames in between are discarded WHOLE, not shrunk -- see the notice
+       paragraph below, this rung is reported the same way a drop is.
     2. **Compress** what survives. Re-encoding to 720p JPEG typically cuts a
        screenshot several-fold and costs nothing a viewer would notice.
     3. Only if both fail, drop from the front (oldest first, always keeping the
@@ -306,11 +308,16 @@ async def fit_images_to_turn_budget(
     The notice is NOT automatically a user-facing message any more. Rung 0
     fires on nearly every turn that carries an image, so a caller that toasted
     on any notice would toast constantly about routine housekeeping. Read
-    ``notice["user_visible"]``: it is True only when whole images were DROPPED,
-    which is the one outcome the reader actually loses something to.
-    Normalizing, sampling and re-compressing stay log-only. Everything else in
-    the notice (``normalized`` / ``sampled`` / ``compressed`` / ``dropped``)
-    is there for the log either way.
+    ``notice["user_visible"]``: it is True whenever whole images LEFT the turn
+    -- dropped by the final trim, or thrown away by the head/middle/tail
+    sample, which keeps three frames and discards every other one. Those two
+    rungs look different from in here (one is "redundancy", one is "content"),
+    but they are the same event from the other side of the screen: a picture he
+    sent is simply not there, and what she says next may not line up with it.
+    Normalizing and re-compressing stay log-only, because they lose nothing a
+    reader would notice -- every frame is still present, only smaller.
+    Everything else in the notice (``normalized`` / ``sampled`` /
+    ``compressed`` / ``dropped``) is there for the log either way.
     """
     kept = [img for img in (images or []) if img]
     if not kept:
@@ -399,10 +406,11 @@ async def fit_images_to_turn_budget(
 
     notice["final_count"] = len(kept)
     notice["final_bytes"] = total
-    # 只有「整张图被丢掉」才值得打扰用户。归一化 / 抽样 / 重压在读者看来是无损
-    # 的（画面还在，只是小一点），而丢弃是真的少了一张图，她接下来讲的东西可能
-    # 就对不上——这才是用户需要知道的那一类。
-    notice["user_visible"] = notice["dropped"] > 0
+    # 判据是「读者少了一张图吗」，不是「哪一级跑了」。抽样排在丢弃前面、名字也
+    # 温和，但 _sample_head_middle_tail 只留开头/中间/结尾三张，其余是整张扔掉的，
+    # 从读者那一侧看跟 trim 掉的没有任何分别。归一化 / 重压则相反：每一帧都还在，
+    # 只是小一点，而且 rung 0 几乎每个带图回合都会跑，弹了就是刷屏。
+    notice["user_visible"] = notice["dropped"] > 0 or notice["sampled"]
     return kept, notice
 
 

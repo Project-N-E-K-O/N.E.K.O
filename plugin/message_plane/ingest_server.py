@@ -164,6 +164,23 @@ class MessagePlaneIngestServer:
             else:
                 logger.info("ingest DROP reason={} {}", reason, extra)
         except Exception:
+            # Diagnostics must never take the ingest loop down with them. Two
+            # ways this block can raise, both outside our control: a field
+            # value whose __repr__/__format__ throws (fields carry plugin- and
+            # payload-derived values, e.g. a topic name or a source string that
+            # came off the wire), and a logger backend that is momentarily
+            # unavailable or reentrant. The caller is on the path that decides
+            # whether a message is accepted; losing the whole batch because a
+            # DROP line could not be formatted would turn a reporting failure
+            # into a delivery failure, which is strictly worse than the missing
+            # line.
+            #
+            # Deliberately no logging in this handler: the thing that just
+            # failed IS the logger, so reporting the failure through it would
+            # either recurse or raise again. The drop is still COUNTED --
+            # _stats_dropped is bumped by the caller before we get here, so the
+            # periodic stats line keeps the event visible in aggregate even
+            # when its detail line is lost.
             pass
 
     def _ingest_delta_batch(self, msg: Dict[str, Any]) -> None:
@@ -333,8 +350,18 @@ class MessagePlaneIngestServer:
             # A failed replace loses the whole snapshot, which until now was not
             # even counted as a drop -- the caller saw an untouched aggregate and
             # a topic that simply never updated.
+            #
+            # ``records`` carries how many went down with it. The counter stays
+            # at +1 on purpose: _stats_dropped counts DROP EVENTS, and the
+            # append branch above bumps it once per failed record, so folding a
+            # snapshot's whole length into it would make the two modes count
+            # different things and silently distort the aggregate. The size
+            # belongs in the log line instead, where it answers the only
+            # question this warning has to answer on its own -- one lost record
+            # or five hundred, i.e. whether to look now or at leisure.
             self._record_drop(
                 "publish_error", store=st.name, topic=topic,
+                records=len(records),
                 err=type(_exc).__name__,
             )
             events = []

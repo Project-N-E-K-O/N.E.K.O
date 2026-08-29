@@ -326,9 +326,15 @@ if not result["submitted"]:
 
 `submitted=True` 只表示 SDK 已把 payload 交给权威本地提交路径，并接管后续提交
 责任；它不表示宿主已经消费、AI 已生成回复或音频已经播放。
-`submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`
-或 `transport_unavailable`。结果不会暴露内部 transport 名称，也不会回显消息正文
-或异常内容。拒绝结果还会携带兼容旧调用方的 `ok=False`；新代码应以
+`submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`、
+`transport_unavailable` 或 `payload_too_large`。前三个描述的是传输当时的状况
+（拥塞 / 发送失败 / 没有可用通道），换个时机原样重发是有意义的。
+`payload_too_large` 是另一类：它由 SDK 在**发送之前**本地量出来——整条 payload
+打包后超过了 `MESSAGE_PLANE_PAYLOAD_MAX_BYTES`（判据见下面的「大小限制」），
+所以原样重试必然还是同一个结果，唯一的出路是把这条 push 变小。inline 图片改用
+`ctx.images.upload()` 换成 URL part；`audio` / `video` 目前没有对应的上传接口，
+只能自己压小（更短的片段、更低的码率或分辨率），或者自己托管后用 `url=` 代替
+`data=`。结果不会暴露内部 transport 名称，也不会回显消息正文或异常内容。拒绝结果还会携带兼容旧调用方的 `ok=False`；新代码应以
 `submitted` 为正式判据。调用方可以保留本地状态，但重试和去重仍由具体插件决定。
 
 ##### 两条轴的语义
@@ -395,25 +401,44 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。
 >   推荐配合 `ai_behavior="blind"` + `ui_action` 走纯前端展示。
 >
 > **大小限制**：inline part 通过 message_plane 走 ZMQ，整条 payload 上限是
-> `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 262144（256 **KiB** = 256*1024，不是
-> 十进制的 256 KB）。但这个数字**不是**你能塞进去的图片大小：wire envelope
-> 为了照顾还没迁到 v2 的下游消费者，把同一张 inline 图带了**两遍**——一份
-> base64 放在 `parts[].binary_base64`（+33%），一份原始 bytes 放在 legacy 的
-> `binary_data` 字段（`plugin/core/context.py` 的 `_build_wire_payload`）。
-> 两份加起来约是原图的 2.34 倍，所以一张 inline 图的**实际**可用上限只有
-> **约 110 KiB**，而不是 256 KiB。
+> `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 524288（512 **KiB** = 512*1024，不是
+> 十进制的 512 KB）。这个数字量的是**打包后**的信封，不是原图字节数——inline
+> 图片以 base64 放在 `parts[].binary_base64` 里，是原始字节的 4/3（+33%）。
+> 所以一张 inline 图的原始字节上限是 512 KiB × 3/4 = **约 384 KiB**，再减掉
+> 几百字节的信封开销和同一条消息里的 text part。实测：一张 256 KiB 的图加一句
+> 短文字打包出来是 341.8 KiB，离上限还有约 170 KiB 余量；恰好卡满的原始图片大小
+> 是 383.6 KiB。
 >
-> 超限的后果是**整条 push 被丢掉**，不是「图掉了、文字还在」：host 侧
-> （`plugin/message_plane/ingest_server.py`）按整条 payload 量字节，超了就记一条
-> `payload_too_big` 然后跳过，同一条消息里的 text part 和 `ui_action` 陪葬。
-> 而 `push_message()` 在 ZMQ send 返回后就给你 `submitted=True`——它的含义是
-> 「已交给传输」，不是「host 收下了」，所以这种丢弃在插件侧**完全静默**，没有
-> 任何返回值或异常能让你察觉。1080p 截图别指望 inline 走：先压成 JPEG q70 或
+> 这个「实际上限」曾经低得多，值得说清楚为什么变了。wire envelope 以前为了照顾
+> 还没迁到 v2 的下游消费者，把同一张 inline 图带**两遍**：一份 base64 在
+> `parts[].binary_base64`，一份原始 bytes 在 legacy 的 `binary_data` 字段，加起来
+> 约是原图的 2.34 倍，于是当时 256 KiB 的上限实际只兜得住**约 110 KiB** 的图。
+> 现在 `_build_wire_payload`（`plugin/core/context.py`）只在「调用方同时传了
+> `parts=` 和 `binary_data=`」这一种形状下才填 legacy 字段——那时那些 bytes 不在
+> 任何 part 里，是唯一的载体；普通的 inline 图片只走 base64 那一遍。双份没了，
+> 上限又从 256 KiB 提到 512 KiB，两件事合起来才让「文档承诺 256 KiB 的图能过」
+> 这句话第一次成立。
+>
+> 超限现在**在本地就被拦下**：`push_message()` 在把 payload 交给 message_plane 的
+> ZMQ 通道之前先打包量一次，超了直接返回 `submitted=False` +
+> `reason="payload_too_large"`，那条消息一个字节都不会上线，日志里还会写明是哪个
+> part（`image` / `audio` / `video`）吃掉了预算。这一侧和 host 侧
+> （`plugin/message_plane/ingest_server.py`）读的是同一个常量，所以两边不会漂移；
+> host 侧的检查也还在，作为最后一道兜底。
+>
+> 但这没有改变 `submitted=True` 的含义：它仍然只表示「已交给传输」，不表示 host
+> 收下了——宿主背压、进程重启之类仍然可能让消息静默消失。变的只是**超限**这一类
+> 丢弃，它从「插件侧完全察觉不到」变成了一个同步的返回值。也别把它反过来读成
+> 「`submitted=True` 就一定没超限」：本地这道闸挂在 ZMQ 那条主路上，ZMQ 整个不
+> 可用时 SDK 会退到 legacy 控制面队列，那条退路上没有它。
+>
+> 超限影响的是**整条 push**，不是「图掉了、文字还在」：同一条消息里的 text part 和
+> `ui_action` 一起被拒。1080p 截图别指望 inline 走：先压成 JPEG q70 或
 > 256x256 PNG，再大就用下面的上传接口。
 >
 > 较大图片使用独立的临时图片上传 interface；它会在线程池中规范化为最长边不超过
 > 2048 的 JPEG，并通过独立 media transport 上传，不占用 `push_message` 的
-> 256 KiB payload：
+> 512 KiB payload：
 >
 > ```python
 > image_part = await ctx.images.upload(image_bytes, mime="image/png")

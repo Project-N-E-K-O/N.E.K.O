@@ -1616,14 +1616,30 @@ async def test_letterbox_frame_that_used_to_pass_through_is_bounded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_only_dropping_whole_images_is_user_visible() -> None:
-    """The toast fires on lost CONTENT, never on housekeeping.
+async def test_losing_whole_images_is_user_visible_however_it_happened() -> None:
+    """The toast gate is "a picture is gone", not "the drop rung ran".
 
-    Normalizing, sampling and re-compressing all leave the picture there --
-    smaller, but there. Dropping is the one rung where the reader really is
-    short an image, and what she says next may not match what he sent.
+    Sampling and dropping are different rungs in here -- one is framed as
+    shedding redundancy, the other as shedding content -- but they are the
+    same event from the reader's side: ``_sample_head_middle_tail`` keeps
+    three frames and discards every other one WHOLE, exactly like the trim
+    does. Gating the toast on ``dropped`` alone meant a ten-frame burst could
+    silently arrive as three, and what she says next would not line up with
+    what he sent.
+
+    Both directions are asserted, because the one-sided version of this test
+    is what let the sampling case slip: normalizing and re-compressing must
+    stay quiet, and this test would pass just as well if the gate were wired
+    to ``True``.
+
+    Mutation A: put the gate back to ``notice["dropped"] > 0`` -- the sampling
+    case fails.
+    Mutation B: make the gate ``or notice["normalized"]`` (or just ``True``)
+    -- the normalization case fails.
     """
     from main_logic.proactive_delivery import (
+        TURN_IMAGE_SAMPLE_KEEP,
+        CALLBACK_IMAGE_MAX_TOTAL_BYTES,
         approx_base64_decoded_bytes,
         fit_images_to_turn_budget,
     )
@@ -1631,12 +1647,33 @@ async def test_only_dropping_whole_images_is_user_visible() -> None:
     images = [_tiny_jpeg() for _ in range(10)]
     total = sum(approx_base64_decoded_bytes(i) for i in images)
 
-    _, sampled = await fit_images_to_turn_budget(images, total // 2)
+    # ── Sampling alone: no drop rung, no compress rung, and seven of the ten
+    #    frames are nevertheless not in the turn any more.
+    kept, sampled = await fit_images_to_turn_budget(images, total // 2)
     assert sampled["sampled"] is True
+    assert sampled["compressed"] is False
     assert sampled["dropped"] == 0
-    assert sampled["user_visible"] is False
+    assert len(kept) == TURN_IMAGE_SAMPLE_KEEP < len(images), (
+        "if sampling did not actually remove frames this asserts nothing"
+    )
+    assert sampled["user_visible"] is True
 
+    # ── The trim rung: the case that was always user-visible.
     kept, dropped = await fit_images_to_turn_budget(images, 2000)
     assert dropped["dropped"] > 0
     assert dropped["user_visible"] is True
     assert len(kept) >= 1, "the turn must never lose every image"
+
+    # ── Pure rung 0: one oversized frame, budget never in danger. The picture
+    #    is rewritten smaller but nothing left the turn, so this stays a log
+    #    line. Rung 0 fires on nearly every turn that carries an image, and a
+    #    toast here would be a permanent stream of "images adjusted".
+    only = _jpeg_of(2048, 1536)
+    assert (
+        approx_base64_decoded_bytes(only) < CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    ), "fixture must be UNDER budget, or the ladder runs and this proves nothing"
+    kept, quiet = await fit_images_to_turn_budget([only], CALLBACK_IMAGE_MAX_TOTAL_BYTES)
+    assert quiet is not None and quiet["normalized"] is True
+    assert quiet["sampled"] is False and quiet["dropped"] == 0
+    assert len(kept) == 1, "nothing may leave the turn on the normalize-only path"
+    assert quiet["user_visible"] is False

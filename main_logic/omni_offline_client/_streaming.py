@@ -732,9 +732,11 @@ class _StreamingMixin:
                     _budget_notice["compressed"],
                     _budget_notice["dropped"],
                 )
-                # 日志每种情况都打，弹窗只在**整张图被丢掉**时弹。归一化那一级
-                # 现在几乎每个带图的回合都会跑，照旧「有 notice 就弹」的话用户
-                # 会被一串「图片已调整」刷屏，而其中绝大多数他根本没损失什么。
+                # 日志每种情况都打，弹窗只在**整张图没了**时弹——丢弃和抽样都算：
+                # 抽样只留开头/中间/结尾三张，中间那些是整张扔掉的，用户那侧看不出
+                # 它跟丢弃有什么分别。归一化 / 重压不弹：图还在，只是小一点，而 rung 0
+                # 几乎每个带图的回合都会跑，照旧「有 notice 就弹」的话用户会被一串
+                # 「图片已调整」刷屏，而其中绝大多数他根本没损失什么。
                 if _budget_notice.get("user_visible") and self.on_status_message:
                     try:
                         await self.on_status_message(json.dumps({
