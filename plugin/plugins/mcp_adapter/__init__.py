@@ -1580,6 +1580,21 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             port = int(USER_PLUGIN_SERVER_PORT)
         return f"http://127.0.0.1:{port}"
 
+    @staticmethod
+    def _phase_timeout_within(deadline: float, *, cap: float = 10.0) -> httpx.Timeout:
+        """按剩余预算构造 httpx 阶段超时。
+
+        httpx.Timeout 的 connect/read/write/pool 是独立阶段限制而非整个请求的
+        总时长，任一阶段超过剩余预算都会让请求跨过 deadline、推迟
+        ``_cancel_run_best_effort``。这里把每个阶段都封顶到剩余预算；请求整体
+        的硬墙由调用方的 ``asyncio.timeout_at(deadline)`` 兜底。
+        """
+        remaining = deadline - asyncio.get_running_loop().time()
+        return httpx.Timeout(
+            max(min(remaining, cap), 1.0),
+            connect=max(min(remaining, 2.0), 0.1),
+        )
+
     async def _execute_chat_tool_via_run(
         self,
         *,
@@ -1613,91 +1628,104 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 proxy=None,
                 trust_env=False,
             ) as client:
-                remaining = deadline - asyncio.get_running_loop().time()
-                create_resp = await client.post(
-                    f"{base}/runs",
-                    json={
-                        "plugin_id": self.plugin_id,
-                        "entry_id": entry_id,
-                        "args": run_args,
-                    },
-                    timeout=httpx.Timeout(max(remaining, 1.0), connect=2.0),
-                )
-                if create_resp.status_code >= 400:
-                    return {
-                        "status": "failed",
-                        "success": False,
-                        "data": None,
-                        "error": f"POST /runs returned HTTP {create_resp.status_code}",
-                    }
-                create_body = create_resp.json()
-                candidate_id = create_body.get("run_id") if isinstance(create_body, dict) else None
-                if not isinstance(candidate_id, str) or not candidate_id:
-                    return {
-                        "status": "failed",
-                        "success": False,
-                        "data": None,
-                        "error": "POST /runs response missing run_id",
-                    }
-                run_id = candidate_id
-
-                run_record: Dict[str, object] = {}
-                while True:
-                    remaining = deadline - asyncio.get_running_loop().time()
-                    if remaining <= 0:
-                        # 放弃前尽力取消 run：否则上层重试可能与仍在执行的 run
-                        # 叠加，造成有副作用的 MCP tool 重复执行。run 看门狗
-                        # （entry_timeout）通常已先取消，这里是创建耗时挤占
-                        # 守卫窗口时的兜底。
-                        await self._cancel_run_best_effort(base, run_id, tool_name)
-                        return {
-                            "status": "timeout",
-                            "success": False,
-                            "data": None,
-                            "error": f"Timed out waiting for run of MCP tool '{tool_name}'",
-                        }
-                    poll_resp = await client.get(
-                        f"{base}/runs/{run_id}",
-                        timeout=httpx.Timeout(max(min(remaining, 10.0), 1.0), connect=2.0),
-                    )
-                    if poll_resp.status_code in (404, 410):
-                        return {
-                            "status": "failed",
-                            "success": False,
-                            "data": None,
-                            "error": f"Run {run_id} not found (HTTP {poll_resp.status_code})",
-                        }
-                    if poll_resp.status_code == 200:
-                        run_record = poll_resp.json()
-                        if run_record.get("status") in _RUN_TERMINAL_STATUSES:
-                            break
-                    await asyncio.sleep(min(_RUN_POLL_INTERVAL_S, max(deadline - asyncio.get_running_loop().time(), 0.0)))
-
-                status = str(run_record.get("status") or "failed")
-                if status != "succeeded":
-                    error = run_record.get("error")
-                    if isinstance(error, dict):
-                        error_msg = str(error.get("message") or error.get("code") or status)
-                    elif isinstance(error, str) and error:
-                        error_msg = error
-                    else:
-                        error_msg = f"Run {status}"
-                    return {"status": status, "success": False, "data": None, "error": error_msg}
-
-                remaining = deadline - asyncio.get_running_loop().time()
-                export_resp = await client.get(
-                    f"{base}/runs/{run_id}/export",
-                    params={"limit": 50},
-                    timeout=httpx.Timeout(max(min(remaining, 10.0), 1.0), connect=2.0),
-                )
-                if export_resp.status_code != 200:
-                    return {"status": status, "success": True, "data": None, "error": None}
-                # run 已成功，export 解析失败只降级为空数据，不反报失败
                 try:
-                    payload = self._extract_chat_tool_payload(export_resp.json())
-                except ValueError:
-                    payload = None
-                return {"status": status, "success": True, "data": payload, "error": None}
+                    # 硬截止墙：httpx 的阶段超时封顶剩余预算后仍可能被服务器
+                    # 慢速滴流拖过 deadline，这里保证任何请求都不会延迟超时
+                    # 结论与取消动作。
+                    async with asyncio.timeout_at(deadline):
+                        create_resp = await client.post(
+                            f"{base}/runs",
+                            json={
+                                "plugin_id": self.plugin_id,
+                                "entry_id": entry_id,
+                                "args": run_args,
+                            },
+                            timeout=self._phase_timeout_within(deadline, cap=timeout_s),
+                        )
+                        if create_resp.status_code >= 400:
+                            return {
+                                "status": "failed",
+                                "success": False,
+                                "data": None,
+                                "error": f"POST /runs returned HTTP {create_resp.status_code}",
+                            }
+                        create_body = create_resp.json()
+                        candidate_id = create_body.get("run_id") if isinstance(create_body, dict) else None
+                        if not isinstance(candidate_id, str) or not candidate_id:
+                            return {
+                                "status": "failed",
+                                "success": False,
+                                "data": None,
+                                "error": "POST /runs response missing run_id",
+                            }
+                        run_id = candidate_id
+
+                        run_record: Dict[str, object] = {}
+                        while True:
+                            remaining = deadline - asyncio.get_running_loop().time()
+                            if remaining <= 0:
+                                # 放弃前尽力取消 run：否则上层重试可能与仍在执行
+                                # 的 run 叠加，造成有副作用的 MCP tool 重复执行。
+                                # run 看门狗（entry_timeout）通常已先取消，这里
+                                # 是创建耗时挤占守卫窗口时的兜底。
+                                await self._cancel_run_best_effort(base, run_id, tool_name)
+                                return {
+                                    "status": "timeout",
+                                    "success": False,
+                                    "data": None,
+                                    "error": f"Timed out waiting for run of MCP tool '{tool_name}'",
+                                }
+                            poll_resp = await client.get(
+                                f"{base}/runs/{run_id}",
+                                timeout=self._phase_timeout_within(deadline),
+                            )
+                            if poll_resp.status_code in (404, 410):
+                                return {
+                                    "status": "failed",
+                                    "success": False,
+                                    "data": None,
+                                    "error": f"Run {run_id} not found (HTTP {poll_resp.status_code})",
+                                }
+                            if poll_resp.status_code == 200:
+                                run_record = poll_resp.json()
+                                if run_record.get("status") in _RUN_TERMINAL_STATUSES:
+                                    break
+                            await asyncio.sleep(min(_RUN_POLL_INTERVAL_S, max(deadline - asyncio.get_running_loop().time(), 0.0)))
+
+                        status = str(run_record.get("status") or "failed")
+                        if status != "succeeded":
+                            error = run_record.get("error")
+                            if isinstance(error, dict):
+                                error_msg = str(error.get("message") or error.get("code") or status)
+                            elif isinstance(error, str) and error:
+                                error_msg = error
+                            else:
+                                error_msg = f"Run {status}"
+                            return {"status": status, "success": False, "data": None, "error": error_msg}
+
+                        export_resp = await client.get(
+                            f"{base}/runs/{run_id}/export",
+                            params={"limit": 50},
+                            timeout=self._phase_timeout_within(deadline),
+                        )
+                        if export_resp.status_code != 200:
+                            return {"status": status, "success": True, "data": None, "error": None}
+                        # run 已成功，export 解析失败只降级为空数据，不反报失败
+                        try:
+                            payload = self._extract_chat_tool_payload(export_resp.json())
+                        except ValueError:
+                            payload = None
+                        return {"status": status, "success": True, "data": payload, "error": None}
+                except TimeoutError:
+                    # 硬截止墙触发（某次请求跨过 deadline）：有 run_id 时在截止
+                    # 后尽力取消，防止 run 在我们放弃后仍继续执行。
+                    await self._cancel_run_best_effort(base, run_id, tool_name)
+                    return {
+                        "status": "timeout",
+                        "success": False,
+                        "data": None,
+                        "error": f"Timed out waiting for run of MCP tool '{tool_name}'",
+                    }
         except (httpx.HTTPError, OSError, ValueError) as exc:
             return {
                 "status": "failed",
