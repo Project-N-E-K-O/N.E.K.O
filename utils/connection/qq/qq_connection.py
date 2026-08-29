@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
@@ -142,16 +143,6 @@ class QQConnectionBase(ABC):
         """Sent message id -> sent timestamp. Public alias for ``_sent_message_ids``."""
         return getattr(self, "_sent_message_ids", {})
 
-    async def enrich_message(self, message: dict[str, Any]) -> dict[str, Any]:
-        """Expand reply/forward/voice/file + inject VLM image descriptions.
-
-        Default no-op; ``QQClient`` overrides it (its ``needs_attention`` is True,
-        and callers trigger it on demand). This runs after the dispatcher's
-        eligibility filters and before backlog / blacklist re-check, and returns the
-        (possibly modified) message dict.
-        """
-        return message
-
     async def send_group_ark_card(
         self, group_id: str, ark_obj: dict[str, Any], **_: Any
     ) -> bool:
@@ -182,16 +173,45 @@ class QQConnectionBase(ABC):
         setattr(self, self._INBOUND_SINK_ATTR, sink)
 
     async def _dispatch_inbound(self, message: dict[str, Any]) -> None:
-        """Internal: hand one inbound message to the registered sink (fire-and-forget, fault-tolerant)."""
+        """Internal: hand one inbound message to the registered sink.
+
+        Fire-and-forget and fault-tolerant: the sink runs on an independent task,
+        so a slow or never-completing subscriber can never stall the receive loop.
+        Every exception is swallowed (the broadcast is best-effort).
+        """
         sink = self.inbound_sink
         if sink is None:
             return
+        try:
+            self._spawn_inbound_sink(sink, message)
+        except Exception:
+            pass
+
+    def _spawn_inbound_sink(self, sink: Any, message: dict[str, Any]) -> None:
+        """Schedule ``_run_inbound_sink`` on a background task, keeping a strong ref.
+
+        ``create_task`` must run inside a live event loop (``receive_message`` is
+        always awaited on one); without a reference the task could be collected
+        before it runs, so we track it in a set and discard it on completion.
+        """
+        task = asyncio.create_task(self._run_inbound_sink(sink, message))
+        tasks = getattr(self, "_inbound_sink_tasks", None)
+        if tasks is None:
+            tasks = set()
+            setattr(self, "_inbound_sink_tasks", tasks)
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    async def _run_inbound_sink(self, sink: Any, message: dict[str, Any]) -> None:
+        """Run one sink call; swallow any failure so the broadcast never raises."""
         try:
             result = sink(message)
             if hasattr(result, "__await__"):
                 await result
         except Exception:
-            pass
+            logger = getattr(self, "logger", None)
+            if logger:
+                logger.exception("Inbound sink failed (swallowed; broadcast is best-effort)")
 
     @property
     @abstractmethod

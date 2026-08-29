@@ -2,8 +2,9 @@
 
 The chat plugin calls :func:`create_qq_connection` to build the right concrete
 connection from transport settings, then holds it as a :class:`QQConnector`.
-The connector owns the transport + message-handling chain; the plugin injects the
-optional VLM/STT describers and consumes the normalized messages / send API.
+The connector owns the transport + message-handling chain; the plugin owns
+message enrichment (reply/forward/voice/file + VLM/STT, via ``QQMessageEnricher``)
+and consumes the normalized messages / send API.
 """
 
 from __future__ import annotations
@@ -20,8 +21,6 @@ def create_qq_connection(
     *,
     logger: Any = None,
     emit_log: Any = None,
-    image_describer: Any = None,
-    voice_transcriber: Any = None,
 ) -> QQConnectionBase:
     """Build the concrete QQ connection from transport settings.
 
@@ -50,8 +49,6 @@ def create_qq_connection(
         token=str(settings.get("token") or ""),
         logger=logger,
         emit_log=emit_log,
-        image_describer=image_describer,
-        voice_transcriber=voice_transcriber,
         # napcat_forward = forward WS client (dials out to the OneBot implementation's WS server);
         # everything else (incl. the default) uses the reverse WS server.
         direction="forward" if mode == "napcat_forward" else "reverse",
@@ -111,8 +108,7 @@ class QQConnector(Protocol):
     @property
     def supports_ark_cards(self) -> bool: ...
 
-    # ── enrichment / extended send ──────────────────────────
-    async def enrich_message(self, message: dict[str, Any]) -> dict[str, Any]: ...
+    # ── extended send ───────────────────────────────────────
     async def send_group_ark_card(
         self, group_id: str, ark_obj: dict[str, Any]
     ) -> bool: ...
