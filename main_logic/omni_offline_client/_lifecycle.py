@@ -212,6 +212,11 @@ class _LifecycleMixin:
         # images are present we switch to the vision model exactly like
         # stream_text does (一旦带图就永久切 vision — 既定设计；vision model 也能跑
         # 后续纯文本轮). The instruction itself stays ephemeral (not persisted).
+        # 在 `if images:` 之外初始化：纯文本的主动轮根本不进这个分支，而下面
+        # 的 emit 点无条件要读它。放在分支里的后果不是函数直接报错，而是文本已经发给
+        # 用户了、函数却因 UnboundLocalError 走到失败分支返回 False，主动
+        # 调度状态跟着被污染（CodeRabbit）。
+        _pending_budget_notice = None
         if images:
             # 一旦带图就永久切到 vision model（既定设计，见上）。vision model 也能
             # 跑后续纯文本轮，且凝神不再因 vision 而关闭思考。
@@ -228,10 +233,6 @@ class _LifecycleMixin:
             # 自己已经能带到 8 张，合批之后没有任何人再看总量。它和用户轮共用同
             # 一个 provider、同一个单请求上限，超了是整条请求被拒——只是这里被拒
             # 的后果更隐蔽：用户根本不知道刚才有一轮主动搭话没发出去。
-            # 在 if 之外初始化：多数轮次根本不产生 notice（图片没超预算，或者
-            # 这一轮压根没带图），那时下面的 if 块整块跳过，而 emit 点无条件要
-            # 读它。
-            _pending_budget_notice = None
             try:
                 _budget_images, _budget_notice = await fit_images_to_turn_budget(
                     images,

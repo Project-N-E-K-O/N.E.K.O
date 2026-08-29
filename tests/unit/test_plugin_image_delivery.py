@@ -3680,3 +3680,48 @@ async def test_trim_notice_fires_once_across_a_multi_chunk_stream(monkeypatch) -
     )
     # And it did arrive -- a clear that fired too early would also give len 0.
     assert client.on_text_delta.await_count == 10
+
+
+@pytest.mark.asyncio
+async def test_text_only_proactive_turn_completes_without_touching_image_state() -> None:
+    """A proactive turn with no images at all must still finish cleanly.
+
+    The staged-notice slot is read unconditionally at the first emitted delta,
+    but it was being bound inside ``if images:``. A text-only proactive turn --
+    by far the common case -- therefore raised UnboundLocalError at that read.
+
+    The failure mode is worse than a crash in isolation: on_text_delta has
+    ALREADY delivered the first chunk to the user by then, so the reader sees a
+    reply while prompt_ephemeral falls into its failure branch and returns
+    False. The proactive scheduler then treats a turn the user plainly saw as
+    one that never happened.
+
+    Both halves are asserted for that reason -- returning True is not enough if
+    the text never arrived, and delivered text is not enough if the turn is
+    still reported as failed.
+    """
+    from types import SimpleNamespace
+
+    client, sent = _offline_client_for_ephemeral()
+
+    async def _talky(messages):
+        # 替掉夹具的 stream 就丢了它对 sent 的追加，这里补上，
+        # 否则「LLM 被调用了」这条断言测的是夹具自己。
+        sent.append(messages)
+        yield SimpleNamespace(content="今天也想你了喵~")
+
+    client._astream_visible_with_tools = _talky
+
+    result = await client.prompt_ephemeral("======主动搭话======")
+
+    assert client.on_text_delta.await_count == 1, "the turn must actually speak"
+    assert result is not False, (
+        "a text-only proactive turn delivered its text but was reported failed"
+    )
+    # No image state was involved, so no trim notice may appear either.
+    trims = [
+        call for call in client.on_status_message.await_args_list
+        if "TURN_IMAGES_TRIMMED" in str(call)
+    ]
+    assert trims == []
+    assert sent, "the LLM should have been called"
