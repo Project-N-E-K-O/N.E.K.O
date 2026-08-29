@@ -1232,7 +1232,7 @@ async def test_model_path_caps_total_image_bytes_per_push(monkeypatch) -> None:
     # Pool sized from the MEASURED normalized fixture: room for one, not two.
     # Hardcoding a figure would drift the moment the fixture or codec changes.
     _one = character_runtime._approx_decoded_bytes(
-        character_runtime._normalize_inline_image_to_jpeg_base64(
+        character_runtime._normalize_inline_image_to_model_profile(
             _expands_under_jpeg_base64()
         )
     )
@@ -1278,7 +1278,7 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
     # Pool sized from the MEASURED normalized fixture: room for one, not two.
     # Hardcoding a figure would drift the moment the fixture or codec changes.
     _one = character_runtime._approx_decoded_bytes(
-        character_runtime._normalize_inline_image_to_jpeg_base64(
+        character_runtime._normalize_inline_image_to_model_profile(
             _expands_under_jpeg_base64()
         )
     )
@@ -1419,10 +1419,16 @@ async def test_budget_is_charged_on_the_retained_bytes(monkeypatch) -> None:
         lambda _name: manager,
     )
     # Pool that fits the compressible source several times over but not the
-    # expanded jpeg twice.
+    # expanded jpeg twice. Measured through the resolver's OWN normalizer, so
+    # the figure follows the model profile instead of being a second guess at
+    # what the resolver retains.
     expanding = _expands_under_jpeg_base64()
-    normalized = character_runtime._normalize_inline_image_to_jpeg_base64(expanding)
+    normalized = character_runtime._normalize_inline_image_to_model_profile(expanding)
     grown = character_runtime._approx_decoded_bytes(normalized)
+    # The premise, asserted rather than assumed: if a codec change ever made
+    # the jpeg SMALLER than the png, charging the source would over-count and
+    # this test would pass while proving the opposite of its name.
+    assert grown > character_runtime._approx_decoded_bytes(expanding)
     monkeypatch.setattr(
         character_runtime, "_PLUGIN_IMAGE_TOTAL_MAX_BYTES", int(grown * 1.5)
     )
@@ -1683,12 +1689,24 @@ def _expands_under_jpeg_base64() -> str:
     """A png that provably GROWS when normalized to jpeg.
 
     Flat colour is the extreme of png-compressible and the worst case for
-    jpeg, which spends bytes per block regardless. Measured ~16 KiB png against
-    ~63 KiB jpeg. Callers assert the growth as a precondition, so a codec change
+    jpeg, which spends bytes per block regardless. Measured ~4 KiB png against
+    ~15 KiB jpeg. Callers assert the growth as a precondition, so a codec change
     fails loudly instead of quietly making the test prove nothing.
+
+    Sized to the MODEL PROFILE, and derived from those constants rather than
+    hardcoded. The model resolver now bounds every copy it returns to that
+    profile, so a bigger fixture (this was 2000x2000) comes back DOWNSCALED --
+    and the byte-budget tests below, which are about accounting and not about
+    resolution, would silently be measuring the resize instead of the jpeg
+    expansion they claim to measure. At exactly the profile the resize is a
+    no-op and the claim stays true.
     """
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
     source = BytesIO()
-    Image.new("RGB", (2000, 2000), "white").save(source, format="PNG")
+    Image.new(
+        "RGB", (MODEL_IMAGE_MAX_WIDTH, COMPRESS_TARGET_HEIGHT), "white"
+    ).save(source, format="PNG")
     return base64.b64encode(source.getvalue()).decode("ascii")
 
 
@@ -2975,3 +2993,340 @@ def test_an_inline_image_rides_the_wire_envelope_twice(monkeypatch) -> None:
     # whole reason the guide prints an effective number.
     assert packed > MESSAGE_PLANE_PAYLOAD_MAX_BYTES
     assert "约 110 KiB" in _guide_text()
+
+
+# ---------------------------------------------------------------------------
+# The proactive text turn (prompt_ephemeral) and the model/display fork
+#
+# Two separate holes, one theme: an image reached a model at whatever
+# resolution it happened to arrive with.
+#
+#   * prompt_ephemeral attached every entry of ``images`` verbatim as a
+#     data: URL. It was the only image-bearing model call in the repo with no
+#     budget ladder at all -- the same provider, the same per-request ceiling
+#     as a user turn, but nothing between the plugin's bytes and the wire.
+#   * _resolve_plugin_model_image re-encoded INLINE bytes and passed URL bytes
+#     through untouched. The SDK bounds an upload's long edge at 2048, so the
+#     measured plugin frame is 2048x1536 / ~49 KiB: far under any byte budget,
+#     and therefore never trimmed by one.
+# ---------------------------------------------------------------------------
+
+
+def _gradient_rgb(width: int, height: int) -> Image.Image:
+    """A real, non-degenerate picture of exactly this size.
+
+    Three different ramps, not flat colour: a flat image compresses to almost
+    nothing at ANY size, so a byte-budget assertion built on one would be
+    measuring rounding noise rather than the picture. Built from
+    ``linear_gradient`` + one resize so a 2048x1536 fixture costs microseconds
+    instead of two million python-level pixel writes.
+    """
+    ramp = Image.linear_gradient("L").resize((width, height))
+    return Image.merge(
+        "RGB", (ramp, ramp.rotate(180), ramp.transpose(Image.FLIP_LEFT_RIGHT))
+    )
+
+
+def _jpeg_b64(width: int, height: int) -> str:
+    buffer = BytesIO()
+    _gradient_rgb(width, height).save(buffer, format="JPEG", quality=92)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _png_b64(width: int, height: int) -> str:
+    """The same picture as a png, for the inline (re-encoded) branch."""
+    buffer = BytesIO()
+    _gradient_rgb(width, height).save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _image_size(b64: str) -> tuple[int, int]:
+    with Image.open(BytesIO(base64.b64decode(b64))) as image:
+        return image.size
+
+
+def _image_format(b64: str) -> str:
+    with Image.open(BytesIO(base64.b64decode(b64))) as image:
+        return str(image.format or "").upper()
+
+
+def _offline_client_for_ephemeral():
+    """The minimum needed to drive prompt_ephemeral to its finally block.
+
+    Modelled on the harness in test_proactive_vision_screenshot_staging.py.
+    ``vision_model`` is left empty so the model switch stays out of the path --
+    these tests are about what gets ATTACHED, not about which model receives it.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock as _AsyncMock, MagicMock as _MagicMock
+    from main_logic.omni_offline_client._client import OmniOfflineClient
+    from utils.llm_client import SystemMessage
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._pending_plugin_images = []
+    client._proactive_image_to_inject = None
+    client._proactive_image_staged_at = 0.0
+    client._proactive_image_history_len = 0
+    client.model = "m"
+    client.vision_model = ""
+    client._is_responding = False
+    client._prefix_buffer_size = 0
+    client.master_name = "M"
+    client.lanlan_name = "L"
+    client.on_text_delta = _AsyncMock()
+    client.on_status_message = _AsyncMock()
+    client.on_response_done = _AsyncMock()
+    client.on_proactive_done = _AsyncMock()
+    client._begin_reasoning_stream = _MagicMock(return_value=1)
+    client._notify_reasoning_done = _AsyncMock()
+
+    sent: list = []
+
+    async def _fake_stream(messages):
+        sent.append(messages)
+        yield SimpleNamespace(content="看到了喵~")
+
+    client._astream_visible_with_tools = _fake_stream
+    return client, sent
+
+
+def _attached_images(messages: list) -> list[str]:
+    """The base64 payloads of every image block on the ephemeral message."""
+    content = messages[-1].content
+    if not isinstance(content, list):
+        return []
+    return [
+        block["image_url"]["url"].split("base64,", 1)[1]
+        for block in content
+        if block.get("type") == "image_url"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_proactive_prompt_ephemeral_images_go_through_the_budget_ladder(
+    monkeypatch,
+) -> None:
+    """The proactive turn now obeys the same ladder as a user turn.
+
+    Mutation: replace the ``fit_images_to_turn_budget`` call in
+    ``prompt_ephemeral`` with ``_budget_images = images`` (what the code did
+    before). Every assertion below fails -- five 1600x1200 frames reach the
+    model untouched and the user is told nothing.
+    """
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
+    client, sent = _offline_client_for_ephemeral()
+    # The LAST frame has a different aspect ratio on purpose. Every frame comes
+    # out of rung 0 at 720 high, but only this one comes out 1280 wide, so the
+    # survivor's shape says WHICH input survived -- and the ladder's rule is
+    # that the newest frame, the one the instruction is about, is the one it
+    # must never drop. With five identical fixtures that would be unobservable.
+    oversized = [_jpeg_b64(1600, 1200) for _ in range(4)] + [_jpeg_b64(1600, 900)]
+    # Budget squeezed to roughly one normalized frame and a half, so the ladder
+    # has to walk all the way down: sample five to three, re-compress, then
+    # drop from the front. Derived from the MEASURED normalized size, because a
+    # hardcoded figure drifts the moment the profile or the codec moves.
+    from utils.screenshot_utils import normalize_image_for_model
+
+    one_normalized = len(base64.b64decode(normalize_image_for_model(oversized[0])))
+    monkeypatch.setattr(
+        _lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one_normalized * 1.5)
+    )
+
+    committed = await client.prompt_ephemeral("======主动搭话======", images=oversized)
+
+    assert committed is True
+    attached = _attached_images(sent[-1])
+    # Something was actually dropped, so the ladder ran to its last rung.
+    assert 0 < len(attached) < len(oversized)
+    # And what survived is at the model profile, not at 1600x1200.
+    for payload in attached:
+        width, height = _image_size(payload)
+        assert width <= MODEL_IMAGE_MAX_WIDTH
+        assert height <= COMPRESS_TARGET_HEIGHT
+    # The last frame is the one the instruction is about; the ladder keeps it.
+    # 1280x720 is reachable only from the 1600x900 input (the 1600x1200 ones
+    # normalize to 960x720), so this identifies the survivor rather than merely
+    # re-checking the bound above.
+    assert _image_size(attached[-1]) == (MODEL_IMAGE_MAX_WIDTH, COMPRESS_TARGET_HEIGHT)
+
+
+@pytest.mark.asyncio
+async def test_proactive_prompt_ephemeral_toasts_only_when_images_were_dropped(
+    monkeypatch,
+) -> None:
+    """The gate is DROPPED, not "the ladder did something".
+
+    Both directions, because a one-sided assertion here is worth little:
+    a turn that silently loses a frame is as bad as one that toasts about
+    routine housekeeping.
+
+    Mutation A: gate on ``if _budget_notice`` instead of
+    ``_budget_notice.get("user_visible")`` -- the quiet case fails.
+    Mutation B: drop the ``on_status_message`` call entirely -- the loud case
+    fails.
+    """
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+    from utils.screenshot_utils import normalize_image_for_model
+
+    # ── Quiet: normalization alone. One oversized frame, budget untouched, so
+    #    rung 0 rewrites it and nothing is lost from the reader's point of view.
+    client, sent = _offline_client_for_ephemeral()
+    only = _jpeg_b64(1600, 1200)
+
+    await client.prompt_ephemeral("======主动搭话======", images=[only])
+
+    attached = _attached_images(sent[-1])
+    assert len(attached) == 1
+    width, height = _image_size(attached[0])
+    # It really was rewritten -- otherwise "no toast" would prove nothing.
+    assert (width, height) != (1600, 1200)
+    assert width <= MODEL_IMAGE_MAX_WIDTH and height <= COMPRESS_TARGET_HEIGHT
+    client.on_status_message.assert_not_awaited()
+
+    # ── Loud: whole frames dropped. Same call, budget squeezed.
+    client, sent = _offline_client_for_ephemeral()
+    frames = [_jpeg_b64(1600, 1200) for _ in range(3)]
+    one_normalized = len(base64.b64decode(normalize_image_for_model(frames[0])))
+    monkeypatch.setattr(
+        _lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one_normalized * 1.5)
+    )
+
+    await client.prompt_ephemeral("======主动搭话======", images=frames)
+
+    client.on_status_message.assert_awaited_once()
+    import json as _json
+
+    payload = _json.loads(client.on_status_message.await_args.args[0])
+    assert payload["code"] == "TURN_IMAGES_TRIMMED"
+    assert payload["details"]["dropped"] > 0
+    assert payload["details"]["user_visible"] is True
+    # The frontend interpolates these two into the toast copy, so an empty
+    # notice would render "images trimmed from {{original_count}}".
+    assert payload["details"]["original_count"] == 3
+    assert payload["details"]["final_count"] == len(_attached_images(sent[-1]))
+
+
+@pytest.mark.asyncio
+async def test_one_inline_image_reaches_chat_full_size_and_the_model_at_720p(
+    monkeypatch,
+) -> None:
+    """The fork, on the inline branch: same part, two deliberately different copies.
+
+    Mutation A (model side): put ``_normalize_inline_image_to_jpeg_base64``
+    back in ``_resolve_plugin_model_image`` -- the model image comes back
+    2048x1536 and the size assertion fails.
+    Mutation B (chat side): make ``_build_plugin_chat_blocks`` re-encode the
+    inline payload through the model normalizer -- the chat block is no longer
+    the plugin's own bytes and the identity assertion fails.
+    """
+    from app import main_server
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
+    manager = _manager()
+    # 2048x1536 is the MEASURED shape of an SDK-normalized plugin frame: the
+    # SDK bounds the long edge at MAX_IMAGE_EDGE=2048, and nothing downstream
+    # bounded the other one.
+    original = _png_b64(2048, 1536)
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": ["chat"],
+        "parts": [
+            {"type": "image", "binary_base64": original, "mime": "image/png"}
+        ],
+    })
+
+    # ── Chat: the plugin's own bytes, byte for byte, at the uploaded size.
+    manager.render_chat_blocks.assert_awaited_once()
+    blocks = manager.render_chat_blocks.await_args.args[0]
+    images = [block for block in blocks if block["type"] == "image"]
+    assert len(images) == 1
+    assert images[0]["url"] == f"data:image/png;base64,{original}"
+    assert _image_size(images[0]["url"].split("base64,", 1)[1]) == (2048, 1536)
+
+    # ── Model: jpeg, inside the profile.
+    manager.session.stream_image.assert_awaited_once()
+    model_b64 = manager.session.stream_image.await_args.args[0]
+    assert _image_format(model_b64) == "JPEG"
+    width, height = _image_size(model_b64)
+    assert width <= MODEL_IMAGE_MAX_WIDTH
+    assert height <= COMPRESS_TARGET_HEIGHT
+    # Stated as an asymmetry rather than as two independent facts: the point is
+    # that ONE part produced two different resolutions on purpose.
+    assert (width, height) != (2048, 1536)
+
+
+@pytest.mark.asyncio
+async def test_one_url_image_reaches_chat_by_reference_and_the_model_at_720p(
+    monkeypatch,
+) -> None:
+    """The same fork on the URL branch, which is where the hole actually was.
+
+    The inline branch always re-encoded; the URL branch returned the fetched
+    bytes verbatim, and those bytes are the measured 2048x1536 / ~49 KiB frame
+    that no byte budget ever objects to.
+
+    Mutation A (model side): drop the ``normalize_image_for_model`` call after
+    ``_fetch_plugin_image_base64`` -- the model gets 2048x1536 back.
+    Mutation B (chat side): render the fetched bytes inline instead of the
+    ``/media/<id>`` path -- the chat block stops being a reference and the URL
+    assertion fails.
+    """
+    from app import main_server
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
+    manager = _manager()
+    fetched = _jpeg_b64(2048, 1536)
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    # Mocked at the FETCH, deliberately: the resolver -- not the transfer -- is
+    # what has to own the profile guarantee, so bypassing the transfer must not
+    # bypass the bound.
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=fetched),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": ["chat"],
+        "parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
+    })
+
+    # ── Chat: a reference the browser fetches itself, so the reader gets the
+    #    uploaded resolution and those bytes never touch a model request.
+    manager.render_chat_blocks.assert_awaited_once()
+    blocks = manager.render_chat_blocks.await_args.args[0]
+    assert [block for block in blocks if block["type"] == "image"] == [
+        {"type": "image", "url": _browser_url(_IMAGE_URL)}
+    ]
+
+    # ── Model: the same picture, bounded.
+    manager.session.stream_image.assert_awaited_once()
+    model_b64 = manager.session.stream_image.await_args.args[0]
+    assert model_b64 != fetched, "the URL branch used to pass bytes through"
+    assert _image_format(model_b64) == "JPEG"
+    width, height = _image_size(model_b64)
+    assert width <= MODEL_IMAGE_MAX_WIDTH
+    assert height <= COMPRESS_TARGET_HEIGHT

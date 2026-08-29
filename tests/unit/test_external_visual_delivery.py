@@ -617,10 +617,19 @@ async def test_gemini_turn_drops_frames_lost_during_the_quarantine_wait():
             owned[0] = False
 
     client._await_gemini_external_quarantine = _lose_ownership_on_the_submit_wait
-    # 让 _submit_external_gemini_turn 头部走进隔离等待那条分支。
-    client._gemini_external_outcome_token = object()
 
     await client.prepare_external_voice_turn(turn_id="turn-quarantine")
+    # 让 _submit_external_gemini_turn 头部走进隔离等待那条分支。
+    #
+    # ⚠️ 必须挂在 prepare **之后**。prepare 里的
+    # _start_gemini_external_submit_quarantine() 会为一个已存在的 token 起后台
+    # 隔离任务，那个任务一被调度就把 token settle 成 None，第二次隔离等待的分支
+    # 就再也进不去了。原来挂在 prepare 之前也能过，只是因为 submit 那条路上恰好
+    # 没有让出点让后台任务跑起来——那是巧合，不是判据：图片预算那一步现在无条件
+    # 走一次 asyncio.to_thread（把每张图归一到模型档位），多出的这个 await 就让
+    # 后台任务抢先跑完，用例随即翻车。挂在 prepare 之后，前提由用例自己保证，与
+    # 被测路径上有几个 await 无关。
+    client._gemini_external_outcome_token = object()
     # 前提自证：进入被测函数时仍然持有所有权。
     assert owned[0] is True
     await client.submit_multimodal_turn(

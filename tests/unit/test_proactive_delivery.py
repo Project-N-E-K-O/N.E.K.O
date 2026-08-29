@@ -1222,7 +1222,23 @@ def test_submit_reports_nothing_when_nothing_was_evicted():
     assert mgr.submit({"text": "fits"}, coalesce_key="k") == []
 
 
-def _tiny_jpeg(px: int = 900) -> str:
+def _tiny_jpeg(px: int = 720) -> str:
+    """A JPEG that ALREADY sits at the model profile, encoded at high quality.
+
+    720 (not 1080 or 900) because the ladder test below has to measure the
+    LADDER, and rung 0 now normalizes every image to
+    MODEL_IMAGE_MAX_WIDTH x COMPRESS_TARGET_HEIGHT before the ladder is even
+    reached. A fixture over either bound would be rewritten by rung 0 first,
+    and the sample/compress/drop assertions would then be reading numbers that
+    rung 0 produced. 720x720 is inside both bounds, so rung 0 hands it straight
+    back -- which the "budget is loose" case asserts explicitly by requiring
+    ``notice is None``.
+
+    quality=95 while the profile is q80, so the compress rung still has real
+    work to do (measured ~0.38x). An image already at q80 would come back the
+    same size, the rung would keep the original, and the test would be
+    asserting nothing.
+    """
     import base64
     import io as _io
 
@@ -1398,3 +1414,229 @@ def test_byte_axis_still_acks_the_cues_it_drops():
         keys.append(mgr.submit(_img_cue_payload(per_cue, "I"), priority=5, coalesce_key=f"img{i}"))
 
     assert any(k for k in keys), "byte-axis eviction must report evicted keys"
+
+
+# ---------------------------------------------------------------------------
+# Rung 0: the model resolution profile.
+#
+# fit_images_to_turn_budget used to be a pure CEILING -- it totalled the
+# payloads and returned them unchanged when they already fit, BEFORE sampling,
+# compressing or dropping. So an image was only ever downscaled when it was too
+# BIG, and nothing anywhere guaranteed a bounded resolution: a plugin frame the
+# SDK had normalized to 2048x1536 / ~49 KiB sailed under the 8 MiB budget and
+# reached the model at 1536px high. compress_screenshot could not have caught
+# it either -- it bounds HEIGHT ONLY, so 16000x400 passes through completely
+# untouched and 5120x1440 still comes out 2560 wide.
+# ---------------------------------------------------------------------------
+
+
+def _jpeg_of(width: int, height: int, *, quality: int = 95) -> str:
+    """A JPEG of exact pixel dimensions, base64 without the ``data:`` prefix."""
+    import base64
+    import io as _io
+
+    from PIL import Image
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (width, height), (120, 30, 200)).save(
+        buf, "JPEG", quality=quality
+    )
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _size_of_b64(b64: str) -> tuple:
+    import base64
+    import io as _io
+
+    from PIL import Image
+
+    with Image.open(_io.BytesIO(base64.b64decode(b64))) as img:
+        return img.size
+
+
+def _size_of_jpeg_bytes(raw: bytes) -> tuple:
+    import io as _io
+
+    from PIL import Image
+
+    with Image.open(_io.BytesIO(raw)) as img:
+        return img.size
+
+
+def test_model_image_profile_constants_are_pinned() -> None:
+    """Anchor the literals every derived assertion below computes against.
+
+    Without these pins a change to either constant would move the profile and
+    the size assertions would quietly follow it, still green, while the images
+    actually sent to the model changed shape.
+
+    1280 is not a fresh number: static/app/app-state.js captures at
+    MAX_SCREENSHOT_WIDTH: 1280, so backend and frontend agree instead of
+    diverging silently.
+    """
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
+    assert COMPRESS_TARGET_HEIGHT == 720
+    assert MODEL_IMAGE_MAX_WIDTH == 1280
+
+
+def test_compress_screenshot_bounds_width_only_when_asked() -> None:
+    """``max_w`` is opt-in, so existing callers keep their exact old output.
+
+    brain/computer_use.py asks for target_h=1080 deliberately; making the width
+    bound a new floor everyone inherits would have changed what it produces.
+    """
+    from PIL import Image
+
+    from utils.screenshot_utils import compress_screenshot
+
+    ultrawide = Image.new("RGB", (5120, 1440), (10, 200, 90))
+
+    height_only = compress_screenshot(ultrawide, target_h=720)
+    assert _size_of_jpeg_bytes(height_only) == (2560, 720), (
+        "the default must stay HEIGHT ONLY -- width unclamped, exactly as before"
+    )
+
+    both_bounds = compress_screenshot(ultrawide, target_h=720, max_w=1280)
+    assert _size_of_jpeg_bytes(both_bounds) == (1280, 360)
+
+
+@pytest.mark.asyncio
+async def test_under_budget_image_is_normalized_and_stays_quiet() -> None:
+    """Rung 0 runs even when the byte budget was never in danger.
+
+    This is the case the old ceiling missed entirely, and the reason rung 0
+    sits ABOVE the early return rather than inside the ladder.
+    """
+    from main_logic.proactive_delivery import (
+        CALLBACK_IMAGE_MAX_TOTAL_BYTES,
+        approx_base64_decoded_bytes,
+        fit_images_to_turn_budget,
+    )
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
+    plugin_image = _jpeg_of(2048, 1536)
+    assert approx_base64_decoded_bytes(plugin_image) < CALLBACK_IMAGE_MAX_TOTAL_BYTES, (
+        "fixture must be UNDER budget, or this tests the ladder and not rung 0"
+    )
+
+    kept, notice = await fit_images_to_turn_budget(
+        [plugin_image], CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    )
+
+    width, height = _size_of_b64(kept[0])
+    assert height <= COMPRESS_TARGET_HEIGHT
+    assert width <= MODEL_IMAGE_MAX_WIDTH
+    assert notice is not None, "rung 0 did something, so it has to be reported"
+    assert notice["normalized"] is True
+    assert notice["dropped"] == 0
+    # 例行归一化不弹窗。rung 0 几乎每个带图的回合都会跑，照旧「有 notice 就弹」
+    # 的话用户会被刷屏，而他其实什么都没损失。
+    assert notice["user_visible"] is False
+
+
+@pytest.mark.asyncio
+async def test_model_normalization_is_a_fixed_point(monkeypatch) -> None:
+    """Feeding the normalizer its own output must NOT re-encode.
+
+    Load-bearing rather than a nicety: images ride ``_conversation_history``
+    for several more turns, so this code runs over the same payload again and
+    again. A normalizer that re-encoded every time would degrade the picture
+    generationally, one JPEG round-trip per turn, for no benefit at all.
+    """
+    from main_logic.proactive_delivery import (
+        CALLBACK_IMAGE_MAX_TOTAL_BYTES,
+        fit_images_to_turn_budget,
+    )
+    from utils import screenshot_utils as su
+
+    once = su.normalize_image_for_model(_jpeg_of(2048, 1536))
+    assert _size_of_b64(once)[1] <= su.COMPRESS_TARGET_HEIGHT, "fixture never normalized"
+
+    class _ReEncodeAttempted(BaseException):
+        # 刻意**不**继承 Exception：normalize_image_for_model 的失败兜底和 fit
+        # 里的归一化循环都是 `except Exception`，用普通异常会被它们吞掉，这个
+        # 测试就永远绿——连「删掉头部探测的跳过分支」这种变异都照样绿。
+        pass
+
+    def _boom(*args, **kwargs):
+        raise _ReEncodeAttempted("re-encoded a payload that already fits the profile")
+
+    monkeypatch.setattr(su, "compress_screenshot", _boom)
+
+    assert su.normalize_image_for_model(once) is once
+
+    # 再走一遍真实调用路径：rung 0 对已经合规的图必须是彻底的 no-op。
+    kept, notice = await fit_images_to_turn_budget(
+        [once], CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    )
+    assert kept == [once]
+    assert notice is None
+
+
+@pytest.mark.asyncio
+async def test_ultrawide_frame_is_bounded_on_width_too() -> None:
+    """5120x1440 came out 2560x720 -- inside the height bound, still 2560 wide."""
+    from main_logic.proactive_delivery import (
+        CALLBACK_IMAGE_MAX_TOTAL_BYTES,
+        fit_images_to_turn_budget,
+    )
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
+    kept, _ = await fit_images_to_turn_budget(
+        [_jpeg_of(5120, 1440)], CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    )
+
+    width, height = _size_of_b64(kept[0])
+    assert width <= MODEL_IMAGE_MAX_WIDTH, f"still {width}px wide"
+    assert height <= COMPRESS_TARGET_HEIGHT
+
+
+@pytest.mark.asyncio
+async def test_letterbox_frame_that_used_to_pass_through_is_bounded() -> None:
+    """16000x400 was the worst case: the height bound never even fired.
+
+    Its height already fits, so the resize branch never ran and the frame
+    reached the model at its full 16000px width.
+    """
+    from main_logic.proactive_delivery import (
+        CALLBACK_IMAGE_MAX_TOTAL_BYTES,
+        fit_images_to_turn_budget,
+    )
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
+    kept, _ = await fit_images_to_turn_budget(
+        [_jpeg_of(16000, 400)], CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    )
+
+    width, height = _size_of_b64(kept[0])
+    assert (width, height) != (16000, 400), "passed through completely untouched"
+    assert width <= MODEL_IMAGE_MAX_WIDTH
+    assert height <= COMPRESS_TARGET_HEIGHT
+
+
+@pytest.mark.asyncio
+async def test_only_dropping_whole_images_is_user_visible() -> None:
+    """The toast fires on lost CONTENT, never on housekeeping.
+
+    Normalizing, sampling and re-compressing all leave the picture there --
+    smaller, but there. Dropping is the one rung where the reader really is
+    short an image, and what she says next may not match what he sent.
+    """
+    from main_logic.proactive_delivery import (
+        approx_base64_decoded_bytes,
+        fit_images_to_turn_budget,
+    )
+
+    images = [_tiny_jpeg() for _ in range(10)]
+    total = sum(approx_base64_decoded_bytes(i) for i in images)
+
+    _, sampled = await fit_images_to_turn_budget(images, total // 2)
+    assert sampled["sampled"] is True
+    assert sampled["dropped"] == 0
+    assert sampled["user_visible"] is False
+
+    kept, dropped = await fit_images_to_turn_budget(images, 2000)
+    assert dropped["dropped"] > 0
+    assert dropped["user_visible"] is True
+    assert len(kept) >= 1, "the turn must never lose every image"

@@ -449,12 +449,20 @@ class _ResponseMixin:
                 TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
             )
             if _notice:
-                logger.warning(
-                    "Gemini multimodal turn over the %d-byte aggregate budget: "
-                    "%d -> %d image(s) (sampled=%s compressed=%s dropped=%d)",
+                # 这条路没有 on_status_message，本来就只落日志——但级别要跟着
+                # user_visible 走：归一化是每回合都会发生的例行事，用 warning 打
+                # 等于把日志淹掉；真丢了图才是 warning 级的事。
+                _emit = (
+                    logger.warning if _notice.get("user_visible") else logger.info
+                )
+                _emit(
+                    "Gemini multimodal turn fitted for the %d-byte aggregate "
+                    "budget: %d -> %d image(s) "
+                    "(normalized=%s sampled=%s compressed=%s dropped=%d)",
                     TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
                     _notice["original_count"],
                     _notice["final_count"],
+                    _notice.get("normalized"),
                     _notice["sampled"],
                     _notice["compressed"],
                     _notice["dropped"],

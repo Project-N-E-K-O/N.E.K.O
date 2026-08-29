@@ -270,10 +270,26 @@ async def fit_images_to_turn_budget(
     images: list,
     max_total_bytes: int,
 ) -> tuple[list, Optional[dict]]:
-    """Bring one turn's images under a byte budget without losing them silently.
+    """Bring one turn's images to the model profile, and under a byte budget.
 
-    A single request carrying too many bytes is rejected WHOLE by the provider,
-    so something has to give. The order of what gives is deliberate:
+    Rung 0 runs UNCONDITIONALLY: every image is normalized to the resolution
+    profile we send models (``MODEL_IMAGE_MAX_WIDTH`` x
+    ``COMPRESS_TARGET_HEIGHT``, JPEG q80) before anything else is even
+    considered. That used to sit behind the "already under budget" early
+    return, which made this a pure CEILING and left a real hole: an image only
+    ever got downscaled when it was too BIG, so a plugin frame the SDK had
+    normalized to 2048x1536 / ~49 KiB sailed under the 8 MiB budget and reached
+    the model at 1536px high, full width, untouched. No path guaranteed a
+    bounded resolution. Now one does, and it does not depend on the byte total.
+
+    Rung 0 is a fixed point (``normalize_image_for_model`` returns an
+    already-conforming payload unchanged), which matters because images ride
+    ``_conversation_history`` for several more turns and would otherwise be
+    re-encoded once per turn, degrading generationally.
+
+    Below it, a single request carrying too many bytes is still rejected WHOLE
+    by the provider, so something has to give. The order of what gives is
+    unchanged and deliberate:
 
     1. **Sample** down to head/middle/tail. A long burst of frames is mostly
        redundant; its two ends and its midpoint carry nearly all of the signal.
@@ -282,36 +298,68 @@ async def fit_images_to_turn_budget(
     3. Only if both fail, drop from the front (oldest first, always keeping the
        last one) -- and say so.
 
-    Never drops the turn itself, and never drops images without reporting it:
-    the returned notice is meant for the user, not just the log.
+    Never drops the turn itself, and never drops images without reporting it.
 
-    All three steps sit BEHIND an early return. The first thing this does is
-    total the payloads, and when the total already fits it hands the list back
-    unchanged with ``notice=None`` — nothing is sampled, nothing is re-encoded,
-    nothing is dropped. So this is a CEILING like
-    ``trim_images_to_turn_budget``, not a normalizer: images under budget reach
-    the provider exactly as they arrived, at whatever resolution and encoding
-    that was. A caller that wants every frame at 720p JPEG regardless of size
-    has to compress them itself before getting here.
+    Returns ``(kept, notice)``; ``notice`` is None only when literally nothing
+    happened -- already at the profile AND already under budget.
 
-    Returns ``(kept, notice)``; ``notice`` is None when nothing was needed.
+    The notice is NOT automatically a user-facing message any more. Rung 0
+    fires on nearly every turn that carries an image, so a caller that toasted
+    on any notice would toast constantly about routine housekeeping. Read
+    ``notice["user_visible"]``: it is True only when whole images were DROPPED,
+    which is the one outcome the reader actually loses something to.
+    Normalizing, sampling and re-compressing stay log-only. Everything else in
+    the notice (``normalized`` / ``sampled`` / ``compressed`` / ``dropped``)
+    is there for the log either way.
     """
     kept = [img for img in (images or []) if img]
     if not kept:
         return kept, None
-    total = sum(approx_base64_decoded_bytes(img) for img in kept)
-    if total <= max_total_bytes:
-        return kept, None
 
     original_count = len(kept)
+    original_bytes = sum(approx_base64_decoded_bytes(img) for img in kept)
+
+    # ── Rung 0：归一化到模型档位。跑在预算判断之前，所以这条保证与图片大小无关。
+    from utils.screenshot_utils import normalize_image_for_model
+
+    def _normalize_all(payloads: list) -> list:
+        out = []
+        for payload in payloads:
+            try:
+                out.append(normalize_image_for_model(payload))
+            except Exception:
+                # 单张失败不该拖累整轮：原样留着，下面的阶梯照旧管它的字节数。
+                out.append(payload)
+        return out
+
+    try:
+        normalized = await asyncio.to_thread(_normalize_all, kept)
+    except Exception:
+        normalized = kept
+    # 归一化器对「已经合规」的图返回**同一个字符串对象**，所以身份比较正好是
+    # 「这张图真被重编码了吗」的精确判据，不用再去比内容或长度。
+    was_normalized = any(new is not old for new, old in zip(normalized, kept))
+    kept = normalized
+    total = sum(approx_base64_decoded_bytes(img) for img in kept)
+
     notice: dict = {
         "original_count": original_count,
-        "original_bytes": total,
+        "original_bytes": original_bytes,
         "budget_bytes": max_total_bytes,
+        "normalized": was_normalized,
         "sampled": False,
         "compressed": False,
         "dropped": 0,
     }
+
+    if total <= max_total_bytes:
+        if not was_normalized:
+            # 图片本来就在档位内、也在预算内：什么都没发生，连日志都不必打扰。
+            return kept, None
+        notice["final_count"] = len(kept)
+        notice["final_bytes"] = total
+        notice["user_visible"] = False
+        return kept, notice
 
     if len(kept) > TURN_IMAGE_SAMPLE_KEEP:
         kept = _sample_head_middle_tail(kept)
@@ -351,6 +399,10 @@ async def fit_images_to_turn_budget(
 
     notice["final_count"] = len(kept)
     notice["final_bytes"] = total
+    # 只有「整张图被丢掉」才值得打扰用户。归一化 / 抽样 / 重压在读者看来是无损
+    # 的（画面还在，只是小一点），而丢弃是真的少了一张图，她接下来讲的东西可能
+    # 就对不上——这才是用户需要知道的那一类。
+    notice["user_visible"] = notice["dropped"] > 0
     return kept, notice
 
 

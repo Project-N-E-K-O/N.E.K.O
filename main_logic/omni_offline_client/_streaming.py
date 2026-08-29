@@ -722,16 +722,20 @@ class _StreamingMixin:
                 raise
             if _budget_notice:
                 logger.warning(
-                    "Turn images over the %d-byte budget: %d -> %d image(s) "
-                    "(sampled=%s compressed=%s dropped=%d)",
+                    "Turn images fitted for the %d-byte budget: %d -> %d image(s) "
+                    "(normalized=%s sampled=%s compressed=%s dropped=%d)",
                     TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
                     _budget_notice["original_count"],
                     _budget_notice["final_count"],
+                    _budget_notice.get("normalized"),
                     _budget_notice["sampled"],
                     _budget_notice["compressed"],
                     _budget_notice["dropped"],
                 )
-                if self.on_status_message:
+                # 日志每种情况都打，弹窗只在**整张图被丢掉**时弹。归一化那一级
+                # 现在几乎每个带图的回合都会跑，照旧「有 notice 就弹」的话用户
+                # 会被一串「图片已调整」刷屏，而其中绝大多数他根本没损失什么。
+                if _budget_notice.get("user_visible") and self.on_status_message:
                     try:
                         await self.on_status_message(json.dumps({
                             "code": "TURN_IMAGES_TRIMMED",

@@ -16,6 +16,10 @@
 import contextlib
 import functools
 
+from main_logic.proactive_delivery import (
+    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+    fit_images_to_turn_budget,
+)
 from utils.llm_client import (
     peek_dialog_slop_lang,
     reset_dialog_slop_lang,
@@ -216,15 +220,80 @@ class _LifecycleMixin:
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
                 )
                 await self.switch_model(self.vision_model, use_vision_config=True)
-            _ephemeral_content: list = []
-            for img_b64 in images:
-                _ephemeral_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
-                })
-            _ephemeral_content.append({"type": "text", "text": instruction})
-            logger.info(f"prompt_ephemeral: attaching {len(images)} proactive image(s)")
-            _ephemeral_msg = HumanMessage(content=_ephemeral_content)
+            # 走和 stream_text 同一条预算阶梯：归一化到模型档位 → 抽样 → 重压 →
+            # 最后才丢。这条路以前是仓库里**唯一**一个带图却完全没有预算闸的模型
+            # 调用——images 里的每一张都逐条原样贴成 data URL 就发出去了。
+            # 而它恰恰是最容易堆量的一条：调用方（core/proactive.py）把这一批
+            # 里**所有** callback 的 media_images 拼在一起传进来，每个 callback
+            # 自己已经能带到 8 张，合批之后没有任何人再看总量。它和用户轮共用同
+            # 一个 provider、同一个单请求上限，超了是整条请求被拒——只是这里被拒
+            # 的后果更隐蔽：用户根本不知道刚才有一轮主动搭话没发出去。
+            try:
+                _budget_images, _budget_notice = await fit_images_to_turn_budget(
+                    images,
+                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+                )
+            except Exception as _fit_error:
+                # 阶梯内部已经逐张兜底（单张失败就原样留着），能漏到这里的只剩
+                # 编程错误。这种情况下按原样送出，而不是让异常炸穿 prompt_ephemeral
+                # ——最坏是 provider 拒一条主动搭话，正好落在下面那条「失败就静默
+                # 放弃」的既定语义里；而炸穿会连带把调用方的 proactive 状态机
+                # 一起掀了。
+                logger.warning(
+                    "prompt_ephemeral: 图片预算阶梯异常，按原样附图: %s",
+                    _fit_error,
+                )
+                _budget_images, _budget_notice = list(images), None
+            if _budget_notice:
+                logger.warning(
+                    "prompt_ephemeral images fitted for the %d-byte budget: "
+                    "%d -> %d image(s) (normalized=%s sampled=%s compressed=%s dropped=%d)",
+                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+                    _budget_notice["original_count"],
+                    _budget_notice["final_count"],
+                    _budget_notice.get("normalized"),
+                    _budget_notice["sampled"],
+                    _budget_notice["compressed"],
+                    _budget_notice["dropped"],
+                )
+                # 这里确实向前端弹了一条 —— 和下面「主动搭话失败静默吞掉」的立场
+                # 不冲突，因为两者说的不是一回事：
+                #   * 那条立场管的是**这一轮没能发生**。用户没在等回复，也从不知道
+                #     本来会有这么一轮，告诉他「刚才有句话没说出来」只是制造焦虑。
+                #   * 这里管的是**这一轮发生了，但内容缺了一块**。角色接下来会围着
+                #     她看到的图讲话，而被丢掉的那几张用户很可能还看得见——插件推
+                #     的图只要带 visibility=["chat"] 就同时渲染进了聊天气泡。不说，
+                #     用户面对的就是「她怎么对着这张图答非所问」，一个他无从解释、
+                #     只会归因于模型变笨的现象。
+                # 判据本身仍然是全仓统一的那条：只有**整张图被丢掉**才打扰用户，
+                # 归一化 / 抽样 / 重压一律只进日志（见 fit_images_to_turn_budget）。
+                if _budget_notice.get("user_visible") and self.on_status_message:
+                    try:
+                        await self.on_status_message(json.dumps({
+                            "code": "TURN_IMAGES_TRIMMED",
+                            "details": _budget_notice,
+                        }))
+                    except Exception as _notice_error:
+                        logger.warning(
+                            "could not report the proactive image trim to the user: %s",
+                            _notice_error,
+                        )
+            if _budget_images:
+                _ephemeral_content: list = []
+                for img_b64 in _budget_images:
+                    _ephemeral_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                    })
+                _ephemeral_content.append({"type": "text", "text": instruction})
+                logger.info(
+                    f"prompt_ephemeral: attaching {len(_budget_images)} proactive image(s)"
+                )
+                _ephemeral_msg = HumanMessage(content=_ephemeral_content)
+            else:
+                # 阶梯永远至少保住最后一张，所以走到这里只可能是调用方传了一串空
+                # 字符串。退回纯文本消息，别发一条只有 text block 的多模态壳子。
+                _ephemeral_msg = HumanMessage(content=instruction)
         else:
             _ephemeral_msg = HumanMessage(content=instruction)
         messages_to_send = self._conversation_history + [_ephemeral_msg]

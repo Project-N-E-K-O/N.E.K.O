@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from plugin.core.bus.memory import MemoryClient
     from plugin.core.bus.messages import MessageClient
     from plugin.core.bus.conversations import ConversationClient
-    from plugin.sdk.shared.core.types import PushMessageResult
+    from plugin.sdk.shared.core.types import PushMessageRejected, PushMessageResult
     # ⚠ 严禁 import loguru。logger 字段实际类型是 plugin.logging_config.PluginLoggerAdapter。
     from plugin.logging_config import PluginLoggerAdapter as LoguruLogger
 
@@ -72,6 +72,37 @@ def _is_submission_backpressure(error: BaseException) -> bool:
         return True
     again_type = getattr(zmq, "Again", None) if zmq is not None else None
     return isinstance(again_type, type) and isinstance(error, again_type)
+
+
+def _push_payload_carries_inline_bytes(parts: Any, legacy_binary_data: Any) -> bool:
+    """Return whether the wire payload will embed raw bytes rather than a URL.
+
+    This is the gate that keeps the payload size probe off the hot path.  A
+    push only has a realistic chance of blowing MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+    when it ships its bytes inline; text cues, ui_action cues and url-carrying
+    media parts all stay in the low kilobytes no matter how many of them a
+    plugin emits.  Those are also the overwhelming majority of pushes -- a
+    screenshot notice, a log tail, a per-frame status cue -- and making every
+    one of them pay a second msgpack pack just so the rare image push can be
+    measured would be a permanent tax levied for an exceptional case.
+
+    Both inline carriers are checked because they can appear independently:
+    ``parts[].binary_base64`` is the canonical one, while ``binary_data`` is
+    the legacy field that :func:`translate_push_message` leaves untranslated
+    when a caller passes v2 ``parts`` and the deprecated ``binary_data=``
+    kwarg together.  Either one alone is enough to reach the cap.
+    """
+    if isinstance(legacy_binary_data, (bytes, bytearray)) and legacy_binary_data:
+        return True
+    if not isinstance(parts, list):
+        return False
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        blob = part.get("binary_base64")
+        if isinstance(blob, str) and blob:
+            return True
+    return False
 
 
 def _synthesize_legacy_message_type(canonical: Dict[str, Any]) -> str:
@@ -1198,6 +1229,85 @@ class PluginContext:
                 "reply": legacy_reply,
             }
 
+        def _reject_if_payload_too_large(payload: Dict[str, Any]) -> Optional["PushMessageRejected"]:
+            """Refuse a push the host's ingest server would discard whole.
+
+            The host measures ``len(ormsgpack.packb(payload))`` of each delta
+            item -- the payload dict, NOT the batch envelope around it -- against
+            MESSAGE_PLANE_PAYLOAD_MAX_BYTES, and on overflow it records
+            ``payload_too_big`` and drops the entire item, text parts included.
+            That verdict lands in the host process, long after push_message() has
+            already returned ``{"submitted": True}``, so the author's only trace
+            is a throttled line in someone else's log.  Measuring the same
+            expression here turns that into a synchronous verdict the caller can
+            branch on.  Both processes import the constant from plugin.settings,
+            so the two measurements cannot drift apart.
+
+            The check is deliberately skipped when the host is not validating
+            (MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES off): rejecting locally what
+            the host would happily accept would be the SDK inventing a limit of
+            its own, and this function exists precisely to agree with the host.
+            A pack failure is likewise not our verdict to make -- the host's
+            own ``payload_pack_error`` path owns it, and swallowing the
+            exception here keeps a msgpack quirk from turning into a push that
+            never even reaches the transport.
+
+            Returns the rejection dict to hand back to the caller, or ``None``
+            when the push may proceed.
+            """
+            if not _push_payload_carries_inline_bytes(
+                canonical.get("parts"), legacy_binary_data
+            ):
+                return None
+            if ormsgpack is None:
+                return None
+            from plugin.settings import (
+                MESSAGE_PLANE_PAYLOAD_MAX_BYTES,
+                MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES,
+            )
+
+            if not bool(MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES):
+                return None
+            try:
+                size = len(ormsgpack.packb(payload))
+            except Exception:
+                return None
+            limit = int(MESSAGE_PLANE_PAYLOAD_MAX_BYTES)
+            if size <= limit:
+                return None
+            try:
+                # The author needs three things to act: how far over they are,
+                # what the ceiling is, and why their "100 KiB screenshot" blew a
+                # 256 KiB cap. The last one is the non-obvious part -- the
+                # envelope carries the same image twice, base64 (4/3 of the raw
+                # bytes) in parts[].binary_base64 and raw again in the legacy
+                # binary_data compat field, so ~2.34x -- and without it the
+                # arithmetic looks broken and the fix looks arbitrary.
+                self.logger.error(
+                    "[PluginContext] push_message rejected: reason=payload_too_large "
+                    "plugin_id={} size={}B limit={}B. The wire envelope carries every "
+                    "inline image about 2.34x its raw size (base64 in "
+                    "parts[].binary_base64 plus the legacy binary_data compat field), "
+                    "so the effective raw-bytes ceiling is only about {}B. Send large "
+                    "images as a URL part instead: "
+                    "`part = await ctx.images.upload(data, mime=...)` returns a "
+                    "push-ready image part that does not travel inline.",
+                    self.plugin_id,
+                    int(size),
+                    limit,
+                    int(limit / 2.34),
+                )
+            except Exception:
+                # Diagnostic only. A logging failure (rotation race, bad
+                # formatting arg) must not convert a clean local rejection into
+                # an exception the plugin author never asked for.
+                pass
+            return {
+                "ok": False,
+                "submitted": False,
+                "reason": "payload_too_large",
+            }
+
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
         # from the control plane and rely on ZMQ backpressure.
         primary_failure_reason: Optional[str] = None
@@ -1280,6 +1390,16 @@ class PluginContext:
                                 message_id=f"{self.plugin_id}:{next(msg_counter)}",
                                 ts=time.time(),
                             )
+                            # Probed under _push_lock, which is the price of
+                            # reusing the counter-stamped payload: only pushes
+                            # that actually carry inline bytes get here, and
+                            # dropping the lock to pack and retaking it to
+                            # enqueue would let a later push jump ahead of an
+                            # earlier message_id for no gain on a path that is
+                            # already the rare one.
+                            oversized = _reject_if_payload_too_large(payload)
+                            if oversized is not None:
+                                return oversized
                             item = {"store": "messages", "topic": "all", "payload": payload}
                             try:
                                 batcher.enqueue(item)
@@ -1389,6 +1509,17 @@ class PluginContext:
                         message_id=str(uuid.uuid4()),
                         ts=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     )
+                    # Before the envelope is built, so an oversized push costs
+                    # one pack instead of two, and before the send, so the
+                    # rejection is authoritative rather than a report about a
+                    # payload already on its way to be discarded. Returning
+                    # here also skips the legacy control-plane fallback below
+                    # on purpose: that queue would accept the same oversized
+                    # payload, which is exactly the silent non-delivery this
+                    # check exists to end.
+                    oversized = _reject_if_payload_too_large(payload)
+                    if oversized is not None:
+                        return oversized
                     msg = {
                         "v": 1,
                         "kind": "delta_batch",

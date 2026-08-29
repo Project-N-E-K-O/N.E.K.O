@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import ormsgpack
 import pytest
 
 from plugin import settings
@@ -398,3 +399,225 @@ def test_primary_setup_failure_can_use_fallback_before_submission_attempt(
     assert len(fallback_queue.items) == 1
     assert private_marker not in repr(logger.records)
     assert "RuntimeError" in repr(logger.records)
+
+
+# ---------------------------------------------------------------------------
+# Local payload-size rejection (host parity)
+#
+# The host's ingest server measures len(ormsgpack.packb(payload)) of each delta
+# item against MESSAGE_PLANE_PAYLOAD_MAX_BYTES and drops the whole item on
+# overflow, in a different process, after push_message() has already returned.
+# These tests pin the SDK-side probe that turns that into a synchronous verdict
+# -- including the hot-path gate, which is the part most likely to rot: an
+# unconditional pack here would be a permanent tax on every text-only cue.
+# ---------------------------------------------------------------------------
+
+
+class _PackCounter:
+    """Real ormsgpack behind a counter, so tests can price each push.
+
+    Sizes have to be real for the limit comparison to mean anything, so this
+    delegates instead of returning a canned blob like
+    ``_install_slow_message_plane`` does.
+    """
+
+    def __init__(self) -> None:
+        self.sizes: list[int] = []
+
+    @property
+    def calls(self) -> int:
+        return len(self.sizes)
+
+    def packb(self, payload: object) -> bytes:
+        encoded = ormsgpack.packb(payload)
+        self.sizes.append(len(encoded))
+        return encoded
+
+
+class _RecordingBatcher:
+    """Fast-path batcher stand-in that keeps whatever reached the queue."""
+
+    items: list[dict[str, object]] = []
+
+    def __init__(self, **_kwargs: object) -> None:
+        return None
+
+    def start(self) -> None:
+        return None
+
+    def stop(self, *, timeout: float) -> None:
+        assert timeout == 2.0
+
+    def enqueue(self, item: dict[str, object]) -> None:
+        type(self).items.append(item)
+
+
+def _install_counting_slow_plane(
+    monkeypatch: pytest.MonkeyPatch,
+    socket: _Socket,
+) -> _PackCounter:
+    _install_slow_message_plane(monkeypatch, socket)
+    counter = _PackCounter()
+    monkeypatch.setattr(
+        context_module,
+        "ormsgpack",
+        SimpleNamespace(packb=counter.packb),
+    )
+    return counter
+
+
+def _install_counting_fast_plane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[_PackCounter, type[_RecordingBatcher]]:
+    from plugin.utils import zeromq_ipc
+
+    counter = _PackCounter()
+    batcher = type("_Batcher", (_RecordingBatcher,), {"items": []})
+    monkeypatch.setattr(context_module, "zmq", object())
+    monkeypatch.setattr(
+        context_module,
+        "ormsgpack",
+        SimpleNamespace(packb=counter.packb),
+    )
+    monkeypatch.setattr(
+        settings,
+        "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",
+        "inproc://submission-test",
+    )
+    monkeypatch.setattr(zeromq_ipc, "MessagePlaneIngestBatcher", batcher)
+    return counter, batcher
+
+
+def _inline_image_part(raw_bytes: int) -> dict[str, object]:
+    return {
+        "type": "image",
+        "data": b"\x00" * raw_bytes,
+        "mime": "image/png",
+    }
+
+
+@pytest.mark.plugin_unit
+def test_oversized_inline_push_is_rejected_before_the_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = _Socket()
+    _install_counting_slow_plane(monkeypatch, socket)
+    monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    fallback_queue = _Queue()
+    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="respond",
+        parts=[{"type": "text", "text": "look"}, _inline_image_part(8192)],
+    )
+
+    assert result == {
+        "ok": False,
+        "submitted": False,
+        "reason": "payload_too_large",
+    }
+    assert socket.sent == []
+    # The legacy control-plane queue must not become a silent second chance:
+    # it would carry the same oversized payload to a different consumer, which
+    # is the invisible non-delivery this rejection exists to end.
+    assert fallback_queue.items == []
+    # The author has to be able to act on the log line alone.
+    reported = repr(logger.records)
+    assert "payload_too_large" in reported
+    assert "4096" in reported
+    assert "2.34" in reported
+    assert "ctx.images.upload" in reported
+
+
+@pytest.mark.plugin_unit
+def test_oversized_inline_fast_push_is_not_enqueued(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _counter, batcher = _install_counting_fast_plane(monkeypatch)
+    monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    ctx, _logger = _context(tmp_path)
+
+    with pytest.warns(DeprecationWarning, match="fast_mode.*v0.9"):
+        result = ctx.push_message(
+            visibility=["chat"],
+            ai_behavior="read",
+            parts=[_inline_image_part(8192)],
+            fast_mode=True,
+        )
+
+    assert result == {
+        "ok": False,
+        "submitted": False,
+        "reason": "payload_too_large",
+    }
+    assert batcher.items == []
+
+
+@pytest.mark.plugin_unit
+def test_text_only_fast_push_pays_no_size_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counter, batcher = _install_counting_fast_plane(monkeypatch)
+    ctx, _logger = _context(tmp_path)
+
+    with pytest.warns(DeprecationWarning, match="fast_mode.*v0.9"):
+        result = ctx.push_message(
+            visibility=["chat"],
+            ai_behavior="read",
+            parts=[{"type": "text", "text": "a high-frequency cue"}],
+            fast_mode=True,
+        )
+
+    assert result == {"submitted": True}
+    assert len(batcher.items) == 1
+    # The batcher does its own packing on its own thread; push_message itself
+    # must pack nothing at all for a text-only cue.
+    assert counter.calls == 0
+
+
+@pytest.mark.plugin_unit
+def test_text_only_slow_push_packs_only_the_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = _Socket()
+    counter = _install_counting_slow_plane(monkeypatch, socket)
+    ctx, _logger = _context(tmp_path)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="read",
+        parts=[{"type": "text", "text": "a high-frequency cue"}],
+    )
+
+    assert result == {"submitted": True}
+    assert len(socket.sent) == 1
+    # One pack: the ZMQ envelope. A second one would mean the probe went
+    # unconditional and every text cue now pays for the rare image push.
+    assert counter.calls == 1
+
+
+@pytest.mark.plugin_unit
+def test_small_inline_push_still_submits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = _Socket()
+    counter = _install_counting_slow_plane(monkeypatch, socket)
+    ctx, _logger = _context(tmp_path)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="respond",
+        parts=[{"type": "text", "text": "a tiny icon"}, _inline_image_part(64)],
+    )
+
+    assert result == {"submitted": True}
+    assert len(socket.sent) == 1
+    # Probe + envelope, and the probe measured well under the real default cap.
+    assert counter.calls == 2
+    assert counter.sizes[0] < int(settings.MESSAGE_PLANE_PAYLOAD_MAX_BYTES)
