@@ -483,7 +483,6 @@ const S = {
 const U = { isMobile: () => false };
 const window = {
   t: () => 'ok',
-  navigator: { userActivation: { isActive: true } },
   appCrop: null,
   fetchBackendInteractiveScreenshot: async () => null,
   prepareRememberedWindowCapture: async () => __PREPARE__,
@@ -502,14 +501,8 @@ const setScreenshotCaptureSessionActive = () => {};
 const captureDesktopRegionDirectly = async () => __DIRECT__;
 const recaptureWithoutNeko = async () => null;
 let _captureScreenshotDataUrlBusy = false;
-let trustedScreenshotCaptureToken = 'test-token';
-const consumeTrustedScreenshotCaptureToken = (token) => {
-  if (token !== trustedScreenshotCaptureToken) return false;
-  trustedScreenshotCaptureToken = '';
-  return true;
-};
 __CAPTURE__
-captureScreenshotDataUrl('test-token').then((shot) => {
+captureScreenshotDataUrl().then((shot) => {
   results.data = shot && shot.dataUrl;
   results.selected = S.selectedScreenSourceId;
   console.log(JSON.stringify(results));
@@ -578,7 +571,6 @@ const U = { isMobile: () => false };
 const window = {
   t: (key) => key,
   showStatusToast: (message) => results.toasts.push(message),
-  navigator: { userActivation: { isActive: true } },
   appCrop: null,
   prepareRememberedWindowCapture: async () => ({
     required: true,
@@ -618,12 +610,6 @@ const captureDesktopRegionDirectly = async () => {
 };
 const recaptureWithoutNeko = async () => null;
 let _captureScreenshotDataUrlBusy = false;
-let trustedScreenshotCaptureToken = 'test-token';
-const consumeTrustedScreenshotCaptureToken = (token) => {
-  if (token !== trustedScreenshotCaptureToken) return false;
-  trustedScreenshotCaptureToken = '';
-  return true;
-};
 __CAPTURE__
 const mod = { captureScreenshotDataUrl };
 mod.enqueueCapturedScreenshotResult = async () => {
@@ -653,7 +639,7 @@ def _remembered_screenshot_race_script(
     if run_outer:
         outer = _fn(buttons_src, "captureScreenshotToPendingList")
         run = """mod.captureScreenshotToPendingList = captureScreenshotToPendingList;
-mod.captureScreenshotToPendingList('test-token').then(() => {
+mod.captureScreenshotToPendingList().then(() => {
   console.log(JSON.stringify(results));
 }).catch((error) => {
   results.error = error && error.message;
@@ -661,7 +647,7 @@ mod.captureScreenshotToPendingList('test-token').then(() => {
 });"""
     else:
         outer = ""
-        run = """captureScreenshotDataUrl('test-token').then((shot) => {
+        run = """captureScreenshotDataUrl().then((shot) => {
   results.data = shot && shot.dataUrl;
   results.unavailable = !!(shot && shot.rememberedWindowUnavailable);
   console.log(JSON.stringify(results));

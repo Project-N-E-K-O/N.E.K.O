@@ -526,11 +526,11 @@
         I.dispatchHostEvent('import-image', {});
     }
 
-    I.handleComposerScreenshot = function handleComposerScreenshot(event) {
+    I.handleComposerScreenshot = function handleComposerScreenshot() {
         var handled = false;
         if (typeof I.state.onComposerScreenshot === 'function') {
             try {
-                I.state.onComposerScreenshot(event);
+                I.state.onComposerScreenshot();
                 handled = true;
             } catch (error) {
                 console.error('[ReactChatWindow] onComposerScreenshot failed:', error);
@@ -538,13 +538,8 @@
             }
         } else if (window.appButtons && typeof window.appButtons.captureScreenshotToPendingList === 'function') {
             try {
-                var screenshotCaptureToken = typeof window.appButtons.mintTrustedScreenshotCaptureToken === 'function'
-                    ? window.appButtons.mintTrustedScreenshotCaptureToken(event)
-                    : '';
-                if (screenshotCaptureToken) {
-                    window.appButtons.captureScreenshotToPendingList(screenshotCaptureToken);
-                    handled = true;
-                }
+                window.appButtons.captureScreenshotToPendingList();
+                handled = true;
             } catch (error) {
                 console.error('[ReactChatWindow] captureScreenshotToPendingList failed:', error);
                 handled = false;
