@@ -212,8 +212,8 @@ DEFAULT_ASSIST_API_PROFILES = {
     'orcarouter': {
         'OPENROUTER_URL': "https://api.orcarouter.ai/v1",
         'CONVERSATION_MODEL': "anthropic/claude-sonnet-5",
-        'SUMMARY_MODEL': "anthropic/claude-haiku-4.5",
-        'CORRECTION_MODEL': "anthropic/claude-haiku-4.5",
+        'SUMMARY_MODEL': "anthropic/claude-sonnet-5",
+        'CORRECTION_MODEL': "anthropic/claude-sonnet-5",
         'EMOTION_MODEL': "anthropic/claude-haiku-4.5",
         'VISION_MODEL': "anthropic/claude-sonnet-5",
         'AGENT_MODEL': "anthropic/claude-sonnet-5",
