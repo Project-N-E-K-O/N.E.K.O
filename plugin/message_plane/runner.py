@@ -153,8 +153,13 @@ def _rpc_health_check(endpoint: str, *, timeout_s: float = 1.0) -> bool:
 
 
 class PythonMessagePlaneRunner(MessagePlaneRunner):
-    def __init__(self, *, endpoints: MessagePlaneEndpoints) -> None:
+    def __init__(self, *, endpoints: MessagePlaneEndpoints, auth_token: str) -> None:
         self._endpoints = endpoints
+        # Injected rather than read from a global: the plane must only accept
+        # writes from the process that started it.
+        self._auth_token = str(auth_token or "").strip()
+        if not self._auth_token:
+            raise ValueError("message-plane runner requires an ingest auth token")
 
         self._thread: threading.Thread | None = None
         self._ingest_thread: threading.Thread | None = None
@@ -230,7 +235,6 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             from plugin.message_plane.rpc_server import MessagePlaneRpcServer
             from plugin.message_plane.stores import StoreRegistry, TopicStore
             from plugin.settings import MESSAGE_PLANE_STORE_MAXLEN
-            from utils.plugin_host_auth import require_plugin_host_token
 
             stores = StoreRegistry(default_store="messages")
             # conversations 是独立的 store，用于存储对话上下文（与 messages 分离）
@@ -242,7 +246,7 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
                 endpoint=str(self._endpoints.ingest),
                 stores=stores,
                 pub_server=pub_srv,
-                auth_token=require_plugin_host_token(),
+                auth_token=self._auth_token,
             )
             rpc_srv = MessagePlaneRpcServer(endpoint=str(self._endpoints.rpc), pub_server=pub_srv, stores=stores)
 
@@ -370,7 +374,7 @@ def _resolve_endpoint_with_fallback(endpoint: str, used_ports: set[tuple[str, in
     return endpoint
 
 
-def build_message_plane_runner() -> MessagePlaneRunner:
+def build_message_plane_runner(*, auth_token: str) -> MessagePlaneRunner:
     from plugin.settings import (
         MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT,
         MESSAGE_PLANE_ZMQ_PUB_ENDPOINT,
@@ -396,4 +400,4 @@ def build_message_plane_runner() -> MessagePlaneRunner:
         ingest=ingest_ep,
     )
 
-    return PythonMessagePlaneRunner(endpoints=endpoints)
+    return PythonMessagePlaneRunner(endpoints=endpoints, auth_token=auth_token)

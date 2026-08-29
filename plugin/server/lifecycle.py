@@ -20,7 +20,7 @@ from plugin.server.application.plugins.layout_migration import migrate_legacy_pl
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
-from plugin.server.messaging.plane_bridge import start_bridge, stop_bridge
+from plugin.server.messaging.plane_bridge import ingest_auth_token, start_bridge, stop_bridge
 from plugin.server.messaging.proactive_bridge import start_proactive_bridge, stop_proactive_bridge
 from plugin.server.messaging.plane_runner import MessagePlaneRunner, build_message_plane_runner
 from plugin.server.monitoring.metrics import metrics_collector
@@ -167,7 +167,11 @@ class ServerLifecycleService:
             state.event_handlers.clear()
 
     async def _start_message_plane(self) -> None:
-        self._message_plane_runner = build_message_plane_runner()
+        # Same process mints the credential and starts the plane that must
+        # accept it; start_bridge() below is the only writer.
+        self._message_plane_runner = build_message_plane_runner(
+            auth_token=ingest_auth_token(),
+        )
         self._message_plane_runner.start()
         try:
             health_check_async = getattr(self._message_plane_runner, "health_check_async", None)

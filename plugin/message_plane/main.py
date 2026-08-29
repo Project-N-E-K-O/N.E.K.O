@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import signal
+import secrets
 import threading
 from typing import Optional
 
 from plugin.logging_config import logger
-from utils.plugin_host_auth import require_plugin_host_token
 
 from plugin.settings import (
     MESSAGE_PLANE_STORE_MAXLEN,
@@ -25,10 +25,15 @@ def run_message_plane(
     rpc_endpoint: Optional[str] = None,
     pub_endpoint: Optional[str] = None,
     ingest_endpoint: Optional[str] = None,
+    auth_token: Optional[str] = None,
 ) -> None:
     endpoint = rpc_endpoint or MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
     pub_ep = pub_endpoint or MESSAGE_PLANE_ZMQ_PUB_ENDPOINT
     ingest_ep = ingest_endpoint or MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
+    # Standalone entry point: no bridge shares this process, so a caller that
+    # does not supply a credential gets a fresh one and effectively runs a
+    # write-closed plane.
+    resolved_token = str(auth_token or "").strip() or secrets.token_urlsafe(32)
 
     stores = StoreRegistry(default_store="messages")
     # conversations 是独立的 store，用于存储对话上下文（与 messages 分离）
@@ -40,7 +45,7 @@ def run_message_plane(
         endpoint=ingest_ep,
         stores=stores,
         pub_server=pub_srv,
-        auth_token=require_plugin_host_token(),
+        auth_token=resolved_token,
     )
     srv = MessagePlaneRpcServer(endpoint=endpoint, pub_server=pub_srv, stores=stores)
 

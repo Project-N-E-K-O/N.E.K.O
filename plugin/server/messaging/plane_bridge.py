@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import secrets
 import socket
 import threading
 import time
@@ -11,18 +12,30 @@ import zmq
 from plugin.logging_config import get_logger
 
 from plugin.settings import MESSAGE_PLANE_BRIDGE_ENABLED, MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
-from utils.plugin_host_auth import require_plugin_host_token
 
 logger = get_logger("server.messaging.plane_bridge")
 
 _RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError)
+
+# The ingest credential is minted here and never leaves this process. The
+# bridge is the only writer to the ingest socket, and the message plane it
+# authenticates against is started by the same process (see
+# ServerLifecycleService._start_message_plane), so a process-local secret is
+# enough — plugin children reach the host over their own per-host uplink and
+# never touch this socket.
+_INGEST_AUTH_TOKEN = secrets.token_urlsafe(32)
+
+
+def ingest_auth_token() -> str:
+    """Credential the locally started message plane must accept."""
+    return _INGEST_AUTH_TOKEN
 
 
 def _dumps(obj: object) -> bytes:
     if not isinstance(obj, dict):
         raise TypeError("message-plane ingest payload must be an object")
     authenticated = dict(obj)
-    authenticated["_auth"] = require_plugin_host_token()
+    authenticated["_auth"] = _INGEST_AUTH_TOKEN
     return ormsgpack.packb(authenticated)
 
 
