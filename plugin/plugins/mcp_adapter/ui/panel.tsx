@@ -42,6 +42,7 @@ type McpServerView = {
   tools_count?: number
   error?: string | null
   tools?: Array<{ name?: string; description?: string }>
+  inject_to_chat?: boolean
 }
 
 type McpPanelState = {
@@ -67,6 +68,7 @@ type ImportServerConfig = {
   env?: unknown
   headers?: unknown
   enabled?: unknown
+  inject_to_chat?: unknown
   autoConnect?: unknown
 }
 
@@ -97,6 +99,7 @@ const emptyServerForm = {
   url: "",
   env: "",
   headers: "",
+  injectToChat: false,
   autoConnect: true,
 }
 type ServerFormValues = typeof emptyServerForm
@@ -122,6 +125,7 @@ export default function McpAdapterPanel(props: PluginSurfaceProps<McpPanelState>
   const connectServer = safeActions.find((action) => action.id === "connect_server")
   const disconnectServer = safeActions.find((action) => action.id === "disconnect_server")
   const removeServers = safeActions.find((action) => action.id === "remove_servers")
+  const setChatInjection = safeActions.find((action) => action.id === "set_chat_injection")
   const firstServer = servers[0]
   const [selectedServerName, setSelectedServerName] = props.useLocalState("selectedServerName", firstServer?.name || "")
   const [selectedServerNames, setSelectedServerNames] = props.useLocalState<string[]>("selectedServerNames", [])
@@ -174,6 +178,8 @@ auto_connect = true`
       auto_connect: autoConnectOverride === undefined ? !!server.autoConnect : !!autoConnectOverride,
     }
     if ("enabled" in server && server.enabled !== undefined) payload.enabled = !!server.enabled
+    if ("injectToChat" in server && server.injectToChat !== undefined) payload.inject_to_chat = !!server.injectToChat
+    else if ("inject_to_chat" in server && server.inject_to_chat !== undefined) payload.inject_to_chat = !!server.inject_to_chat
     if (transport === "stdio") {
       const command = String(server.command || "").trim()
       if (!command) throw new Error(t("panel.form.errors.commandRequired"))
@@ -230,6 +236,7 @@ auto_connect = true`
           env: server.env,
           headers: server.headers,
           enabled: server.enabled,
+          inject_to_chat: server.inject_to_chat,
         }
       })
   }
@@ -304,6 +311,16 @@ auto_connect = true`
       else set.add(serverName)
       return Array.from(set)
     })
+  }
+
+  const toggleChatInjection = async (serverName, value) => {
+    if (!serverName) return
+    try {
+      await props.api.call("set_chat_injection", { server_name: serverName, inject_to_chat: !!value })
+      await props.api.refresh()
+    } catch (error) {
+      toast.error(error && error.message ? error.message : String(error))
+    }
   }
 
   const removeSelectedServers = async () => {
@@ -414,6 +431,17 @@ auto_connect = true`
                 { key: "connected", label: "Connected" },
                 { key: "tools_count", label: "Tools" },
                 {
+                  key: "inject_to_chat",
+                  label: t("panel.servers.columns.chatInjection"),
+                  render: (server) => (
+                    <Switch
+                      checked={!!server?.inject_to_chat}
+                      disabled={!setChatInjection}
+                      onChange={(value) => toggleChatInjection(server?.name || "", value)}
+                    />
+                  ),
+                },
+                {
                   key: "tools",
                   label: t("panel.servers.columns.toolNames"),
                   render: (server) => {
@@ -483,6 +511,7 @@ auto_connect = true`
                   <Textarea value={serverForm.values.headers} placeholder='{"Authorization":"Bearer ..."}' onChange={(value) => updateServerForm({ headers: value })} />
                 </Field>
               ) : null}
+              <Switch checked={serverForm.values.injectToChat} label={t("panel.form.injectToChat")} onChange={(value) => updateServerForm({ injectToChat: value })} />
               <Switch checked={serverForm.values.autoConnect} label={t("panel.form.autoConnect")} onChange={(value) => updateServerForm({ autoConnect: value })} />
               <Button tone="success" onClick={addServerFromForm}>{t("panel.addServer.submit")}</Button>
             </Stack>
