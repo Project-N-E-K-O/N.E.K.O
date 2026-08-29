@@ -1677,3 +1677,87 @@ async def test_losing_whole_images_is_user_visible_however_it_happened() -> None
     assert quiet["sampled"] is False and quiet["dropped"] == 0
     assert len(kept) == 1, "nothing may leave the turn on the normalize-only path"
     assert quiet["user_visible"] is False
+
+
+def _jpeg_with_orientation(width: int, height: int, orientation: int | None) -> str:
+    """A base64 JPEG whose STORED matrix is width x height, tagged for display."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    image = Image.new("RGB", (width, height), "white")
+    buffer = io.BytesIO()
+    if orientation is None:
+        image.save(buffer, format="JPEG")
+    else:
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        image.save(buffer, format="JPEG", exif=exif)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _displayed_size(b64: str) -> tuple[int, int]:
+    import base64
+    import io
+
+    from PIL import Image, ImageOps
+
+    image = Image.open(io.BytesIO(base64.b64decode(b64)))
+    return ImageOps.exif_transpose(image).size
+
+
+@pytest.mark.parametrize("orientation", [5, 6, 7, 8])
+def test_model_normalization_honours_exif_orientation(orientation) -> None:
+    """A rotated photo must not reach the model lying on its side.
+
+    ``compress_screenshot`` writes a JPEG without an EXIF block, so any
+    orientation tag on the input is dropped by the re-encode. Resizing the
+    stored matrix and then discarding the tag hands the model a picture rotated
+    90 degrees with no way to tell -- and the caller cannot tell either, because
+    the bytes look perfectly valid.
+
+    Measured before the fix: a 3000x1000 JPEG tagged orientation=6 (so it
+    DISPLAYS as 1000x3000) came out 1280x426 with EXIF None -- landscape, from a
+    portrait source.
+
+    Orientations 5-8 are exactly the ones that transpose width and height, which
+    is why they are the parametrised set: 1-4 keep the aspect the same and could
+    not expose this.
+    """
+    from utils.screenshot_utils import (
+        COMPRESS_TARGET_HEIGHT,
+        MODEL_IMAGE_MAX_WIDTH,
+        normalize_image_for_model,
+    )
+
+    source = _jpeg_with_orientation(3000, 1000, orientation)
+    assert _displayed_size(source) == (1000, 3000), "fixture must display as portrait"
+
+    out = normalize_image_for_model(source)
+    width, height = _displayed_size(out)
+
+    assert height > width, (
+        f"portrait source came back as {width}x{height}: the model is being "
+        "shown a sideways picture"
+    )
+    assert width <= MODEL_IMAGE_MAX_WIDTH
+    assert height <= COMPRESS_TARGET_HEIGHT
+
+
+def test_profile_probe_measures_the_displayed_shape_not_the_stored_one() -> None:
+    """The skip test must compare the profile against what will be SEEN.
+
+    A JPEG stored 720x1280 and tagged orientation=6 displays as 1280x720 --
+    already exactly the model profile. Judging it by the stored matrix reads
+    1280 as the height, decides it is over the 720 ceiling, and re-encodes a
+    payload that needed nothing done to it. That is not just wasted work: it is
+    a fixed-point break, and these payloads live on _conversation_history for
+    several turns, so it would re-encode once per turn forever.
+    """
+    from utils.screenshot_utils import normalize_image_for_model
+
+    already_fine = _jpeg_with_orientation(720, 1280, 6)
+    assert _displayed_size(already_fine) == (1280, 720)
+
+    assert normalize_image_for_model(already_fine) is already_fine

@@ -23,7 +23,7 @@ from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 import asyncio
 from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from utils.llm_client import create_chat_llm_async
 
 logger = get_module_logger(__name__)
@@ -187,6 +187,20 @@ def _probe_image_profile(b64: str) -> Optional[tuple]:
             with Image.open(BytesIO(raw)) as image:
                 w, h = image.size
                 fmt = str(image.format or "").upper()
+                # 报的是**显示**尺寸，不是存储尺寸。带 EXIF orientation 5-8 的
+                # 照片，存储矩阵与显示方向差一个 90 度：一张显示为 1000x3000 的
+                # 竖图，存储的是 3000x1000。拿存储尺寸去判「已经在档位内了吗」，
+                # 判的是一个用户和模型都看不到的形状——横竖一颠倒，宽高各自对
+                # 哪条边界也就跟着错了。
+                #
+                # getexif() 读的是文件头，和 size 一样不需要解码像素，所以这里
+                # 仍然是 O(1)，前缀探测的成本优势没有丢。
+                try:
+                    orientation = image.getexif().get(0x0112)
+                except Exception:
+                    orientation = None
+                if orientation in (5, 6, 7, 8):
+                    w, h = h, w
         except Exception:
             # 前缀不够这个格式开头（WebP 之类）——落到下一个候选，也就是整段。
             continue
@@ -238,6 +252,15 @@ def normalize_image_for_model(b64: str) -> str:
 
     try:
         img = Image.open(BytesIO(base64.b64decode(b64)))
+        # 先按 EXIF 摆正，再谈缩放。顺序不能反：resize 之后像素矩阵变了、
+        # 而 compress_screenshot 存 JPEG 时不写 EXIF，orientation 标记就此丢失
+        # ——模型拿到的是一张躺倒 90 度的照片，而且它没有任何线索能看出来。
+        # 实测：3000x1000 + orientation=6（显示应为 1000x3000 竖图）经这里出来
+        # 是 1280x426 的横图、EXIF 为 None。
+        #
+        # exif_transpose 把方向烘进像素并去掉该标记，所以输出天然是「无 EXIF
+        # 且已摆正」，再喂回本函数时探测读到的就是它的真实形状，不动点不受影响。
+        img = ImageOps.exif_transpose(img) or img
         if img.mode in ("RGBA", "LA", "P"):
             img = img.convert("RGB")
         jpg_bytes = compress_screenshot(
