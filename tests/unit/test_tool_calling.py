@@ -4553,6 +4553,49 @@ async def test_stream_text_replaces_full_prompt_history_after_memory_callback(mo
 
 
 @pytest.mark.asyncio
+async def test_stream_text_keeps_system_prefix_images_invocation_local(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import HumanMessage, LLMStreamChunk
+
+    observed_user_content = []
+
+    async def _astream(self, messages, **overrides):
+        del overrides
+        observed_user_content.append(
+            [msg for msg in messages if isinstance(msg, HumanMessage)][-1].content
+        )
+        yield LLMStreamChunk(content="ok")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _minimal_offline_client_for_leak_tests()
+    client.on_text_delta = noop
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text(
+        "user text",
+        system_prefix="callback context",
+        system_prefix_images=["callback-image"],
+    )
+
+    assert observed_user_content == [[
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/jpeg;base64,callback-image"},
+        },
+        {"type": "text", "text": "callback context\n\nuser text"},
+    ]]
+    assert client._pending_images == []
+
+
+@pytest.mark.asyncio
 async def test_prompt_ephemeral_filters_tool_call_leak_before_ui_and_history(monkeypatch):
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import AIMessage, LLMStreamChunk

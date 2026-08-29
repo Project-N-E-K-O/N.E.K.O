@@ -271,7 +271,7 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert "memory_override_text" not in core_source
     assert "record_transcript_text = transcript_text" in core_source
     assert '"text": record_transcript_text' in core_source
-    assert "msg_input_type in _TEXT_SESSION_INPUT_TYPES" in core_source
+    assert 'msg_input_type == "text"' in core_source
     assert "input_type in _IMAGE_INPUT_TYPES" in core_source
     assert '_USER_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})' in cross_server_source
     assert "input_type in _USER_IMAGE_INPUT_TYPES" in cross_server_source

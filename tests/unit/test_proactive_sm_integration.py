@@ -20,7 +20,9 @@ import re
 import sys
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
+
+import pytest
 
 import pytest
 
@@ -32,6 +34,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 # state/session/lock 结构，然后直接调用 trigger_agent_callbacks 的关键分支。
 import main_logic.core as core_module
 from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.omni_realtime_client import (
+    ImageStageResult,
+    MultimodalTurnDelivery,
+)
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
@@ -182,23 +188,24 @@ def test_enqueue_agent_callback_uses_generic_context_source_budget(monkeypatch):
     assert mgr.pending_extra_replies[1]["context_source"] == "proactive.callback"
 
 
-def test_image_only_callback_is_accepted_only_for_proactive_delivery():
+def test_enqueue_agent_callback_keeps_image_only_completed_callback():
     mgr = _make_mgr()
-    passive = {
+    callback = {
         "status": "completed",
-        "delivery_mode": "passive",
-        "media_images": ["read-image"],
-    }
-    proactive = {
-        "status": "completed",
-        "delivery_mode": "proactive",
-        "media_images": ["respond-image"],
+        "summary": "",
+        "detail": "",
+        "media_images": ["image-b64"],
+        "origin": "event",
     }
 
-    core_module.LLMSessionManager.enqueue_agent_callback(mgr, passive)
-    core_module.LLMSessionManager.enqueue_agent_callback(mgr, proactive)
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, callback)
 
-    assert mgr.pending_agent_callbacks == [proactive]
+    assert mgr.pending_agent_callbacks == [callback]
+    assert len(mgr.pending_extra_replies) == 1
+    assert (
+        mgr.pending_extra_replies[0]["_callback_delivery_id"]
+        == callback["_callback_delivery_id"]
+    )
 
 
 def _make_voice_sess(*, is_responding=False, inject=None):
@@ -235,6 +242,9 @@ def _make_voice_sess(*, is_responding=False, inject=None):
     sess._client_vad_active = False
     sess._user_recent_activity_time = 0.0
     sess._ai_recent_activity_time = 0.0
+    sess.get_multimodal_turn_delivery = lambda: (
+        MultimodalTurnDelivery.DIRECT_ATOMIC
+    )
 
     if inject is None:
         async def _default_inject(
@@ -320,6 +330,55 @@ async def test_voice_gate_sees_arbiter_busyness_not_just_the_responding_flag():
     assert mgr.pending_agent_callbacks == []
 
 
+async def test_voice_callback_defers_when_microphone_activity_arrived_first():
+    sess = _make_voice_sess()
+    sess._user_recent_activity_time = time.time()
+    sess.stream_image = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-recent-microphone",
+        "status": "completed",
+        "summary": "must wait for the user turn",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    sess.on_sid_rotate.assert_not_awaited()
+    sess.stream_image.assert_not_awaited()
+    assert sess.inject_calls == 0
+    assert mgr.pending_agent_callbacks == [cb]
+
+
+async def test_recent_voice_activity_arms_retry_without_turn_end_signal():
+    sess = _make_voice_sess()
+    sess._user_recent_activity_window = 0.02
+    sess._user_recent_activity_time = time.time()
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-recent-activity-retry",
+        "status": "completed",
+        "summary": "retry after the activity window",
+    }
+    mgr.pending_agent_callbacks = [cb]
+    retry_fired = asyncio.Event()
+
+    async def retry_trigger():
+        retry_fired.set()
+        return False
+
+    mgr.trigger_agent_callbacks = retry_trigger
+    mgr._fire_task = asyncio.create_task
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert mgr.pending_agent_callbacks == [cb]
+    await asyncio.wait_for(retry_fired.wait(), timeout=0.2)
+
+
 async def test_voice_nudge_waits_for_callback_inject_lock():
     sess = _make_voice_sess()
     sess._proactive_inject_awaiting_outcome = False
@@ -338,7 +397,12 @@ async def test_voice_nudge_waits_for_callback_inject_lock():
 
     mgr._voice_proactive_inject_lock.release()
     assert await task is True
-    sess.prompt_ephemeral.assert_awaited_once_with(language="en")
+    sess.prompt_ephemeral.assert_awaited_once_with(
+        language="en",
+        user_turn_active=mgr._independent_asr_user_turn_active,
+        session_owned=sess.prompt_ephemeral.await_args.kwargs["session_owned"],
+    )
+    assert sess.prompt_ephemeral.await_args.kwargs["session_owned"]() is True
 
 
 async def test_voice_nudge_request_locale_is_forwarded_without_mutating_manager_state():
@@ -359,7 +423,12 @@ async def test_voice_nudge_request_locale_is_forwarded_without_mutating_manager_
     )
 
     assert delivered is True
-    sess.prompt_ephemeral.assert_awaited_once_with(language="zh-TW")
+    sess.prompt_ephemeral.assert_awaited_once_with(
+        language="zh-TW",
+        user_turn_active=mgr._independent_asr_user_turn_active,
+        session_owned=sess.prompt_ephemeral.await_args.kwargs["session_owned"],
+    )
+    assert sess.prompt_ephemeral.await_args.kwargs["session_owned"]() is True
     assert mgr.user_language == "en"
     assert mgr._user_language_explicit is False
     assert mgr._conversation_render_language is None
@@ -410,6 +479,7 @@ async def test_voice_mode_sid_rotation_rechecks_user_activity_before_media():
     )
     sess.stream_image = AsyncMock()
     mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
     cb = {
         "_callback_delivery_id": "id-vad-during-rotation",
         "status": "completed",
@@ -428,6 +498,285 @@ async def test_voice_mode_sid_rotation_rechecks_user_activity_before_media():
     assert sess.inject_calls == 0
     assert mgr.pending_agent_callbacks == [cb]
     assert cb.get("_voice_delivery_committed") is None
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
+async def test_voice_mode_native_media_rechecks_user_activity_after_stream():
+    sess = _make_voice_sess()
+    sess._inject_rejection_handlers = {}
+    sess._fatal_error_occurred = False
+    sess.close = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    mgr.end_session = AsyncMock()
+    mgr._schedule_proactive_retry = MagicMock()
+    retirement_tasks = []
+
+    def _fire_retirement(coro):
+        task = asyncio.create_task(coro)
+        retirement_tasks.append(task)
+        return task
+
+    mgr._fire_task = _fire_retirement
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        source=None,
+        request_id=None,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert source == "callback"
+        assert on_rejected is not None
+        await asyncio.sleep(0)
+        sess._client_vad_active = True
+        return SimpleNamespace(accepted=True, mode="native")
+
+    sess.stream_image = _stream_image
+    cb = {
+        "_callback_delivery_id": "id-vad-during-native-media",
+        "status": "completed",
+        "summary": "defer native visual callback",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.gather(*retirement_tasks)
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert sess._fatal_error_occurred is True
+    sess.close.assert_awaited_once_with()
+    mgr.end_session.assert_awaited_once_with(
+        by_server=True,
+        expected_session=sess,
+    )
+    assert mgr.pending_agent_callbacks == [cb]
+    assert cb.get("_voice_delivery_committed") is None
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
+async def test_external_callback_rechecks_user_activity_after_visual_analysis():
+    """A user turn that wins the vision await must preempt proactive injection."""
+    sess = _make_voice_sess()
+    sess._inject_rejection_handlers = {}
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        source=None,
+        request_id=None,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert source == "callback"
+        assert request_id == "id-vad-during-vision"
+        assert on_rejected is not None
+        await asyncio.sleep(0)
+        sess._client_vad_active = True
+        return SimpleNamespace(
+            accepted=True,
+            mode="external_description",
+            description="画面里有一只猫。",
+        )
+
+    async def _expire(_event_id, _timeout):
+        return None
+
+    def _fire_task(coro):
+        coro.close()
+
+    sess.stream_image = _stream_image
+    sess._expire_inject_rejection_handler = _expire
+    sess._fire_task = _fire_task
+    mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
+    cb = {
+        "_callback_delivery_id": "id-vad-during-vision",
+        "status": "completed",
+        "summary": "defer this visual callback",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(
+        mgr
+    )
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert sess._inject_rejection_handlers == {}
+    assert mgr.pending_agent_callbacks == [cb]
+    assert cb.get("_voice_delivery_committed") is None
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
+async def test_callback_media_analysis_rechecks_session_ownership():
+    sess = _make_voice_sess()
+    sess._inject_rejection_handlers = {}
+    replacement = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        source=None,
+        request_id=None,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert source == "callback"
+        assert request_id == "id-session-swap-during-vision"
+        assert on_rejected is not None
+        await asyncio.sleep(0)
+        mgr.session = replacement
+        return SimpleNamespace(
+            accepted=True,
+            mode="external_description",
+            description="画面里有一只猫。",
+        )
+
+    async def _expire(_event_id, _timeout):
+        return None
+
+    sess.stream_image = _stream_image
+    sess._expire_inject_rejection_handler = _expire
+    sess._fire_task = lambda coro: coro.close()
+    cb = {
+        "_callback_delivery_id": "id-session-swap-during-vision",
+        "status": "completed",
+        "summary": "defer this visual callback",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert sess._inject_rejection_handlers == {}
+    assert mgr.pending_agent_callbacks == [cb]
+    assert cb.get("_voice_delivery_committed") is None
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
+async def test_callback_external_description_prefix_has_item_id():
+    sess = _make_voice_sess()
+    sess._inject_rejection_handlers = {}
+    sess._fire_task = lambda coro: coro.close()
+    sess._expire_inject_rejection_handler = AsyncMock()
+    mgr = _make_mgr(session=sess)
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        source=None,
+        request_id=None,
+        on_rejected=None,
+    ):
+        return SimpleNamespace(
+            accepted=True,
+            mode="external_description",
+            description="画面里有一只猫。",
+        )
+
+    sess.stream_image = _stream_image
+    cb = {
+        "_callback_delivery_id": "id-description-prefix-item",
+        "status": "completed",
+        "summary": "visual callback",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert len(sess.injected_events) == 1
+    visual_event = sess.injected_events[0][0]
+    assert visual_event["item"]["id"].startswith("item_neko_callback_visual_")
+
+
+async def test_external_callback_rechecks_independent_asr_turn_after_visual_analysis():
+    """Independent-ASR onset must preempt callback injection after vision awaits."""
+    sess = _make_voice_sess()
+    sess._inject_rejection_handlers = {}
+    mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
+    independent_turn_active = False
+    mgr._independent_asr_user_turn_active = lambda: independent_turn_active
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        source=None,
+        request_id=None,
+        on_rejected=None,
+    ):
+        nonlocal independent_turn_active
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert source == "callback"
+        assert request_id == "id-independent-asr-during-vision"
+        assert on_rejected is not None
+        await asyncio.sleep(0)
+        independent_turn_active = True
+        return SimpleNamespace(
+            accepted=True,
+            mode="external_description",
+            description="画面里有一只猫。",
+        )
+
+    async def _expire(_event_id, _timeout):
+        return None
+
+    def _fire_task(coro):
+        coro.close()
+
+    sess.stream_image = _stream_image
+    sess._expire_inject_rejection_handler = _expire
+    sess._fire_task = _fire_task
+    cb = {
+        "_callback_delivery_id": "id-independent-asr-during-vision",
+        "status": "completed",
+        "summary": "defer this visual callback",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert sess._inject_rejection_handlers == {}
+    assert mgr.pending_agent_callbacks == [cb]
+    assert cb.get("_voice_delivery_committed") is None
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
 
 
 async def test_voice_mode_sid_rotation_failure_arms_callback_retry():
@@ -669,9 +1018,13 @@ async def test_voice_mode_rechecks_retracted_callbacks_before_inject():
         *,
         on_rejected=None,
         events_before_text=None,
+        on_session_unsafe=None,
+        on_native_prefix_committed=None,
     ):
         assert on_rejected is not None
         assert events_before_text == []
+        assert on_session_unsafe is not None
+        assert on_native_prefix_committed is not None
         cb[DELIVERY_RETRACTED_KEY] = True
         return True
     mgr._stream_cb_media = _stream_then_retract
@@ -966,6 +1319,408 @@ async def test_drain_agent_callbacks_resolves_delivery_ack():
     assert future.done()
     assert future.result() is True
     assert mgr.pending_agent_callbacks == []
+
+
+async def test_passive_image_is_staged_before_text_drain_can_prune_callback():
+    session = _FakeOmniOffline(delivered=True)
+    session.stream_image = AsyncMock(return_value=None)
+    mgr = _make_mgr(session=session)
+    cb = {
+        "_callback_delivery_id": "id-passive-image-text",
+        "status": "completed",
+        "summary": "camera event",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    # 生产里的顺序就是「先 staging、再 drain」：staging 把图挂进
+    # system_prefix_images，drain 渲染文字，两者随同一条 user message 出去。
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    # Offline 的图是随 stream_text 的前缀走的，不经过 stream_image。
+    session.stream_image.assert_not_awaited()
+    assert outcome["system_prefix_images"] == ["image-b64"]
+    assert "camera event" in rendered
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_text_passive_media_stages_only_the_selected_prompt_snapshot():
+    session = _FakeOmniOffline(delivered=True)
+    session.stream_image = AsyncMock(return_value=None)
+    mgr = _make_mgr(session=session)
+    retracted = {
+        "_callback_delivery_id": "id-retracted-media",
+        "status": "completed",
+        "summary": "must not render",
+        "delivery_mode": "passive",
+        "media_images": ["retracted-image"],
+        DELIVERY_RETRACTED_KEY: True,
+    }
+    selected = {
+        "_callback_delivery_id": "id-selected-media",
+        "status": "completed",
+        "summary": "selected callback",
+        # 仓库约定：缺省 delivery_mode 即 proactive，而 proactive + 带图会被 STOP
+        # 闸扣住等 proactive 路径。这条测的是 passive 文本路径，写明确。
+        "delivery_mode": "passive",
+        "media_images": ["selected-image"],
+    }
+    mgr.pending_agent_callbacks = [retracted, selected]
+
+    snapshot = core_module.LLMSessionManager._claim_agent_callbacks_for_llm(mgr)
+    await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        snapshot,
+        session,
+    )
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(
+        mgr,
+        snapshot,
+    )
+
+    assert snapshot == [selected]
+    session.stream_image.assert_not_awaited()
+    assert "selected callback" in rendered
+    assert "must not render" not in rendered
+    assert mgr.pending_agent_callbacks == []
+
+
+def test_passive_media_identity_is_stable_and_distinct_per_session():
+    mgr = _make_mgr()
+    first_session = SimpleNamespace()
+    replacement_session = SimpleNamespace()
+    first_identity = core_module.LLMSessionManager._session_media_identity(
+        first_session
+    )
+    replacement_identity = (
+        core_module.LLMSessionManager._session_media_identity(
+            replacement_session
+        )
+    )
+    cb = {
+        "media_images": ["image-b64"],
+        "_passive_media_session_id": first_identity,
+        "_passive_media_staged_count": 1,
+    }
+
+    assert first_identity == core_module.LLMSessionManager._session_media_identity(
+        first_session
+    )
+    assert first_identity != replacement_identity
+    assert core_module.LLMSessionManager._callback_media_ready_for_session(
+        mgr,
+        cb,
+        first_session,
+    )
+    assert not core_module.LLMSessionManager._callback_media_ready_for_session(
+        mgr,
+        cb,
+        replacement_session,
+    )
+
+
+async def test_transient_native_passive_image_rejection_keeps_callback_for_retry():
+    session = _make_voice_sess()
+    session.stream_image = AsyncMock(
+        return_value=ImageStageResult(
+            accepted=False,
+            mode="native",
+            rejection_reason="raw_visual_delivery_blocked",
+        )
+    )
+    mgr = _make_mgr(session=session)
+    cb = {
+        "_callback_delivery_id": "id-passive-image-retry",
+        "status": "completed",
+        "summary": "camera event",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    # 维护者判据（①B）：**瞬时**失败值得留一轮再试 —— 网络抖一下就把图丢了不划算。
+    # 这一轮它连文字都不投（保序：跳过它去投更晚的 cue 会让顺序反过来）。
+    assert rendered == ""
+    assert mgr.pending_agent_callbacks == [cb]
+    assert cb["media_images"] == ["image-b64"]
+
+    # 但**只留一轮**。再来一次仍然挂不上，就走 best effort：文字照投、图不带，
+    # 不会无限扣住。
+    await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+    rendered_after_retry = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert "camera event" in rendered_after_retry
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_offline_passive_media_uses_call_local_images_without_touching_queue():
+    session = _FakeOmniOffline(delivered=True)
+    session._pending_images = ["user-image"]
+    session.stream_image = AsyncMock()
+    mgr = _make_mgr(session=session)
+    cb = {
+        "_callback_delivery_id": "id-passive-partial-rollback",
+        "status": "completed",
+        "summary": "two callback images",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image-1", "callback-image-2"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert session._pending_images == ["user-image"]
+    session.stream_image.assert_not_awaited()
+    assert outcome["system_prefix_images"] == [
+        "callback-image-1",
+        "callback-image-2",
+    ]
+    assert cb["_passive_media_staged_count"] == 2
+    assert "two callback images" in rendered
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_partial_native_passive_media_staging_requires_session_retirement():
+    session = _make_voice_sess()
+    session._is_gemini = False
+    session._supports_native_image = True
+    session._visual_delivery_mode = "native"
+
+    async def stream_image(image_b64, **_kwargs):
+        if image_b64 == "callback-image-2":
+            raise RuntimeError("transient second-image failure")
+        return ImageStageResult(accepted=True, mode="native")
+
+    session.stream_image = AsyncMock(side_effect=stream_image)
+    mgr = _make_mgr(session=session)
+    cb = {
+        "_callback_delivery_id": "id-native-partial-retire",
+        "status": "completed",
+        "summary": "two native callback images",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image-1", "callback-image-2"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+
+    assert outcome["safe_to_continue"] is False
+    assert outcome["native_prefix_committed"] is True
+    assert outcome["native_rejection_pending"] is True
+    assert cb["_passive_media_staged_count"] == 1
+    # 维护者判据：文字一定投出去，图 best effort —— 没挂上就这一轮不带，
+    # 但不因此扣住这条通知（扣住会让它在两条路都投不了时永远卡在队列里）。
+    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) != ""
+
+
+async def test_first_native_passive_media_exception_requires_session_retirement():
+    session = _make_voice_sess()
+    session._is_gemini = False
+    session._supports_native_image = True
+    session._visual_delivery_mode = "native"
+    session.stream_image = AsyncMock(
+        side_effect=RuntimeError("ambiguous first-image write failure")
+    )
+    mgr = _make_mgr(session=session)
+    cb = {
+        "_callback_delivery_id": "id-native-first-retire",
+        "status": "completed",
+        "summary": "one native callback image",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image-1"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+
+    assert outcome["safe_to_continue"] is False
+    assert outcome["native_prefix_committed"] is False
+    assert cb["_passive_media_staged_count"] == 0
+    # 维护者判据：文字一定投出去，图 best effort —— 没挂上就这一轮不带，
+    # 但不因此扣住这条通知（扣住会让它在两条路都投不了时永远卡在队列里）。
+    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) != ""
+
+
+async def test_partial_gemini_passive_media_staging_requires_session_retirement():
+    session = _make_voice_sess()
+    session._is_gemini = True
+    session._supports_native_image = True
+    session._visual_delivery_mode = "native"
+
+    async def stream_image(image_b64, **_kwargs):
+        if image_b64 == "callback-image-2":
+            raise RuntimeError("second Gemini image failed")
+        return ImageStageResult(accepted=True, mode="native")
+
+    session.stream_image = AsyncMock(side_effect=stream_image)
+    mgr = _make_mgr(session=session)
+    cb = {
+        "_callback_delivery_id": "id-gemini-partial-retire",
+        "status": "completed",
+        "summary": "two Gemini callback images",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image-1", "callback-image-2"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+
+    assert outcome["safe_to_continue"] is False
+    assert outcome["native_prefix_committed"] is True
+    assert cb["_passive_media_staged_count"] == 1
+    # 维护者判据：文字一定投出去，图 best effort —— 没挂上就这一轮不带，
+    # 但不因此扣住这条通知（扣住会让它在两条路都投不了时永远卡在队列里）。
+    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) != ""
+
+
+async def test_passive_native_async_rejection_invalidates_live_stage_outcome():
+    session = _make_voice_sess()
+    session._is_gemini = False
+    rejection_handlers = []
+
+    async def stream_image(_image_b64, *, on_rejected=None, **_kwargs):
+        rejection_handlers.append(on_rejected)
+        return ImageStageResult(accepted=True, mode="native")
+
+    session.stream_image = AsyncMock(side_effect=stream_image)
+    mgr = _make_mgr(session=session)
+    cb = {
+        "_callback_delivery_id": "id-native-async-reject",
+        "status": "completed",
+        "summary": "native callback image",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image"],
+    }
+
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+    assert outcome["safe_to_continue"] is True
+    assert outcome["native_prefix_committed"] is True
+    assert outcome["native_rejection_pending"] is True
+
+    rejection_handlers[0]("provider rejected callback image")
+
+    assert outcome["rejected"] is True
+    assert outcome["safe_to_continue"] is False
+    assert outcome["rejection_observed"].is_set()
+    assert cb["_passive_media_staged_count"] == 0
+
+
+async def test_passive_handoff_required_never_calls_stream_or_annotation():
+    session = _make_voice_sess()
+    session.get_multimodal_turn_delivery = MagicMock(
+        return_value=MultimodalTurnDelivery.HANDOFF_REQUIRED
+    )
+    session.stream_image = AsyncMock()
+    session._analyze_image_with_vision_model = AsyncMock()
+    mgr = _make_mgr(session=session)
+    cb = {
+        "_callback_delivery_id": "id-passive-image-handoff",
+        "status": "completed",
+        "summary": "camera event",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+
+    assert outcome["safe_to_continue"] is True
+    session.stream_image.assert_not_awaited()
+    session._analyze_image_with_vision_model.assert_not_awaited()
+    assert cb["media_images"] == ["image-b64"]
+    # 维护者判据：文字一定投出去，图 best effort —— 没挂上就这一轮不带，
+    # 但不因此扣住这条通知（扣住会让它在两条路都投不了时永远卡在队列里）。
+    assert "camera event" in core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_passive_image_description_never_rides_hot_swap_prime():
+    session = _make_voice_sess()
+    session.stream_image = AsyncMock(
+        return_value=ImageStageResult(
+            accepted=True,
+            mode="external_description",
+            description="桌上有一只白杯子",
+        )
+    )
+    mgr = _make_mgr(session=session)
+    mgr.pending_session = session
+    cb = {
+        "_callback_delivery_id": "id-passive-image-swap",
+        "status": "completed",
+        "summary": "camera event",
+        "detail": "",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "source_kind": "unknown",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+    selected, rendered = (
+        core_module.LLMSessionManager._select_passive_callbacks_for_swap_prime(mgr)
+    )
+
+    assert selected == []
+    assert rendered == ""
+    assert cb["detail"] == ""
+    assert cb["media_images"] == ["image-b64"]
+    assert mgr.pending_agent_callbacks == [cb]
 
 
 async def test_drain_agent_callbacks_rechecks_topic_release_gate():
@@ -1322,8 +2077,63 @@ async def test_voice_mode_callback_image_rejection_before_inject_keeps_cb():
     )
 
 
+async def test_partial_proactive_native_rejection_retires_active_session():
+    """A raw callback prefix cannot survive without its paired callback text."""
+    sess = _make_voice_sess()
+    sess._is_gemini = False
+    sess._supports_native_image = True
+    sess._visual_delivery_mode = "native"
+    sess._fatal_error_occurred = False
+    sess.close = AsyncMock()
+
+    async def _stream_image(image_b64, **_kwargs):
+        if image_b64 == "callback-image-1":
+            return ImageStageResult(accepted=True, mode="native")
+        sess._visual_delivery_mode = "external_description"
+        return ImageStageResult(
+            accepted=False,
+            mode="external_description",
+        )
+
+    sess.stream_image = AsyncMock(side_effect=_stream_image)
+    mgr = _make_mgr(session=sess)
+    mgr.end_session = AsyncMock()
+    retirement_tasks = []
+
+    def _fire_retirement(coro):
+        task = asyncio.create_task(coro)
+        retirement_tasks.append(task)
+        return task
+
+    mgr._fire_task = _fire_retirement
+    mgr._schedule_proactive_retry = MagicMock()
+    cb = {
+        "_callback_delivery_id": "id-proactive-native-partial-reject",
+        "status": "completed",
+        "summary": "two native callback images",
+        "media_images": ["callback-image-1", "callback-image-2"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.gather(*retirement_tasks)
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert sess._fatal_error_occurred is True
+    sess.close.assert_awaited_once_with()
+    mgr.end_session.assert_awaited_once_with(
+        by_server=True,
+        expected_session=sess,
+    )
+    assert mgr.pending_agent_callbacks == [cb]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
 async def test_voice_mode_drops_permanently_oversized_image_and_delivers_text():
-    from main_logic.omni_realtime_client import RealtimeImagePayloadTooLargeError
+    from main_logic.omni_realtime_client import ImageStageResult
 
     sess = _make_voice_sess()
     streamed = []
@@ -1340,7 +2150,12 @@ async def test_voice_mode_drops_permanently_oversized_image_and_delivers_text():
         assert on_rejected is not None
         streamed.append(image_b64)
         if image_b64 == "oversized-image":
-            raise RealtimeImagePayloadTooLargeError("permanent oversize")
+            return ImageStageResult(
+                accepted=False,
+                mode="external_description",
+                rejection_reason="payload_too_large",
+            )
+        return ImageStageResult(accepted=True, mode="native")
 
     sess.stream_image = _stream_image
     mgr = _make_mgr(session=sess)
@@ -1359,6 +2174,53 @@ async def test_voice_mode_drops_permanently_oversized_image_and_delivers_text():
     assert sess.inject_calls == 1
     assert cb["media_images"] == ["valid-prefix", "valid-tail"]
     assert mgr.pending_agent_callbacks == []
+
+
+@pytest.mark.parametrize(
+    "rejection_reason",
+    ["analysis_empty", "invalid_payload"],
+)
+async def test_voice_mode_drops_terminally_rejected_image_and_delivers_text(
+    rejection_reason,
+):
+    from main_logic.omni_realtime_client import ImageStageResult
+
+    sess = _make_voice_sess()
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+        return ImageStageResult(
+            accepted=False,
+            mode="external_description",
+            rejection_reason=rejection_reason,
+        )
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": f"id-{rejection_reason}",
+        "status": "completed",
+        "summary": "deliver text despite unusable media",
+        "media_images": ["unanalyzable-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr._schedule_proactive_retry = MagicMock()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert "media_images" not in cb
+    assert sess.inject_calls == 1
+    assert mgr.pending_agent_callbacks == []
+    mgr._schedule_proactive_retry.assert_not_called()
 
 
 async def test_standard_step_callback_image_description_shares_inject_ticket():
@@ -1410,6 +2272,109 @@ async def test_standard_step_callback_image_description_shares_inject_ticket():
     }]
     assert description_event["event_id"] in sess._inject_rejection_handlers
     assert expired == [description_event["event_id"]]
+
+
+async def test_external_visual_callback_uses_description_even_for_native_capable_provider():
+    """Delivery mode, not provider capability, decides whether raw callback media is legal."""
+    sess = _make_voice_sess()
+    sess._supports_native_image = True
+    sess._inject_rejection_handlers = {}
+    expired = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        source=None,
+        request_id=None,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert source == "callback"
+        assert request_id == "id-external-image"
+        assert on_rejected is not None
+        return SimpleNamespace(
+            accepted=True,
+            mode="external_description",
+            generation=23,
+            description="画面里有一只猫。",
+        )
+
+    async def _expire(event_id, _timeout):
+        expired.append(event_id)
+
+    def _fire_task(coro):
+        asyncio.create_task(coro)
+
+    sess.stream_image = _stream_image
+    sess._expire_inject_rejection_handler = _expire
+    sess._fire_task = _fire_task
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-external-image",
+        "status": "completed",
+        "summary": "inspect this image",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert delivered is True
+    assert len(sess.injected_events) == 1
+    description_event = sess.injected_events[0][0]
+    description_text = description_event["item"]["content"][0]["text"]
+    assert description_text.startswith("[系统视觉感知结果，不是用户陈述]")
+    assert "当前画面" in description_text
+    assert "画面里有一只猫。" in description_text
+    assert expired == [description_event["event_id"]]
+
+
+async def test_external_visual_callback_analysis_failure_defers_text_delivery():
+    """A false structured staging result cannot be reported as callback success."""
+    sess = _make_voice_sess()
+    staged = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        source=None,
+        request_id=None,
+        on_rejected=None,
+    ):
+        staged.append((source, request_id))
+        return SimpleNamespace(
+            accepted=False,
+            mode="external_description",
+            generation=24,
+            description=None,
+        )
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-external-failed",
+        "status": "completed",
+        "summary": "inspect this image",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr._schedule_proactive_retry = MagicMock()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert staged == [("callback", "id-external-failed")]
+    assert sess.inject_calls == 0
+    assert mgr.pending_agent_callbacks == [cb]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
 
 
 async def test_voice_mode_callback_image_rejection_after_inject_rearms_retry():
@@ -2741,13 +3706,17 @@ def test_text_drain_returns_empty_when_every_callback_carries_media():
     assert mgr.pending_agent_callbacks == [only_image]
 
 
-def test_passive_media_callbacks_are_still_drained_not_stranded():
-    """Passive cues are excluded from the proactive path.
+def test_passive_media_callbacks_deliver_text_with_images_best_effort():
+    """Text always goes out; images ride along only if they were staged.
 
-    Holding them back from the text drain as well would leave them deliverable
-    by neither, stranded in the queue forever — worse than the image loss the
-    hold-back exists to prevent. They drain (with the loss logged) until a
-    media-capable user-turn path exists.
+    Holding a passive cue back until its images attach would strand it whenever
+    neither path can take it. Dropping it entirely would lose the notice. So the
+    text is delivered either way, and the images are best-effort: attached when
+    ``_stage_passive_callback_media`` already claimed them for this session,
+    skipped (with a warning) when it did not.
+
+    A PROACTIVE media cue is different and still stops the queue -- it is
+    waiting for the proactive path, which can carry its images.
     """
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
     passive_cb = _budget_cb("passive-image", 1)
@@ -2757,10 +3726,10 @@ def test_passive_media_callbacks_are_still_drained_not_stranded():
 
     rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
+    # 图没挂上，但文字投出去了，且这条不再留在队列里。
     assert "cue passive-image" in rendered
-    # Only the proactively-deliverable one is held back.
+    # 带图的 proactive cue 仍然等它自己的路径。
     assert mgr.pending_agent_callbacks == [proactive_cb]
-
 
 async def test_deferred_image_overflow_is_re_driven_on_the_text_path():
     """A deferred tail must not wait for an unrelated event to wake it.
@@ -2877,3 +3846,171 @@ async def test_topic_hint_is_retracted_when_its_hook_lands_in_image_overflow():
     mgr.send_cancel_topic_hint.assert_awaited_once()
     assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == ["cue topic"]
     assert sess.image_batches == [["heavy-img%d" % i for i in range(8)]]
+
+
+async def test_budget_deferred_callbacks_keep_their_images_for_the_next_turn():
+    """Overflowing the turn's image budget is not a staging failure.
+
+    A deferred callback never got its attempt, so treating it like unstaged
+    media -- render the text, drop the images, dequeue -- destroys exactly what
+    the deferral was protecting. It stays queued whole, and it does not spend
+    the transient-failure retry allowance either.
+    """
+    from main_logic.proactive_delivery import (
+        PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
+        PASSIVE_MEDIA_RETRY_KEY,
+    )
+
+    session = _FakeOmniOffline(delivered=True)
+    session.stream_image = AsyncMock(return_value=None)
+    mgr = _make_mgr(session=session)
+    callbacks = [
+        {
+            "_callback_delivery_id": f"id-budget-{i}",
+            "status": "completed",
+            "summary": f"camera event {i}",
+            "delivery_mode": "passive",
+            "origin": "event",
+            "media_images": [f"img-{i}-a", f"img-{i}-b", f"img-{i}-c"],
+        }
+        for i in range(5)
+    ]
+    mgr.pending_agent_callbacks = list(callbacks)
+
+    await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        callbacks,
+        session,
+    )
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(
+        mgr,
+        callbacks,
+    )
+
+    deferred = [
+        cb for cb in callbacks if cb.get(PASSIVE_MEDIA_BUDGET_DEFERRED_KEY)
+    ]
+    assert deferred, "预算应当挡下一部分，否则这条用例没测到东西"
+
+    for cb in deferred:
+        # 文字没被消费掉。
+        assert cb["summary"] not in rendered
+        # 还在队列里，图完好。
+        assert cb in mgr.pending_agent_callbacks
+        assert len(cb["media_images"]) == 3
+        # 没有吃掉瞬时失败的重试额度 —— 它压根没尝试过。
+        assert PASSIVE_MEDIA_RETRY_KEY not in cb
+
+
+async def test_budget_deferral_holds_text_only_callbacks_behind_it_too():
+    """The split is strict FIFO, so text-only cues get deferred as well.
+
+    Checking the deferral marker only when a callback carries media lets a
+    text-only cue queued BEHIND an over-budget one jump ahead of it, which is
+    exactly the ordering the strict-FIFO split exists to preserve. A deferred
+    queue made up only of text cues would be consumed outright.
+    """
+    from main_logic.proactive_delivery import PASSIVE_MEDIA_BUDGET_DEFERRED_KEY
+
+    session = _FakeOmniOffline(delivered=True)
+    session.stream_image = AsyncMock(return_value=None)
+    mgr = _make_mgr(session=session)
+    # 队头把预算占满，后面跟一条纯文本、再跟一条带图。
+    heavy = {
+        "_callback_delivery_id": "id-heavy",
+        "status": "completed",
+        "summary": "heavy media cue",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": [f"heavy-{i}" for i in range(8)],
+    }
+    text_only = {
+        "_callback_delivery_id": "id-text",
+        "status": "completed",
+        "summary": "text cue behind it",
+        "delivery_mode": "passive",
+        "origin": "event",
+    }
+    trailing = {
+        "_callback_delivery_id": "id-trailing",
+        "status": "completed",
+        "summary": "trailing media cue",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["trailing-a"],
+    }
+    # 顺序要紧：纯文本只有在**排在它前面的那条已经溢出**时才会被延后，那正是
+    # 严格 FIFO 的定义。所以先让 trailing 溢出，text_only 跟在它后面。
+    callbacks = [heavy, trailing, text_only]
+    mgr.pending_agent_callbacks = list(callbacks)
+
+    await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        callbacks,
+        session,
+    )
+    assert text_only.get(PASSIVE_MEDIA_BUDGET_DEFERRED_KEY) is True
+
+    # 只拿那条**纯文本**的去 drain：这是 CodeRabbit 指出的第二种情况 ——
+    # 延后队列里只剩纯文本时它会被整条错误消费。用整串 drain 判别不出来，因为
+    # 排在前面的带图 cue 会先 STOP，把差异掩盖掉。
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(
+        mgr,
+        [text_only],
+    )
+
+    # 它被预算推到了下一轮，这一轮不该消费它。
+    assert "text cue behind it" not in rendered
+    assert text_only in mgr.pending_agent_callbacks
+    assert trailing in mgr.pending_agent_callbacks
+
+
+async def test_staging_stops_where_the_drain_stops():
+    """Never stage an image the drain will not deliver the text for.
+
+    The drain halts at a media-bearing PROACTIVE cue (that one waits for the
+    proactive path). Staging past it still attaches its image to
+    ``system_prefix_images``, and the passive cue in front of it renders text --
+    so the Offline turn carries the proactive cue's image with somebody else's
+    words, while the cue itself stays queued and sends the same image again next
+    time.
+    """
+    session = _FakeOmniOffline(delivered=True)
+    session.stream_image = AsyncMock(return_value=None)
+    mgr = _make_mgr(session=session)
+    passive = {
+        "_callback_delivery_id": "id-passive-first",
+        "status": "completed",
+        "summary": "passive cue",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["passive-img"],
+    }
+    proactive_media = {
+        "_callback_delivery_id": "id-proactive-media",
+        "status": "completed",
+        "summary": "proactive cue",
+        "delivery_mode": "proactive",
+        "origin": "event",
+        "media_images": ["proactive-img"],
+    }
+    callbacks = [passive, proactive_media]
+    mgr.pending_agent_callbacks = list(callbacks)
+
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        callbacks,
+        session,
+    )
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(
+        mgr,
+        callbacks,
+    )
+
+    # 只有 passive 那条的图被挂上；proactive 的图没有脱离它的文字漏出去。
+    assert outcome["system_prefix_images"] == ["passive-img"]
+    assert "proactive-img" not in outcome["system_prefix_images"]
+    assert "passive cue" in rendered
+    assert "proactive cue" not in rendered
+    # 它仍在队列里等 proactive 那条路。
+    assert proactive_media in mgr.pending_agent_callbacks

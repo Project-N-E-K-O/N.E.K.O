@@ -69,6 +69,18 @@ DELIVERY_RETRACTED_KEY = "_proactive_delivery_retracted"
 CALLBACK_EXPIRES_AT_KEY = "_expires_at_monotonic"
 VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
 SWAP_PRIME_DELIVERY_CLAIM_KEY = "_swap_prime_delivery_claimed"
+# 最近一次挂图失败是**瞬时**的（网络抖动 / provider 临时拒绝），不是终局的
+# （格式不支持之类）。终局失败再试也没用，瞬时的下一轮大概率能成 —— 所以只有
+# 瞬时失败值得为它把这条通知多留一轮。
+PASSIVE_MEDIA_TRANSIENT_KEY = "_passive_media_transient_failure"
+# 已经为此多留过几轮。上限 1：留两轮以上就等于回到「扣住不放」，那是这条判据
+# 一开始要避免的。
+PASSIVE_MEDIA_RETRY_KEY = "_passive_media_retries"
+PASSIVE_MEDIA_MAX_RETRIES = 1
+# 这一轮的图片预算装不下它，被推到下一轮。与「瞬时失败」是两回事：那是尝试过
+# 失败了，这是**根本没轮到它尝试**，所以既不该套重试上限，也不该退化成 text-only
+# ——退化就等于把它的图永久丢掉，而这恰恰是预算延后想避免的。
+PASSIVE_MEDIA_BUDGET_DEFERRED_KEY = "_passive_media_budget_deferred"
 
 # Image budget for ONE model turn. A trigger drains every pending proactive
 # callback into a single turn, so a per-push cap alone does not bound what the
@@ -149,7 +161,10 @@ def approx_base64_decoded_bytes(encoded: str) -> int:
     return len(encoded) * 3 // 4
 
 
-def trim_images_to_turn_budget(images: list[str]) -> tuple[list[str], int]:
+def trim_images_to_turn_budget(
+    images: list[str],
+    max_total_bytes: int = TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+) -> tuple[list[str], int]:
     """Trim one turn's attachments to what a single request may carry.
 
     ``images`` is in ATTACHMENT order, which is also chronological: the
@@ -175,7 +190,7 @@ def trim_images_to_turn_budget(images: list[str]) -> tuple[list[str], int]:
     kept = list(images)
     dropped = 0
     total = sum(approx_base64_decoded_bytes(img) for img in kept)
-    while len(kept) > 1 and total > TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES:
+    while len(kept) > 1 and total > max_total_bytes:
         total -= approx_base64_decoded_bytes(kept.pop(0))
         dropped += 1
     return kept, dropped
@@ -224,6 +239,96 @@ def split_callbacks_by_image_budget(callbacks: list) -> tuple[list, list]:
         total_bytes += cb_bytes
         taken.append(callback)
     return taken, overflow
+
+
+# 单轮图片超预算时保留的张数：开头 / 中间 / 结尾。与独立 ASR 的抽样判据同源
+# ——一段视觉材料最有信息量的是它的两端和中点。
+TURN_IMAGE_SAMPLE_KEEP = 3
+
+
+def _sample_head_middle_tail(images: list) -> list:
+    if len(images) <= TURN_IMAGE_SAMPLE_KEEP:
+        return list(images)
+    return [images[0], images[len(images) // 2], images[-1]]
+
+
+async def fit_images_to_turn_budget(
+    images: list,
+    max_total_bytes: int,
+) -> tuple[list, Optional[dict]]:
+    """Bring one turn's images under a byte budget without losing them silently.
+
+    A single request carrying too many bytes is rejected WHOLE by the provider,
+    so something has to give. The order of what gives is deliberate:
+
+    1. **Sample** down to head/middle/tail. A long burst of frames is mostly
+       redundant; its two ends and its midpoint carry nearly all of the signal.
+    2. **Compress** what survives. Re-encoding to 720p JPEG typically cuts a
+       screenshot several-fold and costs nothing a viewer would notice.
+    3. Only if both fail, drop from the front (oldest first, always keeping the
+       last one) -- and say so.
+
+    Never drops the turn itself, and never drops images without reporting it:
+    the returned notice is meant for the user, not just the log.
+
+    Returns ``(kept, notice)``; ``notice`` is None when nothing was needed.
+    """
+    kept = [img for img in (images or []) if img]
+    if not kept:
+        return kept, None
+    total = sum(approx_base64_decoded_bytes(img) for img in kept)
+    if total <= max_total_bytes:
+        return kept, None
+
+    original_count = len(kept)
+    notice: dict = {
+        "original_count": original_count,
+        "original_bytes": total,
+        "budget_bytes": max_total_bytes,
+        "sampled": False,
+        "compressed": False,
+        "dropped": 0,
+    }
+
+    if len(kept) > TURN_IMAGE_SAMPLE_KEEP:
+        kept = _sample_head_middle_tail(kept)
+        notice["sampled"] = True
+        total = sum(approx_base64_decoded_bytes(img) for img in kept)
+
+    if total > max_total_bytes:
+        from utils.screenshot_utils import decode_and_compress_screenshot_b64
+
+        def _compress_all(payloads: list) -> list:
+            out = []
+            for payload in payloads:
+                try:
+                    shrunk = decode_and_compress_screenshot_b64(payload)
+                except Exception:
+                    out.append(payload)
+                    continue
+                # 压缩反而变大就保留原图（已经是小图/已压过的会这样）。
+                out.append(shrunk if len(shrunk) < len(payload) else payload)
+            return out
+
+        try:
+            compressed = await asyncio.to_thread(_compress_all, kept)
+        except Exception:
+            compressed = kept
+        if sum(approx_base64_decoded_bytes(i) for i in compressed) < total:
+            kept = compressed
+            notice["compressed"] = True
+            total = sum(approx_base64_decoded_bytes(img) for img in kept)
+
+    # 兜底：压完仍超限，才轮到丢内容。复用既有的 trim —— 它的判据（从最旧丢、
+    # 无条件保住最后一张）正是这一步要的。
+    if total > max_total_bytes:
+        kept, dropped = trim_images_to_turn_budget(kept, max_total_bytes)
+        notice["dropped"] = dropped
+        total = sum(approx_base64_decoded_bytes(img) for img in kept)
+
+    notice["final_count"] = len(kept)
+    notice["final_bytes"] = total
+    return kept, notice
 
 
 def resolve_callback_delivery_ack(callback: dict, delivered: bool) -> None:

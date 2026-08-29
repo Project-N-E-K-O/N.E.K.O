@@ -205,6 +205,16 @@ class TranscriptDispatcher:
         self._idle = asyncio.Event()
         self._idle.set()
 
+    @property
+    def has_pending_delivery(self) -> bool:
+        """Return whether an accepted final still owns delivery priority."""
+
+        return bool(
+            self._reservations
+            or not self._queue.empty()
+            or self._active is not None
+        )
+
     def try_reserve(self, key: FinalKey) -> bool:
         if key in self._reservations:
             return True
@@ -243,7 +253,14 @@ class TranscriptDispatcher:
                 break
         worker, self._worker = self._worker, None
         if worker is not None and not worker.done():
-            worker.cancel()
+            # 不要取消调用者自己。收口路径（例如独立 ASR final 里发现会话不可用后
+            # 调 _close_independent_asr）本身就跑在这个 worker 上：取消它会让紧接着
+            # 的那个 await 抛 CancelledError，剩下的 detector/provider 清理和
+            # send_session_ended_by_server() 全部被跳过，前端也就收不到结束通知。
+            # 队列已经清空、_worker 也已置 None，所以不取消它也不会再接新活，
+            # 当前这一条 envelope 跑完就自然结束。
+            if worker is not asyncio.current_task():
+                worker.cancel()
         self._active = None
         self._idle.set()
 
@@ -286,6 +303,12 @@ class TranscriptDispatcher:
                     ):
                         self._active = None
                         self._set_idle_if_empty()
+                if self._worker is not worker_task:
+                    # invalidate_all() 已经把我们从 _worker 上摘掉了（而且刻意没有
+                    # 取消调用者自己）。跑完手头这条 envelope 就必须退出 —— 再回去
+                    # await self._queue.get() 会变成一个和新 worker 并存的僵尸，
+                    # 两个消费者抢同一个队列。
+                    return
         except asyncio.CancelledError:
             return
 

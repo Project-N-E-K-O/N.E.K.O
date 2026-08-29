@@ -5,7 +5,7 @@ import struct
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import WebSocketDisconnect
@@ -116,6 +116,65 @@ async def test_flush_pending_input_data_routes_audio_through_bounded_queue():
     assert mgr.pending_input_data == []
 
 
+async def test_cancelled_pending_input_flush_restores_unprocessed_suffix_first():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    first = {"input_type": "text", "data": "first"}
+    blocked = {"input_type": "text", "data": "blocked"}
+    suffix = {"input_type": "text", "data": "suffix"}
+    live = {"input_type": "text", "data": "live"}
+    mgr.pending_input_data = [first, blocked, suffix]
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.session = object()
+    mgr.is_active = True
+    mgr._enqueue_audio_stream_data = AsyncMock()
+    blocked_started = asyncio.Event()
+
+    async def process(message):
+        if message is blocked:
+            blocked_started.set()
+            await asyncio.Event().wait()
+
+    mgr._process_stream_data_internal = process
+    task = asyncio.create_task(LLMSessionManager._flush_pending_input_data(mgr))
+    await blocked_started.wait()
+    mgr.pending_input_data.append(live)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert mgr.pending_input_data == [blocked, suffix, live]
+    assert mgr._pending_input_flush_active is False
+
+
+async def test_failed_pending_input_drops_only_current_and_continues_suffix():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    first = {"input_type": "text", "data": "first"}
+    failed = {"input_type": "text", "data": "failed"}
+    suffix = {"input_type": "text", "data": "suffix"}
+    live = {"input_type": "text", "data": "live"}
+    mgr.pending_input_data = [first, failed, suffix]
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.session = object()
+    mgr.is_active = True
+    mgr._enqueue_audio_stream_data = AsyncMock()
+    attempted: list[dict] = []
+
+    async def process(message):
+        attempted.append(message)
+        if message is failed:
+            mgr.pending_input_data.append(live)
+            raise RuntimeError("bad cached message")
+
+    mgr._process_stream_data_internal = process
+
+    await LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert attempted == [first, failed, suffix, live]
+    assert mgr.pending_input_data == []
+    assert mgr._pending_input_flush_active is False
+
+
 def _queue_token() -> VoiceIngressToken:
     return VoiceIngressToken(1, "socket", 1, 1, 1)
 
@@ -126,10 +185,12 @@ def _hot_swap_frame(
     samples: int = 160,
     speech_probability: float | None = 0.5,
     rnnoise_available: bool = True,
+    captured_at: float = 0.0,
 ) -> HotSwapAudioFrame:
     return HotSwapAudioFrame(
         pcm16=b"\x01\x00" * samples,
         token=token,
+        captured_at=captured_at,
         speech_probability=speech_probability,
         rnnoise_available=rnnoise_available,
     )
@@ -301,6 +362,7 @@ async def test_audio_worker_leaves_runtime_generation_validation_to_submit():
         ingress_token=frame.token,
         audio_stream_epoch=frame.audio_stream_epoch,
         ingress_sequence=frame.ingress_sequence,
+        captured_at=frame.captured_at,
     )
     assert mgr._audio_stream_dropped_total == 0
 
@@ -345,6 +407,7 @@ async def test_audio_worker_does_not_wait_for_core_session_readiness():
         ingress_token=frame.token,
         audio_stream_epoch=frame.audio_stream_epoch,
         ingress_sequence=frame.ingress_sequence,
+        captured_at=frame.captured_at,
     )
 
 
@@ -496,6 +559,7 @@ async def test_independent_audio_route_precedes_omni_websocket_checks():
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        captured_at=ANY,
     )
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
@@ -534,6 +598,7 @@ async def test_independent_audio_route_does_not_require_omni_session_container()
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        captured_at=ANY,
     )
     mgr.start_session.assert_not_awaited()
     mgr.end_session.assert_not_awaited()
@@ -592,6 +657,7 @@ async def test_hot_swap_flush_preserves_identity_and_detector_metadata():
             token,
             speech_probability=0.75,
             rnnoise_available=True,
+            captured_at=1234.5,
         )
     )
 
@@ -605,6 +671,7 @@ async def test_hot_swap_flush_preserves_identity_and_detector_metadata():
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        captured_at=1234.5,
     )
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()

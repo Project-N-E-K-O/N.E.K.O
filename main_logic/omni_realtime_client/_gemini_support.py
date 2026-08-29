@@ -321,9 +321,11 @@ class _GeminiMixin:
         self,
         text: str,
         *,
+        images_bytes: tuple[bytes, ...] = (),
+        image_mime_type: str = "image/jpeg",
         starts_user_turn: bool = True,
     ) -> None:
-        """Inject ``text`` as a Gemini user turn and trigger a response via
+        """Inject one Gemini user turn and trigger a response via
         ``send_client_content(turn_complete=True)``.
 
         This is Gemini Live's idiomatic equivalent of OpenAI-Realtime's
@@ -341,8 +343,17 @@ class _GeminiMixin:
             self.note_user_turn_started()
         from google.genai import types as genai_types
 
+        parts = []
+        for image_bytes in images_bytes:
+            parts.append(
+                genai_types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=image_mime_type,
+                )
+            )
+        parts.append(genai_types.Part(text=text))
         content = genai_types.Content(
-            parts=[genai_types.Part(text=text)],
+            parts=parts,
             role="user",
         )
         await self._gemini_session.send_client_content(
@@ -450,7 +461,11 @@ class _GeminiMixin:
         genuinely be cancelled: besides ``close()``, the Gemini proactive
         quarantine in ``_responses.py`` calls this from a fired task.
         """
-        if not self._gemini_context_manager:
+        if (
+            not self._gemini_context_manager
+            and getattr(self, "_gemini_proactive_submit_task", None) is None
+            and getattr(self, "_gemini_external_submit_task", None) is None
+        ):
             return
         await self._own_teardown("_gemini_close_task", self._detach_for_gemini_close)
 
@@ -462,12 +477,48 @@ class _GeminiMixin:
             self._gemini_context_manager,
             self._gemini_session,
             tool_tasks,
+            proactive_submit_task=getattr(
+                self, "_gemini_proactive_submit_task", None
+            ),
+            external_submit_task=getattr(
+                self, "_gemini_external_submit_task", None
+            ),
         )
 
-    async def _close_gemini_context(self, context, session, tool_tasks=()) -> None:
+    async def _cancel_gemini_submit_tasks(
+        self,
+        proactive_submit_task=None,
+        external_submit_task=None,
+    ) -> None:
+        """Cancel and join the SDK sends a closing Gemini session still owns."""
+
+        await self._cancel_gemini_proactive_submit(
+            session_closing=True,
+            submit_task=proactive_submit_task,
+        )
+        if (
+            external_submit_task is not None
+            and external_submit_task is not asyncio.current_task()
+            and not external_submit_task.done()
+        ):
+            external_submit_task.cancel()
+            await asyncio.gather(external_submit_task, return_exceptions=True)
+
+    async def _close_gemini_context(
+        self,
+        context,
+        session,
+        tool_tasks=(),
+        *,
+        proactive_submit_task=None,
+        external_submit_task=None,
+    ) -> None:
         """Exit one Gemini context exactly once, even across replacements."""
 
         if context is None:
+            await self._cancel_gemini_submit_tasks(
+                proactive_submit_task, external_submit_task
+            )
             await self._await_retired_tool_tasks(tool_tasks)
             return
         registry = self._gemini_context_close_tasks
@@ -475,10 +526,22 @@ class _GeminiMixin:
         existing = registry.get(key)
         if existing is not None and existing[0] is context:
             close_task = existing[1]
+            # The context is already being exited by an earlier caller, but the
+            # submit tasks WE seized are ours to cancel either way -- cancelling
+            # an already-finished one is a no-op.
+            await self._cancel_gemini_submit_tasks(
+                proactive_submit_task, external_submit_task
+            )
             await self._await_retired_tool_tasks(tool_tasks)
         else:
             close_task = asyncio.create_task(
-                self._close_gemini_impl(context, session, tool_tasks)
+                self._close_gemini_impl(
+                    context,
+                    session,
+                    tool_tasks,
+                    proactive_submit_task=proactive_submit_task,
+                    external_submit_task=external_submit_task,
+                )
             )
             registry[key] = (context, close_task)
 
@@ -504,7 +567,18 @@ class _GeminiMixin:
             ):
                 registry.pop(key, None)
 
-    async def _close_gemini_impl(self, context, session, tool_tasks=()) -> None:
+    async def _close_gemini_impl(
+        self,
+        context,
+        session,
+        tool_tasks=(),
+        *,
+        proactive_submit_task=None,
+        external_submit_task=None,
+    ) -> None:
+        await self._cancel_gemini_submit_tasks(
+            proactive_submit_task, external_submit_task
+        )
         await self._await_retired_tool_tasks(tool_tasks)
         if context is None:
             return
@@ -551,11 +625,10 @@ class _GeminiMixin:
 
     async def _handle_messages_gemini(self) -> None:
         """Handle messages from Gemini Live API."""
-        if not self._gemini_session:
+        provider_session = self._gemini_session
+        if not provider_session:
             logger.error("Gemini session not established")
             return
-
-        provider_session = self._gemini_session
         connection_generation = self._connection_generation
         try:
             while not self._fatal_error_occurred:
@@ -613,15 +686,32 @@ class _GeminiMixin:
                     expected_provider_session=provider_session,
                     expected_outcome_token=outcome_owner[2],
                 )
+            if self._still_owns_connection(connection_generation):
+                outcome_token = getattr(
+                    self,
+                    "_gemini_external_outcome_token",
+                    None,
+                )
+                if outcome_token is not None:
+                    self._settle_gemini_external_turn(outcome_token)
 
     async def _process_gemini_response(
         self,
         response,
         *,
         provider_session=None,
-        connection_generation=None,
+        connection_generation: int | None = None,
     ) -> None:
         """Process a single Gemini response event."""
+        if connection_generation is None:
+            connection_generation = self._connection_generation
+        if not self._still_owns_connection(connection_generation):
+            return
+        external_outcome_token = getattr(
+            self,
+            "_gemini_external_outcome_token",
+            None,
+        )
         try:
             # 处理工具调用 —— 将 function_calls 中每一个调用都派给
             # ``on_tool_call``，结果通过 ``send_tool_response`` 一次性回写
@@ -770,6 +860,11 @@ class _GeminiMixin:
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch
                     self._current_turn_host_id = self._read_host_turn_id()
+                    if _is_new_turn:
+                        # 新回合开始就说明旧回合已经收场：欠账作废，免得旧回合
+                        # 永不终结时把下一条**合法**终结也吃掉，让 token 永远结算
+                        # 不掉、会话被钉成「忙」而主动搭话彻底哑掉。
+                        self._gemini_cancelled_terminal_pending = False
                     if _is_new_turn and _can_clear_interrupted:
                         # Gemini has no response.created event; clear stale interrupt state only
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.
@@ -833,6 +928,21 @@ class _GeminiMixin:
                 was_interrupted = bool(
                     getattr(server_content, 'interrupted', False)
                 )
+                # 一个 server event 可能**同时**带 turn_complete 和 interrupted，
+                # 下面两条终结分支都会跑。欠账是「每个**终结**事件一笔」：
+                #   - 不能每条分支各消费一次 —— 第一条拿到 True 跳过结算，第二条
+                #     拿到 False 就用旧那一轮的终结把新铸的 token 结算掉；
+                #   - 也不能每个事件都消费 —— 取消之后的**非终结**迟到内容会把欠账
+                #     提前清掉，随后旧回合真正的终结就把新 token 当成可结算对象。
+                # 所以：先判定这是不是终结事件，是才消费，且只消费一次。
+                _is_terminal_event = bool(
+                    getattr(server_content, 'turn_complete', False)
+                ) or was_interrupted
+                _owed_to_cancelled = (
+                    self._consume_cancelled_terminal()
+                    if _is_terminal_event
+                    else False
+                )
                 # ⚠️ 这里刻意【不】触发 on_audio_done（issue #1566 的音频完结信号，
                 # 见 _transport.py 的 response.audio.done 分支）。Gemini（原生 +
                 # lanlan.app free 代理）唯一的结束信号就是 turn_complete，而它会
@@ -855,6 +965,14 @@ class _GeminiMixin:
                     except Exception:
                         pass
                     self._is_responding = False
+                    if (
+                        not _owed_to_cancelled
+                        and external_outcome_token is not None
+                        and self._still_owns_connection(connection_generation)
+                    ):
+                        self._settle_gemini_external_turn(
+                            external_outcome_token
+                        )
                     if not was_interrupted:
                         settle_event_outcome()
                     if self._skip_until_next_response:
@@ -867,6 +985,14 @@ class _GeminiMixin:
 
                 # 检查是否被中断
                 if was_interrupted:
+                    if (
+                        not _owed_to_cancelled
+                        and external_outcome_token is not None
+                        and self._still_owns_connection(connection_generation)
+                    ):
+                        self._settle_gemini_external_turn(
+                            external_outcome_token
+                        )
                     settle_event_outcome(
                         error_msg="Gemini proactive response interrupted"
                     )

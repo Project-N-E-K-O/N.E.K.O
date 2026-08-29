@@ -219,6 +219,44 @@ def test_binary_audio_frame_decodes_extreme_sample_values() -> None:
     assert _decode_binary_audio_frame(payload)["data"] == samples
 
 
+@pytest.mark.asyncio
+async def test_live_visual_validation_is_tracked_before_background_processing(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [
+            {
+                "action": "stream_data",
+                "input_type": "screen",
+                "data": "raw-frame",
+            }
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+    ordering = []
+
+    async def stream_data(message: dict) -> None:
+        ordering.append(("stream", message))
+
+    def track_validation(task: asyncio.Task, *, captured_at: object) -> bool:
+        assert not task.done()
+        ordering.append(("track", captured_at))
+        return True
+
+    manager.stream_data = stream_data
+    manager._track_independent_visual_validation_task = track_validation
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert [kind for kind, _value in ordering] == ["track", "stream"]
+    assert isinstance(ordering[0][1], float)
+
+
 @pytest.mark.parametrize(
     "payload",
     [

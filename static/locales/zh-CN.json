@@ -590,6 +590,7 @@
         "ERROR_1007_ARREARS": "💥 备注：检测到1007错误。该错误大概率是欠费导致。",
         "IMAGE_BLOCKED": "⚠️ 图片内容被审查系统拦截，请尝试更换图片或内容。",
         "SERVER_BUSY_THROTTLE": "⚠️ 服务器繁忙，正在自动调节发送速率...",
+        "ASR_INGRESS_BACKPRESSURE": "语音处理繁忙，请再说一遍。",
         "RESPONSE_TIMEOUT": "💥 连接超时 (Response timeout)，语音对话已中断。",
         "CONNECTION_TIMEOUT": "💥 连接超时，请检查网络连接。",
         "RESPONSE_TOO_LONG": "回复过长，已放弃输出（可在配置中调大 TEXT_GUARD_MAX_LENGTH）",

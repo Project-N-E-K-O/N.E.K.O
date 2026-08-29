@@ -27,6 +27,31 @@ def _envelope(turn_id: int) -> TranscriptEnvelope:
     return TranscriptEnvelope(token, "qwen", f"text-{turn_id}")
 
 
+async def test_pending_delivery_spans_reservation_queue_and_active_dispatch() -> None:
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    async def dispatch(_envelope: TranscriptEnvelope) -> None:
+        dispatch_started.set()
+        await release_dispatch.wait()
+
+    dispatcher = TranscriptDispatcher(dispatch)
+    envelope = _envelope(1)
+
+    assert dispatcher.has_pending_delivery is False
+    assert dispatcher.try_reserve(envelope.final_key) is True
+    assert dispatcher.has_pending_delivery is True
+
+    dispatcher.submit(envelope)
+    assert dispatcher.has_pending_delivery is True
+    await dispatch_started.wait()
+    assert dispatcher.has_pending_delivery is True
+
+    release_dispatch.set()
+    await dispatcher.wait_idle()
+    assert dispatcher.has_pending_delivery is False
+
+
 async def test_dispatcher_reserves_capacity_and_serializes_delivery() -> None:
     release_first = asyncio.Event()
     delivered: list[int] = []
@@ -139,3 +164,71 @@ async def test_wait_idle_returns_while_next_turn_slot_is_reserved() -> None:
 
     await asyncio.wait_for(dispatcher.wait_idle(), 1)
     assert second.final_key in dispatcher._reservations
+
+
+async def test_invalidate_all_from_inside_dispatch_does_not_cancel_its_caller() -> None:
+    """Teardown paths run ON the worker; cancelling it truncates their cleanup.
+
+    An independent-ASR final that discovers the session is unusable calls
+    `_close_independent_asr()`, which reaches `invalidate_all()` while still
+    executing inside `_run()`. Cancelling the current worker there makes the
+    very next await raise CancelledError, so the remaining detector/provider
+    cleanup and the frontend "session ended" notification never happen.
+    """
+    steps: list[str] = []
+    captured: dict[str, asyncio.Task] = {}
+
+    async def dispatch(_envelope: TranscriptEnvelope) -> None:
+        steps.append("start")
+        captured["worker"] = asyncio.current_task()
+        dispatcher.invalidate_all()
+        # 收口路径在 invalidate_all 之后还有若干 await —— 它们必须照常跑完。
+        await asyncio.sleep(0)
+        steps.append("after-await")
+        await asyncio.sleep(0)
+        steps.append("cleanup-done")
+
+    dispatcher = TranscriptDispatcher(dispatch)
+    envelope = _envelope(1)
+    assert dispatcher.try_reserve(envelope.final_key) is True
+    dispatcher.submit(envelope)
+
+    for _ in range(50):
+        if "cleanup-done" in steps:
+            break
+        await asyncio.sleep(0.01)
+
+    assert steps == ["start", "after-await", "cleanup-done"]
+
+    # 跑完手头这条之后必须**退出**：再回去 await queue.get() 就成了和新 worker
+    # 并存的僵尸，两个消费者抢同一个队列。
+    worker = captured["worker"]
+    for _ in range(50):
+        if worker.done():
+            break
+        await asyncio.sleep(0.01)
+    assert worker.done(), "the self-invalidated worker must exit after its envelope"
+    assert not worker.cancelled()
+
+
+async def test_invalidate_all_still_cancels_a_worker_from_outside() -> None:
+    """The normal identity-barrier use must keep cancelling the worker."""
+    started = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def dispatch(_envelope: TranscriptEnvelope) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finished.set()
+
+    dispatcher = TranscriptDispatcher(dispatch)
+    envelope = _envelope(1)
+    assert dispatcher.try_reserve(envelope.final_key) is True
+    dispatcher.submit(envelope)
+    await asyncio.wait_for(started.wait(), 1.0)
+
+    dispatcher.invalidate_all()
+
+    await asyncio.wait_for(finished.wait(), 1.0)

@@ -44,6 +44,12 @@ DEFAULT_OPENROUTER_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 NATIVE_IMAGE_MIN_INTERVAL = 1.5
 # 无语音活动时图片发送间隔倍数（实际间隔 = NATIVE_IMAGE_MIN_INTERVAL × 此值）
 IMAGE_IDLE_RATE_MULTIPLIER = 5
+# 一个独立 ASR 回合最多带几张原图（开头 / 中间 / 结尾）。
+# 一次发声是一段时间不是一个瞬间：屏幕共享按 NATIVE_IMAGE_MIN_INTERVAL 那个量级
+# 持续推帧，只留最后一张会丢掉用户开口时指的东西，全留则是无界输入——而且写进
+# provider conversation 的 item 事后删不掉。Core 先把整段抽样成这三张，provider
+# 侧再按这个数兜一次底。
+MAX_MULTIMODAL_TURN_IMAGES = 3
 
 # 用户自定义模型配置的默认 Provider/URL/API_KEY（空字符串表示使用全局配置）
 DEFAULT_CONVERSATION_MODEL_URL = ""

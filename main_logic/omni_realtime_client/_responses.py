@@ -18,14 +18,25 @@ from ._shared import (
     Any,
     Callable,
     Dict,
+    OMNI_WS_FRAME_LIMIT_BYTES,
     Optional,
+    VisualDeliveryMode,
     asyncio,
+    base64,
+    json,
     logger,
     response_arbiter_fail_open_enabled,
     time,
     uuid,
 )
 
+from typing import Sequence
+
+from config import MAX_MULTIMODAL_TURN_IMAGES
+from main_logic.proactive_delivery import (
+    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+    fit_images_to_turn_budget,
+)
 from config.prompts.prompts_proactive import (
     REALTIME_PROACTIVE_GENERAL_TRIGGER_PROMPTS,
     REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS,
@@ -34,7 +45,10 @@ from config.prompts.prompts_proactive import (
 from config.prompts.prompts_sys import _loc
 
 from ._response_arbiter import RealtimeResponseArbiter, ResponseTicket
-from ._protocol_capabilities import STRICT_REALTIME_PROTOCOL_CAPABILITIES
+from ._protocol_capabilities import (
+    MultimodalTurnDelivery,
+    STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+)
 
 
 # A missing response.done must fail conservatively instead of acknowledging a
@@ -48,6 +62,8 @@ _GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS = 3.0
 # the cancel grace budget rather than inventing a second number.
 _GEMINI_PROACTIVE_TOOL_SETTLE_SECONDS = 3.0
 _PROACTIVE_TICKET_CANCEL_OBSERVE_TIMEOUT_SECONDS = 0.5
+_GEMINI_PROACTIVE_SESSION_CLOSE_CANCEL = "Gemini session is closing"
+_GEMINI_PROACTIVE_TASK_UNSET = object()
 
 
 def _proactive_text_instruction(language: str, *, has_vision: bool) -> str:
@@ -316,6 +332,9 @@ class _ResponseMixin:
         arbiter.resume_dispatch()
         try:
             await ticket.sent
+        except asyncio.CancelledError:
+            await arbiter.cancel_ticket(ticket)
+            raise
         finally:
             # Re-arm the newer turn's pause on the failure path too: a
             # transport error (or a newer prepare's cancel_current) can fail
@@ -331,23 +350,542 @@ class _ResponseMixin:
                 arbiter.pause_dispatch()
         return ticket
 
-    async def prepare_external_voice_turn(self, *, turn_id: str) -> None:
-        """Prepare the active Provider session for one external ASR turn."""
+    def get_multimodal_turn_delivery(self) -> MultimodalTurnDelivery:
+        """Return the provider adapter's atomic text+image capability."""
+
+        capabilities = getattr(
+            self,
+            "_realtime_protocol_capabilities",
+            STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+        )
+        return capabilities.multimodal_turn_delivery
+
+    @staticmethod
+    def _decode_multimodal_turn_image(image_b64: str) -> bytes:
+        """Validate one image payload before it can enter provider history."""
+
+        from utils.screenshot_utils import MAX_BASE64_SIZE
+
+        if not isinstance(image_b64, str) or not image_b64:
+            raise ValueError("multimodal turn image must not be empty")
+        if len(image_b64) > MAX_BASE64_SIZE:
+            raise ValueError("multimodal turn image exceeds the payload budget")
+        try:
+            return base64.b64decode(image_b64, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("multimodal turn image is not valid base64") from exc
+
+    @classmethod
+    def _normalize_multimodal_turn_images(
+        cls,
+        images: str | Sequence[str],
+    ) -> tuple[tuple[str, ...], tuple[bytes, ...]]:
+        """Validate the turn's frames and hold them to the per-turn cap.
+
+        Core samples one utterance down to first/middle/last before it gets
+        here. This is the provider-side floor for that contract: whatever the
+        caller passes, at most ``MAX_MULTIMODAL_TURN_IMAGES`` frames may enter
+        provider history, and provider history cannot be edited afterwards.
+        """
+
+        if isinstance(images, str):
+            images = (images,)
+        staged = tuple(images or ())
+        if not staged:
+            raise ValueError("multimodal turn requires at least one image")
+        if len(staged) > MAX_MULTIMODAL_TURN_IMAGES:
+            logger.warning(
+                "external_multimodal_turn over the per-turn image cap: "
+                "%d supplied, keeping the first %d",
+                len(staged),
+                MAX_MULTIMODAL_TURN_IMAGES,
+            )
+            staged = staged[:MAX_MULTIMODAL_TURN_IMAGES]
+        return staged, tuple(
+            cls._decode_multimodal_turn_image(image) for image in staged
+        )
+
+    async def submit_multimodal_turn(
+        self,
+        text: str,
+        images: str | Sequence[str],
+        *,
+        turn_id: str,
+        visual_still_owned=None,
+    ):
+        """Submit one atomic raw-image + external-ASR user turn.
+
+        Unsupported Realtime protocols fail closed so Core can hand the whole
+        turn to an Offline VLM. This method never invokes the annotation model
+        and never degrades a visual turn into text-only input.
+        """
+
+        if self.get_multimodal_turn_delivery() is not (
+            MultimodalTurnDelivery.DIRECT_ATOMIC
+        ):
+            raise RuntimeError("realtime multimodal turn requires VLM handoff")
+        clean = str(text or "").strip()
+        if not clean:
+            raise ValueError("external ASR turn must not be empty")
+        if len(clean) > 8_000:
+            raise ValueError("external ASR turn exceeds the 8000 character budget")
+        stable_turn_id = str(turn_id or "").strip()
+        if not stable_turn_id:
+            raise ValueError("external voice turn_id must not be empty")
+        staged_images, images_bytes = self._normalize_multimodal_turn_images(
+            images
+        )
+
+        if self._is_gemini:
+            # 上面只管了**张数**和**单张**上限；三张各自合规的帧加起来仍可能逼近
+            # 30 MB。WebSocket 分支后面还有按聚合大小重压/摘帧那一步，Offline 走
+            # fit_images_to_turn_budget —— 只有 Gemini 这条直接把 bytes 交给
+            # send_client_content()，没有任何聚合闸。超限时 provider 整条请求拒收，
+            # 用户这一轮就没了。
+            #
+            # 用与 Offline 同一条阶梯：先抽样、再压缩、都不行才丢，并且至少留一张。
+            _fitted, _notice = await fit_images_to_turn_budget(
+                list(staged_images),
+                TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+            )
+            if _notice:
+                logger.warning(
+                    "Gemini multimodal turn over the %d-byte aggregate budget: "
+                    "%d -> %d image(s) (sampled=%s compressed=%s dropped=%d)",
+                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+                    _notice["original_count"],
+                    _notice["final_count"],
+                    _notice["sampled"],
+                    _notice["compressed"],
+                    _notice["dropped"],
+                )
+                images_bytes = tuple(
+                    self._decode_multimodal_turn_image(image)
+                    for image in _fitted
+                )
+                # 上面那步是 asyncio.to_thread 压几张 MB 级截图，是真实耗时的让
+                # 出点。后继发声可以整段跑完 _begin_core_multimodal_turn（同步把
+                # 本轮 record invalidated）+ prepare_external_voice_turn +
+                # handle_interruption —— 这两条路互不互斥（前者不拿 swap lock，
+                # 本函数也不拿 turn admission lock）。不复查的话，我们会把已经不
+                # 属于这一轮的帧发给 provider，而 Core 收不到任何信号，既有的
+                # "降级成纯文本"出口根本走不到。
+                #
+                # 判据用调用方穿进来的 visual_still_owned，与 Offline 交接那条路
+                # 同源（asr_runtime.py 的 lambda: not visual_ownership_lost()）。
+                # 刻意**不**用 _tool_scope_generation 代理：create_response 和
+                # submit_external_text_turn 也会推进它，会在根本没有语音后继时
+                # 把这一轮误降级。
+                #
+                # 丢帧只降级成纯文本，话照送 —— 与本 PR 其它三处所有权判据一致。
+                #
+                # ⚠️ 复查**不**放在这里，而是穿到 _submit_external_gemini_turn 里
+                # 紧贴 SDK 送出的那一刻。理由有二：
+                #   1. 放这里会被关在 `if _notice:` 之内，不裁剪时根本不跑；
+                #   2. 这之后还有一个让出点——_submit_external_gemini_turn 头部的
+                #      _await_gemini_external_quarantine()，后继回合可以在那段等待
+                #      里让本轮 record 失效。
+            await self._submit_external_gemini_turn(
+                clean,
+                images_bytes=images_bytes,
+                visual_still_owned=visual_still_owned,
+            )
+            return None
+        if self.ws is None or self._fatal_error_occurred:
+            raise RuntimeError("realtime websocket is not connected")
+
+        import hashlib
+
+        event_suffix = uuid.uuid4().hex
+        item_id = f"item_neko_{uuid.uuid4().hex}"
+        item_event = {
+            "type": "conversation.item.create",
+            "event_id": f"event_asr_multimodal_item_{event_suffix}",
+            "item": {
+                "id": item_id,
+                "type": "message",
+                "role": "user",
+                # 开头/中间/结尾同属一个 user item：一次发声是一段时间，三张按
+                # 时间顺序排在 transcript 前面，模型才知道这段话对着的是哪段画面。
+                # 仍然只触发一次回复。
+                "content": [
+                    *(
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/jpeg;base64," + image,
+                        }
+                        for image in staged_images
+                    ),
+                    {"type": "input_text", "text": clean},
+                ],
+            },
+        }
+        response_event = {
+            "type": "response.create",
+            "event_id": f"event_asr_multimodal_response_{event_suffix}",
+        }
+        # 传输上限在这里先判一次，而不是等 send_event 里再判。原因是那条路失败
+        # 只会 return False，而 arbiter 的 _worker_send 不看这个布尔值：整条
+        # conversation.item.create（连同 transcript）被丢掉之后，它照样会发
+        # response.create，用户拿到一个和自己这句话无关的回复。
+        #
+        # 这里把重压/摘帧提前做掉（helper 会就地改写 item_event，所以 send_event
+        # 之后不会重复做）；连一张都压不进上限时抛错，让 Core 走既有的整轮
+        # fail-closed（ASR_MULTIMODAL_TURN_FAILED）。不静默降级成纯文本 —— 那是
+        # 本 PR 明确禁止的行为。
+        # ⚠️ 降级要跑在超限判断**之前**。所有权已经丢了的话这些帧本来就不会送
+        # 出去，先摘掉再判大小：否则一批注定要丢的帧压不进上限时会抛
+        # RealtimeImagePayloadTooLargeError，把这一轮整个判死（Core 走
+        # ASR_MULTIMODAL_TURN_FAILED），而它其实只该降级成纯文本、话照送。
+        def _downgrade_if_visual_ownership_lost(event: Dict[str, Any]) -> None:
+            if visual_still_owned is None or visual_still_owned():
+                return
+            _item = event.get("item")
+            if not isinstance(_item, dict):
+                return
+            _content = _item.get("content")
+            if not isinstance(_content, list):
+                return
+            _kept = [
+                part
+                for part in _content
+                if not (
+                    isinstance(part, dict) and part.get("type") == "input_image"
+                )
+            ]
+            if len(_kept) != len(_content):
+                logger.info(
+                    "external multimodal turn %s lost visual ownership; "
+                    "submitting text-only",
+                    stable_turn_id,
+                )
+                _item["content"] = _kept
+
+        # 跑两次，位置不同、作用也不同：
+        #   这里（enqueue 之前）—— 覆盖上面重压/摘帧那段 to_thread 让出点，并且
+        #     能在还没占用 arbiter 名额时就把负载降下来；
+        #   pre_commit（dispatch、_worker_send 之前）—— 覆盖 arbiter 内部的等待
+        #     （等活跃响应结束、等发送信号量），那段窗口调用方够不着。
+        # 两次都只摘图、保留 transcript，不走"整条拒"：拒是**提交之后**才发生的，
+        # 要付一次未经确认的补偿删除（issue #2982）。
+        _downgrade_if_visual_ownership_lost(item_event)
+
+        item_payload = json.dumps(item_event)
+        if len(item_payload) > OMNI_WS_FRAME_LIMIT_BYTES:
+            shrunk = await asyncio.to_thread(
+                self._try_shrink_image_payload,
+                item_event,
+                item_payload,
+            )
+            if shrunk is None:
+                from ._transport import RealtimeImagePayloadTooLargeError
+
+                raise RealtimeImagePayloadTooLargeError(
+                    "multimodal turn item exceeds the realtime frame limit"
+                )
+        text_hash = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:8]
+        logger.info(
+            "external_multimodal_turn queued turn=%s chars=%d images=%d hash=%s",
+            stable_turn_id,
+            len(clean),
+            len(staged_images),
+            text_hash,
+        )
+        # 送进 arbiter 之前的最后一道视觉所有权复查，与 Gemini 那条路对偶。
+        #
+        # 上面的重压/摘帧是 asyncio.to_thread，真实让出点。后继回合的
+        # _begin_core_multimodal_turn 是**同步**把本轮 record invalidated 的，
+        # 但它随后的 prepare_external_voice_turn 可能还堵在 turn-admission 锁上、
+        # 尚未更新 _external_voice_turn_pause_id —— 于是下面那条 admission_check
+        # 拿着没变的 pause id 照样放行，过期的帧就进了 provider 历史。两个判据的
+        # 时机不同，admission_check 覆盖不了这一段。
+        #
+        # 就地摘掉图片、保留 transcript，而不是让 admission_check 去拒整条：
+        # 那是**提交之后**才拒，需要一次未经确认的补偿删除（见 issue #2982），
+        # 比在提交前把帧摘掉贵得多。丢帧只降级成纯文本，话照送。
+        arbiter = self._ensure_response_arbiter()
+        ticket = await arbiter.enqueue(
+            source="external_asr_multimodal",
+            events_before_response=(item_event,),
+            response_event=response_event,
+            ack_expected=True,
+            expected_item_id=item_id,
+            expected_item_role="user",
+            priority=0,
+            admission_check=lambda: getattr(
+                self,
+                "_external_voice_turn_pause_id",
+                None,
+            ) in (None, stable_turn_id),
+            pre_commit=_downgrade_if_visual_ownership_lost,
+            # 第三处，也是最后一处：arbiter 交给传输之后，send_event 还要等
+            # _send_semaphore；那段等待里所有权同样可能翻转，而 payload 是拿到
+            # 信号量之后才序列化的。用 main(#2837) 引入的每-ticket event_sender
+            # 把同一个降级函数送进那个临界区，序列化自然会带上结果。
+            event_sender=lambda _ev: self.send_event(
+                _ev,
+                pre_send=_downgrade_if_visual_ownership_lost,
+            ),
+        )
+        active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
+        if active_pause_id == stable_turn_id:
+            self._external_voice_turn_pause_id = None
+        arbiter.resume_dispatch()
+        try:
+            await ticket.sent
+        except asyncio.CancelledError:
+            await arbiter.cancel_ticket(ticket)
+            raise
+        finally:
+            if (
+                active_pause_id is not None
+                and active_pause_id != stable_turn_id
+                and getattr(self, "_external_voice_turn_pause_id", None)
+                == active_pause_id
+            ):
+                arbiter.pause_dispatch()
+        return ticket
+
+    async def _cancel_gemini_proactive_submit(
+        self,
+        *,
+        session_closing: bool = False,
+        submit_task: Any = _GEMINI_PROACTIVE_TASK_UNSET,
+    ) -> None:
+        """Cancel and join the task parked in Gemini's proactive SDK send."""
+
+        if submit_task is _GEMINI_PROACTIVE_TASK_UNSET:
+            submit_task = getattr(self, "_gemini_proactive_submit_task", None)
+        if submit_task is None:
+            return
+        if submit_task is asyncio.current_task():
+            return
+        if not submit_task.done():
+            if session_closing:
+                submit_task.cancel(_GEMINI_PROACTIVE_SESSION_CLOSE_CANCEL)
+            else:
+                submit_task.cancel()
+            await asyncio.gather(submit_task, return_exceptions=True)
+        if getattr(self, "_gemini_proactive_submit_task", None) is submit_task:
+            self._gemini_proactive_submit_task = None
+
+    async def prepare_external_voice_turn(self, *, turn_id: str) -> bool:
+        """Prepare one external ASR turn; report an in-place reconnect.
+
+        Gemini quarantine may retire and replace the SDK connection on this
+        same client instance.  The Core owner uses the returned flag to replace
+        the receive task that captured the retired session.
+        """
 
         stable_turn_id = str(turn_id or "").strip()
         if not stable_turn_id:
             raise ValueError("external voice turn_id must not be empty")
-        self.note_user_turn_started()
+        connection_generation = self._connection_generation
+        async with self._ensure_turn_admission_lock():
+            if self._is_gemini:
+                self._start_gemini_external_submit_quarantine()
+                await self._await_gemini_external_quarantine()
+                await self._cancel_gemini_proactive_submit()
+                proactive_outcome = getattr(
+                    self,
+                    "_gemini_proactive_outcome",
+                    None,
+                )
+                proactive_quarantine = getattr(
+                    self,
+                    "_gemini_proactive_quarantine_task",
+                    None,
+                )
+                if (
+                    proactive_outcome is not None
+                    and (
+                        proactive_quarantine is None
+                        or proactive_quarantine.done()
+                    )
+                ):
+                    # SDK-send completion is not a Gemini lifecycle terminal.
+                    # Until first content / turn_complete / interrupted arrives,
+                    # the accepted proactive turn still owns this unscoped SDK
+                    # session. Quarantine that outcome before admitting an
+                    # external-ASR successor, just as the in-flight cancellation
+                    # path does.
+                    proactive_quarantine = self._fire_task(
+                        self._interrupt_and_quarantine_gemini_proactive_outcome(
+                            proactive_outcome[0],
+                            error_msg=(
+                                "Gemini proactive turn was superseded by "
+                                "external voice input"
+                            ),
+                        )
+                    )
+                    self._gemini_proactive_quarantine_task = proactive_quarantine
+                await self._await_gemini_proactive_quarantine()
+            # ⚠️ 必须在上面这段 Gemini 隔离**之后**才宣告新用户回合。
+            # note_user_turn_started() 会推进 _tool_scope_generation，而
+            # _interrupt_and_quarantine_gemini_proactive_outcome 的第一道闸
+            # scope_still_ours() 正是拿 owner 里记下的 scope 跟它比：先推进的话这
+            # 个判据恒不相等，隔离每次都走 retire_without_touching_the_live_turn，
+            # 一次 client_content 打断都不发。那条已被 SDK 收下、还在生成的主动
+            # 搭话回合于是完全没被打断，外部 ASR 回合直接压在同一个 unscoped SDK
+            # session 上，两个回合的音频/文本交错——正是这道围栏要防的事。
+            # 隔离针对的是**上一轮**（主动搭话）那一轮，所以它必须在上一轮的
+            # scope 下跑完；跑完之后这一轮才真正开始。
+            self.note_user_turn_started()
+            try:
+                if not self._is_gemini:
+                    arbiter = self._ensure_response_arbiter()
+                    self._external_voice_turn_pause_id = stable_turn_id
+                    arbiter.pause_dispatch()
+                    await arbiter.cancel_current()
+                await self.handle_interruption()
+            except BaseException:
+                self.abandon_external_voice_turn(stable_turn_id)
+                raise
+        return self._connection_generation != connection_generation
+
+    def _consume_cancelled_terminal(self) -> bool:
+        """Take the terminal owed to a response ``handle_interruption`` cancelled.
+
+        One-shot: the first terminal after the cancellation is that response's,
+        no matter what has been minted since. Returns whether this terminal was
+        the owed one.
+        """
+        if not getattr(self, "_gemini_cancelled_terminal_pending", False):
+            return False
+        self._gemini_cancelled_terminal_pending = False
+        return True
+
+    def _settle_gemini_external_turn(self, token: object | None = None) -> None:
+        """Release accepted external-ASR ownership at its terminal edge."""
+
+        current = getattr(self, "_gemini_external_outcome_token", None)
+        if token is not None and current is not token:
+            return
+        self._gemini_external_outcome_token = None
+
+    def _start_gemini_external_submit_quarantine(
+        self,
+        submit_task: Optional[asyncio.Task] = None,
+    ) -> None:
+        """Retire a Gemini session whose external turn send was cancelled."""
+
+        if submit_task is None:
+            submit_task = getattr(self, "_gemini_external_submit_task", None)
+        outcome_token = getattr(self, "_gemini_external_outcome_token", None)
+        if (
+            (submit_task is None or submit_task.done())
+            and outcome_token is None
+        ):
+            return
+        if submit_task is asyncio.current_task():
+            return
+        quarantine_task = getattr(
+            self,
+            "_gemini_external_quarantine_task",
+            None,
+        )
+        if quarantine_task is not None and not quarantine_task.done():
+            return
+        self._gemini_external_quarantine_task = self._fire_task(
+            self._quarantine_gemini_external_submit(submit_task, outcome_token)
+        )
+
+    async def _quarantine_gemini_external_submit(
+        self,
+        submit_task: Optional[asyncio.Task],
+        outcome_token: object | None,
+    ) -> None:
+        """Join a cancelled SDK send, then close the ambiguous connection."""
+
+        submit_was_inflight = submit_task is not None and not submit_task.done()
+        if submit_was_inflight:
+            submit_task.cancel()
+            await asyncio.gather(submit_task, return_exceptions=True)
+        if (
+            submit_task is not None
+            and getattr(self, "_gemini_external_submit_task", None) is submit_task
+        ):
+            self._gemini_external_submit_task = None
+        if (
+            not submit_was_inflight
+            and outcome_token is not None
+            and getattr(self, "_gemini_external_outcome_token", None)
+            is not outcome_token
+        ):
+            # Its terminal event won the race with quarantine startup, so the
+            # session no longer contains an ambiguous accepted turn.
+            return
+        self._settle_gemini_external_turn(outcome_token)
+        # Cancellation only ends our await; Gemini may already have accepted
+        # the turn. The connection is the smallest scope that can prove no late
+        # transcript/response from that turn can cross into its successor.
+        self._fatal_error_occurred = True
+        await self._close_gemini()
+
+    async def _await_gemini_external_quarantine(self) -> None:
+        """Join external-submit quarantine and reconnect before a new turn."""
+
+        quarantine_task = getattr(
+            self,
+            "_gemini_external_quarantine_task",
+            None,
+        )
+        if quarantine_task is not None and quarantine_task is not asyncio.current_task():
+            await asyncio.shield(quarantine_task)
+            if (
+                quarantine_task.done()
+                and getattr(self, "_gemini_external_quarantine_task", None)
+                is quarantine_task
+            ):
+                self._gemini_external_quarantine_task = None
+        if getattr(self, "_gemini_session", None) is None:
+            instructions = str(getattr(self, "instructions", "") or "")
+            if instructions:
+                await self.connect(
+                    instructions,
+                    native_audio=getattr(self, "_native_audio", True),
+                )
+
+    async def _await_gemini_proactive_quarantine(self) -> None:
+        """Join stale Gemini proactive quarantine before opening a user turn."""
+
+        quarantine_task = getattr(self, "_gemini_proactive_quarantine_task", None)
+        if (
+            quarantine_task is None
+            or quarantine_task is asyncio.current_task()
+        ):
+            return
+        current_task = asyncio.current_task()
+        cancelling_before = (
+            current_task.cancelling() if current_task is not None else 0
+        )
         try:
-            if not self._is_gemini:
-                arbiter = self._ensure_response_arbiter()
-                self._external_voice_turn_pause_id = stable_turn_id
-                arbiter.pause_dispatch()
-                await arbiter.cancel_current()
-            await self.handle_interruption()
-        except BaseException:
-            self.abandon_external_voice_turn(stable_turn_id)
-            raise
+            await asyncio.shield(quarantine_task)
+        except asyncio.CancelledError:
+            if (
+                current_task is None
+                or current_task.cancelling() > cancelling_before
+                or not quarantine_task.cancelled()
+            ):
+                raise
+        finally:
+            if (
+                quarantine_task.done()
+                and getattr(self, "_gemini_proactive_quarantine_task", None)
+                is quarantine_task
+            ):
+                self._gemini_proactive_quarantine_task = None
+
+        # A quarantine with no terminal lifecycle retires the old Gemini
+        # session. Reconnect before admitting the user's turn so its transcript
+        # cannot race the retired SDK context.
+        if getattr(self, "_gemini_session", None) is None:
+            instructions = str(getattr(self, "instructions", "") or "")
+            if instructions:
+                await self.connect(
+                    instructions,
+                    native_audio=getattr(self, "_native_audio", True),
+                )
 
     def abandon_external_voice_turn(self, turn_id: str | None = None) -> None:
         """Release an external-ASR dispatch pause, optionally by turn key."""
@@ -365,11 +903,103 @@ class _ResponseMixin:
             arbiter = self._ensure_response_arbiter()
         arbiter.resume_dispatch()
 
+    async def _submit_external_gemini_turn(
+        self,
+        text: str,
+        *,
+        images_bytes: tuple[bytes, ...] = (),
+        visual_still_owned=None,
+    ) -> None:
+        """Submit one external-ASR turn through the owned Gemini lifecycle."""
+
+        submit_task = asyncio.current_task()
+        # 上一轮 external turn 可能还没等到终结事件：重叠发声时 B 的 prepare 会跑
+        # 在 A 的 SDK send **之前**，那一刻还没有 token 可隔离，于是 prepare 里的
+        # 隔离空转。到这里再直接覆盖 A 的活 token，两个回合就并存了——两份响应
+        # 交错，或者 B 的所有权被 A 的终结顺手带走。
+        #
+        # 用与 prepare 相同的隔离，不另立判据：settle 掉旧的并退掉这条连接。
+        # 「连接是能证明旧回合的迟到内容不会串进后继的最小范围」是这个文件已有的
+        # 结论（见 _quarantine_gemini_external_submit）。
+        if getattr(self, "_gemini_external_outcome_token", None) is not None:
+            self._start_gemini_external_submit_quarantine()
+            await self._await_gemini_external_quarantine()
+        # 外部 ASR 回合**就是**一次新的用户发声，但这条路径不经过
+        # _transport 里更新 _user_recent_activity_time 的那些点（音频没走 provider）。
+        # 不更新的话 _is_new_turn 会把这一轮的首个内容判成「迟到续帧」：内容被
+        # _interrupted 抑制、欠账不作废，随后它自己的终结把欠账消费掉、跳过结算
+        # —— token 永远挂着，会话被钉成「忙」，她再也不会主动开口。
+        # 送出前的最后一道视觉所有权复查。上面的
+        # _await_gemini_external_quarantine() 是一个真实让出点（前一轮的 token
+        # 还挂着时要等隔离跑完），后继回合可以在那段等待里让本轮 record 失效。
+        # 与图片预算那一步同一判据：丢帧只降级成纯文本，话照送。
+        if (
+            images_bytes
+            and visual_still_owned is not None
+            and not visual_still_owned()
+        ):
+            logger.info(
+                "Gemini external turn lost visual ownership before the SDK "
+                "send; submitting text-only"
+            )
+            images_bytes = ()
+        self._user_recent_activity_time = time.time()
+        outcome_token = object()
+        self._gemini_external_submit_task = submit_task
+        self._gemini_external_outcome_token = outcome_token
+        accepted = False
+        quarantined = False
+        try:
+            await self._gemini_send_user_turn(
+                text,
+                images_bytes=images_bytes,
+            )
+            accepted = True
+        except asyncio.CancelledError:
+            # 取消只结束了**我们的 await**，Gemini 可能已经收下这一轮：
+            # TranscriptDispatcher 的 invalidate_all() 会把取消沿 worker 一路传到
+            # 这里，而那时 send 早就交给 SDK 了。此时按"没送成"结算 token，等于对
+            # 外宣称没有在飞的回合，下一轮 prepare 便不会起隔离，那一轮的迟到
+            # transcript / 响应会串进后继回合。
+            #
+            # 所以保住 token，改为就地武装隔离——隔离本体会 join 掉这条 submit、
+            # settle token 再退掉这条连接，所以忙标志不会因此永久挂住（
+            # is_active_response() 读的就是这个 token）。这与 proactive 那条路
+            # 在 CancelledError 上的处理对偶，判据一致。
+            #
+            # 不走 _start_gemini_external_submit_quarantine：它有
+            # "submit_task is asyncio.current_task() → return" 的自保，从这里调
+            # 是空转。直接 fire 隔离本体，由它去 join 我们自己。
+            quarantined = True
+            _existing = getattr(self, "_gemini_external_quarantine_task", None)
+            if _existing is None or _existing.done():
+                self._gemini_external_quarantine_task = self._fire_task(
+                    self._quarantine_gemini_external_submit(
+                        submit_task,
+                        outcome_token,
+                    )
+                )
+            raise
+        finally:
+            if getattr(self, "_gemini_external_submit_task", None) is submit_task:
+                self._gemini_external_submit_task = None
+            if not accepted and not quarantined:
+                # 同步发送失败（provider 直接拒）才立刻结算：那一轮确实没被收下。
+                self._settle_gemini_external_turn(outcome_token)
+
     async def submit_external_voice_turn(self, text: str, *, turn_id: str) -> None:
         """Submit external ASR text through the Provider-appropriate path."""
 
         if self._is_gemini:
-            await self.create_response(text)
+            clean = str(text or "").strip()
+            if not clean:
+                raise ValueError("external ASR turn must not be empty")
+            if len(clean) > 8_000:
+                raise ValueError("external ASR turn exceeds the 8000 character budget")
+            stable_turn_id = str(turn_id or "").strip()
+            if not stable_turn_id:
+                raise ValueError("external voice turn_id must not be empty")
+            await self._submit_external_gemini_turn(clean)
             return
         await self.submit_external_text_turn(text, turn_id=turn_id)
 
@@ -382,7 +1012,16 @@ class _ResponseMixin:
         response" against the realtime API's "one active response at a time"
         constraint.
         """
-        return bool(self._is_responding or self._ensure_response_arbiter().is_busy)
+        # Gemini 的 external-ASR 回合在 SDK send 返回之后、第一个模型内容事件到达
+        # 之前，_is_responding 还是 False、arbiter 也已经空闲，但那一轮其实已经被
+        # provider 接下了（_gemini_external_outcome_token 活着，要到 turn_complete
+        # / interrupted 才落地）。这段窗口里不认它，排队的主动搭话就能过掉所有忙检
+        # 查、再插一个不受管辖的 Gemini 回合，两者的终结事件互相顶掉。
+        return bool(
+            self._is_responding
+            or getattr(self, "_gemini_external_outcome_token", None) is not None
+            or self._ensure_response_arbiter().is_busy
+        )
 
     async def inject_text_and_request_response(
         self,
@@ -449,6 +1088,24 @@ class _ResponseMixin:
             # SDK-send success alone is not response completion.
             if self._gemini_session is None:
                 raise RuntimeError("Gemini session not available for proactive inject")
+            gemini_text_parts: list[str] = []
+            for event in events_before_text:
+                if event.get("type") != "conversation.item.create":
+                    raise ValueError("Gemini proactive prefix must be a text item")
+                item = event.get("item")
+                if not isinstance(item, dict) or item.get("role") != "user":
+                    raise ValueError("Gemini proactive prefix must use user role")
+                content = item.get("content")
+                if not isinstance(content, list):
+                    raise ValueError("Gemini proactive prefix content must be a list")
+                for part in content:
+                    if not isinstance(part, dict) or part.get("type") != "input_text":
+                        raise ValueError("Gemini proactive prefix must contain input_text")
+                    prefix_text = str(part.get("text") or "").strip()
+                    if prefix_text:
+                        gemini_text_parts.append(prefix_text)
+            gemini_text_parts.append(text.strip())
+            gemini_text = "\n".join(gemini_text_parts)
             proactive_session = self._gemini_session
             proactive_scope = getattr(self, "_tool_scope_generation", 0)
             await self._settle_tools_before_gemini_proactive()
@@ -499,31 +1156,69 @@ class _ResponseMixin:
                 )
                 self._proactive_inject_outcome_token = outcome_token
                 self._proactive_inject_awaiting_outcome = True
-            try:
-                await self._gemini_send_user_turn(
-                    text,
-                    starts_user_turn=False,
-                )
-            except asyncio.CancelledError:
+            submit_task = asyncio.current_task()
+            existing_submit_task = getattr(
+                self,
+                "_gemini_proactive_submit_task",
+                None,
+            )
+            existing_submit_session = getattr(
+                self,
+                "_gemini_proactive_submit_session",
+                None,
+            )
+            if (
+                existing_submit_task is not None
+                and existing_submit_task is not submit_task
+                and not existing_submit_task.done()
+                # 按 session 收窄，与上面 outcome owner 同一判据。两条 send 只有落
+                # 在**同一个** SDK session 上才会互相交错；卡在退休 session 上的那
+                # 条不该挡住替换连接的 inject——_on_connection_attached 正是为此退
+                # 掉了前一条的 outcome，如果这里还拦着，替换连接依然要等到 60s 过
+                # 期或隔离结束才做得成自己的主动搭话。退休那条由拆除路径
+                # (_cancel_gemini_submit_tasks) 取消，不会漏。
+                and existing_submit_session is proactive_session
+            ):
                 outcome = getattr(self, "_gemini_proactive_outcome", None)
                 if outcome is not None and outcome[0] == outcome_token:
-                    # Cancellation can arrive after the SDK accepted the
-                    # unscoped turn but before its await resumes. Suppress the
-                    # abandoned caller's callbacks, retain its token, and
-                    # interrupt/quarantine the generation until a terminal (or
-                    # fail-closed session retirement) makes retry correlation
-                    # safe again.
-                    self._gemini_proactive_outcome = (
-                        outcome_token,
-                        None,
-                        None,
-                    )
-                    self._fire_task(
-                        self._interrupt_and_quarantine_gemini_proactive_outcome(
+                    self._settle_gemini_proactive_inject(notify=False)
+                raise RuntimeError("another Gemini proactive SDK send is pending")
+            self._gemini_proactive_submit_task = submit_task
+            self._gemini_proactive_submit_session = proactive_session
+            try:
+                await self._gemini_send_user_turn(
+                    gemini_text,
+                    starts_user_turn=False,
+                )
+            except asyncio.CancelledError as exc:
+                outcome = getattr(self, "_gemini_proactive_outcome", None)
+                if outcome is not None and outcome[0] == outcome_token:
+                    if (
+                        exc.args
+                        and exc.args[0]
+                        == _GEMINI_PROACTIVE_SESSION_CLOSE_CANCEL
+                    ):
+                        # The owning SDK session is being retired immediately;
+                        # no delayed quarantine may survive this close and later
+                        # seize a replacement connection.
+                        self._settle_gemini_proactive_inject(notify=False)
+                    else:
+                        # Cancellation can arrive after the SDK accepted the
+                        # unscoped turn but before its await resumes. Suppress
+                        # callbacks and quarantine until a terminal (or session
+                        # retirement) makes retry correlation safe again.
+                        self._gemini_proactive_outcome = (
                             outcome_token,
-                            error_msg="Gemini proactive SDK send was cancelled",
+                            None,
+                            None,
                         )
-                    )
+                        quarantine_task = self._fire_task(
+                            self._interrupt_and_quarantine_gemini_proactive_outcome(
+                                outcome_token,
+                                error_msg="Gemini proactive SDK send was cancelled",
+                            )
+                        )
+                        self._gemini_proactive_quarantine_task = quarantine_task
                 raise
             except Exception:
                 # Owner-scoped, like the CancelledError branch above. This send
@@ -538,6 +1233,13 @@ class _ResponseMixin:
                     expected_outcome_token=outcome_token,
                 )
                 raise
+            finally:
+                if (
+                    getattr(self, "_gemini_proactive_submit_task", None)
+                    is submit_task
+                ):
+                    self._gemini_proactive_submit_task = None
+                    self._gemini_proactive_submit_session = None
             if on_rejected is not None or on_completed is not None:
                 self._fire_task(
                     self._expire_gemini_proactive_outcome(outcome_token, 60.0)
@@ -885,6 +1587,19 @@ class _ResponseMixin:
             if owner is None or owner[:3] != expected_owner:
                 return
         self._gemini_proactive_outcome = None
+        quarantine_task = getattr(self, "_gemini_proactive_quarantine_task", None)
+        if (
+            quarantine_task is not None
+            and quarantine_task is not asyncio.current_task()
+            and not quarantine_task.done()
+        ):
+            quarantine_task.cancel()
+        if (
+            quarantine_task is not None
+            and quarantine_task is not asyncio.current_task()
+            and quarantine_task.done()
+        ):
+            self._gemini_proactive_quarantine_task = None
         self._gemini_proactive_outcome_owner = None
         if getattr(self, "_proactive_inject_outcome_token", None) == token:
             self._proactive_inject_outcome_token = None
@@ -1143,6 +1858,8 @@ class _ResponseMixin:
         instruction: str = "",
         *,
         language: str = "zh",
+        user_turn_active: Optional[Callable[[], bool]] = None,
+        session_owned: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Inject a text turn and explicitly request proactive speech.
 
@@ -1209,6 +1926,11 @@ class _ResponseMixin:
             if _now - self._client_vad_last_speech_time < self._client_vad_grace_period:
                 logger.debug("prompt_ephemeral: skipped — VAD grace period")
                 return False
+        if callable(user_turn_active) and user_turn_active():
+            logger.debug(
+                "prompt_ephemeral: skipped — external user turn is active"
+            )
+            return False
 
         outcome_observed = asyncio.Event()
         delivery_rejected = False
@@ -1216,6 +1938,14 @@ class _ResponseMixin:
         rejection_message = ""
         visual_event_id: str | None = None
         events_before_text: tuple[Dict[str, Any], ...] = ()
+        # 这一轮有没有真的把原始帧写进 provider context。竞态早退时要靠它决定
+        # 快照该不该记成已消费。
+        _raw_frame_sent = False
+        external_visual_delivery = getattr(
+            self,
+            "_visual_delivery_mode",
+            VisualDeliveryMode.NATIVE,
+        ) == VisualDeliveryMode.EXTERNAL_DESCRIPTION
 
         def _on_rejected(error_msg: str) -> None:
             nonlocal delivery_rejected, rejection_message
@@ -1266,6 +1996,7 @@ class _ResponseMixin:
         )
         if (
             has_pending_frame
+            and not external_visual_delivery
             and not self._supports_native_image
             and not self._image_recognized_this_turn
         ):
@@ -1273,8 +2004,20 @@ class _ResponseMixin:
                 "prompt_ephemeral: skipped — StepFun visual analysis is pending"
             )
             return False
+        # 独立 ASR 给会话上了原始帧栅栏：麦克风路线归 Core，帧不许走 provider 连
+        # 接，但 stage_multimodal_frame 仍然为「主动观察」把缓存喂得温热。栅栏期还
+        # 把 has_vision 算成真的话，下面那次 native inject 必被栅栏拒掉、整条主动搭
+        # 话连文本一起发不出去；而屏幕共享期间帧持续到达，缓存一直被重新装填，于是
+        # 整场都哑了。栅栏期按无视觉处理：这一轮退化成纯文本，帧留着不消费，等栅栏
+        # 解除之后的某一轮再用。
+        raw_delivery_fenced = (
+            getattr(self, "_raw_visual_delivery_blocked", False)
+            and not external_visual_delivery
+        )
         has_vision = self._image_recognized_this_turn or (
-            self._supports_native_image and has_pending_frame
+            (self._supports_native_image or external_visual_delivery)
+            and has_pending_frame
+            and not raw_delivery_fenced
         )
         # Snapshot the current image so concurrent stream_image() calls don't
         # cause us to mark a newer frame as consumed.
@@ -1316,6 +2059,7 @@ class _ResponseMixin:
             if (
                 self.is_active_response()
                 or self._client_vad_active
+                or (callable(user_turn_active) and user_turn_active())
                 or self._user_recent_activity_time > _now
                 or self._ai_recent_activity_time > _now
             ):
@@ -1324,10 +2068,30 @@ class _ResponseMixin:
                 )
                 return False
 
+            # SID rotation can yield long enough for Core to reconcile an
+            # independent/blocked visual route. A snapshot captured under the
+            # old mode must not cross that boundary into a different ASR turn;
+            # retry from the new route instead of sending it as either raw
+            # media or an external description.
+            current_external_visual_delivery = getattr(
+                self,
+                "_visual_delivery_mode",
+                VisualDeliveryMode.NATIVE,
+            ) == VisualDeliveryMode.EXTERNAL_DESCRIPTION
+            if current_external_visual_delivery != external_visual_delivery:
+                logger.info(
+                    "prompt_ephemeral: skipped — visual route changed during SID rotation"
+                )
+                return False
+            external_visual_delivery = current_external_visual_delivery
+
         if (
             has_vision
             and not self._is_gemini
             and (
+                # 描述模式下的一次性 cue 图现在也走原始 WebSocket 事件，同样会被
+                # 异步拒绝，所以同样需要这个关联句柄——否则拒绝到达时
+                # _on_visual_rejected() 找不到人，快照不会被重新武装。
                 (self._supports_native_image and snapshot_image_b64)
                 or (
                     not self._supports_native_image
@@ -1347,12 +2111,17 @@ class _ResponseMixin:
                 self._expire_inject_rejection_handler(visual_event_id, 60.0)
             )
 
-        if has_vision and self._supports_native_image and snapshot_image_b64:
+        if (
+            has_vision
+            and not external_visual_delivery
+            and self._supports_native_image
+            and snapshot_image_b64
+        ):
             # ``bypass_rate_limit`` identifies this as one deliberate cue image.
             # stream_image also owns the provider-specific wire event, including
             # the dedicated free-service input_image_buffer.append route.
             try:
-                await self.stream_image(
+                stage_result = await self.stream_image(
                     snapshot_image_b64,
                     bypass_rate_limit=True,
                     cache_latest=False,
@@ -1368,12 +2137,134 @@ class _ResponseMixin:
                     exc,
                 )
                 return False
+            if hasattr(stage_result, "accepted"):
+                raw_stage_mode = getattr(stage_result, "mode", None)
+                stage_mode = getattr(raw_stage_mode, "value", raw_stage_mode)
+                if not bool(stage_result.accepted) or stage_mode != "native":
+                    _remove_visual_rejection_handler()
+                    logger.info(
+                        "prompt_ephemeral: visual route changed during native image staging; keeping snapshot for retry"
+                    )
+                    return False
             if delivery_rejected:
                 _remove_visual_rejection_handler()
                 logger.info(
                     "prompt_ephemeral: native image rejected before proactive text inject"
                 )
                 return False
+        elif has_vision and external_visual_delivery and snapshot_image_b64:
+            try:
+                stage_result = await self.stream_image(
+                    snapshot_image_b64,
+                    source="proactive",
+                    request_id=f"proactive-{snapshot_image_generation}",
+                    bypass_rate_limit=True,
+                    cache_latest=False,
+                    event_id=visual_event_id,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "prompt_ephemeral: external visual analysis failed: %s",
+                    exc,
+                )
+                # A transient analysis failure is retryable. Keep the exact
+                # generation unconsumed and do not downgrade this attempt to a
+                # text-only nudge. Only an explicit empty analysis result below
+                # is terminal for the selected frame.
+                return False
+            external_description = str(
+                getattr(stage_result, "description", "") or ""
+            ).strip()
+            _raw_mode = getattr(stage_result, "mode", None)
+            _stage_mode = getattr(_raw_mode, "value", _raw_mode)
+            if (
+                hasattr(stage_result, "accepted")
+                and not bool(getattr(stage_result, "accepted", False))
+                and _stage_mode == VisualDeliveryMode.NATIVE.value
+            ):
+                # 原始 cue 图**根本没送出去**：等发送信号量 / 重压缩超大图期间路由
+                # 模式翻转了，或者传输断了，send_event 返回 False。这不是"分析出
+                # 空结果"那种终局失败，不能按它处置——那会把一张从未到达 provider
+                # 的图记成已消费，本轮还降级成纯文本。与上面原生投递分支同一处置：
+                # 摘掉关联句柄、快照留着武装，下一次主动搭话重试。
+                _remove_visual_rejection_handler()
+                logger.info(
+                    "prompt_ephemeral: raw cue image was not delivered; keeping snapshot for retry"
+                )
+                return False
+            if (
+                bool(getattr(stage_result, "accepted", False))
+                and _stage_mode == VisualDeliveryMode.NATIVE.value
+            ):
+                _raw_frame_sent = True
+                if delivery_rejected:
+                    # provider 在这一轮的文字注入之前就已经把这张图拒了（原始图
+                    # 走 WebSocket 事件，error.event_id 可能比写返回还早到）。
+                    # 照常投文字等于让她描述一张根本没进上下文的画面。与上面原生
+                    # 投递分支的 `if delivery_rejected:` 同一处置。
+                    _remove_visual_rejection_handler()
+                    logger.info(
+                        "prompt_ephemeral: raw cue image rejected before proactive text inject"
+                    )
+                    return False
+                # 图已经原样送进去了（描述模式下的一次性 cue 图走原生通道）。
+                # 只补一句简单引导告诉模型这是什么，不再为它单独跑一次
+                # VISION_MODEL 注释——省一次付费调用，也少一层转述失真。
+                # 说明文字与下面描述分支同一口径：明示这不是用户说的话。
+                events_before_text = ({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "id": f"item_neko_visual_{uuid.uuid4().hex}",
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": (
+                                "[系统视觉感知结果，不是用户陈述]\n"
+                                "上面这张图是此刻的屏幕画面。"
+                            ),
+                        }],
+                    },
+                },)
+            elif external_description:
+                if not self._is_gemini:
+                    visual_event_id = f"event_inject_image_{uuid.uuid4().hex}"
+                    self._inject_rejection_handlers[
+                        visual_event_id
+                    ] = _on_visual_rejected
+                    self._fire_task(
+                        self._expire_inject_rejection_handler(
+                            visual_event_id,
+                            60.0,
+                        )
+                    )
+                visual_event = {
+                    "type": "conversation.item.create",
+                    "item": {
+                        "id": f"item_neko_visual_{uuid.uuid4().hex}",
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": (
+                                "[系统视觉感知结果，不是用户陈述]\n"
+                                f"当前画面：{external_description}"
+                            ),
+                        }],
+                    },
+                }
+                if visual_event_id is not None:
+                    visual_event["event_id"] = visual_event_id
+                events_before_text = (visual_event,)
+            else:
+                # The selected generation reached a terminal empty/error
+                # analysis result. Retire that exact snapshot so a proactive
+                # retry cannot repeatedly spend vision calls on the same stale
+                # frame; the generation fence preserves any newer arrival.
+                _mark_snapshot_consumed_if_current()
+                has_vision = False
         elif (
             has_vision
             and self._image_recognized_this_turn
@@ -1387,6 +2278,7 @@ class _ResponseMixin:
                 "type": "conversation.item.create",
                 "event_id": visual_event_id,
                 "item": {
+                    "id": f"item_neko_visual_{uuid.uuid4().hex}",
                     "type": "message",
                     "role": "user",
                     "content": [{"type": "input_text", "text": self._image_description}],
@@ -1395,17 +2287,36 @@ class _ResponseMixin:
 
         # Re-check activity after any image await. A user or AI turn that won
         # during the visual send must preempt this proactive response.create.
+        # The manager can also replace this client during the await; a retired
+        # session must never receive a nudge whose result would be discarded.
+        if callable(session_owned) and not session_owned():
+            _remove_visual_rejection_handler()
+            logger.info(
+                "prompt_ephemeral: skipped — session ownership changed during visual inject"
+            )
+            return False
         if (
             self.is_active_response()
+            or (callable(user_turn_active) and user_turn_active())
             or self._user_recent_activity_time > _now
             or self._ai_recent_activity_time > _now
         ):
-            if has_vision and self._supports_native_image and snapshot_image_b64:
+            if (
+                has_vision
+                and snapshot_image_b64
+                and self._supports_native_image
+                and (not external_visual_delivery or _raw_frame_sent)
+            ):
                 # The raw frame is already persistent provider context and may
                 # be consumed by the turn that won this race. Account for it
                 # now to avoid resending duplicate/stale visual context. Keep
                 # the exact rejection handler alive so a late provider error
                 # can re-arm the snapshot.
+                #
+                # 判据是"这一轮到底送没送出原始帧"，不是"处在哪个投递模式"：描述
+                # 模式下的一次性 cue 图现在也走原始通道，按模式判会漏掉它——那张
+                # 图已经在 provider context 里，快照却还武装着，下一次主动搭话会
+                # 把同一张图再发一遍。
                 _mark_snapshot_consumed_if_current()
             else:
                 # Step's description is only queued below, so no visual event

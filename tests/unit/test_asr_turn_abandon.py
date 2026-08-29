@@ -25,6 +25,7 @@ from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseAr
 def _make_client(send) -> tuple[OmniRealtimeClient, RealtimeResponseArbiter]:
     client = OmniRealtimeClient.__new__(OmniRealtimeClient)
     client._is_gemini = False
+    client._connection_generation = 0
     arbiter = RealtimeResponseArbiter(send)
     client._response_arbiter = arbiter
     return client, arbiter

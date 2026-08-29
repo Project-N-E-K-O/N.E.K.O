@@ -111,6 +111,7 @@ jobs:
               "version": os.environ["GITHUB_REF_NAME"].removeprefix("v"),
               "source_commit": os.environ["GITHUB_SHA"],
               "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
               "neko_repository": os.environ["NEKO_REPOSITORY"],
               "neko_ref": os.environ["NEKO_REF"],
               "neko_commit": os.environ["NEKO_COMMIT"],

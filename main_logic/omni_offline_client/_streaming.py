@@ -13,9 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Sequence
+
 from main_logic.proactive_delivery import (
     TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
-    trim_images_to_turn_budget,
+    fit_images_to_turn_budget,
 )
 
 from ._shared import (
@@ -495,6 +497,9 @@ class _StreamingMixin:
         text: str,
         *,
         system_prefix: str | None = None,
+        system_prefix_images: Optional[list[str]] = None,
+        turn_images: Optional[Sequence[str]] = None,
+        on_turn_committed: Optional[Callable[[], None]] = None,
         thinking_on: bool = False,
         input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         history_replacement_text: str | None = None,
@@ -542,10 +547,38 @@ class _StreamingMixin:
         ``response_discarded_callback`` binds discard ownership to this invocation.
         It avoids re-reading mutable session-level request state after a later text
         request has already started.
+
+        ``system_prefix_images`` binds passive callback media to the same
+        invocation as ``system_prefix``.  Unlike ``_pending_images``, this list
+        cannot be consumed by a concurrently scheduled text request while Core
+        awaits its Focus decision.
         """  # noqa: DOCSTRING_CJK
+        prefix_images = list(system_prefix_images or [])
+        # 本轮自带的用户帧（独立 ASR 抽样出的开头/中间/结尾）。刻意不走
+        # _pending_images：那条队列是 session 级的"下一个消费者拿走"，一次性附件
+        # （拖图 / 聊天贴图）随时可能在 staging 与本次消费之间挤进来，被这一轮
+        # 连带吞掉，用户那张图就配错了发言。invocation-local 才没有这个窗口。
+        own_images = [image for image in (turn_images or []) if image]
+        # 一个自带帧的回合（独立 ASR）绝不消费共享附件队列。那条队列是 session 级
+        # 的「下一个消费者拿走」：本轮 await（switch_model / provider 请求）期间到达
+        # 的附件会被顺手清掉，既配错了发言，也不再能给它自己的追问用。附件在
+        # submit 入口已经按快照取走过一次，这里只负责不再碰活的队列。
+        # 取走必须和拷贝在同一个同步步骤里完成，中间不能有 await：下面
+        # switch_model() 一让出，另一条并发的普通文本请求就会拷到同一批附件，两轮
+        # 各发一次同样的图，随后的按前缀删除还会切到别人的队列。
+        if own_images:
+            attachment_images = []
+        else:
+            attachment_images = list(self._pending_images)
+            del self._pending_images[:len(attachment_images)]
         if not text or not text.strip():
             # If only images without text, use a default prompt
-            if self._pending_images or getattr(self, "_pending_plugin_images", None):
+            if (
+                attachment_images
+                or prefix_images
+                or own_images
+                or getattr(self, "_pending_plugin_images", None)
+            ):
                 text = "请分析这些图片。"
             else:
                 return
@@ -592,14 +625,14 @@ class _StreamingMixin:
         # built via __new__ (tests, legacy callers) never ran __init__, so read
         # it the same defensive way the proactive slot is read above.
         #
-        # Only the DECISION is taken here. The contents are read later, next to
-        # the user's list, because the vision-model switch below is an await:
-        # a snapshot taken here would miss a plugin read that arrived during
-        # the switch and would still be erased by the clear afterwards, losing
-        # it from every turn (Codex P2).
+        # 只在这里做**判断**，内容留到下面和用户列表一起读：切 vision model 是
+        # 个 await，此刻取快照会漏掉切换期间到达的插件图，而它随后又会被清掉，
+        # 等于从每一轮里都丢失（Codex P2）。
         has_images = (
             bool(proactive_image)
-            or len(self._pending_images) > 0
+            or bool(prefix_images)
+            or bool(own_images)
+            or bool(attachment_images)
             or len(getattr(self, "_pending_plugin_images", None) or []) > 0
         )
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
@@ -617,40 +650,101 @@ class _StreamingMixin:
             # (cannot switch back because image data remains in conversation history)
             if self.vision_model and self.vision_model != self.model:
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
-                await self.switch_model(self.vision_model, use_vision_config=True)
+                try:
+                    await self.switch_model(self.vision_model, use_vision_config=True)
+                except BaseException:
+                    # 附件在上面已经原子出队了。这里是出队之后、真正拼进消息之前
+                    # 唯一的 await：切 vision model 要新建 LLM 客户端，网络抖动 /
+                    # key 失效都会抛。不放回去的话用户刚选的图既没发出去也不在队列
+                    # 里了。与 submit_multimodal_turn 的失败回滚同一判据。
+                    if attachment_images:
+                        self._pending_images[0:0] = attachment_images
+                    raise
 
             # Multi-modal message: images + text
             content = []
 
-            # Read HERE, after the model switch await above and with no
-            # suspension point between this and the clear below, so what is
-            # attached and what is cleared are the same set -- the property
-            # the user's list gets for free by being iterated in place.
+            # 在模型切换的 await **之后**读取，且到下面的清理之间没有挂起点，
+            # 保证「附上的」和「清掉的」是同一批（用户那条列表靠就地迭代天然拥有
+            # 这个性质）。
             plugin_images = list(getattr(self, "_pending_plugin_images", None) or [])
-            # Ordering, which is both temporal and by relevance: the proactive
-            # screen leads (it is what the screen showed BEFORE the user
-            # spoke), then plugin-supplied context, then the user's own frames
-            # last so they sit closest to the text they belong to.
+            # 就地取走所有权：读完立刻清空，中间**不能**有 await（否则模型调用期间
+            # 到达的插件图会被下面的清理连带抹掉，等于从每一轮里丢失）。取走之后
+            # 这批字节已经归本轮所有，后面再做异步的压缩/抽样就安全了。
+            _plugin_pending = getattr(self, "_pending_plugin_images", None)
+            if _plugin_pending is not None:
+                _plugin_pending.clear()
+            # 顺序既是时间顺序也是相关性顺序（#2964 × #2835 合并）：
+            #   1. 主动搭话截图 —— 用户开口**之前**屏幕上的东西，最远；
+            #   2. 插件提供的上下文；
+            #   3. passive callback 带的图（同样是上下文，不是用户这一刻拍的）；
+            #   4. 本回合自己抽样的帧（独立 ASR 的开头/中间/结尾）；
+            #   5. 用户显式投递的附件 —— 离它所属的文本最近。
+            # 4/5 放最后，是为了不让模型把更早的屏幕误当成用户刚拍的东西。
             _ordered_images = (
                 ([proactive_image] if proactive_image else [])
                 + plugin_images
-                + list(self._pending_images)
+                + list(prefix_images)
+                + list(own_images)
+                + list(attachment_images)
             )
-            # The three sources are quota'd SEPARATELY on purpose (neither can
-            # spend the other's budget), but they all land on this one
-            # HumanMessage, so what the provider sees is their SUM -- past the
-            # per-request ceiling, which rejects the whole request rather than
-            # dropping images. Trim from the front: the frames nearest the text
-            # are the ones it is about.
-            _attached_images, _dropped_images = trim_images_to_turn_budget(
-                _ordered_images
-            )
-            if _dropped_images:
-                logger.warning(
-                    f"Dropped {_dropped_images} oldest attachment(s): this turn's "
-                    f"images exceeded the {TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES}-byte "
-                    f"per-request budget"
+            # 各来源的**张数**配额是分开的（谁也花不了谁的额度），但它们最终落在
+            # 同一条 HumanMessage 上，provider 看到的是**总和**——超过单请求上限
+            # 会整条请求被拒，而不是丢几张图。从**前面**裁：离文本最近的那些才是
+            # 它要讲的。
+            # 超预算时按阶梯处理，**不静默丢弃**：先抽样成开头/中间/结尾三张，
+            # 还超就压缩，都不行才从最旧的开始丢——并且无论走到哪一级都告诉用户。
+            # 整条请求超限会被 provider 整个拒掉，所以必须有人让步；让步的顺序是
+            # 「先减冗余、再降质量、最后才是丢内容」。
+            def _restore_consumed_queues() -> None:
+                """Put both queues back when this turn dies before committing.
+
+                The user's attachments were dequeued atomically above and the
+                plugin list was cleared at read time, so from here until the
+                message reaches history nothing else owns those bytes. A
+                teardown landing on one of the awaits below would otherwise
+                lose them from every future turn.
+                """
+                if attachment_images:
+                    self._pending_images[0:0] = attachment_images
+                if plugin_images:
+                    _queue = getattr(self, "_pending_plugin_images", None)
+                    if _queue is not None:
+                        _queue[0:0] = plugin_images
+
+            try:
+                _attached_images, _budget_notice = await fit_images_to_turn_budget(
+                    _ordered_images,
+                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
                 )
+            except BaseException:
+                _restore_consumed_queues()
+                raise
+            if _budget_notice:
+                logger.warning(
+                    "Turn images over the %d-byte budget: %d -> %d image(s) "
+                    "(sampled=%s compressed=%s dropped=%d)",
+                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+                    _budget_notice["original_count"],
+                    _budget_notice["final_count"],
+                    _budget_notice["sampled"],
+                    _budget_notice["compressed"],
+                    _budget_notice["dropped"],
+                )
+                if self.on_status_message:
+                    try:
+                        await self.on_status_message(json.dumps({
+                            "code": "TURN_IMAGES_TRIMMED",
+                            "details": _budget_notice,
+                        }))
+                    except asyncio.CancelledError:
+                        _restore_consumed_queues()
+                        raise
+                    except Exception as _notice_error:
+                        logger.warning(
+                            "could not report the image trim to the user: %s",
+                            _notice_error,
+                        )
             for img_b64 in _attached_images:
                 content.append({
                     "type": "image_url",
@@ -670,7 +764,13 @@ class _StreamingMixin:
             # takes a prefix, and the proactive screenshot is that prefix's
             # first element, so it survives exactly when nothing was dropped.
             _img_count = len(_attached_images)
-            _proactive_attached = bool(proactive_image) and _dropped_images == 0
+            # 直接问「它在不在最终附上的那批里」。原来算的是「有没有丢过东西」，
+            # 那个近似在只有丢弃时成立；现在预算阶梯还会**抽样**（只留头/中/尾），
+            # 队头同样可能不在结果里，成员判断才是准的。
+            _proactive_attached = (
+                bool(proactive_image)
+                and proactive_image in _attached_images
+            )
             logger.info(
                 f"Sending multi-modal message with {_img_count} image(s)"
                 f"{' (incl. proactive screen)' if _proactive_attached else ''}"
@@ -679,14 +779,11 @@ class _StreamingMixin:
             # Clear pending images after using them (content already holds the
             # data urls). The proactive screenshot is one-shot: consumed by this
             # reply, then cleared so it never re-injects into later turns.
-            self._pending_images.clear()
-            # Cleared wholesale, exactly like the user's list above: both are
-            # consumed by this turn. Anything a plugin appends during the model
-            # call is lost the same way a user frame would be -- one shared
-            # window, not a new asymmetry between the two sources.
-            _plugin_pending = getattr(self, "_pending_plugin_images", None)
-            if _plugin_pending is not None:
-                _plugin_pending.clear()
+            # 用户附件在上面取快照时就已经**原子地**出队了，这里不能再整体
+            # clear：那会连带吃掉模型调用期间新到的附件（本 PR 专门修过的竞态）。
+            # 插件那条列表在上面读取时就已经原子地清空了（那里到读取之间不能有
+            # await），此处不再重复。
+            # 一次性的主动搭话截图同样在这里清掉。
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0
@@ -695,6 +792,10 @@ class _StreamingMixin:
             user_message = HumanMessage(content=_user_text_with_prefix)
 
         self._conversation_history.append(user_message)
+        # 本次调用自己的「已提交」标记。调用方不能用全局 history 长度判断：并发的
+        # 另一条文本请求或收尾中的响应同样会追加，长度增长并不代表**这一轮**进去了。
+        if callable(on_turn_committed):
+            on_turn_committed()
         history_replacement_index = len(self._conversation_history) - 1
         history_replacement_text = (
             str(history_replacement_text).strip()

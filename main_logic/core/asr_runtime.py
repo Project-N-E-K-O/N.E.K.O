@@ -8,6 +8,7 @@ delivery concerns. Provider sessions and endpointing remain encapsulated by
 from __future__ import annotations
 
 import asyncio
+import bisect
 import json
 import struct
 import time
@@ -27,6 +28,7 @@ from main_logic.asr_client.runtime import (
     IndependentAsrRuntime,
     SpeakerShadowFactory,
 )
+from main_logic.asr_client.lifecycle import VoiceLifecycleState
 from main_logic.voice_input import (
     BuiltinVoiceInputConsumer,
     VoiceInputConsumerCapabilities,
@@ -48,6 +50,9 @@ from main_logic.voice_turn.contracts import (
     VoiceTranscriptEvent,
     VoiceTurnToken,
 )
+from main_logic.omni_realtime_client._response_arbiter import (
+    ResponseAdmissionRejected,
+)
 from main_logic.voice_turn.activity_evidence import RnnoiseEvidence
 from main_logic.voice_turn.audio_input import (
     ProcessedVoiceFrame,
@@ -56,6 +61,14 @@ from main_logic.voice_turn.audio_input import (
 from main_logic import core as _core_facade
 
 from ._shared import logger
+from .multimodal_turn import (
+    _MAX_PRERECORD_VISUAL_VALIDATIONS,
+    _MAX_LIVE_TURN_RECORDS,
+    _ONSET_TRUST_WINDOW_S,
+    MultimodalTurn,
+    _CoreMultimodalTurnRecord,
+    _IndependentVisualFrame,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +87,7 @@ class _QueuedMicFrame:
     source_rate_hz: int
     token: VoiceIngressToken
     received_at: float
+    captured_at: float
     audio_stream_epoch: int = 0
     ingress_sequence: int = 0
 
@@ -84,6 +98,7 @@ class _QueuedMicFrame:
         *,
         token: VoiceIngressToken,
         received_at: float | None = None,
+        captured_at: float | None = None,
         audio_stream_epoch: int = 0,
         ingress_sequence: int = 0,
     ) -> "_QueuedMicFrame":
@@ -112,6 +127,7 @@ class _QueuedMicFrame:
             source_rate_hz=source_rate_hz,
             token=token,
             received_at=time.monotonic() if received_at is None else received_at,
+            captured_at=time.time() if captured_at is None else captured_at,
             audio_stream_epoch=audio_stream_epoch,
             ingress_sequence=ingress_sequence,
         )
@@ -187,6 +203,7 @@ class _VoiceInputPipelineFailure:
 class _HotSwapAudioFrame:
     pcm16: bytes
     token: VoiceIngressToken
+    captured_at: float = 0.0
     speech_probability: float | None = None
     rnnoise_available: bool = False
     rnnoise_evidence: RnnoiseEvidence | None = None
@@ -275,6 +292,7 @@ class AsrRuntimeMixin:
         self._hot_swap_sequence_progress.set()
         self._omni_mic_audio_bytes = 0
         self._asr_route_mode = "blocked"
+        self._visual_route_mode: Literal["native", "independent"] = "native"
         self._microphone_route_generation = 0
         self._asr_route_operation_generation = 0
         self._asr_notification_lock = asyncio.Lock()
@@ -283,6 +301,19 @@ class AsrRuntimeMixin:
         # has atomically exposed the replacement.
         self._core_voice_session_swap_lock = asyncio.Lock()
         self._core_voice_session_swap_barrier_timeout_s = 5.0
+        # 取消旧 listener 的等待上限。见 lifecycle.py：这里必须是"只等到期、不等
+        # 取消完成"的语义，否则一个吞掉 CancelledError 的 listener 会连带卡死
+        # swap lock。
+        self._core_voice_listener_cancel_timeout_s = 2.0
+        self._independent_visual_generation = 0
+        self._independent_visual_frame_ttl_s = 5.0
+        self._latest_independent_visual_frame: _IndependentVisualFrame | None = None
+        self._core_multimodal_turns: dict[str, _CoreMultimodalTurnRecord] = {}
+        self._prerecord_visual_validations: dict[asyncio.Task, float] = {}
+        # record 建立之前**已经校验完**的帧。单槽 _latest_independent_visual_frame
+        # 只留最新一张，所以光靠它救不回这段窗口里的开头/中间帧；任务栈也不行，
+        # 任务一完成就从栈里摘掉了。
+        self._prerecord_visual_frames: list[_IndependentVisualFrame] = []
         self._voice_input_pipeline_transition_lock = asyncio.Lock()
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
@@ -379,12 +410,32 @@ class AsrRuntimeMixin:
         self._init_voice_input_registry()
         if not hasattr(self, "_asr_route_operation_generation"):
             self._asr_route_operation_generation = 0
+        if not hasattr(self, "_visual_route_mode"):
+            self._visual_route_mode = (
+                "independent"
+                if getattr(self, "_asr_route_mode", "blocked") == "independent"
+                else "native"
+            )
         if not hasattr(self, "_asr_notification_lock"):
             self._asr_notification_lock = asyncio.Lock()
         if not hasattr(self, "_core_voice_session_swap_lock"):
             self._core_voice_session_swap_lock = asyncio.Lock()
         if not hasattr(self, "_core_voice_session_swap_barrier_timeout_s"):
             self._core_voice_session_swap_barrier_timeout_s = 5.0
+        if not hasattr(self, "_core_voice_listener_cancel_timeout_s"):
+            self._core_voice_listener_cancel_timeout_s = 2.0
+        if not hasattr(self, "_independent_visual_generation"):
+            self._independent_visual_generation = 0
+        if not hasattr(self, "_independent_visual_frame_ttl_s"):
+            self._independent_visual_frame_ttl_s = 5.0
+        if not hasattr(self, "_latest_independent_visual_frame"):
+            self._latest_independent_visual_frame = None
+        if not hasattr(self, "_core_multimodal_turns"):
+            self._core_multimodal_turns = {}
+        if not hasattr(self, "_prerecord_visual_validations"):
+            self._prerecord_visual_validations = {}
+        if not hasattr(self, "_prerecord_visual_frames"):
+            self._prerecord_visual_frames = []
         if not hasattr(self, "_voice_input_pipeline_transition_lock"):
             self._voice_input_pipeline_transition_lock = asyncio.Lock()
         if not hasattr(self, "_voice_input_pipeline_failure_token"):
@@ -432,6 +483,587 @@ class AsrRuntimeMixin:
         if not hasattr(self, "_voice_lease_resync_suppressed"):
             self._voice_lease_resync_suppressed = False
 
+    def _stage_independent_visual_frame(
+        self,
+        image_b64: str,
+        *,
+        source: str,
+        request_id: str | None,
+        captured_at: float,
+    ) -> bool:
+        """Stage one validated live frame without sending it to any model."""
+
+        self._ensure_asr_runtime_state()
+        if (
+            self._asr_route_mode != "independent"
+            or not image_b64
+            or not isinstance(captured_at, (int, float))
+        ):
+            return False
+
+        ingress = self._capture_ingress_token()
+        previous = self._latest_independent_visual_frame
+        stable_captured_at = float(captured_at)
+        # screen/camera 各自跑独立的 fire-and-forget 校验任务，先捕获的那帧完全
+        # 可能后 staging。这两件事必须分开判：
+        #   - 「最新帧缓存」必须真的是最新的，乱序到达的旧帧不能顶掉它；
+        #   - 但那张旧帧仍然是本回合发声区间里的合法成员，抽样要收下它，
+        #     否则开头那张（正是用户开口时指的东西）会被后到的邻居顶掉。
+        supersedes_latest_cache = not (
+            previous is not None
+            and previous.session_epoch == ingress.session_epoch
+            and previous.route_generation == self._voice_input_transition_generation
+            and stable_captured_at <= previous.captured_at
+        )
+
+        self._independent_visual_generation += 1
+        frame = _IndependentVisualFrame(
+            image_b64=image_b64,
+            session_epoch=ingress.session_epoch,
+            route_generation=self._voice_input_transition_generation,
+            generation=self._independent_visual_generation,
+            captured_at=stable_captured_at,
+            source=str(source or "unknown"),
+            request_id=(str(request_id) if request_id is not None else None),
+        )
+        if supersedes_latest_cache:
+            self._latest_independent_visual_frame = frame
+        # 语义端点之后（lifecycle 进 DRAINING）到 provider final 派发之间，周期性
+        # 的截图任务还会继续落地。那些画面已经不是这段发声了。判据必须是回合自己
+        # 的端点截止时间而不是"当下的 lifecycle 状态"——校验任务并发跑，说话期间
+        # 拍到、端点之后才校验完的帧按状态判会被误杀。
+        self._mark_independent_asr_endpoint_if_sealed()
+        observed = False
+        for record in tuple(self._core_multimodal_turns.values()):
+            # 跳过已作废的记录：它们留着只是为了别把正在派发的那条 final 的**话**
+            # 弄丢，视觉所有权早已交给后继回合。喂给它们等于让新帧被一条不会再用图
+            # 的记录"吃掉"，当前这一轮反而收不到（而且 prerecord 暂存也不会武装）。
+            if record.invalidated.is_set():
+                continue
+            if record.accepts(frame):
+                record.observe(frame)
+                observed = True
+        # 判据是"当前这一轮还没建起来"，不是"一条记录都没有"：为了保住正在派发的
+        # 上一条 final，旧记录会被保留下来，dict 因此不再会空。
+        if not observed and self._active_multimodal_turn_record() is None:
+            # 语音确认到 _begin_core_multimodal_turn 之间还没有 record。这一帧已经
+            # 校验完了，任务栈救不了它（任务一完成就被摘掉），单槽缓存也只留最新
+            # 一张 —— 不留下来的话这段窗口里的开头/中间帧就永久丢了。
+            self._retain_prerecord_visual_frame(frame)
+        return supersedes_latest_cache or observed
+
+    def _current_turn_onset_for_prerecord(self) -> float | None:
+        """This turn's speech onset, when it is recent enough to be trusted.
+
+        Same trust window the record uses, so the buffer and the record agree
+        on where the turn began. Returns None when no usable onset exists --
+        then every retained frame stays a candidate, which is the old behaviour.
+        """
+        runtime = getattr(self, "_asr_runtime", None)
+        # 重叠期间优先读 _asr_pending_turn_onset_at：后继发声在前一轮还 DRAINING
+        # 时开口，它的边界先记在 pending 槽里，要等前一轮的 provider final 把那一
+        # 轮激活了才拷进 _asr_turn_onset_at。只读后者的话，整个重叠窗口里拿到的都
+        # 是**前一轮**的 onset —— 封口之后、后继开口之前的帧照样算「本轮的」，占满
+        # 有界缓冲，把后继真正的开头/中间帧挤掉。
+        onset = getattr(runtime, "_asr_pending_turn_onset_at", None)
+        if not isinstance(onset, (int, float)):
+            onset = getattr(runtime, "_asr_turn_onset_at", None)
+        if not isinstance(onset, (int, float)):
+            return None
+        age = time.monotonic() - float(onset)
+        if not 0.0 <= age <= _ONSET_TRUST_WINDOW_S:
+            return None
+        return float(onset)
+
+    def _retain_prerecord_visual_frame(
+        self,
+        frame: _IndependentVisualFrame,
+    ) -> None:
+        """Keep one already-validated frame until the onset-owned record exists."""
+
+        frames = self._prerecord_visual_frames
+        # 先按**本轮 onset** 裁掉开口之前的帧，再做有界抽稀。
+        #
+        # 这个缓冲会在屏幕/摄像头共享着、用户还没开口时就被闲置帧填满（8 张）。
+        # 抽稀刻意保留跨度大的两端，于是那些闲置帧很占位；等用户真开口、确认到
+        # 注册之间拍的几张挤进来时，它们和整段闲置历史一起被抽稀，随后建记录时
+        # 的 onset 过滤又把开口之前的全丢掉 —— 最后只剩最新那一张，这一轮的开头
+        # 和中间视图就没了。开口之前的帧本来就不属于这一轮，不该占它的名额。
+        onset = self._current_turn_onset_for_prerecord()
+        if onset is not None:
+            stale = [item for item in frames if item.captured_at < onset]
+            if stale:
+                frames[:] = [item for item in frames if item.captured_at >= onset]
+        # 按拍摄时间维护，不按落地顺序 —— 并发校验下两者不是一回事（这条判据在
+        # middle_candidates 上已经栽过一次，这里是同一个坑）。否则下面按"相邻跨度"
+        # 抽稀时，列表两端根本不是时间上的首尾，还可能删掉真正最早/最晚的那帧。
+        bisect.insort(
+            frames,
+            frame,
+            key=lambda item: (item.captured_at, item.generation),
+        )
+        # 有界。超限时**不能丢队头** —— 队头正是这段发声的开头（用户开口时指的东
+        # 西），丢掉它就等于把 record 建立前那段窗口的起点抹掉。改成丢掉"最冗余"
+        # 的内点（左右邻居跨度最小），两端保留；与 middle_candidates 的抽稀同一
+        # 判据，留下的仍然大致铺满整段。
+        while len(frames) > _MAX_PRERECORD_VISUAL_VALIDATIONS:
+            victim = min(
+                range(1, len(frames) - 1),
+                key=lambda index: (
+                    frames[index + 1].captured_at - frames[index - 1].captured_at,
+                    index,
+                ),
+            )
+            del frames[victim]
+
+    def _mark_independent_asr_endpoint_if_sealed(self) -> None:
+        """Stamp the endpoint cutoff on the active turn once ASR seals it.
+
+        Prefers the runtime's recorded seal instant (``_asr_turn_endpointed_at``)
+        over the moment Core happens to look. Sampling the lifecycle state can
+        only ever place the cutoff at an observation point, which drifts later
+        than the real endpoint and lets a frame captured in that gap pass as if
+        it belonged to the utterance. The recorded instant has no such drift.
+
+        Falls back to the observation time for a runtime that exposes the
+        lifecycle but not the timestamp, and leaves the cutoff unset when
+        neither is available (previous admit-everything behaviour).
+        """
+
+        runtime = getattr(self, "_asr_runtime", None)
+        endpointed_at = getattr(runtime, "_asr_turn_endpointed_at", None)
+        # live 字段在 PROVIDER_FINAL 时被清，所以它只可能描述**在飞的那一轮**，
+        # 用 started_at 当下界就够。保留副本则是跨轮存活的，必须更严 —— 见下。
+        live_endpoint = isinstance(endpointed_at, (int, float))
+        # 三类来源要分开，不能只分 live / 非 live：
+        #   live     —— 在飞那一轮的字段，PROVIDER_FINAL 会清；
+        #   retained —— 跨轮存活的保留副本，可能是**上一轮**的；
+        #   observed —— 两者都没有时按 DRAINING 当场取的 monotonic，它必然属于
+        #               本轮（就是此刻），不该套跨轮那条更严的判据。
+        retained_endpoint = False
+        if not live_endpoint:
+            # PROVIDER_FINAL 会把上面那个清掉，而 Core 要到 transcript 派发之后
+            # 才冻结这一轮 —— 冻结时读到的必然是 None。所以再读一个不随 final
+            # 清除的副本；上一轮的残值由下面 started_at 的比较排掉。
+            endpointed_at = getattr(
+                runtime,
+                "_asr_last_turn_endpointed_at",
+                None,
+            )
+            retained_endpoint = isinstance(endpointed_at, (int, float))
+            retained_key = getattr(
+                runtime,
+                "_asr_last_turn_endpointed_key",
+                None,
+            )
+        if not isinstance(endpointed_at, (int, float)):
+            lifecycle = getattr(runtime, "_asr_lifecycle", None)
+            state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
+            if state is not VoiceLifecycleState.DRAINING:
+                return
+            endpointed_at = time.monotonic()
+        sealed_at = float(endpointed_at)
+        for record in self._core_multimodal_turns.values():
+            # 已作废的记录留着只是为了保住正在派发的那条 final 的话，它不会再交出
+            # 图；把后继回合的封口盖到它头上没有意义，也让状态更难读。
+            if record.invalidated.is_set() or record.endpoint_at is not None:
+                continue
+            # ⚠️ 判据不能用 started_at：overlap 的后继发声其起点**早于**上一轮封口
+            # （onset 是在上一轮还 ACTIVE 时记下的），拿 started_at 比会把上一轮的
+            # 封口绑成本轮的截止点，本轮之后拍的每一帧都被拒 —— 整轮退化成纯文本。
+            #
+            # 保留副本跨轮存活，所以要求它晚于 record **注册**的时刻：上一轮的封口
+            # 必然发生在本轮 record 建立之前。live 字段只描述在飞那一轮，仍用
+            # started_at，免得极短发声里 seal 抢在注册之前时反而绑不上。
+            if retained_endpoint and isinstance(retained_key, str):
+                # 保留副本跨轮存活，所以先问它**属于哪一轮**。
+                #
+                # 为什么不靠时间戳：monotonic 在 Windows 上是 ~15ms 粒度（本文件
+                # _begin_core_multimodal_turn 里已经为同一个原因退回过生成号判
+                # 据）。"上一轮的封口"和"本轮自己的封口"都可能与本轮 record 的注
+                # 册时刻相等，往任一个方向猜都会错：
+                #   猜"相等归上一轮"（严格 >）—— 本轮若在注册的同一 tick 里封口，
+                #     它自己的截止点被丢掉，endpoint_at 一直是 None，停口之后拍的
+                #     帧会被折进这条 transcript；
+                #   猜"相等归本轮"（>=）—— 上一轮的封口被盖到后继回合头上，本轮
+                #     之后拍的每一帧都过不了 accepts()，稍长的发声等开头那张过期
+                #     就整轮退化成纯文本。
+                # 带上身份就不用猜：runtime 封口时把回合键一并记下（同构于
+                # record.turn_id），这里直接判是不是同一轮。
+                floor_ok = retained_key == record.turn_id
+            elif retained_endpoint:
+                # 旧 runtime / 测试替身没有那个身份字段时的兼容回落：退回时间戳，
+                # 并把相等判给上一轮（丢掉本轮自己的截止点只是少一道过滤，把上一
+                # 轮的封口盖到后继头上则会让整轮退化成纯文本，后者更贵）。
+                floor_ok = sealed_at > record.registered_at
+            elif live_endpoint:
+                # live 字段只描述在飞的那一轮，用 started_at 当下界；取 >= 是为了
+                # 极短发声里 seal 抢在注册之前时仍绑得上。
+                floor_ok = sealed_at >= record.started_at
+            else:
+                # 当场观测：这个值就是此刻，必然属于本轮，沿用原判据即可。
+                floor_ok = sealed_at >= record.registered_at
+            if floor_ok:
+                record.endpoint_at = sealed_at
+
+    def _track_independent_visual_validation_task(
+        self,
+        task: asyncio.Task,
+        *,
+        captured_at: object,
+    ) -> bool:
+        """Bind one router-owned validation task to the active ASR turn."""
+
+        self._ensure_asr_runtime_state()
+        if (
+            self._asr_route_mode != "independent"
+            or not isinstance(task, asyncio.Task)
+            or not isinstance(captured_at, (int, float))
+        ):
+            return False
+        stable_captured_at = float(captured_at)
+        record = self._active_multimodal_turn_record()
+        if record is None:
+            # 语音确认到 _begin_core_multimodal_turn 之间还没有 record。直接丢掉
+            # 这个任务的话，短发声在 final 时看不到它、冻结成纯文本回合，而那一帧
+            # 校验完时 record 已经作废了。先暂存，等 record 建出来再挂上去。
+            self._stash_prerecord_visual_validation_task(task, stable_captured_at)
+            return False
+        if record.invalidated.is_set():
+            return False
+        ingress = self._capture_ingress_token()
+        if (
+            record.session_epoch != ingress.session_epoch
+            or record.route_generation != self._voice_input_transition_generation
+            or stable_captured_at < record.started_at
+        ):
+            return False
+        self._bind_visual_validation_task(record, task, stable_captured_at)
+        return True
+
+    @staticmethod
+    def _bind_visual_validation_task(
+        record: _CoreMultimodalTurnRecord,
+        task: asyncio.Task,
+        captured_at: float,
+    ) -> None:
+        record.pending_visual_validations[task] = captured_at
+
+        def discard(completed: asyncio.Task) -> None:
+            record.pending_visual_validations.pop(completed, None)
+
+        task.add_done_callback(discard)
+
+    def _active_multimodal_turn_record(self):
+        """Return the newest record that has not been superseded.
+
+        Once older records are retained (so an in-flight final keeps its
+        transcript), "whichever record comes first" no longer means "the
+        current turn" — the retained ones are still there, just invalidated.
+        """
+
+        active = [
+            record
+            for record in self._core_multimodal_turns.values()
+            if not record.invalidated.is_set()
+            # 已封口（endpoint_at 已打）的同样不算 active：它的 accepts() 会按
+            # 那个时刻挡掉之后拍的帧，而作废要等 provider final 回来、后继才能
+            # prepare。这段窗口里如果把它算作 active，后继发声的帧既进不了它、
+            # 又因为「有 active record」而不进 prerecord 缓冲，直接丢掉 ——
+            # 后继回合开头和中间的帧就永久没了，只剩单槽缓存那一张。
+            and record.endpoint_at is None
+        ]
+        if not active:
+            return None
+        return max(active, key=lambda record: record.registered_at)
+
+    def _stash_prerecord_visual_validation_task(
+        self,
+        task: asyncio.Task,
+        captured_at: float,
+    ) -> None:
+        """Hold one validation task until the onset-owned record exists."""
+
+        pending = self._prerecord_visual_validations
+        pending[task] = captured_at
+        # 有界：只可能积压「语音确认到 record 建立」这一小段窗口里的任务；仍然设
+        # 一个上限，免得 record 一直没建出来时无限增长。
+        #
+        # ⚠️ 淘汰方向与 _prerecord_visual_frames 一致：**不能丢最早的那个**。
+        # router 按拍摄顺序注册任务，最早那个就是这段发声的开头；丢了它之后，短发声
+        # 在 final 时等不到它，record 在那一帧落地前就作废了，抽样里正好缺掉"用户开
+        # 口时看到的东西"。改成丢「最冗余」的内点（左右邻居跨度最小），两端保留。
+        while len(pending) > _MAX_PRERECORD_VISUAL_VALIDATIONS:
+            ordered = sorted(pending.items(), key=lambda item: item[1])
+            victim = min(
+                range(1, len(ordered) - 1),
+                key=lambda index: (
+                    ordered[index + 1][1] - ordered[index - 1][1],
+                    index,
+                ),
+            )
+            pending.pop(ordered[victim][0], None)
+
+        def discard(completed: asyncio.Task) -> None:
+            self._prerecord_visual_validations.pop(completed, None)
+
+        task.add_done_callback(discard)
+
+    def _attach_prerecord_visual_validation_tasks(
+        self,
+        record: _CoreMultimodalTurnRecord,
+    ) -> None:
+        """Move eligible pre-record validation tasks onto the new record."""
+
+        stashed = self._prerecord_visual_validations
+        self._prerecord_visual_validations = {}
+        for task, captured_at in stashed.items():
+            if task.done() or captured_at < record.started_at:
+                continue
+            self._bind_visual_validation_task(record, task, captured_at)
+
+    async def _await_independent_visual_validation_tasks(
+        self,
+        turn_id: str,
+    ) -> None:
+        """Bound final-freeze on validations captured during this ASR turn."""
+
+        self._ensure_asr_runtime_state()
+        record = self._core_multimodal_turns.get(turn_id)
+        if record is None or record.invalidated.is_set():
+            return
+        freeze_at = time.monotonic()
+        if (
+            record.route_generation != self._voice_input_transition_generation
+            or record.session_epoch != self._capture_ingress_token().session_epoch
+        ):
+            return
+        eligible = [
+            task
+            for task, captured_at in record.pending_visual_validations.items()
+            if (
+                not task.done()
+                and record.started_at <= captured_at <= freeze_at
+                and freeze_at - captured_at
+                <= self._independent_visual_frame_ttl_s
+            )
+        ]
+        if not eligible:
+            return
+        remaining_ttl = max(
+            self._independent_visual_frame_ttl_s
+            - (freeze_at - record.pending_visual_validations[task])
+            for task in eligible
+        )
+        # Image validation is local/threaded work. Give an already-captured
+        # frame a short chance to join its transcript without holding the
+        # serial ASR final dispatcher behind a slow or wedged worker.
+        timeout = min(0.5, remaining_ttl)
+        if timeout <= 0:
+            return
+
+        all_validations = asyncio.gather(
+            *(asyncio.shield(task) for task in eligible),
+            return_exceptions=True,
+        )
+        invalidated = asyncio.create_task(record.invalidated.wait())
+        try:
+            await asyncio.wait(
+                {all_validations, invalidated},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            if not all_validations.done():
+                all_validations.cancel()
+            if not invalidated.done():
+                invalidated.cancel()
+            await asyncio.gather(
+                all_validations,
+                invalidated,
+                return_exceptions=True,
+            )
+
+    def _begin_core_multimodal_turn(
+        self,
+        turn_id: str,
+        token: VoiceTurnToken,
+    ) -> None:
+        """Register raw-image ownership at the independent-ASR turn boundary."""
+
+        self._ensure_asr_runtime_state()
+        # The independent-ASR registry admits one Core chat utterance at a
+        # time. A newer prepare invalidates any older frame/text ownership
+        # synchronously, before candidate creation or provider awaits.
+        for previous in self._core_multimodal_turns.values():
+            previous.invalidated.set()
+        # ⚠️ 不能 clear()：上一条**已被接受**的 final 可能还在 dispatcher 里跑（比如
+        # 正卡在有界的视觉校验 join 上）。记录一没，它回来做身份自检时会认为世界已经
+        # 变了而直接 return —— 那句话既不落库也不提交，重叠发声等于抹掉用户完整的上
+        # 一轮。invalidated 已经置上，足以让它放弃**图**；话必须留住。
+        # 每条记录都在自己 dispatch 的 finally 里被 _abandon_core_voice_turn 按
+        # turn_id 移除。到不到上限，淘汰的判据都是**这条 final 派发完了没有**，不是
+        # 注册得早不早：挤掉一条还挂在 handle_input_transcript 上的 final，等于把用
+        # 户整句话丢掉。上限只对还没开始派发的记录（准备了却没等到 final 的回合）生
+        # 效，是内存兜底。
+        while len(self._core_multimodal_turns) >= _MAX_LIVE_TURN_RECORDS:
+            idle = [
+                key
+                for key, record in self._core_multimodal_turns.items()
+                if not record.dispatch_started
+            ]
+            if not idle:
+                # 全都在派发中。宁可让 dict 暂时超限也不丢数据 —— 真无限增长意味着
+                # 有 dispatch 卡死不返回，那是另一个 bug，不该在这里用丢用户发言来
+                # 掩盖它。
+                logger.warning(
+                    "[%s] %d independent ASR turn records are all mid-dispatch; "
+                    "keeping them past the cap rather than dropping a final",
+                    self.lanlan_name,
+                    len(self._core_multimodal_turns),
+                )
+                break
+            del self._core_multimodal_turns[
+                min(
+                    idle,
+                    key=lambda key: self._core_multimodal_turns[key].registered_at,
+                )
+            ]
+        # 所有权的起点是**语音确认那一刻**，不是这行代码执行的时刻：两者之间隔着
+        # _send_asr_lifecycle_state() 的投递 await，期间落地的帧是这段发声真正的
+        # 开头（用户开口时指的东西）。runtime 已经在每个 SPEECH_CONFIRMED 点记了
+        # _asr_turn_audio_started_at，直接用它；只有在它足够新（TTL 之内）时才采
+        # 信，免得残值把窗口往前拉到上一轮。
+        registered_at = time.monotonic()
+        started_at = registered_at
+        runtime = getattr(self, "_asr_runtime", None)
+        # 读 _asr_turn_onset_at 而不是 _asr_turn_audio_started_at：后者在两条
+        # SPEECH_CONFIRMED 路径上是 _send_asr_lifecycle_state() 投递完成之后才打
+        # 的，用它当起点会把投递窗口里拍的帧误判成不属于这段发声。
+        onset = getattr(runtime, "_asr_turn_onset_at", None)
+        if not isinstance(onset, (int, float)):
+            onset = getattr(runtime, "_asr_turn_audio_started_at", None)
+        # 这里判的是「这个 onset 是不是本回合的」，不是「帧新不新鲜」——帧的新鲜度
+        # 由 _snapshot_core_multimodal_turn 在冻结时另行 fail-closed。原来借用帧的
+        # 5 秒 TTL，会在**合法但迟到**的注册上误判：重叠发声排在一个 provider final
+        # 后面（该超时最长可到 40 秒），或 ASR 重连，都会让 onset 早于注册超过 5 秒。
+        # 一旦误判，started_at 退回注册时刻、prerecord 缓冲被清、真实开口以来的帧
+        # 全部不采纳 —— 明明屏幕/摄像头一直有输入，这一轮却退化成纯文本。
+        #
+        # 改用「一个回合等到建记录最长能等多久」为界：provider final 的最长超时
+        # （registry 里最大 40s）再留一倍余量。仍然拒绝未来时刻的 onset，也仍然
+        # 有生成号基线兜底「绝不复用上一轮的帧」。
+        onset_known = (
+            isinstance(onset, (int, float))
+            and 0.0 <= registered_at - float(onset)
+            <= _ONSET_TRUST_WINDOW_S
+        )
+        if onset_known:
+            started_at = float(onset)
+        record = _CoreMultimodalTurnRecord(
+            turn_id=turn_id,
+            session_epoch=token.ingress.session_epoch,
+            route_generation=self._voice_input_transition_generation,
+            start_image_generation=self._independent_visual_generation,
+            started_at=started_at,
+            registered_at=registered_at,
+        )
+        self._core_multimodal_turns[turn_id] = record
+        self._attach_prerecord_visual_validation_tasks(record)
+        # 缓存里那张如果就是在这个窗口里拍的，直接并进来。生成号基线同样要让开
+        # 它，否则 accepts() 会以 generation 为由把它挡在外面；而单槽缓存只留最新
+        # 一张，更早的本来就找不回来了。
+        #
+        # 只有拿到可信的 onset 时才这么做。拿不到时时间戳区分不了「上一轮的残帧」
+        # 和「本轮开头的帧」——monotonic 在 Windows 上是 ~15ms 粒度，注册时刻和刚
+        # 才那帧的拍摄时刻完全可能相等——此时必须退回生成号基线这条硬判据，
+        # 保住"绝不复用上一轮的帧"。
+        retained = self._prerecord_visual_frames
+        self._prerecord_visual_frames = []
+        latest = self._latest_independent_visual_frame
+        candidates = list(retained)
+        if latest is not None and all(
+            item.generation != latest.generation for item in candidates
+        ):
+            candidates.append(latest)
+        if onset_known:
+            eligible = [
+                item
+                for item in candidates
+                if item.session_epoch == record.session_epoch
+                and item.route_generation == record.route_generation
+                and item.captured_at >= record.started_at
+            ]
+            eligible.sort(key=lambda item: (item.captured_at, item.generation))
+            for item in eligible:
+                record.start_image_generation = min(
+                    record.start_image_generation,
+                    item.generation - 1,
+                )
+                record.observe(item)
+
+    def _snapshot_core_multimodal_turn(
+        self,
+        turn_id: str,
+        transcript: str,
+    ) -> MultimodalTurn | None:
+        """Freeze the frame owned by ``turn_id``; stale frames are fail-closed."""
+
+        self._ensure_asr_runtime_state()
+        record = self._core_multimodal_turns.get(turn_id)
+        if record is None:
+            return None
+        if record.invalidated.is_set():
+            # 记录留着只是为了别把这条 final 的**话**弄丢；后继 prepare 已经接管了
+            # 视觉所有权，这些帧属于新那一轮。返回 None = 走纯文本提交（这是正常的
+            # 无图路径，不是失败路径）。
+            return None
+        # 冻结前再采一次端点：staging 只在有帧落地时跑，最后一帧之后到 final 之间
+        # 的封口要在这里补上，否则截止值会漏。
+        self._mark_independent_asr_endpoint_if_sealed()
+        snapshot_at = time.monotonic()
+        if record.last_frame is None:
+            latest = self._latest_independent_visual_frame
+            if (
+                latest is not None
+                # 走 record.accepts 而不是自己再抄一遍条件：兜底路径同样要受端点
+                # 截止约束，否则端点之后拍的那张会从缓存溜进本回合。
+                and record.accepts(latest)
+                and snapshot_at - latest.captured_at
+                <= self._independent_visual_frame_ttl_s
+            ):
+                record.adopt_single_frame(latest)
+        newest = record.last_frame
+        if (
+            newest is None
+            or record.route_generation != self._voice_input_transition_generation
+            or newest.session_epoch != record.session_epoch
+            or newest.route_generation != record.route_generation
+            or newest.captured_at < record.started_at
+            # 只有最新那张要过 TTL：它回答的是"画面流还活着吗"。开头/中间那两张
+            # 本来就比 TTL 老（一次发声可以说很久），它们的有效性由"落在本回合
+            # 窗口内"保证，不该按新鲜度否掉。
+            or snapshot_at - newest.captured_at
+            > self._independent_visual_frame_ttl_s
+        ):
+            return None
+        frames = tuple(
+            frame for frame in record.sampled_frames() if record.accepts(frame)
+        )
+        if not frames:
+            return None
+        return MultimodalTurn(
+            turn_id=turn_id,
+            session_epoch=record.session_epoch,
+            route_generation=record.route_generation,
+            start_image_generation=record.start_image_generation,
+            image_generation=newest.generation,
+            captured_at=newest.captured_at,
+            images=tuple(frame.image_b64 for frame in frames),
+            transcript=transcript,
+            source=newest.source,
+            request_id=newest.request_id,
+        )
     def _schedule_core_asr_cleanup(
         self,
         awaitable: Awaitable[Any],
@@ -523,6 +1155,80 @@ class AsrRuntimeMixin:
             self._voice_lease_resync_delivery_state = None
             self._voice_lease_resync_suppressed = False
         self._asr_route_mode = mode
+
+        if mode != "blocked":
+            self._visual_route_mode = mode
+        visual_route_mode = self._visual_route_mode
+        self._sync_realtime_visual_delivery_mode(visual_route_mode)
+        if mode == "blocked" and visual_route_mode != "independent":
+            # A blocked route is unresolved, not permission to fall back to raw
+            # provider vision. Native mode clears the session fence, so re-arm
+            # it after restoring the remembered policy on a replacement session.
+            self._block_realtime_raw_visual_delivery()
+
+    def _block_realtime_raw_visual_delivery(self) -> None:
+        session = getattr(self, "session", None)
+        block_raw_visual_delivery = getattr(
+            session,
+            "block_raw_visual_delivery",
+            None,
+        )
+        if not callable(block_raw_visual_delivery):
+            return
+        try:
+            block_raw_visual_delivery()
+        except Exception as exc:
+            logger.warning(
+                "[%s] raw visual delivery fence failed: %s",
+                self.lanlan_name,
+                exc,
+            )
+
+    def _sync_realtime_visual_delivery_mode(
+        self,
+        route_mode: Literal["native", "independent", "blocked"],
+    ) -> None:
+        """Apply the ASR strategy to the session's provider-neutral visual policy."""
+
+        # Keep microphone ownership and visual delivery as separate contracts.
+        # Independent ASR never authorizes raw frames to ride the Realtime
+        # provider connection. Native audio keeps the session's established
+        # capability routing (raw native vision or its legacy fallback).
+        session = getattr(self, "session", None)
+        set_visual_delivery_mode = getattr(
+            session,
+            "set_visual_delivery_mode",
+            None,
+        )
+        if not callable(set_visual_delivery_mode):
+            return
+        if route_mode == "independent":
+            # Independent ASR owns raw frames in Core until transcript final.
+            # Arming the provider fence is sufficient; selecting the legacy
+            # external-description mode would reintroduce image annotation in
+            # an ordinary user conversation.
+            self._block_realtime_raw_visual_delivery()
+            return
+        if route_mode != "native":
+            return
+        try:
+            set_visual_delivery_mode("native")
+            allow_raw_visual_delivery = getattr(
+                session,
+                "allow_raw_visual_delivery",
+                None,
+            )
+            if callable(allow_raw_visual_delivery):
+                allow_raw_visual_delivery()
+        except Exception as exc:
+            # This setter only updates local session policy. A broken or stale
+            # session must not take the independent-ASR microphone route down.
+            self._block_realtime_raw_visual_delivery()
+            logger.warning(
+                "[%s] visual delivery mode sync failed: %s",
+                self.lanlan_name,
+                exc,
+            )
 
     def _capture_ingress_token(self, _lifecycle=None) -> VoiceIngressToken:
         return self._asr_runtime.capture_ingress_token(
@@ -858,6 +1564,13 @@ class AsrRuntimeMixin:
                     )
                 )
                 return
+            # The persisted choice cannot be read, but the handshake still
+            # requires independent ASR. Fail closed for raw visual delivery
+            # before any later failure handling or callback can run.
+            if not core_start_is_current():
+                return
+            self._visual_route_mode = "independent"
+            self._sync_realtime_visual_delivery_mode("independent")
             await self._fail_closed_voice_route(
                 "asr_settings_unreadable",
                 operation_generation=operation_generation,
@@ -943,6 +1656,11 @@ class AsrRuntimeMixin:
                 )
             )
             return
+        # Close the raw-image path as soon as the independent-ASR choice is
+        # authoritative. Provider connection may take seconds or fail; neither
+        # window may let screen/camera or callback images reach Realtime raw.
+        self._visual_route_mode = "independent"
+        self._sync_realtime_visual_delivery_mode("independent")
         if (
             connect_budget_seconds is not None
             and connect_budget_seconds < ASR_CONNECT_TOTAL_BUDGET_SECONDS
@@ -1107,6 +1825,16 @@ class AsrRuntimeMixin:
         *,
         session_ref: object | None = None,
     ) -> None:
+        turns = getattr(self, "_core_multimodal_turns", None)
+        if turns is not None:
+            if turn_id is None:
+                for record in turns.values():
+                    record.invalidated.set()
+                turns.clear()
+            else:
+                record = turns.pop(turn_id, None)
+                if record is not None:
+                    record.invalidated.set()
         target_session = (
             session_ref if session_ref is not None else getattr(self, "session", None)
         )
@@ -1278,6 +2006,19 @@ class AsrRuntimeMixin:
             finish_close(),
             name="core-independent-asr-close",
         )
+        # 这段发声窗口的原图只对这一条路由有意义。它们此前唯一的清理点是**下一个**
+        # 回合开始时（_begin_core_multimodal_turn），所以屏幕共享着、还没开口就结束
+        # 这一集的话，最多 8 张满尺寸 base64 原图会一直挂在常驻的角色管理器上；下
+        # 一集 ASR 起步时缓冲区里还掺着上一集的帧，把这一集自己开头的帧挤出上限。
+        # 路由身份边界就是它们的生命周期终点。
+        #
+        # 这里是同步清（此函数从顶部的 operation_generation 检查到这一行没有任何
+        # await，create_task 也还没让出控制权），所以不需要再自证身份；provider /
+        # route_key 的置空、_asr_runtime.close()、管线关闭与指标日志则一律交给 main
+        # 的 finish_close()——它带 transition lock 和 operation_generation 围栏，能
+        # 区分同一条连接上的后继回合，比在这里再抄一遍精确。
+        self._prerecord_visual_frames = []
+        self._latest_independent_visual_frame = None
         await asyncio.shield(close_cleanup)
 
     async def apply_voice_input_noise_reduction(self, enabled: bool) -> bool:
@@ -1340,6 +2081,11 @@ class AsrRuntimeMixin:
         self._ensure_asr_runtime_state()
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
         if core_type == self._independent_asr_route_key:
+            # A same-provider hot swap can promote a fresh Realtime session
+            # while the microphone route key remains unchanged. Reapply the
+            # current abstract route so the replacement inherits the visual
+            # delivery policy without restarting ASR or touching PCM routing.
+            self._set_microphone_route(self._asr_route_mode)
             return
         await self._start_independent_asr_if_enabled(
             str(getattr(self, "input_mode", "audio") or "audio"),
@@ -1704,6 +2450,7 @@ class AsrRuntimeMixin:
                     ingress_token=token,
                     audio_stream_epoch=frame.audio_stream_epoch,
                     ingress_sequence=frame.ingress_sequence,
+                    captured_at=frame.captured_at,
                 )
             except asyncio.CancelledError:
                 raise
@@ -1964,6 +2711,7 @@ class AsrRuntimeMixin:
         ingress_token: VoiceIngressToken,
         audio_stream_epoch: int | None = None,
         ingress_sequence: int | None = None,
+        captured_at: float | None = None,
     ) -> None:
         sequence_owned = ingress_sequence is None
         if ingress_sequence is None:
@@ -2036,6 +2784,11 @@ class AsrRuntimeMixin:
                 return
             if not processed_frame.pcm16:
                 return
+            audio_captured_at = (
+                float(captured_at)
+                if isinstance(captured_at, (int, float)) and captured_at > 0
+                else time.time()
+            )
             if (
                 not self.is_active
                 or self._audio_stream_epoch != audio_epoch
@@ -2073,6 +2826,7 @@ class AsrRuntimeMixin:
                             rnnoise_evidence=processed_frame.rnnoise_evidence,
                             audio_stream_epoch=audio_epoch,
                             ingress_sequence=ingress_sequence,
+                            captured_at=audio_captured_at,
                         )
                     )
             if cache_for_hot_swap:
@@ -2096,6 +2850,7 @@ class AsrRuntimeMixin:
                 rnnoise_available=processed_frame.rnnoise_available,
                 rnnoise_evidence=processed_frame.rnnoise_evidence,
                 ingress_token=ingress_token,
+                captured_at=audio_captured_at,
             )
         except struct.error:
             logger.error("Microphone input rejected: invalid PCM samples")
@@ -2116,6 +2871,7 @@ class AsrRuntimeMixin:
         rnnoise_available: bool | None = None,
         rnnoise_evidence: RnnoiseEvidence | None = None,
         ingress_token: VoiceIngressToken | None = None,
+        captured_at: float | None = None,
     ) -> bool:
         route_mode = self._asr_route_mode
         if not self._voice_input_accepts_pcm():
@@ -2156,7 +2912,10 @@ class AsrRuntimeMixin:
                     self.last_audio_send_error_time = now
                 return True
             try:
-                await stream_audio(pcm16)
+                if isinstance(session_ref, _core_facade.OmniRealtimeClient):
+                    await stream_audio(pcm16, captured_at=captured_at)
+                else:
+                    await stream_audio(pcm16)
                 if not native_send_is_current():
                     return True
                 self._record_omni_microphone_audio(len(pcm16))
@@ -2340,6 +3099,7 @@ class AsrRuntimeMixin:
                             rnnoise_available=frame.rnnoise_available,
                             rnnoise_evidence=frame.rnnoise_evidence,
                             ingress_token=token,
+                            captured_at=audio_frames[batch_end - 1].captured_at,
                         )
                     except asyncio.CancelledError:
                         damaged_frames.extend(audio_frames[index:])
@@ -2794,6 +3554,29 @@ class AsrRuntimeMixin:
         )
         await self._voice_input_registry.wait_idle()
 
+    def _independent_asr_user_turn_active(self) -> bool:
+        """Expose a provider-neutral user-turn gate to Core collaborators."""
+        if getattr(self, "_asr_route_mode", "blocked") != "independent":
+            return False
+        runtime = getattr(self, "_asr_runtime", None)
+        lifecycle = getattr(runtime, "_asr_lifecycle", None)
+        state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
+        pending_delivery = getattr(
+            runtime,
+            "has_pending_transcript_delivery",
+            None,
+        )
+        return (
+            state
+            in {
+                VoiceLifecycleState.PREWARMING,
+                VoiceLifecycleState.ACTIVE,
+                VoiceLifecycleState.DRAINING,
+            }
+            or callable(pending_delivery)
+            and pending_delivery()
+        )
+
     async def _prepare_voice_input_turn(self, token: VoiceTurnToken) -> bool:
         self._ensure_asr_runtime_state()
         # A lease transition activates its next consumer before waiting for
@@ -2871,6 +3654,7 @@ class AsrRuntimeMixin:
             return False
         transition_generation = self._voice_input_transition_generation
         external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        self._begin_core_multimodal_turn(external_turn_id, token)
         previous_preview_turn_id = self._core_asr_preview_turn_id
         previous_preview_turn_token = self._core_asr_preview_turn_token
         previous_preview_text = self._core_asr_preview_text
@@ -2894,7 +3678,18 @@ class AsrRuntimeMixin:
         preparation_succeeded = False
         try:
             if callable(prepare):
-                await prepare(turn_id=external_turn_id)
+                reconnected = await prepare(turn_id=external_turn_id)
+                if reconnected is True and not await (
+                    self._restart_message_handler_after_session_reconnect(
+                        session_ref
+                    )
+                ):
+                    if abandon_on_failure:
+                        self._abandon_core_voice_turn(
+                            external_turn_id,
+                            session_ref=session_ref,
+                        )
+                    return False
             else:
                 interrupt = getattr(session_ref, "handle_interruption", None)
                 if callable(interrupt):
@@ -2945,6 +3740,10 @@ class AsrRuntimeMixin:
                 self._core_asr_preview_turn_id = previous_preview_turn_id
                 self._core_asr_preview_turn_token = previous_preview_turn_token
                 self._core_asr_preview_text = previous_preview_text
+            if not preparation_succeeded:
+                record = self._core_multimodal_turns.pop(external_turn_id, None)
+                if record is not None:
+                    record.invalidated.set()
 
     async def _submit_core_voice_turn(
         self,
@@ -2965,6 +3764,12 @@ class AsrRuntimeMixin:
 
         if session_ref is None:
             session_ref = self.session
+        if getattr(self, "response_backend", "realtime") == "offline_vlm":
+            # A failed promotion-time TTS initialization leaves the Offline
+            # conversation/listener usable. Retry the external TTS lifecycle on
+            # every later independent-ASR turn before asking it to generate;
+            # never push this concern into the general Offline stream_text path.
+            await self.ensure_tts_pipeline_alive()
         submit = getattr(session_ref, "submit_external_voice_turn", None)
         if callable(submit):
             await submit(text, turn_id=turn_id)
@@ -2981,6 +3786,7 @@ class AsrRuntimeMixin:
         external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
         if session_ref is None:
             session_ref = getattr(self, "session", None)
+        prepared_session_ref = session_ref
         transition_generation = self._voice_input_transition_generation
         try:
             if (
@@ -2999,6 +3805,38 @@ class AsrRuntimeMixin:
                 # next turn.
                 await self._send_core_asr_preview_clear(external_turn_id)
                 return
+            # A normal pending hot-swap may already be caching the conversation.
+            # Snapshot it before handle_input_transcript appends this final: the
+            # handoff candidate receives the prior context here, while the raw
+            # transcript itself is submitted exactly once with its image below.
+            cached_turns_before_final = [
+                dict(item)
+                for item in (
+                    getattr(self, "message_cache_for_new_session", None) or []
+                )
+                if isinstance(item, dict)
+            ]
+            turn_record = self._core_multimodal_turns.get(external_turn_id)
+            if turn_record is not None:
+                # 从这里到本函数的 finally（_abandon_core_voice_turn 按 turn_id 摘
+                # 掉它）之间，这条记录是**在派发中**的，后继的 prepare 不能挤掉它。
+                turn_record.dispatch_started = True
+                await self._await_independent_visual_validation_tasks(
+                    external_turn_id
+                )
+                if (
+                    self._core_multimodal_turns.get(external_turn_id)
+                    is not turn_record
+                    or transition_generation
+                    != self._voice_input_transition_generation
+                    or self._voice_lease_owner != "core"
+                    or not self._ingress_token_matches(token)
+                ):
+                    return
+            multimodal_turn = self._snapshot_core_multimodal_turn(
+                external_turn_id,
+                event.text,
+            )
             accepted = await self.handle_input_transcript(
                 event.text,
                 is_voice_source=True,
@@ -3020,6 +3858,12 @@ class AsrRuntimeMixin:
                     == self._voice_input_transition_generation
                     and self._voice_lease_owner == "core"
                     and self._ingress_token_matches(token)
+                    and (
+                        multimodal_turn is None
+                        or turn_record is None
+                        or self._core_multimodal_turns.get(external_turn_id)
+                        is turn_record
+                    )
                 )
 
             operation_still_current = route_still_core()
@@ -3036,6 +3880,47 @@ class AsrRuntimeMixin:
                     # the preview bubble and the clear must not remove it.
                     await self._send_core_asr_preview_clear(external_turn_id)
                 return
+            def visual_ownership_lost() -> bool:
+                """Whether a successor has taken this turn's frames since the freeze.
+
+                Deliberately kept out of ``route_still_core()``: losing the
+                frames must downgrade this turn to text, never drop the user's
+                sentence. Re-checkable, because every await between the freeze
+                and the provider call is another chance for a successor to
+                prepare -- the transcript send, preview restoration, the swap
+                barrier, replacement-session preparation.
+                """
+                return turn_record is not None and turn_record.invalidated.is_set()
+
+            def note_visual_ownership_lost() -> None:
+                logger.info(
+                    "[%s] independent ASR turn %s superseded after freeze; "
+                    "submitting transcript without its frames",
+                    self.lanlan_name,
+                    external_turn_id,
+                )
+
+            if multimodal_turn is not None and visual_ownership_lost():
+                note_visual_ownership_lost()
+                multimodal_turn = None
+            if getattr(self, "response_backend", "realtime") == "offline_vlm":
+                # handle_input_transcript historically keys voice display off
+                # the session class. After a main-session VLM promotion the
+                # input is still voice/independent-ASR even though the answering
+                # client is Offline, so preserve the same frontend event here.
+                websocket_ref = getattr(self, "websocket", None)
+                send_json = getattr(websocket_ref, "send_json", None)
+                if callable(send_json):
+                    try:
+                        await send_json({
+                            "type": "user_transcript",
+                            "text": event.text.strip(),
+                        })
+                    except Exception:
+                        logger.warning(
+                            "[%s] Offline VLM voice transcript delivery failed",
+                            self.lanlan_name,
+                        )
             await self._restore_core_asr_preview_after_final(
                 external_turn_id,
                 session_epoch=token.session_epoch,
@@ -3057,6 +3942,7 @@ class AsrRuntimeMixin:
             # the promoted replacement. Bound the wait so the serial transcript
             # dispatcher cannot be held forever by a stuck swap.
             session_swap_lock = self._core_voice_session_swap_lock
+            handoff_target = None
             try:
                 await asyncio.wait_for(
                     session_swap_lock.acquire(),
@@ -3087,16 +3973,124 @@ class AsrRuntimeMixin:
                         None,
                     )
                     if callable(prepare):
-                        await prepare(turn_id=external_turn_id)
+                        reconnected = await prepare(turn_id=external_turn_id)
+                        if reconnected is True and not await (
+                            self._restart_message_handler_after_session_reconnect(
+                                session_ref
+                            )
+                        ):
+                            return
                     if not route_still_core() or self.session is not session_ref:
                         return
+                if multimodal_turn is None:
+                    await self._submit_core_voice_turn(
+                        event.text,
+                        turn_id=external_turn_id,
+                        session_ref=session_ref,
+                    )
+                else:
+                    get_delivery = getattr(
+                        session_ref,
+                        "get_multimodal_turn_delivery",
+                        None,
+                    )
+                    delivery = (
+                        get_delivery() if callable(get_delivery) else None
+                    )
+                    delivery_value = str(
+                        getattr(delivery, "value", delivery) or "handoff_required"
+                    )
+                    if delivery_value == "direct_atomic":
+                        submit_multimodal = getattr(
+                            session_ref,
+                            "submit_multimodal_turn",
+                            None,
+                        )
+                        if not callable(submit_multimodal):
+                            raise RuntimeError(
+                                "DIRECT_MULTIMODAL_SUBMIT_UNAVAILABLE"
+                            )
+                        if visual_ownership_lost():
+                            # 上面那次检查之后还隔着传 transcript、恢复预览、抢
+                            # swap 闸几段 await。这是**真正调用 provider 之前**的
+                            # 最后一个同步点。
+                            note_visual_ownership_lost()
+                            multimodal_turn = None
+                            await self._submit_core_voice_turn(
+                                event.text,
+                                turn_id=external_turn_id,
+                                session_ref=session_ref,
+                            )
+                        else:
+                            try:
+                                await submit_multimodal(
+                                    multimodal_turn.transcript,
+                                    multimodal_turn.images,
+                                    turn_id=multimodal_turn.turn_id,
+                                    # Gemini 那条路在真正送出之前还有一段
+                                    # 压缩 await，后继发声可以在其中拿走帧。
+                                    # 与 Offline 交接同源的判据。
+                                    visual_still_owned=(
+                                        lambda: not visual_ownership_lost()
+                                    ),
+                                )
+                            except ResponseAdmissionRejected:
+                                # provider 侧的取代判据（后继回合已经 prepare，
+                                # arbiter 的 admission 闸把这张 ticket 拒了）比
+                                # Core 的 invalidated 更晚也更权威。被拒时已提交
+                                # 的 item 已经删干净，provider 侧不留痕迹 ——
+                                # 但这一轮的**话**不能跟着帧一起消失。与
+                                # visual_ownership_lost 那三处同一判据：丢帧降级
+                                # 成纯文本，绝不丢用户的句子。
+                                logger.info(
+                                    "[%s] independent ASR turn %s lost its "
+                                    "provider admission window; submitting "
+                                    "transcript without its frames",
+                                    self.lanlan_name,
+                                    external_turn_id,
+                                )
+                                multimodal_turn = None
+                                await self._submit_core_voice_turn(
+                                    event.text,
+                                    turn_id=external_turn_id,
+                                    session_ref=session_ref,
+                                )
+                    else:
+                        # Candidate connect must happen outside the swap lock so
+                        # the healthy Realtime session remains usable until the
+                        # replacement is ready.
+                        handoff_target = session_ref
+            finally:
+                session_swap_lock.release()
+            if handoff_target is not None and visual_ownership_lost():
+                # 交接本身还要连一个候选会话，比直接提交更长。释放 swap 闸之后再
+                # 确认一次所有权，否则整段交接都在替后继那一轮搬帧。
+                note_visual_ownership_lost()
+                handoff_target = None
+                multimodal_turn = None
                 await self._submit_core_voice_turn(
                     event.text,
                     turn_id=external_turn_id,
                     session_ref=session_ref,
                 )
-            finally:
-                session_swap_lock.release()
+            if handoff_target is not None:
+                delivered = await self._handoff_to_offline_vlm_and_submit(
+                    multimodal_turn,
+                    expected_session=handoff_target,
+                    prepared_session=prepared_session_ref,
+                    operation_is_current=route_still_core,
+                    cached_turns_before_final=cached_turns_before_final,
+                    # 交接内部还有连候选会话、promote、起 TTS、同步工具一长串
+                    # await。所有权判据必须跟着进去，而且**不能**并进
+                    # operation_is_current —— 那个谓词为假会整轮放弃，丢帧只该
+                    # 降级成纯文本。
+                    visual_still_owned=lambda: not visual_ownership_lost(),
+                )
+                if not delivered and route_still_core():
+                    await self.send_status(json.dumps({
+                        "code": "ASR_MULTIMODAL_TURN_FAILED",
+                        "details": {"stage": "offline_vlm_handoff"},
+                    }))
         finally:
             self._abandon_core_voice_turn(
                 external_turn_id,

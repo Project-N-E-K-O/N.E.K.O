@@ -590,6 +590,7 @@
         "ERROR_1007_ARREARS": "💥 Nota: Erro 1007 detectado. Isto é provavelmente causado por equilíbrio insuficiente.",
         "IMAGE_BLOCKED": "⚠️ Conteúdo de imagem bloqueado pelo sistema de revisão. Tente uma imagem ou conteúdo diferente.",
         "SERVER_BUSY_THROTTLE": "⚠️ Servidor ocupado, ajustando automaticamente a taxa de envio...",
+        "ASR_INGRESS_BACKPRESSURE": "O processamento de voz está ocupado. Diga novamente.",
         "RESPONSE_TIMEOUT": "💥 Tempo limite de conexão (tempo limite de resposta), conversa por voz interrompida.",
         "CONNECTION_TIMEOUT": "💥 Tempo limite de conexão. Verifique sua conexão de rede.",
         "RESPONSE_TOO_LONG": "Resposta muito longa, saída descartada (você pode aumentar TEXT_GUARD_MAX_LENGTH nas configurações)",
