@@ -217,6 +217,38 @@ class _LifecycleMixin:
         # 用户了、函数却因 UnboundLocalError 走到失败分支返回 False，主动
         # 调度状态跟着被污染（CodeRabbit）。
         _pending_budget_notice = None
+
+        async def _emit_pending_budget_notice() -> None:
+            """Send the staged trim notice, at most once, once the turn speaks.
+
+            Called from EVERY path that delivers visible text -- both the
+            per-chunk emit and the end-of-stream prefix flush. The flush is not
+            a rare corner: any reply shorter than ``_prefix_buffer_size`` is
+            delivered entirely by it, and an inline copy of this block on the
+            chunk path alone silently skipped the notice for exactly those
+            turns while still committing them (Codex). Anything added later
+            that emits visible text has to call this too.
+            """
+            nonlocal _pending_budget_notice
+            if _pending_budget_notice is None:
+                return
+            payload = _pending_budget_notice
+            # Clear BEFORE awaiting: the emit paths run per delta, and a slot
+            # still set while the send is in flight re-fires on the next one.
+            _pending_budget_notice = None
+            if not self.on_status_message:
+                return
+            try:
+                await self.on_status_message(json.dumps({
+                    "code": "TURN_IMAGES_TRIMMED",
+                    "details": payload,
+                }))
+            except Exception as _notice_error:
+                logger.warning(
+                    "could not report the proactive image trim to the user: %s",
+                    _notice_error,
+                )
+
         if images:
             # 一旦带图就永久切到 vision model（既定设计，见上）。vision model 也能
             # 跑后续纯文本轮，且凝神不再因 vision 而关闭思考。
@@ -392,25 +424,7 @@ class _LifecycleMixin:
                             is_first_chunk = False
                             emitted_any = True
                             # 这一轮确实开口了，挂起的裁剪提示现在才该出现。
-                            # 用「置 None」表示已发而不是另设一个 bool：
-                            # emitted_any 每个 attempt 都归零，跟着它走会在
-                            # retry 后重复弹；而这个变量活在 retry 循环之外，
-                            # 天然只发一次。
-                            if _pending_budget_notice is not None:
-                                _notice_payload = _pending_budget_notice
-                                _pending_budget_notice = None
-                                if self.on_status_message:
-                                    try:
-                                        await self.on_status_message(json.dumps({
-                                            "code": "TURN_IMAGES_TRIMMED",
-                                            "details": _notice_payload,
-                                        }))
-                                    except Exception as _notice_error:
-                                        logger.warning(
-                                            "could not report the proactive image "
-                                            "trim to the user: %s",
-                                            _notice_error,
-                                        )
+                            await _emit_pending_budget_notice()
 
                     # ── flush 前缀缓冲区（流提前结束时） ──
                     if prefix_buffer and not prefix_checked:
@@ -431,6 +445,10 @@ class _LifecycleMixin:
                                 await self.on_text_delta(flush_text, is_first_chunk)
                             is_first_chunk = False
                             emitted_any = True
+                            # 短于前缀缓冲阈值的回复整段走这条路，chunk 分支
+                            # 一次都不进 —— 少了这一行，那类回合会照常提交却
+                            # 永远不报裁剪。
+                            await _emit_pending_budget_notice()
 
                     break  # 流正常结束，跳出 retry 循环
 

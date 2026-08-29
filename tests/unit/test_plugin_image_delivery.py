@@ -3725,3 +3725,52 @@ async def test_text_only_proactive_turn_completes_without_touching_image_state()
     ]
     assert trims == []
     assert sent, "the LLM should have been called"
+
+
+@pytest.mark.asyncio
+async def test_trim_notice_survives_a_reply_shorter_than_the_prefix_buffer(
+    monkeypatch,
+) -> None:
+    """A short reply is delivered by the flush path, which must notice too.
+
+    ``_prefix_buffer_size`` holds back the opening characters so a leading
+    "MasterName:" can be stripped before anything reaches the screen. A reply
+    shorter than that threshold therefore never satisfies the per-chunk emit
+    branch at all -- the whole thing is delivered by the end-of-stream flush.
+
+    The staged notice originally lived inline on the chunk branch only, so
+    those turns committed normally and silently dropped TURN_IMAGES_TRIMMED
+    (Codex). Every fixture in this file sets ``_prefix_buffer_size = 0``, which
+    is why 451 passing tests never went near it.
+    """
+    from types import SimpleNamespace
+
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import normalize_image_for_model
+
+    client, _sent = _offline_client_for_ephemeral()
+    # Big enough that the whole reply below stays buffered to the very end.
+    client._prefix_buffer_size = 64
+
+    async def _short_reply(messages):
+        yield SimpleNamespace(content="喵~")
+
+    client._astream_visible_with_tools = _short_reply
+
+    frames = [_jpeg_b64(1600, 1200) for _ in range(3)]
+    one = len(base64.b64decode(normalize_image_for_model(frames[0])))
+    monkeypatch.setattr(
+        _lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one * 1.5)
+    )
+
+    await client.prompt_ephemeral("======主动搭话======", images=frames)
+
+    # The reply really did go out through the flush, not the chunk branch.
+    assert client.on_text_delta.await_count == 1
+    trims = [
+        call for call in client.on_status_message.await_args_list
+        if "TURN_IMAGES_TRIMMED" in str(call)
+    ]
+    assert len(trims) == 1, (
+        f"a short reply still lost whole frames and must say so, got {len(trims)}"
+    )
