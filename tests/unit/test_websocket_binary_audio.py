@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -217,6 +219,44 @@ def test_binary_audio_frame_decodes_extreme_sample_values() -> None:
     assert _decode_binary_audio_frame(payload)["data"] == samples
 
 
+@pytest.mark.asyncio
+async def test_live_visual_validation_is_tracked_before_background_processing(
+    monkeypatch,
+) -> None:
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [
+            {
+                "action": "stream_data",
+                "input_type": "screen",
+                "data": "raw-frame",
+            }
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+    ordering = []
+
+    async def stream_data(message: dict) -> None:
+        ordering.append(("stream", message))
+
+    def track_validation(task: asyncio.Task, *, captured_at: object) -> bool:
+        assert not task.done()
+        ordering.append(("track", captured_at))
+        return True
+
+    manager.stream_data = stream_data
+    manager._track_independent_visual_validation_task = track_validation
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert [kind for kind, _value in ordering] == ["track", "stream"]
+    assert isinstance(ordering[0][1], float)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -262,6 +302,66 @@ def test_binary_audio_frame_accepts_real_and_boundary_frame_sizes(
 
     assert len(message["data"]) == samples
     assert message["sample_rate_hz"] == sample_rate_hz
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "docs/api/websocket/audio-streaming.md",
+        "docs/api/websocket/message-types.md",
+    ),
+)
+def test_public_audio_docs_match_the_120_ms_frame_limit(relative_path: str) -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    text = (project_root / relative_path).read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
+
+    assert re.search(
+        r"\b(?:at most|no longer than) 120 ms\b",
+        normalized,
+        re.IGNORECASE,
+    )
+    assert re.search(r"\b10\s*[-–]\s*32 ms\b", normalized)
+    assert not re.search(
+        r"\b(?:at most|no longer than)\s+(?:one|1)\s*(?:s|secs?|seconds?)\b",
+        normalized,
+        re.IGNORECASE,
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "docs/api/websocket/audio-streaming.md",
+        "docs/api/websocket/message-types.md",
+        "docs/api/websocket/protocol.md",
+    ),
+)
+def test_public_lease_docs_explain_engaged_claim_semantics(
+    relative_path: str,
+) -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    text = (project_root / relative_path).read_text(encoding="utf-8")
+    rows: dict[str, str] = {}
+    for line in text.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) == 3 and cells[0] in {"`true`", "`false`", "omitted"}:
+            rows[cells[0]] = " ".join(cells[1:]).lower()
+
+    assert "active recording" in rows["`true`"]
+    assert "reconnecting" in rows["`true`"]
+    assert "claims" in rows["`true`"]
+    assert "does not claim" not in rows["`true`"]
+
+    assert "passive" in rows["`false`"]
+    assert "does not claim" in rows["`false`"]
+
+    assert "legacy" in rows["omitted"]
+    assert "claims" in rows["omitted"]
+    assert "does not claim" not in rows["omitted"]
+
+    normalized = " ".join(text.split()).lower()
+    assert "only the literal json value `false` suppresses the claim" in normalized
 
 
 @pytest.mark.asyncio

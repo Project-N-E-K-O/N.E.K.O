@@ -81,10 +81,10 @@ def test_rate_limit_and_retry_after_skip_endpoint_fallback() -> None:
 @pytest.mark.parametrize(
     ("configured", "country", "expected"),
     [
-        ("auto", "CN", "baidu"),
-        ("auto", "JP", "duckduckgo"),
-        ("auto", None, "baidu"),
-        ("invalid", None, "baidu"),
+        ("auto", "CN", "anysearch"),
+        ("auto", "JP", "anysearch"),
+        ("auto", None, "anysearch"),
+        ("invalid", None, "anysearch"),
         ("baidu", "JP", "baidu"),
         ("duckduckgo", "CN", "duckduckgo"),
     ],
@@ -137,7 +137,7 @@ async def test_geoip_stalled_provider_does_not_starve_fallback(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["baidu", "duckduckgo"])
-async def test_startup_skips_geoip_for_explicit_backend(
+async def test_startup_detects_geoip_for_explicit_backend_override(
     backend: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -149,13 +149,49 @@ async def test_startup_skips_geoip_for_explicit_backend(
     plugin.config = _Config()
     plugin.logger = type("Logger", (), {"info": lambda *_args: None})()
 
-    async def unexpected_geoip() -> str:
-        pytest.fail("explicit backend must not perform GeoIP detection")
+    async def detected_geoip() -> str:
+        return "US"
 
-    monkeypatch.setattr(web_search, "_detect_country", unexpected_geoip)
+    monkeypatch.setattr(web_search, "_detect_country", detected_geoip)
     await web_search.WebSearchPlugin.startup(plugin)
     assert plugin._backend == backend
-    assert plugin._country is None
+    assert plugin._country == "US"
+    assert plugin._anysearch_zone == "intl"
+
+
+@pytest.mark.asyncio
+async def test_configured_anysearch_does_not_cross_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = _PluginStub()
+    plugin._configured_backend = "anysearch"
+    plugin._backend = "anysearch"
+    plugin._country = "CN"
+    plugin._anysearch_zone = "cn"
+    plugin._anysearch_api_key = ""
+    baidu_calls = 0
+
+    async def failing_anysearch(*_args: object, **_kwargs: object) -> resilience.SearchResults:
+        raise web_search.SearchResponseError("AnySearch failed")
+
+    async def unexpected_baidu(*_args: object, **_kwargs: object) -> resilience.SearchResults:
+        nonlocal baidu_calls
+        baidu_calls += 1
+        return []
+
+    monkeypatch.setattr(web_search, "_search_anysearch", failing_anysearch)
+    monkeypatch.setattr(web_search, "_search_baidu", unexpected_baidu)
+
+    with pytest.raises(web_search.SearchResponseError, match="AnySearch failed"):
+        await web_search.WebSearchPlugin._do_text_search(
+            plugin,
+            "neko",
+            3,
+            1.0,
+            backend="auto",
+        )
+
+    assert baidu_calls == 0
 
 
 def test_duckduckgo_defaults_are_more_conservative_than_baidu() -> None:

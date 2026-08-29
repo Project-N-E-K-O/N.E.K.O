@@ -1,24 +1,32 @@
-"""Tests for ``LLMSessionManager.passthrough_to_chat_bubble`` and the
-``main_server`` proactive_message → passthrough wiring.
+"""Tests for ``LLMSessionManager.passthrough_to_chat_bubble`` and for the
+``main_server`` proactive_message → chat-render wiring that replaced it.
 
-Background — see PR-1110 (squashed ``c49d6fe89``) and PR-4 brief:
+Background — see PR-1110 (squashed ``c49d6fe89``), the PR-4 brief, and
+#2835 (``1d654e302``), which rewired the host side:
 
 The plugin v2 schema (``plugin/sdk/shared/core/push_message_schema.py``)
-defines ``visibility=["chat"]`` + ``ai_behavior="blind"`` to mean
-"render verbatim into the chat bubble, but never feed to the LLM."
-PR-4 implements that path — distinct from PR-1110's mirror channel,
-which DOES enter chat history as an ``AIMessage``.
+defines ``visibility=["chat"]`` to mean "render the plugin's own parts
+verbatim in chat", orthogonally to ``ai_behavior``. The host renders that
+through :py:meth:`LLMSessionManager.render_chat_blocks` as a source-labelled
+SYSTEM message, for every ``ai_behavior`` — a plugin bubble must not wear
+the assistant's identity, and with ``ai_behavior="blind"`` the content never
+reaches the model at all.
+
+``passthrough_to_chat_bubble`` was the previous receiver of that branch and
+has NO production caller left; the unit tests below still cover it directly,
+because it remains the only way to render verbatim text *as the assistant*
+without touching chat history.
 
 Two distinguishing assertions matter:
 
 * mirror writes to ``sync_message_queue`` (cross_server picks it up
   and may inject into chat history).
-* passthrough does NOT — frontend sees the bubble, LLM never does.
+* passthrough / render_chat_blocks do NOT — frontend sees the bubble,
+  LLM never does.
 
 We construct the manager via ``__new__`` (skipping the heavy real
 ``__init__`` that needs a config_manager) and stub only the attributes
-``passthrough_to_chat_bubble`` reads: ``websocket``, ``lanlan_name``,
-``sync_message_queue``.
+these helpers read: ``websocket``, ``lanlan_name``, ``sync_message_queue``.
 """
 
 from __future__ import annotations
@@ -114,6 +122,60 @@ async def test_passthrough_writes_to_websocket_with_passthrough_metadata():
     assert payload["turn_id"] == "turn-1"
     assert payload["request_id"] == "req-1"
     assert payload["metadata"] == {"source": "plugin", "passthrough": True}
+
+
+@pytest.mark.unit
+async def test_passthrough_can_carry_structured_image_blocks():
+    ws = _FakeWebsocket(connected=True)
+    mgr = _make_mgr(websocket=ws)
+    blocks = [
+        {"type": "text", "text": "look"},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/example"},
+    ]
+
+    assert await mgr.passthrough_to_chat_bubble("look", blocks=blocks) is True
+
+    payload = ws.send_json.await_args.args[0]
+    assert payload["blocks"] == blocks
+
+
+@pytest.mark.unit
+async def test_passthrough_sends_image_only_blocks_without_text():
+    ws = _FakeWebsocket(connected=True)
+    mgr = _make_mgr(websocket=ws)
+    blocks = [{"type": "image", "url": "http://127.0.0.1:48916/media/example"}]
+
+    assert await mgr.passthrough_to_chat_bubble("", blocks=blocks) is True
+
+    payload = ws.send_json.await_args.args[0]
+    assert payload["text"] == ""
+    assert payload["blocks"] == blocks
+
+
+@pytest.mark.unit
+async def test_render_chat_blocks_uses_a_display_only_websocket_frame():
+    ws = _FakeWebsocket(connected=True)
+    mgr = _make_mgr(websocket=ws)
+    blocks = [{"type": "image", "url": "http://127.0.0.1:48916/media/example"}]
+
+    assert await mgr.render_chat_blocks(
+        blocks, request_id="r", source="plugin", source_name="LifeKit"
+    ) is True
+
+    payload = ws.send_json.await_args.args[0]
+    assert payload == {
+        "type": "chat_blocks",
+        "blocks": blocks,
+        "request_id": "r",
+        # source_name rides along so the bubble can name its origin: a plugin
+        # may write in the character's voice, and for blind pushes she has no
+        # memory of the content at all.
+        "metadata": {
+            "source": "plugin",
+            "source_name": "LifeKit",
+            "passthrough": True,
+        },
+    }
 
 
 @pytest.mark.unit
@@ -233,26 +295,30 @@ async def test_passthrough_synthesizes_turn_id_when_missing():
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Integration-ish: main_server proactive_message → passthrough wiring
+# Integration-ish: main_server proactive_message → chat-render wiring
 # ──────────────────────────────────────────────────────────────────────
 #
-# Verifies that the visibility=["chat"] + ai_behavior="blind" branch in
-# ``_handle_agent_event`` actually invokes ``passthrough_to_chat_bubble``
-# on the resolved manager. We don't run the main_server package wholesale —
+# Verifies that the visibility contains "chat" branch in
+# ``_handle_agent_event`` invokes ``render_chat_blocks`` — not
+# ``passthrough_to_chat_bubble`` — on the resolved manager. The branch is
+# gated on visibility alone; ai_behavior only decides whether the same parts
+# also reach the model. We don't run the main_server package wholesale —
 # we extract the function under test and call it with a stubbed event +
 # a stubbed manager.
 
 
 @pytest.mark.unit
-async def test_main_server_proactive_chat_blind_invokes_passthrough(monkeypatch):
+async def test_main_server_proactive_chat_blind_renders_system_blocks(monkeypatch):
     """main_server's _handle_agent_event with visibility=["chat"] +
-    ai_behavior="blind" must call mgr.passthrough_to_chat_bubble exactly
-    once with the event's text, source_kind, and task_id."""
+    ai_behavior="blind" must call mgr.render_chat_blocks exactly once with
+    the event's text, source_kind, and task_id — and must NOT reach for
+    passthrough_to_chat_bubble, which would wear the assistant's identity."""
     # Late import: main_server is heavy; only import when needed.
     from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None  # disable HUD send for cleanliness
@@ -281,21 +347,25 @@ async def test_main_server_proactive_chat_blind_invokes_passthrough(monkeypatch)
 
     await main_server._handle_agent_event(event)
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
-    call = fake_mgr.passthrough_to_chat_bubble.await_args
-    # text positional arg
-    assert call.args[0] == "verbatim line"
-    # request_id from task_id, source from source_kind
+    # System message, not an assistant bubble: blind content never reaches the
+    # model, so an assistant-looking bubble claims something she never said and
+    # has no memory of.
+    fake_mgr.passthrough_to_chat_bubble.assert_not_awaited()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
+    call = fake_mgr.render_chat_blocks.await_args
+    assert call.args[0] == [{"type": "text", "text": "verbatim line"}]
     assert call.kwargs.get("request_id") == "task-42"
     assert call.kwargs.get("source") == "plugin"
+    # The plugin's own name labels the bubble.
+    assert call.kwargs.get("source_name") == "foo"
     # silent + blind → LLM channel NOT engaged
     fake_mgr.enqueue_agent_callback.assert_not_called()
 
 
 @pytest.mark.unit
 async def test_main_server_proactive_chat_blind_preserves_verbatim_whitespace(monkeypatch):
-    """Verbatim contract: passthrough must receive the RAW event text with
-    leading/trailing whitespace intact, even though the empty-check / log /
+    """Verbatim contract: the chat render must receive the RAW event text
+    with leading/trailing whitespace intact, even though the empty-check / log /
     callback paths in _handle_agent_event use a stripped local. CodeRabbit
     PR #1128 r3182231689 — pre-fix the call shared the stripped local and
     silently swallowed surrounding whitespace/newlines."""
@@ -303,6 +373,7 @@ async def test_main_server_proactive_chat_blind_preserves_verbatim_whitespace(mo
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None
@@ -327,22 +398,26 @@ async def test_main_server_proactive_chat_blind_preserves_verbatim_whitespace(mo
 
     await main_server._handle_agent_event(event)
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
-    call = fake_mgr.passthrough_to_chat_bubble.await_args
-    assert call.args[0] == "  hello world\n\n"
+    fake_mgr.render_chat_blocks.assert_awaited_once()
+    call = fake_mgr.render_chat_blocks.await_args
+    # Verbatim contract survives the move: compare against the event text
+    # itself, so the whitespace under test cannot be lost to escaping here.
+    assert call.args[0] == [{"type": "text", "text": event["text"]}]
 
 
 @pytest.mark.unit
-async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(monkeypatch):
-    """When ai_behavior != "blind", the passthrough branch must NOT fire
-    even if visibility includes "chat" — non-blind ai_behavior already
-    enqueues the LLM callback, and the AI's own response is what fills
-    the chat bubble.
+async def test_main_server_proactive_chat_respond_renders_as_system_and_still_responds(monkeypatch):
+    """Chat visibility renders; ai_behavior decides what the model does.
+
+    respond used to render nothing at all. It now shows the plugin's text as a
+    system message AND hands the callback to the proactive manager, so the
+    reader sees what prompted the reply rather than only the reply.
     """
     from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.submit_proactive_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
@@ -369,6 +444,7 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
     await main_server._handle_agent_event(event)
 
     fake_mgr.passthrough_to_chat_bubble.assert_not_called()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     # respond → handed to the proactive delivery manager (which enqueues +
     # triggers at release time, gated on the playback/min-gap pacing).
     fake_mgr.submit_proactive_callback.assert_called_once()
@@ -394,6 +470,7 @@ async def test_blind_with_proactive_delivery_mode_does_not_enqueue_callback(monk
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None
@@ -425,7 +502,7 @@ async def test_blind_with_proactive_delivery_mode_does_not_enqueue_callback(monk
     fake_mgr.enqueue_agent_callback.assert_not_called()
     fake_mgr.trigger_agent_callbacks.assert_not_called()
     # Chat passthrough still fires (visibility includes "chat", behavior is blind).
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -436,6 +513,7 @@ async def test_blind_with_passive_delivery_mode_does_not_enqueue_callback(monkey
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None
@@ -461,7 +539,7 @@ async def test_blind_with_passive_delivery_mode_does_not_enqueue_callback(monkey
     await main_server._handle_agent_event(event)
 
     fake_mgr.enqueue_agent_callback.assert_not_called()
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -476,6 +554,7 @@ async def test_passthrough_uses_resolved_source_kind_from_channel(monkeypatch):
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None
@@ -499,8 +578,8 @@ async def test_passthrough_uses_resolved_source_kind_from_channel(monkeypatch):
 
     await main_server._handle_agent_event(event)
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
-    call = fake_mgr.passthrough_to_chat_bubble.await_args
+    fake_mgr.render_chat_blocks.assert_awaited_once()
+    call = fake_mgr.render_chat_blocks.await_args
     # Channel "computer_use" must resolve to source_kind="cu", NOT "plugin".
     assert call.kwargs.get("source") == "cu"
 
@@ -513,6 +592,7 @@ async def test_main_server_proactive_hud_only_blind_does_not_invoke_passthrough(
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None
@@ -573,6 +653,7 @@ def _hud_event(visibility, ai_behavior="blind", text="hud-or-chat line"):
 def _hud_fake_mgr():
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = MagicMock()
@@ -611,7 +692,7 @@ async def test_visibility_chat_blind_chat_fires_hud_does_not(monkeypatch):
 
     await main_server._handle_agent_event(_hud_event(["chat"]))
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     assert _hud_send_count(fake_mgr) == 0
 
 
@@ -639,7 +720,7 @@ async def test_visibility_chat_and_hud_blind_both_fire(monkeypatch):
 
     await main_server._handle_agent_event(_hud_event(["chat", "hud"]))
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     assert _hud_send_count(fake_mgr) == 1
 
 
@@ -695,36 +776,37 @@ async def test_visibility_absent_field_legacy_fires_hud(monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Turn-end emission after chat-blind passthrough (codex P2 — PR #1128)
+# NO turn-end after a plugin chat render (was codex P2 — PR #1128)
 # ──────────────────────────────────────────────────────────────────────
 #
-# Background: ``passthrough_to_chat_bubble`` sends a ``gemini_response``
+# History: ``passthrough_to_chat_bubble`` sends a ``gemini_response``
 # frame, which on the frontend opens an assistant turn lifecycle via
 # ``ensureAssistantTurnStarted``. Without a matching ``turn end`` /
-# ``turn end agent_callback`` system event, the assistant bubble stays
-# "in-progress" and proactive rescheduling never fires. The canonical
-# helper that emits this turn-end is
-# :py:meth:`LLMSessionManager.handle_proactive_complete`; the direct
-# task_result reply path in character_runtime.py already calls it. The
-# chat-blind passthrough branch must do the same.
+# ``turn end agent_callback`` system event, the assistant bubble stayed
+# "in-progress" and proactive rescheduling never fired — so back when the
+# chat-blind branch went through that helper, it had to emit a turn-end via
+# :py:meth:`LLMSessionManager.handle_proactive_complete`.
 #
-# The HUD-only branch (agent_notification) does NOT open an assistant
-# turn lifecycle on the frontend, so it does NOT need turn-end. This
-# means the dedup strategy is "emit once iff chat passthrough fired",
-# not "per-sink emit with explicit dedup".
+# Since #2835 the branch sends a ``chat_blocks`` frame instead, which opens
+# no assistant turn — exactly like the HUD-only branch (agent_notification).
+# There is therefore no lifecycle to close on either sink, and emitting a
+# turn-end would close one that never started. The tests below lock in
+# "no turn-end", which is the inverse of what they originally asserted.
 
 
 @pytest.mark.unit
-async def test_chat_blind_passthrough_emits_turn_end_via_proactive_complete(monkeypatch):
-    """visibility=["chat"] + blind → handle_proactive_complete called
-    exactly once after passthrough_to_chat_bubble returns. This is the
-    codex P2 regression: prior code dispatched the gemini_response bubble
-    but never closed the assistant turn lifecycle on the frontend.
+async def test_chat_blind_render_emits_no_turn_end(monkeypatch):
+    """visibility=["chat"] + blind → render_chat_blocks fires and
+    handle_proactive_complete is NOT called. The chat_blocks frame opens no
+    assistant turn, so there is none to close; the codex P2 regression this
+    used to guard (gemini_response bubble left "in-progress") can no longer
+    happen on this path.
     """
     from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.handle_proactive_complete = AsyncMock()
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
@@ -750,16 +832,18 @@ async def test_chat_blind_passthrough_emits_turn_end_via_proactive_complete(monk
 
     await main_server._handle_agent_event(event)
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
-    fake_mgr.handle_proactive_complete.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
+    # No turn-end: a system message never opened an assistant turn. The old
+    # passthrough did, which is why this used to expect exactly one.
+    fake_mgr.handle_proactive_complete.assert_not_awaited()
 
 
 @pytest.mark.unit
-async def test_chat_and_hud_blind_emits_turn_end_exactly_once(monkeypatch):
-    """visibility=["chat","hud"] + blind → BOTH chat passthrough AND HUD
-    fire (per the existing visibility contract), but turn-end must be
-    emitted EXACTLY ONCE. The HUD branch doesn't open an assistant turn,
-    so a single emit gated on the chat passthrough is correct.
+async def test_chat_and_hud_blind_emits_no_turn_end(monkeypatch):
+    """visibility=["chat","hud"] + blind → BOTH the chat render AND the HUD
+    fire (per the existing visibility contract), and neither emits a
+    turn-end: a system chat bubble opens no assistant turn, and the HUD
+    never did.
     """
     from app import main_server
 
@@ -769,9 +853,11 @@ async def test_chat_and_hud_blind_emits_turn_end_exactly_once(monkeypatch):
 
     await main_server._handle_agent_event(_hud_event(["chat", "hud"]))
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     assert _hud_send_count(fake_mgr) == 1
-    fake_mgr.handle_proactive_complete.assert_awaited_once()
+    # HUD is unchanged; the chat half is a system bubble now, and a system
+    # bubble opens no assistant turn to close.
+    fake_mgr.handle_proactive_complete.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -832,6 +918,7 @@ async def test_chat_blind_passthrough_noop_skips_turn_end(monkeypatch):
     # helper returns normally but reports False to indicate nothing was
     # sent.
     fake_mgr.passthrough_to_chat_bubble = AsyncMock(return_value=False)
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.handle_proactive_complete = AsyncMock()
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
@@ -843,7 +930,7 @@ async def test_chat_blind_passthrough_noop_skips_turn_end(monkeypatch):
 
     await main_server._handle_agent_event(_blind_chat_event("task-blind-noop"))
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     fake_mgr.handle_proactive_complete.assert_not_called()
 
 
@@ -858,7 +945,9 @@ async def test_chat_blind_passthrough_unexpected_raise_skips_turn_end(monkeypatc
     from app import main_server
 
     fake_mgr = MagicMock()
-    fake_mgr.passthrough_to_chat_bubble = AsyncMock(side_effect=RuntimeError("ws boom"))
+    fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    # The system renderer is what runs now, so it is what must raise.
+    fake_mgr.render_chat_blocks = AsyncMock(side_effect=RuntimeError("ws boom"))
     fake_mgr.handle_proactive_complete = AsyncMock()
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
@@ -870,13 +959,13 @@ async def test_chat_blind_passthrough_unexpected_raise_skips_turn_end(monkeypatc
 
     await main_server._handle_agent_event(_blind_chat_event("task-blind-raise"))
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    fake_mgr.render_chat_blocks.assert_awaited_once()
     fake_mgr.handle_proactive_complete.assert_not_called()
 
 
 @pytest.mark.unit
-async def test_chat_blind_passthrough_real_helper_swallowed_send_skips_turn_end(monkeypatch):
-    """Lower-level integration: drive the REAL ``passthrough_to_chat_bubble``
+async def test_chat_blind_render_real_helper_swallowed_send_skips_turn_end(monkeypatch):
+    """Lower-level integration: drive the REAL ``render_chat_blocks``
     against a websocket whose ``send_json`` raises. The helper must
     swallow the exception, return False, and ``main_server`` must NOT
     call ``handle_proactive_complete``.

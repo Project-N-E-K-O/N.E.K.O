@@ -189,6 +189,7 @@ export const chatWindowPropsSchema = z.object({
   title: z.string().optional(),
   iconSrc: z.string().optional(),
   messages: z.array(chatMessageSchema).optional(),
+  userName: z.string().trim().min(1).optional(),
   assistantName: z.string().trim().min(1).optional(),
   inputPlaceholder: z.string().optional(),
   sendButtonLabel: z.string().optional(),
@@ -257,7 +258,12 @@ export const chatWindowPropsSchema = z.object({
     .optional(),
   onComposerScreenshot: z.function()
     .args()
-    .returns(z.void())
+    // 宿主的 handleComposerScreenshot 结尾是 return handled（布尔）——PC 主进程按 F4 时
+    // 走 resize-drag-and-api.js 暴露的 triggerComposerScreenshot 读这个返回值，决定要不要
+    // 回落到旧的 Pet 截图路径，所以返回值不能去掉。声明成 z.void() 会让 zod 的校验壳在
+    // 宿主函数跑完之后抛 invalid_return_type，从聊天面板每点一次截图就往 window 抛一个
+    // 未捕获错误（debug-health.js 的全局 error 计数会跟着涨）。
+    .returns(z.unknown())
     .optional(),
   onComposerRemoveAttachment: z.function()
     .args(z.string())

@@ -281,6 +281,7 @@ class _GeminiMixin:
             return
         if self._fatal_error_occurred:
             return
+        self.note_user_turn_started()
         if self._is_gemini:
             if not self._gemini_session:
                 return
@@ -316,8 +317,15 @@ class _GeminiMixin:
         )
         await ticket.sent
 
-    async def _gemini_send_user_turn(self, text: str) -> None:
-        """Inject ``text`` as a Gemini user turn and trigger a response via
+    async def _gemini_send_user_turn(
+        self,
+        text: str,
+        *,
+        images_bytes: tuple[bytes, ...] = (),
+        image_mime_type: str = "image/jpeg",
+        starts_user_turn: bool = True,
+    ) -> None:
+        """Inject one Gemini user turn and trigger a response via
         ``send_client_content(turn_complete=True)``.
 
         This is Gemini Live's idiomatic equivalent of OpenAI-Realtime's
@@ -327,10 +335,25 @@ class _GeminiMixin:
         errors so the caller can re-queue). Errors propagate here; callers
         that need to swallow wrap it.
         """
+        # Proactive plugin notifications use a provider ``role=user`` message
+        # as a transport detail, but they do not replace the real user's turn.
+        # Keep that distinction explicit so a notification cannot cancel a
+        # still-running tool call owned by the current user turn.
+        if starts_user_turn:
+            self.note_user_turn_started()
         from google.genai import types as genai_types
 
+        parts = []
+        for image_bytes in images_bytes:
+            parts.append(
+                genai_types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=image_mime_type,
+                )
+            )
+        parts.append(genai_types.Part(text=text))
         content = genai_types.Content(
-            parts=[genai_types.Part(text=text)],
+            parts=parts,
             role="user",
         )
         self._active_tool_image_chain_id = None
@@ -344,7 +367,13 @@ class _GeminiMixin:
             turn_complete=True,
         )
 
-    async def _create_response_gemini(self, instructions: str, *, raise_on_error: bool = False) -> None:
+    async def _create_response_gemini(
+        self,
+        instructions: str,
+        *,
+        raise_on_error: bool = False,
+        starts_user_turn: bool = True,
+    ) -> None:
         """Send text content to Gemini and trigger response."""
         if not self._gemini_session:
             logger.warning("Gemini session not available for create_response")
@@ -358,7 +387,10 @@ class _GeminiMixin:
             return
 
         try:
-            await self._gemini_send_user_turn(instructions)
+            await self._gemini_send_user_turn(
+                instructions,
+                starts_user_turn=starts_user_turn,
+            )
             logger.info("Gemini: sent client content, waiting for response")
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
@@ -371,25 +403,43 @@ class _GeminiMixin:
         *,
         skipped: bool = False,
         raise_on_error: bool = False,
+        starts_user_turn: bool = True,
     ) -> None:
         """Set Gemini skip state only for a successfully-started skipped turn."""
         if not skipped:
-            await self._create_response_gemini(instructions, raise_on_error=raise_on_error)
+            await self._create_response_gemini(
+                instructions,
+                raise_on_error=raise_on_error,
+                starts_user_turn=starts_user_turn,
+            )
             return
 
         previous_skip = self._skip_until_next_response
         self._skip_until_next_response = True
         try:
-            await self._create_response_gemini(instructions, raise_on_error=raise_on_error)
+            await self._create_response_gemini(
+                instructions,
+                raise_on_error=raise_on_error,
+                starts_user_turn=starts_user_turn,
+            )
         except Exception:
             self._skip_until_next_response = previous_skip
             raise
 
-    async def _send_tool_result_gemini(self, results: List[ToolResult]) -> None:
+    async def _send_tool_result_gemini(
+        self,
+        results: List[ToolResult],
+        *,
+        provider_session=None,
+        owner=None,
+    ) -> None:
         """Gemini Live SDK — batch all tool results into one
         ``send_tool_response`` call (matches the SDK's expectation when
         the model issues multiple parallel function calls)."""
-        if not self._gemini_session or not results:
+        session = provider_session if provider_session is not None else self._gemini_session
+        if not session or not results:
+            return
+        if owner is not None and not self._tool_task_owner_is_current(owner):
             return
         if types is None:  # SDK unavailable — should never hit here
             return
@@ -401,7 +451,7 @@ class _GeminiMixin:
                 kw["id"] = r.call_id
             function_responses.append(types.FunctionResponse(**kw))
         try:
-            await self._gemini_session.send_tool_response(function_responses=function_responses)
+            await session.send_tool_response(function_responses=function_responses)
         except Exception as e:
             logger.error("Gemini send_tool_response failed: %s", e)
 
@@ -417,18 +467,125 @@ class _GeminiMixin:
         genuinely be cancelled: besides ``close()``, the Gemini proactive
         quarantine in ``_responses.py`` calls this from a fired task.
         """
-        if not self._gemini_context_manager:
+        if (
+            not self._gemini_context_manager
+            and getattr(self, "_gemini_proactive_submit_task", None) is None
+            and getattr(self, "_gemini_external_submit_task", None) is None
+        ):
             return
         await self._own_teardown("_gemini_close_task", self._detach_for_gemini_close)
 
     def _detach_for_gemini_close(self):
         """Seize the context to exit, synchronously (see ``_own_teardown``)."""
 
-        return self._close_gemini_impl(
-            self._gemini_context_manager, self._gemini_session
+        tool_tasks = self._advance_tool_scope()
+        return self._close_gemini_context(
+            self._gemini_context_manager,
+            self._gemini_session,
+            tool_tasks,
+            proactive_submit_task=getattr(
+                self, "_gemini_proactive_submit_task", None
+            ),
+            external_submit_task=getattr(
+                self, "_gemini_external_submit_task", None
+            ),
         )
 
-    async def _close_gemini_impl(self, context, session) -> None:
+    async def _cancel_gemini_submit_tasks(
+        self,
+        proactive_submit_task=None,
+        external_submit_task=None,
+    ) -> None:
+        """Cancel and join the SDK sends a closing Gemini session still owns."""
+
+        await self._cancel_gemini_proactive_submit(
+            session_closing=True,
+            submit_task=proactive_submit_task,
+        )
+        if (
+            external_submit_task is not None
+            and external_submit_task is not asyncio.current_task()
+            and not external_submit_task.done()
+        ):
+            external_submit_task.cancel()
+            await asyncio.gather(external_submit_task, return_exceptions=True)
+
+    async def _close_gemini_context(
+        self,
+        context,
+        session,
+        tool_tasks=(),
+        *,
+        proactive_submit_task=None,
+        external_submit_task=None,
+    ) -> None:
+        """Exit one Gemini context exactly once, even across replacements."""
+
+        if context is None:
+            await self._cancel_gemini_submit_tasks(
+                proactive_submit_task, external_submit_task
+            )
+            await self._await_retired_tool_tasks(tool_tasks)
+            return
+        registry = self._gemini_context_close_tasks
+        key = id(context)
+        existing = registry.get(key)
+        if existing is not None and existing[0] is context:
+            close_task = existing[1]
+            # The context is already being exited by an earlier caller, but the
+            # submit tasks WE seized are ours to cancel either way -- cancelling
+            # an already-finished one is a no-op.
+            await self._cancel_gemini_submit_tasks(
+                proactive_submit_task, external_submit_task
+            )
+            await self._await_retired_tool_tasks(tool_tasks)
+        else:
+            close_task = asyncio.create_task(
+                self._close_gemini_impl(
+                    context,
+                    session,
+                    tool_tasks,
+                    proactive_submit_task=proactive_submit_task,
+                    external_submit_task=external_submit_task,
+                )
+            )
+            registry[key] = (context, close_task)
+
+            def _forget_finished_context(done_task) -> None:
+                current = registry.get(key)
+                if (
+                    current is not None
+                    and current[0] is context
+                    and current[1] is done_task
+                ):
+                    registry.pop(key, None)
+
+            close_task.add_done_callback(_forget_finished_context)
+        try:
+            await asyncio.shield(close_task)
+        finally:
+            current = registry.get(key)
+            if (
+                close_task.done()
+                and current is not None
+                and current[0] is context
+                and current[1] is close_task
+            ):
+                registry.pop(key, None)
+
+    async def _close_gemini_impl(
+        self,
+        context,
+        session,
+        tool_tasks=(),
+        *,
+        proactive_submit_task=None,
+        external_submit_task=None,
+    ) -> None:
+        await self._cancel_gemini_submit_tasks(
+            proactive_submit_task, external_submit_task
+        )
+        await self._await_retired_tool_tasks(tool_tasks)
         if context is None:
             return
         try:
@@ -474,17 +631,30 @@ class _GeminiMixin:
 
     async def _handle_messages_gemini(self) -> None:
         """Handle messages from Gemini Live API."""
-        if not self._gemini_session:
+        provider_session = self._gemini_session
+        if not provider_session:
             logger.error("Gemini session not established")
             return
-
+        connection_generation = self._connection_generation
         try:
             while not self._fatal_error_occurred:
+                if (
+                    connection_generation != self._connection_generation
+                    or provider_session is not self._gemini_session
+                ):
+                    logger.info(
+                        "Gemini receive loop retired after a replacement connection attached"
+                    )
+                    return
                 try:
                     # 接收响应流
-                    turn = self._gemini_session.receive()
+                    turn = provider_session.receive()
                     async for response in turn:
-                        await self._process_gemini_response(response)
+                        await self._process_gemini_response(
+                            response,
+                            provider_session=provider_session,
+                            connection_generation=connection_generation,
+                        )
                     # receive() 是 session 级 async generator，仅在连接断开时退出；
                     # 正常会话期间此行不会执行。缺失 turn_complete 的兜底已移至
                     # _process_gemini_response 中基于 model_turn 时间间隔的检测。
@@ -500,18 +670,54 @@ class _GeminiMixin:
                         break
                     else:
                         logger.error(f"Error receiving Gemini response: {e}")
-                        if self.on_connection_error:
+                        if (
+                            connection_generation == self._connection_generation
+                            and provider_session is self._gemini_session
+                            and self.on_connection_error
+                        ):
                             await self.on_connection_error(error_msg)
                         break
         except Exception as e:
             logger.error(f"Gemini message handler error: {e}")
         finally:
-            self._settle_gemini_proactive_inject(
-                error_msg="Gemini realtime message loop ended"
-            )
+            outcome_owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+            if (
+                outcome_owner is not None
+                and outcome_owner[0] == connection_generation
+                and outcome_owner[1] is provider_session
+            ):
+                self._settle_gemini_proactive_inject(
+                    error_msg="Gemini realtime message loop ended",
+                    expected_connection_generation=connection_generation,
+                    expected_provider_session=provider_session,
+                    expected_outcome_token=outcome_owner[2],
+                )
+            if self._still_owns_connection(connection_generation):
+                outcome_token = getattr(
+                    self,
+                    "_gemini_external_outcome_token",
+                    None,
+                )
+                if outcome_token is not None:
+                    self._settle_gemini_external_turn(outcome_token)
 
-    async def _process_gemini_response(self, response) -> None:
+    async def _process_gemini_response(
+        self,
+        response,
+        *,
+        provider_session=None,
+        connection_generation: int | None = None,
+    ) -> None:
         """Process a single Gemini response event."""
+        if connection_generation is None:
+            connection_generation = self._connection_generation
+        if not self._still_owns_connection(connection_generation):
+            return
+        external_outcome_token = getattr(
+            self,
+            "_gemini_external_outcome_token",
+            None,
+        )
         try:
             server_content = getattr(response, 'server_content', None)
             has_ai_content = False
@@ -553,55 +759,98 @@ class _GeminiMixin:
             # 处理工具调用 —— 将 function_calls 中每一个调用都派给
             # ``on_tool_call``，结果通过 ``send_tool_response`` 一次性回写
             # （Gemini Live 期望批量回应，而不是逐个）。
+            session = provider_session if provider_session is not None else self._gemini_session
+            def event_owner_is_current() -> bool:
+                return bool(
+                    provider_session is None
+                    or (
+                        session is self._gemini_session
+                        and connection_generation == self._connection_generation
+                    )
+                )
+
+            def settle_event_outcome(error_msg=None) -> None:
+                if provider_session is None:
+                    self._settle_gemini_proactive_inject(error_msg=error_msg)
+                    return
+                owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+                if (
+                    owner is not None
+                    and owner[0] == connection_generation
+                    and owner[1] is session
+                ):
+                    owner_scope = owner[4] if len(owner) > 4 else None
+                    if (
+                        owner_scope is not None
+                        and owner_scope
+                        != getattr(self, "_tool_scope_generation", 0)
+                    ):
+                        # This terminal belongs to the USER's turn, not to the
+                        # proactive inject: the connection and the session both
+                        # survive a new user turn, so only the scope tells them
+                        # apart. Settling it as a COMPLETION would report the
+                        # notification delivered on the strength of a response
+                        # that was abandoned, and the caller drops the callback
+                        # instead of re-queueing it. Force a rejection so it
+                        # goes back in the queue for the live turn.
+                        error_msg = error_msg or (
+                            "Gemini proactive response was abandoned by a new "
+                            "user turn"
+                        )
+                    self._settle_gemini_proactive_inject(
+                        error_msg=error_msg,
+                        expected_connection_generation=connection_generation,
+                        expected_provider_session=session,
+                        expected_outcome_token=owner[2],
+                    )
+
+            if not event_owner_is_current():
+                return
             if hasattr(response, 'tool_call') and response.tool_call:
                 fcs = list(getattr(response.tool_call, 'function_calls', []) or [])
                 if fcs:
+                    # A user turn that landed after the last chain started a
+                    # new logical tool chain, so the per-turn image budget
+                    # must restart with it.
+                    user_activity_time = self._user_recent_activity_time
+                    if user_activity_time > getattr(
+                        self,
+                        "_tool_image_chain_user_activity_time",
+                        0.0,
+                    ):
+                        self._active_tool_image_chain_id = None
+                        self._tool_image_chain_user_activity_time = (
+                            user_activity_time
+                        )
+                    tool_chain_id = self._ensure_tool_image_chain_id()
+                    calls = []
+                    for fc in fcs:
+                        args = dict(getattr(fc, 'args', None) or {})
+                        calls.append(ToolCall(
+                            name=getattr(fc, 'name', '') or '',
+                            arguments=args,
+                            call_id=getattr(fc, 'id', '') or '',
+                            raw_arguments=json.dumps(args, ensure_ascii=False),
+                            provider_meta={"tool_chain_id": tool_chain_id},
+                        ))
                     if self.on_tool_call is None:
                         logger.warning(
                             "Gemini tool_call received but no on_tool_call handler — replying with error"
                         )
-                        results = [
-                            ToolResult(
-                                call_id=getattr(fc, 'id', '') or '',
-                                name=getattr(fc, 'name', '') or '',
-                                output={"error": "no on_tool_call handler"},
-                                is_error=True, error_message="no on_tool_call handler",
-                            )
-                            for fc in fcs
-                        ]
-                    else:
-                        results = []
-                        user_activity_time = self._user_recent_activity_time
-                        if user_activity_time > getattr(
-                            self,
-                            "_tool_image_chain_user_activity_time",
-                            0.0,
-                        ):
-                            self._active_tool_image_chain_id = None
-                            self._tool_image_chain_user_activity_time = (
-                                user_activity_time
-                            )
-                        tool_chain_id = self._ensure_tool_image_chain_id()
-                        for fc in fcs:
-                            args = dict(getattr(fc, 'args', None) or {})
-                            call = ToolCall(
-                                name=getattr(fc, 'name', '') or '',
-                                arguments=args,
-                                call_id=getattr(fc, 'id', '') or '',
-                                raw_arguments=json.dumps(args, ensure_ascii=False),
-                                provider_meta={"tool_chain_id": tool_chain_id},
-                            )
-                            results.append(await self._execute_tool_call(call))
-                    # Fire-and-forget — let the message loop continue. The
-                    # SDK's ``send_tool_response`` is the only way to feed
-                    # results back to a Live session.
-                    self._fire_task(self._send_tool_result_gemini(results))
-                # Tool call cancellation (if present in this SDK build) is
-                # surfaced as ``response.tool_call_cancellation`` — currently
-                # not actioned because we run tools fire-and-forget; if a
-                # cancellation arrives mid-flight the result we eventually
-                # send back will be ignored by the model. Acceptable for
-                # now; revisit if cancel-rate becomes a problem.
+                    owner = self._capture_tool_task_owner(
+                        session,
+                        connection_generation=connection_generation,
+                    )
+                    self._start_gemini_tool_batch(calls, owner)
+
+            cancellation = getattr(response, 'tool_call_cancellation', None)
+            if cancellation:
+                self._cancel_tool_call_ids(list(getattr(cancellation, 'ids', None) or []))
+
+            vad_signal = getattr(response, 'voice_activity_detection_signal', None)
+            vad_signal_type = getattr(vad_signal, 'vad_signal_type', None)
+            if vad_signal_type is not None and str(getattr(vad_signal_type, 'value', vad_signal_type)).endswith("_SOS"):
+                self.note_user_turn_started()
 
             # 检查是否有服务器内容
             if server_content:
@@ -649,6 +898,11 @@ class _GeminiMixin:
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch
                     self._current_turn_host_id = self._read_host_turn_id()
+                    if _is_new_turn:
+                        # 新回合开始就说明旧回合已经收场：欠账作废，免得旧回合
+                        # 永不终结时把下一条**合法**终结也吃掉，让 token 永远结算
+                        # 不掉、会话被钉成「忙」而主动搭话彻底哑掉。
+                        self._gemini_cancelled_terminal_pending = False
                     if _is_new_turn and _can_clear_interrupted:
                         # Gemini has no response.created event; clear stale interrupt state only
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.
@@ -656,12 +910,21 @@ class _GeminiMixin:
                         # 在AI开始响应前，发送累积的用户输入
                         if self._gemini_user_transcript and self.on_input_transcript:
                             await self.on_input_transcript(self._gemini_user_transcript)
+                            if not event_owner_is_current():
+                                return
                             self._gemini_user_transcript = ""  # 清空累积
                         self._gemini_user_transcript_after_interrupt = False
                         self._is_first_text_chunk = True  # 重置第一个 chunk 标记
                         self._gemini_current_transcript = ""  # 清空累积
                         if not self._skip_until_next_response and not self._interrupted and self.on_new_message:
                             await self.on_new_message()
+                            if not event_owner_is_current():
+                                return
+                            # Core rotates the host speech id while opening the
+                            # new message. Gemini tool calls can arrive in a
+                            # later standalone event for this same provider
+                            # turn, so keep their ownership snapshot aligned.
+                            self._current_turn_host_id = self._read_host_turn_id()
                     else:
                         logger.debug(
                             "Gemini: late content after premature turn_complete/interruption (%.2fs ago), treating as continuation",
@@ -679,6 +942,8 @@ class _GeminiMixin:
                         if not self._skip_until_next_response and not self._interrupted and self.on_text_delta:
                             self._ai_recent_activity_time = time.time()
                             await self.on_text_delta(text, self._is_first_text_chunk)
+                            if not event_owner_is_current():
+                                return
                             self._is_first_text_chunk = False
 
                 # 处理模型输出 (音频)
@@ -694,10 +959,27 @@ class _GeminiMixin:
                                 if not self._skip_until_next_response and not self._interrupted and self.on_audio_delta:
                                     self._ai_recent_activity_time = time.time()
                                     await self.on_audio_delta(part.inline_data.data)
+                                    if not event_owner_is_current():
+                                        return
 
                 # 检查是否 turn 完成（用 getattr 防止 SDK 无该字段时抛错）
                 was_interrupted = bool(
                     getattr(server_content, 'interrupted', False)
+                )
+                # 一个 server event 可能**同时**带 turn_complete 和 interrupted，
+                # 下面两条终结分支都会跑。欠账是「每个**终结**事件一笔」：
+                #   - 不能每条分支各消费一次 —— 第一条拿到 True 跳过结算，第二条
+                #     拿到 False 就用旧那一轮的终结把新铸的 token 结算掉；
+                #   - 也不能每个事件都消费 —— 取消之后的**非终结**迟到内容会把欠账
+                #     提前清掉，随后旧回合真正的终结就把新 token 当成可结算对象。
+                # 所以：先判定这是不是终结事件，是才消费，且只消费一次。
+                _is_terminal_event = bool(
+                    getattr(server_content, 'turn_complete', False)
+                ) or was_interrupted
+                _owed_to_cancelled = (
+                    self._consume_cancelled_terminal()
+                    if _is_terminal_event
+                    else False
                 )
                 # ⚠️ 这里刻意【不】触发 on_audio_done（issue #1566 的音频完结信号，
                 # 见 _transport.py 的 response.audio.done 分支）。Gemini（原生 +
@@ -721,17 +1003,35 @@ class _GeminiMixin:
                     except Exception:
                         pass
                     self._is_responding = False
+                    if (
+                        not _owed_to_cancelled
+                        and external_outcome_token is not None
+                        and self._still_owns_connection(connection_generation)
+                    ):
+                        self._settle_gemini_external_turn(
+                            external_outcome_token
+                        )
                     if not was_interrupted:
-                        self._settle_gemini_proactive_inject()
+                        settle_event_outcome()
                     if self._skip_until_next_response:
                         self._skip_until_next_response = False
                         logger.info("Gemini: skipped response (prime_context priming)")
                     elif self.on_response_done:
                         await self.on_response_done()
+                        if not event_owner_is_current():
+                            return
 
                 # 检查是否被中断
                 if was_interrupted:
-                    self._settle_gemini_proactive_inject(
+                    if (
+                        not _owed_to_cancelled
+                        and external_outcome_token is not None
+                        and self._still_owns_connection(connection_generation)
+                    ):
+                        self._settle_gemini_external_turn(
+                            external_outcome_token
+                        )
+                    settle_event_outcome(
                         error_msg="Gemini proactive response interrupted"
                     )
                     if self._skip_until_next_response:
@@ -744,6 +1044,8 @@ class _GeminiMixin:
                         self._gemini_user_transcript_after_interrupt = True
                         if self.on_input_transcript:
                             await self.on_input_transcript(self._gemini_user_transcript)
+                            if not event_owner_is_current():
+                                return
                         self._gemini_user_transcript = ""
                     logger.info("Gemini response was interrupted by user")
 

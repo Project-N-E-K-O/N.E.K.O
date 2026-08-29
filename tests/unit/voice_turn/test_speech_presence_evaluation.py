@@ -562,6 +562,28 @@ def test_calibration_holdout_keeps_source_variants_together() -> None:
     }
 
 
+def test_calibration_holdout_preserves_truthy_label_conversion() -> None:
+    clips = [
+        SimpleNamespace(
+            clip_id=f"compat/{label}/{index}",
+            label=label,
+            locale="en" if label else None,
+            scenario="speech" if label else "idle",
+            device_id=None,
+        )
+        for label in (0, 1)
+        for index in range(2)
+    ]
+
+    calibration, holdout = evaluation.split_calibration_holdout(
+        clips,
+        seed=2398,
+    )
+
+    assert {bool(clip.label) for clip in calibration} == {False, True}
+    assert {bool(clip.label) for clip in holdout} == {False, True}
+
+
 def test_calibration_holdout_rejects_singleton_only_strata_explicitly() -> None:
     clips = [
         SimpleNamespace(
@@ -595,6 +617,71 @@ def test_calibration_holdout_rejects_singleton_only_strata_explicitly() -> None:
     ]
 
     with pytest.raises(ValueError, match="singleton-only strata"):
+        evaluation.split_calibration_holdout(clips, seed=2398)
+
+
+@pytest.mark.parametrize(
+    "singleton_label, missing_class",
+    ((False, "negative"), (True, "speech")),
+)
+def test_calibration_holdout_rejects_a_split_missing_one_class(
+    singleton_label: bool,
+    missing_class: str,
+) -> None:
+    paired_label = not singleton_label
+    clips = [
+        SimpleNamespace(
+            clip_id=f"paired/{index:02d}",
+            label=paired_label,
+            locale="en" if paired_label else None,
+            scenario="speech" if paired_label else "idle",
+            device_id=None,
+        )
+        for index in range(2)
+    ]
+    clips.append(
+        SimpleNamespace(
+            clip_id="singleton/00",
+            label=singleton_label,
+            locale="en" if singleton_label else None,
+            scenario="speech" if singleton_label else "idle",
+            device_id=None,
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=rf"both splits; holdout missing {missing_class}",
+    ):
+        evaluation.split_calibration_holdout(clips, seed=2398)
+
+
+@pytest.mark.parametrize(
+    "label, missing_class",
+    ((True, "negative"), (False, "speech")),
+)
+def test_calibration_holdout_rejects_a_single_class_corpus(
+    label: bool,
+    missing_class: str,
+) -> None:
+    clips = [
+        SimpleNamespace(
+            clip_id=f"single-class/{index:02d}",
+            label=label,
+            locale="en" if label else None,
+            scenario="speech" if label else "idle",
+            device_id=None,
+        )
+        for index in range(2)
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            rf"both splits; calibration missing {missing_class}, "
+            rf"holdout missing {missing_class}"
+        ),
+    ):
         evaluation.split_calibration_holdout(clips, seed=2398)
 
 

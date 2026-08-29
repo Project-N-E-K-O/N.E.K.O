@@ -6,15 +6,24 @@ N.E.K.O. 将再次导入同一个可执行插件视为“升级”，不再生�
 
 ## 用户流程
 
-插件管理器在修改文件前必须先请求安装计划。计划只有三种动作：
+插件管理器在修改文件前必须先请求安装计划。计划有四种动作：
 
 | 动作 | 含义 | 用户看到的结果 |
 | --- | --- | --- |
 | `install` | 目标身份和目录均未被现有插件占用。 | 直接安装。 |
 | `upgrade` | 恰好有一个已安装插件与包内身份和目标目录匹配。 | 展示当前版本和目标版本，要求明确确认。 |
+| `override_builtin` | 单插件 Market 包可安全地以相同身份覆盖当前有效的内置来源。 | 展示内置版本与 Market 版本，要求明确确认。 |
 | `blocked` | 无法在不产生歧义或风险的情况下替换。 | 修改安装目录前停止。 |
 
 升级确认令牌由插件包内容、目标路径和当前 `plugin.toml` 共同生成。执行安装前，服务器会重新生成计划；确认后包文件或已安装目标发生变化时，令牌会失效，升级会被拒绝。
+
+## 代码、状态与有效来源
+
+用户插件代码安装在 `.neko-plugin-installations/plugins`，运行时状态仍保留在 `plugins/<plugin_id>/{config,data,cache}`。安装、升级、回滚和普通卸载均不得移动、复制、替换或删除状态目录。自定义执行根与状态根解析到同一路径，或任一根目录嵌套于另一根目录中时，系统均以 `PLUGIN_EXEC_STATE_ROOT_COLLISION` 保守拒绝写入。
+
+注册器按声明的插件 ID 只选择一个有效来源：用户安装优先，其次是内置来源。Market 覆盖只会遮蔽同 ID 内置插件，不会给任一来源改名。卸载 Market 版本时只删除用户代码和 package profile，随后刷新注册表，使内置版本重新成为有效来源。
+
+启动注册前，旧布局中的用户插件代码会经校验 staging 复制到新执行根；旧目录保持不变，原子迁移 ledger 会防止已卸载的迁移插件在后续启动时从旧目录复活。
 
 ## 升级事务
 
@@ -34,6 +43,8 @@ N.E.K.O. 将再次导入同一个可执行插件视为“升级”，不再生�
 ## 失败与回滚
 
 备份、安装、校验、profile 保留或重启阶段失败时，事务会按相反顺序恢复所有目标。升级前正在运行的插件会尽量从恢复后的旧版本重新启动。
+
+内置来源切换使用独立事务：重新核对计划后提升用户代码与 package profile、记录 Market 来源、刷新注册表，再按原运行状态启动 Market 版本。失败时只删除本次事务创建的产物，恢复 lock 快照、内置有效来源和原运行状态；运行时状态从不作为回滚目标。
 
 API 将升级失败与回滚状态分开报告：
 
@@ -55,6 +66,11 @@ API 将升级失败与回滚状态分开报告：
 - 同一个插件 ID 出现在多个目录；
 - 单插件包没有且仅有一个插件；
 - 可执行目录名、package ID 或自定义根目录逃逸允许范围。
+- `override_identity_mismatch`：package ID、插件 ID、包内目录或内置目录不完全一致；
+- `override_previous_ids_not_supported`：内置覆盖包声明了 `[plugin].previous_ids`；
+- `override_entry_missing`：包内不存在 manifest 声明的入口模块；
+- `override_builtin_identity_mismatch`：内置 manifest ID 与规范 ID 不一致；
+- `multiple_builtin_sources`：多个内置目录声明了同一个插件 ID。
 
 存在冲突的 bundle 不进行整组事务升级，应使用单插件包逐个升级。
 
@@ -91,6 +107,8 @@ previous_ids = ["old_plugin_id"] # 可选的旧身份冲突保护
 | 安装编排与路径策略 | `plugin/server/application/plugin_cli/service.py` |
 | HTTP 请求与响应模型 | `plugin/server/routes/plugin_cli.py` |
 | 插件管理器确认流程与结果提示 | `frontend/plugin-manager/src/composables/usePackageManager.ts` |
+| 旧布局迁移 | `plugin/server/application/plugins/layout_migration.py` |
+| 内置来源切换与回滚 | `plugin/server/application/plugins/source_switch.py` |
 
 ## 验证要求
 

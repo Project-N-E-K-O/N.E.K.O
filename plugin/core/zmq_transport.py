@@ -1,15 +1,23 @@
 """ZeroMQ transport for plugin host ↔ child process communication.
 
-Replaces ``multiprocessing.Queue`` with three authenticated ZMQ channels:
+Replaces ``multiprocessing.Queue`` with four authenticated ZMQ channels:
 
 * **Downlink** (host → child): commands, plugin-to-plugin responses
 * **Control uplink** (child → host): results, status, plugin-to-plugin requests
 * **Message uplink** (child → host): individual and batched plugin messages
+* **Image uplink** (child → host): bounded raw image uploads
 
 Downlink messages are serialised with :mod:`pickle` for compatibility with
 existing host commands. Uplink messages, which cross from untrusted plugin code
 into the host, use MessagePack so decoding cannot execute plugin-controlled
 objects. Both directions carry a *channel tag* so the receiver can demux.
+
+The image uplink keeps its own framing — JSON metadata plus a separate raw
+bytes frame — because re-packing megabytes through MessagePack would buy
+nothing. It is authenticated the same way as the other uplinks: CURVE on the
+socket, plus the shared uplink token inside the metadata frame. Every
+child → host socket is authenticated; none may be left open to any local
+process that can guess the port.
 
 Channel tags
 ~~~~~~~~~~~~
@@ -23,7 +31,9 @@ Channel tags
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import pickle
 import queue
 import secrets
@@ -126,9 +136,42 @@ def _decode_uplink(raw: bytes, *, expected_token: str) -> Tuple[str, dict]:
     return channel, payload
 
 
+_IMAGE_HWM = 8
+_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+_IMAGE_AUTH_KEY = "_auth"
+
+
+def _authenticate_image_metadata(
+    metadata: dict,
+    *,
+    expected_token: str,
+) -> dict:
+    """Strip and verify the uplink token carried by an image metadata frame.
+
+    The image uplink does not go through ``_decode_uplink`` — re-packing
+    megabytes of pixels through MessagePack would buy nothing — so the same
+    credential check lives here instead. Without it this socket would be the
+    one child → host path any local process could write to.
+    """
+    supplied_token = metadata.pop(_IMAGE_AUTH_KEY, None)
+    if (
+        not isinstance(supplied_token, str)
+        or not expected_token
+        or not secrets.compare_digest(
+            supplied_token.encode("utf-8"),
+            expected_token.encode("utf-8"),
+        )
+    ):
+        raise ValueError("invalid image uplink credential")
+    return metadata
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Host-side transport (runs in the user_plugin_server process)
 # ═══════════════════════════════════════════════════════════════════
+
+_IMG_LOCK_SHUTDOWN_WAIT_S = 2.0
+
 
 class HostTransport:
     """Async ZMQ transport for the host (main-process) side.
@@ -194,6 +237,21 @@ class HostTransport:
             zmq.LAST_ENDPOINT
         ).decode()
 
+        # Bulk image uplink: isolated from status/result/control traffic so a
+        # full media queue cannot head-of-line block the plugin control plane.
+        # Same CURVE identity as every other uplink — a bulk channel is still
+        # a channel into the host.
+        self._img_sock = self._ctx.socket(zmq.PULL)
+        self._img_sock.curve_publickey = server_public_key
+        self._img_sock.curve_secretkey = server_secret_key
+        self._img_sock.curve_server = True
+        self._img_sock.zap_domain = _CURVE_DOMAIN
+        self._img_sock.setsockopt(zmq.LINGER, 0)
+        self._img_sock.setsockopt(zmq.RCVHWM, _IMAGE_HWM)
+        self._img_sock.setsockopt(zmq.MAXMSGSIZE, _IMAGE_MAX_BYTES)
+        self._img_sock.bind("tcp://127.0.0.1:*")
+        self.image_uplink_endpoint: str = self._img_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
+
         self._closed = False
 
     @property
@@ -243,13 +301,39 @@ class HostTransport:
             return channel, payload
         return None
 
+    async def recv_image(self, timeout_ms: int = 1000) -> Optional[Tuple[dict, bytes]]:
+        """Receive one metadata/raw-bytes upload from the isolated media socket."""
+        if await self._img_sock.poll(timeout=timeout_ms):
+            frames = await self._img_sock.recv_multipart()
+            if len(frames) != 2:
+                raise ValueError("image upload must contain metadata and data frames")
+            try:
+                metadata = json.loads(frames[0].decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("image upload metadata must be valid JSON") from exc
+            if not isinstance(metadata, dict):
+                raise TypeError("image upload metadata must be a dict")
+            if not all(isinstance(key, str) for key in metadata):
+                raise TypeError("image upload metadata keys must be strings")
+            metadata = _authenticate_image_metadata(
+                metadata,
+                expected_token=self._uplink_token,
+            )
+            return metadata, bytes(frames[1])
+        return None
+
     # ── lifecycle ────────────────────────────────────────────────
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        for sock in (self._dl_sock, self._ul_sock, self._msg_sock):
+        for sock in (
+            self._dl_sock,
+            self._ul_sock,
+            self._msg_sock,
+            self._img_sock,
+        ):
             try:
                 sock.close(linger=0)
             except Exception:
@@ -286,6 +370,7 @@ class ChildTransport:
         *,
         downlink_curve: tuple[bytes, bytes, bytes] | None = None,
         message_uplink_endpoint: str | None = None,
+        image_uplink_endpoint: str | None = None,
     ) -> None:
         if downlink_curve is None or len(downlink_curve) != 3:
             raise ValueError("Plugin child process requires CURVE credentials")
@@ -326,6 +411,17 @@ class ChildTransport:
         self._dl_sock.setsockopt(zmq.LINGER, 0)
         self._dl_sock.connect(downlink_endpoint)
 
+        self._img_sock: Any | None = None
+        self._img_lock = threading.Lock()
+        if image_uplink_endpoint:
+            self._img_sock = self._sync_ctx.socket(zmq.PUSH)
+            self._img_sock.curve_serverkey = server_public_key
+            self._img_sock.curve_publickey = client_public_key
+            self._img_sock.curve_secretkey = client_secret_key
+            self._img_sock.setsockopt(zmq.LINGER, 0)
+            self._img_sock.setsockopt(zmq.SNDHWM, _IMAGE_HWM)
+            self._img_sock.connect(image_uplink_endpoint)
+
         self._downlink_endpoint = downlink_endpoint
         self._uplink_endpoint = uplink_endpoint
         self._message_uplink_endpoint = message_uplink_endpoint or uplink_endpoint
@@ -344,6 +440,79 @@ class ChildTransport:
             raw = await self._dl_sock.recv()
             return pickle.loads(raw)  # type: ignore[return-value]
         return None
+
+    async def send_image(
+        self,
+        request_id: str,
+        *,
+        mime: str,
+        data: bytes,
+        timeout: float,
+    ) -> None:
+        """Send raw image bytes without using the shared control uplink."""
+        if self._img_sock is None:
+            raise RuntimeError("image transport is not configured")
+        payload = bytes(data)
+        if len(payload) > _IMAGE_MAX_BYTES:
+            raise ValueError(
+                f"image payload exceeds the {_IMAGE_MAX_BYTES} byte transport limit"
+            )
+        metadata = json.dumps(
+            {
+                "type": "IMAGE_UPLOAD",
+                "request_id": str(request_id),
+                "mime": str(mime),
+                # Same credential the MessagePack uplinks carry, in the frame
+                # the host already parses. CURVE alone would be enough against
+                # an unrelated local process, but this keeps one answer to
+                # "who is allowed to write into the host" across all uplinks.
+                _IMAGE_AUTH_KEY: self._uplink_token,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        await asyncio.to_thread(
+            self._send_image_sync,
+            metadata,
+            payload,
+            timeout,
+        )
+
+    def _send_image_sync(
+        self,
+        metadata: bytes,
+        payload: bytes,
+        timeout: float,
+    ) -> None:
+        """Bound one image send while serialising access across plugin threads."""
+        if timeout <= 0:
+            raise ValueError("image transport timeout must be positive")
+        started_at = time.monotonic()
+        if not self._img_lock.acquire(timeout=timeout):
+            raise TimeoutError(f"image transport send timed out after {timeout}s")
+        try:
+            if self._closed or self._img_sock is None:
+                raise RuntimeError("image transport is closed")
+            remaining = timeout - (time.monotonic() - started_at)
+            if remaining <= 0 or not self._img_sock.poll(
+                timeout=max(1, int(remaining * 1000)),
+                flags=zmq.POLLOUT,
+            ):
+                raise TimeoutError(f"image transport send timed out after {timeout}s")
+            try:
+                self._img_sock.send_multipart([metadata, payload], flags=zmq.NOBLOCK)
+            except zmq.Again:
+                raise TimeoutError(
+                    f"image transport send timed out after {timeout}s"
+                ) from None
+        finally:
+            # If a shutdown started while this send held the lock, the sender
+            # is the last thread that will touch the socket, so the sender
+            # closes it. libzmq sockets are not thread safe: closing one from
+            # another thread while a send or poll is in progress is undefined
+            # behaviour, not merely impolite (CodeRabbit).
+            if self._closed:
+                self._close_img_sock_locked()
+            self._img_lock.release()
 
     # ── uplink (thread-safe, any thread) ─────────────────────────
 
@@ -408,6 +577,14 @@ class ChildTransport:
 
     # ── lifecycle ────────────────────────────────────────────────
 
+    def _close_img_sock_locked(self) -> None:
+        """Close the media socket. Callers decide whether they hold _img_lock."""
+        if self._img_sock is not None:
+            try:
+                self._img_sock.close(linger=0)
+            except Exception:
+                pass
+
     def close(self) -> None:
         with self._message_batcher_init_lock:
             if self._closed:
@@ -428,6 +605,38 @@ class ChildTransport:
                 sock.close(linger=0)
             except Exception:
                 pass
+        # Bounded, and deliberately not unconditional. A handler inside
+        # _send_image_sync holds this lock for its whole upload, so an
+        # unconditional acquire made shutdown wait on an in-flight upload
+        # (Codex P2). Closing the socket anyway is not the answer either:
+        # libzmq sockets are not thread safe, so closing one while a send is in
+        # progress is undefined behaviour -- a crash instead of a hang
+        # (CodeRabbit).
+        if self._img_lock.acquire(timeout=_IMG_LOCK_SHUTDOWN_WAIT_S):
+            try:
+                self._close_img_sock_locked()
+            finally:
+                self._img_lock.release()
+
+        # Both contexts terminate here, including the one that may still own
+        # an open media socket.
+        #
+        # This looks like it should block -- term() does wait for every socket
+        # in the context to close. It does not, because zmq_ctx_term first
+        # interrupts blocked calls in that context with ETERM and only then
+        # waits. The in-flight sender's poll/send raises ContextTerminated at
+        # once, its finally closes the media socket, and term returns.
+        # Measured on pyzmq 27.1.0 / libzmq 4.3.5: a poll(30_000) blocked on a
+        # full PUSH socket is interrupted in 0.000s and term returns
+        # immediately.
+        #
+        # An earlier revision deferred this termination to the sender, on the
+        # belief that terminating here would wait out the sender's full upload
+        # timeout. That belief was wrong, and the deferral was worse than the
+        # thing it avoided: the flag was written outside _img_lock and read
+        # inside it, so a sender that finished first read a stale False and
+        # nobody terminated the context -- and the designated hand-off thread
+        # is a daemon the process never joins.
         for ctx in (self._async_ctx, self._sync_ctx):
             try:
                 ctx.term()

@@ -1,0 +1,29 @@
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[search]
+# auto: AnySearch first. GeoIP CN -> zone=cn; known non-CN -> zone=intl.
+# If detection fails, AnySearch omits zone. On failure, CN/unknown falls back
+# to Baidu and known non-CN falls back to DuckDuckGo. Setting a concrete backend
+# forces that source without cross-engine fallback.
+backend = "auto"
+# Optional. Leave empty to use AnySearch anonymous access with lower limits.
+anysearch_api_key = ""
+max_results = 8
+timeout_seconds = 15
+total_timeout_seconds = 25
+cache_ttl_seconds = 120
+stale_ttl_seconds = 600
+cache_entries = 128
+min_interval_seconds = 0.75
+baidu_min_interval_seconds = 15
+duckduckgo_min_interval_seconds = 3
+cooldown_seconds = 60
+duckduckgo_cooldown_seconds = 300
+duckduckgo_max_cooldown_seconds = 3600
+queue_wait_seconds = 2
+retry_attempts = 2
+retry_base_delay_seconds = 0.5
+duckduckgo_retry_base_delay_seconds = 2
+duckduckgo_fallback_delay_seconds = 3

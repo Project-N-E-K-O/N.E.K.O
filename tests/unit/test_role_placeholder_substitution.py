@@ -10,8 +10,9 @@ same substitution helper:
    hot-swap rendering into ``prime_context``.
 3. ``app/main_server/character_runtime.py`` direct_reply — plugin text bypassing the LLM and
    going verbatim to TTS via ``send_lanlan_response``.
-4. ``app/main_server/character_runtime.py`` ``passthrough_to_chat_bubble`` — ``visibility=["chat"]``
-   + ``ai_behavior="blind"`` blind chat-bubble passthrough.
+4. ``app/main_server/character_runtime.py`` ``render_chat_blocks`` — the text
+   blocks of a ``visibility=["chat"]`` push, rendered as a system message for
+   every ``ai_behavior`` (blind included).
 5. ``app/main_server/character_runtime.py`` HUD ``agent_notification`` — ``visibility=["hud"]``
    toast text.
 
@@ -202,6 +203,7 @@ def _mgr_for_main_server(send_lanlan_return=True):
     fake_mgr.send_lanlan_response = AsyncMock(return_value=send_lanlan_return)
     fake_mgr.handle_proactive_complete = AsyncMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock(return_value=True)
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = MagicMock()
@@ -286,8 +288,8 @@ async def test_main_server_direct_reply_substitutes_master_name(monkeypatch, cap
 @pytest.mark.unit
 async def test_main_server_chat_passthrough_substitutes_master_name(monkeypatch):
     """visibility=["chat"] + ai_behavior="blind" → text goes verbatim to
-    ``passthrough_to_chat_bubble`` (skipping the LLM). Without substitution
-    the literal placeholder renders in the chat bubble. This is the codex
+    ``render_chat_blocks`` (skipping the LLM). Without substitution the
+    literal placeholder renders in the chat bubble. This is the codex
     P2 finding on PR #1422."""
     from app import main_server
 
@@ -309,8 +311,11 @@ async def test_main_server_chat_passthrough_substitutes_master_name(monkeypatch)
         }
     )
 
-    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
-    sent_text = fake_mgr.passthrough_to_chat_bubble.await_args.args[0]
+    # Plugin chat output is a system message now; the placeholder contract is
+    # unchanged, it just lives inside the text block rather than a bare string.
+    fake_mgr.render_chat_blocks.assert_awaited_once()
+    blocks = fake_mgr.render_chat_blocks.await_args.args[0]
+    sent_text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
     assert "{MASTER_NAME}" not in sent_text
     assert "小明 你看一下这个" in sent_text
 

@@ -162,6 +162,7 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
             self.user_language = "en"
             self._recent_avatar_interaction_ids = deque(maxlen=32)
             self._recent_avatar_interaction_id_set = set()
+            self._avatar_interaction_gate_lock = asyncio.Lock()
             self._last_avatar_interaction_at = 0
             self._last_avatar_interaction_speak_at = 0
             self.avatar_interaction_cooldown_ms = 0
@@ -747,3 +748,191 @@ def test_payload_normalizer_requires_touch_zone_only_for_declared_tools():
     assert lollipop_without_zone is not None
     assert lollipop_without_zone["touch_zone"] == ""
     assert lollipop_with_null_zone is None
+
+
+# --- 回归面：新增的 _avatar_interaction_gate_lock 不得改变内置道具的互动语义 ---
+
+
+def _builtin_runtime(monkeypatch, *, cooldown_ms=600, clock=None):
+    """A runtime harness driving the built-in (definition v1) interaction path."""
+    from main_logic.core import greeting
+
+    class FakeOfflineClient:
+        _is_responding = False
+
+        def update_max_response_length(self, _max_length):
+            return None
+
+        async def prompt_ephemeral(self, *_args, **_kwargs):
+            return True
+
+    class RuntimeHarness(greeting.GreetingMixin):
+        def __init__(self):
+            self.is_active = True
+            self.session = FakeOfflineClient()
+            self.lanlan_name = "YUI"
+            self.master_name = "Alice"
+            self.user_language = "en"
+            self._recent_avatar_interaction_ids = deque(maxlen=32)
+            self._recent_avatar_interaction_id_set = set()
+            self._avatar_interaction_gate_lock = asyncio.Lock()
+            self._last_avatar_interaction_at = 0
+            self._last_avatar_interaction_speak_at = 0
+            self.avatar_interaction_cooldown_ms = cooldown_ms
+            self.avatar_interaction_speak_cooldown_ms = 0
+            self._proactive_write_lock = asyncio.Lock()
+            self.lock = asyncio.Lock()
+            self.current_speech_id = ""
+            self._pending_turn_meta = None
+            self.acks = []
+
+        def _get_text_guard_max_length(self):
+            return 1000
+
+        async def send_avatar_interaction_ack(self, interaction_id, accepted, reason, **kwargs):
+            self.acks.append((interaction_id, accepted, reason))
+
+    monkeypatch.setattr(greeting, "OmniOfflineClient", FakeOfflineClient)
+    patch_module_clock(monkeypatch, greeting, time=clock or (lambda: 1000.0))
+    runtime = RuntimeHarness()
+    runtime.note_user_engagement = lambda *, at=None: None
+    return runtime
+
+
+def _fist_payload(interaction_id):
+    return {
+        "interactionId": interaction_id,
+        "toolId": "fist",
+        "actionId": "poke",
+        "target": "avatar",
+        "intensity": "normal",
+        "touchZone": "head",
+        "timestamp": 1,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_builtin_interaction_accepts_then_enforces_cooldown(monkeypatch):
+    # 时钟必须会走：固定时钟下「冷却拒绝也推进了时间戳」是观测不到的。
+    clock = {"now": 1000.0}
+    runtime = _builtin_runtime(monkeypatch, clock=lambda: clock["now"])
+
+    first = await runtime.handle_avatar_interaction(_fist_payload("fist-1"))
+    assert first["accepted"] is True
+    committed_at = runtime._last_avatar_interaction_at
+    assert committed_at == 1000_000
+
+    clock["now"] = 1000.3  # +300ms，仍在 600ms 冷却窗口内
+    second = await runtime.handle_avatar_interaction(_fist_payload("fist-2"))
+    assert second == {
+        "accepted": False,
+        "reason": "cooldown",
+        "interaction_id": "fist-2",
+    }
+    # 冷却拒绝不得推进提交时间戳，否则连击会把冷却窗口无限续期。
+    assert runtime._last_avatar_interaction_at == committed_at
+    assert runtime.acks[-1] == ("fist-2", False, "cooldown")
+
+    # 冷却拒绝仍要消费去重槽位：同一个 id 再来是重放，不该再走一遍冷却分支。
+    clock["now"] = 1000.4
+    replay = await runtime.handle_avatar_interaction(_fist_payload("fist-2"))
+    assert replay["reason"] == "duplicate"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_builtin_interaction_rejects_a_replayed_id(monkeypatch):
+    runtime = _builtin_runtime(monkeypatch, cooldown_ms=0)
+
+    assert (await runtime.handle_avatar_interaction(_fist_payload("fist-1")))["accepted"] is True
+    replay = await runtime.handle_avatar_interaction(_fist_payload("fist-1"))
+    assert replay == {
+        "accepted": False,
+        "reason": "duplicate",
+        "interaction_id": "fist-1",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_builtin_interactions_do_not_touch_the_local_store(monkeypatch):
+    """The built-in path must never reach avatar-tool storage."""
+    from main_logic.core import greeting
+
+    runtime = _builtin_runtime(monkeypatch, cooldown_ms=0)
+
+    def explode(_manager):
+        raise AssertionError("built-in interaction reached the local avatar-tool store")
+
+    monkeypatch.setattr(greeting, "get_avatar_tool_store", explode)
+    assert (await runtime.handle_avatar_interaction(_fist_payload("fist-1")))["accepted"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_builtin_instruction_is_sent_inside_the_session_with_its_system_prompt(monkeypatch):
+    """Instructions must ride the live session context, which carries the watermark."""
+    from main_logic.core import greeting
+    from main_logic.omni_offline_client._shared import HumanMessage, SystemMessage
+
+    seen = {}
+
+    class HistoryClient:
+        _is_responding = False
+
+        def __init__(self):
+            self._conversation_history = [
+                SystemMessage(content="======以下为对话历史======\nrules\n======以上为对话历史======"),
+                HumanMessage(content="hi"),
+            ]
+
+        def update_max_response_length(self, _max_length):
+            return None
+
+        async def prompt_ephemeral(self, instruction, **_kwargs):
+            # 复刻 prompt_ephemeral 的拼装：历史 + 临时 HumanMessage。
+            seen["messages"] = self._conversation_history + [HumanMessage(content=instruction)]
+            return True
+
+    runtime = _builtin_runtime(monkeypatch, cooldown_ms=0)
+    runtime.session = HistoryClient()
+    monkeypatch.setattr(greeting, "OmniOfflineClient", HistoryClient)
+
+    assert (await runtime.handle_avatar_interaction(_fist_payload("fist-1")))["accepted"] is True
+
+    messages = seen["messages"]
+    assert isinstance(messages[0], SystemMessage), "instruction lost the system prompt context"
+    assert "======" in messages[0].content
+    assert messages[-1].content.strip(), "the instruction itself must be non-empty"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_stalled_cooldown_ack_does_not_hold_the_interaction_gate(monkeypatch):
+    """The cooldown ack goes over the socket; it must not serialize the gate."""
+    runtime = _builtin_runtime(monkeypatch, cooldown_ms=60_000)
+    gate_probe = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stalling_ack(interaction_id, accepted, reason, **_kwargs):
+        runtime.acks.append((interaction_id, accepted, reason))
+        if reason == "cooldown" and not gate_probe.is_set():
+            gate_probe.set()
+            await release.wait()
+
+    assert (await runtime.handle_avatar_interaction(_fist_payload("fist-1")))["accepted"] is True
+    runtime.send_avatar_interaction_ack = stalling_ack
+
+    stalled = asyncio.create_task(runtime.handle_avatar_interaction(_fist_payload("fist-2")))
+    await asyncio.wait_for(gate_probe.wait(), 2)
+    follower = asyncio.create_task(runtime.handle_avatar_interaction(_fist_payload("fist-3")))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    # 后续互动必须能自己走完闸门，不被卡在 ack 上的那一次拖住。
+    assert follower.done(), "a stalled cooldown ack still blocks the interaction gate"
+    assert follower.result()["reason"] == "cooldown"
+
+    release.set()
+    await asyncio.gather(stalled, follower)

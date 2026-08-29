@@ -4151,11 +4151,21 @@ async def test_gemini_tool_calls_share_a_chain_until_the_next_user_turn():
     calls = []
 
     async def _handle_tool(call):
-        calls.append(call)
         return ToolResult(call_id=call.call_id, name=call.name, output={})
 
     def _discard_task(coro) -> None:
         coro.close()
+
+    # Capture at the batch boundary rather than at ``on_tool_call``: the
+    # Gemini path hands its calls to ``_start_gemini_tool_batch`` and runs
+    # them fire-and-forget, so a handler-level probe never fires here.
+    # The chain identity is stamped on the ToolCall before the handoff,
+    # which is exactly what this test is about.
+    def _capture_batch(batch_calls, _owner):
+        calls.extend(batch_calls)
+
+    client._start_gemini_tool_batch = _capture_batch
+    client._capture_tool_task_owner = lambda *_args, **_kwargs: object()
 
     def _response(call_id: str, *, starts_turn: bool):
         return SimpleNamespace(
@@ -4882,6 +4892,49 @@ async def test_stream_text_replaces_full_prompt_history_after_memory_callback(mo
     assert "full document prompt" not in [
         getattr(message, "content", "") for message in client._conversation_history
     ]
+
+
+@pytest.mark.asyncio
+async def test_stream_text_keeps_system_prefix_images_invocation_local(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import HumanMessage, LLMStreamChunk
+
+    observed_user_content = []
+
+    async def _astream(self, messages, **overrides):
+        del overrides
+        observed_user_content.append(
+            [msg for msg in messages if isinstance(msg, HumanMessage)][-1].content
+        )
+        yield LLMStreamChunk(content="ok")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _minimal_offline_client_for_leak_tests()
+    client.on_text_delta = noop
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text(
+        "user text",
+        system_prefix="callback context",
+        system_prefix_images=["callback-image"],
+    )
+
+    assert observed_user_content == [[
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/jpeg;base64,callback-image"},
+        },
+        {"type": "text", "text": "callback context\n\nuser text"},
+    ]]
+    assert client._pending_images == []
 
 
 @pytest.mark.asyncio

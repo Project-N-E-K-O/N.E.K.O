@@ -357,6 +357,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._logged_in_bili_uid: int = 0
         self._logged_in_matches_master: bool = False
         self._master_display_name_fetched: bool = False
+        self._neko_credential_manager = None
         
         # B站登录
         self._bilibili_credential = None
@@ -473,8 +474,10 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
         # Fallback：读取 NEKO 全局保存的 B 站 Cookie
         try:
-            from utils.cookies_login import load_cookies_from_file
-            cookies = load_cookies_from_file("bilibili")
+            from utils.cookies_login import CredentialManager
+            if self._neko_credential_manager is None:
+                self._neko_credential_manager = CredentialManager()
+            cookies = self._neko_credential_manager.load("bilibili")
             if cookies and cookies.get("SESSDATA"):
                 self._bilibili_credential = _BiliCredential(
                     sessdata=cookies.get("SESSDATA", ""),
@@ -3176,6 +3179,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     async def _reload_credential_internal(self):
         """内部重载凭据（供 BiliAuthService 回调使用）"""
+        # agent 是独立进程；显式重载需丢弃本进程快照后重新读取主进程保存结果。
+        self._neko_credential_manager = None
         await self._load_bilibili_credential()
         self.logger.info(f"凭据已重新加载: {'已登录' if self._is_logged_in else '游客模式'}")
 

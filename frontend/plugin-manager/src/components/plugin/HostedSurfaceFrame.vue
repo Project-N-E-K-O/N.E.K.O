@@ -11,6 +11,7 @@
       @close="runtimeError = ''"
     />
 
+    <!-- Preserve standard alert/confirm/prompt behavior authored by static plugins. -->
     <iframe
       v-if="surface.mode === 'static' && surfaceUrl"
       ref="iframeRef"
@@ -18,7 +19,7 @@
       :src="surfaceUrl"
       :title="surfaceTitle"
       class="hosted-surface-frame__iframe"
-      sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+      sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals"
       @load="handleLoad"
       @error="handleError"
     />

@@ -9,10 +9,12 @@ from pathlib import Path
 import shutil
 import stat
 
+from plugin import settings
 from plugin.core.plugin_layout import PluginLayout
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_paths import ensure_plugin_layout_runtime_config
+from plugin.settings import get_plugin_state_root
 
 logger = get_logger("server.application.plugins.upgrade_support")
 
@@ -243,6 +245,65 @@ def _notify_rollback_start(callback: Callable[[], None] | None) -> None:
         )
 
 
+def _evict_replaced_plugin_modules(plugin_id: str) -> None:
+    from plugin.core.host import evict_cached_plugin_modules
+
+    evict_cached_plugin_modules(plugin_id)
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    resolved_path = path.resolve(strict=False)
+    resolved_root = root.resolve(strict=False)
+    return resolved_path == resolved_root or resolved_root in resolved_path.parents
+
+
+def _validate_replacement_targets(
+    targets: tuple[Path, ...],
+    *,
+    state_root: Path | None = None,
+) -> None:
+    resolved_targets = tuple(target.resolve(strict=False) for target in targets)
+    overlapping: set[Path] = set()
+    for index, target in enumerate(resolved_targets):
+        for other in resolved_targets[index + 1 :]:
+            if target == other or target in other.parents or other in target.parents:
+                overlapping.update((target, other))
+    if overlapping:
+        raise ValueError(
+            "plugin replacement targets must be distinct and non-overlapping: "
+            + ", ".join(str(path) for path in sorted(overlapping, key=str))
+        )
+
+    state_roots = {get_plugin_state_root().resolve(strict=False)}
+    if state_root is not None:
+        state_roots.add(state_root.resolve(strict=False))
+    forbidden = [
+        target
+        for target in targets
+        if any(
+            _path_is_within(target, root) or _path_is_within(root, target)
+            for root in state_roots
+        )
+    ]
+    if forbidden:
+        raise ValueError(
+            "plugin persistent state paths cannot be replacement targets: "
+            + ", ".join(str(path) for path in forbidden)
+        )
+
+    builtin_root = Path(settings.BUILTIN_PLUGIN_CONFIG_ROOT).resolve(strict=False)
+    immutable = [
+        target
+        for target in targets
+        if _path_is_within(target, builtin_root) or _path_is_within(builtin_root, target)
+    ]
+    if immutable:
+        raise ValueError(
+            "immutable builtin plugin paths cannot be replacement targets: "
+            + ", ".join(str(path) for path in immutable)
+        )
+
+
 async def replace_plugin(
     *,
     layout: PluginLayout,
@@ -267,6 +328,10 @@ async def replace_plugin(
     targets = (target_dir, *additional_targets)
     if any(target not in targets for target in preserve_targets):
         raise ValueError("preserve targets must also be replacement targets")
+    _validate_replacement_targets(
+        targets,
+        state_root=layout.data_dir.parent.parent,
+    )
 
     if initialize_runtime_config:
         await asyncio.to_thread(
@@ -327,6 +392,8 @@ async def replace_plugin(
             if backup is not None:
                 await merge_directory_contents(backup, target)
         await _restore_manifest_adjacent_profiles(backup_dir, target_dir)
+        stage = "invalidate_cache"
+        await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
         if was_running:
             stage = "restart"
             await start(plugin_id)
@@ -354,6 +421,15 @@ async def replace_plugin(
             preexisting_targets=preexisting_targets,
             remove_created_targets=True,
         )
+        try:
+            await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
+        except Exception as eviction_exc:
+            restored = False
+            logger.error(
+                "plugin rollback cache invalidation failed plugin_id={} err_type={}",
+                plugin_id,
+                type(eviction_exc).__name__,
+            )
         if was_running:
             try:
                 await start(plugin_id)

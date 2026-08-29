@@ -1081,6 +1081,13 @@ def _build_storage_location_diagnostics_payload(config_manager) -> dict[str, Any
             effective_root=effective_root,
             retained_source_root=retained_source_root,
         ),
+        "avatar_tools": _build_runtime_entry_diagnostic(
+            name="avatar_tools",
+            write_root=config_manager.avatar_tools_dir,
+            read_roots=[config_manager.avatar_tools_dir],
+            effective_root=effective_root,
+            retained_source_root=retained_source_root,
+        ),
     }
 
     entries_with_reads_outside_effective_root = [

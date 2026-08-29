@@ -46,6 +46,12 @@ from config.prompts.prompts_avatar_interaction import (
     _sanitize_avatar_interaction_text_context,
 )
 from utils.config_manager import get_config_manager
+from utils.avatar_tool_store import (
+    AvatarToolStoreError,
+    get_avatar_tool_store,
+    is_local_avatar_tool_id,
+)
+from utils.cloudsave_runtime import MaintenanceModeError
 from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -97,6 +103,31 @@ class GreetingMixin:
             }
         }
 
+    @staticmethod
+    def _resolve_local_avatar_tool_prompt_record(raw: dict, record: dict) -> dict:
+        change_items = record.get("imageChange", {}).get("items")
+        change_index = raw.get("change_index")
+        if (
+            not isinstance(change_items, list)
+            or isinstance(change_index, bool)
+            or not isinstance(change_index, int)
+            or change_index < 0
+            or change_index >= len(change_items)
+        ):
+            raise ValueError("invalid local change index")
+        special = record.get("interaction", {}).get("special")
+        has_special_fact = "special_triggered" in raw
+        if bool(special) != has_special_fact:
+            raise ValueError("local special fact does not match record")
+        return {
+            "name": record["name"],
+            "meaning": (
+                special["meaning"]
+                if special and raw["special_triggered"] is True
+                else change_items[change_index]["meaning"]
+            ),
+        }
+
     def note_avatar_interaction_ingress(self, payload: dict) -> bool:
         """Expose validated avatar engagement before background dispatch."""
         raw = normalize_avatar_interaction_payload(
@@ -128,8 +159,48 @@ class GreetingMixin:
             await self.send_avatar_interaction_ack(raw_interaction_id, False, "invalid_payload")
             return {"accepted": False, "reason": "invalid_payload"}
 
+        local_record = None
+        local_prompt_record = None
+        local_store = None
+        if is_local_avatar_tool_id(raw["tool_id"]):
+            local_store = get_avatar_tool_store(self._config_manager)
+            try:
+                local_record = await asyncio.to_thread(
+                    local_store.read_record,
+                    raw["tool_id"],
+                    verify_resources=False,
+                )
+            except (AvatarToolStoreError, MaintenanceModeError, OSError):
+                logger.debug(
+                    "[%s] handle_avatar_interaction: missing or invalid local tool=%s",
+                    self.lanlan_name,
+                    raw["tool_id"],
+                )
+                await self.send_avatar_interaction_ack(
+                    raw_interaction_id, False, "invalid_payload"
+                )
+                return {"accepted": False, "reason": "invalid_payload"}
+            if raw["tool_revision"] != local_store.record_revision(local_record):
+                logger.debug(
+                    "[%s] handle_avatar_interaction: stale local tool revision=%s",
+                    self.lanlan_name,
+                    raw["tool_id"],
+                )
+                await self.send_avatar_interaction_ack(
+                    raw_interaction_id, False, "stale_tool_revision"
+                )
+                return {"accepted": False, "reason": "stale_tool_revision"}
+            try:
+                local_prompt_record = self._resolve_local_avatar_tool_prompt_record(
+                    raw, local_record
+                )
+            except (KeyError, TypeError, ValueError):
+                await self.send_avatar_interaction_ack(
+                    raw_interaction_id, False, "invalid_payload"
+                )
+                return {"accepted": False, "reason": "invalid_payload"}
+
         interaction_id = raw["interaction_id"]
-        now_ms = int(time.time() * 1000)
         ingress_reserved = (
             payload.get("_avatar_interaction_ingress_reserved") is True
         )
@@ -147,14 +218,68 @@ class GreetingMixin:
                 at=self._avatar_interaction_ingress_time(payload)
             )
 
-        if now_ms - self._last_avatar_interaction_at < self.avatar_interaction_cooldown_ms:
+        # Serialize the cooldown decision with strict local-resource
+        # verification and cooldown commit. A failed verification releases the
+        # gate without consuming the next valid interaction's cooldown slot.
+        #
+        # 冷却命中是连击时的高频分支，它的 ack 走 WebSocket。早先把这次 await
+        # 留在闸门里，一旦下行有背压，后面每一次互动都要排队等它发完 —— 包括
+        # 冷却窗口结束后第一个本该被接受的互动。判定与去重登记留在锁内保持原子，
+        # ack 挪到锁外发。
+        cooldown_hit = False
+        gate_rejection: tuple[str, str] | None = None
+        async with self._avatar_interaction_gate_lock:
+            now_ms = int(time.time() * 1000)
+            if now_ms - self._last_avatar_interaction_at < self.avatar_interaction_cooldown_ms:
+                self._remember_avatar_interaction_id(interaction_id)
+                cooldown_hit = True
+
+            # Only an event that can pass the duplicate/cooldown gates pays the
+            # full resource-digest cost. Re-read and resolve from the verified
+            # record so prompt data never comes from the lightweight first read.
+            if not cooldown_hit and local_store is not None:
+                try:
+                    local_record = await asyncio.to_thread(
+                        local_store.read_record,
+                        raw["tool_id"],
+                        verify_resources=True,
+                    )
+                    if raw["tool_revision"] != local_store.record_revision(local_record):
+                        gate_rejection = (raw_interaction_id, "stale_tool_revision")
+                    else:
+                        local_prompt_record = self._resolve_local_avatar_tool_prompt_record(
+                            raw, local_record
+                        )
+                except (
+                    AvatarToolStoreError,
+                    MaintenanceModeError,
+                    OSError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                ):
+                    logger.debug(
+                        "[%s] handle_avatar_interaction: local tool changed or failed resource verification=%s",
+                        self.lanlan_name,
+                        raw["tool_id"],
+                    )
+                    gate_rejection = (raw_interaction_id, "invalid_payload")
+
+            if not cooldown_hit and gate_rejection is None:
+                self._remember_avatar_interaction_id(interaction_id)
+                self._last_avatar_interaction_at = now_ms
+
+        # 闸门里不留任何 await：拒绝的 ack 走 WebSocket，下行一有背压就会把后面
+        # 每一次互动堵在锁上。判定与去重登记在锁内保持原子，回执一律出锁再发。
+        if gate_rejection is not None:
+            rejected_id, reason = gate_rejection
+            await self.send_avatar_interaction_ack(rejected_id, False, reason)
+            return {"accepted": False, "reason": reason}
+
+        if cooldown_hit:
             logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
-            self._remember_avatar_interaction_id(interaction_id)
             await self.send_avatar_interaction_ack(interaction_id, False, "cooldown")
             return {"accepted": False, "reason": "cooldown", "interaction_id": interaction_id}
-
-        self._remember_avatar_interaction_id(interaction_id)
-        self._last_avatar_interaction_at = now_ms
 
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
             logger.debug("[%s] handle_avatar_interaction: voice session active, skipping", self.lanlan_name)
@@ -184,11 +309,13 @@ class GreetingMixin:
             self.lanlan_name,
             self.master_name,
             raw,
+            local_prompt_record,
         )
         memory_meta = _build_avatar_interaction_memory_meta(
             getattr(self, "user_language", None),
             raw,
             self.master_name,
+            local_prompt_record,
         )
         memory_note = memory_meta["memory_note"]
         delivered = False

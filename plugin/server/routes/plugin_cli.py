@@ -71,7 +71,9 @@ class PluginCliInstallPlanRequest(BaseModel):
 
 
 class PluginCliInstallPlanResponse(BaseModel):
-    action: str = Field(pattern="^(install|upgrade|reinstall|downgrade|blocked)$")
+    action: str = Field(
+        pattern="^(install|upgrade|reinstall|downgrade|override_builtin|blocked)$"
+    )
     package_type: str = Field(pattern="^(plugin|bundle)$")
     plugin_id: str
     directory_name: str
@@ -80,6 +82,8 @@ class PluginCliInstallPlanResponse(BaseModel):
     confirmation_token: str = ""
     reason: str = ""
     legacy_plugin_ids: list[str] = Field(default_factory=list)
+    current_source: str = ""
+    target_source: str = ""
 
 
 class PluginCliAnalyzeRequest(BaseModel):

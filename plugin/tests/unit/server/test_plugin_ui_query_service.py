@@ -1272,3 +1272,113 @@ def test_surface_source_excludes_entry_from_dependency_byte_budget(tmp_path, mon
 
     assert payload["dependencies"] == []
     assert payload["source"] == large_entry
+
+
+def _install_demo_plugin(tmp_path, host, *, permissions: list[str]):
+    """Register a single-panel demo plugin bound to *host*; returns a restore callback."""
+    plugin_dir = tmp_path / "demo_plugin"
+    plugin_dir.mkdir(exist_ok=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{
+                        "id": "main",
+                        "entry": "ui/panel.tsx",
+                        "permissions": permissions,
+                    }],
+                },
+            },
+        },
+        plugin_id="demo",
+    )
+
+    plugins_backup = dict(state.plugins)
+    hosts_backup = dict(state.plugin_hosts)
+    with state.acquire_plugins_write_lock():
+        state.plugins.clear()
+        state.plugins["demo"] = {
+            "id": "demo",
+            "config_path": str(config_path),
+            "plugin_ui": plugin_ui,
+            "entries": [{"id": "ping", "name": "Ping"}],
+        }
+    with state.acquire_plugin_hosts_write_lock():
+        state.plugin_hosts.clear()
+        state.plugin_hosts["demo"] = host
+
+    def _restore() -> None:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+        with state.acquire_plugin_hosts_write_lock():
+            state.plugin_hosts.clear()
+            state.plugin_hosts.update(hosts_backup)
+
+    return _restore
+
+
+class _BrokenContextHost:
+    """Host whose @ui.context provider failed; actions still come back."""
+
+    def __init__(self) -> None:
+        self.triggered: list[str] = []
+
+    def is_alive(self) -> bool:
+        return True
+
+    async def get_ui_context(self, context_id: str) -> dict[str, object]:
+        return {
+            "state": {},
+            "state_schema": None,
+            "actions": [{"id": "ping", "entry_id": "ping"}],
+            "context_error": f"UI context '{context_id}' not found",
+        }
+
+    async def trigger(self, entry_id: str, args: dict[str, object], timeout: float | None = None) -> object:
+        self.triggered.append(entry_id)
+        return {"ok": True}
+
+
+def test_surface_action_dispatches_even_when_context_provider_failed(tmp_path, monkeypatch) -> None:
+    """provider 挂了不该让面板上每个按钮都变成 500——授权只看 actions 白名单。"""
+    monkeypatch.setattr(ui_query_module, "_resolve_hosted_entry_timeout", lambda *_args: 10.0)
+    host = _BrokenContextHost()
+    restore = _install_demo_plugin(tmp_path, host, permissions=["action:call"])
+    try:
+        result = asyncio.run(
+            PluginUiQueryService().call_surface_action(
+                "demo",
+                action_id="ping",
+                args={},
+                kind="panel",
+                surface_id="main",
+            )
+        )
+    finally:
+        restore()
+
+    assert host.triggered == ["ping"]
+    assert result is not None
+
+
+def test_surface_context_reports_provider_failure_as_warning(tmp_path) -> None:
+    """provider 的失败原因不能因为不再抛异常就从渲染路径上消失。"""
+    restore = _install_demo_plugin(tmp_path, _BrokenContextHost(), permissions=["state:read", "action:call"])
+    try:
+        context = asyncio.run(
+            PluginUiQueryService().get_surface_context("demo", kind="panel", surface_id="main")
+        )
+    finally:
+        restore()
+
+    codes = [warning.get("code") for warning in context.get("warnings") or []]
+    assert "ui_context_failed" in codes
+    messages = [
+        warning.get("message")
+        for warning in context.get("warnings") or []
+        if warning.get("code") == "ui_context_failed"
+    ]
+    assert any("not found" in str(message) for message in messages)

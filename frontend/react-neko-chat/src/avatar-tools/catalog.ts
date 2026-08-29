@@ -14,12 +14,14 @@ export {
 } from './profileInterpreter';
 
 export const AVATAR_TOOL_DEFINITION_IDS = ['lollipop', 'fist', 'hammer', 'rps'] as const;
+export const LOCAL_AVATAR_TOOL_ID_PATTERN = /^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const AVATAR_TOOL_VARIANT_IDS = ['primary', 'secondary', 'tertiary'] as const;
 export const AVATAR_TOOL_INTERACTION_INTENSITIES = ['normal', 'rapid', 'burst', 'easter_egg'] as const;
 export const AVATAR_TOOL_TOUCH_ZONES = ['ear', 'head', 'face', 'body'] as const;
 export const AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS = [
   'interactionId', 'target', 'pointer', 'textContext', 'timestamp',
   'toolId', 'actionId', 'intensity', 'touchZone', 'clientX', 'clientY',
+  'changeIndex',
   'userGesture', 'avatarGesture', 'roundResult',
 ] as const;
 const AVATAR_TOOL_WIRE_IDENTIFIER_PATTERN = /^[a-z][a-z0-9_-]*$/;
@@ -40,6 +42,7 @@ function getReactChatAssetVersion(): string {
 }
 
 export function withAvatarToolAssetVersion(path: string, fallbackVersion = ''): string {
+  if (path.startsWith('/user_avatar_tools/') && hasValidAvatarToolAssetVersion(path)) return path;
   const version = getReactChatAssetVersion() || fallbackVersion.trim();
   if (!version || !path) return path;
   const hashIndex = path.indexOf('#');
@@ -77,7 +80,9 @@ export function hasValidAvatarToolAssetVersion(path: string): boolean {
   }
 }
 
-export type AvatarToolId = typeof AVATAR_TOOL_DEFINITION_IDS[number];
+export type BuiltInAvatarToolId = typeof AVATAR_TOOL_DEFINITION_IDS[number];
+export type LocalAvatarToolId = `local-${string}`;
+export type AvatarToolId = BuiltInAvatarToolId | LocalAvatarToolId;
 export type AvatarToolVariantId = typeof AVATAR_TOOL_VARIANT_IDS[number];
 export type AvatarToolInteractionIntensity = typeof AVATAR_TOOL_INTERACTION_INTENSITIES[number];
 export type AvatarToolTouchZone = typeof AVATAR_TOOL_TOUCH_ZONES[number];
@@ -198,6 +203,7 @@ export type AvatarToolVariantSource = 'range' | 'outside' | 'primary';
 export type AvatarToolVisualDefinition = {
   initialVariant: AvatarToolVariantId;
   variants: Record<AvatarToolVariantId, AvatarToolVisualVariant>;
+  frames?: ReadonlyArray<AvatarToolVisualVariant>;
   presentation: {
     inRangeVariantSource: AvatarToolVariantSource;
     outsideVariantSource: AvatarToolVariantSource;
@@ -248,17 +254,10 @@ export type ProgressiveReleaseProfile = {
   };
 };
 
-export type PressReleaseProfile = {
+type PressReleaseProfileBase = {
   kind: 'press-release';
+  revision?: string;
   actionId: string;
-  pointerDown: {
-    rangeVariant: AvatarToolVariantId;
-    outsideVariant: AvatarToolVariantId;
-  };
-  pointerRelease: {
-    rangeVariant: AvatarToolVariantId;
-    outsideVariant: AvatarToolVariantId;
-  };
   burst: {
     key: string;
     windowMs: number;
@@ -268,13 +267,37 @@ export type PressReleaseProfile = {
   };
   touchZone: 'release';
   touchZones: ReadonlyArray<AvatarToolTouchZone>;
-  chance: {
+  feedback?: {
+    sound: AvatarToolSoundId;
+  };
+  chance?: {
     field: string;
     probability: number;
-    sound: AvatarToolSoundId;
     effect: AvatarToolEffectId;
+    sound?: AvatarToolSoundId;
   };
 };
+
+export type PressReleaseProfile = PressReleaseProfileBase & (
+  | {
+    pointerDown: {
+      rangeVariant: AvatarToolVariantId;
+      outsideVariant: AvatarToolVariantId;
+    };
+    pointerRelease: {
+      rangeVariant: AvatarToolVariantId;
+      outsideVariant: AvatarToolVariantId;
+    };
+    imageChange?: never;
+  }
+  | {
+    imageChange:
+      | { kind: 'press-swap' }
+      | { kind: 'click-advance' };
+    pointerDown?: never;
+    pointerRelease?: never;
+  }
+);
 
 export type LockedImpactProfile = {
   kind: 'locked-impact';
@@ -333,11 +356,15 @@ export type AvatarToolInteractionProfile =
   | RoundChoiceProfile;
 
 export type AvatarToolDefinition = {
-  definitionVersion: 1;
+  definitionVersion: 1 | 2;
   id: AvatarToolId;
   label: {
+    kind: 'i18n';
     key: string;
     fallback: string;
+  } | {
+    kind: 'literal';
+    value: string;
   };
   capability: {
     desktopVisual: boolean;
@@ -354,7 +381,7 @@ export type AvatarToolRegistration = {
   handlers: AvatarToolRuleHandlers;
 };
 
-function registerAvatarTool<const Definition extends AvatarToolDefinition>(
+export function registerAvatarTool<const Definition extends AvatarToolDefinition>(
   definition: Definition,
 ) {
   return {
@@ -466,6 +493,28 @@ function validateVisual(definition: AvatarToolDefinition) {
     assertFinite(definition, asset?.menuOffsetX, `visual.variants.${variant}.menuOffsetX`);
     assertFinite(definition, asset?.menuOffsetY, `visual.variants.${variant}.menuOffsetY`);
   });
+  if (definition.definitionVersion === 1 && visual.frames !== undefined) {
+    fail(definition, 'v1 visual must not contain frames');
+  }
+  if (definition.definitionVersion === 2) {
+    if (
+      !Array.isArray(visual.frames)
+      || visual.frames.length < 2
+      || visual.frames.length > AVATAR_TOOL_RESOURCE_MAX_COUNT + 1
+    ) {
+      fail(definition, 'v2 visual.frames must contain one default frame and 1 to 16 change frames');
+    }
+    visual.frames.forEach((frame, index) => {
+      assertNonEmpty(definition, frame?.iconImagePath, `visual.frames[${index}].iconImagePath`);
+      assertNonEmpty(definition, frame?.pointerImagePath, `visual.frames[${index}].pointerImagePath`);
+      if (definition.capability.desktopVisual) {
+        assertDesktopAssetSource(definition, frame.iconImagePath, `visual.frames[${index}].iconImagePath`);
+        assertDesktopAssetSource(definition, frame.pointerImagePath, `visual.frames[${index}].pointerImagePath`);
+      }
+      assertFinite(definition, frame?.menuOffsetX, `visual.frames[${index}].menuOffsetX`);
+      assertFinite(definition, frame?.menuOffsetY, `visual.frames[${index}].menuOffsetY`);
+    });
+  }
   const presentation = visual.presentation;
   const sources = ['range', 'outside', 'primary'];
   if (!sources.includes(presentation?.inRangeVariantSource)) {
@@ -505,7 +554,7 @@ function validateVisual(definition: AvatarToolDefinition) {
 function validateSounds(definition: AvatarToolDefinition) {
   if (
     !Array.isArray(definition.sounds)
-    || definition.sounds.length === 0
+    || (definition.definitionVersion === 1 && definition.sounds.length === 0)
     || definition.sounds.length > AVATAR_TOOL_RESOURCE_MAX_COUNT
   ) {
     fail(definition, 'sounds must contain between 1 and 16 resources');
@@ -799,6 +848,82 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
   assertIntensity(definition, interaction.burst.normalIntensity, 'interaction.burst.normalIntensity');
   assertIntensity(definition, interaction.burst.rapidIntensity, 'interaction.burst.rapidIntensity');
   assertTouchZones(definition, interaction.touchZones, 'interaction.touchZones');
+  if (interaction.kind === 'press-release') {
+    if (definition.definitionVersion === 1) {
+      if (!interaction.pointerDown || !interaction.pointerRelease || interaction.imageChange) {
+        fail(definition, 'v1 press-release requires pointer variant commands');
+      }
+      assertVariant(definition, interaction.pointerDown.rangeVariant, 'interaction.pointerDown.rangeVariant');
+      assertVariant(definition, interaction.pointerDown.outsideVariant, 'interaction.pointerDown.outsideVariant');
+      assertVariant(definition, interaction.pointerRelease.rangeVariant, 'interaction.pointerRelease.rangeVariant');
+      assertVariant(definition, interaction.pointerRelease.outsideVariant, 'interaction.pointerRelease.outsideVariant');
+    } else {
+      if (!interaction.imageChange || interaction.pointerDown || interaction.pointerRelease) {
+        fail(definition, 'v2 press-release requires imageChange without pointer variant commands');
+      }
+      if (!['press-swap', 'click-advance'].includes(interaction.imageChange.kind)) {
+        fail(definition, 'v2 interaction.imageChange.kind is unsupported');
+      }
+      const changeFrameCount = (definition.visual.frames?.length ?? 0) - 1;
+      if (interaction.imageChange.kind === 'press-swap' && changeFrameCount !== 1) {
+        fail(definition, 'press-swap requires exactly one change frame');
+      }
+      if (interaction.imageChange.kind === 'click-advance' && changeFrameCount < 1) {
+        fail(definition, 'click-advance requires at least one change frame');
+      }
+    }
+    if (definition.definitionVersion === 1 && !interaction.chance) {
+      fail(definition, 'v1 press-release requires interaction.chance');
+    }
+    if (interaction.feedback) requireSound(interaction.feedback.sound);
+    if (interaction.chance) {
+      assertNonEmpty(definition, interaction.chance.field, 'interaction.chance.field');
+      if (
+        interaction.chance.field.length > 64
+        || !/^[a-z][a-zA-Z0-9]*$/.test(interaction.chance.field)
+      ) {
+        fail(definition, 'interaction.chance.field must be a camel-case payload field of at most 64 characters');
+      }
+      if ((AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS as readonly string[]).includes(interaction.chance.field)) {
+        fail(definition, 'interaction.chance.field conflicts with a reserved payload field');
+      }
+      assertProbability(definition, interaction.chance.probability, 'interaction.chance.probability');
+      const hasChanceSound = Object.prototype.hasOwnProperty.call(interaction.chance, 'sound');
+      if (definition.definitionVersion === 1 || hasChanceSound) {
+        assertWireIdentifier(definition, interaction.chance.sound, 'interaction.chance.sound');
+        requireSound(interaction.chance.sound as AvatarToolSoundId);
+      }
+      requireEffect(interaction.chance.effect);
+      if (definition.definitionVersion === 2) {
+        if (interaction.chance.field !== 'specialTriggered') {
+          fail(definition, 'v2 interaction.chance.field must be specialTriggered');
+        }
+        if (interaction.chance.probability <= 0) {
+          fail(definition, 'v2 interaction.chance.probability must be greater than zero');
+        }
+        const chanceEffect = definition.effects.find(effect => effect.id === interaction.chance?.effect);
+        if (chanceEffect?.kind !== 'random-scatter') {
+          fail(definition, 'v2 interaction.chance.effect must reference random-scatter');
+        }
+      }
+    }
+    const referencedSounds = new Set([
+      interaction.feedback?.sound,
+      interaction.chance?.sound,
+    ].filter((value): value is string => !!value));
+    const referencedEffects = new Set([
+      interaction.chance?.effect,
+    ].filter((value): value is string => !!value));
+    if (
+      definition.sounds.length !== referencedSounds.size
+      || definition.sounds.some(sound => !referencedSounds.has(sound.id))
+    ) fail(definition, 'press-release sounds must match references exactly');
+    if (
+      definition.effects.length !== referencedEffects.size
+      || definition.effects.some(effect => !referencedEffects.has(effect.id))
+    ) fail(definition, 'press-release effects must match references exactly');
+    return;
+  }
   assertNonEmpty(definition, interaction.chance.field, 'interaction.chance.field');
   if (
     interaction.chance.field.length > 64
@@ -810,15 +935,6 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
     fail(definition, 'interaction.chance.field conflicts with a reserved payload field');
   }
   assertProbability(definition, interaction.chance.probability, 'interaction.chance.probability');
-  if (interaction.kind === 'press-release') {
-    assertVariant(definition, interaction.pointerDown.rangeVariant, 'interaction.pointerDown.rangeVariant');
-    assertVariant(definition, interaction.pointerDown.outsideVariant, 'interaction.pointerDown.outsideVariant');
-    assertVariant(definition, interaction.pointerRelease.rangeVariant, 'interaction.pointerRelease.rangeVariant');
-    assertVariant(definition, interaction.pointerRelease.outsideVariant, 'interaction.pointerRelease.outsideVariant');
-    requireSound(interaction.chance.sound);
-    requireEffect(interaction.chance.effect);
-    return;
-  }
   if (interaction.kind === 'locked-impact') {
     assertPositiveInteger(definition, interaction.burst.burstThreshold, 'interaction.burst.burstThreshold');
     assertIntensity(definition, interaction.burst.burstIntensity, 'interaction.burst.burstIntensity');
@@ -847,10 +963,23 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
 
 export function validateAvatarToolDefinition(definition: AvatarToolDefinition): void {
   if (!definition || typeof definition !== 'object') throw new Error('Invalid avatar tool definition');
-  if (definition.definitionVersion !== 1) fail(definition, 'definitionVersion must be 1');
-  if (!AVATAR_TOOL_DEFINITION_IDS.includes(definition.id as never)) fail(definition, 'id is unsupported');
-  assertNonEmpty(definition, definition.label?.key, 'label.key');
-  assertNonEmpty(definition, definition.label?.fallback, 'label.fallback');
+  if (definition.definitionVersion !== 1 && definition.definitionVersion !== 2) {
+    fail(definition, 'definitionVersion must be 1 or 2');
+  }
+  if (definition.definitionVersion === 1) {
+    if (!AVATAR_TOOL_DEFINITION_IDS.includes(definition.id as never)) fail(definition, 'v1 id is unsupported');
+    if (definition.label?.kind !== 'i18n') fail(definition, 'v1 label must be i18n');
+    assertNonEmpty(definition, definition.label.key, 'label.key');
+    assertNonEmpty(definition, definition.label.fallback, 'label.fallback');
+  } else {
+    if (!LOCAL_AVATAR_TOOL_ID_PATTERN.test(definition.id)) fail(definition, 'v2 id must be a local UUID');
+    if (definition.label?.kind !== 'literal') fail(definition, 'v2 label must be literal');
+    assertNonEmpty(definition, definition.label.value, 'label.value');
+    if (definition.interaction.kind !== 'press-release') fail(definition, 'v2 interaction must be press-release');
+    if (!/^\d+-\d+$/.test(definition.interaction.revision ?? '') || definition.interaction.revision!.length > 128) {
+      fail(definition, 'v2 interaction revision must identify the authoritative record');
+    }
+  }
   if (
     typeof definition.capability?.desktopVisual !== 'boolean'
     || typeof definition.capability?.desktopInteraction !== 'boolean'
@@ -885,6 +1014,7 @@ export const LOLLIPOP_AVATAR_TOOL_DEFINITION = {
   definitionVersion: 1,
   id: 'lollipop',
   label: {
+    kind: 'i18n',
     key: 'chat.toolLollipop',
     fallback: '棒棒糖',
   },
@@ -1000,6 +1130,7 @@ export const FIST_AVATAR_TOOL_DEFINITION = {
   definitionVersion: 1,
   id: 'fist',
   label: {
+    kind: 'i18n',
     key: 'chat.toolFist',
     fallback: '猫爪',
   },
@@ -1138,6 +1269,7 @@ export const HAMMER_AVATAR_TOOL_DEFINITION = {
   definitionVersion: 1,
   id: 'hammer',
   label: {
+    kind: 'i18n',
     key: 'chat.toolHammer',
     fallback: '锤子',
   },
@@ -1255,6 +1387,7 @@ export const RPS_AVATAR_TOOL_DEFINITION = {
   definitionVersion: 1,
   id: 'rps',
   label: {
+    kind: 'i18n',
     key: 'chat.toolRps',
     fallback: '猜拳',
   },

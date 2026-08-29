@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -168,10 +168,58 @@ class IndependentAsrRuntime:
         return self._callbacks.display_name()
 
     async def close(self) -> None:
-        operation_generation = self._begin_asr_start_operation()
-        await self._close_independent_asr(
-            operation_generation=operation_generation,
-        )
+        self._ensure_asr_runtime_state()
+        close_task = self._asr_runtime_close_task
+        if close_task is None:
+            # Explicit close owns a different operation from start's detached
+            # predecessor cleanup. Invalidate the in-flight start before
+            # awaiting either cleanup, then wait for both under one explicit
+            # close latch so cancellation/retry retains the same owner.
+            operation_generation = self._begin_asr_start_operation()
+            predecessor_cleanups = tuple(self._asr_owned_cleanup_tasks)
+            cleanup = self._detach_independent_asr(
+                operation_generation=operation_generation,
+            )
+            # Started HERE, not inside the joiner below. The resources this
+            # close just detached are its own and independent of any retired
+            # teardown; sequencing them behind a predecessor that never
+            # returns -- a retired provider stuck in session.close(), say --
+            # would keep this generation's detector and session physically
+            # open for as long as that lasts.
+            cleanup_task = (
+                self._schedule_owned_cleanup(
+                    cleanup,
+                    name="independent-asr-close-detached",
+                )
+                if cleanup is not None
+                else None
+            )
+            close_task = self._schedule_owned_cleanup(
+                self._finish_explicit_asr_close(
+                    predecessor_cleanups,
+                    cleanup_task,
+                ),
+                name="independent-asr-close",
+            )
+            self._asr_runtime_close_task = close_task
+        await asyncio.shield(close_task)
+
+    @staticmethod
+    async def _finish_explicit_asr_close(
+        predecessor_cleanups: tuple[asyncio.Task[Any], ...],
+        cleanup_task: "asyncio.Task[Any] | None",
+    ) -> None:
+        """Join both teardowns; ``cleanup_task`` is already running."""
+
+        if predecessor_cleanups:
+            await asyncio.gather(
+                *predecessor_cleanups,
+                return_exceptions=True,
+            )
+        if cleanup_task is not None:
+            # Awaited last but NOT started last, and awaited bare so its
+            # failure still reaches the owned-cleanup logger.
+            await cleanup_task
 
     async def set_speaker_verifier_factory(
         self,
@@ -515,6 +563,11 @@ class IndependentAsrRuntime:
     async def wait_transcript_idle(self) -> None:
         await self._asr_transcript_dispatcher.wait_idle()
 
+    def has_pending_transcript_delivery(self) -> bool:
+        """Return whether an accepted final has not finished Core dispatch."""
+
+        return self._asr_transcript_dispatcher.has_pending_delivery
+
     def _init_asr_runtime_state(self) -> None:
         self._asr_session = None
         self._asr_session_epoch = 0
@@ -525,9 +578,13 @@ class IndependentAsrRuntime:
         self._asr_audio_bytes = 0
         self._asr_received_audio = False
         self._asr_close_tasks: set[asyncio.Task[None]] = set()
+        self._asr_owned_cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self._asr_runtime_close_task: asyncio.Task[None] | None = None
         self._asr_lifecycle: VoiceInputLifecycleController | None = None
         self._asr_detector: DetectorRuntime | None = None
         self._asr_smart_turn_lease: SmartTurnLease | None = None
+        self._asr_smart_turn_prepare_lock = asyncio.Lock()
+        self._asr_smart_turn_prepare_scope: tuple[int, int, int] | None = None
         self._asr_session_factory = None
         self._asr_transport_selection = None
         self._asr_transport_task: asyncio.Task[None] | None = None
@@ -535,9 +592,17 @@ class IndependentAsrRuntime:
         self._asr_warm_expiry_task: asyncio.Task[None] | None = None
         self._asr_final_watchdog_task: asyncio.Task[None] | None = None
         self._asr_pending_speech_confirmed = False
+        self._asr_pending_speech_onset_at = None
         self._asr_pending_detector_candidate = None
         self._asr_overlap_onset_token: VoiceIngressToken | None = None
+        # 重叠发声的真实开口时刻。重放发生在「上一轮延迟 final 到达」之后，比用户
+        # 实际开口晚得多；不把这一刻带过去，重放时取到的 onset 会把中间那段全算成
+        # 「开口之后」，后继发声在重放前拍的帧就全被排除了。
+        self._asr_overlap_onset_at: float | None = None
         self._asr_overlap_completed_token: VoiceIngressToken | None = None
+        # 每张 credit 一个开口时刻：多个 onset+pause 周期可以在同一条延迟 final
+        # 后面排队，用单个槽位会让所有重放共用最后那个时刻。
+        self._asr_overlap_completed_onsets: deque[float] = deque()
         self._asr_overlap_completed_turns = 0
         self._asr_sealed_turn_token: VoiceTransportToken | None = None
         self._asr_provider_candidate_fence: ProviderCandidateFence | None = None
@@ -570,9 +635,49 @@ class IndependentAsrRuntime:
         )
         self._asr_last_provider_wire_audio_ms = 0
         self._asr_turn_audio_started_at: float | None = None
+        # 语义上的「用户开口时刻」。与上面那个的区别是**打点位置**：这个钉在
+        # SPEECH_CONFIRMED 转换那一行，不跨 _send_asr_lifecycle_state() 的投递
+        # await；上面那个在两条路径上是投递完成之后才打的，喂延迟指标够用，但拿
+        # 来当视觉所有权的起点会把投递窗口里拍的帧判成"不属于这段发声"。
+        self._asr_turn_onset_at: float | None = None
+        # 语音已经检测到、但 ASR session 还没就绪（要等重连）时先把这一刻记下来。
+        # 真正 SPEECH_CONFIRMED 要等 connect() 成功之后才发得出去，用那时的时钟
+        # 当"用户开口时刻"会把整段重连等待算进去，重连期间拍的帧全被判成不属于
+        # 这段发声。
+        self._asr_pending_speech_onset_at: float | None = None
+        # 上一回合还在排空（DRAINING）时用户就接着说了：pending turn 的真实开口时刻
+        # 是 mark_pending_turn_speech() 那一刻，不是后面 begin_pending_turn() 激活的
+        # 时刻。lifecycle 硬要求 DRAINING 才能标记，所以这个值必然晚于上一轮封口。
+        self._asr_pending_turn_onset_at: float | None = None
         self._asr_turn_endpointed_at: float | None = None
+        # 与上面那个一样在封口时刻打点，但**不在 PROVIDER_FINAL 时清掉**。Core 要
+        # 到 transcript 派发之后才冻结多模态回合，那时上面那个已经是 None 了；
+        # 消费方靠"这个时刻是否晚于本回合起点"排除上一轮的残值。
+        self._asr_last_turn_endpointed_at: float | None = None
+        # 上面那个保留副本**属于哪一轮**。时间戳分不清"上一轮的封口"和"本轮的封
+        # 口"：monotonic 在 Windows 上是 ~15ms 粒度，两者都可能与后继 record 的注
+        # 册时刻相等，往任一个方向猜都会错（猜"归上一轮"会丢掉本轮自己的截止点，
+        # 猜"归本轮"会把上一轮的封口盖到后继头上）。带上身份就不用猜。
+        self._asr_last_turn_endpointed_key: str | None = None
         self._asr_first_partial_recorded = False
         self._voice_input_resource_optimization_enabled = True
+
+    def _schedule_owned_cleanup(
+        self,
+        awaitable: Awaitable[Any],
+        *,
+        name: str,
+    ) -> asyncio.Task[Any]:
+        """Keep teardown running when its caller is cancelled."""
+
+        task = asyncio.create_task(awaitable, name=name)
+        self._asr_owned_cleanup_tasks.add(task)
+        task.add_done_callback(self._owned_cleanup_done)
+        return task
+
+    def _owned_cleanup_done(self, task: asyncio.Task[Any]) -> None:
+        self._asr_owned_cleanup_tasks.discard(task)
+        self._log_asr_background_task_failure(task)
 
     def _ensure_asr_runtime_state(self) -> None:
         # A number of focused unit tests intentionally construct the manager via
@@ -598,6 +703,10 @@ class IndependentAsrRuntime:
             self._asr_pending_detector_candidate = None
         if not hasattr(self, "_asr_overlap_onset_token"):
             self._asr_overlap_onset_token = None
+        if not hasattr(self, "_asr_overlap_onset_at"):
+            self._asr_overlap_onset_at = None
+        if not hasattr(self, "_asr_overlap_completed_onsets"):
+            self._asr_overlap_completed_onsets = deque()
         if not hasattr(self, "_asr_partial_turn_token"):
             self._asr_partial_turn_token = None
         if not hasattr(self, "_asr_overlap_completed_token"):
@@ -607,6 +716,13 @@ class IndependentAsrRuntime:
             self._asr_start_generation = 0
         if not hasattr(self, "_asr_provider_candidate_fence"):
             self._asr_provider_candidate_fence = None
+        if not hasattr(self, "_asr_owned_cleanup_tasks"):
+            self._asr_owned_cleanup_tasks = set()
+        if not hasattr(self, "_asr_runtime_close_task"):
+            self._asr_runtime_close_task = None
+        if not hasattr(self, "_asr_smart_turn_prepare_lock"):
+            self._asr_smart_turn_prepare_lock = asyncio.Lock()
+            self._asr_smart_turn_prepare_scope = None
         if not hasattr(self, "_speaker_verifier_factory"):
             self._speaker_verifier_factory = None
             self._speaker_verifier_activation_generation = None
@@ -920,6 +1036,11 @@ class IndependentAsrRuntime:
     ) -> None:
         """Prepare segmented endpointing and transport without final authority."""
 
+        # 用户开口的时刻是**进这个处理函数**的时刻，不是底下 prewarm / transport
+        # gather 跑完的时刻。视觉所有权拿 onset 当下界，晚打点会把整段 prewarm+
+        # 重连等待算成「用户开口之后」，期间拍的帧全被判成不属于这段发声。
+        detected_at = time.monotonic()
+
         def event_is_current() -> bool:
             return bool(
                 epoch == self._asr_session_epoch
@@ -935,6 +1056,8 @@ class IndependentAsrRuntime:
         if state is VoiceLifecycleState.DRAINING:
             if event.kind == "continuous":
                 lifecycle.mark_pending_turn_speech()
+                if self._asr_pending_turn_onset_at is None:
+                    self._asr_pending_turn_onset_at = detected_at
                 self._asr_pending_detector_candidate = event.candidate
             return
         if state in {
@@ -1004,8 +1127,23 @@ class IndependentAsrRuntime:
         session_ref = self._asr_session
         if session_ref is None or not getattr(session_ref, "is_ready", True):
             self._asr_pending_speech_confirmed = True
+            if self._asr_pending_speech_onset_at is None:
+                self._asr_pending_speech_onset_at = detected_at
             return
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+        # session 先未就绪、随后又 ready 时，真实开口时刻是当初记下的那个
+        # pending onset —— 直接用当前时钟会把整段重连等待算成「开口之后」，
+        # 期间拍的帧全被排除在本回合外（CodeRabbit Major）。
+        self._asr_turn_onset_at = (
+            self._asr_pending_speech_onset_at
+            if self._asr_pending_speech_onset_at is not None
+            else detected_at
+        )
+        # 直接确认这一路同样要把待确认状态清干净：session 在标记 pending 之后
+        # 才 ready 时，直接路径可能先完成确认，旧 flag / 旧 onset 会留到下一轮
+        # 被复用（CodeRabbit Major）。
+        self._asr_pending_speech_confirmed = False
+        self._asr_pending_speech_onset_at = None
         active_identity = self._capture_runtime_identity(
             ingress_token=event.ingress.ingress_token,
         )
@@ -1090,6 +1228,9 @@ class IndependentAsrRuntime:
     ) -> bool:
         """Open a provider-owned streaming turn without fabricating VAD activity."""
 
+        # 同 _handle_detector_prewarm_event：onset 取进函数的时刻，不取底下各段
+        # await 跑完的时刻。
+        detected_at = time.monotonic()
         detector = self._asr_detector
         ingress_token = self._asr_current_ingress_token
 
@@ -1107,6 +1248,8 @@ class IndependentAsrRuntime:
         state = lifecycle.snapshot.state
         if state is VoiceLifecycleState.DRAINING:
             lifecycle.mark_pending_turn_speech()
+            if self._asr_pending_turn_onset_at is None:
+                self._asr_pending_turn_onset_at = detected_at
             return wake_is_current()
         if state in {
             VoiceLifecycleState.LOCAL_LISTEN,
@@ -1138,6 +1281,8 @@ class IndependentAsrRuntime:
         session_ref = self._asr_session
         if session_ref is None or not getattr(session_ref, "is_ready", True):
             self._asr_pending_speech_confirmed = True
+            if self._asr_pending_speech_onset_at is None:
+                self._asr_pending_speech_onset_at = detected_at
             self._ensure_transport_restart_task()
             return wake_is_current()
         turn_token = self._capture_turn_token(lifecycle)
@@ -1154,6 +1299,16 @@ class IndependentAsrRuntime:
             )
             return False
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+        # session 先未就绪、随后又 ready 时，真实开口时刻是当初记下的那个
+        # pending onset —— 直接用当前时钟会把整段重连等待算成「开口之后」，
+        # 期间拍的帧全被排除在本回合外（CodeRabbit Major）。
+        self._asr_turn_onset_at = (
+            self._asr_pending_speech_onset_at
+            if self._asr_pending_speech_onset_at is not None
+            else detected_at
+        )
+        self._asr_pending_speech_confirmed = False
+        self._asr_pending_speech_onset_at = None
         active_identity = self._capture_runtime_identity(
             ingress_token=ingress_token,
             turn_token=turn_token,
@@ -1253,6 +1408,29 @@ class IndependentAsrRuntime:
                 expected_identity=identity,
             )
             return False
+        prepare_scope = (epoch, id(lifecycle), id(detector))
+        if self._asr_smart_turn_prepare_scope != prepare_scope:
+            self._asr_smart_turn_prepare_scope = prepare_scope
+            self._asr_smart_turn_prepare_lock = asyncio.Lock()
+        prepare_lock = self._asr_smart_turn_prepare_lock
+        async with prepare_lock:
+            if not self._runtime_identity_matches(identity):
+                return False
+            return await self._ensure_smart_turn_ready_for_identity(
+                detector,
+                turn_token,
+                identity,
+                epoch=epoch,
+            )
+
+    async def _ensure_smart_turn_ready_for_identity(
+        self,
+        detector: DetectorRuntime,
+        turn_token: VoiceTurnToken,
+        identity: _AsrRuntimeIdentity,
+        *,
+        epoch: int,
+    ) -> bool:
         lease = self._asr_smart_turn_lease
         if (
             lease is not None
@@ -1322,7 +1500,9 @@ class IndependentAsrRuntime:
                     return
                 state = lifecycle.snapshot.state
                 lifecycle.discard_pending_turn()
+                self._asr_pending_turn_onset_at = None
                 self._asr_pending_speech_confirmed = False
+                self._asr_pending_speech_onset_at = None
                 self._asr_pending_detector_candidate = None
                 if state is VoiceLifecycleState.DRAINING:
                     sealed_token = self._asr_sealed_turn_token
@@ -1393,7 +1573,9 @@ class IndependentAsrRuntime:
                 await self._asr_transcript_dispatcher.wait_idle()
         if state is VoiceLifecycleState.DRAINING:
             lifecycle.discard_pending_turn()
+            self._asr_pending_turn_onset_at = None
             self._asr_pending_speech_confirmed = False
+            self._asr_pending_speech_onset_at = None
             self._asr_pending_detector_candidate = None
             if detector is not None:
                 identity = self._capture_runtime_identity(ingress_token=token)
@@ -1521,10 +1703,20 @@ class IndependentAsrRuntime:
         """
 
         self._ensure_asr_runtime_state()
+        # A new start owns a new runtime generation. Any predecessor close task
+        # still owns only the resources it already detached; future close calls
+        # must target this start instead of re-awaiting that retired teardown.
+        self._asr_runtime_close_task = None
         operation_generation = self._begin_asr_start_operation()
-        await self._close_independent_asr(
+        cleanup = self._detach_independent_asr(
             operation_generation=operation_generation,
         )
+        if cleanup is not None:
+            cleanup_task = self._schedule_owned_cleanup(
+                cleanup,
+                name="independent-asr-start-predecessor-close",
+            )
+            await asyncio.shield(cleanup_task)
         if not self._asr_start_operation_matches(operation_generation):
             return AsrStartResult(
                 AsrStartStatus.FAILED,
@@ -2261,9 +2453,12 @@ class IndependentAsrRuntime:
         self._asr_turn_prepared = False
         self._asr_received_audio = False
         self._asr_pending_speech_confirmed = False
+        self._asr_pending_speech_onset_at = None
         self._asr_pending_detector_candidate = None
         self._asr_overlap_onset_token = None
+        self._asr_overlap_onset_at = None
         self._asr_overlap_completed_token = None
+        self._asr_overlap_completed_onsets.clear()
         self._asr_overlap_completed_turns = 0
         self._asr_audio_sequence = 0
         self._asr_current_ingress_token = None
@@ -2275,6 +2470,8 @@ class IndependentAsrRuntime:
         self._asr_provider_candidate_fence = None
         self._asr_turn_endpointed_at = None
         self._asr_turn_audio_started_at = None
+        self._asr_turn_onset_at = None
+        self._asr_pending_turn_onset_at = None
         self._asr_first_partial_recorded = False
         watchdog = self._asr_rejection_watchdog_task
         self._asr_rejection_watchdog_task = None
@@ -2302,11 +2499,24 @@ class IndependentAsrRuntime:
     ) -> None:
         """Invalidate callbacks first, then release the detached provider session."""
 
+        cleanup = self._detach_independent_asr(
+            operation_generation=operation_generation,
+        )
+        if cleanup is not None:
+            await cleanup
+
+    def _detach_independent_asr(
+        self,
+        *,
+        operation_generation: int | None = None,
+    ) -> Awaitable[None] | None:
+        """Synchronously seize one generation and return its owned cleanup."""
+
         self._ensure_asr_runtime_state()
         if operation_generation is None:
             operation_generation = self._begin_asr_start_operation()
         elif not self._asr_start_operation_matches(operation_generation):
-            return
+            return None
         self._asr_session_epoch += 1
         self._asr_audio_generation += 1
         transcript_dispatcher = self._asr_transcript_dispatcher
@@ -2358,27 +2568,40 @@ class IndependentAsrRuntime:
         self._reset_asr_turn_state()
         self._asr_session_factory = None
         self._asr_transport_selection = None
-        if detector is not None:
-            await detector.close()
-        if lease is not None:
-            try:
-                await lease.release()
-            except Exception:
-                logger.warning(
-                    "[%s] SmartTurn lease release failed during ASR close",
-                    self.display_name,
-                )
-        if asr_session is not None:
-            try:
-                await asr_session.close()
-            except Exception:
-                logger.warning("[%s] independent ASR close failed", self.display_name)
-        wait_tasks = (*detached_tasks, *close_tasks, *rejection_tasks)
-        if wait_tasks:
-            await asyncio.gather(*wait_tasks, return_exceptions=True)
-        await detector_dispatcher.close()
-        await audio_dispatcher.close()
-        transcript_dispatcher.invalidate_all()
+
+        async def finish_detached_cleanup() -> None:
+            if detector is not None:
+                try:
+                    await detector.close()
+                except Exception:
+                    logger.warning(
+                        "[%s] detector close failed during ASR close",
+                        self.display_name,
+                    )
+            if lease is not None:
+                try:
+                    await lease.release()
+                except Exception:
+                    logger.warning(
+                        "[%s] SmartTurn lease release failed during ASR close",
+                        self.display_name,
+                    )
+            if asr_session is not None:
+                try:
+                    await asr_session.close()
+                except Exception:
+                    logger.warning(
+                        "[%s] independent ASR close failed",
+                        self.display_name,
+                    )
+            wait_tasks = (*detached_tasks, *close_tasks, *rejection_tasks)
+            if wait_tasks:
+                await asyncio.gather(*wait_tasks, return_exceptions=True)
+            await detector_dispatcher.close()
+            await audio_dispatcher.close()
+            transcript_dispatcher.invalidate_all()
+
+        return finish_detached_cleanup()
 
     async def submit(
         self,
@@ -2782,7 +3005,13 @@ class IndependentAsrRuntime:
                             )
                             return
                         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+                        self._asr_turn_onset_at = (
+                            self._asr_pending_speech_onset_at
+                            if self._asr_pending_speech_onset_at is not None
+                            else time.monotonic()
+                        )
                         self._asr_pending_speech_confirmed = False
+                        self._asr_pending_speech_onset_at = None
                         self._asr_turn_audio_started_at = time.monotonic()
                         self._asr_first_partial_recorded = False
                         await self._send_asr_lifecycle_state(
@@ -2906,17 +3135,34 @@ class IndependentAsrRuntime:
             )
             lifecycle.invalidate_transport()
         post_detach = self._capture_runtime_identity()
-        if lease is not None:
-            await lease.release()
-        if asr_session is not None:
+
+        async def finish_abort() -> None:
             try:
-                await asr_session.close()
+                if lease is not None:
+                    await lease.release()
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.warning(
-                    "[%s] independent ASR abort failed reason=%s",
+                    "[%s] SmartTurn lease release failed during ASR abort",
                     self.display_name,
-                    reason,
                 )
+            finally:
+                if asr_session is not None:
+                    try:
+                        await asr_session.close()
+                    except Exception:
+                        logger.warning(
+                            "[%s] independent ASR abort failed reason=%s",
+                            self.display_name,
+                            reason,
+                        )
+
+        cleanup_task = self._schedule_owned_cleanup(
+            finish_abort(),
+            name="independent-asr-abort-transport",
+        )
+        await asyncio.shield(cleanup_task)
         return post_detach
 
     async def _close_transport_only(self) -> None:
@@ -2929,6 +3175,21 @@ class IndependentAsrRuntime:
             warm_task.cancel()
         self._asr_warm_expiry_task = None
         asr_session, self._asr_session = self._asr_session, None
+        session_close_task = None
+        if asr_session is not None:
+            async def close_transport() -> None:
+                try:
+                    await asr_session.close()
+                except Exception:
+                    logger.warning(
+                        "[%s] independent ASR transport-only close failed",
+                        self.display_name,
+                    )
+
+            session_close_task = self._schedule_owned_cleanup(
+                close_transport(),
+                name="independent-asr-transport-close",
+            )
         lifecycle = self._asr_lifecycle
         if lifecycle is not None:
             lifecycle.invalidate_transport()
@@ -2944,14 +3205,8 @@ class IndependentAsrRuntime:
                     session_epoch=epoch,
                     expected_identity=identity,
                 )
-        if asr_session is not None:
-            try:
-                await asr_session.close()
-            except Exception:
-                logger.warning(
-                    "[%s] independent ASR transport-only close failed",
-                    self.display_name,
-                )
+        if session_close_task is not None:
+            await asyncio.shield(session_close_task)
 
     def _schedule_transport_warm_expiry(
         self,
@@ -3017,6 +3272,7 @@ class IndependentAsrRuntime:
                         return
                     lifecycle.transition(VoiceLifecycleEvent.PREWARM_EXPIRED)
                     self._asr_pending_speech_confirmed = False
+                    self._asr_pending_speech_onset_at = None
                     self._asr_pending_detector_candidate = None
                     identity = self._capture_runtime_identity()
                     delivered = await self._send_asr_lifecycle_state(
@@ -3114,6 +3370,8 @@ class IndependentAsrRuntime:
         event: SpeechActivityEvent,
         epoch: int,
     ) -> None:
+        # 同上：onset 是收到这个语音活动事件的时刻。
+        detected_at = time.monotonic()
         if epoch != self._asr_session_epoch:
             return
         provider = self._asr_provider or "unknown"
@@ -3128,6 +3386,8 @@ class IndependentAsrRuntime:
             }
         ):
             lifecycle.mark_pending_turn_speech()
+            if self._asr_pending_turn_onset_at is None:
+                self._asr_pending_turn_onset_at = detected_at
             return
         if (
             lifecycle is not None
@@ -3180,8 +3440,20 @@ class IndependentAsrRuntime:
                 asr_session = self._asr_session
                 if asr_session is not None and getattr(asr_session, "is_ready", True):
                     lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+                    # session 先未就绪、随后又 ready 时，真实开口时刻是当初记下的那个
+                    # pending onset —— 直接用当前时钟会把整段重连等待算成「开口之后」，
+                    # 期间拍的帧全被排除在本回合外（CodeRabbit Major）。
+                    self._asr_turn_onset_at = (
+                        self._asr_pending_speech_onset_at
+                        if self._asr_pending_speech_onset_at is not None
+                        else detected_at
+                    )
+                    self._asr_pending_speech_confirmed = False
+                    self._asr_pending_speech_onset_at = None
                 else:
                     self._asr_pending_speech_confirmed = True
+                    if self._asr_pending_speech_onset_at is None:
+                        self._asr_pending_speech_onset_at = detected_at
             if lifecycle.snapshot.state is not previous_state:
                 identity = self._capture_runtime_identity(
                     ingress_token=self._asr_current_ingress_token,
@@ -3215,14 +3487,24 @@ class IndependentAsrRuntime:
                 # completed-overlap credit; only a provider endpoint arriving
                 # in WARM_IDLE proves a queued turn exists and redeems it.
                 onset_token = self._asr_overlap_onset_token
+                onset_at = self._asr_overlap_onset_at
                 self._asr_overlap_onset_token = None
+                self._asr_overlap_onset_at = None
                 if onset_token is not None:
+                    # 一张 credit 配一个时刻，按兑付顺序排队。
+                    self._asr_overlap_completed_onsets.append(
+                        onset_at if onset_at is not None else detected_at
+                    )
                     if onset_token == self._asr_overlap_completed_token:
                         # Each additional onset+pause cycle observed while the
                         # first turn stays ACTIVE queues one more provider
                         # endpoint/final pair, so count credits per cycle.
                         self._asr_overlap_completed_turns += 1
                     else:
+                        # 换了 ingress 身份：旧队列作废，只留这一张。
+                        last = self._asr_overlap_completed_onsets.pop()
+                        self._asr_overlap_completed_onsets.clear()
+                        self._asr_overlap_completed_onsets.append(last)
                         self._asr_overlap_completed_token = onset_token
                         self._asr_overlap_completed_turns = 1
             return
@@ -3238,6 +3520,7 @@ class IndependentAsrRuntime:
                 # prepared. Remember the onset (ingress-fenced) so the delayed
                 # final can replay it instead of dropping the next turn.
                 self._asr_overlap_onset_token = self._asr_current_ingress_token
+                self._asr_overlap_onset_at = detected_at
             return
         if (
             lifecycle is not None
@@ -3303,6 +3586,16 @@ class IndependentAsrRuntime:
             if self._asr_partial_turn_token == turn_token:
                 self._asr_partial_turn_token = None
 
+    def _consume_overlap_completed_credit(self) -> None:
+        """Retire one redeemed completed-overlap credit and its onset."""
+
+        self._asr_overlap_completed_turns -= 1
+        if self._asr_overlap_completed_onsets:
+            self._asr_overlap_completed_onsets.popleft()
+        if self._asr_overlap_completed_turns == 0:
+            self._asr_overlap_completed_token = None
+            self._asr_overlap_completed_onsets.clear()
+
     async def _handle_independent_asr_endpoint(self, epoch: int) -> None:
         """Seal the current turn immediately at its semantic endpoint."""
 
@@ -3336,9 +3629,26 @@ class IndependentAsrRuntime:
             # credit: replay the onset so the lifecycle is ACTIVE and prepared,
             # then fall through to seal immediately, letting the queued final
             # right behind this endpoint find a DRAINING turn.
-            self._asr_overlap_completed_turns -= 1
-            if self._asr_overlap_completed_turns == 0:
-                self._asr_overlap_completed_token = None
+            # ⚠️ 先重放、确认真的醒过来了，**再**记账。重放可能唤不醒这一轮
+            # （会话暂时不可用时停在 PREWARMING）；此时若 credit 已经扣掉，这张
+            # credit 对应的 endpoint 就再也封不了口，紧随其后的 final 会被整条
+            # 丢弃，而被弹出的 onset 还会被更晚的回合继承（拿错视觉窗口）。
+            replay_onset_at = (
+                self._asr_overlap_completed_onsets[0]
+                if self._asr_overlap_completed_onsets
+                else None
+            )
+            # 把真实开口时刻交给重放：直接确认分支会优先取 pending onset，于是
+            # SPEECH_CONFIRMED 打上的是用户当初开口的时刻，而不是这次重放的时刻。
+            _lent_pending_onset = False
+            if (
+                replay_onset_at is not None
+                and self._asr_pending_speech_onset_at is None
+            ):
+                self._asr_pending_speech_onset_at = replay_onset_at
+                _lent_pending_onset = True
+            pending_before = self._asr_pending_speech_confirmed
+            credit_consumed = False
             await self._handle_independent_asr_activity(
                 SpeechActivityEvent.SPEECH_RESUMED,
                 epoch,
@@ -3348,6 +3658,103 @@ class IndependentAsrRuntime:
                 or self._asr_lifecycle is not lifecycle
             ):
                 return
+            if (
+                not pending_before
+                and self._asr_pending_speech_confirmed
+                and lifecycle.snapshot.state is VoiceLifecycleState.PREWARMING
+            ):
+                # 重放被"传输未就绪"挡住了，停在 PREWARMING 并挂起了确认。
+                # （provider 权威下 SOFT_WAKE→PREWARMING 之后拦路的就是
+                # asr_session.is_ready —— _ensure_smart_turn_ready 在 provider
+                # 权威下无 await 直接返回 True；PREWARMING 的 lifecycle 广播没送达
+                # 是同态的另一种成因。别在注释里写死"唯一成因"。）
+                #
+                # 但这一轮**不需要**传输：它的音频早在上一轮还 ACTIVE 时就已经过
+                # 线，endpoint 和它自己的 final 已经排在有序 FIFO 里、正要到达。
+                # 而且能走到这里就说明老 session 还被认领着——_restart_transport
+                # 和 _close_transport_only 都是先把 _asr_session 置 None 再 close，
+                # 之后 is_adopted_candidate() 会丢掉它的全部回调——也就是说重连
+                # **还没开始**，那条 final 就排在后面。等重连救不回它：重连会换新
+                # session，老队列里那条 final 必定在 is_adopted_candidate() 上被
+                # 丢掉。就地补完确认，让紧随其后的 final 找到一个 DRAINING 的回合。
+                #
+                # 这里刻意**不**走 _handle_independent_asr_error：那条出口会 bump
+                # epoch、拆掉整个 session、cancel 掉正在跑的重连任务，并把语音路由
+                # fail-closed 到本次会话结束——为一句其实救得回来的话把整场语音判
+                # 死，违反"绝不丢用户的句子"。真丢的情况（final 始终不来）由下面封
+                # 口时装上的 provider-final watchdog 兜底：10s 硬顶，且不受
+                # _voice_input_resource_optimization_enabled 开关影响（那个开关会
+                # 让 _schedule_transport_warm_expiry 直接 return，所以不能靠它）。
+                #
+                # 门里 not pending_before 是刻意的：只补偿**这次重放自己造出来的**
+                # 那笔挂起确认，不吞别人的。
+                #
+                # 刻意不做的两件事：不调 _activate_asr_audio_dispatcher /
+                # drain_active_start_audio（重连确认分支有，但这一轮的音频早已过
+                # 线，本地没有待发缓冲）；不武装 _schedule_transport_warm_expiry
+                # （忙窗口的界由上面那个 watchdog 提供）。将来若有人让这条路承接
+                # 未发出的 PCM，必须回来补第一条。
+                lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+                self._asr_turn_onset_at = (
+                    self._asr_pending_speech_onset_at
+                    if self._asr_pending_speech_onset_at is not None
+                    else time.monotonic()
+                )
+                # 与 _restart_transport 的补确认块同序：确认一落地就把挂起状态
+                # 清掉。真实开口时刻已经装进 _asr_turn_onset_at，下面那个 await
+                # 无论怎么返回都不会把它丢掉。
+                self._asr_pending_speech_confirmed = False
+                self._asr_pending_speech_onset_at = None
+                # 这张 credit 就是被这次确认兑走的，账要跟着确认一起落。留到
+                # 下面记的话，身份漂移那条 return 会把它跳过：这一轮照常在替换后的
+                # 传输上封口，而陈旧的 credit 与 onset 还压在队列里 —— 后面真实的
+                # overlap 排在它后面，兑付时拿到错的 onset，多出来的那张还会让某个
+                # endpoint 重放到不属于它的回合上，把一条 final 丢掉。
+                self._consume_overlap_completed_credit()
+                credit_consumed = True
+                self._asr_turn_audio_started_at = time.monotonic()
+                self._asr_first_partial_recorded = False
+                confirm_identity = self._capture_runtime_identity(
+                    ingress_token=self._asr_current_ingress_token,
+                )
+                delivered = await self._send_asr_lifecycle_state(
+                    VoiceLifecycleState.ACTIVE,
+                    provider=provider,
+                    session_epoch=epoch,
+                    expected_identity=confirm_identity,
+                )
+                if (
+                    not delivered
+                    or epoch != self._asr_session_epoch
+                    or self._asr_lifecycle is not lifecycle
+                ):
+                    # delivered 为假只可能是运行时身份漂移：_send_asr_lifecycle_state
+                    # 吞掉回调异常之后，返回的就是 _runtime_identity_matches。而
+                    # _restart_transport / _close_transport_only 换掉 _asr_session 与
+                    # transport_generation 时都不走 _reset_asr_turn_state，所以这里留下
+                    # 的挂起状态没人回收：上面 transition(SPEECH_CONFIRMED) 已经把它兑付
+                    # 进 _asr_turn_onset_at，两个兑付点又都以 PREWARMING 为闸、ACTIVE 下
+                    # 一律跳过。残留下去会被后面某个不相干的回合当成自己的开口时刻，还会
+                    # 把补偿门 not pending_before 恒假化，让重叠补偿此后静默失效。
+                    return
+            if lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE:
+                # 没唤醒。credit 原样留着等下一次兑付；借出去的 onset 也要收回，
+                # 免得它被后面某个不相干的回合当成自己的起点。
+                # ⚠️ 只有在**没有**挂起的确认时才收回。session 未就绪时
+                # _handle_independent_asr_activity 会停在 PREWARMING、置上
+                # _asr_pending_speech_confirmed 并**特意留着**这个 onset 等重连后
+                # 的确认去取；此时收回等于让那次确认退回用新的 detected_at，把用户
+                # 真实开口以来的帧全排除掉。
+                if (
+                    _lent_pending_onset
+                    and not self._asr_pending_speech_confirmed
+                    and self._asr_pending_speech_onset_at == replay_onset_at
+                ):
+                    self._asr_pending_speech_onset_at = None
+                return
+            # 确认 ACTIVE 之后才记账（补确认那条路已经在上面记过了）。
+            if not credit_consumed:
+                self._consume_overlap_completed_credit()
         if lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE:
             if not self._asr_turn_prepared:
                 # A rejected preparation keeps the lifecycle ACTIVE so the
@@ -3422,6 +3829,13 @@ class IndependentAsrRuntime:
             lifecycle.transition(VoiceLifecycleEvent.TURN_SEALED)
             self._asr_sealed_turn_token = self._capture_transport_token(lifecycle)
             self._asr_turn_endpointed_at = time.monotonic()
+            self._asr_last_turn_endpointed_at = self._asr_turn_endpointed_at
+            # 与 Core 侧 record.turn_id 同构（asr_runtime.py 的
+            # external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"），
+            # 好让冻结时能直接判"这个封口是不是这条 record 的"。
+            self._asr_last_turn_endpointed_key = (
+                f"asr-{turn_token.ingress.session_epoch}-{turn_token.turn_id}"
+            )
             self._schedule_provider_final_watchdog(
                 epoch,
                 lifecycle,
@@ -3445,14 +3859,31 @@ class IndependentAsrRuntime:
             return
         lifecycle = self._asr_lifecycle
         if lifecycle is None or not lifecycle.has_pending_turn:
+            # has_pending_turn 还要求 pending buffer 里真有音频：speech 先到、或者
+            # 对应 PCM 被丢弃时会走到这里。不清的话这个 onset 会被**下一个**真实
+            # pending turn 复用，把那一轮的起点提前到上一轮，视觉帧绑错回合。
+            self._asr_pending_turn_onset_at = None
             if lifecycle is not None:
                 lifecycle.discard_unconfirmed_pending_audio()
             return
         if lifecycle.snapshot.state is not VoiceLifecycleState.WARM_IDLE:
             lifecycle.discard_pending_turn()
+            self._asr_pending_turn_onset_at = None
             self._asr_pending_detector_candidate = None
             return
         payload = lifecycle.begin_pending_turn()
+        # begin_pending_turn() 内部完成 SPEECH_CONFIRMED 迁移（lifecycle.py），是第
+        # 五个迁移点 —— 之前给另外四处补 onset 打点时漏了它，因为守卫只扫本模块的
+        # 字面量。不补的话 _asr_turn_onset_at 还留着**上一轮**的值（它只在
+        # close/abort/error 才清），Core 会拿上一轮的 onset 当本回合 started_at，于是
+        # 上一轮保留的封口时刻反过来成了本回合的截止点，本回合之后拍的每一帧都被
+        # accepts() 拒掉 —— 整轮退化成纯文本。
+        self._asr_turn_onset_at = (
+            self._asr_pending_turn_onset_at
+            if self._asr_pending_turn_onset_at is not None
+            else time.monotonic()
+        )
+        self._asr_pending_turn_onset_at = None
         if not payload:
             return
         turn_token = self._capture_turn_token(lifecycle)
@@ -3769,7 +4200,22 @@ class IndependentAsrRuntime:
 
         await self._activate_pending_independent_turn(epoch)
         overlap_token = self._asr_overlap_onset_token
-        self._asr_overlap_onset_token = None
+        overlap_onset_at = self._asr_overlap_onset_at
+        if overlap_token is not None and self._asr_overlap_completed_turns > 0:
+            # 单槽 onset 和已兑换成 credit 的旧周期同时存在时，credit 排在前面。
+            # provider 的 FIFO 会先送那些周期的 endpoint/final，再轮到这个还活着的
+            # onset。此刻**直接**重放的话，先到的那个 endpoint 会把这条 onset 建出
+            # 来的记录封掉 —— 旧那轮的 transcript 配上新那轮的视觉窗口；而新那轮的
+            # endpoint 再没有 credit 可兑，它的 final 会被整条丢掉。
+            #
+            # 所以两边都不动：onset 留在单槽里，credit 留在队列里各自按 FIFO 兑付。
+            # credit 兑完之后，那条 final 走到这里时 _asr_overlap_completed_turns
+            # 已经归零，重放才轮到这个 onset。身份轮换（硬静音 / 中止 / 路由切换）
+            # 会由 _reset_asr_turn_state 把单槽和队列一起清掉，不会留下半边。
+            overlap_token = None
+        else:
+            self._asr_overlap_onset_token = None
+            self._asr_overlap_onset_at = None
         if (
             detector_ref is not None
             and self._asr_lifecycle is lifecycle_ref
@@ -3805,10 +4251,96 @@ class IndependentAsrRuntime:
         # delayed behind this final. Replay the onset now that the lifecycle
         # reached WARM_IDLE so the next turn's ordered endpoint and final find
         # an ACTIVE, prepared turn instead of discarding the utterance.
+        #
+        # 把真实开口时刻交给重放 —— 和 credit 兑付那条路一样。少了这一步，这条
+        # **直接**重放会用当前时钟当后继发声的起点，把「上一轮排空 + 延迟 final」
+        # 整段算进「开口之后」，用户重新开口以来拍的帧全被排除。
+        _lent_pending_onset = False
+        if (
+            overlap_onset_at is not None
+            and self._asr_pending_speech_onset_at is None
+        ):
+            self._asr_pending_speech_onset_at = overlap_onset_at
+            _lent_pending_onset = True
+        pending_before = self._asr_pending_speech_confirmed
         await self._handle_independent_asr_activity(
             SpeechActivityEvent.SPEECH_RESUMED,
             epoch,
         )
+        if (
+            epoch != self._asr_session_epoch
+            or self._asr_lifecycle is not lifecycle_ref
+        ):
+            return
+        if (
+            not pending_before
+            and self._asr_pending_speech_confirmed
+            and lifecycle_ref.snapshot.state is VoiceLifecycleState.PREWARMING
+        ):
+            # 与 credit 兑付那条路同一处置（见 _handle_independent_asr_endpoint）：
+            # 重放被"传输未就绪"挡住停在 PREWARMING 时，就地补完确认。
+            #
+            # 光留住 onset 不够。这一轮的 provider endpoint / final 已经排在有序
+            # FIFO 里正要到达，而 PREWARMING 封不了口、_handle_independent_asr_final
+            # 又要求 DRAINING —— 那条 final 会被整条丢弃，且没有任何 watchdog 兜底。
+            # 等重连也救不回来：重连换新 session，老队列里的回调全被
+            # is_adopted_candidate() 丢掉（_restart_transport / _close_transport_only
+            # 都是先把 _asr_session 置 None 再 close）。能走到这里说明老 session
+            # 还被认领着，也就是重连还没开始。
+            #
+            # 这一轮不需要传输：它的音频早在上一轮 ACTIVE 时就已经过线。
+            lifecycle_ref.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+            self._asr_turn_onset_at = (
+                self._asr_pending_speech_onset_at
+                if self._asr_pending_speech_onset_at is not None
+                else time.monotonic()
+            )
+            # 与 credit 兑付那条路同序（见 _handle_independent_asr_endpoint）：
+            # 确认一落地就清挂起状态，真实开口时刻已经装进 _asr_turn_onset_at。
+            self._asr_pending_speech_confirmed = False
+            self._asr_pending_speech_onset_at = None
+            self._asr_turn_audio_started_at = time.monotonic()
+            self._asr_first_partial_recorded = False
+            confirm_identity = self._capture_runtime_identity(
+                ingress_token=self._asr_current_ingress_token,
+            )
+            delivered = await self._send_asr_lifecycle_state(
+                VoiceLifecycleState.ACTIVE,
+                provider=self._asr_provider or "unknown",
+                session_epoch=epoch,
+                expected_identity=confirm_identity,
+            )
+            if (
+                not delivered
+                or epoch != self._asr_session_epoch
+                or self._asr_lifecycle is not lifecycle_ref
+            ):
+                # delivered 为假只可能是运行时身份漂移：_send_asr_lifecycle_state
+                # 吞掉回调异常之后，返回的就是 _runtime_identity_matches。而
+                # _restart_transport / _close_transport_only 换掉 _asr_session 与
+                # transport_generation 时都不走 _reset_asr_turn_state，所以这里留下
+                # 的挂起状态没人回收：上面 transition(SPEECH_CONFIRMED) 已经把它兑付
+                # 进 _asr_turn_onset_at，两个兑付点又都以 PREWARMING 为闸、ACTIVE 下
+                # 一律跳过。残留下去会被后面某个不相干的回合当成自己的开口时刻，还会
+                # 把补偿门 not pending_before 恒假化，让重叠补偿此后静默失效。
+                return
+        if lifecycle_ref.snapshot.state is not VoiceLifecycleState.ACTIVE:
+            # 没醒起来（Smart Turn 租约没就绪，或 lifecycle 广播没送达）。借出去的
+            # onset 必须收回：留着的话，后面某个**不相干**的发声会把这个陈旧时刻
+            # 当成自己的起点，视觉所有权窗口整个错位——要么把无关的帧折进来，要么
+            # 把本轮真正的帧判成过期。
+            #
+            # ⚠️ 只有在**没有**挂起确认时才收回，判据与 credit 兑付那条路一字不差：
+            # session 未就绪时 _handle_independent_asr_activity 会停在 PREWARMING、
+            # 置上 _asr_pending_speech_confirmed 并**特意留着**这个 onset 等后续的
+            # 确认去取；此时收回等于让那次确认退回用新的 detected_at，把用户真实
+            # 开口以来的帧全排除掉。
+            if (
+                _lent_pending_onset
+                and not self._asr_pending_speech_confirmed
+                and self._asr_pending_speech_onset_at == overlap_onset_at
+            ):
+                self._asr_pending_speech_onset_at = None
 
     async def _dispatch_asr_transcript_envelope(
         self,

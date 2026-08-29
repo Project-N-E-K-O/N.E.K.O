@@ -90,3 +90,66 @@ jobs:
         # rebuilds and verifies that artifact on every run, which is the right
         # place for it — a stale local bundle would only produce a false green.
         run: uv run pytest tests/unit -q
+
+  plugin-manager-vitest:
+    name: Plugin manager vitest
+    # 前端侧的同一个洞。frontend/plugin-manager 有 36 个 vitest 文件、327 条用例，
+    # 在此之前没有任何 npm 脚本或 workflow 会执行它们：`test:hosted` 只覆盖
+    # src/components/plugin/hosted，而 build-desktop.yml 只跑 `npm run build-only`。
+    # 结果和 tests/unit 当年一样 —— 补齐依赖后一跑，10 条是红的，其中
+    # src/utils/i18nLabel.test.ts 的兜底顺序断言从写下起就没对过。
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/plugin-manager/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend/plugin-manager
+        run: npm ci
+
+      - name: Run plugin-manager unit suite
+        # 只排除 hosted/e2e（那是 playwright，另有 test:hosted:e2e 负责）。
+        # 限定 src 是为了把 scripts/*.test.mjs 挡在外面 —— 它们是 node:test
+        # 格式，由 test:hosted-script 单独跑，被 vitest 收进来只会报 no test suite。
+        working-directory: frontend/plugin-manager
+        run: npm run test:unit
+
+  react-neko-chat-checks:
+    name: React chat typecheck & vitest
+    # 和 plugin-manager 一样的洞，只是更深一层：frontend/react-neko-chat 的
+    # 17 个 vitest 文件此前没有任何 PR workflow 会执行，而唯一跑过它类型检查的
+    # build-desktop.yml 是 `on: workflow_call`，不是 PR 触发。结果是这个包的
+    # 类型错误和测试回归只有打包发版时才会暴露 —— #2948 里就有一个真实的编译
+    # 错误（调用点多传了一个不存在的标识符）一路活到 review 才被发现。
+    #
+    # typecheck 用 `npm run typecheck`（tsc -b --noEmit）。注意不能退回裸的
+    # `tsc --noEmit`：tsconfig.json 是 solution-style（"files": [] + references），
+    # 那条命令一个文件都不检查，永远绿。
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/react-neko-chat/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend/react-neko-chat
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: frontend/react-neko-chat
+        run: npm run typecheck
+
+      - name: Run react-neko-chat unit suite
+        working-directory: frontend/react-neko-chat
+        run: npm test

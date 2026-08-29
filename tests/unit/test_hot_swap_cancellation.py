@@ -38,16 +38,24 @@ its cancel set; ``assert not swap_task.cancelled()`` pins that guard.
 """
 import asyncio
 import time
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import main_logic.core as core_module
 from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.omni_realtime_client import (
+    ImageStageResult,
+    MultimodalTurnDelivery,
+    OmniRealtimeClient,
+)
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
+    PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
+    PASSIVE_MEDIA_RETRY_KEY,
+    PASSIVE_MEDIA_TRANSIENT_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
 )
 
@@ -431,6 +439,137 @@ def _passive_callback(summary, *, coalesce_key=""):
     }
 
 
+def test_swap_prime_render_excludes_retracted_claimed_callback():
+    mgr = _make_swap_manager()
+    callback = _passive_callback("expired during media staging")
+    callback[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+    callback[DELIVERY_RETRACTED_KEY] = True
+
+    ready, rendered = mgr._render_claimed_passive_callbacks_for_swap_prime(
+        [callback]
+    )
+
+    assert ready == []
+    assert rendered == ""
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in callback
+
+
+def test_swap_prime_render_stops_at_a_budget_deferred_callback():
+    """Nothing after a budget-deferred callback may jump ahead in this swap.
+
+    ``split_callbacks_by_image_budget`` is strictly FIFO, so once the budget is
+    spent the ENTIRE suffix is marked with PASSIVE_MEDIA_BUDGET_DEFERRED_KEY --
+    including the text-only callbacks in it. ``_callback_media_ready_for_session``
+    returns True for any callback without images, so filtering on it alone lets
+    the text-only entry queued BEHIND a deferred media cue be injected and
+    dequeued by this swap, and the model hears them out of order (the media cue
+    is still queued for the next turn).
+
+    The assertion is that the trailing text-only callback was not rendered, not
+    that the media one was not: the latter passes under a media_ready-only
+    filter too and would not catch this.
+    """
+    mgr = _make_swap_manager()
+    deferred_media = _passive_callback("带图的，预算没轮到它")
+    deferred_media["media_images"] = ["img-b64"]
+    deferred_media[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+    deferred_media[PASSIVE_MEDIA_BUDGET_DEFERRED_KEY] = True
+    deferred_text = _passive_callback("排在它后面的纯文本")
+    deferred_text[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+    deferred_text[PASSIVE_MEDIA_BUDGET_DEFERRED_KEY] = True
+
+    ready, rendered = mgr._render_claimed_passive_callbacks_for_swap_prime(
+        [deferred_media, deferred_text]
+    )
+
+    assert ready == []
+    assert "排在它后面的纯文本" not in rendered
+    # 两条都留在队列里等下一轮，claim 也都要还回去。
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in deferred_media
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in deferred_text
+
+
+def test_swap_prime_render_stops_at_a_transient_media_failure():
+    """A retryable staging failure must hold back everything behind it too.
+
+    Same FIFO argument as the budget-deferred case, different branch: skipping
+    a media callback whose staging hit a TRANSIENT rejection lets a later
+    text-only callback render and be dequeued after promotion while the earlier
+    one stays queued, so the model hears them in the wrong order.
+
+    Matches drain_agent_callbacks_for_llm()'s transient branch. The retry count
+    is deliberately NOT incremented here -- the drain owns that accounting, and
+    charging it at both consumers burns the budget twice as fast.
+    """
+    mgr = _make_swap_manager()
+    stuck_media = _passive_callback("带图的，挂图瞬时失败")
+    stuck_media["media_images"] = ["img-b64"]
+    stuck_media[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+    stuck_media[PASSIVE_MEDIA_TRANSIENT_KEY] = True
+    later_text = _passive_callback("排在它后面的纯文本")
+    later_text[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+
+    ready, rendered = mgr._render_claimed_passive_callbacks_for_swap_prime(
+        [stuck_media, later_text]
+    )
+
+    assert ready == []
+    assert "排在它后面的纯文本" not in rendered
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in stuck_media
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in later_text
+    # 重试记账归 drain，这里不能碰（两处都加会让额度按两倍速烧完）。
+    assert PASSIVE_MEDIA_RETRY_KEY not in stuck_media
+    # 判据不是这个标记：终局失败同样 STOP（见下面那条对偶）。
+
+
+def test_swap_prime_render_stops_at_a_terminal_media_failure_too():
+    """A terminal failure stops the swap as well -- FIFO does not care why.
+
+    Skipping it lets the later callback be primed and dequeued after promotion
+    while this one stays queued, reversing their order. Stopping does not
+    strand it either: drain_agent_callbacks_for_llm() delivers a terminally
+    unstaged media callback text-only on its best-effort path, so the next user
+    turn releases it together with everything behind it.
+
+    Deliberately NOT classified by PASSIVE_MEDIA_TRANSIENT_KEY: the staging
+    exception path leaves that marker unset on purpose (drain's contract for an
+    exception is text-only delivery, pinned by
+    test_first_native_passive_media_exception_requires_session_retirement), so
+    keying on it here would misread an exception as terminal. Both cases stop,
+    so no classification is needed.
+    """
+    mgr = _make_swap_manager()
+    dead_media = _passive_callback("带图的，终局失败")
+    dead_media["media_images"] = ["img-b64"]
+    dead_media[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+    later_text = _passive_callback("排在它后面的纯文本")
+    later_text[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+
+    ready, rendered = mgr._render_claimed_passive_callbacks_for_swap_prime(
+        [dead_media, later_text]
+    )
+
+    assert ready == []
+    assert "排在它后面的纯文本" not in rendered
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in dead_media
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in later_text
+
+
+def test_swap_prime_render_still_takes_an_undeferred_text_callback():
+    """Dual: an undeferred text-only callback still renders.
+
+    Guards against widening the gate into "hold back every text-only callback".
+    """
+    mgr = _make_swap_manager()
+    plain = _passive_callback("正常的纯文本通知")
+    plain[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+
+    ready, rendered = mgr._render_claimed_passive_callbacks_for_swap_prime([plain])
+
+    assert ready == [plain]
+    assert "正常的纯文本通知" in rendered
+
+
 def _install_passive_prime_barrier(session, *, expected_text):
     prime_entered = asyncio.Event()
     allow_prime = asyncio.Event()
@@ -618,6 +757,42 @@ async def test_final_swap_passive_prime_failure_aborts_pending_session():
     assert mgr.pending_agent_callbacks == [callback]
     assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in callback
     assert not delivery_ack.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_gemini", [False, True])
+async def test_final_swap_native_media_retraction_before_text_aborts_pending(
+    is_gemini,
+):
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _make_fake_realtime_session("pending")
+    new_session._is_gemini = is_gemini
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    callback = _passive_callback("retracted after native staging")
+    callback[DELIVERY_RETRACTED_KEY] = True
+    mgr.pending_agent_callbacks = [callback]
+    mgr._select_passive_callbacks_for_swap_prime = (
+        lambda **_kwargs: ([callback], "")
+    )
+    mgr._stage_passive_callback_media = AsyncMock(return_value={
+        "safe_to_continue": True,
+        "native_prefix_committed": True,
+        "native_rejection_pending": not is_gemini,
+        "rejected": False,
+    })
+    mgr._render_claimed_passive_callbacks_for_swap_prime = MagicMock(
+        return_value=([], "")
+    )
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert mgr.session is old_session
+    assert new_session.closed is True
+    assert mgr.pending_agent_callbacks == []
 
 
 @pytest.mark.asyncio
@@ -1455,3 +1630,349 @@ async def test_prime_dispatch_failure_on_the_skipped_branch_takes_the_targeted_a
     assert mgr.pending_session is None
     assert mgr.is_hot_swap_imminent is False
     assert not any("INTERNAL_UPDATE_FAILED" in s for s in statuses)
+
+
+@pytest.mark.asyncio
+async def test_passive_native_rejection_retires_replacement_before_callback_ack():
+    mgr = _make_swap_manager()
+    statuses = []
+    cleanup_steps = []
+
+    def _record_status(status):
+        statuses.append(status)
+        cleanup_steps.append("status")
+
+    mgr._close_independent_asr = AsyncMock(
+        side_effect=lambda **_kwargs: cleanup_steps.append("asr")
+    )
+    mgr.send_status = AsyncMock(side_effect=_record_status)
+    mgr.send_session_ended_by_server = AsyncMock(
+        side_effect=lambda: cleanup_steps.append("ended")
+    )
+    old_session = _FakeSession("old")
+    new_session = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    new_session.ws = object()
+    new_session._fatal_error_occurred = False
+    new_session._is_gemini = False
+    new_session._session_update_ack_waiters = []
+    new_session.get_multimodal_turn_delivery = MagicMock(
+        return_value=MultimodalTurnDelivery.DIRECT_ATOMIC
+    )
+    new_session.instructions = "initial instructions"
+    new_session.closed = False
+    new_session.prime_calls = []
+    rejection_handler = None
+
+    async def prime_context(text, *, skipped=False):
+        new_session.prime_calls.append((text, skipped))
+        new_session.instructions += "\n" + text
+
+    async def stream_image(_image_b64, *, on_rejected=None, **_kwargs):
+        nonlocal rejection_handler
+        rejection_handler = on_rejected
+        return ImageStageResult(accepted=True, mode="native")
+
+    async def handle_messages():
+        assert rejection_handler is not None
+        # Longer than the removed 50ms grace period: the transaction must stay
+        # uncommitted until a real Provider acknowledgement or rejection.
+        await asyncio.sleep(0.08)
+        rejection_handler("provider rejected passive image")
+        await asyncio.Event().wait()
+
+    async def close():
+        new_session.closed = True
+        new_session.ws = None
+
+    new_session.prime_context = prime_context
+    new_session.stream_image = stream_image
+    new_session.handle_messages = handle_messages
+    new_session.close = close
+
+    callback_ack = asyncio.get_running_loop().create_future()
+    callback = {
+        "_callback_delivery_id": "id-passive-native-reject",
+        "status": "completed",
+        "summary": "inspect this native image",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image"],
+        DELIVERY_ACK_FUTURE_KEY: callback_ack,
+    }
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.pending_agent_callbacks = [callback]
+    mgr.pending_extra_replies = []
+    mgr.is_active = True
+    mgr.is_hot_swap_imminent = True
+    mgr._select_passive_callbacks_for_swap_prime = (
+        lambda **_kwargs: ([callback], "")
+    )
+    mgr._render_claimed_passive_callbacks_for_swap_prime = (
+        lambda selected: (selected, "passive callback text")
+    )
+    mgr._purge_undeliverable_callbacks = lambda: None
+
+    await mgr._perform_final_swap_sequence()
+
+    assert old_session.closed is True
+    assert new_session.closed is True
+    assert mgr.session is None
+    mgr._close_independent_asr.assert_awaited_once_with(
+        next_route_mode="blocked",
+    )
+    assert any("INTERNAL_UPDATE_FAILED" in status for status in statuses)
+    mgr.send_session_ended_by_server.assert_awaited_once_with()
+    assert cleanup_steps == ["asr", "status", "ended"]
+    assert mgr.pending_agent_callbacks == [callback]
+    assert callback_ack.done() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("takeover_stage", ["barrier_wait", "listener_cancel"])
+async def test_passive_native_rejection_preserves_concurrent_session_takeover(
+    takeover_stage,
+):
+    """A stale media-rejection cleanup may retire only its own session pair."""
+    mgr = _make_swap_manager()
+    mgr._close_independent_asr = AsyncMock()
+    mgr.send_status = AsyncMock()
+    mgr.send_session_ended_by_server = AsyncMock()
+    mgr._reset_preparation_state = AsyncMock()
+
+    old_session = _FakeSession("old")
+    winner_session = _FakeSession("winner")
+    winner_listener = asyncio.create_task(asyncio.Event().wait())
+    new_session = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    new_session.ws = object()
+    new_session._fatal_error_occurred = False
+    new_session._is_gemini = False
+    new_session._session_update_ack_waiters = []
+    new_session.get_multimodal_turn_delivery = MagicMock(
+        return_value=MultimodalTurnDelivery.DIRECT_ATOMIC
+    )
+    new_session.instructions = "initial instructions"
+    new_session.closed = False
+    rejection_handler = None
+    winner_installed = False
+
+    def install_winner():
+        nonlocal winner_installed
+        if winner_installed:
+            return
+        winner_installed = True
+        mgr.session = winner_session
+        mgr.message_handler_task = winner_listener
+        mgr.is_active = True
+
+    async def prime_context(text, *, skipped=False):
+        del skipped
+        new_session.instructions += "\n" + text
+
+    async def stream_image(_image_b64, *, on_rejected=None, **_kwargs):
+        nonlocal rejection_handler
+        rejection_handler = on_rejected
+        return ImageStageResult(accepted=True, mode="native")
+
+    async def handle_messages():
+        assert rejection_handler is not None
+        if takeover_stage == "barrier_wait":
+            install_winner()
+        rejection_handler("provider rejected passive image")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if takeover_stage == "listener_cancel":
+                install_winner()
+            raise
+
+    async def close():
+        new_session.closed = True
+        new_session.ws = None
+
+    new_session.prime_context = prime_context
+    new_session.stream_image = stream_image
+    new_session.handle_messages = handle_messages
+    new_session.close = close
+
+    callback_ack = asyncio.get_running_loop().create_future()
+    callback = {
+        "_callback_delivery_id": f"id-takeover-{takeover_stage}",
+        "status": "completed",
+        "summary": "inspect this native image",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image"],
+        DELIVERY_ACK_FUTURE_KEY: callback_ack,
+    }
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.pending_agent_callbacks = [callback]
+    mgr.pending_extra_replies = []
+    mgr.is_active = True
+    mgr.is_hot_swap_imminent = True
+    mgr._select_passive_callbacks_for_swap_prime = (
+        lambda **_kwargs: ([callback], "")
+    )
+    mgr._render_claimed_passive_callbacks_for_swap_prime = (
+        lambda selected: (selected, "passive callback text")
+    )
+    mgr._purge_undeliverable_callbacks = lambda: None
+
+    try:
+        await mgr._perform_final_swap_sequence()
+
+        assert old_session.closed is True
+        assert new_session.closed is True
+        assert winner_installed is True
+        assert mgr.session is winner_session
+        assert mgr.message_handler_task is winner_listener
+        assert winner_listener.done() is False
+        assert mgr.is_active is True
+        mgr._close_independent_asr.assert_not_awaited()
+        mgr.send_status.assert_not_awaited()
+        mgr.send_session_ended_by_server.assert_not_awaited()
+        mgr._reset_preparation_state.assert_not_awaited()
+        assert mgr.pending_agent_callbacks == [callback]
+        assert callback_ack.done() is False
+    finally:
+        winner_listener.cancel()
+        await asyncio.gather(winner_listener, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_passive_native_session_update_ack_commits_callback():
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    new_session.ws = object()
+    new_session._fatal_error_occurred = False
+    new_session._is_gemini = False
+    new_session._session_update_ack_waiters = []
+    new_session.instructions = "initial instructions"
+    new_session.closed = False
+    new_session.prime_calls = []
+
+    async def prime_context(text, *, skipped=False):
+        new_session.prime_calls.append((text, skipped))
+        new_session.instructions += "\n" + text
+
+    async def stream_image(_image_b64, **_kwargs):
+        return ImageStageResult(accepted=True, mode="native")
+
+    async def handle_messages():
+        # A stale setup acknowledgement must not settle the media handoff.
+        new_session._notify_session_updated(
+            {"session": {"instructions": "initial instructions"}}
+        )
+        await asyncio.sleep(0)
+        new_session._notify_session_updated(
+            {"session": {"instructions": new_session.instructions}}
+        )
+        await asyncio.Event().wait()
+
+    async def close():
+        new_session.closed = True
+        new_session.ws = None
+
+    new_session.prime_context = prime_context
+    new_session.stream_image = stream_image
+    new_session.handle_messages = handle_messages
+    new_session.close = close
+
+    callback_ack = asyncio.get_running_loop().create_future()
+    callback = {
+        "_callback_delivery_id": "id-passive-native-ack",
+        "status": "completed",
+        "summary": "inspect this native image",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image"],
+        DELIVERY_ACK_FUTURE_KEY: callback_ack,
+    }
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.pending_agent_callbacks = [callback]
+    mgr.pending_extra_replies = []
+    mgr.is_active = True
+    mgr.is_hot_swap_imminent = True
+    mgr._select_passive_callbacks_for_swap_prime = (
+        lambda **_kwargs: ([callback], "")
+    )
+    mgr._render_claimed_passive_callbacks_for_swap_prime = (
+        lambda selected: (selected, "passive callback text")
+    )
+    mgr._purge_undeliverable_callbacks = lambda: None
+
+    await mgr._perform_final_swap_sequence()
+
+    assert old_session.closed is True
+    assert new_session.closed is False
+    assert mgr.session is new_session
+    assert mgr.pending_agent_callbacks == []
+    assert callback_ack.result() is True
+
+
+@pytest.mark.asyncio
+async def test_settled_media_barrier_releases_image_rejection_handlers():
+    """A settled barrier makes late image rejections moot; free their closures.
+
+    ``stream_image`` deliberately leaves each image's rejection handler
+    registered after a successful send, because a provider rejection can arrive
+    later than the send returns. Once the ``session.updated`` barrier proves the
+    provider processed the whole prefix, those handlers are dead weight -- and
+    each closure pins the entire callback, which can hold several multi-megabyte
+    base64 images, until the 60-second expiry.
+    """
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _make_fake_realtime_session("pending")
+    new_session._is_gemini = False
+    new_session._inject_rejection_handlers = {}
+    new_session.instructions = "prompt"
+    _ack_waiters = []
+
+    def _expect_session_update_ack(_instructions):
+        fut = asyncio.get_running_loop().create_future()
+        _ack_waiters.append(fut)
+        # provider 立刻确认：屏障落地，晚到的图片拒绝就无关了。
+        fut.set_result(True)
+        return fut
+
+    new_session.expect_session_update_ack = _expect_session_update_ack
+    new_session.discard_session_update_ack = lambda _fut: None
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+
+    big_payload = "x" * 4096
+    staged_ids = ["evt-callback-image-1", "evt-callback-image-2"]
+    for staged in staged_ids:
+        new_session._inject_rejection_handlers[staged] = (
+            lambda _msg, _held=big_payload: None
+        )
+    # 一个不属于本次媒体投递的 handler，必须原样留着。
+    new_session._inject_rejection_handlers["evt-unrelated"] = lambda _msg: None
+
+    callback = _passive_callback("camera frame delivered")
+    mgr.pending_agent_callbacks = [callback]
+    mgr._select_passive_callbacks_for_swap_prime = (
+        lambda **_kwargs: ([callback], "")
+    )
+    mgr._stage_passive_callback_media = AsyncMock(return_value={
+        "safe_to_continue": True,
+        "native_prefix_committed": True,
+        "native_rejection_pending": True,
+        "rejected": False,
+        "rejection_observed": asyncio.Event(),
+        "settled": False,
+        "rejection_event_ids": list(staged_ids),
+    })
+    mgr._render_claimed_passive_callbacks_for_swap_prime = MagicMock(
+        return_value=([callback], "camera frame delivered")
+    )
+
+    await _run_swap_as_final_swap_task(mgr)
+
+    remaining = set(new_session._inject_rejection_handlers)
+    assert remaining == {"evt-unrelated"}, remaining

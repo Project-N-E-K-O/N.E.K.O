@@ -24,6 +24,7 @@
       <p>{{ t('plugins.ui.noUI') }}</p>
     </div>
     
+    <!-- Legacy static plugins may rely on standard browser modal dialogs. -->
     <iframe
       v-show="!loading && !error && hasUI"
       :key="iframeKey"
@@ -32,7 +33,7 @@
       :title="pluginId"
       :data-load-generation="iframeGeneration"
       class="plugin-iframe"
-      sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+      sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals"
       @load="onIframeLoad"
       @error="onIframeError"
     />

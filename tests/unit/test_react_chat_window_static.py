@@ -296,7 +296,7 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
-def test_avatar_tool_result_name_tracks_the_current_catgirl():
+def test_avatar_tool_result_names_track_the_current_participants():
     geometry_path = (
         Path(__file__).resolve().parents[2]
         / "static"
@@ -318,6 +318,7 @@ def test_avatar_tool_result_name_tracks_the_current_catgirl():
     assert name_block.index("window.appState && window.appState.lanlan_name") < name_block.index(
         "window.lanlan_config && window.lanlan_config.lanlan_name"
     )
+    assert "userName: getConfiguredUserName() || undefined" in build_render_block
     assert "assistantName: getConfiguredAssistantName() || undefined" in build_render_block
 
 
@@ -1332,23 +1333,6 @@ def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
     assert "nativeRect: scrollbarRect" in scrollbar_block
 
 
-def test_compact_meme_close_hit_region_is_collected_as_native_extra_island():
-    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
-    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
-
-    composite_block = script.split("function collectCompactCompositeGeometryItems(element, kind)", 1)[1].split(
-        "function collectCompactSurfaceGeometryItems()",
-        1,
-    )[0]
-
-    assert 'data-compact-geometry-item="meme"' in app_source
-    assert 'data-compact-geometry-hit-scope="children"' in app_source
-    assert 'data-compact-hit-region-id="meme:close"' in app_source
-    assert "kind === 'musicPlayer' || kind === 'meme'" in composite_block
-    assert "id: child.getAttribute('data-compact-hit-region-id') || (kind + ':hit:' + index)" in composite_block
-    assert "nativeRect: clippedRect" in composite_block
-
-
 def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
@@ -1840,7 +1824,7 @@ def test_compact_avatar_tool_manager_uses_desktop_work_area_for_carrier_layout()
     assert "workAreaX - windowX" in manager_source
     assert "workAreaY - windowY" in manager_source
     assert "viewport.compactDesktop" in manager_source
-    assert "getDesktopCompactDialogSize(viewport)" in manager_source
+    assert "getDesktopCompactDialogSize(viewport, preferredHeight)" in manager_source
     assert "neko:desktop-compact-layout-change" in manager_source
     assert "'--avatar-tool-manager-width'" in manager_source
     assert "'--avatar-tool-manager-height'" in manager_source
@@ -1851,9 +1835,9 @@ def test_compact_avatar_tool_manager_uses_desktop_work_area_for_carrier_layout()
         ".avatar-tool-manager-dialog.is-desktop-compact-layout",
         ".avatar-tool-manager-dialog.is-dragging",
     )
-    assert "width: var(--avatar-tool-manager-width, 380px);" in desktop_compact_block
-    assert "height: var(--avatar-tool-manager-height, 600px);" in desktop_compact_block
-    assert "max-height: var(--avatar-tool-manager-max-height, 600px);" in desktop_compact_block
+    assert "width: var(--avatar-tool-manager-width, 460px);" in desktop_compact_block
+    assert "height: var(--avatar-tool-manager-height, 680px);" in desktop_compact_block
+    assert "max-height: var(--avatar-tool-manager-max-height, 680px);" in desktop_compact_block
     assert "100vw" not in desktop_compact_block
     assert "85vh" not in desktop_compact_block
 
@@ -2807,19 +2791,6 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
         "    pointer-events: none;\n"
         "}"
     )
-    meme_passthrough_rule = (
-        f'{compact_surface_prefix} .compact-meme-overlay,\n'
-        f'{compact_surface_prefix} .compact-meme-overlay img,\n'
-        f'{compact_surface_prefix} .compact-meme-overlay-frame,\n'
-        f'{compact_surface_prefix} .compact-meme-overlay-close-icon {{\n'
-        "    pointer-events: none;\n"
-        "}"
-    )
-    meme_close_interactive_rule = (
-        f'{compact_surface_prefix} .compact-meme-overlay-close {{\n'
-        "    pointer-events: auto;\n"
-        "}"
-    )
     history_interactive_rule = (
         f'{compact_surface_prefix} .compact-export-history-bubble,\n'
         f'{compact_surface_prefix} .compact-export-history-controls,\n'
@@ -2836,15 +2807,11 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
     assert compact_music_interactive_rule in styles
     assert compact_music_hidden_rule in styles
     assert history_passthrough_rule in styles
-    assert meme_passthrough_rule in styles
-    assert meme_close_interactive_rule in styles
     assert history_interactive_rule in styles
     assert styles.index(broad_surface_rule) < styles.index(compact_music_interactive_rule)
     assert styles.index(compact_music_interactive_rule) < styles.index(compact_music_hidden_rule)
     assert styles.index(compact_music_hidden_rule) < styles.index(history_passthrough_rule)
-    assert styles.index(history_passthrough_rule) < styles.index(meme_passthrough_rule)
-    assert styles.index(meme_passthrough_rule) < styles.index(meme_close_interactive_rule)
-    assert styles.index(meme_close_interactive_rule) < styles.index(history_interactive_rule)
+    assert styles.index(history_passthrough_rule) < styles.index(history_interactive_rule)
     assert styles.index(broad_surface_rule) < styles.index(tool_fan_passthrough_rule)
     assert styles.index(tool_fan_passthrough_rule) < styles.index(visible_tool_fan_interactive_rule)
     assert styles.index(visible_tool_fan_interactive_rule) < styles.index(hidden_tool_fan_slots_rule)

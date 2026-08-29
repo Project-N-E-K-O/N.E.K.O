@@ -83,7 +83,7 @@ Cat Mind 不写 DOM、不直接播放素材、不直接操作窗口，也不保�
 
 avatar 侧另有只读 observation adapter：它只汇总已有的毛线拖拽阶段、坐标和猫/毛线矩形，生成完整手势事实；不写 journey 状态、不选动作，也不启动 runner。输入适配和动作执行因此仍是两个方向明确、职责分离的边界。
 
-只有 runner 真实进入 `started` 后，Cat Mind 才写 cooldown 并重置共享节奏分。provider dry-run 必须只读；provider 拒绝、adapter 接受后启动失败或终态先于 started 都不得写 cooldown、不得伪造完成反馈或经历。未确认的 request 最多占用 `5s`，已经 accepted 但没有 started 的 request 最多占用 `12s`，超时只释放调度租约并记录协议失败，避免 selector 永久卡住。音频动作只有 `audio.play()` 成功后才能报告 started，不能在仅创建 `Audio` 时提前开始冷却。所有已接入动作统一使用连续恢复曲线；cooldown 不从实际动作分数中扣除，只产生 `0–1` 的独立排序位。有多个合法候选时，更久没执行的动作优先；只有一个动作达到资格时，新鲜 cooldown 也不会阻止它执行。没有额外的连续重复 gate、负分或 idle 禁止结果。
+只有 runner 真实进入 `started` 后，Cat Mind 才写 cooldown 并重置共享节奏分。provider dry-run 必须只读；provider 拒绝、adapter 接受后启动失败或终态先于 started 都不得写 cooldown、不得伪造完成反馈或经历。未确认的 request 最多占用 `5s`，已经 accepted 但没有 started 的 request 最多占用 `12s`，超时只释放调度租约并记录协议失败，避免 selector 永久卡住。音频动作只有 `audio.play()` 成功后才能报告 started，不能在仅创建 `Audio` 时提前开始冷却。所有已接入动作统一使用连续恢复曲线；普通状态使用原节奏底部，只有 active action 被下一次真实拖拽中断时临时加深连续恢复底部，避免没有完成反馈的高需求在随后每次拖拽后连播。cooldown 不从实际动作分数中扣除，只产生 `0–1` 的独立排序位。有多个合法候选时，更久没执行的动作优先；只有一个动作达到资格时，新鲜 cooldown 也不会阻止它执行。没有额外的连续重复 gate、负分或 idle 禁止结果。
 
 动作进行中到达的用户 observation 不会丢失，也不会在旧回调内同步连播。Cat Mind 会把同类触发合并为一次 deferred reevaluation，在 runner 终态和表现恢复后异步重新计分。明确毛线意图暂时被 provider 拒绝时，后续既有 walk/stretch 完成可以作为“条件已变化”的唤醒事实；它们仍不是主动候选，也不直接指定玩球。
 
@@ -97,7 +97,7 @@ Web 主页面与 NEKO-PC 的 Pet renderer 页面运行同一套页面内 Cat Min
 - 毛线球临时隐藏与恢复；
 - 桌面窗口命中、遮挡和层级安全。
 
-桌面壳不持有 Cat Mind 运行状态，不维护五维、短时意图、cooldown、pending/active action 或 return episode，不运行 selector，也不发 action request。它把安全的真实桌面事实提供给 Primary Pet renderer；需要进入 Cat Mind 的事实再由页面 consumer 转换为 observation，其他 renderer 功能可以并列消费对应的通用窗口、坐标与命中能力。后续计分、选择、request、Cat Mind runner 结果和 return 摘要仍由 Pet renderer 内的同一条 Cat Mind 链处理。
+桌面壳不持有 Cat Mind 运行状态，不维护五维、短时意图、cooldown、pending/active action 或 return episode，不运行 selector，也不发 action request。它把安全的真实桌面事实提供给 Primary Pet renderer；需要进入 Cat Mind 的事实再由页面 consumer 转换为 observation，其他 renderer 功能可以并列消费对应的通用窗口、坐标与命中能力。窗口移动时可能连续产生桌面事实：`source=desktop-window-sensing` 的正式原生窗口 observation 只进入 recent events 和 debug，不排入 Cat Mind decision，因此不能在 runner 完成后立即串起下一动作；其他来源的同名 observation 保留既有异步判断语义。后续计分、选择、request、Cat Mind runner 结果和 return 摘要仍由 Pet renderer 内的同一条 Cat Mind 链处理。
 
 桌面窗口感知只覆盖真实小猫形态的 CAT1 阶段：小猫已经出现并且当前 tier 为 CAT1 时启动正式 sensing session；进入 CAT2/CAT3、return commit、切换为呼吸球、猫容器失败或页面卸载时停止；从 CAT2/CAT3 重新回到 CAT1 时建立新 session。普通模型形态、呼吸球形态、CAT2 和 CAT3 都不启动窗口感知。这里复用的是 CAT1 生命周期，不是 Cat Mind 的 30 秒自主时钟。
 
@@ -342,10 +342,10 @@ request -> accepted -> started -> done | failed | cancelled | interrupted
 ```
 
 - `accepted`：adapter 接受，并绑定唯一 runId；尚不写 cooldown。
-- `started`：runner 已实际起效；此时写本动作 cooldown、重置共享节奏并消费对应动作意图。
+- `started`：runner 已实际起效；此时写本动作 cooldown、重置共享节奏、清除上一轮拖拽中断恢复状态并消费对应动作意图。
 - `done`：runner 在恢复完成后报告；此时结算五维完成反馈，并可写 return episode。
 - `rejected`：provider 或 adapter 未启动；不写 cooldown、结果或经历。
-- `cancelled / failed / interrupted`：不得当成完成经历；small move 或既有 walk 取消时只结算已经发生且可去重的物理路程。中断原因是生命周期元数据，本身不再追加一份五维反馈；拖拽、tier 或 return 的源 observation 已各自拥有唯一的状态反馈，避免同一事实双计。
+- `cancelled / failed / interrupted`：不得当成完成经历；small move 或既有 walk 取消时只结算已经发生且可去重的物理路程。中断原因是生命周期元数据，本身不再追加一份五维反馈；拖拽、tier 或 return 的源 observation 已各自拥有唯一的状态反馈，避免同一事实双计。只有 active action 被拖拽中断时会启用更深的共享节奏恢复底部；它不修改五维，下一次真实 started 会清除该状态。
 
 一个 active action 未终结时，selector 不再启动另一个动作。动作进行期间的高频用户触发会合并保留；动作结果只释放调度并排入一次下一轮判断，不在结束回调里同步连播。严格结果必须匹配 `actionId + requestId + runId`；终态早于 started 只作为协议失败释放 request，不能结算五维、cooldown 或 episode。
 
@@ -386,13 +386,15 @@ debug 默认不显示，仅影响观察：
 
 URL 参数优先于全局变量和 localStorage，方便单次排查后用 `0` 明确关闭。关闭 debug 时不派发完整 snapshot/state-change 调试数据，动作运行语义不变。
 
+调试模式还会保留最近 `600` 条结构化时间线，并以 `[CatMindTrace]` 输出到 DevTools。记录覆盖 observation、五维、30 秒时钟、决策分数、request、started 和 terminal 生命周期；detail 只采用物理距离、时长、阶段、reason 和运行 ID 等允许字段，不保存聊天文本。复现前可调用 `window.nekoCatMind.clearDebugTimeline()` 清空，复现后调用 `window.nekoCatMind.exportDebugTimeline()` 得到可复制的 JSON。
+
 ## 十二、验证与完成标准
 
 ### 12.1 自动验证
 
 1. 修改 Cat Mind 或 avatar split 后，所有相关脚本通过 `node --check`。
 2. Cat Mind 静态 Node harness 覆盖 observation、去重、异步 scheduler、provider、生命周期、cooldown、五维反馈、短时意图、物理活动一次性结算、动作分数与 return episode；avatar harness 另覆盖毛线阶段兼容、只读几何、重复 terminal、active/settling gate、后台 RAF fallback，以及各拖拽/走路/取消终态的稳定物理事实。
-3. 短时矩阵必须按生产事实覆盖从不交互、一次 hover、普通拖拽、单次 rapid drag 和短时多轮交互；fake clock 与事件时间一致，每轮拖拽分别经过 drag-pending、drag-active、return-pending 和 settled 步骤，并覆盖 settled near-chat / far-chat、真实各 runner 时长、拖拽对 active runner 的取消以及 started 前终态。它不替代真实桌面几何验收，也不把所有 runner 伪装成统一时长。
+3. 短时矩阵必须按生产事实覆盖从不交互、一次 hover、普通拖拽、单次 rapid drag 和短时多轮交互；fake clock 与事件时间一致，每轮拖拽分别经过 drag-pending、drag-active、return-pending 和 settled 步骤，并覆盖 settled near-chat / far-chat、真实各 runner 时长、拖拽对 active runner 的取消、连续六次普通拖拽不会在首次响应后形成逐次 started，以及 started 前终态。它不替代真实桌面几何验收，也不把所有 runner 伪装成统一时长。
 4. 交互梯度按可验证区间验收：从不/少量交互持续平均约 `3–5` 分钟一次，正常交互在短时和一段时间内比无/少更早且更多；短时间大量交互在 gate/provider 可用时应在数秒到数十秒内出现首个真实 started，并在前几分钟拉开数量和动作种类。高频输入停止后逐步回到普通节奏，不能留下永久高频。最小化聊天球 near-chat、展开/compact 的 solo small move、以及确实没有移动/玩球能力的场景必须分开验证；测试只验证相对包络，不锁死具体动作顺序、精确分钟序列或单一真人节奏。
 5. return 测试覆盖大量交互并完成动作、正常互动并完成动作、无用户交互但有自主完成动作、只有互动没有完成动作、短时 started/done 仍静默、失败/取消/打断、一次性消费及无 socket/send failure。
 6. 后端测试覆盖 enum allowlist、canonical 覆盖、非法组合、独立 cat greeting 路由和 prompt 格式化。

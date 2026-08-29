@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from utils.cookies_login import load_cookies_from_file, save_cookies_to_file
+from utils.cookies_login import (
+    CredentialSnapshot,
+    credential_manager,
+    save_cookies_to_file,
+)
 from utils.external_http_client import get_external_http_client
 
 
@@ -100,47 +104,92 @@ class TwitchAuthService:
         return _public_status(credential, refreshed=False)
 
     async def status(self) -> dict[str, Any]:
-        credential = await _load()
+        snapshot = await _snapshot()
+        credential = snapshot.credentials
+        credential_status = _snapshot_status(snapshot)
         if not _credential_present(credential) or not set(_SCOPES).issubset(_scopes(credential.get("scopes") if credential else "")):
             return {
+                **credential_status,
                 "success": True, "platform": "twitch", "logged_in": False, "has_cookies": False,
-                "requires_reauthorization": bool(credential),
+                "requires_reauthorization": snapshot.state in {
+                    credential_manager.AUTH_REJECTED,
+                    credential_manager.INVALID,
+                } or bool(credential),
             }
-        return _public_status(credential, refreshed=False)
+        return {**_public_status(credential, refreshed=False), **credential_status}
 
     async def access_token(self, *, force_refresh: bool = False) -> tuple[str, str]:
         """Return a valid ``(client_id, access_token)`` pair, refreshing when needed."""
-        credential = await _load()
+        credential = await self._credential_for_access(
+            (await _snapshot()).credentials,
+            force_refresh=force_refresh,
+        )
+        client_id = _client_id(credential.get("client_id") if credential else "")
+        access_token = _secret(credential, "access_token")
+        return (client_id, access_token) if client_id and access_token else ("", "")
+
+    async def followed_stream_credential(
+        self,
+        *,
+        force_refresh: bool = False,
+    ) -> dict[str, str]:
+        """Return one credential snapshot for a followed-stream request."""
+        credential = (await _snapshot()).credentials
+        if not set(_SCOPES).issubset(_scopes(credential.get("scopes") if credential else "")):
+            return {}
+        credential = await self._credential_for_access(
+            credential,
+            force_refresh=force_refresh,
+        )
+        user_id = _text(credential.get("user_id") if credential else "", 64)
+        return credential if user_id else {}
+
+    async def followed_stream_access(self, *, force_refresh: bool = False) -> tuple[str, str, str]:
+        """Return the credential context required by ``/streams/followed``."""
+        credential = await self.followed_stream_credential(
+            force_refresh=force_refresh,
+        )
+        user_id = _text(credential.get("user_id") if credential else "", 64)
+        client_id = _client_id(credential.get("client_id") if credential else "")
+        access_token = _secret(credential, "access_token")
+        return (client_id, access_token, user_id) if client_id and access_token and user_id else ("", "", "")
+
+    async def _credential_for_access(
+        self,
+        credential: dict[str, str],
+        *,
+        force_refresh: bool,
+    ) -> dict[str, str]:
         client_id = _client_id(credential.get("client_id") if credential else "")
         access_token = _secret(credential, "access_token")
         if not client_id or not access_token:
-            return "", ""
+            return {}
         expires_at = _positive_int(credential.get("expires_at"), 0, 2_147_483_647)
         if not force_refresh and expires_at > int(time.time()) + 90:
-            return client_id, access_token
+            return credential
         refresh_token = _secret(credential, "refresh_token")
         if not refresh_token:
-            return "", ""
+            return {}
         status, data = await _request("POST", _TOKEN_URL, data={
             "client_id": client_id,
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
         })
         if status != 200:
-            return "", ""
+            if status in {400, 401}:
+                await asyncio.to_thread(
+                    credential_manager.mark_auth_rejected,
+                    "twitch",
+                    credential,
+                )
+            return {}
         refreshed = await _validated_credential(client_id, data)
-        if refreshed is None or not await _save(refreshed):
-            return "", ""
-        return client_id, _secret(refreshed, "access_token")
-
-    async def followed_stream_access(self, *, force_refresh: bool = False) -> tuple[str, str, str]:
-        """Return the credential context required by ``/streams/followed``."""
-        credential = await _load()
-        if not set(_SCOPES).issubset(_scopes(credential.get("scopes") if credential else "")):
-            return "", "", ""
-        user_id = _text(credential.get("user_id") if credential else "", 64)
-        client_id, access_token = await self.access_token(force_refresh=force_refresh)
-        return (client_id, access_token, user_id) if client_id and access_token and user_id else ("", "", "")
+        if refreshed is None or not await _save(
+            refreshed,
+            expected_credentials=credential,
+        ):
+            return {}
+        return refreshed
 
 
 async def _request(method: str, url: str, *, headers: dict[str, str] | None = None, data: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
@@ -177,12 +226,24 @@ async def _validated_credential(client_id: str, token_data: dict[str, Any]) -> d
     }
 
 
-async def _load() -> dict[str, str]:
-    return await asyncio.to_thread(load_cookies_from_file, "twitch")
+async def _snapshot() -> CredentialSnapshot:
+    return await asyncio.to_thread(credential_manager.snapshot, "twitch")
 
 
-async def _save(credential: dict[str, str]) -> bool:
-    return await asyncio.to_thread(save_cookies_to_file, "twitch", credential, True)
+async def _save(
+    credential: dict[str, str],
+    *,
+    expected_credentials: dict[str, str] | None = None,
+) -> bool:
+    if expected_credentials is None:
+        return await asyncio.to_thread(save_cookies_to_file, "twitch", credential, True)
+    return await asyncio.to_thread(
+        credential_manager.save,
+        "twitch",
+        credential,
+        True,
+        expected_credentials=expected_credentials,
+    )
 
 
 def _public_status(credential: dict[str, str], *, refreshed: bool) -> dict[str, Any]:
@@ -190,6 +251,20 @@ def _public_status(credential: dict[str, str], *, refreshed: bool) -> dict[str, 
         "success": True, "platform": "twitch", "logged_in": True, "has_cookies": True,
         "login": _login(credential.get("login")), "user_id": _text(credential.get("user_id"), 64),
         "expires_at": _text(credential.get("expires_at"), 24), "refreshed": refreshed,
+    }
+
+
+def _snapshot_status(snapshot: CredentialSnapshot) -> dict[str, Any]:
+    stored = snapshot.state in {
+        credential_manager.READY,
+        credential_manager.INVALID,
+        credential_manager.AUTH_REJECTED,
+    }
+    return {
+        "has_cookies": snapshot.state == credential_manager.READY and bool(snapshot.credentials),
+        "has_stored_credentials": stored,
+        "cookies_count": len(snapshot.credentials) if snapshot.state == credential_manager.READY else 0,
+        "credential_state": snapshot.state,
     }
 
 

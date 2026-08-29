@@ -112,13 +112,22 @@ export function reloadAllPlugins(): Promise<{
 /**
  * 删除插件目录并刷新注册表
  */
-export function deletePlugin(pluginId: string): Promise<{
+export interface DeletePluginResult {
   success: boolean
   plugin_id: string
   plugin_dir: string
   deleted_from_disk: boolean
+  restored_builtin: boolean
+  restored_builtin_started: boolean
+  restored_builtin_restart_error: {
+    code: string
+    message: string
+    error_type: string
+  } | null
   message: string
-}> {
+}
+
+export function deletePlugin(pluginId: string): Promise<DeletePluginResult> {
   const safeId = encodeURIComponent(pluginId)
   return del(`/plugin/${safeId}`)
 }

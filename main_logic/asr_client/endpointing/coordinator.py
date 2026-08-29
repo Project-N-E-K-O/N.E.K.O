@@ -56,6 +56,7 @@ class TurnCoordinator:
         self._closed = False
         self._state_lock = asyncio.Lock()
         self._evaluation_lock = asyncio.Lock()
+        self._close_task: asyncio.Task[None] | None = None
 
     @property
     def generation(self) -> int:
@@ -282,6 +283,16 @@ class TurnCoordinator:
                 await self._run_predictor_call(unload)
 
     async def close(self) -> None:
+        close_task = self._close_task
+        if close_task is None:
+            close_task = asyncio.create_task(
+                self._close_impl(),
+                name="smart-turn-coordinator-close",
+            )
+            self._close_task = close_task
+        await asyncio.shield(close_task)
+
+    async def _close_impl(self) -> None:
         async with self._state_lock:
             if self._closed:
                 return

@@ -157,7 +157,7 @@ import * as Diff from 'diff'
 
 import {
   getPluginConfig,
-  getPluginBaseConfig,
+  getPluginEffectiveBaseConfig,
   getPluginProfilesState,
   getPluginProfileConfig,
   upsertPluginProfileConfig,
@@ -494,7 +494,7 @@ async function loadAll() {
   try {
     const prevSelected = selectedProfileName.value
     const [baseRes, effectiveRes, profilesRes] = await Promise.all([
-      getPluginBaseConfig(props.pluginId),
+      getPluginEffectiveBaseConfig(props.pluginId),
       getPluginConfig(props.pluginId),
       getPluginProfilesState(props.pluginId)
     ])

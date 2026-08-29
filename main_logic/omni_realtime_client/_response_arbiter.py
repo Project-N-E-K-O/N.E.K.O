@@ -82,6 +82,23 @@ _WAIT_MARGIN_REPORT_FRACTION = 0.5
 _STUCK_RELEASE_NOTIFY_TIMEOUT = 2.0
 
 
+class ResponseAdmissionRejected(RuntimeError):
+    """This request lost its admission window **before anything was sent**.
+
+    The promise is narrow on purpose: not one byte of this request reached the
+    provider, so the caller may safely re-submit an equivalent request in a
+    degraded form. It is NOT raised once an item has been committed to the
+    transport -- the compensating ``conversation.item.delete`` is fire-and-
+    forget (the provider confirms asynchronously with ``conversation.item.deleted``
+    and may instead answer with an error), so a committed item may well survive
+    and a re-submit would duplicate the user's turn against stale visual
+    context. Those paths keep raising a plain ``RuntimeError``, which callers
+    treat as "this turn is over".
+
+    Subclasses ``RuntimeError`` so existing broad handlers keep working.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ResponseDispatchResult:
     item_acknowledged: bool
@@ -152,6 +169,7 @@ class _QueuedResponse:
     source: str = field(compare=False)
     events_before_response: tuple[dict[str, Any], ...] = field(compare=False)
     response_event: dict[str, Any] = field(compare=False)
+    event_sender: SendEvent | None = field(compare=False)
     ack_expected: bool = field(compare=False)
     expected_item_id: str | None = field(compare=False)
     expected_item_role: str | None = field(compare=False)
@@ -160,6 +178,14 @@ class _QueuedResponse:
     response_done_timeout: float = field(compare=False)
     cancel_timeout: float = field(compare=False)
     ticket: ResponseTicket = field(compare=False)
+    admission_check: Callable[[], bool] | None = field(default=None, compare=False)
+    # 提交前的最后一次就地改写机会。admission_check 只能答"发不发"，而有些判据
+    # （比如视觉所有权）的正确处置是"降级这条 item 再发"，不是整条拒——拒是**提交
+    # 之后**才发生的，要付一次未经确认的补偿删除。回调在 _worker_send 之前、
+    # admission 复查之后逐事件调用，就地改 event。
+    pre_commit: Callable[[dict[str, Any]], None] | None = field(
+        default=None, compare=False
+    )
     item_ack: asyncio.Future[None] | None = field(default=None, compare=False)
     terminal: asyncio.Future[None] | None = field(default=None, compare=False)
     terminal_error: BaseException | None = field(default=None, compare=False)
@@ -169,6 +195,15 @@ class _QueuedResponse:
     completed: asyncio.Future[None] | None = field(default=None, compare=False)
     bypass_count: int = field(default=0, compare=False)
     response_send_started: bool = field(default=False, compare=False)
+    # Once the first pre-response event enters the transport send, the item is
+    # committed to the provider. Admission invalidation after that point must
+    # finish (or cancel) the same response lifecycle rather than orphaning the
+    # persisted conversation item by suppressing response.create.
+    item_committed: bool = field(default=False, compare=False)
+    # Client-assigned item ids that have completed their transport write. This
+    # is narrower than ``events_before_response``: a later prefix event may
+    # still be unsent when admission is invalidated.
+    committed_item_ids: list[str] = field(default_factory=list, compare=False)
     # Evidence this request collected for itself, so both the terminal path
     # and the started-timeout path judge an adoption from the same facts.
     adoption: _AdoptionEvidence = field(
@@ -327,6 +362,7 @@ class RealtimeResponseArbiter:
         source: str,
         events_before_response: tuple[dict[str, Any], ...] = (),
         response_event: dict[str, Any] | None = None,
+        event_sender: SendEvent | None = None,
         ack_expected: bool = False,
         expected_item_id: str | None = None,
         expected_item_role: str | None = None,
@@ -335,6 +371,8 @@ class RealtimeResponseArbiter:
         response_started_timeout: float = 5.0,
         response_done_timeout: float = _DEFAULT_RESPONSE_DONE_TIMEOUT,
         cancel_timeout: float = 3.0,
+        admission_check: Callable[[], bool] | None = None,
+        pre_commit: Callable[[dict[str, Any]], None] | None = None,
     ) -> ResponseTicket:
         loop = asyncio.get_running_loop()
         ticket = ResponseTicket(
@@ -378,6 +416,7 @@ class RealtimeResponseArbiter:
             source=source,
             events_before_response=events_before_response,
             response_event=create_event,
+            event_sender=event_sender,
             ack_expected=ack_expected,
             expected_item_id=expected_item_id,
             expected_item_role=expected_item_role,
@@ -386,6 +425,8 @@ class RealtimeResponseArbiter:
             response_done_timeout=response_done_timeout,
             cancel_timeout=cancel_timeout,
             ticket=ticket,
+            admission_check=admission_check,
+            pre_commit=pre_commit,
             event_ids=frozenset(ids),
             completed=loop.create_future(),
         )
@@ -431,12 +472,26 @@ class RealtimeResponseArbiter:
         current.interrupted = True
         current.interrupt_event.set()
         if not current.ticket.sent.done():
-            self._wake_current_with_error(
-                current,
-                RuntimeError("response dispatch interrupted before response.create"),
+            admission_rejected = bool(
+                current.admission_check is not None
+                and not current.admission_check()
             )
+            if current.item_committed and admission_rejected:
+                if current.item_ack is not None and not current.item_ack.done():
+                    # Wake the worker so it can issue the compensating item
+                    # delete. Ordinary barge-in must retain the committed user
+                    # item in provider history and follows the error wake-up
+                    # below instead.
+                    current.item_ack.set_result(None)
+            else:
+                self._wake_current_with_error(
+                    current,
+                    RuntimeError(
+                        "response dispatch interrupted before response.create"
+                    ),
+                )
         else:
-            await self._send_event({"type": "response.cancel"})
+            await self._send_queued_event(current, {"type": "response.cancel"})
         assert current.completed is not None
         try:
             # The barge-in bound. Every user interruption of a speaking turn
@@ -482,7 +537,7 @@ class RealtimeResponseArbiter:
             and not ticket.sent.cancelled()
             and ticket.sent.exception() is None
         ):
-            await self._send_event({"type": "response.cancel"})
+            await self._send_queued_event(queued, {"type": "response.cancel"})
         if not wait:
             return True
         assert queued.completed is not None
@@ -1159,7 +1214,25 @@ class RealtimeResponseArbiter:
                     # has not done it yet. Remember the outcome so the started
                     # timeout can still claim it once nothing has answered.
                     self._adoptable_terminal_status = response_status or "completed"
-                if never_announced:
+                cancelled_adoption = bool(
+                    owner.interrupted
+                    and response_status in {"canceled", "cancelled"}
+                    and owner.ticket.sent.done()
+                    and not owner.ticket.sent.cancelled()
+                    and owner.ticket.sent.exception() is None
+                    and self._adoptable_id_for(owner) == response_id
+                )
+                if cancelled_adoption:
+                    # A provider that answers the conversation item directly
+                    # can announce before the item-ack barrier installs the
+                    # owner. Once this exact request has sent response.create,
+                    # a barge-in has targeted it, and the sole adoptable
+                    # response acknowledges that cancellation, waiting for the
+                    # longer missing-created timeout is no longer ambiguous.
+                    # Claim it now so cancel_current's shorter terminal bound
+                    # does not tear down a healthy connection first.
+                    self._adopt_announcement(owner, response_id)
+                elif never_announced:
                     # Attribution is one act, not two: the id and the
                     # announcement both belong to the owner now. Resolving
                     # only the terminal would leave the fall-through below to
@@ -1315,7 +1388,10 @@ class RealtimeResponseArbiter:
         target.interrupted = True
         target.interrupt_event.set()
         task = asyncio.create_task(
-            self._send_cancel_best_effort(self._connection_generation)
+            self._send_cancel_best_effort(
+                self._connection_generation,
+                target.event_sender,
+            )
         )
         target.cancel_send_task = task
         self._cancel_send_tasks.add(task)
@@ -1327,13 +1403,17 @@ class RealtimeResponseArbiter:
 
         task.add_done_callback(_finished)
 
-    async def _send_cancel_best_effort(self, generation: int) -> None:
+    async def _send_cancel_best_effort(
+        self,
+        generation: int,
+        event_sender: SendEvent | None = None,
+    ) -> None:
         if generation != self._connection_generation:
             # The connection this cancel was aimed at is gone; sending now
             # would cancel an unrelated response on its replacement.
             return
         try:
-            await self._send_event({"type": "response.cancel"})
+            await (event_sender or self._send_event)({"type": "response.cancel"})
         except Exception as exc:
             # Delivery is best-effort: if the cancel cannot reach the server,
             # the owner's started/terminal timeout still fail-closes the lane.
@@ -1400,6 +1480,9 @@ class RealtimeResponseArbiter:
         # Defensive: a cancel send spawned against a previous connection must
         # never fire into the replacement one.
         self._cancel_pending_cancel_sends()
+        retired_worker = self._retire_connection_owners(
+            "realtime connection replaced"
+        )
         self._connection_available = True
         self._dispatch_allowed.set()
         self._server_response_ids.clear()
@@ -1415,10 +1498,53 @@ class RealtimeResponseArbiter:
         self._server_vad_response_pending = False
         self._cancel_server_vad_pending_timer()
         self._cancel_stale_release_timer()
-        if self._current is None and self._response_owner is None:
-            self._server_response_active = False
-            self._idle.set()
-        self._ensure_worker()
+        self._server_response_active = False
+        self._idle.set()
+        if retired_worker is None:
+            self._ensure_worker()
+        else:
+            self._worker = asyncio.create_task(
+                self._restart_after_retired_worker(retired_worker),
+                name="realtime-response-arbiter",
+            )
+
+    def _retire_connection_owners(self, reason: str) -> asyncio.Task[None] | None:
+        """Fail only the active predecessor work before reopening a connection."""
+
+        owner = self._response_owner
+        current = self._current
+        if owner is None and current is None:
+            return None
+        exc = ConnectionError(reason)
+        seen: set[int] = set()
+        for target in (owner, current):
+            if target is None or id(target) in seen:
+                continue
+            seen.add(id(target))
+            target.interrupted = True
+            target.interrupt_event.set()
+            self._wake_current_with_error(target, exc)
+            if target.terminal is not None and not target.terminal.done():
+                target.terminal.set_exception(exc)
+            self._fail_ticket(target.ticket, exc)
+        if owner is not None:
+            self._detach_response_owner(owner)
+        if self._current is current:
+            self._current = None
+
+        worker, self._worker = self._worker, None
+        if worker is None or worker.done():
+            return None
+        worker.cancel()
+        return worker
+
+    async def _restart_after_retired_worker(
+        self,
+        retired_worker: asyncio.Task[None],
+    ) -> None:
+        await asyncio.gather(retired_worker, return_exceptions=True)
+        if self._connection_available:
+            await self._run()
 
     @staticmethod
     def _fail_ticket(ticket: ResponseTicket, exc: Exception) -> None:
@@ -1637,7 +1763,18 @@ class RealtimeResponseArbiter:
                     100.0 * elapsed / timeout,
                 )
 
-    async def _worker_send(self, event: dict[str, Any]) -> None:
+    async def _send_queued_event(
+        self,
+        queued: _QueuedResponse,
+        event: dict[str, Any],
+    ) -> None:
+        await (queued.event_sender or self._send_event)(event)
+
+    async def _worker_send(
+        self,
+        queued: _QueuedResponse,
+        event: dict[str, Any],
+    ) -> None:
         """Send from the queue consumer, flagged for the duration of the write.
 
         Only the worker's sends qualify: a caller-task send that blocks hurts
@@ -1648,7 +1785,7 @@ class RealtimeResponseArbiter:
 
         self._worker_send_in_flight = True
         try:
-            await self._send_event(event)
+            await self._send_queued_event(queued, event)
         finally:
             self._worker_send_in_flight = False
 
@@ -1921,6 +2058,28 @@ class RealtimeResponseArbiter:
                     waiter.cancel()
             await asyncio.gather(*waiters, return_exceptions=True)
 
+    async def _delete_committed_item(self, queued: _QueuedResponse) -> None:
+        """Remove every pre-response item invalidated after transport commit."""
+
+        if not self._connection_available:
+            return
+        item_ids = list(queued.committed_item_ids)
+        if (
+            queued.expected_item_id
+            and queued.expected_item_id not in item_ids
+            and queued.item_committed
+            and not item_ids
+        ):
+            item_ids.append(queued.expected_item_id)
+        for item_id in item_ids:
+            await self._worker_send(
+                queued,
+                {
+                    "type": "conversation.item.delete",
+                    "item_id": item_id,
+                },
+            )
+
     async def _process(self, queued: _QueuedResponse) -> None:
         self._current = queued
         # The disqualifier arms HERE, not after the waits below. From this
@@ -1949,6 +2108,13 @@ class RealtimeResponseArbiter:
                 raise RuntimeError("response dispatch interrupted")
             if not self._connection_available:
                 raise ConnectionError("realtime connection is unavailable")
+            if (
+                queued.admission_check is not None
+                and not queued.admission_check()
+            ):
+                raise ResponseAdmissionRejected(
+                    "response dispatch admission rejected"
+                )
             self._idle.clear()
             if queued.ack_expected:
                 queued.item_ack = loop.create_future()
@@ -1960,34 +2126,91 @@ class RealtimeResponseArbiter:
                 self._adoptable_serial, self._item_created_serial
             )
             for event in queued.events_before_response:
-                if queued.interrupted:
+                admission_rejected = bool(
+                    queued.admission_check is not None
+                    and not queued.admission_check()
+                )
+                if queued.interrupted or admission_rejected:
+                    if queued.item_committed and admission_rejected:
+                        await self._delete_committed_item(queued)
+                    # 这里**不能**抛 ResponseAdmissionRejected：上面那次补偿删除
+                    # 是 fire-and-forget，provider 异步确认、也可能改回一个 error，
+                    # 于是这条已提交的 item 完全可能还留在会话历史里。此时让调用方
+                    # 降级重投就会变成重复的用户回合，还配着过期的视觉上下文。
                     raise RuntimeError("response dispatch interrupted")
-                await self._worker_send(event)
+                if queued.pre_commit is not None:
+                    # 提交前的最后一刻，让调用方按自己的判据就地降级这条 event。
+                    # 位置在 admission 复查之后、_worker_send 之前：arbiter 在
+                    # enqueue 与这里之间还有等活跃响应、等发送信号量等多段等待，
+                    # 调用方在 enqueue 前做的检查覆盖不到那段窗口。
+                    queued.pre_commit(event)
+                queued.item_committed = True
+                # main(#2837) 起 _worker_send 按 ticket 路由（queued.event_sender），
+                # 多一个 queued 形参；本轮的提交记账仍留在调用点两侧。
+                await self._worker_send(queued, event)
+                item = event.get("item")
+                item_id = item.get("id") if isinstance(item, dict) else None
+                if (
+                    isinstance(item_id, str)
+                    and item_id
+                    and item_id not in queued.committed_item_ids
+                ):
+                    queued.committed_item_ids.append(item_id)
+
+            admission_rejected = bool(
+                queued.admission_check is not None
+                and not queued.admission_check()
+            )
+            if queued.item_committed and admission_rejected:
+                # 同上：补偿删除未经确认，不承诺「provider 侧不留痕迹」。
+                await self._delete_committed_item(queued)
+                raise RuntimeError("response dispatch interrupted")
 
             if queued.item_ack is not None:
-                try:
-                    # The one bound that was not instrumented, which made
-                    # "no wait spent half its allowance" a claim nothing could
-                    # back for it. It is also the bound I once mis-reported as
-                    # over budget from outside the arbiter, so leaving it
-                    # unmeasured from inside was the worst possible gap.
-                    with self._report_wait_margin(
-                        "conversation item ack", queued.item_ack_timeout
-                    ):
-                        await asyncio.wait_for(
-                            asyncio.shield(queued.item_ack), queued.item_ack_timeout
-                        )
-                    item_acked = True
-                    queued.item_acked = True
-                except asyncio.TimeoutError:
+                if queued.item_committed and queued.interrupted:
                     item_acked = False
                     queued.item_acked = False
-                    queued.item_ack.cancel()
+                else:
+                    try:
+                        # The one bound that was not instrumented, which made
+                        # "no wait spent half its allowance" a claim nothing could
+                        # back for it. It is also the bound I once mis-reported as
+                        # over budget from outside the arbiter, so leaving it
+                        # unmeasured from inside was the worst possible gap.
+                        with self._report_wait_margin(
+                            "conversation item ack", queued.item_ack_timeout
+                        ):
+                            await asyncio.wait_for(
+                                asyncio.shield(queued.item_ack),
+                                queued.item_ack_timeout,
+                            )
+                        item_acked = True
+                        queued.item_acked = True
+                    except asyncio.TimeoutError:
+                        item_acked = False
+                        queued.item_acked = False
+                        queued.item_ack.cancel()
 
+            admission_rejected = bool(
+                queued.admission_check is not None
+                and not queued.admission_check()
+            )
+            if queued.item_committed and admission_rejected:
+                # 同上：补偿删除未经确认，不承诺「provider 侧不留痕迹」。
+                await self._delete_committed_item(queued)
+                raise RuntimeError("response dispatch interrupted")
             if queued.interrupted:
                 raise RuntimeError("response dispatch interrupted")
             if not self._connection_available:
                 raise ConnectionError("realtime connection is unavailable")
+            if (
+                queued.admission_check is not None
+                and not queued.item_committed
+                and not queued.admission_check()
+            ):
+                raise ResponseAdmissionRejected(
+                    "response dispatch admission rejected"
+                )
             if queued.ticket.started.done():
                 if queued.ticket.started.cancelled():
                     raise RuntimeError(
@@ -2002,7 +2225,7 @@ class RealtimeResponseArbiter:
             self._response_owner = queued
             queued.response_send_started = True
             try:
-                await self._worker_send(queued.response_event)
+                await self._worker_send(queued, queued.response_event)
             except Exception:
                 self._detach_response_owner(queued)
                 if not queued.terminal.done():
@@ -2039,7 +2262,10 @@ class RealtimeResponseArbiter:
                 cancel_write_failed = False
                 try:
                     try:
-                        await self._worker_send({"type": "response.cancel"})
+                        await self._worker_send(
+                            queued,
+                            {"type": "response.cancel"},
+                        )
                     except Exception:
                         cancel_write_failed = True
                         raise
@@ -2163,7 +2389,7 @@ class RealtimeResponseArbiter:
         cancel_write_failed = False
         try:
             try:
-                await self._worker_send({"type": "response.cancel"})
+                await self._worker_send(queued, {"type": "response.cancel"})
             except Exception:
                 # ``_worker_send``'s finally has already lowered the in-flight
                 # flag, so without remembering this the escalation below would

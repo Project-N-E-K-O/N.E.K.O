@@ -5,7 +5,7 @@ import os
 import sys
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -18,6 +18,7 @@ from config.prompts.prompts_proactive import (
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
 from main_logic.omni_realtime_client import _responses as responses_module
 from main_logic.omni_realtime_client import _transport as transport_module
+from main_logic.omni_realtime_client._shared import VisualDeliveryMode
 
 
 DUMMY_IMAGE_B64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP/Z"
@@ -148,6 +149,295 @@ async def test_prompt_ephemeral_selects_screen_prompt_when_visual_context_exists
     assert any("屏幕主动搭话触发" in text for text in input_texts)
     assert any("画面中的具体内容" in text for text in input_texts)
     assert not any("不要假设刚刚看到了新的画面或事件" in text for text in input_texts)
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_description_mode_proactive_still_sends_its_image_with_a_lead_in():
+    """Description mode must not silently burn the proactive snapshot.
+
+    EXTERNAL_DESCRIPTION is a ROUTING decision (independent ASR owns the
+    multimodal handoff), not a provider capability. The handoff itself belongs
+    to an ASR turn, and a proactive nudge has no such turn to hand off to, so
+    returning "handoff_required" left prompt_ephemeral with nothing: it treated
+    the empty result as a terminal analysis failure, retired the exact snapshot
+    via _mark_snapshot_consumed_if_current() and dropped to text-only. Every
+    proactive turn in this mode lost its visual context -- not a race, the
+    steady state.
+
+    The image now goes out raw on the native channel with a short lead-in, and
+    no separate VISION_MODEL annotation is spent on it.
+    """
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+    client._analyze_image_with_vision_model = AsyncMock(
+        side_effect=AssertionError("must not pay for an annotation call here")
+    )
+
+    delivered = await _prompt_and_complete(client, "describe what you notice")
+
+    events = _sent_events(client)
+    event_types = [event.get("type") for event in events]
+    input_texts = _input_texts(events)
+    assert delivered is True
+    # 图真的送出去了，而且排在文字之前。
+    assert event_types.index("input_image_buffer.append") < event_types.index(
+        "conversation.item.create"
+    )
+    # 补了一句引导，明示这不是用户说的话。
+    assert any("上面这张图是此刻的屏幕画面。" in text for text in input_texts)
+    assert any("describe what you notice" in text for text in input_texts)
+    client._analyze_image_with_vision_model.assert_not_awaited()
+    # 原始图走 WebSocket 事件，拒绝可能晚于写成功才到——必须留下关联句柄，
+    # 否则 _on_visual_rejected() 找不到人，快照不会被重新武装。
+    image_event = next(
+        event
+        for event in events
+        if event.get("type") == "input_image_buffer.append"
+    )
+    assert image_event.get("event_id") in client._inject_rejection_handlers
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_description_mode_rejected_cue_image_keeps_the_snapshot_armed():
+    """A cue image that never reached the provider must stay retryable.
+
+    stream_image() returns an unaccepted native result when the route mode
+    flips or the transport dies while it waits on the send semaphore or
+    recompresses an oversized frame. That is not the "analysis came back empty"
+    terminal case: treating it as one marks an image that was never delivered
+    as consumed and drops this nudge to text-only, losing the visual context
+    for good. Same handling as the native delivery branch -- keep the snapshot
+    armed and retry on the next nudge.
+    """
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+    client.stream_image = AsyncMock(
+        return_value=SimpleNamespace(
+            accepted=False,
+            mode="native",
+            description=None,
+            rejection_reason="raw_visual_delivery_blocked",
+            rejection_event_id=None,
+        )
+    )
+
+    delivered = await client.prompt_ephemeral("describe what you notice")
+
+    assert delivered is False
+    # 图从没到过 provider：快照必须还武装着，下一次主动搭话重试。
+    assert client._proactive_image_consumed is False
+    # 也不能退化成纯文本把这一轮讲掉。
+    assert not _sent_events(client)
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_description_mode_stops_when_the_cue_image_is_rejected_early():
+    """Do not narrate a picture the provider already refused.
+
+    The raw cue image rides a WebSocket event, so its error.event_id can land
+    before the text inject. Sending the text anyway makes her describe a screen
+    that never entered the model's context. Same handling as the native
+    delivery branch's `if delivery_rejected:` guard.
+    """
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+
+    real_stream_image = client.stream_image
+    sent_image_event_ids: list[str] = []
+
+    async def _reject_right_after_send(image_b64, **kwargs):
+        result = await real_stream_image(image_b64, **kwargs)
+        # 前提自证：拒绝必须发生在图**真的写出去之后**。少了这一步，一个在发送
+        # 前就返回 accepted=False 的实现同样能让本用例通过——那时文字也没发，
+        # 断言全绿却什么都没测到。
+        sent_image_event_ids.extend(
+            event["event_id"]
+            for event in _sent_events(client)
+            if event.get("type") == "input_image_buffer.append"
+            and event.get("event_id")
+        )
+        assert sent_image_event_ids, "图还没发出去，这条用例测不到它要测的东西"
+        assert bool(getattr(result, "accepted", False)) is True
+        handler = client._inject_rejection_handlers.get(kwargs.get("event_id"))
+        assert handler is not None, "拒绝句柄没注册，拒绝无从关联"
+        assert kwargs.get("event_id") in sent_image_event_ids
+        handler("image rejected by provider")
+        return result
+
+    client.stream_image = _reject_right_after_send
+
+    delivered = await client.prompt_ephemeral("describe what you notice")
+
+    assert delivered is False
+    assert sent_image_event_ids, "夹具没走到发送那一步"
+    # 被拒的那张图不算数：快照必须还武装着，下一次主动搭话重试。
+    assert client._proactive_image_consumed is False
+    # 图发出去了，但拒绝已经到达——不能再投这一轮的文字。
+    input_texts = _input_texts(_sent_events(client))
+    assert not any("describe what you notice" in text for text in input_texts)
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_description_mode_snapshot_is_consumed_when_activity_wins_the_race():
+    """A raw frame already in provider context must not be re-sent later.
+
+    The image goes out before the pre-inject activity re-check. If a user or AI
+    turn wins that race we bail out -- but the frame is already persistent
+    provider context, so leaving the snapshot armed makes the NEXT proactive
+    nudge send the very same picture again.
+
+    The consumption gate therefore keys on whether this turn actually wrote a
+    raw frame, not on which delivery mode we are in: description mode now sends
+    one too, and a mode-based test skips exactly this case.
+    """
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+
+    # 活动只在图送出去**之后**才抢跑：让复查恰好落在那道窗口里。
+    def user_turn_active() -> bool:
+        return any(
+            event.get("type") == "input_image_buffer.append"
+            for event in _sent_events(client)
+        )
+
+    delivered = await client.prompt_ephemeral(
+        "describe what you notice",
+        user_turn_active=user_turn_active,
+    )
+
+    assert delivered is False
+    events = _sent_events(client)
+    assert any(
+        event.get("type") == "input_image_buffer.append" for event in events
+    ), "夹具没造出那道窗口：图根本没送出去"
+    assert client._proactive_image_consumed is True, (
+        "原始帧已在 provider context 里，快照却还武装着——下一次主动搭话会重发同一张图"
+    )
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_description_mode_gemini_cue_image_is_not_fenced_out():
+    """Gemini's one-shot cue image must clear the inner fence too.
+
+    set_visual_delivery_mode(EXTERNAL_DESCRIPTION) also raises
+    _raw_visual_delivery_blocked, and the Gemini send path re-checks it. Testing
+    only the flag there rejects the very image the entry gate just exempted, so
+    Gemini lost raw proactive visual delivery entirely in this mode.
+    """
+    client = _make_client(api_type="gemini", model="gemini-live")
+    session = AsyncMock()
+    client._gemini_session = session
+    client.ws = session
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    assert client._raw_visual_delivery_blocked is True
+
+    result = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source="proactive",
+        request_id="gemini-cue",
+        bypass_rate_limit=True,
+        cache_latest=False,
+    )
+
+    assert getattr(result, "accepted", False) is True
+    session.send_realtime_input.assert_awaited_once()
+    await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expect_sent"),
+    [
+        ("proactive", True),
+        ("callback", False),
+        ("plugin", False),
+        ("unknown", False),
+    ],
+)
+async def test_description_mode_only_the_proactive_cue_goes_out_raw(
+    source: str,
+    expect_sent: bool,
+):
+    """Only the proactive nudge's own cue image bypasses the handoff.
+
+    The maintainer's call was "the proactive nudge may just push its picture".
+    Gating on `not cache_latest` alone would widen that to EVERY one-shot image
+    -- callback media and plugin `read` frames included -- and put raw frames on
+    the realtime connection during an independent-ASR takeover, which the fence
+    exists to prevent.
+
+    It is not only a scope question. Three other `cache_latest=False` callers
+    keep their own "did this attempt a raw WS send" predicates, all hardcoded to
+    `_visual_delivery_mode == "native"`: proactive.py's
+    attempted_websocket_native_delivery / websocket_native_delivery decide
+    whether to retire the session when a half-written send raises, and the
+    passive-callback contract "must reach the answering VLM as raw media" was
+    implemented precisely by this handoff_required return. Widening here
+    silently disables all of them.
+    """
+    client = _make_client()
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+
+    result = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source=source,
+        request_id=f"{source}-cue",
+        bypass_rate_limit=True,
+        cache_latest=False,
+    )
+
+    sent_image = any(
+        event.get("type") == "input_image_buffer.append"
+        for event in _sent_events(client)
+    )
+    assert sent_image is expect_sent
+    if expect_sent:
+        assert bool(getattr(result, "accepted", False)) is True
+    else:
+        assert bool(getattr(result, "accepted", False)) is False
+        assert getattr(result, "mode", None) == "handoff_required"
+        assert (
+            getattr(result, "rejection_reason", None)
+            == "multimodal_handoff_required"
+        )
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_description_mode_ambient_frame_still_goes_to_the_handoff():
+    """Dual: only the one-shot cue changes; ambient frames keep staging.
+
+    cache_latest=True is an ambient screen/camera frame, and in description
+    mode those belong to the independent-ASR multimodal turn. Widening the
+    change to them would let ambient frames cross the routing boundary.
+    """
+    client = _make_client()
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+    staged = MagicMock(return_value="staged-result")
+    client.stage_multimodal_frame = staged
+
+    result = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source="screen",
+        request_id="ambient-1",
+        cache_latest=True,
+    )
+
+    assert result == "staged-result"
+    staged.assert_called_once()
     await client.close()
 
 
@@ -567,6 +857,39 @@ async def test_prompt_rechecks_arbiter_after_visual_await():
 
 
 @pytest.mark.unit
+async def test_prompt_rechecks_session_ownership_after_visual_await():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client.on_sid_rotate = AsyncMock()
+    visual_started = asyncio.Event()
+    release_visual = asyncio.Event()
+    ownership = {"current": True}
+
+    async def delayed_stream_image(*_args, **_kwargs):
+        visual_started.set()
+        await release_visual.wait()
+
+    client.stream_image = delayed_stream_image
+    task = asyncio.create_task(
+        client.prompt_ephemeral(
+            "do not inject into a retired session",
+            session_owned=lambda: ownership["current"],
+        )
+    )
+    await visual_started.wait()
+    ownership["current"] = False
+    release_visual.set()
+
+    assert await task is False
+    assert not any(
+        event.get("type") == "response.create"
+        for event in _sent_events(client)
+    )
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_prompt_rechecks_activity_after_sid_rotation_await():
     client = _make_client()
     client._latest_image_b64 = DUMMY_IMAGE_B64
@@ -736,6 +1059,12 @@ async def test_gemini_outcome_ttl_closes_session_before_releasing_token(monkeypa
         rejected.append,
         lambda: None,
     )
+    client._gemini_proactive_outcome_owner = (
+        client._connection_generation,
+        gemini_session,
+        token,
+        context_manager,
+    )
     client._proactive_inject_outcome_token = token
     client._proactive_inject_awaiting_outcome = True
     monkeypatch.setattr(
@@ -758,6 +1087,152 @@ async def test_gemini_outcome_ttl_closes_session_before_releasing_token(monkeypa
         "turn_complete": False,
     }
     await client.close()
+
+
+@pytest.mark.unit
+async def test_external_voice_turn_interrupts_before_it_claims_the_new_turn(
+    monkeypatch,
+):
+    """Opening an external ASR turn must really interrupt the live proactive one.
+
+    This is where two hardenings meet, and the wrong order silently disables
+    one of them: ``note_user_turn_started()`` advances
+    ``_tool_scope_generation``, while the quarantine's first gate,
+    ``scope_still_ours()``, compares the scope recorded on the owner against
+    it. Claim the new turn first and that test can never match, so the
+    quarantine always takes its retire branch and sends no ``client_content``
+    interrupt at all -- the proactive turn the SDK already accepted keeps
+    generating, and the external ASR turn piles onto the same unscoped SDK
+    session with the two turns' audio and text interleaved.
+
+    The assertion is the ORDER of the two, not that each happened. Asserting
+    only "an interrupt was sent" would miss "the new turn was never claimed";
+    asserting only that the scope advanced would miss it too, because retiring
+    the session inside the quarantine advances the scope by itself -- delete
+    ``note_user_turn_started()`` entirely and the scope still moves.
+    """
+    events: list[str] = []
+
+    client = _make_client(api_type="gemini", model="gemini-live")
+    session = AsyncMock()
+    context = AsyncMock()
+
+    async def _record_send(*, turns, turn_complete):
+        if turns is None and turn_complete is False:
+            events.append("interrupt")
+
+    session.send_client_content.side_effect = _record_send
+    client._gemini_session = session
+    client._gemini_context_manager = context
+    client.ws = session
+
+    _real_note = type(client).note_user_turn_started
+
+    def _spy_note() -> None:
+        events.append("user_turn_started")
+        _real_note(client)
+
+    client.note_user_turn_started = _spy_note
+
+    token = "live-proactive-turn"
+    client._gemini_proactive_outcome = (token, None, None)
+    client._gemini_proactive_outcome_owner = (
+        client._connection_generation,
+        session,
+        token,
+        context,
+        # 生产代码写的是 5 元组（末位是 inject 当时的 tool scope）。少写这一位，
+        # scope_still_ours() 会因为 owner_scope is None 无条件返回 True——闸门被
+        # 短路，这条用例就变成"碰巧过"而不是真的走了那道判据。（实测过：只把这
+        # 一位删掉，本用例仍然通过，因为抓住顺序错误的是下面的事件顺序断言；写
+        # 满是为了让被测的闸门真的被求值。）
+        client._tool_scope_generation,
+    )
+    monkeypatch.setattr(
+        responses_module,
+        "_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS",
+        0,
+    )
+
+    await client.prepare_external_voice_turn(turn_id="external-turn")
+
+    assert events == ["interrupt", "user_turn_started"], (
+        "隔离必须在宣告新用户回合之前跑完：先宣告会推进 tool scope，"
+        "scope_still_ours() 恒假，隔离退化成一次打断都不发的 retire 分支"
+    )
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_old_gemini_quarantine_releases_only_its_captured_context(
+    monkeypatch,
+):
+    client = _make_client(api_type="gemini", model="gemini-live")
+    interrupt_started = asyncio.Event()
+    release_interrupt = asyncio.Event()
+
+    async def block_old_interrupt(*, turns, turn_complete):
+        assert turns is None
+        assert turn_complete is False
+        interrupt_started.set()
+        await release_interrupt.wait()
+
+    old_session = AsyncMock()
+    old_session.send_client_content.side_effect = block_old_interrupt
+    old_context = AsyncMock()
+    client._gemini_session = old_session
+    client._gemini_context_manager = old_context
+    client.ws = old_session
+    client._on_connection_attached()
+    old_generation = client._connection_generation
+    old_token = "retired-quarantine"
+    client._gemini_proactive_outcome = (old_token, None, None)
+    client._gemini_proactive_outcome_owner = (
+        old_generation,
+        old_session,
+        old_token,
+        old_context,
+    )
+    monkeypatch.setattr(
+        responses_module,
+        "_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS",
+        0,
+    )
+
+    quarantine = asyncio.create_task(
+        client._interrupt_and_quarantine_gemini_proactive_outcome(
+            old_token,
+            error_msg="retired",
+        )
+    )
+    await asyncio.wait_for(interrupt_started.wait(), timeout=1)
+
+    replacement_session = AsyncMock()
+    replacement_context = AsyncMock()
+    client._gemini_session = replacement_session
+    client._gemini_context_manager = replacement_context
+    client.ws = replacement_session
+    client._on_connection_attached()
+    replacement_token = "replacement-outcome"
+    client._gemini_proactive_outcome = (replacement_token, None, None)
+    client._gemini_proactive_outcome_owner = (
+        client._connection_generation,
+        replacement_session,
+        replacement_token,
+        replacement_context,
+    )
+    release_interrupt.set()
+    await asyncio.wait_for(quarantine, timeout=1)
+
+    assert old_session.send_client_content.await_count == 1
+    old_context.__aexit__.assert_awaited_once_with(None, None, None)
+    replacement_session.send_client_content.assert_not_awaited()
+    replacement_context.__aexit__.assert_not_awaited()
+    assert client._gemini_session is replacement_session
+    assert client._gemini_context_manager is replacement_context
+    assert client.ws is replacement_session
+    assert client._fatal_error_occurred is False
+    assert client._gemini_proactive_outcome == (replacement_token, None, None)
 
 
 @pytest.mark.unit
@@ -815,6 +1290,25 @@ async def test_gemini_cancelled_wait_observes_boundary_completion(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_cancel_response_honors_send_guard():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+
+    await client.cancel_response(send_guard=lambda: False)
+
+    client._gemini_session.send_client_content.assert_not_awaited()
+
+    await client.cancel_response(send_guard=lambda: True)
+
+    client._gemini_session.send_client_content.assert_awaited_once_with(
+        turns=None,
+        turn_complete=False,
+    )
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_gemini_cancelled_send_quarantines_until_terminal():
     client = _make_client(api_type="gemini", model="gemini-live")
     client._gemini_session = AsyncMock()
@@ -862,6 +1356,102 @@ async def test_gemini_cancelled_send_quarantines_until_terminal():
     assert client._gemini_proactive_outcome is None
     assert client._proactive_inject_outcome_token is None
     assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_cancelled_prepare_preserves_quarantine_for_next_external_turn():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    quarantine_started = asyncio.Event()
+    release_quarantine = asyncio.Event()
+
+    async def quarantine():
+        quarantine_started.set()
+        await release_quarantine.wait()
+
+    quarantine_task = asyncio.create_task(quarantine())
+    client._gemini_proactive_quarantine_task = quarantine_task
+
+    first_prepare = asyncio.create_task(
+        client.prepare_external_voice_turn(turn_id="cancelled-prepare")
+    )
+    await quarantine_started.wait()
+    first_prepare.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_prepare
+
+    assert client._gemini_proactive_quarantine_task is quarantine_task
+    assert not quarantine_task.done()
+
+    next_prepare = asyncio.create_task(
+        client.prepare_external_voice_turn(turn_id="next-prepare")
+    )
+    await asyncio.sleep(0)
+    assert not next_prepare.done()
+
+    release_quarantine.set()
+    await next_prepare
+    assert client._gemini_proactive_quarantine_task is None
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_cancelled_quarantine_wait_does_not_reconnect_when_child_is_cancelled():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    quarantine_future = asyncio.get_running_loop().create_future()
+    client._gemini_proactive_quarantine_task = quarantine_future
+    client._gemini_session = None
+    client.instructions = "system prompt"
+    client.connect = AsyncMock()
+
+    waiter = asyncio.create_task(
+        client._await_gemini_proactive_quarantine()
+    )
+    await asyncio.sleep(0)
+    waiter.cancel()
+    quarantine_future.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    client.connect.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_gemini_send_conflict_cannot_clear_another_inject_outcome():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    send_started = asyncio.Event()
+    release_send = asyncio.Event()
+
+    async def blocked_send(*_args, **kwargs):
+        if kwargs.get("turns") is not None:
+            send_started.set()
+            await release_send.wait()
+
+    client._gemini_session.send_client_content.side_effect = blocked_send
+    owner_task = asyncio.create_task(
+        client.inject_text_and_request_response(
+            "owner inject",
+            on_rejected=lambda _message: None,
+            on_completed=lambda: None,
+        )
+    )
+    await send_started.wait()
+    owner_outcome = client._gemini_proactive_outcome
+
+    with pytest.raises(
+        RuntimeError,
+        match="another Gemini proactive SDK send is pending",
+    ):
+        await client.inject_text_and_request_response("competing inject")
+
+    assert client._gemini_proactive_outcome is owner_outcome
+    assert client._proactive_inject_awaiting_outcome is True
+    release_send.set()
+    await owner_task
+    client._settle_gemini_proactive_inject(notify=False)
     await client.close()
 
 

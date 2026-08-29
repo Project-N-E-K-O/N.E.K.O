@@ -2424,6 +2424,125 @@ def test_manual_picker_fallback_discards_late_stream_after_source_change(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("capture_path", ["selected-source", "display-picker"])
+@pytest.mark.parametrize(
+    "invalidation",
+    ["current", "cancel", "source-change", "confirmation-error"],
+)
+def test_wgc_restart_approval_requires_current_attempt(
+    page: Page,
+    capture_path: str,
+    invalidation: str,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        source_enumeration_may_prompt=True,
+        initial_storage=(
+            {"selectedScreenSourceId": "window:old"}
+            if capture_path == "selected-source"
+            else None
+        ),
+    )
+    page.evaluate(
+        """() => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            window.__wgcRequests = [];
+            window.__wgcRestartCalls = [];
+            window.__statusToasts = [];
+            window.showStatusToast = (message) => {
+                window.__statusToasts.push(String(message));
+            };
+            window.__wgcRequestStarted = false;
+            window.__desktopProvider.requestWindowsGraphicsCaptureFallback = (payload) => {
+                window.__wgcRequests.push(payload);
+                window.__wgcRequestStarted = true;
+                return new Promise((resolve) => {
+                    window.__resolveWgcRequest = resolve;
+                });
+            };
+            window.__desktopProvider.restartWindowsGraphicsCaptureFallback = (token) => {
+                window.__wgcRestartCalls.push(token);
+                if (window.__rejectWgcRestart) {
+                    return Promise.reject(new Error('restart IPC unavailable'));
+                }
+                return Promise.resolve({ restarting: true, reason: 'restarting' });
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia() {
+                        const error = new Error('Could not start video source');
+                        error.name = 'NotReadableError';
+                        throw error;
+                    },
+                    async getDisplayMedia() {
+                        throw new Error('fallback picker failed');
+                    },
+                },
+            });
+            window.__manualStartPromise = window.startScreenSharing();
+        }"""
+    )
+    page.wait_for_function("window.__wgcRequestStarted === true")
+
+    result = page.evaluate(
+        """async (invalidation) => {
+            if (invalidation === 'cancel') {
+                window.appScreen.cancelPendingScreenSharingStart();
+            } else if (invalidation === 'source-change') {
+                await window.selectScreenSource('window:new', 'Browser', 'Browser');
+            }
+            window.__rejectWgcRestart = invalidation === 'confirmation-error';
+            window.__resolveWgcRequest({
+                prompted: true,
+                restarting: false,
+                restartApproved: true,
+                restartToken: 'approval-1',
+                reason: 'restart-approved',
+            });
+            await window.__manualStartPromise;
+            return {
+                pending: window.isScreenSharingStartPending(),
+                restartCalls: window.__wgcRestartCalls,
+                requestCount: window.__wgcRequests.length,
+                deferred: window.__wgcRequests[0].deferRestartUntilConfirmed,
+                selectedId: window.appState.selectedScreenSourceId,
+                captureFailureToasts: window.__statusToasts.filter(
+                    (message) => message.startsWith('NotReadableError:')
+                ).length,
+            };
+        }""",
+        invalidation,
+    )
+
+    expected_selected_id = None
+    if capture_path == "selected-source":
+        expected_selected_id = "window:old"
+    if invalidation == "source-change":
+        expected_selected_id = "window:new"
+    assert result == {
+        "pending": False,
+        "restartCalls": (
+            ["approval-1"]
+            if invalidation in {"current", "confirmation-error"}
+            else []
+        ),
+        "requestCount": 1,
+        "deferred": True,
+        "selectedId": expected_selected_id,
+        "captureFailureToasts": 1 if invalidation == "confirmation-error" else 0,
+    }
+
+
+@pytest.mark.frontend
 def test_cached_acquisition_without_trusted_title_does_not_widen_to_screen(
     page: Page,
 ) -> None:

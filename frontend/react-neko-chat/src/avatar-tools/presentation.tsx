@@ -1,7 +1,6 @@
 import type { CSSProperties, RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  AVAILABLE_COMPACT_AVATAR_TOOLS,
   resolveAvatarToolImagePaths,
   type AvatarToolId,
   type AvatarToolItem,
@@ -9,8 +8,6 @@ import {
 } from '../avatarTools';
 import {
   AVATAR_TOOL_DEFINITIONS,
-  getAvatarToolRegistration,
-  getAvatarToolSoundResource,
   withAvatarToolAssetVersion,
   type AvatarToolDefinition,
   type AvatarToolEffectRecipe,
@@ -25,6 +22,10 @@ import {
   type AvatarToolRoundChoiceGesture,
   type AvatarToolRoundResult,
 } from './catalog';
+import {
+  BUILT_IN_AVATAR_TOOL_REGISTRY,
+  type AvatarToolRegistrySnapshot,
+} from './registry';
 import { i18n } from '../i18n';
 import {
   isPointWithinAvatarToolUi,
@@ -242,9 +243,13 @@ function stopAudio(audio: HTMLAudioElement) {
   try { audio.load(); } catch {}
 }
 
-export function prewarmAvatarToolSounds(toolId: AvatarToolId, disposer: AvatarToolDisposer) {
+export function prewarmAvatarToolSounds(
+  toolId: AvatarToolId,
+  disposer: AvatarToolDisposer,
+  registry: AvatarToolRegistrySnapshot = BUILT_IN_AVATAR_TOOL_REGISTRY,
+) {
   if (typeof Audio === 'undefined' || !disposer.isCurrent()) return;
-  getAvatarToolRegistration(toolId).definition.sounds.forEach((resource) => {
+  registry.getRegistration(toolId).definition.sounds.forEach((resource) => {
     if (!disposer.isCurrent()) return;
     let cleanup = () => {};
     try {
@@ -270,18 +275,27 @@ export function prewarmAvatarToolSounds(toolId: AvatarToolId, disposer: AvatarTo
   });
 }
 
-const visualPreparation = new Map<AvatarToolId, Promise<void>>();
+const visualPreparation = new WeakMap<AvatarToolRegistrySnapshot, Map<AvatarToolId, Promise<void>>>();
 
-export function prepareAvatarToolVisuals(toolId: AvatarToolId): Promise<void> {
-  const existing = visualPreparation.get(toolId);
+export function prepareAvatarToolVisuals(
+  toolId: AvatarToolId,
+  registry: AvatarToolRegistrySnapshot = BUILT_IN_AVATAR_TOOL_REGISTRY,
+): Promise<void> {
+  const registryPreparation = visualPreparation.get(registry) ?? new Map<AvatarToolId, Promise<void>>();
+  visualPreparation.set(registry, registryPreparation);
+  const existing = registryPreparation.get(toolId);
   if (existing) return existing;
   if (typeof Image === 'undefined') return Promise.resolve();
 
-  const definition = getAvatarToolRegistration(toolId).definition;
+  const definition = registry.getRegistration(toolId).definition;
   const paths = new Set<string>();
   Object.values(definition.visual.variants).forEach((variant) => {
     paths.add(withAvatarToolAssetVersion(variant.iconImagePath));
     paths.add(withAvatarToolAssetVersion(variant.pointerImagePath));
+  });
+  definition.visual.frames?.forEach((frame) => {
+    paths.add(withAvatarToolAssetVersion(frame.iconImagePath));
+    paths.add(withAvatarToolAssetVersion(frame.pointerImagePath));
   });
   const preparation = Promise.all(Array.from(paths, imagePath => new Promise<void>((resolve) => {
     const image = new Image();
@@ -309,15 +323,34 @@ export function prepareAvatarToolVisuals(toolId: AvatarToolId): Promise<void> {
     image.src = imagePath;
     if (image.complete) decode();
   }))).then(() => undefined);
-  visualPreparation.set(toolId, preparation);
+  registryPreparation.set(toolId, preparation);
   return preparation;
 }
 
-export function playAvatarToolSound(sound: AvatarToolSoundId, disposer: AvatarToolDisposer) {
+export function playAvatarToolSound(sound: AvatarToolSoundId, disposer: AvatarToolDisposer): () => void;
+export function playAvatarToolSound(
+  toolId: AvatarToolId,
+  sound: AvatarToolSoundId,
+  disposer: AvatarToolDisposer,
+  registry?: AvatarToolRegistrySnapshot,
+): () => void;
+export function playAvatarToolSound(
+  toolOrSound: AvatarToolId | AvatarToolSoundId,
+  soundOrDisposer: AvatarToolSoundId | AvatarToolDisposer,
+  maybeDisposer?: AvatarToolDisposer,
+  registry: AvatarToolRegistrySnapshot = BUILT_IN_AVATAR_TOOL_REGISTRY,
+) {
+  const legacyCall = typeof soundOrDisposer !== 'string';
+  const sound = legacyCall ? String(toolOrSound) : soundOrDisposer;
+  const disposer = legacyCall ? soundOrDisposer : maybeDisposer;
+  const toolId = legacyCall
+    ? registry.definitions.find(definition => definition.sounds.some(resource => resource.id === sound))?.id
+    : toolOrSound as AvatarToolId;
+  if (!toolId || !disposer) return () => {};
   if (typeof Audio === 'undefined' || !disposer.isCurrent()) return () => {};
   let cleanup = () => {};
   try {
-    const resource = getAvatarToolSoundResource(sound);
+    const resource = registry.getSound(toolId, sound);
     const audio = new Audio(withAvatarToolAssetVersion(resource.src));
     audio.preload = 'auto';
     audio.volume = resource.volume;
@@ -351,18 +384,23 @@ export function playAvatarToolSound(sound: AvatarToolSoundId, disposer: AvatarTo
 // Presentation state ---------------------------------------------------------
 
 export type AvatarToolVariantState = Record<AvatarToolId, AvatarToolVariantId>;
+export type AvatarToolImageFrameState = Record<AvatarToolId, number>;
 
 export type AvatarToolPresentation = {
   activeTool: AvatarToolItem | null;
   avatarRangeVariant: AvatarToolVariantId;
   outsideRangeVariant: AvatarToolVariantId;
   effectiveVariant: AvatarToolVariantId;
+  imageFrameIndex: number;
   withinAvatarRange: boolean;
   imageKind: 'pointer' | 'icon';
 };
 
-export function getAvatarTool(toolId: AvatarToolId | null): AvatarToolItem | null {
-  return AVAILABLE_COMPACT_AVATAR_TOOLS.find(item => item.id === toolId) ?? null;
+export function getAvatarTool(
+  toolId: AvatarToolId | null,
+  registry: AvatarToolRegistrySnapshot = BUILT_IN_AVATAR_TOOL_REGISTRY,
+): AvatarToolItem | null {
+  return registry.items.find(item => item.id === toolId) ?? null;
 }
 
 export function createAvatarToolVariantState(
@@ -371,6 +409,16 @@ export function createAvatarToolVariantState(
   const state = {} as AvatarToolVariantState;
   definitions.forEach((definition) => {
     state[definition.id] = definition.visual.initialVariant;
+  });
+  return state;
+}
+
+export function createAvatarToolImageFrameState(
+  definitions: ReadonlyArray<AvatarToolDefinition> = AVATAR_TOOL_DEFINITIONS,
+): AvatarToolImageFrameState {
+  const state = {} as AvatarToolImageFrameState;
+  definitions.forEach((definition) => {
+    state[definition.id] = 0;
   });
   return state;
 }
@@ -417,26 +465,31 @@ export function deriveAvatarToolPresentation({
   activeToolId,
   rangeVariants,
   outsideVariants,
+  imageFrameIndices,
   overAvatarRange,
   overCompactZone,
   insideHostWindow,
   effectActive,
+  registry = BUILT_IN_AVATAR_TOOL_REGISTRY,
 }: {
   activeToolId: AvatarToolId | null;
   rangeVariants: AvatarToolVariantState;
   outsideVariants: AvatarToolVariantState;
+  imageFrameIndices?: AvatarToolImageFrameState;
   overAvatarRange: boolean;
   overCompactZone: boolean;
   insideHostWindow: boolean;
   effectActive: boolean;
+  registry?: AvatarToolRegistrySnapshot;
 }): AvatarToolPresentation {
-  const activeTool = getAvatarTool(activeToolId);
+  const activeTool = getAvatarTool(activeToolId, registry);
   const avatarRangeVariant = activeToolId ? rangeVariants[activeToolId] : 'primary';
   const outsideRangeVariant = activeToolId ? outsideVariants[activeToolId] : 'primary';
   const withinAvatarRange = insideHostWindow && overAvatarRange && !overCompactZone;
-  const visual = activeToolId
+  const imageFrameIndex = activeToolId ? imageFrameIndices?.[activeToolId] ?? 0 : 0;
+  const visual = activeTool && activeToolId
     ? resolveAvatarToolVisualPresentation({
-      definition: getAvatarToolRegistration(activeToolId).definition,
+      definition: registry.getRegistration(activeToolId).definition,
       rangeVariant: avatarRangeVariant,
       outsideVariant: outsideRangeVariant,
       overAvatarRange,
@@ -450,6 +503,7 @@ export function deriveAvatarToolPresentation({
     avatarRangeVariant,
     outsideRangeVariant,
     effectiveVariant: visual.effectiveVariant,
+    imageFrameIndex,
     withinAvatarRange,
     imageKind: visual.imageKind,
   };
@@ -495,6 +549,7 @@ export type AvatarToolVisualModel = {
   activeTool: AvatarToolItem | null;
   activeToolId: AvatarToolId | null;
   effectiveVariant: AvatarToolVariantId;
+  imageFrameIndex: number;
   avatarRangeVariant: AvatarToolVariantId;
   withinAvatarRange: boolean;
   overlayRef: RefObject<HTMLDivElement>;
@@ -504,12 +559,14 @@ export type AvatarToolVisualModel = {
   overlayEffect: AvatarToolOwnedEffectVisualModel | null;
   roundChoiceAvatarGesture: AvatarToolRoundChoiceAvatarGestureVisualModel | null;
   transientEffects: AvatarToolTransientVisualEffect[];
+  definition: AvatarToolDefinition | null;
 };
 
 export function buildAvatarToolVisualModel({
   activeTool,
   activeToolId,
   effectiveVariant,
+  imageFrameIndex,
   avatarRangeVariant,
   withinAvatarRange,
   overlayRef,
@@ -518,11 +575,24 @@ export function buildAvatarToolVisualModel({
   overlayEffectExecution,
   roundChoiceAvatarGestureState,
   transientEffects,
-}: Omit<AvatarToolVisualModel, 'overlayImagePath' | 'overlayEffect' | 'roundChoiceAvatarGesture'> & {
+  registry = BUILT_IN_AVATAR_TOOL_REGISTRY,
+}: Omit<AvatarToolVisualModel, 'overlayImagePath' | 'overlayEffect' | 'roundChoiceAvatarGesture' | 'definition'> & {
   overlayEffectExecution: ActiveAvatarToolEffectExecution | null;
   roundChoiceAvatarGestureState: AvatarToolRoundChoiceAvatarGestureState | null;
+  registry?: AvatarToolRegistrySnapshot;
 }) : AvatarToolVisualModel {
-  const activeImagePaths = activeTool ? resolveAvatarToolImagePaths(activeTool, effectiveVariant) : null;
+  const activeDefinition = activeTool ? registry.getRegistration(activeTool.id).definition : null;
+  const activeFrame = activeDefinition?.definitionVersion === 2
+    ? activeDefinition.visual.frames?.[imageFrameIndex] ?? activeDefinition.visual.frames?.[0]
+    : null;
+  const activeImagePaths = activeTool
+    ? activeFrame
+      ? {
+        iconImagePath: withAvatarToolAssetVersion(activeFrame.iconImagePath),
+        pointerImagePath: withAvatarToolAssetVersion(activeFrame.pointerImagePath),
+      }
+      : resolveAvatarToolImagePaths(activeTool, effectiveVariant)
+    : null;
   const overlayEffect: AvatarToolOwnedEffectVisualModel | null = activeTool && overlayEffectExecution
     ? overlayEffectExecution.kind === 'hammer-swing'
       ? {
@@ -535,8 +605,8 @@ export function buildAvatarToolVisualModel({
         ...overlayEffectExecution,
         userImagePath: resolveAvatarToolImagePaths(activeTool, overlayEffectExecution.round.userVariant).iconImagePath,
         avatarImagePath: resolveAvatarToolImagePaths(activeTool, overlayEffectExecution.round.avatarVariant).iconImagePath,
-        displayWidth: getAvatarToolRegistration(activeTool.id).definition.visual.inRange.displayWidth,
-        displayHeight: getAvatarToolRegistration(activeTool.id).definition.visual.inRange.displayHeight,
+        displayWidth: registry.getRegistration(activeTool.id).definition.visual.inRange.displayWidth,
+        displayHeight: registry.getRegistration(activeTool.id).definition.visual.inRange.displayHeight,
         resultLabel: getAvatarToolRoundResultLabel(
           overlayEffectExecution.round.roundResult,
           overlayEffectExecution.avatarName,
@@ -546,13 +616,14 @@ export function buildAvatarToolVisualModel({
   const roundChoiceAvatarGesture = activeTool && roundChoiceAvatarGestureState ? {
     ...roundChoiceAvatarGestureState,
     imagePath: resolveAvatarToolImagePaths(activeTool, roundChoiceAvatarGestureState.variant).iconImagePath,
-    displayWidth: getAvatarToolRegistration(activeTool.id).definition.visual.inRange.displayWidth,
-    displayHeight: getAvatarToolRegistration(activeTool.id).definition.visual.inRange.displayHeight,
+    displayWidth: registry.getRegistration(activeTool.id).definition.visual.inRange.displayWidth,
+    displayHeight: registry.getRegistration(activeTool.id).definition.visual.inRange.displayHeight,
   } : null;
   return {
     activeTool,
     activeToolId,
     effectiveVariant,
+    imageFrameIndex,
     avatarRangeVariant,
     withinAvatarRange,
     overlayRef,
@@ -564,6 +635,7 @@ export function buildAvatarToolVisualModel({
     overlayEffect,
     roundChoiceAvatarGesture,
     transientEffects,
+    definition: activeTool ? registry.getRegistration(activeTool.id).definition : null,
   };
 }
 
@@ -621,9 +693,10 @@ export function getAvatarToolOverlayTransform(
   item: AvatarToolItem,
   compact: boolean,
   pointer: AvatarToolPointer,
+  registry: AvatarToolRegistrySnapshot = BUILT_IN_AVATAR_TOOL_REGISTRY,
 ): string {
   return getAvatarToolOverlayTransformFromDefinition(
-    getAvatarToolRegistration(item.id).definition,
+    registry.getRegistration(item.id).definition,
     compact,
     pointer,
   );
@@ -757,9 +830,7 @@ function AvatarToolTransientEffectVisual({ effect }: { effect: AvatarToolTransie
 }
 
 export default function AvatarToolVisuals({ model }: { model: AvatarToolVisualModel }) {
-  const activeVisual = model.activeToolId
-    ? getAvatarToolRegistration(model.activeToolId).definition.visual
-    : null;
+  const activeVisual = model.definition?.visual ?? null;
   const activeVisualMode = activeVisual
     ? (model.overlayCompact ? activeVisual.pointer : activeVisual.inRange)
     : null;

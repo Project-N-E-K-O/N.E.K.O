@@ -21,9 +21,11 @@ respects HTTP(S)_PROXY, ALL_PROXY, and NO_PROXY.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from urllib.parse import quote
 
+from utils.cookies_login import credential_manager
 from utils.external_http_client import get_external_http_client
 from utils.twitch_auth import TwitchAuthService
 
@@ -59,7 +61,10 @@ def _stream_item(value: Any) -> dict[str, str] | None:
 async def fetch_twitch_live_streams(limit: int = 10) -> dict[str, Any]:
     """Fetch live streams from the authorized account's followed channels."""
 
-    client_id, access_token, user_id = await _auth_service.followed_stream_access()
+    request_credential = await _auth_service.followed_stream_credential()
+    client_id = request_credential.get("client_id", "")
+    access_token = request_credential.get("access_token", "")
+    user_id = request_credential.get("user_id", "")
     if not client_id or not access_token or not user_id:
         return {
             "success": False,
@@ -81,7 +86,12 @@ async def fetch_twitch_live_streams(limit: int = 10) -> dict[str, Any]:
             timeout=10.0,
         )
         if response.status_code == 401:
-            client_id, access_token, user_id = await _auth_service.followed_stream_access(force_refresh=True)
+            request_credential = await _auth_service.followed_stream_credential(
+                force_refresh=True,
+            )
+            client_id = request_credential.get("client_id", "")
+            access_token = request_credential.get("access_token", "")
+            user_id = request_credential.get("user_id", "")
             if not client_id or not access_token or not user_id:
                 return {
                     "success": False,
@@ -95,6 +105,18 @@ async def fetch_twitch_live_streams(limit: int = 10) -> dict[str, Any]:
                 headers={"Client-ID": client_id, "Authorization": f"Bearer {access_token}"},
                 timeout=10.0,
             )
+            if response.status_code == 401:
+                await asyncio.to_thread(
+                    credential_manager.mark_auth_rejected,
+                    "twitch",
+                    request_credential,
+                )
+                return {
+                    "success": False,
+                    "source": "twitch",
+                    "videos": [],
+                    "error": "Twitch followed-stream access requires reauthorization",
+                }
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:

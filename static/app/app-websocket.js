@@ -2344,6 +2344,23 @@
                     console.log(window.t('console.catgirlSwitchedReceived'), response);
                 }
 
+                if (response.type === 'chat_blocks') {
+                    // NOT gated on suppressAssistantStreamUntilNextSession.
+                    // That latch stops a finished session's ASSISTANT stream
+                    // from continuing to write into chat. A chat_blocks frame
+                    // is a system post that claims no assistant identity and
+                    // opens no turn, and `ai_behavior="blind"` is explicitly
+                    // allowed to render with no model session at all — so
+                    // gating it on model-session state discarded plugin
+                    // notifications that never depended on a session, and they
+                    // were gone for good if the user never started another
+                    // one (Codex).
+                    if (typeof window.appendReactChatBlocks === 'function') {
+                        window.appendReactChatBlocks(response);
+                    }
+                    return;
+                }
+
                 // -------- gemini_response --------
                 if (response.type === 'gemini_response') {
                     if (S.suppressAssistantStreamUntilNextSession) {
@@ -2358,6 +2375,8 @@
                     var assistantResponseMeta = response.meta !== undefined
                         ? response.meta
                         : response.metadata;
+                    var hasStructuredResponseBlocks = Array.isArray(response.blocks)
+                        && response.blocks.length > 0;
                     if (response.metadata && response.metadata.game_route) {
                         var gameMeta = response.metadata.game_route;
                         var gameEvent = gameMeta.event || {};
@@ -2393,7 +2412,8 @@
                     }
                     if (!S.assistantTurnId
                             && S.assistantTurnAwaitingBubble
-                            && getRenderableAssistantChunkText(response.text)) {
+                            && (getRenderableAssistantChunkText(response.text)
+                                || hasStructuredResponseBlocks)) {
                         ensureAssistantTurnStarted(
                             'gemini_response_first_chunk',
                             response.turn_id,
@@ -2403,7 +2423,16 @@
                     }
                     var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
-                        createdVisibleBubble = window.appendMessage(response.text, 'gemini', isNewMessage) === true;
+                        if (hasStructuredResponseBlocks) {
+                            createdVisibleBubble = window.appendMessage(
+                                response.text,
+                                'gemini',
+                                isNewMessage,
+                                { blocks: response.blocks }
+                            ) === true;
+                        } else {
+                            createdVisibleBubble = window.appendMessage(response.text, 'gemini', isNewMessage) === true;
+                        }
                     }
                     if (createdVisibleBubble && response.request_id) {
                         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {

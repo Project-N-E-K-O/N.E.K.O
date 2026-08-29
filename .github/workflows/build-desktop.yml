@@ -481,7 +481,7 @@ jobs:
           # Synced with build_nuitka.bat.
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=onnxruntime.transformers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tokenizers"
-          # bilibili_dm/bilibili_danmaku plugins import bilibili_api; compile the
+          # The bilibili_danmaku plugin imports bilibili_api; compile the
           # package itself (CI previously only carried its package-data).  The
           # dev SDK imports these transitive packages from login_v2/__init__ at
           # runtime, so list them explicitly rather than relying on Nuitka's
@@ -1094,6 +1094,12 @@ jobs:
             fi
           fi
 
+      # 三个 Portable 更新步骤都用 `PREVIOUS_ARGS` 这个可能为空的数组来传可选的
+      # `--previous`。展开必须写成 `${PREVIOUS_ARGS[@]+"${PREVIOUS_ARGS[@]}"}`：
+      # macOS runner 的 /bin/bash 是 3.2，在 `set -u` 下展开空数组会直接报
+      # `PREVIOUS_ARGS[@]: unbound variable`（bash 4.4 才修）。写成 `"${PREVIOUS_ARGS[@]}"`
+      # 在 Linux / Git Bash（bash 5）上是绿的，只有 macOS 两个 job 会红 —— #2439 就是
+      # 这样让 nightly 桌面构建的 mac-x64 / mac-arm64 连续红了下去。
       - name: Create Windows Portable full and differential update assets
         if: runner.os == 'Windows'
         working-directory: electron-app
@@ -1109,7 +1115,7 @@ jobs:
             --dir dist/win-unpacked \
             --version "$PORTABLE_VERSION" \
             --out dist/portable-update \
-            "${PREVIOUS_ARGS[@]}"
+            ${PREVIOUS_ARGS[@]+"${PREVIOUS_ARGS[@]}"}
 
       - name: Create macOS/Linux Portable directory update assets
         if: runner.os != 'Windows'
@@ -1134,7 +1140,7 @@ jobs:
             --arch "$ARCH" \
             --version "$PORTABLE_VERSION" \
             --out dist/portable-update \
-            "${PREVIOUS_ARGS[@]}"
+            ${PREVIOUS_ARGS[@]+"${PREVIOUS_ARGS[@]}"}
 
       - name: Create Linux AppImage full and differential update assets
         if: runner.os == 'Linux'
@@ -1154,7 +1160,7 @@ jobs:
             --arch x64 \
             --version "$PORTABLE_VERSION" \
             --out dist/portable-update \
-            "${PREVIOUS_ARGS[@]}"
+            ${PREVIOUS_ARGS[@]+"${PREVIOUS_ARGS[@]}"}
 
       - name: List build output
         working-directory: electron-app/dist

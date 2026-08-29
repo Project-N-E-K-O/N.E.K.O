@@ -3,6 +3,7 @@ import {
   AVATAR_TOOL_ASSET_PATH_MAX_LENGTH,
   AVATAR_TOOL_DEFINITION_IDS,
   AVATAR_TOOL_INTERACTION_INTENSITIES,
+  LOCAL_AVATAR_TOOL_ID_PATTERN,
   AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS,
   AVATAR_TOOL_ROUND_CHOICE_GESTURES,
   AVATAR_TOOL_TOUCH_ZONES,
@@ -35,7 +36,8 @@ const payloadFieldSchema = z.string().min(1).max(64).regex(/^[a-z][a-zA-Z0-9]*$/
     field => !(AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS as readonly string[]).includes(field),
     { message: 'payload field is reserved' },
   );
-const avatarToolDefinitionIdSchema = z.enum(AVATAR_TOOL_DEFINITION_IDS);
+const builtInAvatarToolDefinitionIdSchema = z.enum(AVATAR_TOOL_DEFINITION_IDS);
+const localAvatarToolDefinitionIdSchema = z.string().regex(LOCAL_AVATAR_TOOL_ID_PATTERN);
 const avatarToolVariantIdSchema = z.enum(AVATAR_TOOL_VARIANT_IDS);
 const intensitySchema = z.enum(AVATAR_TOOL_INTERACTION_INTENSITIES);
 const touchZoneSchema = z.enum(AVATAR_TOOL_TOUCH_ZONES);
@@ -82,6 +84,7 @@ export const desktopAvatarToolVisualSchema = z.object({
     secondary: visualVariantSchema,
     tertiary: visualVariantSchema,
   }).strict(),
+  frames: z.array(visualVariantSchema).min(2).max(17).optional(),
   presentation: z.object({
     inRangeVariantSource: z.enum(['range', 'outside', 'primary']),
     outsideVariantSource: z.enum(['range', 'outside', 'primary']),
@@ -316,6 +319,31 @@ const pressReleaseProfileSchema = z.object({
   }).strict(),
 }).strict();
 
+const localPressReleaseProfileSchema = z.object({
+  kind: z.literal('press-release'),
+  revision: z.string().regex(/^\d+-\d+$/).max(128),
+  actionId: z.literal('interact'),
+  imageChange: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('press-swap') }).strict(),
+    z.object({ kind: z.literal('click-advance') }).strict(),
+  ]),
+  burst: z.object({
+    windowMs: positiveNumberSchema,
+    rapidThreshold: positiveIntegerSchema,
+    normalIntensity: z.literal('normal'),
+    rapidIntensity: z.literal('rapid'),
+  }).strict(),
+  touchZone: z.literal('release'),
+  touchZones: touchZonesSchema,
+  feedback: z.object({ sound: identifierSchema }).strict().optional(),
+  chance: z.object({
+    field: z.literal('specialTriggered'),
+    probability: probabilitySchema.positive(),
+    effect: identifierSchema,
+    sound: identifierSchema.optional(),
+  }).strict().optional(),
+}).strict();
+
 const lockedImpactProfileSchema = z.object({
   kind: z.literal('locked-impact'),
   actionId: identifierSchema,
@@ -411,12 +439,20 @@ const interactionProfileSchema = z.union([
   roundChoiceProfileSchema,
 ]);
 
-function collectInteractionReferences(profile: z.infer<typeof interactionProfileSchema>) {
+const localInteractionProfileSchema = localPressReleaseProfileSchema;
+
+function collectInteractionReferences(
+  profile: z.infer<typeof interactionProfileSchema> | z.infer<typeof localInteractionProfileSchema>,
+) {
   if (profile.kind === 'progressive-release') {
     return { sounds: [profile.feedback.sound], effects: [profile.feedback.effect] };
   }
   if (profile.kind === 'press-release') {
-    return { sounds: [profile.chance.sound], effects: [profile.chance.effect] };
+    const feedbackSound = 'feedback' in profile ? profile.feedback?.sound : undefined;
+    return {
+      sounds: [feedbackSound, profile.chance?.sound].filter((value): value is string => !!value),
+      effects: profile.chance ? [profile.chance.effect] : [],
+    };
   }
   if (profile.kind === 'round-choice') {
     return {
@@ -467,9 +503,31 @@ export const desktopAvatarToolInteractionSchema = z.object({
   });
 });
 
-export const desktopAvatarToolDefinitionSchema = z.object({
+export const desktopLocalAvatarToolInteractionSchema = z.object({
+  profile: localInteractionProfileSchema,
+  sounds: z.array(soundResourceSchema).max(16),
+  effects: z.array(effectRecipeSchema).max(16),
+}).strict().superRefine((interaction, context) => {
+  const soundIds = interaction.sounds.map(sound => sound.id);
+  const effectIds = interaction.effects.map(effect => effect.id);
+  if (new Set(soundIds).size !== soundIds.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['sounds'], message: 'sound IDs must be unique' });
+  }
+  if (new Set(effectIds).size !== effectIds.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['effects'], message: 'effect IDs must be unique' });
+  }
+  const references = collectInteractionReferences(interaction.profile);
+  if (soundIds.length !== references.sounds.length || soundIds.some(id => !references.sounds.includes(id))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['sounds'], message: 'sounds must match references exactly' });
+  }
+  if (effectIds.length !== references.effects.length || effectIds.some(id => !references.effects.includes(id))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['effects'], message: 'effects must match references exactly' });
+  }
+});
+
+const desktopBuiltInAvatarToolDefinitionSchema = z.object({
   definitionVersion: z.literal(1),
-  id: avatarToolDefinitionIdSchema,
+  id: builtInAvatarToolDefinitionIdSchema,
   capability: z.object({
     desktopVisual: z.boolean(),
     desktopInteraction: z.boolean(),
@@ -499,7 +557,47 @@ export const desktopAvatarToolDefinitionSchema = z.object({
       message: 'interaction projection must match desktopInteraction capability',
     });
   }
+  if (definition.visual?.frames !== undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['visual', 'frames'],
+      message: 'v1 visual must not include ordered frames',
+    });
+  }
 });
+
+const desktopLocalAvatarToolDefinitionSchema = z.object({
+  definitionVersion: z.literal(2),
+  id: localAvatarToolDefinitionIdSchema,
+  capability: z.object({
+    desktopVisual: z.literal(true),
+    desktopInteraction: z.literal(true),
+  }).strict(),
+  visual: desktopAvatarToolVisualSchema,
+  interaction: desktopLocalAvatarToolInteractionSchema,
+}).strict().superRefine((definition, context) => {
+  const frames = definition.visual.frames;
+  if (!frames) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['visual', 'frames'],
+      message: 'v2 visual requires ordered frames',
+    });
+    return;
+  }
+  if (definition.interaction.profile.imageChange.kind === 'press-swap' && frames.length !== 2) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['visual', 'frames'],
+      message: 'press-swap requires one default and one change frame',
+    });
+  }
+});
+
+export const desktopAvatarToolDefinitionSchema = z.union([
+  desktopBuiltInAvatarToolDefinitionSchema,
+  desktopLocalAvatarToolDefinitionSchema,
+]);
 
 export const desktopAvatarToolContractSchema = z.object({
   wireVersion: z.literal(1),
@@ -527,7 +625,9 @@ export const desktopAvatarToolContractSchema = z.object({
 });
 
 export type DesktopAvatarToolVisual = z.infer<typeof desktopAvatarToolVisualSchema>;
-export type DesktopAvatarToolInteraction = z.infer<typeof desktopAvatarToolInteractionSchema>;
+export type DesktopAvatarToolInteraction =
+  | z.infer<typeof desktopAvatarToolInteractionSchema>
+  | z.infer<typeof desktopLocalAvatarToolInteractionSchema>;
 export type DesktopAvatarToolContract = z.infer<typeof desktopAvatarToolContractSchema>;
 
 
@@ -561,6 +661,12 @@ function projectVisual(definition: AvatarToolDefinition): DesktopAvatarToolVisua
       secondary: projectVariant('secondary'),
       tertiary: projectVariant('tertiary'),
     },
+    ...(definition.definitionVersion === 2 && visual.frames
+      ? { frames: visual.frames.map(frame => ({
+        iconImagePath: projectAssetPath(frame.iconImagePath),
+        pointerImagePath: projectAssetPath(frame.pointerImagePath),
+      })) }
+      : {}),
     presentation: {
       inRangeVariantSource: visual.presentation.inRangeVariantSource,
       outsideVariantSource: visual.presentation.outsideVariantSource,
@@ -689,16 +795,39 @@ function projectProfile(profile: AvatarToolInteractionProfile) {
     };
   }
   if (profile.kind === 'press-release') {
+    if (profile.imageChange) {
+      return {
+        kind: profile.kind,
+        ...(profile.revision ? { revision: profile.revision } : {}),
+        actionId: profile.actionId,
+        imageChange: { kind: profile.imageChange.kind },
+        burst: {
+          windowMs: profile.burst.windowMs,
+          rapidThreshold: profile.burst.rapidThreshold,
+          normalIntensity: profile.burst.normalIntensity,
+          rapidIntensity: profile.burst.rapidIntensity,
+        },
+        touchZone: profile.touchZone,
+        touchZones: [...profile.touchZones],
+        ...(profile.feedback ? { feedback: { sound: profile.feedback.sound } } : {}),
+        ...(profile.chance ? { chance: {
+          field: profile.chance.field,
+          probability: profile.chance.probability,
+          effect: profile.chance.effect,
+          ...(profile.chance.sound ? { sound: profile.chance.sound } : {}),
+        } } : {}),
+      };
+    }
     return {
       kind: profile.kind,
       actionId: profile.actionId,
       pointerDown: {
-        rangeVariant: profile.pointerDown.rangeVariant,
-        outsideVariant: profile.pointerDown.outsideVariant,
+        rangeVariant: profile.pointerDown!.rangeVariant,
+        outsideVariant: profile.pointerDown!.outsideVariant,
       },
       pointerRelease: {
-        rangeVariant: profile.pointerRelease.rangeVariant,
-        outsideVariant: profile.pointerRelease.outsideVariant,
+        rangeVariant: profile.pointerRelease!.rangeVariant,
+        outsideVariant: profile.pointerRelease!.outsideVariant,
       },
       burst: {
         windowMs: profile.burst.windowMs,
@@ -708,12 +837,13 @@ function projectProfile(profile: AvatarToolInteractionProfile) {
       },
       touchZone: profile.touchZone,
       touchZones: [...profile.touchZones],
-      chance: {
+      ...(profile.feedback ? { feedback: { sound: profile.feedback.sound } } : {}),
+      ...(profile.chance ? { chance: {
         field: profile.chance.field,
         probability: profile.chance.probability,
-        sound: profile.chance.sound,
         effect: profile.chance.effect,
-      },
+        ...(profile.chance.sound ? { sound: profile.chance.sound } : {}),
+      } } : {}),
     };
   }
   if (profile.kind === 'round-choice') {
@@ -772,7 +902,13 @@ function getReferencedResourceIds(profile: AvatarToolInteractionProfile) {
     return { sounds: new Set([profile.feedback.sound]), effects: new Set([profile.feedback.effect]) };
   }
   if (profile.kind === 'press-release') {
-    return { sounds: new Set([profile.chance.sound]), effects: new Set([profile.chance.effect]) };
+    return {
+      sounds: new Set([
+        profile.feedback?.sound,
+        profile.chance?.sound,
+      ].filter((value): value is string => !!value)),
+      effects: new Set(profile.chance ? [profile.chance.effect] : []),
+    };
   }
   if (profile.kind === 'round-choice') {
     return {
@@ -804,7 +940,7 @@ function projectInteraction(definition: AvatarToolDefinition): DesktopAvatarTool
     effects: definition.effects
       .filter(effect => references.effects.has(effect.id))
       .map(projectEffect),
-  };
+  } as DesktopAvatarToolInteraction;
 }
 
 export function projectDesktopAvatarToolContract(
@@ -822,7 +958,7 @@ export function projectDesktopAvatarToolContract(
   return desktopAvatarToolContractSchema.parse({
     wireVersion: 1,
     definition: {
-      definitionVersion: 1,
+      definitionVersion: definition.definitionVersion,
       id: definition.id,
       capability: {
         desktopVisual,
@@ -837,8 +973,9 @@ export function projectDesktopAvatarToolContract(
 
 export function buildDesktopAvatarToolContract(
   toolId: AvatarToolId | null,
+  definition?: AvatarToolDefinition | null,
 ): DesktopAvatarToolContract {
   return projectDesktopAvatarToolContract(
-    toolId === null ? null : getAvatarToolRegistration(toolId).definition,
+    toolId === null ? null : definition ?? getAvatarToolRegistration(toolId).definition,
   );
 }

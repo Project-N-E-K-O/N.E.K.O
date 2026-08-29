@@ -162,9 +162,19 @@ def _is_music_playback_state_message(message: dict) -> bool:
 
 
 def _stamp_user_input_ingress(message: dict) -> dict:
-    """Stamp genuine user input before fire-and-forget task dispatch."""
+    """Stamp ordered input before fire-and-forget task dispatch."""
+    input_type = message.get("input_type")
+    if input_type in {"screen", "camera"}:
+        # Screen/camera processing runs in independent tasks and may complete
+        # validation out of order. This server-owned monotonic timestamp keeps
+        # provider staging aligned with arrival order. Always overwrite an
+        # untrusted JSON-supplied private timestamp at this boundary.
+        return {
+            **message,
+            "_visual_input_ingress_time": time.monotonic(),
+        }
     if (
-        message.get("input_type") not in _TEXT_SESSION_INPUT_TYPES
+        input_type not in _TEXT_SESSION_INPUT_TYPES
         and message.get("action") != "avatar_interaction"
     ):
         return message
@@ -1024,7 +1034,20 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 if input_type in _ORDERED_STREAM_INPUT_TYPES:
                     await stream_mgr.stream_data(message)
                 else:
-                    _fire_task(stream_mgr.stream_data(message))
+                    stream_task = _fire_task(stream_mgr.stream_data(message))
+                    if input_type in {"screen", "camera"}:
+                        track_validation = getattr(
+                            stream_mgr,
+                            "_track_independent_visual_validation_task",
+                            None,
+                        )
+                        if callable(track_validation):
+                            track_validation(
+                                stream_task,
+                                captured_at=message.get(
+                                    "_visual_input_ingress_time"
+                                ),
+                            )
 
             elif action == "avatar_interaction":
                 message = _stamp_user_input_ingress(message)

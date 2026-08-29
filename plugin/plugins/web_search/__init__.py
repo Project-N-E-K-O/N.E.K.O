@@ -27,9 +27,12 @@ from plugin.sdk.plugin import (
 import httpx
 
 from ._parsing import (
+    MAX_SNIPPET_LEN,
+    MAX_TITLE_LEN,
     SearchBlockedError,
     SearchResponseError,
     decode_html,
+    is_http_url,
     is_baidu_no_results,
     is_baidu_blocked,
     is_ddg_blocked,
@@ -38,6 +41,7 @@ from ._parsing import (
     parse_baidu_mobile_html,
     parse_ddg_html,
     parse_ddg_lite_html,
+    sanitize_text,
 )
 from ._resilience import (
     SearchCoordinator,
@@ -48,7 +52,7 @@ from ._resilience import (
     should_skip_fallback,
 )
 
-_UA = "N.E.K.O-WebSearch/0.1.5 (+https://github.com/Project-N-E-K-O/N.E.K.O)"
+_UA = "N.E.K.O-WebSearch/0.1.6 (+https://github.com/Project-N-E-K-O/N.E.K.O)"
 # Baidu currently answers plain bot-style user agents with a tiny JavaScript
 # redirect shell even after the normal BAIDUID cookie warm-up.  Use a
 # browser-compatible UA for Baidu while retaining the N.E.K.O product token;
@@ -57,11 +61,13 @@ _BAIDU_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/131.0.0.0 Safari/537.36 "
-    "N.E.K.O-WebSearch/0.1.5"
+    "N.E.K.O-WebSearch/0.1.6"
 )
 
 _DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 _DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
+_ANYSEARCH_SEARCH_URL = "https://api.anysearch.com/v1/search"
+_ANYSEARCH_MAX_RESULTS = 20
 _BAIDU_HOME_URL = "https://www.baidu.com/"
 _BAIDU_SEARCH_URL = "https://www.baidu.com/s"
 _BAIDU_MOBILE_SEARCH_URL = "https://m.baidu.com/s"
@@ -69,7 +75,7 @@ _BAIDU_MOBILE_UA = (
     "Mozilla/5.0 (Linux; Android 10; K) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/131.0.0.0 Mobile Safari/537.36 "
-    "N.E.K.O-WebSearch/0.1.5"
+    "N.E.K.O-WebSearch/0.1.6"
 )
 _GEOIP_PROVIDERS = (
     ("https://ipwho.is/?fields=success,country_code", "country_code"),
@@ -98,9 +104,31 @@ def _search_sdk_error(error: Exception) -> SdkError:
 
 def _select_backend(configured: object, country: Optional[str]) -> str:
     backend = str(configured or "auto").strip().lower()
-    if backend in {"baidu", "duckduckgo"}:
+    if backend in {"anysearch", "baidu", "duckduckgo"}:
         return backend
-    return "duckduckgo" if country and country not in _CN_COUNTRIES else "baidu"
+    return "anysearch"
+
+
+def _select_anysearch_zone(country: Optional[str]) -> Optional[str]:
+    """Map a known GeoIP country to AnySearch's documented region values."""
+    if country == "CN":
+        return "cn"
+    if country:
+        return "intl"
+    return None
+
+
+def _fallback_backend(primary_backend: str, country: Optional[str]) -> Optional[str]:
+    """Choose the automatic cross-engine fallback for an unforced search."""
+    if primary_backend == "anysearch":
+        return "baidu" if country in _CN_COUNTRIES or country is None else "duckduckgo"
+    if primary_backend == "baidu":
+        return "duckduckgo"
+    return None
+
+
+def _clip_untrusted_text(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
 def _snapshot_baidu_cookies(client: httpx.AsyncClient) -> List[Dict[str, Any]]:
@@ -406,6 +434,90 @@ async def _search_baidu(
     return mobile_results
 
 
+def _anysearch_headers(api_key: str) -> Dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+        "X-Anysearch-Client": "neko-web-search/0.1.6",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+async def _search_anysearch(
+    client: httpx.AsyncClient,
+    query: str,
+    max_results: int = 8,
+    timeout: float = 15.0,
+    zone: Optional[str] = None,
+    api_key: str = "",
+    retry_attempts: int = 2,
+    retry_base_delay: float = 0.5,
+) -> List[Dict[str, str]]:
+    """Query AnySearch while allowing anonymous access when no key is configured."""
+    result_limit = max(1, min(int(max_results), _ANYSEARCH_MAX_RESULTS))
+    payload: Dict[str, object] = {
+        "query": query,
+        "max_results": result_limit,
+    }
+    if zone in {"cn", "intl"}:
+        payload["zone"] = zone
+
+    try:
+        response = await request_with_retry(
+            lambda: client.post(
+                _ANYSEARCH_SEARCH_URL,
+                json=payload,
+                headers=_anysearch_headers(api_key),
+                timeout=timeout,
+            ),
+            max_attempts=retry_attempts,
+            base_delay=retry_base_delay,
+        )
+        envelope = response.json()
+    except httpx.HTTPStatusError as error:
+        status = error.response.status_code
+        if status == 429:
+            raise SearchBlockedError(
+                "AnySearch 请求受限；已停止重试并进入冷却",
+                retry_after_seconds=retry_after_seconds(error.response.headers),
+            ) from error
+        if status in {401, 403} and api_key:
+            raise SearchResponseError("AnySearch API Key 无效、已失效或无权访问") from error
+        raise SearchResponseError(f"AnySearch 请求失败（HTTP {status}）") from error
+    except (httpx.HTTPError, ValueError, TypeError) as error:
+        raise SearchResponseError(f"AnySearch 响应无效：{type(error).__name__}") from error
+
+    if not isinstance(envelope, dict) or envelope.get("code", 0) != 0:
+        raise SearchResponseError("AnySearch 返回了无效响应")
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        raise SearchResponseError("AnySearch 返回了无效数据")
+    raw_results = data.get("results")
+    if not isinstance(raw_results, list):
+        raise SearchResponseError("AnySearch 返回了无效结果")
+
+    results: List[Dict[str, str]] = []
+    for item in raw_results[:_ANYSEARCH_MAX_RESULTS]:
+        if not isinstance(item, dict):
+            continue
+        title = _clip_untrusted_text(
+            sanitize_text(str(item.get("title") or "")),
+            MAX_TITLE_LEN,
+        )
+        url = sanitize_text(str(item.get("url") or ""))
+        if not title or not is_http_url(url):
+            continue
+        snippet = _clip_untrusted_text(
+            sanitize_text(str(item.get("snippet") or item.get("content") or "")),
+            MAX_SNIPPET_LEN,
+        )
+        results.append({"title": title, "url": url, "snippet": snippet})
+        if len(results) >= result_limit:
+            break
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Plugin class
 # ---------------------------------------------------------------------------
@@ -420,7 +532,10 @@ class WebSearchPlugin(NekoPluginBase):
         self._cfg: Dict[str, Any] = {}
         self._country: Optional[str] = None
         self._is_cn: bool = False
-        self._backend: str = "baidu"
+        self._backend: str = "anysearch"
+        self._configured_backend: str = "auto"
+        self._anysearch_zone: Optional[str] = None
+        self._anysearch_api_key: str = ""
         self._client: Optional[httpx.AsyncClient] = None
         self._client_loop: Optional[asyncio.AbstractEventLoop] = None
         self._baidu_cookies: List[Dict[str, Any]] = []
@@ -429,7 +544,8 @@ class WebSearchPlugin(NekoPluginBase):
         self._user_agent = _UA
         self._coordinator = SearchCoordinator()
         self._coordinators: Dict[str, SearchCoordinator] = {
-            "baidu": self._coordinator,
+            "anysearch": self._coordinator,
+            "baidu": SearchCoordinator(),
             "duckduckgo": SearchCoordinator(),
         }
 
@@ -525,13 +641,20 @@ class WebSearchPlugin(NekoPluginBase):
         await self._load_baidu_cookies()
         defs = self._defaults()
         configured_backend = str(self._cfg.get("backend", "auto")).strip().lower()
-        self._country = (
-            None
-            if configured_backend in {"baidu", "duckduckgo"}
-            else await _detect_country()
+        self._configured_backend = (
+            configured_backend
+            if configured_backend in {"auto", "anysearch", "baidu", "duckduckgo"}
+            else "auto"
         )
-        self._backend = _select_backend(configured_backend, self._country)
-        self._is_cn = self._backend == "baidu"
+        raw_api_key = self._cfg.get("anysearch_api_key", "")
+        self._anysearch_api_key = raw_api_key.strip() if isinstance(raw_api_key, str) else ""
+        # Entry-level backend="anysearch" is supported even when the configured
+        # backend is Baidu or DuckDuckGo, so GeoIP must always be available for
+        # AnySearch's per-call zone selection.
+        self._country = await _detect_country()
+        self._backend = _select_backend(self._configured_backend, self._country)
+        self._anysearch_zone = _select_anysearch_zone(self._country)
+        self._is_cn = self._country in _CN_COUNTRIES
         common_coordinator_options = {
             "ttl_seconds": defs["cache_ttl"],
             "stale_seconds": defs["stale_ttl"],
@@ -539,6 +662,12 @@ class WebSearchPlugin(NekoPluginBase):
             "queue_wait_seconds": defs["queue_wait"],
         }
         self._coordinators = {
+            "anysearch": SearchCoordinator(
+                **common_coordinator_options,
+                min_interval_seconds=defs["min_interval"],
+                cooldown_seconds=defs["cooldown"],
+                max_cooldown_seconds=defs["cooldown"],
+            ),
             "baidu": SearchCoordinator(
                 **common_coordinator_options,
                 min_interval_seconds=defs["baidu_min_interval"],
@@ -558,10 +687,16 @@ class WebSearchPlugin(NekoPluginBase):
         self._coordinator = self._coordinators[self._backend]
 
         self.logger.info(
-            "WebSearch started: country={}, configured_backend={}, backend={}",
-            self._country, configured_backend, self._backend,
+            "WebSearch started: country={}, anysearch_zone={}, configured_backend={}, backend={}, anysearch_key={}",
+            self._country, self._anysearch_zone, self._configured_backend, self._backend, bool(self._anysearch_api_key),
         )
-        return Ok({"status": "running", "backend": self._backend, "country": self._country})
+        return Ok({
+            "status": "running",
+            "backend": self._backend,
+            "country": self._country,
+            "anysearch_zone": self._anysearch_zone,
+            "anysearch_api_key_configured": bool(self._anysearch_api_key),
+        })
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
@@ -654,15 +789,19 @@ class WebSearchPlugin(NekoPluginBase):
         preferred_backend: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         defs = self._defaults()
-        requested_backend = backend if backend in {"baidu", "duckduckgo"} else None
+        requested_backend = backend if backend in {"anysearch", "baidu", "duckduckgo"} else None
         hinted_backend = (
             preferred_backend
-            if preferred_backend in {"baidu", "duckduckgo"}
+            if preferred_backend in {"anysearch", "baidu", "duckduckgo"}
             else None
         )
         primary_backend = requested_backend or hinted_backend or self._backend
-        allow_cross_engine_fallback = (
-            primary_backend == "baidu" and requested_backend is None
+        configured_is_auto = getattr(self, "_configured_backend", "auto") == "auto"
+        entry_is_auto = requested_backend is None
+        fallback_backend = (
+            _fallback_backend(primary_backend, getattr(self, "_country", None))
+            if configured_is_auto and entry_is_auto
+            else None
         )
         normalized_query = " ".join(query.casefold().split())
         attempted_backends = [primary_backend]
@@ -693,6 +832,15 @@ class WebSearchPlugin(NekoPluginBase):
                     "retry_attempts": defs["retry_attempts"],
                     "retry_base_delay": retry_base_delay,
                 }
+                if backend == "anysearch":
+                    return await _search_anysearch(
+                        client,
+                        query,
+                        max_results,
+                        zone=self._anysearch_zone,
+                        api_key=self._anysearch_api_key,
+                        **kwargs,
+                    )
                 if backend == "baidu":
                     try:
                         return await _search_baidu(
@@ -741,24 +889,24 @@ class WebSearchPlugin(NekoPluginBase):
             async with asyncio.timeout(total_timeout):
                 primary_budget = (
                     total_timeout * 0.72
-                    if allow_cross_engine_fallback
+                    if fallback_backend is not None
                     else total_timeout
                 )
                 try:
                     return await run_backend(primary_backend, primary_budget)
                 except Exception as primary_error:
-                    if not allow_cross_engine_fallback:
+                    if fallback_backend is None:
                         raise
-                    attempted_backends.append("duckduckgo")
+                    attempted_backends.append(fallback_backend)
                     self.logger.warning(
-                        "Baidu search failed ({}); trying DuckDuckGo",
-                        type(primary_error).__name__,
+                        "{} search failed ({}); trying {}",
+                        primary_backend, type(primary_error).__name__, fallback_backend,
                     )
                     try:
                         fallback_budget = deadline - asyncio.get_running_loop().time()
                         if fallback_budget <= 0:
                             raise primary_error
-                        return await run_backend("duckduckgo", fallback_budget)
+                        return await run_backend(fallback_backend, fallback_budget)
                     except TimeoutError:
                         # Let the outer timeout handler inspect retained results
                         # from both attempted backends. Replacing this with the
@@ -815,8 +963,8 @@ class WebSearchPlugin(NekoPluginBase):
                 },
                 "backend": {
                     "type": "string",
-                    "enum": ["auto", "baidu", "duckduckgo"],
-                    "description": "搜索后端；通常保持 auto",
+                    "enum": ["auto", "anysearch", "baidu", "duckduckgo"],
+                    "description": "搜索后端；auto 优先 AnySearch，anysearch 不跨引擎回退",
                     "default": "auto",
                 },
             },
@@ -895,8 +1043,8 @@ class WebSearchPlugin(NekoPluginBase):
                 },
                 "backend": {
                     "type": "string",
-                    "enum": ["auto", "baidu", "duckduckgo"],
-                    "description": "搜索后端；通常保持 auto",
+                    "enum": ["auto", "anysearch", "baidu", "duckduckgo"],
+                    "description": "搜索后端；auto 优先 AnySearch，anysearch 不跨引擎回退",
                     "default": "auto",
                 },
             },

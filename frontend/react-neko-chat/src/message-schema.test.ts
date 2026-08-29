@@ -54,8 +54,11 @@ describe('message-schema', () => {
     expect(props).toEqual({});
   });
 
-  it('accepts only a real non-empty assistant name for localized tool results', () => {
-    expect(parseChatWindowProps({ assistantName: ' Yui ' }).assistantName).toBe('Yui');
+  it('accepts only real non-empty participant names for localized tool results', () => {
+    const names = parseChatWindowProps({ userName: ' Ming ', assistantName: ' Yui ' });
+    expect(names.userName).toBe('Ming');
+    expect(names.assistantName).toBe('Yui');
+    expect(() => parseChatWindowProps({ userName: '   ' })).toThrow();
     expect(() => parseChatWindowProps({ assistantName: '   ' })).toThrow();
   });
 
@@ -151,6 +154,30 @@ describe('message-schema', () => {
       timestamp: Date.now(),
     } as never)).toThrow(ZodError);
     expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets the screenshot host callback report handled back through the validated wrapper', () => {
+    // 宿主 handleComposerScreenshot 会 return handled（布尔）。生产路径上这个回调一定
+    // 经过 parseChatWindowProps 的 zod 校验壳（mount.tsx），壳会校验返回值——一旦把
+    // 返回类型声明成 void，点一次截图就抛一个未捕获的 invalid_return_type。
+    // 注意这里必须用真的返回布尔的函数：vi.fn() 默认返回 undefined，正好躲开这条校验。
+    const onComposerScreenshot = vi.fn(function handleComposerScreenshot() {
+      return true;
+    });
+    const props = parseChatWindowProps({ onComposerScreenshot });
+
+    expect(() => props.onComposerScreenshot?.()).not.toThrow();
+    expect(onComposerScreenshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the void return contract for host callbacks that report nothing', () => {
+    // 与上一条对偶：放宽只发生在截图这一项，其余回调仍然钉死"不许有返回值"。
+    const onComposerImportImage = vi.fn(function handleComposerImportImage() {
+      return true;
+    });
+    const props = parseChatWindowProps({ onComposerImportImage });
+
+    expect(() => props.onComposerImportImage?.()).toThrow(ZodError);
   });
 
   it('keeps validated host callback identities stable across repeated prop parsing', () => {

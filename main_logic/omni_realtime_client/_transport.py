@@ -18,13 +18,14 @@ from ._shared import (
     Callable,
     Dict,
     IMAGE_IDLE_RATE_MULTIPLIER,
+    ImageStageResult,
     List,
     NATIVE_IMAGE_MIN_INTERVAL,
     OMNI_WS_FRAME_LIMIT_BYTES,
     Optional,
     ToolCall,
-    ToolResult,
     TurnDetectionMode,
+    VisualDeliveryMode,
     VISION_ANALYSIS_MAX_TOKENS,
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
     asyncio,
@@ -51,6 +52,10 @@ from ._protocol_capabilities import (
 
 _ATTACHED_TRANSPORT = object()
 
+
+class _RealtimeEventOwnerRetired(ConnectionError):
+    """The explicit send guard rejected this event before transport I/O."""
+
 # Ceiling on each host step inside a fail-open release that may be cut short.
 # The arbiter bounds the WHOLE notification with one shared budget
 # (_STUCK_RELEASE_NOTIFY_TIMEOUT, 2.0s); without a per-step ceiling the first
@@ -66,6 +71,13 @@ _STUCK_RELEASE_STEP_TIMEOUT = 0.5
 # arrives right behind its original, so this only has to outlive the events
 # interleaved between them; it is a leak guard, not a history.
 _USAGE_RECORDED_ID_LIMIT = 32
+
+# How many utterance ids a ``speech_started`` may have scoped and still be
+# recognised when that utterance's transcript arrives. Input transcription is
+# its own job on these providers, so a transcript can land several turns after
+# the speech it describes; anything older than this is indistinguishable from a
+# new user turn, which is also the safe reading -- it retires stale tool work.
+_RAW_SCOPED_UTTERANCE_MEMORY = 8
 
 # `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
 # 过去匹配在 `str(event['error'])` 上，也就是整个 dict 的 repr —— 里面回显着我们自己
@@ -130,6 +142,7 @@ class _TransportMixin:
 
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
+        self._native_audio = native_audio
         # Validate turn_detection_mode BEFORE any side effect (websockets.connect,
         # silence-check task, or Gemini SDK init). Applies uniformly to all providers.
         if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
@@ -435,14 +448,25 @@ class _TransportMixin:
             # input_audio_buffer.append_video_frame  →  event["video_frame"]
             b64_data = event.get("video_frame")
         elif etype == "conversation.item.create":
-            # GPT path: content[0].image_url = "data:image/jpeg;base64,<b64>"
+            # GPT path: content[i].image_url = "data:image/jpeg;base64,<b64>".
+            # A multimodal ASR turn carries the sampled first/middle/last frames
+            # in ONE item, so every image part has to be recompressed against
+            # the same aggregate budget — shrinking only content[0] leaves the
+            # item over the limit and the whole turn gets dropped.
+            image_parts = []
             try:
-                url = event["item"]["content"][0]["image_url"]
-                if isinstance(url, str) and url.startswith("data:image/"):
-                    prefix, b64_data = url.split(",", 1)
-                    prefix += ","
-            except (KeyError, IndexError, TypeError, ValueError):
-                pass
+                for part in event["item"]["content"]:
+                    url = part.get("image_url") if isinstance(part, dict) else None
+                    if isinstance(url, str) and url.startswith("data:image/"):
+                        image_parts.append(part)
+            except (KeyError, TypeError):
+                image_parts = []
+            if image_parts:
+                return _TransportMixin._shrink_multi_image_item(
+                    event,
+                    payload,
+                    image_parts,
+                )
 
         if not b64_data:
             logger.warning(
@@ -487,16 +511,89 @@ class _TransportMixin:
             logger.warning("⚠️ 图片重压缩失败 type=%s: %s — 丢弃帧", etype, e)
             return None
 
+    @staticmethod
+    def _shrink_multi_image_item(
+        event: dict,
+        payload: str,
+        image_parts: list,
+    ) -> Optional[str]:
+        """Recompress every image part of one item against the shared budget."""
+
+        from io import BytesIO
+        from PIL import Image as PILImage
+
+        limit = _TransportMixin._WS_FRAME_LIMIT
+        decoded = []
+        for part in image_parts:
+            prefix, b64_data = part["image_url"].split(",", 1)
+            try:
+                img = PILImage.open(BytesIO(base64.b64decode(b64_data)))
+                if img.mode in ("RGBA", "LA", "P"):
+                    img = img.convert("RGB")
+            except Exception as exc:
+                logger.warning("⚠️ 多图 item 解码失败，丢弃帧: %s", exc)
+                return None
+            decoded.append((part, prefix + ",", img))
+
+        new_payload = payload
+        for quality in (50, 35, 20):
+            for part, prefix, img in decoded:
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=quality, optimize=True)
+                part["image_url"] = prefix + base64.b64encode(
+                    buf.getvalue()
+                ).decode()
+            new_payload = json.dumps(event)
+            if len(new_payload) <= limit:
+                logger.info(
+                    "🗜️ 多图 item 重压缩成功 q=%d images=%d: %d → %d bytes",
+                    quality,
+                    len(decoded),
+                    len(payload),
+                    len(new_payload),
+                )
+                return new_payload
+
+        # 压到底仍然超限：与其整条 item 被丢掉（那会让本轮既没有图也没有
+        # transcript 进 provider 历史），不如按"多余丢弃"逐张摘掉最旧的那些。
+        # 最新那张必须留 —— 回合身份和 TTL 都以它为准。
+        content = event["item"]["content"]
+        while len(decoded) > 1:
+            dropped_part, _prefix, _img = decoded.pop(0)
+            try:
+                content.remove(dropped_part)
+            except ValueError:
+                break
+            new_payload = json.dumps(event)
+            logger.warning(
+                "⚠️ 多图 item 仍超限，丢弃最旧的一帧（剩 %d 张）",
+                len(decoded),
+            )
+            if len(new_payload) <= limit:
+                return new_payload
+        logger.warning(
+            "⚠️ 丢弃超大 item：单张图 q=20 仍 %d bytes > %d 上限",
+            len(new_payload),
+            limit,
+        )
+        return None
+
     async def send_event(
         self,
         event,
         *,
         raise_on_oversize: bool = False,
+        expected_visual_mode: VisualDeliveryMode | str | None = None,
+        callback_owned_visual: bool = False,
+        send_guard: Callable[[], bool] | None = None,
+        pre_send: Callable[[dict], None] | None = None,
         authorization_guard: Optional[Callable[[], bool]] = None,
-    ) -> bool | None:
+    ) -> bool:
+        if send_guard is not None and not send_guard():
+            raise ConnectionError("realtime event owner is no longer current")
         # 检查是否已发生致命错误，直接跳过发送
         if self._fatal_error_occurred:
-            return
+            return False
 
         # Gemini 不使用 WebSocket 风格的事件发送
         # 而是使用 session.send_client_content() 或 session.send_realtime_input()
@@ -504,14 +601,14 @@ class _TransportMixin:
             # Gemini 的事件通过专用方法处理，这里直接返回
             # 对于 session.update / conversation.item.create 等事件，Gemini 不支持
             logger.debug(f"Gemini mode: skipping WebSocket event {event.get('type', 'unknown')}")
-            return
+            return False
 
         # Backpressure: 检查是否处于节流状态
         if self._is_throttled:
             if time.time() < self._throttle_until:
                 # 仍在节流期，丢弃音频帧以减轻服务器压力
                 if event.get("type") == "input_audio_buffer.append":
-                    return  # 丢弃音频帧
+                    return False  # 丢弃音频帧
             else:
                 # 节流期结束，恢复正常发送
                 self._is_throttled = False
@@ -519,7 +616,7 @@ class _TransportMixin:
 
         # 检查websocket是否有效
         if not self.ws:
-            return
+            return False
 
         # Use setdefault so callers that explicitly stamp an event_id
         # (e.g. proactive inject paths matching server-side
@@ -528,10 +625,24 @@ class _TransportMixin:
         event.setdefault('event_id', "event_" + str(int(time.time() * 1000)))
         async with self._send_semaphore:  # 限制并发发送数量
             try:
+                if send_guard is not None and not send_guard():
+                    raise _RealtimeEventOwnerRetired(
+                        "realtime event owner is no longer current"
+                    )
                 if not self.ws:
-                    return
+                    return False
+                # Third gate, distinct from send_guard (ownership) and the
+                # visual-mode fence (routing): whether the permission that
+                # authorized these pixels is still granted. Waiting on the
+                # semaphore is a real yield point, so it can lapse here.
                 if authorization_guard is not None and not authorization_guard():
                     return False
+                if pre_send is not None:
+                    # 临界区之内、序列化**之前**的最后一次就地改写机会。等信号量
+                    # 是真实让出点，调用方在此之前做的任何判据都可能在这段等待里
+                    # 翻转；而 payload 是下一行才生成的，所以在这里改 event 就能
+                    # 被带上，不需要重新序列化。
+                    pre_send(event)
                 payload = json.dumps(event)
                 # Guard: Qwen/GLM/Step servers enforce 256KB max frame; for
                 # oversized image payloads, try to re-compress the JPEG at
@@ -547,11 +658,49 @@ class _TransportMixin:
                             raise RealtimeImagePayloadTooLargeError(
                                 "image payload exceeds realtime WebSocket frame limit"
                             )
-                        return
+                        return False
+                # 发送前的两道复查，判据不同、都要跑：send_guard 管「这条连接还
+                # 是不是当前所有者」，raw-vision fence 管「这一帧还符不符合当前
+                # 路由模式」。等信号量、重压缩超大图都是让出点，两者都可能在这
+                # 期间翻转。
+                #
+                # 注意 expected_visual_mode 是**送出时的那个模式**，不是写死的
+                # NATIVE：fence 要拦的是"帧在准入之后跨过了模式边界"，不是"只准
+                # 在 native 模式下发原始帧"。描述模式下主动搭话的那张一次性 cue
+                # 图就是照原样送的（见 stream_image 里 cache_latest=False 的分支），
+                # 写死 NATIVE 会把它一并拦掉。
+                if send_guard is not None and not send_guard():
+                    raise _RealtimeEventOwnerRetired(
+                        "realtime event owner is no longer current"
+                    )
                 if authorization_guard is not None and not authorization_guard():
                     return False
-                await self.ws.send(payload)
+                if expected_visual_mode is not None:
+                    expected_mode = VisualDeliveryMode(expected_visual_mode)
+                    current_mode = getattr(
+                        self,
+                        "_visual_delivery_mode",
+                        VisualDeliveryMode.NATIVE,
+                    )
+                    if current_mode != expected_mode or (
+                        expected_mode == VisualDeliveryMode.NATIVE
+                        and getattr(self, "_raw_visual_delivery_blocked", False)
+                        and not callback_owned_visual
+                    ):
+                        return False
+                transport = self.ws
+                if not transport:
+                    return False
+                await transport.send(payload)
+                return True
+            except _RealtimeEventOwnerRetired:
+                raise
             except Exception as e:
+                if send_guard is not None and not send_guard():
+                    logger.info(
+                        "Ignoring send failure from a retired realtime connection"
+                    )
+                    return False
                 error_msg = str(e)
                 # ── Fatal WebSocket errors ────────────────────────────
                 # 1009 (message too big) / 1006 (abnormal close) /
@@ -597,7 +746,60 @@ class _TransportMixin:
         }
         await self.send_event(event)
 
-    async def stream_audio(self, audio_chunk: bytes) -> None:
+    def expect_session_update_ack(self, instructions: str) -> asyncio.Future:
+        """Arm an exact waiter for a future ``session.updated`` snapshot."""
+
+        loop = asyncio.get_running_loop()
+        waiter = loop.create_future()
+        self._session_update_ack_waiters.append((str(instructions), waiter))
+        return waiter
+
+    def discard_session_update_ack(self, waiter: asyncio.Future) -> None:
+        """Remove a delivery-barrier waiter without affecting other updates."""
+
+        self._session_update_ack_waiters = [
+            (expected, pending)
+            for expected, pending in self._session_update_ack_waiters
+            if pending is not waiter
+        ]
+        if not waiter.done():
+            waiter.cancel()
+
+    def _notify_session_updated(self, event: Dict[str, Any]) -> None:
+        """Settle waiters whose exact instructions snapshot was accepted."""
+
+        session = event.get("session")
+        if not isinstance(session, dict):
+            return
+        accepted_instructions = session.get("instructions")
+        if accepted_instructions is None:
+            return
+        accepted_text = str(accepted_instructions)
+        remaining = []
+        for expected, waiter in self._session_update_ack_waiters:
+            if waiter.done():
+                continue
+            if expected == accepted_text:
+                waiter.set_result(None)
+            else:
+                remaining.append((expected, waiter))
+        self._session_update_ack_waiters = remaining
+
+    def _cancel_session_update_ack_waiters(self) -> None:
+        waiters, self._session_update_ack_waiters = (
+            self._session_update_ack_waiters,
+            [],
+        )
+        for _expected, waiter in waiters:
+            if not waiter.done():
+                waiter.cancel()
+
+    async def stream_audio(
+        self,
+        audio_chunk: bytes,
+        *,
+        captured_at: float | None = None,
+    ) -> None:
         """Stream raw audio data to the API.
 
         Supports two input modes:
@@ -608,13 +810,26 @@ class _TransportMixin:
         if self._fatal_error_occurred:
             return
 
-        current_time = time.time()
+        audio_timeline_at = (
+            float(captured_at)
+            if isinstance(captured_at, (int, float)) and captured_at > 0
+            else time.time()
+        )
+
         # 本地音量判定：用原始输入做 RMS，避免 VAD 延迟时误清 buffer
         raw_samples = np.frombuffer(audio_chunk, dtype=np.int16)
+        raw_loud = False
         if len(raw_samples) > 0:
             local_rms = np.sqrt(np.mean(raw_samples.astype(np.float32) ** 2))
-            if local_rms > self._client_vad_threshold:
-                self._last_local_loud_time = current_time
+            raw_loud = local_rms > self._client_vad_threshold
+        if raw_loud:
+            # Publish user engagement before waiting on the shared admission
+            # boundary. A proactive callback holding that lock must see speech
+            # that arrived during its media transaction and defer its response;
+            # all VAD state transitions and provider writes remain serialized
+            # below.
+            self._last_local_loud_time = audio_timeline_at
+            self._user_recent_activity_time = time.time()
 
         # Detect input sample rate based on chunk size
         # 48kHz: 480 samples (10ms) = 960 bytes
@@ -633,14 +848,6 @@ class _TransportMixin:
             if len(audio_chunk) == 0:
                 return
 
-        # Unified VAD update (priority: server VAD > RNNoise > RMS)
-        # Grace period check: always runs regardless of VAD source
-        if self._client_vad_active and current_time - self._client_vad_last_speech_time > self._client_vad_grace_period:
-            self._client_vad_active = False
-
-        # Client-side speech detection (only when no server VAD — server events handle it in handle_messages)
-        # use_rnnoise_path is true only for 48kHz input when AudioProcessor exists;
-        # for 16kHz/mobile input RNNoise doesn't run, so fall back to RMS.
         audio_processor = self._audio_processor
         use_rnnoise_path = use_rnnoise_path and audio_processor is not None
         _rnnoise_vad_live = (
@@ -648,59 +855,69 @@ class _TransportMixin:
             and audio_processor.noise_reduce_enabled
             and audio_processor._denoiser is not None
         )
-        self._rnnoise_vad_active = _rnnoise_vad_live
-        if not self._has_server_vad:
-            if _rnnoise_vad_live:
-                # Priority 2: RNNoise speech probability with sustained threshold
-                if audio_processor.speech_probability > 0.4:
-                    # B: 单帧 RNNoise 判定为语音就立即打点，独立于 sustain。
-                    # _client_vad_active 仍需 500ms sustain，_user_recent_activity
-                    # 只看"最近是否发声"，主动搭话 guard 用它兜住首 500ms 和停顿缝隙。
-                    self._user_recent_activity_time = current_time
-                    if self._speech_detect_start == 0.0:
-                        self._speech_detect_start = current_time
-                    elif current_time - self._speech_detect_start >= self._speech_sustain_threshold:
-                        self._client_vad_last_speech_time = current_time
-                        self._client_vad_active = True
-                else:
-                    self._speech_detect_start = 0.0
-            else:
-                # Priority 3: RMS energy fallback
-                samples = np.frombuffer(audio_chunk, dtype=np.int16)
-                if len(samples) > 0:
-                    rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2))
-                    if rms > self._client_vad_threshold:
-                        self._client_vad_last_speech_time = current_time
-                        self._client_vad_active = True
-                        # RMS 噪音率高，但若 RNNoise 不可用（16kHz/移动端），
-                        # RMS 是唯一信号，也喂给 B 兜底。阈值已经是 500（较高），
-                        # 一般环境噪音达不到。
-                        self._user_recent_activity_time = current_time
 
-        # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
-        if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
-            self._silence_reset_pending = False
-            await self.clear_audio_buffer()
+        # Serialize at the actual user-audio admission boundary, not inside the
+        # provider receive loop. A callback that already owns the boundary can
+        # finish its native image+text transaction before new PCM is admitted;
+        # receive-side audio/done/error events remain continuously drainable.
+        async with self._ensure_turn_admission_lock():
+            if self._fatal_error_occurred:
+                return
+            admitted_at = time.time()
 
-        # Gemini uses different API (16kHz, no uplink resample needed)
-        if self._is_gemini:
-            await self._stream_audio_gemini(audio_chunk)
-            return
+            # Unified VAD update (priority: server VAD > RNNoise > RMS).
+            if (
+                self._client_vad_active
+                and audio_timeline_at - self._client_vad_last_speech_time
+                > self._client_vad_grace_period
+            ):
+                self._client_vad_active = False
+            self._rnnoise_vad_active = _rnnoise_vad_live
+            if not self._has_server_vad:
+                if _rnnoise_vad_live:
+                    if audio_processor.speech_probability > 0.4:
+                        self._user_recent_activity_time = admitted_at
+                        if self._speech_detect_start == 0.0:
+                            self._speech_detect_start = audio_timeline_at
+                        elif (
+                            audio_timeline_at - self._speech_detect_start
+                            >= self._speech_sustain_threshold
+                        ):
+                            self._client_vad_last_speech_time = audio_timeline_at
+                            self._client_vad_active = True
+                    else:
+                        self._speech_detect_start = 0.0
+                elif raw_loud:
+                    self._client_vad_last_speech_time = audio_timeline_at
+                    self._client_vad_active = True
 
-        # By this point audio_chunk is always 16kHz (RNNoise-downsampled,
-        # mobile-native, or hot-swap-cache replay). Upsample to the provider
-        # uplink rate as the very last step (24kHz for OpenAI; no-op others).
-        audio_chunk = self._resample_uplink(audio_chunk)
-        if not audio_chunk:
-            return  # resampler still buffering — nothing to send this frame
+            # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音。
+            if self._should_clear_audio_buffer_on_silence(
+                audio_timeline_at,
+                use_rnnoise_path,
+            ):
+                self._silence_reset_pending = False
+                await self.clear_audio_buffer()
 
-        audio_b64 = base64.b64encode(audio_chunk).decode()
+            # Gemini uses different API (16kHz, no uplink resample needed)
+            if self._is_gemini:
+                await self._stream_audio_gemini(audio_chunk)
+                return
 
-        append_event = {
-            "type": "input_audio_buffer.append",
-            "audio": audio_b64
-        }
-        await self.send_event(append_event)
+            # By this point audio_chunk is always 16kHz (RNNoise-downsampled,
+            # mobile-native, or hot-swap-cache replay). Upsample to the provider
+            # uplink rate as the very last step (24kHz for OpenAI; no-op others).
+            audio_chunk = self._resample_uplink(audio_chunk)
+            if not audio_chunk:
+                return  # resampler still buffering — nothing to send this frame
+
+            audio_b64 = base64.b64encode(audio_chunk).decode()
+
+            append_event = {
+                "type": "input_audio_buffer.append",
+                "audio": audio_b64
+            }
+            await self.send_event(append_event)
 
     async def _analyze_image_with_vision_model(
         self,
@@ -752,21 +969,138 @@ class _TransportMixin:
             if 'censorship' in error_str:
                 if self.on_status_message:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
+                return ""
+            if not update_turn_state:
+                # Callback-owned one-shot images are retriable work. Preserve
+                # transient provider/time-out failures as exceptions so the
+                # callback remains queued with its image; only censorship or an
+                # explicit empty model result is terminal ``analysis_empty``.
+                raise
             return ""
         finally:
             if update_turn_state:
                 self._image_being_analyzed = False
 
+    def block_raw_visual_delivery(self) -> None:
+        """Fail closed for raw frames without changing the microphone route."""
+
+        self._raw_visual_delivery_blocked = True
+
+    def allow_raw_visual_delivery(self) -> None:
+        """Release a temporary raw-frame fence after native routing settles."""
+
+        self._raw_visual_delivery_blocked = False
+
+    def set_visual_delivery_mode(
+        self,
+        mode: VisualDeliveryMode | str,
+    ) -> None:
+        """Switch image delivery without changing provider capability flags."""
+
+        selected = VisualDeliveryMode(mode)
+        if selected == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
+            # Arm the raw-frame fence before turn/cache cleanup. Independent
+            # ASR can keep its microphone route even if that cleanup fails.
+            self.block_raw_visual_delivery()
+        previous = getattr(
+            self,
+            "_visual_delivery_mode",
+            VisualDeliveryMode.NATIVE,
+        )
+        if selected == previous:
+            return
+        self._visual_delivery_mode = selected
+        self._visual_delivery_epoch = getattr(self, "_visual_delivery_epoch", 0) + 1
+        # A cached frame from the old routing contract must never cross the
+        # mode boundary and later appear as context for a different ASR turn.
+        self._latest_image_b64 = None
+        self._latest_image_captured_at = 0.0
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
+        self._proactive_image_consumed = True
+        if (
+            previous == VisualDeliveryMode.EXTERNAL_DESCRIPTION
+            and selected == VisualDeliveryMode.NATIVE
+        ):
+            self._raw_visual_delivery_blocked = False
+
+    def stage_multimodal_frame(
+        self,
+        image_b64: str,
+        *,
+        source: str = "unknown",
+        request_id: str | None = None,
+        captured_at: float | None = None,
+    ) -> ImageStageResult:
+        """Cache a raw frame without sending it or invoking image analysis."""
+
+        from utils.screenshot_utils import MAX_BASE64_SIZE
+
+        if (
+            not isinstance(image_b64, str)
+            or not image_b64
+            or len(image_b64) > MAX_BASE64_SIZE
+        ):
+            return ImageStageResult(
+                accepted=False,
+                mode="staged",
+                generation=getattr(self, "_latest_image_generation", 0),
+                rejection_reason=(
+                    "payload_too_large"
+                    if isinstance(image_b64, str)
+                    and len(image_b64) > MAX_BASE64_SIZE
+                    else "invalid_payload"
+                ),
+            )
+
+        stable_source = str(source or "unknown").strip() or "unknown"
+        stable_request_id = (
+            str(request_id).strip() if request_id is not None else None
+        )
+        has_ingress_order = isinstance(captured_at, (int, float))
+        frame_captured_at = (
+            float(captured_at) if has_ingress_order else time.monotonic()
+        )
+        if has_ingress_order and frame_captured_at <= getattr(
+            self,
+            "_latest_image_captured_at",
+            0.0,
+        ):
+            return ImageStageResult(
+                accepted=False,
+                mode="staged",
+                generation=getattr(self, "_latest_image_generation", 0),
+                rejection_reason="stale_frame",
+            )
+
+        self._latest_image_generation = (
+            getattr(self, "_latest_image_generation", 0) + 1
+        )
+        generation = self._latest_image_generation
+        self._latest_image_b64 = image_b64
+        self._latest_image_captured_at = frame_captured_at
+        self._latest_image_source = stable_source
+        self._latest_image_request_id = stable_request_id
+        self._proactive_image_consumed = False
+        return ImageStageResult(
+            accepted=True,
+            mode="staged",
+            generation=generation,
+        )
+
     async def stream_image(
         self,
         image_b64: str,
         *,
+        source: str = "unknown",
+        request_id: str | None = None,
+        captured_at: float | None = None,
         bypass_rate_limit: bool = False,
         cache_latest: bool = True,
         event_id: str | None = None,
         on_rejected: Optional[Callable[[str], None]] = None,
         authorization_guard: Optional[Callable[[], bool]] = None,
-    ) -> str | bool | None:
+    ) -> ImageStageResult:
         """Stream raw image data to the API.
 
         ``bypass_rate_limit=True`` skips the native-vision frame-rate throttle
@@ -780,17 +1114,108 @@ class _TransportMixin:
         owns the image. The handler is registered before send so an immediate
         asynchronous rejection cannot outrun it.
 
+        ``source`` is accepted for signature parity with the text client,
+        which charges staged frames to a per-source quota. Realtime sends
+        immediately and stages nothing, so there is no quota to charge here --
+        but the host injects images through a duck-typed ``stream_image`` and
+        cannot know which client it holds.
+
         ``cache_latest=False`` sends an already-cached proactive snapshot
         without treating that resend as a newly captured frame generation.
-        For a non-native callback image it returns the callback-owned
-        VISION_MODEL description instead, without changing ambient frame state.
+        For a non-native callback image it returns a structured result carrying
+        the callback-owned VISION_MODEL description, without changing ambient
+        frame state.
         """
         rejection_event_id: str | None = None
         try:
+            callback_owned_raw_image = bool(
+                not cache_latest and str(source or "").strip() == "callback"
+            )
+            # 主动搭话那一张 cue 图。与上面同款谓词并列，别只判 not cache_latest
+            # —— 那覆盖的是所有一次性图（callback media、插件 read 图都算）。
+            proactive_cue_image = bool(
+                not cache_latest and str(source or "").strip() == "proactive"
+            )
+            delivery_mode = getattr(
+                self,
+                "_visual_delivery_mode",
+                VisualDeliveryMode.NATIVE,
+            )
+            if (
+                getattr(self, "_raw_visual_delivery_blocked", False)
+                and delivery_mode != VisualDeliveryMode.EXTERNAL_DESCRIPTION
+                and not callback_owned_raw_image
+            ):
+                return ImageStageResult(
+                    accepted=False,
+                    mode=delivery_mode.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    rejection_reason="raw_visual_delivery_blocked",
+                )
+            if delivery_mode == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
+                if proactive_cue_image:
+                    # 一次性 cue 图（主动搭话的那张截图），不是环境帧。
+                    #
+                    # 这里**不**返回 handoff_required：多模态 handoff 是给独立 ASR
+                    # 回合准备的，主动搭话没有那样一个回合可以交接，调用方
+                    # (prompt_ephemeral) 拿不到东西就会把快照判成终局失败、
+                    # _mark_snapshot_consumed_if_current() 永久退休它——于是描述
+                    # 模式下每一次主动搭话都静默丢掉自己的视觉上下文。
+                    #
+                    # 直接落到下面的原生发送路径把图原样送出去，调用方补一句简单
+                    # 引导即可，不再为它单独跑一次 VISION_MODEL 注释。
+                    # 原始帧闸门在上面已经明确豁免了描述模式，所以这里不越权。
+                    # 收不了原始图的 provider（标准 StepFun，_supports_native_image
+                    # 为假）会继续走下面那条 VISION_MODEL 分支——对它们那是唯一通道。
+                    #
+                    # ⚠️ 判据必须带 source == "proactive"，只放行主动搭话那一张 cue
+                    # 图。一开始我只判 not cache_latest，那覆盖的是**所有**一次性
+                    # 图：callback media（source="callback"）和插件 read 图
+                    # （source="plugin"）也跟着上了线。后果不止是越权——仓库里另外
+                    # 三个 cache_latest=False 的调用方各自维护着一套"这次有没有走
+                    # 原始 WS 投递"的判据，全都写死 _visual_delivery_mode ==
+                    # "native"：
+                    #   proactive.py 的 attempted_websocket_native_delivery 和
+                    #   websocket_native_delivery —— 它们控制着写到一半抛异常时
+                    #   要不要退掉 session（字节可能已经过界），在描述模式下会
+                    #   静默失效；
+                    #   passive callback 那条"必须以原始媒体到达最终 VLM"的约定，
+                    #   原本正是靠这里回 handoff_required 落实的。
+                    # 收窄到 proactive 之后这些路径回到 handoff_required，那些判据
+                    # 也就不会被绕过。
+                    pass
+                elif not cache_latest:
+                    # 其余一次性图（callback media / 插件 read）维持原状：多模态
+                    # handoff 是它们的通道，也是 passive callback"必须以原始媒体
+                    # 到达最终 VLM"那条约定的落实方式。
+                    return ImageStageResult(
+                        accepted=False,
+                        mode="handoff_required",
+                        generation=getattr(self, "_latest_image_generation", 0),
+                        rejection_reason="multimodal_handoff_required",
+                    )
+                else:
+                    return self.stage_multimodal_frame(
+                        image_b64,
+                        source=source,
+                        request_id=request_id,
+                        captured_at=captured_at,
+                    )
+
             if not self._supports_native_image and not cache_latest:
-                return await self._analyze_image_with_vision_model(
+                description = await self._analyze_image_with_vision_model(
                     image_b64,
                     update_turn_state=False,
+                )
+                clean_description = str(description or "").strip()
+                return ImageStageResult(
+                    accepted=bool(clean_description),
+                    mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    description=clean_description or None,
+                    rejection_reason=(
+                        None if clean_description else "analysis_empty"
+                    ),
                 )
 
             # Standard StepFun is the only realtime provider without native
@@ -799,7 +1224,11 @@ class _TransportMixin:
                 # 非原生视觉后端只需要本轮第一帧做分析；后续高频帧直接丢弃，避免并发刷爆 VISION_MODEL。
                 async with self._image_lock:
                     if self._image_recognized_this_turn or self._image_being_analyzed:
-                        return
+                        return ImageStageResult(
+                            accepted=False,
+                            mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
+                            generation=getattr(self, "_latest_image_generation", 0),
+                        )
                     self._image_being_analyzed = True
                 if cache_latest:
                     # Bind the cached generation to the frame that actually
@@ -810,9 +1239,18 @@ class _TransportMixin:
                         getattr(self, "_latest_image_generation", 0) + 1
                     )
                     self._latest_image_b64 = image_b64
+                    self._latest_image_captured_at = time.monotonic()
+                    self._latest_image_source = str(source or "unknown")
+                    self._latest_image_request_id = request_id
                     self._proactive_image_consumed = False
-                await self._analyze_image_with_vision_model(image_b64)
-                return
+                description = await self._analyze_image_with_vision_model(image_b64)
+                clean_description = str(description or "").strip()
+                return ImageStageResult(
+                    accepted=bool(clean_description),
+                    mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    description=clean_description or None,
+                )
 
             preserve_cached_step_frame = (
                 cache_latest
@@ -834,11 +1272,15 @@ class _TransportMixin:
                     getattr(self, "_latest_image_generation", 0) + 1
                 )
                 self._latest_image_b64 = image_b64
+                self._latest_image_captured_at = time.monotonic()
+                self._latest_image_source = str(source or "unknown")
+                self._latest_image_request_id = request_id
                 self._proactive_image_consumed = False
 
             # Rate limiting for native image input (with VAD-based throttling).
             # A deliberate cue image (bypass_rate_limit) skips the interval check
-            # so it's never silently dropped, but still stamps the timestamp.
+            # so it's never silently dropped. The timestamp is updated only
+            # after the provider confirms that the frame was sent.
             if self._supports_native_image:
                 current_time = time.time()
                 if not bypass_rate_limit:
@@ -848,12 +1290,11 @@ class _TransportMixin:
                         min_interval *= IMAGE_IDLE_RATE_MULTIPLIER
                     if elapsed < min_interval:
                         # Skip this image frame due to rate limiting
-                        return
-                # Stamp even on the bypass path: a frame WAS sent to the server,
-                # so it must count toward the throttle window — this keeps
-                # back-to-back bypassed cue images from flooding native vision.
-                self._last_native_image_time = current_time
-
+                        return ImageStageResult(
+                            accepted=False,
+                            mode=VisualDeliveryMode.NATIVE.value,
+                            generation=getattr(self, "_latest_image_generation", 0),
+                        )
             # Gemini uses SDK, not WebSocket events (_audio_in_buffer is not set for Gemini)
             if self._is_gemini:
                 if self._gemini_session:
@@ -862,13 +1303,58 @@ class _TransportMixin:
                             authorization_guard is not None
                             and not authorization_guard()
                         ):
-                            return False
+                            return ImageStageResult(
+                                accepted=False,
+                                mode=VisualDeliveryMode.NATIVE.value,
+                                generation=getattr(
+                                    self, "_latest_image_generation", 0
+                                ),
+                                rejection_reason="live_frame_permission_revoked",
+                            )
                         image_bytes = base64.b64decode(image_b64)
+                        if (
+                            getattr(
+                                self,
+                                "_visual_delivery_mode",
+                                VisualDeliveryMode.NATIVE,
+                            )
+                            != delivery_mode
+                            or (
+                                # 与本函数入口那道闸门同口径：描述模式是被明确
+                                # 豁免的（set_visual_delivery_mode 进这个模式时
+                                # 会顺手把 _raw_visual_delivery_blocked 置上，
+                                # 所以只看这个标志会把描述模式下的一次性 cue 图
+                                # 一起拦掉——Gemini 的主动搭话原始图投递整条断掉）。
+                                delivery_mode
+                                != VisualDeliveryMode.EXTERNAL_DESCRIPTION
+                                and getattr(
+                                    self,
+                                    "_raw_visual_delivery_blocked",
+                                    False,
+                                )
+                                and not callback_owned_raw_image
+                            )
+                        ):
+                            return ImageStageResult(
+                                accepted=False,
+                                mode=VisualDeliveryMode.NATIVE.value,
+                                generation=getattr(
+                                    self, "_latest_image_generation", 0
+                                ),
+                                rejection_reason="raw_visual_delivery_blocked",
+                            )
                         if (
                             authorization_guard is not None
                             and not authorization_guard()
                         ):
-                            return False
+                            return ImageStageResult(
+                                accepted=False,
+                                mode=VisualDeliveryMode.NATIVE.value,
+                                generation=getattr(
+                                    self, "_latest_image_generation", 0
+                                ),
+                                rejection_reason="live_frame_permission_revoked",
+                            )
                         await self._gemini_session.send_realtime_input(
                             media={"data": image_bytes, "mime_type": "image/jpeg"}
                         )
@@ -877,7 +1363,18 @@ class _TransportMixin:
                         if "closed" in str(e).lower():
                             self._fatal_error_occurred = True
                         raise
-                return
+                    if self._supports_native_image:
+                        self._last_native_image_time = current_time
+                    return ImageStageResult(
+                        accepted=True,
+                        mode=VisualDeliveryMode.NATIVE.value,
+                        generation=getattr(self, "_latest_image_generation", 0),
+                    )
+                return ImageStageResult(
+                    accepted=False,
+                    mode=VisualDeliveryMode.NATIVE.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                )
 
             if on_rejected is not None and self._supports_native_image:
                 event_id = event_id or f"event_callback_image_{uuid.uuid4().hex}"
@@ -897,9 +1394,34 @@ class _TransportMixin:
                 sent = await self.send_event(
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
+                    expected_visual_mode=delivery_mode,
+                    callback_owned_visual=callback_owned_raw_image,
                     authorization_guard=authorization_guard,
                 )
-                return sent
+                if not sent and rejection_event_id is not None:
+                    self._inject_rejection_handlers.pop(rejection_event_id, None)
+                    rejection_event_id = None
+                if sent and self._supports_native_image:
+                    self._last_native_image_time = current_time
+                return ImageStageResult(
+                    accepted=sent,
+                    mode=VisualDeliveryMode.NATIVE.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    rejection_reason=(
+                        # A guard that has since flipped is the more specific
+                        # answer: the frame was authorized when it entered and
+                        # lost that authorization while it waited.
+                        "live_frame_permission_revoked"
+                        if not sent
+                        and authorization_guard is not None
+                        and not authorization_guard()
+                        else "raw_visual_delivery_blocked"
+                        if not sent
+                        and getattr(self, "_raw_visual_delivery_blocked", False)
+                        and not callback_owned_raw_image
+                        else None
+                    ),
+                )
 
             if self._audio_in_buffer or bypass_rate_limit:
                 if "qwen" in self._model_lower:
@@ -929,6 +1451,7 @@ class _TransportMixin:
                 else:
                     # Model does not support video streaming, use VISION_MODEL to analyze
                     # Only recognize one image per conversation turn
+                    description_sent = False
                     async with self._image_lock:
                         if not self._image_recognized_this_turn:
                             if not self._image_being_analyzed:
@@ -947,8 +1470,13 @@ class _TransportMixin:
                                     }
                                 }
                                 logger.info("Sending image description before recognition.")
-                                await self.send_event(text_event)
-                                await self._analyze_image_with_vision_model(image_b64)
+                                try:
+                                    description_sent = await self.send_event(text_event)
+                                    if description_sent:
+                                        await self._analyze_image_with_vision_model(image_b64)
+                                finally:
+                                    if not description_sent:
+                                        self._image_being_analyzed = False
                         elif not self._image_sent_this_turn:
                             self._image_sent_this_turn = True
                             text_event = {
@@ -963,21 +1491,58 @@ class _TransportMixin:
                                             }
                                         ]
                                     }
-                                }
+                            }
                             logger.info("Sending image description after recognition.")
-                            await self.send_event(text_event)
-                    return
+                            description_sent = await self.send_event(text_event)
+                    return ImageStageResult(
+                        accepted=description_sent,
+                        mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
+                        generation=getattr(self, "_latest_image_generation", 0),
+                        description=(
+                            str(getattr(self, "_image_description", "") or "").strip()
+                            or None
+                        ),
+                    )
 
                 if event_id is not None:
                     append_event["event_id"] = event_id
                 sent = await self.send_event(
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
+                    expected_visual_mode=delivery_mode,
+                    callback_owned_visual=callback_owned_raw_image,
                     authorization_guard=authorization_guard,
                 )
-                if sent is False:
-                    return False
-            return None
+                if not sent and rejection_event_id is not None:
+                    self._inject_rejection_handlers.pop(rejection_event_id, None)
+                    rejection_event_id = None
+                if sent and self._supports_native_image:
+                    self._last_native_image_time = current_time
+                return ImageStageResult(
+                    accepted=sent,
+                    mode=VisualDeliveryMode.NATIVE.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    rejection_reason=(
+                        # A guard that has since flipped is the more specific
+                        # answer: the frame was authorized when it entered and
+                        # lost that authorization while it waited.
+                        "live_frame_permission_revoked"
+                        if not sent
+                        and authorization_guard is not None
+                        and not authorization_guard()
+                        else "raw_visual_delivery_blocked"
+                        if not sent
+                        and getattr(self, "_raw_visual_delivery_blocked", False)
+                        and not callback_owned_raw_image
+                        else None
+                    ),
+                    rejection_event_id=rejection_event_id,
+                )
+            return ImageStageResult(
+                accepted=False,
+                mode=VisualDeliveryMode.NATIVE.value,
+                generation=getattr(self, "_latest_image_generation", 0),
+            )
         except asyncio.CancelledError:
             if rejection_event_id is not None:
                 self._inject_rejection_handlers.pop(rejection_event_id, None)
@@ -1313,14 +1878,15 @@ class _TransportMixin:
         *,
         step_timeout: float | None = None,
         still_ours: Callable[[], bool] | None = None,
+        connection_still_ours: Callable[[], bool] | None = None,
     ) -> None:
         """Tell the host this turn is over.
 
         The two hooks the terminal path fires, in the order it fires them.
 
-        Both keywords belong to the fail-open release path, and both default
-        to the terminal path's behaviour so this stays one implementation
-        rather than two.
+        ``step_timeout`` and ``still_ours`` belong to the fail-open release
+        path, and both default to the terminal path's behaviour so this stays
+        one implementation rather than two.
 
         ``still_ours`` gates the PAIR, once, rather than each hook. They are
         not independent: ``on_response_done`` queues this turn's TTS-done
@@ -1331,6 +1897,13 @@ class _TransportMixin:
         speaks under a closed sid and has its text silently dropped, which is
         the failure this hook exists to prevent. So either the release still
         owns the turn and finishes ending it, or it never started.
+
+        ``connection_still_ours`` is deliberately separate. A replacement
+        connection owns different host state even when the host-turn id is
+        unavailable or unchanged, so it is re-checked after the first hook's
+        await before the old terminal is allowed to rotate the replacement's
+        speech id. This does not change the pair-once semantics of
+        ``still_ours`` within one connection.
 
         ``on_sid_rotate`` gets no step bound of its own, because it is the
         last step — there is nothing behind it for a slow hook to starve. That
@@ -1397,6 +1970,12 @@ class _TransportMixin:
           out from under itself.
         """
 
+        if connection_still_ours is not None and not connection_still_ours():
+            logger.info(
+                "the connection was replaced before its turn could be ended; "
+                "leaving both end-of-turn hooks to the replacement"
+            )
+            return
         if still_ours is not None and not still_ours():
             logger.info(
                 "a new turn started before this one could be ended; leaving "
@@ -1435,6 +2014,12 @@ class _TransportMixin:
                 )
             except Exception as exc:
                 logger.warning("turn-finished notification failed: %s", exc)
+        if connection_still_ours is not None and not connection_still_ours():
+            logger.info(
+                "the connection was replaced while its turn was being closed; "
+                "leaving the replacement's speech id alone"
+            )
+            return
         if not self._host_turn_is_still_ours():
             # Re-read, because the hook above is exactly where the host hangs.
             logger.info(
@@ -1540,9 +2125,20 @@ class _TransportMixin:
         # guard above still passes — and reading the live value here would make
         # the check compare the successor's epoch with itself.
         released_epoch = self._current_turn_epoch
+        # Connection ownership is a SEPARATE question from turn ownership, and
+        # this path needs both. A replacement bumps _connection_generation
+        # without touching _turn_epoch, and this release runs in its caller's
+        # task rather than the arbiter worker -- so reset_connection_state does
+        # not cancel it. Without this, a release that outlived its connection
+        # still passes _still_ours() and rotates the REPLACEMENT's speech id
+        # (and queues the abandoned turn's trailing text as its TTS).
+        released_generation = self._connection_generation
 
         def _still_ours() -> bool:
             return self._turn_epoch == released_epoch
+
+        def _connection_still_ours() -> bool:
+            return self._connection_generation == released_generation
 
         if not _still_ours():
             # A turn already started before this release even ran, so NOTHING
@@ -1660,7 +2256,7 @@ class _TransportMixin:
         #
         # Best-effort besides: a host that blocks or raises while taking the
         # last half-sentence must not take the rotation behind it down too.
-        if _still_ours():
+        if _still_ours() and _connection_still_ours():
             try:
                 await asyncio.wait_for(
                     self._emit_pending_output_transcript(pending_transcript),
@@ -1685,10 +2281,17 @@ class _TransportMixin:
         await self._notify_turn_finished(
             step_timeout=_STUCK_RELEASE_STEP_TIMEOUT,
             still_ours=_still_ours,
+            connection_still_ours=_connection_still_ours,
         )
 
-    async def handle_interruption(self):
+    async def handle_interruption(
+        self,
+        *,
+        connection_still_ours: Callable[[], bool] | None = None,
+    ) -> None:
         """Handle user interruption of the current response."""
+        if connection_still_ours is not None and not connection_still_ours():
+            return
         if not self._is_responding:
             return
 
@@ -1696,6 +2299,12 @@ class _TransportMixin:
 
         # Mark as interrupted to suppress any remaining output until next response
         self._interrupted = True
+        # 这一轮被取消了，但 provider 仍然欠它一个终结事件（Gemini 是
+        # interrupted / turn_complete）。记一笔「欠账」：那条终结属于**这一轮**，
+        # 不能让它去结算之后才铸造的 external turn token —— 逐事件捕获的实现会
+        # 让它捕获到新 token 并清掉，会话随即显得空闲而外部回合还活着。
+        # 一次性的：由下一个到达的终结消费掉，或在真正的新回合开始时作废。
+        self._gemini_cancelled_terminal_pending = True
 
         # 1. Cancel the current response
         # Presence, not truthiness — the third site in this file where a
@@ -1704,7 +2313,18 @@ class _TransportMixin:
         # and never send response.cancel, so generation keeps running and the
         # arbiter lane stays held until the provider finishes on its own.
         if self._current_response_id is not None:
-            await self.cancel_response()
+            try:
+                await self.cancel_response(send_guard=connection_still_ours)
+            except ConnectionError:
+                if (
+                    connection_still_ours is not None
+                    and not connection_still_ours()
+                ):
+                    return
+                raise
+
+        if connection_still_ours is not None and not connection_still_ours():
+            return
 
         self._is_responding = False
         # Keep the cancelled response identity until its terminal event arrives.
@@ -1732,14 +2352,48 @@ class _TransportMixin:
                 logger.error("WebSocket connection is not established")
                 return
 
-            async for message in message_ws:
-                if (
-                    not self._still_owns_connection(message_generation)
-                    or self.ws is not message_ws
+            def receive_owner_is_current() -> bool:
+                return bool(
+                    message_generation == self._connection_generation
+                    and message_ws is self.ws
+                )
+
+            async def retire_if_replaced() -> bool:
+                if receive_owner_is_current():
+                    return False
+                if self._transport_detached_for_teardown(
+                    message_generation,
                 ):
                     logger.info(
-                        "Ignoring a frame from a retired realtime connection"
+                        "Raw receive event retired by the connection teardown"
                     )
+                    return True
+                # Delegate instead of aborting inline. Returning True exits
+                # handle_messages, which SKIPS the `else:` tail -- and that
+                # tail is the only consumer of _local_failure_recovery. An
+                # arbiter fail-close landing while this loop sat in a host
+                # callback would otherwise leave the latch armed: socket dead,
+                # _fatal_error_occurred dropping every later send, and the
+                # manager never told, so no toast and no rebuild. The fail-
+                # close reasons ARE slow-host reasons, so that pairing is the
+                # expected one, not a corner.
+                #
+                # The recovery already splits the two cases this needs: latch
+                # present -> finish the teardown and report
+                # CHARACTER_DISCONNECTED; latch absent -> exactly the silent
+                # abort that used to be inlined here. It also logs each case,
+                # where the line this replaces claimed a replacement had
+                # attached even when none had.
+                await self._recover_receive_loop_disconnect(
+                    message_ws,
+                    message_generation,
+                    "retired raw receive event",
+                    status_code="CHARACTER_DISCONNECTED",
+                )
+                return True
+
+            async for message in message_ws:
+                if await retire_if_replaced():
                     return
                 event = json.loads(message)
                 event_type = event.get("type")
@@ -1780,6 +2434,8 @@ class _TransportMixin:
                         # 前2次静默节流，第3次起通知前端
                         if self._server_busy_count >= 3 and self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "SERVER_BUSY_THROTTLE"}))
+                            if await retire_if_replaced():
+                                return
                         continue
 
                     # Idle timeout — Qwen 约 25s 无操作断连
@@ -1787,15 +2443,27 @@ class _TransportMixin:
                         logger.warning("⏰ Idle timeout from API: %s", error_msg)
                         if self.on_connection_error:
                             await self.on_connection_error(json.dumps({"code": "API_IDLE_TIMEOUT", "details": {"msg": error_msg}}))
+                            if await retire_if_replaced():
+                                return
                         await self.close()
-                        continue
+                        return
 
                     if ('欠费' in classify_text or 'standing' in classify_lower or 'time limit' in classify_lower or
                         'policy violation' in classify_lower or '1008' in classify_lower or
                         '429' in classify_lower or 'quota' in classify_lower or 'too many' in classify_lower):
                         if self.on_connection_error:
                             await self.on_connection_error(error_msg)
+                            if await retire_if_replaced():
+                                return
                         await self.close()
+                        return
+                    continue
+
+                if event_type == "session.updated":
+                    self._notify_session_updated(event)
+                    handler = self.extra_event_handlers.get(event_type)
+                    if handler is not None:
+                        await handler(event)
                     continue
 
                 if event_type in ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES:
@@ -1953,42 +2621,63 @@ class _TransportMixin:
                             "function_call_arguments.done with no name (call_id=%s) — skipping",
                             call_id,
                         )
-                    elif self.on_tool_call is None:
-                        logger.warning(
-                            "function_call '%s' but no on_tool_call handler bound — replying with error",
-                            name,
-                        )
-                        result = ToolResult(
-                            call_id=call_id, name=name,
-                            output={"error": "no on_tool_call handler"},
-                            is_error=True, error_message="no on_tool_call handler",
-                        )
-                        self._fire_task(self._send_tool_result_openai_realtime(result))
                     else:
+                        if self.on_tool_call is None:
+                            logger.warning(
+                                "function_call '%s' but no on_tool_call handler bound — replying with error",
+                                name,
+                            )
                         # Execute and reply asynchronously — don't block the
                         # message loop. handle_messages stays responsive to
                         # other events while the tool runs.
-                        tool_chain_id = self._ensure_tool_image_chain_id()
-
-                        async def _run_tool(
-                            _name=name,
-                            _args=raw_args,
-                            _cid=call_id,
-                            _tool_chain_id=tool_chain_id,
-                        ):
-                            call = ToolCall(
-                                name=_name,
-                                arguments=parse_arguments_json(_args),
-                                call_id=_cid,
-                                raw_arguments=_args,
-                                provider_meta={"tool_chain_id": _tool_chain_id},
-                            )
-                            result = await self._execute_tool_call(call)
-                            await self._send_tool_result_openai_realtime(result)
-                        self._fire_task(_run_tool())
+                        owner = self._capture_tool_task_owner(
+                            message_ws,
+                            connection_generation=message_generation,
+                        )
+                        self._start_raw_tool_call(
+                            ToolCall(
+                                name=name,
+                                arguments=(
+                                    {}
+                                    if self.on_tool_call is None
+                                    else parse_arguments_json(raw_args)
+                                ),
+                                call_id=call_id,
+                                raw_arguments=raw_args,
+                                provider_meta={
+                                    "tool_chain_id": (
+                                        self._ensure_tool_image_chain_id()
+                                    )
+                                },
+                            ),
+                            owner,
+                            # Groups this call with the parallel siblings the
+                            # SAME provider response issued, so they are
+                            # answered as one batch with a single
+                            # response.create. Absent on a provider that omits
+                            # response identity -- there is then nothing that
+                            # can prove two calls are siblings, and each is
+                            # answered on its own as before.
+                            response_id=_response_id_text(
+                                event.get("response_id")
+                            ),
+                        )
                 elif event_type == "conversation.item.created":
                     self._response_arbiter.notify_item_created(event)
                 elif event_type == "response.done":
+                    # No further function call can name this response, so its
+                    # tool batch may answer as soon as its own calls settle.
+                    # Ahead of the finalize branches below on purpose: several
+                    # of them `continue`, and a stale or non-finalizing
+                    # terminal still proves the response is over.
+                    self.close_raw_tool_batch(
+                        _response_id_text(event.get("response_id"))
+                        or _response_id_text(
+                            (event.get("response") or {}).get("id")
+                            if isinstance(event.get("response"), dict)
+                            else None
+                        )
+                    )
                     finalize_response = (
                         self._response_arbiter.notify_response_terminal(event)
                     )
@@ -2003,6 +2692,8 @@ class _TransportMixin:
                     await self._record_response_repetition(
                         self._take_response_transcript()
                     )
+                    if await retire_if_replaced():
+                        return
                     # [有声无字兜底] 部分 provider（如 lanlan.app Gemini 语音代理）只发
                     # response.audio_transcript.delta、从不发 response.audio_transcript.done，
                     # 输出转录全靠下面 streaming 分支（_print_input_transcript=True）实时送出。
@@ -2021,8 +2712,14 @@ class _TransportMixin:
                             "response.done transcript flush failed (%s); continuing",
                             type(exc).__name__,
                         )
+                    if await retire_if_replaced():
+                        return
                     self._reset_per_turn_output_state()
-                    await self._notify_turn_finished()
+                    await self._notify_turn_finished(
+                        connection_still_ours=receive_owner_is_current,
+                    )
+                    if await retire_if_replaced():
+                        return
                 elif event_type == "response.created":
                     confirms_started_owner = (
                         self._response_arbiter.response_created_confirms_started_owner(
@@ -2055,6 +2752,8 @@ class _TransportMixin:
                     logger.info("input_audio_buffer.committed observed (total=%d)", self._input_audio_committed_total)
                 # Handle interruptions
                 elif event_type == "input_audio_buffer.speech_started":
+                    self.note_user_turn_started()
+                    self._note_raw_speech_started_scope(event.get("item_id"))
                     self._speech_started_total += 1
                     logger.info("Speech detected")
                     self._response_arbiter.notify_server_vad_started()
@@ -2068,7 +2767,11 @@ class _TransportMixin:
                     self._user_recent_activity_time = self._last_speech_time
                     if self._is_responding:
                         logger.info("Handling interruption")
-                        await self.handle_interruption()
+                        await self.handle_interruption(
+                            connection_still_ours=receive_owner_is_current,
+                        )
+                        if await retire_if_replaced():
+                            return
                 elif event_type == "input_audio_buffer.speech_stopped":
                     self._speech_stopped_total += 1
                     logger.info("Speech ended")
@@ -2095,17 +2798,31 @@ class _TransportMixin:
                         # loop is blocked in on_new_message. Start the missing-
                         # created backstop only after the loop can read again,
                         # so a slow callback cannot release a real VAD response.
-                        self._response_arbiter.arm_server_vad_response_pending_timeout()
+                        if receive_owner_is_current():
+                            self._response_arbiter.arm_server_vad_response_pending_timeout()
+                    if await retire_if_replaced():
+                        return
                     self._audio_in_buffer = False
                     # Update timestamp so grace period starts from speech end
                     _now = time.time()
                     self._client_vad_last_speech_time = _now
                     self._user_recent_activity_time = _now
                 elif event_type == "conversation.item.input_audio_transcription.completed":
+                    already_scoped = self._raw_transcript_was_already_scoped(
+                        event.get("item_id")
+                    )
+                    if not self._has_server_vad and not already_scoped:
+                        # Compatibility proxies may omit both server-VAD
+                        # boundary events. The completed transcript is then the
+                        # first authoritative signal that a new user turn has
+                        # begun, so stale tool work must retire here.
+                        self.note_user_turn_started()
                     self._print_input_transcript = True
                     transcript = event.get("transcript", "")
                     if self.on_input_transcript:
                         await self.on_input_transcript(transcript)
+                        if await retire_if_replaced():
+                            return
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
                     # [ISSUE4b] Voice-without-text fix. Audio deltas and transcript
@@ -2127,6 +2844,8 @@ class _TransportMixin:
                         )
                     ):
                         await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
+                        if await retire_if_replaced():
+                            return
                         self._is_first_transcript_chunk = False
                     self._output_transcript_buffer = ""
 
@@ -2136,6 +2855,8 @@ class _TransportMixin:
                             if "glm" not in self._model_lower:
                                 self._ai_recent_activity_time = time.time()
                                 await self.on_text_delta(event["delta"], self._is_first_text_chunk)
+                                if await retire_if_replaced():
+                                    return
                                 self._is_first_text_chunk = False
                     elif event_type in ["response.audio.delta", "response.output_audio.delta"]:
                         self._audio_delta_count += 1
@@ -2147,6 +2868,8 @@ class _TransportMixin:
                             audio_bytes = base64.b64decode(event["delta"])
                             self._ai_recent_activity_time = time.time()
                             await self.on_audio_delta(audio_bytes)
+                            if await retire_if_replaced():
+                                return
                     elif event_type in ["response.audio.done", "response.output_audio.done"]:
                         # 权威的「这一轮音频流已关闭」信号（issue #1566）。前端原本
                         # 靠「四个音频队列当下是否为空」猜本轮放完没，落在音频阵之间
@@ -2164,11 +2887,15 @@ class _TransportMixin:
                         # 通道）。漏发是可接受的降级，前端有 give-up 计时器兜底。
                         if self.on_audio_done:
                             await self.on_audio_done()
+                            if await retire_if_replaced():
+                                return
                     elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                         if self.on_output_transcript and self._is_first_transcript_chunk:
                             transcript = event.get("transcript", "")
                             if transcript:
                                 await self.on_output_transcript(transcript, True)
+                                if await retire_if_replaced():
+                                    return
                                 self._is_first_transcript_chunk = False
                     elif event_type in ["response.audio_transcript.delta", "response.output_audio_transcript.delta"]:
                         if self.on_output_transcript:
@@ -2181,13 +2908,19 @@ class _TransportMixin:
                                 if self._output_transcript_buffer:
                                     # logger.info(f"{self._output_transcript_buffer} is_first_chunk: True")
                                     await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
+                                    if await retire_if_replaced():
+                                        return
                                     self._is_first_transcript_chunk = False
                                     self._output_transcript_buffer = ""
                                 await self.on_output_transcript(delta, self._is_first_transcript_chunk)
+                                if await retire_if_replaced():
+                                    return
                                 self._is_first_transcript_chunk = False
 
                     elif event_type in self.extra_event_handlers:
                         await self.extra_event_handlers[event_type](event)
+                        if await retire_if_replaced():
+                            return
                 else:
                     # 调试日志：text.delta 被 _interrupted/_skip 标志拦截（每个 response 仅记录一次）
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
@@ -2259,6 +2992,87 @@ class _TransportMixin:
                 status_code="CHARACTER_DISCONNECTED",
             )
 
+    def _transport_detached_for_teardown(
+        self,
+        connection_generation: int,
+    ) -> bool:
+        """Whether the current generation's close path already seized a socket."""
+
+        return bool(
+            connection_generation == self._connection_generation
+            and self.ws is None
+            and (
+                self._close_task is not None
+                or self._failed_transport_close_task is not None
+            )
+        )
+
+    def _note_raw_speech_started_scope(self, item_id: Any) -> None:
+        """Record that a ``speech_started`` already scoped this utterance."""
+
+        utterance = str(item_id) if item_id else ""
+        if not utterance:
+            # ONLY an id-less speech_started arms the fallback marker. An
+            # identified one is answered from the id list below, and an
+            # identified transcript deliberately does not consume the marker
+            # -- so arming it here would leave it set for the rest of the
+            # connection, and the next id-less transcript would read as
+            # already scoped. That is the original stale-marker bug, rebuilt
+            # one turn further along.
+            self._raw_speech_started_scope_pending_transcript = True
+            return
+        scoped = self._raw_speech_started_scoped_item_ids
+        if utterance in scoped:
+            return
+        scoped.append(utterance)
+        del scoped[:-_RAW_SCOPED_UTTERANCE_MEMORY]
+
+    def _raw_transcript_was_already_scoped(self, item_id: Any) -> bool:
+        """Whether this transcript's OWN utterance already began a turn here.
+
+        The question the no-server-VAD fallback has to answer is per
+        utterance, and the flag alone answers a different one -- "did any
+        ``speech_started`` happen and not get a transcript yet". Those come
+        apart on a proxy that emits ``speech_started`` for one turn, drops
+        that turn's transcript, then drops ``speech_started`` for the NEXT
+        turn: nothing clears the flag between them (neither
+        ``speech_stopped`` nor ``response.done`` touches it), so the next
+        turn's transcript reads as already scoped, ``note_user_turn_started``
+        is skipped, and a cancellation-resistant tool from the previous turn
+        can still inject its result into the new one.
+
+        None of the cheap lifecycle expiry points fix that. The tool scope
+        does not advance between those two turns -- that IS the failure --
+        and ``_turn_epoch`` moves at ``speech_stopped``, before the transcript
+        normally arrives, so keying on either would fire a spurious extra
+        ``note_user_turn_started`` every healthy turn. Clearing at
+        ``speech_stopped`` breaks the same normal order. Clearing at
+        ``response.done`` would only hold if a transcript could never land
+        after it, which is not something these proxies promise: input
+        transcription runs as its own job alongside the response.
+
+        So the marker is scoped by utterance instead of by lifecycle. The
+        remembered ids are bounded and matching one is a no-op, which also
+        makes a transcript that arrives late -- after its successor's turn has
+        already begun -- stop re-advancing the scope.
+        """
+
+        utterance = str(item_id) if item_id else ""
+        if utterance:
+            # Answered from the id list ALONE, and deliberately without
+            # consuming the id-less fallback marker. Transcription is
+            # asynchronous, so on a proxy that omitted `item_id` for the
+            # NEWER utterance an older identified transcript can arrive
+            # first; consuming the marker there would make that newer
+            # utterance's own id-less transcript read as an unscoped turn and
+            # retire tool work that legitimately belongs to it.
+            return utterance in self._raw_speech_started_scoped_item_ids
+        # Neither side carries identity: this is the pre-identity shape, and
+        # the flag is the only answer available. It is one-shot, so consume it.
+        already_pending = self._raw_speech_started_scope_pending_transcript
+        self._raw_speech_started_scope_pending_transcript = False
+        return already_pending
+
     def _on_connection_attached(self) -> None:
         """Mark a replacement connection as live and hand it the teardown latches.
 
@@ -2282,6 +3096,48 @@ class _TransportMixin:
         """
 
         self._connection_generation += 1
+        self._advance_tool_scope()
+        # A pending proactive outcome belongs to the connection that created
+        # it. Left in place it makes the REPLACEMENT reject its own proactive
+        # work as "another Gemini proactive inject is pending" until the 60s
+        # expiry or the quarantine settles the predecessor's -- and a stalled
+        # retired receive loop or context close can push that past anything
+        # useful. Retire it here; the caller re-queues the callback and the
+        # replacement gets to run it. An outcome the replacement creates
+        # afterwards carries the new generation and is untouched.
+        retired_outcome_owner = getattr(
+            self, "_gemini_proactive_outcome_owner", None
+        )
+        if (
+            retired_outcome_owner is not None
+            and retired_outcome_owner[0] != self._connection_generation
+        ):
+            self._settle_gemini_proactive_inject(
+                error_msg=(
+                    "Gemini proactive inject retired by a replacement connection"
+                ),
+                expected_connection_generation=retired_outcome_owner[0],
+                expected_provider_session=retired_outcome_owner[1],
+                expected_outcome_token=retired_outcome_owner[2],
+            )
+        self._raw_speech_started_scope_pending_transcript = False
+        self._raw_speech_started_scoped_item_ids = []
+        # Provider response identity and interruption state belong to the
+        # retired connection. Some raw proxies never announce responses, so a
+        # stale interrupt would mute the replacement for its entire lifetime,
+        # while a stale response id would make its first barge-in cancel a
+        # response that existed only on the old socket. Reuse the turn reset so
+        # transcript/audio state is fresh too; its image branch deliberately
+        # preserves a completed annotation for an unconsumed cached frame.
+        self._clear_turn_response_state()
+        # Keep this separate from the ordinary response.done reset: no-VAD
+        # tool results still need their provider-turn snapshot after done, but
+        # a replacement connection must never inherit the retired snapshot.
+        self._current_turn_host_id = None
+        self._reset_per_turn_output_state()
+        self._current_response_transcript = ""
+        self._is_first_text_chunk = True
+        self._is_first_transcript_chunk = True
         self._close_task = None
         self._failed_transport_close_task = None
         self._gemini_close_task = None
@@ -2326,6 +3182,17 @@ class _TransportMixin:
         if not self._still_owns_connection(generation) or self.ws is not message_ws:
             local_failure = self._consume_local_failure_recovery(generation)
             if local_failure is None:
+                if not self._transport_detached_for_teardown(
+                    generation,
+                ):
+                    # A replacement can attach before the retired receive
+                    # iterator reaches EOF. Release the socket captured by
+                    # this loop without touching successor-wide fatal state.
+                    await self._abort_failed_transport(
+                        reason,
+                        message_ws,
+                        generation,
+                    )
                 logger.info(
                     "Realtime receive loop ended after its transport was already "
                     "closed or replaced; no connection error will be reported"
@@ -2465,9 +3332,17 @@ class _TransportMixin:
     def _detach_for_failed_transport(self, reason: str):
         generation = self._connection_generation
         ws, self.ws = self.ws, None
-        return self._close_failed_transport_impl(reason, generation, ws)
+        tool_tasks = self._advance_tool_scope()
+        return self._close_failed_transport_impl(reason, generation, ws, tool_tasks)
 
-    async def _close_failed_transport_impl(self, reason: str, generation, ws) -> None:
+    async def _close_failed_transport_impl(
+        self,
+        reason: str,
+        generation,
+        ws,
+        tool_tasks=(),
+    ) -> None:
+        await self._await_retired_tool_tasks(tool_tasks)
         # The fatal flag is the retired connection's, and the wrapper has
         # already set it. Re-asserting it here would re-condemn a replacement
         # that attached in between — connect() clears the flag on purpose, and
@@ -2497,18 +3372,22 @@ class _TransportMixin:
         strand the manager on a live session over a dead transport.
         """
 
-        if generation is None or self._still_owns_connection(generation):
+        attached_transport = ws is _ATTACHED_TRANSPORT
+        if attached_transport:
+            generation = getattr(self, "_connection_generation", None)
+            ws, self.ws = self.ws, None
             self._fatal_error_occurred = True
-        if ws is _ATTACHED_TRANSPORT:
-            # getattr, because this path is reachable on a client shell built
-            # without __init__ (abort is deliberately the one teardown that
-            # needs nothing but a socket) — and a shell has no receive loop to
-            # claim the latch anyway.
+            # Arm recovery before the first await. The receive loop can wake as
+            # soon as the socket is detached and must still be able to report
+            # the local abort to the manager while retired tool tasks unwind.
             self._local_failure_recovery = (
-                getattr(self, "_connection_generation", 0),
+                0 if generation is None else generation,
                 reason,
             )
-            ws, self.ws = self.ws, None
+            tool_tasks = self._advance_tool_scope()
+            await self._await_retired_tool_tasks(tool_tasks)
+        elif generation is None or self._still_owns_connection(generation):
+            self._fatal_error_occurred = True
         if ws is not None:
             try:
                 await ws.close()
@@ -2536,6 +3415,7 @@ class _TransportMixin:
         connection would have no one left to exit it.
         """
 
+        self._cancel_session_update_ack_waiters()
         generation = self._connection_generation
         ws, self.ws = self.ws, None
         # The manager is the one closing, so it already knows this session is
@@ -2544,8 +3424,39 @@ class _TransportMixin:
         silence_check_task, self._silence_check_task = self._silence_check_task, None
         gemini_context = self._gemini_context_manager
         gemini_close_task = self._gemini_close_task
+        gemini_proactive_submit_task = getattr(
+            self,
+            "_gemini_proactive_submit_task",
+            None,
+        )
+        gemini_external_submit_task = getattr(
+            self,
+            "_gemini_external_submit_task",
+            None,
+        )
+        tool_tasks = self._advance_tool_scope()
+        if (
+            self._is_gemini
+            and gemini_context is not None
+            and gemini_close_task is None
+        ):
+            gemini_close_task = asyncio.create_task(
+                self._close_gemini_context(
+                    gemini_context,
+                    self._gemini_session,
+                    tool_tasks,
+                ),
+                name="realtime-retired-gemini-context-close",
+            )
         return self._close_impl(
-            generation, ws, silence_check_task, gemini_context, gemini_close_task
+            generation,
+            ws,
+            silence_check_task,
+            gemini_context,
+            gemini_close_task,
+            gemini_proactive_submit_task,
+            gemini_external_submit_task,
+            tool_tasks,
         )
 
     async def _close_impl(
@@ -2555,7 +3466,18 @@ class _TransportMixin:
         silence_check_task,
         gemini_context,
         gemini_close_task,
+        gemini_proactive_submit_task,
+        gemini_external_submit_task,
+        tool_tasks=(),
     ) -> None:
+        # 先取消在飞的 Gemini 提交，再等退休的工具调用收尾：前者是可能一直挂着的
+        # SDK 写，把它留到后面会让整段拆除跟着它一起等。取消逻辑只有
+        # _gemini_support._cancel_gemini_submit_tasks 一份，别在这里再抄一遍。
+        await self._cancel_gemini_submit_tasks(
+            gemini_proactive_submit_task,
+            gemini_external_submit_task,
+        )
+        await self._await_retired_tool_tasks(tool_tasks)
         response_arbiter = getattr(self, "_response_arbiter", None)
         if response_arbiter is not None and self._still_owns_connection(generation):
             # The arbiter is shared across connections, not owned by one. If a
@@ -2617,7 +3539,10 @@ class _TransportMixin:
 
         # Gemini uses different cleanup
         if self._is_gemini:
-            await self._close_gemini()
+            if gemini_close_task is not None:
+                await asyncio.shield(gemini_close_task)
+            else:
+                await self._close_gemini()
             return
 
         await self._release_retired_connection(ws, gemini_context, gemini_close_task)
@@ -2643,7 +3568,7 @@ class _TransportMixin:
                 # a second __aexit__ on the same one-shot context.
                 await asyncio.shield(gemini_close_task)
             elif gemini_context is not None:
-                await self._close_gemini_impl(gemini_context, ws)
+                await self._close_gemini_context(gemini_context, ws)
             return
         if ws:
             try:

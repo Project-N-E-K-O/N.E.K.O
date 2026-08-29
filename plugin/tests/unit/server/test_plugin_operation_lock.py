@@ -10,6 +10,12 @@ from typing import Any
 
 import pytest
 
+from plugin.server.application.install_source import (
+    InstallSourceManager,
+    PluginDirectoryScanner,
+    get_install_source_manager,
+    set_global_manager,
+)
 from plugin.server.application.plugins.operation_lock import (
     plugin_operation_lock,
     serialized_plugin_operation,
@@ -85,6 +91,83 @@ def test_fork_child_cleanup_closes_active_and_acquisition_phase_handles() -> Non
     assert pending.closed is True
     assert operation_lock._ACTIVE_FILE_LOCK_HANDLE is None
     assert operation_lock._OPEN_FILE_LOCK_HANDLES == set()
+
+
+def test_default_operation_lock_follows_shared_install_state_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from plugin import settings
+    from plugin.server.application.plugins import operation_lock
+
+    state_root = tmp_path / "shared-state" / "plugins"
+    monkeypatch.delenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", raising=False)
+    monkeypatch.delenv("NEKO_PLUGIN_INSTALL_LOCK_PATH", raising=False)
+    monkeypatch.setattr(settings, "get_plugins_directory", lambda: state_root)
+
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(tmp_path / "exec-a" / "plugins"))
+    first_path = operation_lock._operation_file_lock_path()
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(tmp_path / "exec-b" / "plugins"))
+    second_path = operation_lock._operation_file_lock_path()
+
+    expected = state_root.parent / ".plugin-operation.lock"
+    assert first_path == expected.resolve()
+    assert second_path == expected.resolve()
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_operation_lock_reloads_stale_install_source_snapshot(
+    tmp_path: Path,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user"
+    lock_path = tmp_path / "plugins.lock.json"
+    managers = tuple(
+        InstallSourceManager(
+            lock_path=lock_path,
+            builtin_root=builtin_root,
+            user_root=user_root,
+            scanner=PluginDirectoryScanner(builtin_root, user_root),
+        )
+        for _ in range(2)
+    )
+    for manager in managers:
+        manager.load()
+
+    plugin_dirs = tuple(user_root / name for name in ("first", "second"))
+    for plugin_dir in plugin_dirs:
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.toml").write_text(
+            f"[plugin]\nid = '{plugin_dir.name}'\n",
+            encoding="utf-8",
+        )
+
+    @serialized_plugin_operation
+    async def record(manager: InstallSourceManager, plugin_dir: Path) -> None:
+        await asyncio.to_thread(
+            manager.record_import,
+            directory_path=plugin_dir,
+            package_filename=f"{plugin_dir.name}.neko-plugin",
+            package_sha256="a" * 64,
+        )
+
+    previous_manager = get_install_source_manager()
+    try:
+        for manager, plugin_dir in zip(managers, plugin_dirs, strict=True):
+            set_global_manager(manager)
+            await record(manager, plugin_dir)
+    finally:
+        set_global_manager(previous_manager)
+
+    verifier = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+    verifier.load()
+    assert {entry.directory_name for entry in verifier.list_entries()} == {"first", "second"}
 
 
 @pytest.mark.plugin_unit

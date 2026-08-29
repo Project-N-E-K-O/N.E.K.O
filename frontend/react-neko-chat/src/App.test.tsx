@@ -17,7 +17,6 @@ import {
 import MessageList from './MessageList';
 import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from './avatarTools';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
-import { MEME_IMAGE_LOAD_FAILED_STICKER_URL } from './memeImageFallback';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 import compactChatStyles from './styles.css?raw';
 
@@ -506,6 +505,145 @@ describe('App', () => {
     })));
   });
 
+  it('loads a local avatar tool into Full without exposing the create entry', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const onAvatarToolStateChange = vi.fn();
+    (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, JSON.stringify([localToolId]));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
+      ok: true,
+      items: [{
+        id: localToolId,
+        revision: '2-123',
+        name: 'Feather',
+        changeMode: 'click-advance',
+        defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
+        changeUrls: [
+          `/user_avatar_tools/${localToolId}/change-000.png?v=1`,
+          `/user_avatar_tools/${localToolId}/change-001.png?v=1`,
+        ],
+        normalSoundUrl: `/user_avatar_tools/${localToolId}/normal.mp3?v=1`,
+        special: {
+          probability: 0.1,
+          imageUrl: `/user_avatar_tools/${localToolId}/special.png?v=1`,
+          soundUrl: `/user_avatar_tools/${localToolId}/special.mp3?v=1`,
+        },
+      }],
+      limits: {
+        maxTools: 20,
+        maxNameChars: 20,
+        maxMeaningChars: 100,
+        maxChangeImages: 16,
+        maxImageBytes: 10_000_000,
+        maxImagePixels: 16_000_000,
+        maxAudioBytes: 10_000_000,
+        maxAudioDurationMs: 60_000,
+        maxTotalBytes: 100_000_000,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(
+        <App
+          chatSurfaceMode="full"
+          onAvatarToolStateChange={onAvatarToolStateChange}
+        />,
+      );
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      const localToolButton = await screen.findByRole('button', { name: 'Feather' });
+      fireEvent.click(localToolButton);
+
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: true,
+        toolId: localToolId,
+        desktopContract: expect.objectContaining({
+          wireVersion: 1,
+          definition: expect.objectContaining({
+            id: localToolId,
+            definitionVersion: 2,
+            visual: expect.objectContaining({
+              frames: expect.arrayContaining([
+                expect.objectContaining({ pointerImagePath: expect.stringContaining('/default.png?v=1') }),
+                expect.objectContaining({ pointerImagePath: expect.stringContaining('/change-001.png?v=1') }),
+              ]),
+            }),
+            interaction: expect.objectContaining({
+              profile: expect.objectContaining({
+                imageChange: { kind: 'click-advance' },
+                chance: expect.objectContaining({ probability: 0.1 }),
+              }),
+            }),
+          }),
+        }),
+      })));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji: Feather' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+      expect(dialog.querySelector(`[data-avatar-tool-library-id="${localToolId}"]`)).not.toBeNull();
+      expect(dialog.querySelector('[data-avatar-tool-create]')).toBeNull();
+      expect(dialog.querySelector('.avatar-tool-manager-modify')).toBeNull();
+      expect(dialog.querySelector('.avatar-tool-manager-delete')).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+      delete (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__;
+    }
+  });
+
+  it('never rewrites Full local slots from the best-effort catalog list', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        items: [],
+        limits: {
+          maxTools: 20,
+          maxNameChars: 20,
+          maxMeaningChars: 100,
+          maxChangeImages: 16,
+          maxImageBytes: 10_000_000,
+          maxImagePixels: 16_000_000,
+          maxAudioBytes: 10_000_000,
+          maxAudioDurationMs: 60_000,
+          maxTotalBytes: 100_000_000,
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(<App chatSurfaceMode="full" />);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+
+      act(() => window.dispatchEvent(new Event('focus')));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+      // 加载成功后内存里不再渲染这个槽位……
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      const toolGroup = await screen.findByRole('group', { name: 'Tool icons' });
+      await waitFor(() => expect(
+        toolGroup.querySelector(`[data-avatar-tool-id="${localToolId}"]`),
+      ).toBeNull());
+      // ……对照：内置道具照常渲染，否则上面那条只是「工具栏根本没画」的假绿。
+      expect(Array.from(toolGroup.querySelectorAll<HTMLElement>('[data-avatar-tool-id]'))
+        .map(button => button.dataset.avatarToolId)).toEqual(['fist']);
+
+      // localStorage 不回写：list_items 会跳过校验失败的道具，「不在列表里」
+      // ≠「道具不存在」，一次瞬时读失败不该永久抹掉用户的槽位。持久化只发生
+      // 在用户显式 Save 和删除时。
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('publishes only the strict desktop descriptor from the full chat surface', async () => {
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
     const onAvatarInteraction = vi.fn();
@@ -986,295 +1124,27 @@ describe('App', () => {
     }
   });
 
-  it('keeps the proactive meme overlay through the same-turn assistant caption that follows it', () => {
+  it('keeps proactive memes inside chat history instead of floating above the compact input', () => {
     window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    // 回归：主动分享是「发表情包 + 说台词」，台词是 assistant 消息、紧随 meme 落地。
-    // 旧逻辑「有新消息就收起」会让图一瞬间被台词顶掉（线上实测：图闪一下就没）。
     const meme = parseChatMessage({
-      id: 'meme-abc123',
+      id: 'meme-history-only',
       role: 'assistant',
       author: 'Neko',
       time: '10:00',
       createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=x', alt: 'lol' }],
+      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=history-only', alt: 'history meme' }],
       status: 'sent',
     });
-    const { container, rerender } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-    );
-    const img = container.querySelector('.compact-meme-overlay img');
-    expect(img).not.toBeNull();
-    expect(img).toHaveAttribute('src', '/api/meme/proxy-image?url=x');
-    expect(img).toHaveAttribute('loading', 'eager');
-    expect(img).toHaveAttribute('fetchpriority', 'high');
-    expect(img).not.toHaveAttribute('data-neko-image-load-failed-sticker');
 
-    const caption = parseChatMessage({
-      id: 'assistant-newer',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:01',
-      createdAt: 2,
-      blocks: [{ type: 'text', text: 'hi' }],
-      status: 'sent',
-    });
-    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[meme, caption]} />);
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=x');
-  });
-
-  it('collapses the meme overlay once the user speaks again', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-abc123', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=x', alt: 'lol' }], status: 'sent',
-    });
-    const { container, rerender } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay')).not.toBeNull();
-
-    const userReply = parseChatMessage({
-      id: 'user-1', role: 'user', author: 'Me', time: '10:02', createdAt: 3,
-      blocks: [{ type: 'text', text: 'haha' }], status: 'sent',
-    });
-    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[meme, userReply]} />);
-    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
-  });
-
-  it('keeps the meme overlay alongside a music card from the same share (independent widgets)', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-xyz', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=y', alt: 'lol' }], status: 'sent',
-    });
-    const musicCard = parseChatMessage({
-      id: 'music-abc', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 2,
-      blocks: [{ type: 'link', url: 'https://example.com/song', title: 'Song' }], status: 'sent',
-    });
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, musicCard]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=y');
-  });
-
-  it('keeps the meme overlay even when a much later music-only turn arrives (no user message)', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    // 表情包是独立挂件，不被猫娘后续的音乐分享收起；只有用户开口才换场。
-    const meme = parseChatMessage({
-      id: 'meme-old', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1000,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=z', alt: 'lol' }], status: 'sent',
-    });
-    const laterMusic = parseChatMessage({
-      id: 'music-later', role: 'assistant', author: 'Neko', time: '10:05', createdAt: 1000 + 60000,
-      blocks: [{ type: 'link', url: 'https://example.com/song2', title: 'Song2' }], status: 'sent',
-    });
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, laterMusic]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=z');
-  });
-
-  it('keeps the meme overlay through a same-turn caption that shares its turnId', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    // host 给主动分享 meme 打上它所属轮的 turnId（与同轮台词相同）；同轮台词不该顶掉图。
-    const meme = parseChatMessage({
-      id: 'meme-turn1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1, turnId: 'turn-1',
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=t1', alt: 'lol' }], status: 'sent',
-    });
-    const sameTurnCaption = parseChatMessage({
-      id: 'assistant-caption', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 2, turnId: 'turn-1',
-      blocks: [{ type: 'text', text: '给你看个图～' }], status: 'sent',
-    });
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, sameTurnCaption]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=t1');
-  });
-
-  it('collapses the meme overlay once a new assistant turn (different turnId) arrives', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    // 真正的新一轮回复/主动搭话（不同 turnId）应顶掉旧图，即便用户没开口。
-    const meme = parseChatMessage({
-      id: 'meme-turn1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1, turnId: 'turn-1',
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=t1', alt: 'lol' }], status: 'sent',
-    });
-    const { container, rerender } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay')).not.toBeNull();
-
-    const newTurnReply = parseChatMessage({
-      id: 'assistant-newturn', role: 'assistant', author: 'Neko', time: '10:05', createdAt: 2, turnId: 'turn-2',
-      blocks: [{ type: 'text', text: '在干嘛呀～' }], status: 'sent',
-    });
-    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[meme, newTurnReply]} />);
-    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
-  });
-
-  it('keeps the meme overlay when a non-assistant (tool/system) message with a different turnId follows', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    // 只有「不同 turnId 的助手发言」算换场；tool/system 不是发言，不该顶掉图。
-    const meme = parseChatMessage({
-      id: 'meme-turn1', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1, turnId: 'turn-1',
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=t1', alt: 'lol' }], status: 'sent',
-    });
-    const toolMsg = parseChatMessage({
-      id: 'tool-x', role: 'tool', author: 'Tool', time: '10:01', createdAt: 2, turnId: 'turn-2',
-      blocks: [{ type: 'text', text: 'tool result' }], status: 'sent',
-    });
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[meme, toolMsg]} />,
-    );
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=t1');
-  });
-
-  it('renders the meme overlay close button after the image loads and hides the overlay when clicked', async () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-closeme', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=close', alt: 'lol' }], status: 'sent',
-    });
     const { container } = render(
       <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
     );
-    const img = container.querySelector('.compact-meme-overlay img');
-    expect(img).toHaveAttribute('src', '/api/meme/proxy-image?url=close');
-    expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
 
-    fireEvent.load(img as Element);
-    await waitFor(() => expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull());
-    const closeButton = container.querySelector('.compact-meme-overlay-close');
-    // ⚠️ host 只把带 data-compact-hit-region 的子元素登记成 native 可交互区；漏了它 Electron
-    // pass-through 窗口里点击会穿到桌面（见 app-react-chat-window collectCompactCompositeGeometryItems）。
-    expect(closeButton).toHaveAttribute('data-compact-hit-region', 'true');
-
-    fireEvent.click(closeButton as Element);
     expect(container.querySelector('.compact-meme-overlay')).toBeNull();
+    expect(container.querySelector('[data-compact-export-history-message-id="meme-history-only"]')).toBeNull();
   });
 
-  it('refreshes compact interaction geometry when the meme close hit region changes', async () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-close-geometry', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=geometry', alt: 'lol' }], status: 'sent',
-    });
-    const geometryRefreshes: Event[] = [];
-    const handleGeometryRefresh = (event: Event) => geometryRefreshes.push(event);
-    window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
-    try {
-      const { container } = render(
-        <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-      );
-      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
-      geometryRefreshes.length = 0;
-
-      const img = container.querySelector('.compact-meme-overlay img');
-      expect(img).not.toBeNull();
-      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
-      fireEvent.load(img as Element);
-      expect(geometryRefreshes.length).toBe(0);
-      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
-      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
-      geometryRefreshes.length = 0;
-
-      fireEvent.click(container.querySelector('.compact-meme-overlay-close') as Element);
-      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
-      expect(container.querySelector('.compact-meme-overlay')).toBeNull();
-    } finally {
-      window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
-    }
-  });
-
-  it('renders the meme overlay close button after the image fails to load', async () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-error-geometry', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=error', alt: 'lol' }], status: 'sent',
-    });
-    const geometryRefreshes: Event[] = [];
-    const handleGeometryRefresh = (event: Event) => geometryRefreshes.push(event);
-    window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
-    try {
-      const { container } = render(
-        <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-      );
-      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
-      geometryRefreshes.length = 0;
-
-      const img = container.querySelector('.compact-meme-overlay img');
-      expect(img).not.toBeNull();
-      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
-      fireEvent.error(img as Element);
-      expect(img).toHaveAttribute('src', MEME_IMAGE_LOAD_FAILED_STICKER_URL);
-      expect(img).toHaveAttribute('data-neko-image-load-failed-sticker', 'true');
-      expect(geometryRefreshes.length).toBe(0);
-      await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
-      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
-    } finally {
-      window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
-    }
-  });
-
-  it('does not reuse a loaded meme overlay close button after history remounts the same image', async () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const meme = parseChatMessage({
-      id: 'meme-history-remount', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=history-remount', alt: 'lol' }], status: 'sent',
-    });
-    vi.useFakeTimers();
-    try {
-      const { container } = render(
-        <App chatSurfaceMode="compact" compactChatState="input" messages={[meme]} />,
-      );
-
-      const firstImage = container.querySelector('.compact-meme-overlay img');
-      fireEvent.load(firstImage as Element);
-      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
-
-      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
-      expect(container.querySelector('.compact-meme-overlay')).toBeNull();
-
-      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
-      });
-
-      const remountedImage = container.querySelector('.compact-meme-overlay img');
-      expect(remountedImage).toHaveAttribute('src', '/api/meme/proxy-image?url=history-remount');
-      expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
-
-      fireEvent.load(remountedImage as Element);
-      expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('shows a newer meme even after the previous one was manually closed', () => {
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
-    const memeA = parseChatMessage({
-      id: 'meme-A', role: 'assistant', author: 'Neko', time: '10:00', createdAt: 1,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=A', alt: 'A' }], status: 'sent',
-    });
-    const { container, rerender } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[memeA]} />,
-    );
-    const memeAImage = container.querySelector('.compact-meme-overlay img');
-    fireEvent.load(memeAImage as Element);
-    expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
-    fireEvent.click(container.querySelector('.compact-meme-overlay-close') as Element);
-    expect(container.querySelector('.compact-meme-overlay')).toBeNull();
-
-    // 叉掉旧图后，来一张新表情包（不同 id）应照常显示——dismiss 只钉旧 id。
-    const memeB = parseChatMessage({
-      id: 'meme-B', role: 'assistant', author: 'Neko', time: '10:05', createdAt: 2,
-      blocks: [{ type: 'image', url: '/api/meme/proxy-image?url=B', alt: 'B' }], status: 'sent',
-    });
-    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[memeA, memeB]} />);
-    expect(container.querySelector('.compact-meme-overlay img')).toHaveAttribute('src', '/api/meme/proxy-image?url=B');
-  });
-
-  it('hides the proactive meme overlay while compact history is open', () => {
+  it('renders proactive memes inside compact history when it is open', () => {
     const meme = parseChatMessage({
       id: 'meme-visible-in-history',
       role: 'assistant',
@@ -5816,7 +5686,7 @@ describe('App', () => {
       const dialog = screen.getByRole('dialog', { name: 'Manage tools' });
       expect(dialog).toHaveClass('is-positioned');
       expect(dialog).toHaveStyle({
-        '--avatar-tool-manager-left': '366px',
+        '--avatar-tool-manager-left': '286px',
         '--avatar-tool-manager-top': '12px',
       });
       expect(dialog.querySelectorAll('.avatar-tool-manager-slot')).toHaveLength(3);
@@ -5847,7 +5717,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(dialog).toHaveClass('is-dragging');
         expect(dialog).toHaveStyle({
-          '--avatar-tool-manager-left': '396px',
+          '--avatar-tool-manager-left': '316px',
           '--avatar-tool-manager-top': '42px',
         });
       });
@@ -5905,6 +5775,203 @@ describe('App', () => {
     })));
   });
 
+  it('keeps a temporarily unavailable local slot when the user saves without touching it', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      items: [],
+      limits: {
+        maxTools: 64,
+        maxNameChars: 20,
+        maxMeaningChars: 100,
+        maxChangeImages: 16,
+        maxImageBytes: 8_388_608,
+        maxImagePixels: 16_000_000,
+        maxAudioBytes: 5_242_880,
+        maxAudioDurationMs: 10_000,
+        maxTotalBytes: 268_435_456,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(<App chatSurfaceMode="full" />);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+      // 用户没碰这个槽位，只是保存了一次。旧实现会把草稿按当前可用性 sanitize
+      // 一遍，于是一个只是本轮没出现在列表里的道具被永久冲掉。
+      fireEvent.click(dialog.querySelector('.avatar-tool-manager-action.primary') as HTMLButtonElement);
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull());
+
+      expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'))
+        .toEqual([localToolId, 'fist']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('never rewrites Compact local slots from the best-effort catalog list', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue(new Response(JSON.stringify({
+        ok: true,
+        items: [],
+        limits: {
+          maxTools: 64,
+          maxNameChars: 20,
+          maxMeaningChars: 100,
+          maxChangeImages: 16,
+          maxImageBytes: 8_388_608,
+          maxImagePixels: 16_000_000,
+          maxAudioBytes: 5_242_880,
+          maxAudioDurationMs: 10_000,
+          maxTotalBytes: 268_435_456,
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+
+      act(() => window.dispatchEvent(new Event('focus')));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+      // 加载成功后内存里不再渲染这个槽位……
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      await waitFor(() => expect(
+        container.querySelector(`[data-avatar-tool-id="${localToolId}"]`),
+      ).toBeNull());
+      // ……对照：内置道具照常渲染，否则上面那条只是「快捷栏根本没画」的假绿。
+      expect(Array.from(container.querySelectorAll<HTMLElement>('[data-avatar-tool-id]'))
+        .map(button => button.dataset.avatarToolId)).toEqual(['fist']);
+
+      // localStorage 不回写：list_items 会跳过校验失败的道具，「不在列表里」
+      // ≠「道具不存在」，一次瞬时读失败不该永久抹掉用户的槽位。
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('deletes an equipped local tool from Compact and clears its saved slot', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const localItem = {
+      id: localToolId,
+      revision: '100-200',
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
+      changeUrls: [`/user_avatar_tools/${localToolId}/change-000.png?v=1`],
+    };
+    const limits = {
+      maxTools: 64,
+      maxNameChars: 20,
+      maxMeaningChars: 100,
+      maxChangeImages: 16,
+      maxImageBytes: 8_388_608,
+      maxImagePixels: 16_000_000,
+      maxAudioBytes: 5_242_880,
+      maxAudioDurationMs: 10_000,
+      maxTotalBytes: 268_435_456,
+    };
+    const localDetail = {
+      id: localToolId,
+      revision: '100-200',
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultImage: {
+        resource: 'default.png',
+        url: localItem.defaultUrl,
+      },
+      changeItems: [{
+        resource: 'change-000.png',
+        url: localItem.changeUrls[0],
+        meaning: 'The user touches the feather.',
+      }],
+    };
+    let deleted = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'DELETE') {
+        deleted = true;
+        return new Response(JSON.stringify({ ok: true, deletedId: localToolId }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: true, detail: localDetail, limits }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        items: deleted ? [] : [localItem],
+        limits,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onAvatarToolStateChange = vi.fn();
+    (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, JSON.stringify([localToolId]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          onAvatarToolStateChange={onAvatarToolStateChange}
+        />,
+      );
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Feather' }));
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: true,
+        toolId: localToolId,
+      })));
+
+      // The avatar-tool button first exits the active interaction. Opening it
+      // again exposes the equipped-tool manager, matching the actual UI flow.
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: false,
+        toolId: null,
+      })));
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      fireEvent.click(container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement);
+      const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+      fireEvent.click(screen.getByRole('button', { name: 'Edit Feather' }));
+      await screen.findByRole('dialog', { name: 'Edit custom tool' });
+      fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
+
+      await waitFor(() => expect(dialog.querySelector(`[data-avatar-tool-library-id="${localToolId}"]`)).toBeNull());
+      await waitFor(() => expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe('[]'));
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true);
+      expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      confirm.mockRestore();
+      vi.unstubAllGlobals();
+      delete (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__;
+    }
+  });
+
   it('sizes compact avatar tool manager against the desktop work area when the carrier is small', async () => {
     const originalInnerWidth = window.innerWidth;
     const originalInnerHeight = window.innerHeight;
@@ -5955,10 +6022,10 @@ describe('App', () => {
       expect(dialog).toHaveClass('is-desktop-compact-layout');
       expect(dialog).toHaveAttribute('data-compact-geometry-item', 'avatarToolManager');
       expect(dialog).toHaveStyle({
-        '--avatar-tool-manager-left': '-24px',
+        '--avatar-tool-manager-left': '-104px',
         '--avatar-tool-manager-top': '-473px',
-        '--avatar-tool-manager-width': '380px',
-        '--avatar-tool-manager-height': '600px',
+        '--avatar-tool-manager-width': '460px',
+        '--avatar-tool-manager-height': '680px',
       });
 
       desktopWindow.__nekoDesktopCompactLayout = {

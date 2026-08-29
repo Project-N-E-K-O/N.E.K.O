@@ -1364,12 +1364,13 @@ class SmartTurnReadiness(Enum):
 class SmartTurnLease:
     token: VoiceTurnToken
     _runtime: "DetectorRuntime"
+    _lease_id: int
     _released: bool = False
 
     async def release(self) -> None:
         if self._released:
             return
-        await self._runtime.release_endpointing(self.token)
+        await self._runtime.release_endpointing(self.token, self._lease_id)
         self._released = True
 
 
@@ -1428,6 +1429,7 @@ class DetectorRuntime:
         self._load_attempted = False
         self._available = True
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
         self._rnnoise_onset_probability = rnnoise_onset_probability
         self._resource_optimization_enabled = bool(resource_optimization_enabled)
         self._throttle_policy = throttle_policy or VoiceThrottlePolicy(
@@ -1451,9 +1453,15 @@ class DetectorRuntime:
         self._failure_watch_task: asyncio.Task[None] | None = None
         self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
         self._smart_turn_token: VoiceTurnToken | None = None
+        self._smart_turn_generation_sequence = 0
+        self._smart_turn_generation: int | None = None
+        self._smart_turn_lease_sequence = 0
+        self._smart_turn_lease_ids: set[int] = set()
         self._prepare_task: asyncio.Task[bool] | None = None
         self._prepare_token: VoiceTurnToken | None = None
         self._prepare_epoch: int | None = None
+        self._prepare_waiters: dict[asyncio.Task[bool], int] = {}
+        self._prepare_generations: dict[asyncio.Task[bool], int] = {}
         self._overflow_reset_task: asyncio.Task[None] | None = None
         self._detector_epoch = 0
         self._sequence_no = 0
@@ -1823,7 +1831,7 @@ class DetectorRuntime:
                     self._smart_turn_token == token
                     and self._smart_turn_readiness is SmartTurnReadiness.READY
                 ):
-                    return SmartTurnLease(token, self)
+                    return self._acquire_endpointing_lease_locked(token)
                 if self._smart_turn_token is not None:
                     return None
                 if (
@@ -1831,11 +1839,18 @@ class DetectorRuntime:
                     and self._prepare_task is None
                 ):
                     adapter.pin_smart_turn()
+                    self._smart_turn_generation_sequence += 1
+                    self._smart_turn_generation = (
+                        self._smart_turn_generation_sequence
+                    )
                     self._smart_turn_token = token
-                    return SmartTurnLease(token, self)
+                    return self._acquire_endpointing_lease_locked(token)
                 if self._prepare_task is not None:
                     if self._prepare_token == token:
                         prepare_task = self._prepare_task
+                        self._prepare_waiters[prepare_task] = (
+                            self._prepare_waiters.get(prepare_task, 0) + 1
+                        )
                     elif self._prepare_token is not None:
                         return None
                     else:
@@ -1850,24 +1865,76 @@ class DetectorRuntime:
                     self._prepare_token = token
                     self._prepare_epoch = self._detector_epoch
                     adapter.pin_smart_turn()
+                    self._smart_turn_generation_sequence += 1
+                    prepare_generation = self._smart_turn_generation_sequence
                     prepare_task = asyncio.create_task(
                         self._prepare_endpointing_task(
                             adapter,
                             coordinator,
                             token,
                             self._detector_epoch,
+                            prepare_generation,
                         ),
                         name="detector-runtime-smart-turn-prepare",
                     )
                     self._prepare_task = prepare_task
+                    self._prepare_waiters[prepare_task] = 1
+                    self._prepare_generations[prepare_task] = prepare_generation
             if stale_task is None:
                 break
             await asyncio.gather(stale_task, return_exceptions=True)
-        if prepare_task is None or not await asyncio.shield(prepare_task):
+        if prepare_task is None:
             return None
-        if self.endpointing_ready(token):
-            return SmartTurnLease(token, self)
-        return None
+        prepared = False
+        try:
+            prepared = await asyncio.shield(prepare_task)
+        finally:
+            lease = await self._finish_prepare_waiter(
+                prepare_task,
+                token,
+                acquire=prepared,
+            )
+        return lease
+
+    def _acquire_endpointing_lease_locked(
+        self,
+        token: VoiceTurnToken,
+    ) -> SmartTurnLease:
+        self._smart_turn_lease_sequence += 1
+        lease_id = self._smart_turn_lease_sequence
+        self._smart_turn_lease_ids.add(lease_id)
+        return SmartTurnLease(token, self, lease_id)
+
+    async def _finish_prepare_waiter(
+        self,
+        prepare_task: asyncio.Task[bool],
+        token: VoiceTurnToken,
+        *,
+        acquire: bool,
+    ) -> SmartTurnLease | None:
+        async with self._lock:
+            waiter_count = self._prepare_waiters.get(prepare_task, 0)
+            prepare_generation = self._prepare_generations.get(prepare_task)
+            if waiter_count <= 1:
+                self._prepare_waiters.pop(prepare_task, None)
+                self._prepare_generations.pop(prepare_task, None)
+            else:
+                self._prepare_waiters[prepare_task] = waiter_count - 1
+            if acquire and self.endpointing_ready(token):
+                return self._acquire_endpointing_lease_locked(token)
+            if (
+                self._prepare_waiters.get(prepare_task, 0) == 0
+                and not self._smart_turn_lease_ids
+                and self._smart_turn_token == token
+                and self._smart_turn_generation == prepare_generation
+            ):
+                self._smart_turn_token = None
+                self._smart_turn_generation = None
+                self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
+                adapter = self._semantic_adapter
+                if adapter is not None:
+                    adapter.unpin_smart_turn()
+            return None
 
     async def _prepare_endpointing_task(
         self,
@@ -1875,6 +1942,7 @@ class DetectorRuntime:
         coordinator: TurnCoordinator,
         token: VoiceTurnToken,
         detector_epoch: int,
+        prepare_generation: int,
     ) -> bool:
         loaded = False
         prepare_error: BaseException | None = None
@@ -1886,10 +1954,11 @@ class DetectorRuntime:
             prepare_error = exc
         prepared = False
         async with self._lock:
-            owns_prepare = self._prepare_task is asyncio.current_task()
+            current_task = asyncio.current_task()
+            owns_prepare = self._prepare_task is current_task
             if owns_prepare:
                 self._prepare_task = None
-            valid = bool(
+            valid_state = bool(
                 owns_prepare
                 and not self._closed
                 and not adapter.failed
@@ -1897,19 +1966,28 @@ class DetectorRuntime:
                 and self._prepare_epoch == detector_epoch
                 and self._detector_epoch == detector_epoch
             )
+            has_waiters = bool(
+                current_task is not None
+                and self._prepare_waiters.get(current_task, 0) > 0
+            )
             if owns_prepare:
                 # Only the registered single-flight owner may clear these; a
                 # detached task must not clobber a successor's fields.
                 self._prepare_token = None
                 self._prepare_epoch = None
-            if valid and loaded and prepare_error is None:
+            if valid_state and has_waiters and loaded and prepare_error is None:
                 self._smart_turn_token = token
+                self._smart_turn_generation = prepare_generation
                 self._smart_turn_readiness = SmartTurnReadiness.READY
                 prepared = True
             else:
                 adapter.unpin_smart_turn()
-            if valid and not prepared:
-                self._smart_turn_readiness = SmartTurnReadiness.FAILED
+            if valid_state and not prepared:
+                self._smart_turn_readiness = (
+                    SmartTurnReadiness.FAILED
+                    if has_waiters
+                    else SmartTurnReadiness.UNLOADED
+                )
         if isinstance(prepare_error, asyncio.CancelledError):
             raise prepare_error
         return prepared
@@ -1934,13 +2012,21 @@ class DetectorRuntime:
             and self._smart_turn_token == token
         )
 
-    async def release_endpointing(self, token: VoiceTurnToken) -> None:
+    async def release_endpointing(
+        self,
+        token: VoiceTurnToken,
+        lease_id: int,
+    ) -> None:
         async with self._lock:
-            if self._smart_turn_token != token and self._prepare_token != token:
+            if lease_id not in self._smart_turn_lease_ids:
+                return
+            self._smart_turn_lease_ids.remove(lease_id)
+            if self._smart_turn_lease_ids:
+                return
+            if self._smart_turn_token != token:
                 return
             self._smart_turn_token = None
-            self._prepare_token = None
-            self._prepare_epoch = None
+            self._smart_turn_generation = None
             self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
             adapter = self._semantic_adapter
             if adapter is not None:
@@ -1952,6 +2038,8 @@ class DetectorRuntime:
             if self._smart_turn_token != token and self._prepare_token != token:
                 return
             self._smart_turn_token = None
+            self._smart_turn_generation = None
+            self._smart_turn_lease_ids.clear()
             self._prepare_token = None
             self._prepare_epoch = None
             self._detector_epoch += 1
@@ -2489,6 +2577,8 @@ class DetectorRuntime:
                 self._speech_active = False
                 self._prepare_token = None
                 self._prepare_epoch = None
+                self._smart_turn_generation = None
+                self._smart_turn_lease_ids.clear()
                 self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
                 if self._semantic_adapter is not None and self._semantic_started:
                     if self._smart_turn_token is not None:
@@ -2615,6 +2705,16 @@ class DetectorRuntime:
             await callback()
 
     async def close(self) -> None:
+        close_task = self._close_task
+        if close_task is None:
+            close_task = asyncio.create_task(
+                self._close_impl(),
+                name="detector-runtime-close",
+            )
+            self._close_task = close_task
+        await asyncio.shield(close_task)
+
+    async def _close_impl(self) -> None:
         adapter: _VoiceTurnAdapter | None = None
         vad = None
         prepare_task: asyncio.Task[bool] | None = None
@@ -2644,6 +2744,8 @@ class DetectorRuntime:
                 if self._semantic_adapter is not None:
                     overflow_reset_task = self._overflow_reset_task
                     self._smart_turn_token = None
+                    self._smart_turn_generation = None
+                    self._smart_turn_lease_ids.clear()
                     self._prepare_token = None
                     self._prepare_epoch = None
                     prepare_task, self._prepare_task = self._prepare_task, None

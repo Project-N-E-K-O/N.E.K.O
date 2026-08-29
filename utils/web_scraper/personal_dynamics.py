@@ -24,6 +24,8 @@ import time
 from typing import TYPE_CHECKING, Dict, Any, Optional
 import os
 
+from utils.cookies_login import credential_manager
+
 # bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
 # system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
 if TYPE_CHECKING:
@@ -43,13 +45,52 @@ _BILIBILI_DYNAMIC_STALE_SECONDS = 30 * 60
 _BILIBILI_DYNAMIC_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _BILIBILI_DYNAMIC_LOCKS: dict[str, asyncio.Lock] = {}
 
+_WEIBO_AUTH_FAILURE_RE = re.compile(
+    r"未登录|请先登录|登录(?:已)?(?:失效|过期)|认证失败|身份验证失败|"
+    r"login required|not logged in|authentication required|invalid credential|credential expired",
+    re.IGNORECASE,
+)
+
+
+def _is_weibo_auth_failure(payload: Any) -> bool:
+    if not isinstance(payload, dict) or payload.get("ok") == 1:
+        return False
+    message = " ".join(
+        str(payload.get(key) or "")
+        for key in ("msg", "errmsg", "message", "error")
+    )
+    return bool(_WEIBO_AUTH_FAILURE_RE.search(message))
+
+
+def _is_twitter_auth_redirect(url: Any) -> bool:
+    try:
+        parsed = httpx.URL(str(url))
+    except (TypeError, ValueError, httpx.InvalidURL):
+        return False
+
+    host = (parsed.host or "").lower().rstrip(".")
+    if not (
+        host in {"twitter.com", "x.com"}
+        or host.endswith(".twitter.com")
+        or host.endswith(".x.com")
+    ):
+        return False
+    return parsed.path.rstrip("/") in {"/login", "/logout", "/i/flow/login"}
+
 
 async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str, Any]:
     """
     Fetch Bilibili push feed updates
     """
     try:
-        credential = _get_bilibili_credential()
+        stored_credentials = await asyncio.to_thread(
+            _get_platform_cookies,
+            "bilibili",
+        )
+        credential = await asyncio.to_thread(
+            _get_bilibili_credential,
+            stored_credentials,
+        )
         if not credential: 
             return {
                 'success': False,
@@ -69,6 +110,12 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
             data = response.json()
 
         if not isinstance(data, dict) or data.get("code") != 0:
+            if isinstance(data, dict) and data.get("code") == -101:
+                await asyncio.to_thread(
+                    credential_manager.mark_auth_rejected,
+                    "bilibili",
+                    stored_credentials,
+                )
             logger.error(f"获取B站动态失败，API返回: {data}")
             return {
                 'success': False,
@@ -250,7 +297,7 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
 async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """Fetch and briefly cache the authenticated Bilibili following feed."""
 
-    credential = _get_bilibili_credential()
+    credential = await asyncio.to_thread(_get_bilibili_credential)
     if not credential:
         return {
             'success': False,
@@ -517,15 +564,29 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             response = await client.get(url, headers=headers, cookies=req_cookies, timeout=10.0)
 
             if response.status_code != 200:
+                if response.status_code == 401:
+                    await asyncio.to_thread(
+                        credential_manager.mark_auth_rejected,
+                        "weibo",
+                        weibo_cookies,
+                    )
                 logger.error(f"❌ 移动端微博接口异常，状态码: {response.status_code}")
                 return {'success': False, 'error': f"API请求失败，状态码: {response.status_code}"}
 
             data = response.json()
 
-        # 移动端如果未登录，通常会返回 ok: 0 或者重定向
+        # 只有明确的鉴权错误才缓存失效；限流或服务异常仅影响本次请求。
         if data.get('ok') != 1:
-            logger.error("❌ 微博拦截：返回 ok=0，说明你的 SUB 凭证已过期！")
-            return {'success': False, 'error': "微博凭证已过期，请去浏览器重新获取"}
+            if _is_weibo_auth_failure(data):
+                await asyncio.to_thread(
+                    credential_manager.mark_auth_rejected,
+                    "weibo",
+                    weibo_cookies,
+                )
+                logger.error("❌ 微博拦截：登录凭证已失效")
+                return {'success': False, 'error': "微博凭证已过期，请去浏览器重新获取"}
+            logger.warning("微博接口返回非鉴权错误: %s", data)
+            return {'success': False, 'error': "微博接口暂时不可用，请稍后重试"}
 
         cards = data.get('data', {}).get('cards', [])
         weibo_list = []
@@ -638,7 +699,12 @@ async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optiona
             res = await client.get(url, headers=headers, cookies=cookies, timeout=10.0)
 
         # 如果被重定向到了登录页，说明 Cookie 彻底失效了
-        if "login" in str(res.url) or "logout" in str(res.url):
+        if _is_twitter_auth_redirect(res.url):
+            await asyncio.to_thread(
+                credential_manager.mark_auth_rejected,
+                "twitter",
+                cookies or {},
+            )
             return {'success': False, 'error': 'Twitter Cookie 已过期，网页端拒绝访问'}
 
         tweets = []

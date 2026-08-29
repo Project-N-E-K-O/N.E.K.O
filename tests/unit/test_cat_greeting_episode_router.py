@@ -39,6 +39,20 @@ def test_text_ingress_is_stamped_before_async_dispatch(monkeypatch):
     assert websocket_router._stamp_user_input_ingress(audio) is audio
 
 
+def test_live_visual_ingress_is_restamped_before_async_dispatch(monkeypatch):
+    patch_module_clock(monkeypatch, websocket_router, monotonic=lambda: 456.25)
+    supplied = {
+        "input_type": "screen",
+        "data": "frame",
+        "_visual_input_ingress_time": 999_999.0,
+    }
+
+    stamped = websocket_router._stamp_user_input_ingress(supplied)
+
+    assert stamped["_visual_input_ingress_time"] == 456.25
+    assert supplied["_visual_input_ingress_time"] == 999_999.0
+
+
 def test_avatar_ingress_failure_isolated_from_websocket_loop():
     class FailingManager:
         @staticmethod

@@ -329,6 +329,7 @@ async def test_logged_out_response_is_not_reported_as_authenticated(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_expired_credentials_retry_anonymous_home(monkeypatch):
+    rejected = []
     class FakeCookieJar:
         def __init__(self):
             self.clear_count = 0
@@ -384,6 +385,11 @@ async def test_expired_credentials_retry_anonymous_home(monkeypatch):
         "_get_platform_cookies",
         lambda _platform: {"SAPISID": "expired"},
     )
+    monkeypatch.setattr(
+        youtube_feed.credential_manager,
+        "mark_auth_rejected",
+        lambda platform, expected: rejected.append((platform, expected)) or True,
+    )
     monkeypatch.setattr(youtube_feed.httpx, "AsyncClient", lambda **_kwargs: client)
 
     result = await youtube_feed.fetch_youtube_home_feed(limit=5)
@@ -395,6 +401,7 @@ async def test_expired_credentials_retry_anonymous_home(monkeypatch):
     assert "Authorization" not in client.post_headers[1]
     assert "SAPISID" not in client.post_headers[1]["Cookie"]
     assert client.cookies.clear_count == 1
+    assert rejected == [("youtube", {"SAPISID": "expired"})]
 
 
 @pytest.mark.asyncio

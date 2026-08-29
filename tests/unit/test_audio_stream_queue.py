@@ -4,7 +4,8 @@ import os
 import struct
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import WebSocketDisconnect
@@ -115,6 +116,65 @@ async def test_flush_pending_input_data_routes_audio_through_bounded_queue():
     assert mgr.pending_input_data == []
 
 
+async def test_cancelled_pending_input_flush_restores_unprocessed_suffix_first():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    first = {"input_type": "text", "data": "first"}
+    blocked = {"input_type": "text", "data": "blocked"}
+    suffix = {"input_type": "text", "data": "suffix"}
+    live = {"input_type": "text", "data": "live"}
+    mgr.pending_input_data = [first, blocked, suffix]
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.session = object()
+    mgr.is_active = True
+    mgr._enqueue_audio_stream_data = AsyncMock()
+    blocked_started = asyncio.Event()
+
+    async def process(message):
+        if message is blocked:
+            blocked_started.set()
+            await asyncio.Event().wait()
+
+    mgr._process_stream_data_internal = process
+    task = asyncio.create_task(LLMSessionManager._flush_pending_input_data(mgr))
+    await blocked_started.wait()
+    mgr.pending_input_data.append(live)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert mgr.pending_input_data == [blocked, suffix, live]
+    assert mgr._pending_input_flush_active is False
+
+
+async def test_failed_pending_input_drops_only_current_and_continues_suffix():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    first = {"input_type": "text", "data": "first"}
+    failed = {"input_type": "text", "data": "failed"}
+    suffix = {"input_type": "text", "data": "suffix"}
+    live = {"input_type": "text", "data": "live"}
+    mgr.pending_input_data = [first, failed, suffix]
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.session = object()
+    mgr.is_active = True
+    mgr._enqueue_audio_stream_data = AsyncMock()
+    attempted: list[dict] = []
+
+    async def process(message):
+        attempted.append(message)
+        if message is failed:
+            mgr.pending_input_data.append(live)
+            raise RuntimeError("bad cached message")
+
+    mgr._process_stream_data_internal = process
+
+    await LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert attempted == [first, failed, suffix, live]
+    assert mgr.pending_input_data == []
+    assert mgr._pending_input_flush_active is False
+
+
 def _queue_token() -> VoiceIngressToken:
     return VoiceIngressToken(1, "socket", 1, 1, 1)
 
@@ -125,10 +185,12 @@ def _hot_swap_frame(
     samples: int = 160,
     speech_probability: float | None = 0.5,
     rnnoise_available: bool = True,
+    captured_at: float = 0.0,
 ) -> HotSwapAudioFrame:
     return HotSwapAudioFrame(
         pcm16=b"\x01\x00" * samples,
         token=token,
+        captured_at=captured_at,
         speech_probability=speech_probability,
         rnnoise_available=rnnoise_available,
     )
@@ -300,6 +362,7 @@ async def test_audio_worker_leaves_runtime_generation_validation_to_submit():
         ingress_token=frame.token,
         audio_stream_epoch=frame.audio_stream_epoch,
         ingress_sequence=frame.ingress_sequence,
+        captured_at=frame.captured_at,
     )
     assert mgr._audio_stream_dropped_total == 0
 
@@ -344,6 +407,7 @@ async def test_audio_worker_does_not_wait_for_core_session_readiness():
         ingress_token=frame.token,
         audio_stream_epoch=frame.audio_stream_epoch,
         ingress_sequence=frame.ingress_sequence,
+        captured_at=frame.captured_at,
     )
 
 
@@ -495,6 +559,7 @@ async def test_independent_audio_route_precedes_omni_websocket_checks():
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        captured_at=ANY,
     )
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
@@ -533,6 +598,7 @@ async def test_independent_audio_route_does_not_require_omni_session_container()
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        captured_at=ANY,
     )
     mgr.start_session.assert_not_awaited()
     mgr.end_session.assert_not_awaited()
@@ -591,6 +657,7 @@ async def test_hot_swap_flush_preserves_identity_and_detector_metadata():
             token,
             speech_probability=0.75,
             rnnoise_available=True,
+            captured_at=1234.5,
         )
     )
 
@@ -604,6 +671,7 @@ async def test_hot_swap_flush_preserves_identity_and_detector_metadata():
         rnnoise_available=True,
         rnnoise_evidence=None,
         ingress_token=token,
+        captured_at=1234.5,
     )
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
@@ -2073,6 +2141,149 @@ async def test_voice_control_status_reaches_the_lease_holding_socket():
     await LLMSessionManager._send_voice_control_status(mgr, '{"code": "Y"}')
     mgr.send_status.assert_awaited_once()
     assert recorder.sent == []
+
+
+async def test_lease_resync_retries_when_display_and_voice_delivery_fail():
+    class _LiveState:
+        CONNECTED = "connected"
+
+        def __eq__(self, other) -> bool:
+            return other == "connected"
+
+    class _Socket:
+        def __init__(self, *, fail: bool) -> None:
+            self.client_state = _LiveState()
+            self.fail = fail
+            self.attempts = 0
+
+        async def send_text(self, _data: str) -> None:
+            self.attempts += 1
+            if self.fail:
+                raise OSError("delivery failed")
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr._init_asr_runtime_state()
+    mgr._begin_voice_input_connection("socket-a")
+    display = _Socket(fail=True)
+    voice = _Socket(fail=True)
+    mgr.websocket = display
+    mgr.sync_message_queue = SimpleNamespace(put=MagicMock())
+    assert mgr._set_voice_input_websocket("socket-a", voice) is True
+
+    await LLMSessionManager._maybe_signal_voice_lease_resync(mgr)
+
+    assert mgr._voice_lease_resync_signal_state is None
+    assert display.attempts == 1
+    assert voice.attempts == 1
+
+    display.fail = False
+    voice.fail = False
+    await LLMSessionManager._maybe_signal_voice_lease_resync(mgr)
+
+    assert mgr._voice_lease_resync_signal_state is not None
+    assert display.attempts == 2
+    assert voice.attempts == 2
+
+
+@pytest.mark.parametrize(
+    ("display_fails", "voice_fails", "display_attempts", "voice_attempts"),
+    [
+        (False, True, 1, 2),
+        (True, False, 2, 1),
+    ],
+)
+async def test_blocked_text_notice_retries_only_failed_delivery_plane(
+    display_fails: bool,
+    voice_fails: bool,
+    display_attempts: int,
+    voice_attempts: int,
+):
+    class _LiveState:
+        CONNECTED = "connected"
+
+        def __eq__(self, other) -> bool:
+            return other == "connected"
+
+    class _Socket:
+        def __init__(self, *, fail: bool) -> None:
+            self.client_state = _LiveState()
+            self.fail = fail
+            self.attempts = 0
+
+        async def send_text(self, _data: str) -> None:
+            self.attempts += 1
+            if self.fail:
+                raise OSError("delivery failed")
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr._init_asr_runtime_state()
+    mgr._begin_voice_input_connection("socket-a")
+    mgr.input_mode = "text"
+    mgr._set_microphone_route("blocked")
+    display = _Socket(fail=display_fails)
+    voice = _Socket(fail=voice_fails)
+    mgr.websocket = display
+    mgr.sync_message_queue = SimpleNamespace(put=MagicMock())
+    assert mgr._set_voice_input_websocket("socket-a", voice) is True
+
+    await LLMSessionManager._maybe_signal_blocked_text_mode_microphone(mgr)
+
+    assert mgr._blocked_text_mode_microphone_signal_state is None
+    assert display.attempts == 1
+    assert voice.attempts == 1
+
+    display.fail = False
+    voice.fail = False
+    await LLMSessionManager._maybe_signal_blocked_text_mode_microphone(mgr)
+
+    assert mgr._blocked_text_mode_microphone_signal_state is not None
+    assert display.attempts == display_attempts
+    assert voice.attempts == voice_attempts
+
+
+async def test_cancelled_voice_notice_retry_does_not_repeat_display_delivery():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr._init_asr_runtime_state()
+    mgr._begin_voice_input_connection("socket-a")
+    mgr.input_mode = "text"
+    mgr._set_microphone_route("blocked")
+    mgr.send_status = AsyncMock(return_value=True)
+    voice_owner = object()
+    voice_send_started = asyncio.Event()
+    voice_attempts = 0
+
+    mgr._voice_owner_socket = lambda: voice_owner
+
+    async def send_to_voice_owner(_payload):
+        nonlocal voice_attempts
+        voice_attempts += 1
+        if voice_attempts == 1:
+            voice_send_started.set()
+            await asyncio.Event().wait()
+        return voice_owner
+
+    mgr._send_to_voice_owner = send_to_voice_owner
+
+    first = asyncio.create_task(
+        LLMSessionManager._maybe_signal_blocked_text_mode_microphone(mgr)
+    )
+    await asyncio.wait_for(voice_send_started.wait(), timeout=1)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    assert mgr._blocked_text_mode_microphone_signal_state is None
+    assert mgr.send_status.await_count == 1
+    assert voice_attempts == 1
+
+    await LLMSessionManager._maybe_signal_blocked_text_mode_microphone(mgr)
+
+    assert mgr._blocked_text_mode_microphone_signal_state is not None
+    assert mgr.send_status.await_count == 1
+    assert voice_attempts == 2
 
 
 async def test_voice_socket_setter_rejects_a_stale_claim():

@@ -17,15 +17,15 @@ the module-level helpers described in design §4.1 / §5.1 / §5.2 / §5.3:
 * :func:`_serialize_lock` — deterministic ``LockFile → bytes`` serializer
   following the field-order rules of design §5.2.
 
-Do NOT import :mod:`plugin.settings` at module top: reading the user plugin
-config root eagerly here would fight the test harness, which overrides the
-``PLUGIN_CONFIG_ROOT`` environment variable to point into ``tmp_path``.
-:func:`resolve_lock_path` performs the settings lookup lazily on each call.
+Do NOT import :mod:`plugin.settings` at module top: the application user/state
+root is runtime configuration and tests replace it with ``tmp_path``.
+:func:`resolve_lock_path` therefore performs the settings lookup lazily.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import threading
@@ -98,6 +98,61 @@ class InstallSourceError(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _shared_state_lock_path() -> Path:
+    """Return the pre-scoping install-source path in the shared state root."""
+
+    from plugin.settings import get_plugin_state_root
+
+    return (get_plugin_state_root().parent / "plugins.lock.json").resolve()
+
+
+def _filesystem_is_case_insensitive(path: Path) -> bool:
+    """Probe the nearest existing path without assuming platform defaults."""
+
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    while probe.parent != probe:
+        name = probe.name
+        for index, character in enumerate(name):
+            swapped = character.swapcase()
+            if swapped == character:
+                continue
+            alternate = probe.with_name(f"{name[:index]}{swapped}{name[index + 1:]}")
+            try:
+                return os.path.samefile(probe, alternate)
+            except OSError:
+                return False
+        probe = probe.parent
+    return False
+
+
+def _normalise_unicode_path_identity(path: Path) -> str:
+    """Normalise Unicode only when alternate spellings name the same path."""
+
+    comparable = os.path.normpath(str(path))
+    nfc = unicodedata.normalize("NFC", comparable)
+    for alternate in {nfc, unicodedata.normalize("NFD", comparable)}:
+        if alternate == comparable:
+            continue
+        try:
+            if os.path.samefile(comparable, alternate):
+                return nfc
+        except OSError:
+            continue
+    return comparable
+
+
+def _execution_root_scope(config_root: str) -> str:
+    """Return a stable, non-reversible identity for an execution root."""
+
+    resolved = Path(config_root).expanduser().resolve(strict=False)
+    comparable = _normalise_unicode_path_identity(resolved)
+    if _filesystem_is_case_insensitive(resolved):
+        comparable = comparable.casefold()
+    return hashlib.sha256(comparable.encode("utf-8")).hexdigest()[:16]
+
+
 def resolve_lock_path() -> Path:
     """Resolve the absolute path of ``plugins.lock.json``.
 
@@ -105,21 +160,65 @@ def resolve_lock_path() -> Path:
 
     1. If the environment variable ``NEKO_PLUGIN_INSTALL_LOCK_PATH`` is set to
        a non-empty value, expand ``~`` and return its resolved absolute path.
-    2. Otherwise return ``<USER_PLUGIN_CONFIG_ROOT parent>/plugins.lock.json``.
+    2. With an explicit ``PLUGIN_CONFIG_ROOT``, return an execution-root-
+       scoped filename inside the shared state directory.
+    3. Otherwise return ``<N.E.K.O user root>/plugins.lock.json``.
 
-    The user-plugin-config-root lookup is performed lazily (see module
-    docstring) so that tests overriding ``PLUGIN_CONFIG_ROOT`` at runtime
-    take effect without needing to re-import this module.
+    The state-root lookup is performed lazily (see module docstring) so runtime
+    configuration and test overrides take effect without re-importing this
+    module. Execution-root scoping keeps provenance from different plugin
+    server processes isolated while the files themselves remain persistent
+    application state.
     """
 
     env_val = os.environ.get("NEKO_PLUGIN_INSTALL_LOCK_PATH", "").strip()
     if env_val:
         return Path(env_val).expanduser().resolve()
 
-    # Imported lazily to avoid touching plugin.settings at module import time.
-    from plugin.settings import get_user_plugin_config_root
+    shared_path = _shared_state_lock_path()
+    execution_root = os.environ.get("PLUGIN_CONFIG_ROOT", "").strip()
+    if not execution_root:
+        return shared_path
 
-    return (get_user_plugin_config_root().parent / "plugins.lock.json").resolve()
+    scope = _execution_root_scope(execution_root)
+    return shared_path.with_name(f"plugins.{scope}.lock.json")
+
+
+def _resolve_legacy_lock_path(lock_path: Path) -> Path | None:
+    """Return the root-local predecessor of an execution-root-scoped lock.
+
+    Before executable plugin code and persistent state were separated, an
+    explicit ``PLUGIN_CONFIG_ROOT`` also moved ``plugins.lock.json`` beside
+    that root. That path carries enough identity to migrate into the scoped
+    state-root filename. The briefly-used unscoped state-root lock is
+    deliberately not a migration source: its rows cannot be attributed to one
+    of several execution roots safely.
+
+    Compatibility lookup is deliberately disabled for an explicit
+    ``NEKO_PLUGIN_INSTALL_LOCK_PATH`` and for managers using a caller-supplied
+    non-canonical path.  This keeps both override contracts authoritative and
+    prevents tests or embedded callers from unexpectedly reading process-wide
+    legacy state.
+    """
+
+    if os.environ.get("NEKO_PLUGIN_INSTALL_LOCK_PATH", "").strip():
+        return None
+
+    legacy_config_root = os.environ.get("PLUGIN_CONFIG_ROOT", "").strip()
+    if not legacy_config_root:
+        return None
+
+    canonical_path = resolve_lock_path()
+    if lock_path.expanduser().resolve(strict=False) != canonical_path:
+        return None
+
+    legacy_path = (
+        Path(legacy_config_root).expanduser().resolve(strict=False).parent
+        / "plugins.lock.json"
+    ).resolve(strict=False)
+    if legacy_path != canonical_path and legacy_path.exists():
+        return legacy_path
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1076,6 +1175,9 @@ class InstallSourceManager:
 
         Branches:
 
+        * Missing canonical file + explicit legacy ``PLUGIN_CONFIG_ROOT`` →
+          load the old sibling lock, then copy it atomically to the canonical
+          state-root location while retaining the old file as a fallback.
         * ``FileNotFoundError`` → First_Startup. Seeds an empty
           :class:`LockFile` with ``created_at`` set to the current
           timestamp and clears any prior degrade. The on-disk file is
@@ -1100,6 +1202,7 @@ class InstallSourceManager:
 
         with self._lock:
             now = self._now_iso()
+            read_path = self.lock_path
             # Clean up any stale ``plugins.lock.json.<pid>.<uuid>.tmp``
             # leftovers from a previous run that was hard-killed between
             # tmp-write and atomic rename.
@@ -1107,19 +1210,38 @@ class InstallSourceManager:
             try:
                 raw = self.lock_path.read_bytes()
             except FileNotFoundError:
-                # First_Startup: empty snapshot with created_at stamped.
-                self._current = LockFile(
-                    schema_version=1,
-                    entries=(),
-                    updated_at=now,
-                    created_at=now,
-                )
-                self._clear_degrade()
-                logger.info(
-                    "InstallSourceManager: First_Startup (lock file missing) path=%s",
-                    self.lock_path,
-                )
-                return
+                legacy_path = _resolve_legacy_lock_path(self.lock_path)
+                if legacy_path is not None:
+                    try:
+                        raw = legacy_path.read_bytes()
+                        read_path = legacy_path
+                    except FileNotFoundError:
+                        legacy_path = None
+                    except (PermissionError, OSError) as exc:
+                        self._current = LockFile(
+                            schema_version=1,
+                            entries=(),
+                            updated_at=now,
+                            created_at=None,
+                        )
+                        self._enter_read_only_degrade(
+                            reason=f"legacy_read_failed: {exc}"
+                        )
+                        return
+                if legacy_path is None:
+                    # First_Startup: empty snapshot with created_at stamped.
+                    self._current = LockFile(
+                        schema_version=1,
+                        entries=(),
+                        updated_at=now,
+                        created_at=now,
+                    )
+                    self._clear_degrade()
+                    logger.info(
+                        "InstallSourceManager: First_Startup (lock file missing) path=%s",
+                        self.lock_path,
+                    )
+                    return
             except (PermissionError, OSError) as exc:
                 # Read failed — degrade with an empty snapshot. Do NOT
                 # stamp created_at so a later recovery can reconcile
@@ -1135,6 +1257,31 @@ class InstallSourceManager:
 
             try:
                 self._current = _parse_lock(raw)
+                if read_path != self.lock_path:
+                    try:
+                        # Copy only after a successful parse, write atomically,
+                        # and retain the legacy file as a rollback source.
+                        _atomic_write(self.lock_path, raw)
+                    except OSError as exc:
+                        logger.warning(
+                            "InstallSourceManager: loaded legacy lock %s but could not "
+                            "migrate it to %s: %s",
+                            read_path,
+                            self.lock_path,
+                            exc,
+                        )
+                        # Keep serving the recovered metadata, but suppress
+                        # writes until a later load can complete migration.
+                        self._enter_read_only_degrade(
+                            reason=f"legacy_migration_failed: {exc}"
+                        )
+                        return
+                    else:
+                        logger.info(
+                            "InstallSourceManager: migrated legacy lock %s to %s",
+                            read_path,
+                            self.lock_path,
+                        )
                 self._clear_degrade()
                 return
             except InstallSourceError as exc:
@@ -1145,11 +1292,9 @@ class InstallSourceManager:
                 # First_Startup. Use int(time.time()) so the suffix is a
                 # plain epoch seconds value that's easy to grep for.
                 epoch = int(time.time())
-                bak_path = self.lock_path.with_name(
-                    f"plugins.lock.json.bak-{epoch}"
-                )
+                bak_path = read_path.with_name(f"{read_path.name}.bak-{epoch}")
                 try:
-                    self.lock_path.rename(bak_path)
+                    read_path.rename(bak_path)
                     logger.warning(
                         "InstallSourceManager: corrupt lock backed up to %s (%s)",
                         bak_path,
@@ -1763,6 +1908,17 @@ class InstallSourceManager:
             )
 
         with self._lock:
+            if self._read_only:
+                raise InstallSourceError(
+                    "INSTALL_SOURCE_READ_ONLY",
+                    "Market source metadata cannot be changed while the lock is degraded",
+                    details={
+                        "plugin_id": plugin_id,
+                        "root_id": root_id,
+                        "directory_name": directory_name,
+                        "reason": self._degrade_reason or "read_only_degrade",
+                    },
+                )
             old_lock = self._current
             now = self._now_iso()
             existing = self._find_entry(old_lock, root_id, directory_name)

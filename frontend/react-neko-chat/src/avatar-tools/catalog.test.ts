@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   AVAILABLE_COMPACT_AVATAR_TOOLS,
-  AVAILABLE_FULL_AVATAR_TOOLS,
   DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
   MAX_ACTIVE_AVATAR_TOOLS,
   sanitizeAvatarToolIds,
@@ -32,19 +31,16 @@ describe('avatar tool definitions', () => {
     });
   });
 
-  it('projects all definitions into both chat surfaces', () => {
+  it('projects all built-in definitions into the shared catalog', () => {
     expect(AVAILABLE_COMPACT_AVATAR_TOOLS.map(tool => tool.id)).toEqual(
-      AVATAR_TOOL_DEFINITIONS.map(definition => definition.id),
-    );
-    expect(AVAILABLE_FULL_AVATAR_TOOLS.map(tool => tool.id)).toEqual(
       AVATAR_TOOL_DEFINITIONS.map(definition => definition.id),
     );
     AVATAR_TOOL_DEFINITIONS.forEach((definition) => {
       const tool = AVAILABLE_COMPACT_AVATAR_TOOLS.find(candidate => candidate.id === definition.id);
+      expect(definition.label.kind).toBe('i18n');
       expect(tool).toMatchObject({
         id: definition.id,
-        labelKey: definition.label.key,
-        labelFallback: definition.label.fallback,
+        label: definition.label,
         iconImagePath: definition.visual.variants.primary.iconImagePath,
         pointerImagePath: definition.visual.variants.primary.pointerImagePath,
         pointerHotspotX: definition.visual.hotspotX,
@@ -300,6 +296,10 @@ describe('avatar tool definition validation', () => {
     if (scatter?.kind !== 'random-scatter') throw new Error('invalid fixture');
     const cases: Array<[AvatarToolDefinition, RegExp]> = [
       [asDefinition({ ...fist, interaction: { ...fist.interaction, touchZone: 'press' as never } }), /touchZone.*release/],
+      [asDefinition({ ...fist, interaction: {
+        ...fist.interaction,
+        chance: { ...fist.interaction.chance, sound: undefined as never },
+      } }), /interaction\.chance\.sound/],
       [asDefinition({ ...hammer, interaction: {
         ...hammer.interaction,
         chance: { ...hammer.interaction.chance, intensity: 'normal' as never },

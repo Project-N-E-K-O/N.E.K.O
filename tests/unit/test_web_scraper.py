@@ -837,7 +837,7 @@ async def test_bilibili_following_uses_two_minute_cache(monkeypatch):
         return {"success": True, "status": "ok", "dynamics": [{"id": calls}]}
 
     monkeypatch.setattr(
-        personal_dynamics, "_get_bilibili_credential", lambda: FakeCredential()
+        personal_dynamics, "_get_bilibili_credential", lambda *_args: FakeCredential()
     )
     monkeypatch.setattr(
         personal_dynamics,
@@ -962,7 +962,7 @@ async def test_bilibili_following_concurrent_calls_share_one_fetch(monkeypatch):
         return {"success": True, "status": "ok", "dynamics": []}
 
     monkeypatch.setattr(
-        personal_dynamics, "_get_bilibili_credential", lambda: FakeCredential()
+        personal_dynamics, "_get_bilibili_credential", lambda *_args: FakeCredential()
     )
     monkeypatch.setattr(
         personal_dynamics,
@@ -1052,7 +1052,7 @@ async def test_bilibili_following_video_keeps_bvid_and_content_fields(monkeypatc
             return FakeResponse()
 
     monkeypatch.setattr(
-        personal_dynamics, "_get_bilibili_credential", lambda: FakeCredential()
+        personal_dynamics, "_get_bilibili_credential", lambda *_args: FakeCredential()
     )
     monkeypatch.setattr(personal_dynamics.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(personal_dynamics.random, "uniform", lambda *_args: 0)
@@ -1068,6 +1068,21 @@ async def test_bilibili_following_video_keeps_bvid_and_content_fields(monkeypatc
     assert item["authenticated"] is True
     assert result["dynamics"][1]["title"] == "[图文动态] 图文正文"
 
+    rejected = []
+    stored = {"SESSDATA": "x", "DedeUserID": "1"}
+    monkeypatch.setattr(personal_dynamics, "_get_platform_cookies", lambda _platform: stored)
+    monkeypatch.setattr(FakeResponse, "json", lambda _self: {"code": -101})
+    monkeypatch.setattr(
+        personal_dynamics.credential_manager,
+        "mark_auth_rejected",
+        lambda platform, expected: rejected.append((platform, expected)) or True,
+    )
+
+    rejected_result = await personal_dynamics._fetch_bilibili_personal_dynamic_uncached(10)
+
+    assert rejected_result["status"] == "auth_failed"
+    assert rejected == [("bilibili", stored)]
+
 
 def test_bilibili_phase2_context_does_not_invent_missing_summary():
     context = bilibili_content.format_bilibili_phase2_context(
@@ -1082,12 +1097,34 @@ def test_bilibili_phase2_context_does_not_invent_missing_summary():
             "authenticated": False,
         }
     )
-
     assert "无可靠摘要" in context
     assert "看起来在聊" in context
     assert "登录态确认：否" in context
     assert "链接：" not in context
     assert "https://www.bilibili.com/video/BVempty" not in context
+
+
+def test_weibo_auth_failure_detection_is_conservative():
+    assert personal_dynamics._is_weibo_auth_failure({"ok": 0, "msg": "请先登录"})
+    assert personal_dynamics._is_weibo_auth_failure({"ok": 0, "msg": "登录已过期"})
+    assert not personal_dynamics._is_weibo_auth_failure({"ok": 0, "msg": "访问频次过高"})
+    assert not personal_dynamics._is_weibo_auth_failure({"ok": 1, "msg": "请先登录"})
+
+
+def test_twitter_auth_redirect_detection_requires_an_auth_path():
+    assert personal_dynamics._is_twitter_auth_redirect(
+        "https://x.com/i/flow/login?redirect_after_login=%2Fhome"
+    )
+    assert personal_dynamics._is_twitter_auth_redirect(
+        "https://mobile.twitter.com/logout"
+    )
+    assert not personal_dynamics._is_twitter_auth_redirect(
+        "https://twitter.com/home?next=login"
+    )
+    assert not personal_dynamics._is_twitter_auth_redirect(
+        "https://twitter.com/settings/login-history"
+    )
+    assert not personal_dynamics._is_twitter_auth_redirect("https://example.com/login")
 
 
 def test_bilibili_phase2_context_uses_published_at_label_without_link():

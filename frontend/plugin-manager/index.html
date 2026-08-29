@@ -5,8 +5,66 @@
     <link rel="icon" href="favicon.ico">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>N.E.K.O 插件管理</title>
+    <script>
+      (() => {
+        // Keep this pre-bundle subset aligned with useDarkMode.ts so the static shell
+        // matches the Vue application theme before main.ts is downloaded and evaluated.
+        let savedTheme = null
+        try {
+          savedTheme = window.localStorage.getItem('neko-dark-mode')
+        } catch (_) {}
+
+        let prefersDark = false
+        if (savedTheme === null) {
+          try {
+            prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+          } catch (_) {}
+        }
+
+        const dark = savedTheme === null ? prefersDark : savedTheme === 'true'
+        document.documentElement.classList.toggle('dark', dark)
+        if (dark) {
+          document.documentElement.setAttribute('data-theme', 'dark')
+        } else {
+          document.documentElement.removeAttribute('data-theme')
+        }
+      })()
+    </script>
+    <style>
+      #plugin-manager-boot-shell {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483000;
+        display: grid;
+        place-items: center;
+        box-sizing: border-box;
+        background: #ffffff;
+        color: #2c3e50;
+        pointer-events: none;
+      }
+
+      html.dark #plugin-manager-boot-shell {
+        background: #181818;
+        color: #f8f8f8;
+      }
+
+      #plugin-manager-boot-shell .boot-shell__label {
+        font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+    </style>
   </head>
   <body>
+    <div
+      id="plugin-manager-boot-shell"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <span class="boot-shell__label">N.E.K.O</span>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

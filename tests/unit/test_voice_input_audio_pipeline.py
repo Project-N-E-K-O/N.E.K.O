@@ -164,6 +164,20 @@ class _NoiseReductionManager:
         return None
 
 
+class _GateAsyncLock:
+    def __init__(self) -> None:
+        self.requested = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __aenter__(self):
+        self.requested.set()
+        await self.release.wait()
+        return self
+
+    async def __aexit__(self, *_exc_info) -> None:
+        return None
+
+
 async def test_noise_reduction_toggle_rebuilds_the_core_microphone_pipeline() -> None:
     # Codex P2. The settings endpoint updated only the Omni processor, but every
     # microphone frame passes through this Core-owned pipeline first -- and it
@@ -208,6 +222,38 @@ async def test_noise_reduction_toggle_to_the_same_value_is_a_no_op() -> None:
     # Still usable: nothing was torn down.
     frame = await original.process(_PC_FRAME, sample_rate_hz=48_000)
     assert frame.sample_rate_hz == 16_000
+
+
+async def test_noise_reduction_toggle_survives_cancel_while_waiting_for_lock() -> None:
+    from main_logic.core.asr_runtime import AsrRuntimeMixin
+
+    manager = _NoiseReductionManager(nr_enabled=True)
+    original = manager._voice_input_audio_pipeline
+    gate = _GateAsyncLock()
+    manager._voice_input_pipeline_transition_lock = gate
+
+    caller = asyncio.create_task(
+        AsrRuntimeMixin.apply_voice_input_noise_reduction(manager, False)
+    )
+    await asyncio.wait_for(gate.requested.wait(), 1)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+
+    assert manager._voice_input_noise_reduction_enabled is True
+    assert manager._voice_input_audio_pipeline is original
+    transition_task = next(
+        task
+        for task in manager._core_asr_cleanup_tasks
+        if task.get_name() == "core-voice-input-pipeline-transition"
+    )
+
+    gate.release.set()
+    assert await asyncio.wait_for(asyncio.shield(transition_task), 1) is True
+    assert manager._voice_input_noise_reduction_enabled is False
+    assert manager._voice_input_audio_pipeline.nr_enabled is False
+    with pytest.raises(RuntimeError, match="VOICE_AUDIO_PIPELINE_CLOSED"):
+        await original.process(_PC_FRAME, sample_rate_hz=48_000)
 
 
 async def test_one_manager_failing_does_not_abandon_the_rest_of_the_toggle():

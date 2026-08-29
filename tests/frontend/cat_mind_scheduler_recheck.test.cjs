@@ -191,6 +191,19 @@ test('active user observations coalesce into one evaluation after terminal settl
     runtime.observe('cat_hover_reaction');
   }
   assert.equal(runtime.dryRunCalls(), dryRunsBeforeInput, 'active runner blocks selector dry-runs');
+  const lastEvaluatedAfterInput = runtime.win.nekoCatMind.getDebugSnapshot().scheduler.lastEvaluatedAt;
+  for (let index = 0; index < 20; index += 1) {
+    runtime.observe('desktop_occlusion_or_layer_change', {
+      status: 'changed',
+      changes: ['position'],
+      movement: { x: index % 2 === 0 ? 1 : -1, y: 0 },
+    }, 'cat1', 'desktop-window-sensing');
+  }
+  assert.equal(
+    runtime.win.nekoCatMind.getDebugSnapshot().scheduler.lastEvaluatedAt,
+    lastEvaluatedAfterInput,
+    'desktop churn must not wake evaluations while user input is already deferred'
+  );
 
   reportResult(runtime, request, 'social-active-run', 'done', 'social-finished');
   assert.equal(
@@ -201,6 +214,58 @@ test('active user observations coalesce into one evaluation after terminal settl
   assert.ok(
     runtime.win.nekoCatMind.getDebugSnapshot().lastDecision.triggerTypes.includes('cat_hover_reaction')
   );
+});
+
+test('desktop sensing churn remains observable without chaining settled actions', () => {
+  const runtime = createRuntime('cat1_social_ping');
+  runtime.enter();
+  runtime.advanceNeed();
+  assert.equal(runtime.requests.length, 1);
+  const request = runtime.requests[0];
+  startRequest(runtime, request, 'social-before-desktop-churn');
+  reportResult(runtime, request, 'social-before-desktop-churn', 'done', 'social-finished');
+
+  const dryRunsAfterSettle = runtime.dryRunCalls();
+  for (let index = 0; index < 20; index += 1) {
+    runtime.observe('desktop_occlusion_or_layer_change', {
+      status: 'changed',
+      changes: ['position'],
+      movement: { x: index % 2 === 0 ? 1 : -1, y: 0 },
+    }, 'cat1', 'desktop-window-sensing');
+  }
+
+  assert.equal(runtime.requests.length, 1, 'desktop facts must not start the next action');
+  assert.equal(runtime.dryRunCalls(), dryRunsAfterSettle, 'desktop facts must not wake selector dry-runs');
+  assert.equal(
+    runtime.win.nekoCatMind.getRecentEvents().at(-1).type,
+    'desktop_occlusion_or_layer_change'
+  );
+});
+
+test('non-native desktop provider changes may wake one retained explicit intent', () => {
+  const runtime = createRuntime('cat1_play_yarn', { providerReady: false });
+  runtime.enter();
+  runtime.observe('chat_yarn_drag_completed', {
+    userInitiated: true,
+    startedFarFromCat: true,
+    endedNearCat: true,
+    startDistanceToCatPx: 320,
+    endDistanceToCatPx: 20,
+    directApproachDistancePx: 300,
+    pathDistancePx: 310,
+    movementThresholdPx: 24,
+  });
+  assert.equal(runtime.requests.length, 0);
+  assert.equal(runtime.win.nekoCatMind.getDebugSnapshot().scheduler.providerRecheckNeeded, true);
+
+  runtime.setProviderReady(true);
+  runtime.observe('desktop_occlusion_or_layer_change', {
+    status: 'changed',
+    changes: ['position'],
+    movement: { x: 1, y: 0 },
+  }, 'cat1', 'return-ball');
+  assert.equal(runtime.requests.length, 1);
+  assert.equal(runtime.requests[0].actionId, 'cat1_play_yarn');
 });
 
 test('provider-ready presentation wakes retained yarn intent without waiting for clock', () => {

@@ -6,6 +6,10 @@ from types import MethodType
 from unittest.mock import AsyncMock
 import pytest
 
+from main_logic.omni_realtime_client._response_arbiter import (
+    ResponseAdmissionRejected,
+)
+
 from main_logic.omni_realtime_client import OmniRealtimeClient
 import main_logic.omni_realtime_client._response_arbiter as arbiter_module
 from main_logic.omni_realtime_client._protocol_capabilities import (
@@ -188,6 +192,261 @@ async def test_response_arbiter_holds_lane_until_response_done():
         "response.create",
         "response.create",
     ]
+
+
+@pytest.mark.asyncio
+async def test_response_arbiter_rejects_cancelled_admission_before_item_send():
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"role": "user", "content": []},
+            },
+        ),
+        admission_check=lambda: False,
+    )
+
+    with pytest.raises(RuntimeError, match="admission rejected"):
+        await asyncio.wait_for(ticket.sent, 0.2)
+    with pytest.raises(RuntimeError, match="admission rejected"):
+        await asyncio.wait_for(ticket.done, 0.2)
+    assert sent == []
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_response_arbiter_runs_pre_commit_right_before_the_write():
+    """pre_commit is the caller's last chance to rewrite an event in place.
+
+    admission_check can only answer "send or not". Some predicates -- visual
+    ownership is the live one -- want "send a downgraded item" instead, because
+    rejecting happens only AFTER the item is committed and then needs an
+    unconfirmed compensating delete. The hook therefore runs after the
+    admission recheck and immediately before the transport write, so it also
+    covers the arbiter's own waits between enqueue() and dispatch.
+    """
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    seen_before_write = []
+
+    def _strip_images(event):
+        # 断言钩子确实跑在写之前：此刻这条 item 还没出现在 sent 里。
+        seen_before_write.append(len(sent))
+        item = event.get("item")
+        item["content"] = [
+            part for part in item["content"] if part.get("type") != "input_image"
+        ]
+
+    ticket = await arbiter.enqueue(
+        source="external_asr_multimodal",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": "data:image/jpeg;base64,x"},
+                        {"type": "input_text", "text": "look"},
+                    ],
+                },
+            },
+        ),
+        pre_commit=_strip_images,
+    )
+    await asyncio.wait_for(ticket.sent, 1.0)
+
+    assert seen_before_write == [0], "钩子必须在这条 item 写出去之前跑"
+    item_events = [e for e in sent if e.get("type") == "conversation.item.create"]
+    assert item_events, "item 没被发出去"
+    content = item_events[0]["item"]["content"]
+    # 图被摘掉了，文字照发。
+    assert all(part["type"] != "input_image" for part in content)
+    assert any(part.get("text") == "look" for part in content)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_response_arbiter_deletes_committed_item_after_admission_invalidates():
+    sent = []
+    item_write_started = asyncio.Event()
+    release_item_write = asyncio.Event()
+    admitted = True
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            item_write_started.set()
+            await release_item_write.wait()
+            arbiter.notify_item_created(
+                {
+                    "type": "conversation.item.created",
+                    "item": {"id": "committed-item", "role": "user"},
+                }
+            )
+        elif event["type"] == "response.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-1"}}
+            )
+            arbiter.notify_response_terminal(
+                {
+                    "type": "response.done",
+                    "response": {"id": "resp-1", "status": "completed"},
+                }
+            )
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "id": "committed-item",
+                    "role": "user",
+                    "content": [],
+                },
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="committed-item",
+        expected_item_role="user",
+        admission_check=lambda: admitted,
+    )
+    await item_write_started.wait()
+    admitted = False
+    release_item_write.set()
+
+    # 提交后被 admission 拒绝仍抛普通 RuntimeError：补偿删除是 fire-and-forget，
+    # provider 可能异步拒绝，已提交的 item 未必真的没了，因此不承诺可安全重投。
+    # 类型也要断言：ResponseAdmissionRejected 是 RuntimeError 的子类，光靠消息
+    # 匹配锁不住契约 —— 有人把消息改成带 "interrupted" 的那个子类，用例照样绿，
+    # 而 Core 会据此重复投递用户回合。
+    with pytest.raises(RuntimeError, match="interrupted") as admission_excinfo:
+        await asyncio.wait_for(ticket.done, 0.2)
+    assert not isinstance(admission_excinfo.value, ResponseAdmissionRejected)
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+        "conversation.item.delete",
+    ]
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_response_arbiter_deletes_all_committed_prefix_items_after_invalidation():
+    sent = []
+    first_item_started = asyncio.Event()
+    release_first_item = asyncio.Event()
+    admitted = True
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            item_id = event["item"]["id"]
+            if item_id == "visual-item":
+                first_item_started.set()
+                await release_first_item.wait()
+            arbiter.notify_item_created(
+                {"item": {"id": item_id, "role": "user"}}
+            )
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="proactive",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "visual-item", "role": "user", "content": []},
+            },
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "text-item", "role": "user", "content": []},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="text-item",
+        expected_item_role="user",
+        admission_check=lambda: admitted,
+    )
+    await first_item_started.wait()
+    admitted = False
+    release_first_item.set()
+
+    # 提交后被 admission 拒绝仍抛普通 RuntimeError：补偿删除是 fire-and-forget，
+    # provider 可能异步拒绝，已提交的 item 未必真的没了，因此不承诺可安全重投。
+    # 类型也要断言：ResponseAdmissionRejected 是 RuntimeError 的子类，光靠消息
+    # 匹配锁不住契约 —— 有人把消息改成带 "interrupted" 的那个子类，用例照样绿，
+    # 而 Core 会据此重复投递用户回合。
+    with pytest.raises(RuntimeError, match="interrupted") as admission_excinfo:
+        await asyncio.wait_for(ticket.done, 0.2)
+    assert not isinstance(admission_excinfo.value, ResponseAdmissionRejected)
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+        "conversation.item.delete",
+    ]
+    assert [
+        event["item_id"]
+        for event in sent
+        if event["type"] == "conversation.item.delete"
+    ] == ["visual-item"]
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancel_current_keeps_committed_item_for_ordinary_barge_in():
+    sent = []
+    item_write_started = asyncio.Event()
+    release_item_write = asyncio.Event()
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            item_write_started.set()
+            await release_item_write.wait()
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="ordinary-user-turn",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "id": "committed-user-item",
+                    "role": "user",
+                    "content": [],
+                },
+            },
+        ),
+        response_event={"type": "response.create"},
+        admission_check=lambda: True,
+    )
+    await item_write_started.wait()
+
+    cancelling = asyncio.create_task(arbiter.cancel_current(timeout=0.2))
+    await asyncio.sleep(0)
+    release_item_write.set()
+    await asyncio.wait_for(cancelling, 0.2)
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await asyncio.wait_for(ticket.done, 0.2)
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+    ]
+    await arbiter.shutdown()
 
 
 @pytest.mark.asyncio
@@ -738,6 +997,71 @@ async def test_adopting_a_still_live_announcement_moves_its_id_off_the_lane():
     await asyncio.wait_for(ticket.done, 1.0)
     assert aborted == []
     assert arbiter.is_busy is False, "the adopted turn's terminal reopens the lane"
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_barge_in_adopts_the_early_reply_when_its_cancel_terminal_arrives():
+    """A real cancel acknowledgement must beat the missing-created timeout."""
+
+    create_sent = asyncio.Event()
+    cancel_sent = asyncio.Event()
+    sent: list[dict] = []
+    aborted: list[str] = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-early"}}
+            )
+            arbiter.notify_item_created(
+                {"item": {"id": "provider-assigned-id", "role": "user"}}
+            )
+        elif event["type"] == "response.create":
+            create_sent.set()
+        elif event["type"] == "response.cancel":
+            cancel_sent.set()
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "item-ours", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="item-ours",
+        expected_item_role="user",
+        item_ack_timeout=0.05,
+        response_started_timeout=30,
+    )
+    await asyncio.wait_for(create_sent.wait(), 1)
+    await asyncio.wait_for(ticket.sent, 1)
+
+    cancelling = asyncio.create_task(arbiter.cancel_current(timeout=1))
+    await asyncio.wait_for(cancel_sent.wait(), 1)
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-early", "status": "cancelled"},
+        }
+    )
+
+    await asyncio.wait_for(cancelling, 1)
+    assert aborted == [], "a delivered cancel terminal must preserve the connection"
+    assert arbiter._response_owner is None
+    assert arbiter._server_response_ids == {}
+    assert arbiter.is_busy is False
+    assert [event["type"] for event in sent].count("response.cancel") == 1
     await arbiter.shutdown()
 
 
@@ -3006,6 +3330,55 @@ async def test_cancel_during_item_ack_does_not_send_response_create():
 
 
 @pytest.mark.asyncio
+async def test_cancel_after_response_create_still_sends_response_cancel():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_item_created(
+                {"item": {"id": "item-cancel-after-create", "role": "user"}}
+            )
+        elif event["type"] == "response.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-1"}}
+            )
+        elif event["type"] == "response.cancel":
+            arbiter.notify_response_terminal(
+                {"type": "response.cancelled", "response": {"id": "resp-1"}}
+            )
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "id": "item-cancel-after-create",
+                    "role": "user",
+                    "content": [],
+                },
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="item-cancel-after-create",
+        expected_item_role="user",
+    )
+    await ticket.sent
+    await arbiter.cancel_current(timeout=0.2)
+
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+        "response.create",
+        "response.cancel",
+    ]
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_image_description_item_cannot_ack_external_asr_item():
     response_sent = asyncio.Event()
     arbiter = None
@@ -3049,6 +3422,7 @@ async def test_prepare_external_voice_turn_failure_reopens_dispatch_gate():
 
     client = OmniRealtimeClient.__new__(OmniRealtimeClient)
     client._is_gemini = False
+    client._connection_generation = 0
     client._response_arbiter = RealtimeResponseArbiter(send)
     client.handle_interruption = AsyncMock(side_effect=RuntimeError("interrupt failed"))
 
@@ -3795,9 +4169,11 @@ def test_every_bounded_wait_is_measured_or_says_why_not():
     import re
     from pathlib import Path
 
+    # 显式 utf-8：默认编码在 Windows CI runner 上是 cp1252，仓库源码里的中文
+    # 注释会让这条守卫以 UnicodeDecodeError 挂掉（本机默认编码能解 GBK，看不出来）。
     source = Path(
         "main_logic/omni_realtime_client/_response_arbiter.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     lines = source.splitlines()
     unmeasured = []
     for index, line in enumerate(lines, 1):

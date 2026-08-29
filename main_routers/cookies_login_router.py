@@ -26,6 +26,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
+import ipaddress
 import re
 import io
 import base64
@@ -43,10 +44,8 @@ from pydantic import BaseModel, Field, field_validator
 from utils.cookies_login import (
     PlatformLoginManager,
     save_cookies_to_file,
-    load_cookies_from_file,
     parse_cookie_string,
-    COOKIE_FILES,
-    get_cookie_key_file,
+    credential_manager,
 )
 from utils.logger_config import get_module_logger
 from utils.twitch_auth import TwitchAuthService
@@ -62,10 +61,17 @@ SUSPICIOUS_PATTERN = re.compile(
 def verify_local_access(request: Request):
     """🛡️ Defense in depth: block unauthorized access attempts from non-local hosts."""
     client_host = getattr(request.client, "host", None) if request.client else None
-    
-    allowed_hosts = ["127.0.0.1", "::1", "localhost"]
-    
-    if client_host not in allowed_hosts:
+    allowed = client_host == "localhost"
+    if not allowed:
+        try:
+            client_ip = ipaddress.ip_address(str(client_host or ""))
+        except ValueError:
+            client_ip = None
+        if client_ip is not None:
+            mapped = getattr(client_ip, "ipv4_mapped", None)
+            allowed = client_ip.is_loopback or (mapped is not None and mapped.is_loopback)
+
+    if not allowed:
         logger.warning(f"🚨 拦截到非本地主机的越权访问尝试，来源 IP: {client_host}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
@@ -256,16 +262,16 @@ async def get_all_cookies_status():
     """Return cookie presence status for each supported platform (used by the frontend personal-feed feature)."""
     try:
         platforms = login_manager.get_supported_platforms()
-        loaded = await asyncio.gather(
-            *(asyncio.to_thread(load_cookies_from_file, p) for p in platforms)
+        statuses = await asyncio.to_thread(
+            credential_manager.status_all,
+            platforms,
         )
         result = {
             platform_key: {
-                "has_cookies": bool(cookies),
-                "cookies_count": len(cookies) if cookies else 0,
+                **statuses[platform_key],
                 "supports_personal_dynamic": platform_key in PERSONAL_DYNAMIC_PLATFORMS,
             }
-            for platform_key, cookies in zip(platforms, loaded)
+            for platform_key in platforms
         }
         return {"success": True, "data": result}
     except Exception as e:
@@ -282,18 +288,8 @@ async def get_platform_cookies(platform: str):
         status_data = await twitch_auth_service.status()
         return {"success": True, "data": status_data}
             
-    cookies = await asyncio.to_thread(load_cookies_from_file, platform)
-    if not cookies:
-        return {"success": True, "data": {"platform": platform, "has_cookies": False}}
-            
-    return {
-        "success": True,
-        "data": {
-            "platform": platform,
-            "has_cookies": True,
-            "cookies_count": len(cookies)
-        }
-    }
+    credential_status = await asyncio.to_thread(credential_manager.status, platform)
+    return {"success": True, "data": {"platform": platform, **credential_status}}
 
 @router.delete("/cookies/{platform}", summary="删除平台Cookie")
 async def delete_platform_cookies(platform: str):
@@ -301,34 +297,17 @@ async def delete_platform_cookies(platform: str):
     if platform not in supported:
         raise HTTPException(status_code=400, detail="平台无效")
             
-    cookie_file = COOKIE_FILES.get(platform)
-    
-    # 安全检查文件对象是否存在
-    if not cookie_file or not cookie_file.exists():
-        return {"success": True, "message": f"{platform} 凭证本就不存在"}
-            
-    # Step 1: 删除 cookie 文件（独立 try/except，失败才返回 500）
     try:
-        cookie_file.unlink()
+        existed = await asyncio.to_thread(credential_manager.delete, platform)
     except Exception as e:
         logger.error(f"删除 cookie 文件失败: {type(e).__name__}")
         logger.debug(f"详细错误: {e}")
         raise HTTPException(status_code=500, detail="删除 cookie 文件失败，请检查系统权限")
 
-    # Step 2: 删除关联密钥文件（独立 try/except，失败不影响 cookie 已删除的结果）
-    key_file = get_cookie_key_file(platform)
-    if key_file.exists():
-        try:
-            key_file.unlink()
-        except Exception as e:
-            logger.error(f"删除密钥文件失败: {type(e).__name__}")
-            logger.debug(f"详细错误: {e}")
-            return {
-                "success": True,
-                "message": f"⚠️ {platform.capitalize()} cookie 已删除，但密钥文件删除失败，请手动清理"
-            }
+    if not existed:
+        return {"success": True, "message": f"{platform} 凭证本就不存在"}
 
-    return {"success": True, "message": f"✅ {platform.capitalize()} 凭证已物理粉碎"}
+    return {"success": True, "message": f"✅ {platform.capitalize()} 凭证已删除"}
 
 # ============ 4. 兼容性适配 ============
 
