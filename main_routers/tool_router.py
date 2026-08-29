@@ -452,6 +452,26 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
+            # 跨 source 重名拒绝：registry 以名字为键、replace=True 无条件覆盖，
+            # 若不设防，后注册的插件会把其它 source 已有的同名工具静默挤掉
+            # （模型调用被重定向到新 callback，原插件还能把别人的工具注销）。
+            # 同 source 重注册（插件重启刷新 callback_url / 更新 schema）不受影响。
+            existing = mgr.tool_registry.get(req.name)
+            if existing is not None:
+                existing_source = str((getattr(existing, "metadata", None) or {}).get("source", ""))
+                if existing_source != req.source:
+                    logger.warning(
+                        "register_tool refused cross-source overwrite on {}: name='{}' owned_by='{}' incoming='{}'",
+                        role_name, req.name, existing_source or "unknown", req.source,
+                    )
+                    failed.append({
+                        "role": role_name,
+                        "error": (
+                            f"tool '{req.name}' already owned by source "
+                            f"'{existing_source or 'unknown'}' (cross-source overwrite refused)"
+                        ),
+                    })
+                    continue
             # 用 _and_sync 版本：注册后等 session.update 推送完成再返回，
             # 这样调用方拿到 ok=True 的瞬间，active/pending session 上的
             # tools 已经是最新 —— 不会出现"返回成功但下一次 model 调用

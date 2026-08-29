@@ -1345,10 +1345,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         """查询 main_server 上其它 source 已占用的 LLM tool 名。
 
         main_server 的 tool registry 以名字为全局键、replace 语义注册，跨插件
-        重名会把对方的工具挤掉（模型调用被重定向）。注册前先查一次
-        ``GET /api/tools``（含各 role 的 source 标注），把非本插件 source 的
-        名字纳入查重。查询失败时 fail-open 返回空集，不阻塞注入——行为退化为
-        与未查重时一致。带短 TTL 缓存，避免同一批 tool 注册重复打接口。
+        重名会把对方的工具挤掉（模型调用被重定向）。``/api/tools/register``
+        现已在服务端拒绝跨 source 覆盖（权威防线），这里的前置查重只是
+        尽力而为的快失败优化：避免为注定被拒的名字排队注册，并提前用序号
+        避让。查询失败时 fail-open 返回空集，不阻塞注入。带短 TTL 缓存，
+        避免同一批 tool 注册重复打接口。
         """
         from config import MAIN_SERVER_PORT
 
@@ -1456,6 +1457,37 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         )
         return True
 
+    async def _remote_unregister_llm_tool(self, llm_name: str) -> bool:
+        """直接同步调 main_server 注销 LLM tool，返回远端是否确认清理。
+
+        SDK 的 ``unregister_llm_tool`` 只保证本地清理；IPC → host → main_server
+        的远端注销是异步的，失败仅由 host 记日志，插件无法观察到结果。为了
+        让"停用注入"的状态可靠，先同步调远端并确认，再做本地注销。
+        """
+        from config import MAIN_SERVER_PORT
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(5.0, connect=2.0),
+                proxy=None,
+                trust_env=False,
+            ) as client:
+                resp = await client.post(
+                    f"http://127.0.0.1:{int(MAIN_SERVER_PORT)}/api/tools/unregister",
+                    json={"name": llm_name, "role": None},
+                )
+            if resp.status_code >= 400:
+                return False
+            body = resp.json()
+        except (httpx.HTTPError, OSError, ValueError):
+            return False
+        if not isinstance(body, dict):
+            return True
+        # 判定对齐 llm_tool_registry.unregister_remote_tool：failed_roles 非空
+        # 视为部分失败（部分 role 还挂着），保留状态供重试；removed=False 表示
+        # 远端本就没有该工具，视为已清理。
+        return not body.get("failed_roles")
+
     async def _unregister_chat_tool(self, tool_id: str) -> bool:
         info = self._chat_tools.get(tool_id)
         if info is None:
@@ -1464,11 +1496,19 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         if not llm_name:
             self._chat_tools.pop(tool_id, None)
             return False
+        # 先同步确认远端移除，再做本地注销；远端失败时保留映射（可在下次
+        # 切换开关/断开时重试），避免"面板显示已停用但 main_server 还挂着
+        # 死回调工具、且没有映射可用于清理"的僵尸状态。
+        remote_removed = await self._remote_unregister_llm_tool(llm_name)
+        if not remote_removed:
+            self.ctx.logger.warning(
+                f"Remote unregister not confirmed for chat tool '{llm_name}' "
+                f"(MCP tool '{tool_id}'); keeping mapping for retry"
+            )
+            return False
         try:
             removed = self.unregister_llm_tool(llm_name)
         except Exception as exc:
-            # 注销失败时保留映射，set_chat_injection 可重试；过早 pop 会让
-            # 残留的 LLM tool 失去清理入口（面板显示已停用但聊天里还在）。
             self.ctx.logger.warning(
                 f"Failed to remove chat injection for MCP tool '{tool_id}': {exc}"
             )
@@ -1556,12 +1596,16 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         """
         base = self._resolve_plugin_server_origin()
         timeout_s = self._chat_tool_timeout()
-        poll_deadline = asyncio.get_running_loop().time() + max(timeout_s - 5.0, 5.0)
+        # 创建请求与轮询共享同一个绝对截止时间：创建请求可消耗全部剩余预算
+        #（不再被固定 10s 上限挤占轮询窗口），保证处理总时长不超过注册给
+        # main_server 的超时，聊天端不会先于我们拿到干净的超时错误。
+        deadline = asyncio.get_running_loop().time() + timeout_s
         run_args = dict(arguments) if isinstance(arguments, dict) else {}
         # entry_timeout 覆盖 run 侧守卫超时（默认 RUN_EXECUTION_TIMEOUT）与
         # entry 看门狗：预算 - 10s，先于聊天端轮询期限（预算 - 5s）触发取消，
         # 避免超预算的 MCP 调用在聊天端已报超时后 run 又单独 succeeded。
         run_args["_ctx"] = {"entry_timeout": max(timeout_s - 10.0, 5.0)}
+        run_id: Optional[str] = None
 
         try:
             async with httpx.AsyncClient(
@@ -1569,6 +1613,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 proxy=None,
                 trust_env=False,
             ) as client:
+                remaining = deadline - asyncio.get_running_loop().time()
                 create_resp = await client.post(
                     f"{base}/runs",
                     json={
@@ -1576,6 +1621,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                         "entry_id": entry_id,
                         "args": run_args,
                     },
+                    timeout=httpx.Timeout(max(remaining, 1.0), connect=2.0),
                 )
                 if create_resp.status_code >= 400:
                     return {
@@ -1585,18 +1631,35 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                         "error": f"POST /runs returned HTTP {create_resp.status_code}",
                     }
                 create_body = create_resp.json()
-                run_id = create_body.get("run_id") if isinstance(create_body, dict) else None
-                if not isinstance(run_id, str) or not run_id:
+                candidate_id = create_body.get("run_id") if isinstance(create_body, dict) else None
+                if not isinstance(candidate_id, str) or not candidate_id:
                     return {
                         "status": "failed",
                         "success": False,
                         "data": None,
                         "error": "POST /runs response missing run_id",
                     }
+                run_id = candidate_id
 
                 run_record: Dict[str, object] = {}
                 while True:
-                    poll_resp = await client.get(f"{base}/runs/{run_id}")
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        # 放弃前尽力取消 run：否则上层重试可能与仍在执行的 run
+                        # 叠加，造成有副作用的 MCP tool 重复执行。run 看门狗
+                        # （entry_timeout）通常已先取消，这里是创建耗时挤占
+                        # 守卫窗口时的兜底。
+                        await self._cancel_run_best_effort(base, run_id, tool_name)
+                        return {
+                            "status": "timeout",
+                            "success": False,
+                            "data": None,
+                            "error": f"Timed out waiting for run of MCP tool '{tool_name}'",
+                        }
+                    poll_resp = await client.get(
+                        f"{base}/runs/{run_id}",
+                        timeout=httpx.Timeout(max(min(remaining, 10.0), 1.0), connect=2.0),
+                    )
                     if poll_resp.status_code in (404, 410):
                         return {
                             "status": "failed",
@@ -1608,14 +1671,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                         run_record = poll_resp.json()
                         if run_record.get("status") in _RUN_TERMINAL_STATUSES:
                             break
-                    if asyncio.get_running_loop().time() >= poll_deadline:
-                        return {
-                            "status": "timeout",
-                            "success": False,
-                            "data": None,
-                            "error": f"Timed out waiting for run of MCP tool '{tool_name}'",
-                        }
-                    await asyncio.sleep(_RUN_POLL_INTERVAL_S)
+                    await asyncio.sleep(min(_RUN_POLL_INTERVAL_S, max(deadline - asyncio.get_running_loop().time(), 0.0)))
 
                 status = str(run_record.get("status") or "failed")
                 if status != "succeeded":
@@ -1628,7 +1684,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                         error_msg = f"Run {status}"
                     return {"status": status, "success": False, "data": None, "error": error_msg}
 
-                export_resp = await client.get(f"{base}/runs/{run_id}/export", params={"limit": 50})
+                remaining = deadline - asyncio.get_running_loop().time()
+                export_resp = await client.get(
+                    f"{base}/runs/{run_id}/export",
+                    params={"limit": 50},
+                    timeout=httpx.Timeout(max(min(remaining, 10.0), 1.0), connect=2.0),
+                )
                 if export_resp.status_code != 200:
                     return {"status": status, "success": True, "data": None, "error": None}
                 # run 已成功，export 解析失败只降级为空数据，不反报失败
@@ -1644,6 +1705,23 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 "data": None,
                 "error": f"{type(exc).__name__}: {exc}",
             }
+
+    async def _cancel_run_best_effort(self, base: str, run_id: str, tool_name: str) -> None:
+        """轮询放弃前尽力取消 run（best-effort，吞掉一切传输错误）。"""
+        if not run_id:
+            return
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(5.0, connect=2.0),
+                proxy=None,
+                trust_env=False,
+            ) as client:
+                await client.post(
+                    f"{base}/runs/{run_id}/cancel",
+                    json={"reason": f"chat tool '{tool_name}' polling deadline exceeded"},
+                )
+        except (httpx.HTTPError, OSError, ValueError):
+            pass
 
     @staticmethod
     def _extract_chat_tool_payload(export_json: object) -> object:
@@ -2417,9 +2495,15 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         client = self._clients.get(server_name)
         applied = 0
         if client is not None:
-            if inject_flag:
-                for tool in client.tools:
-                    tool_id = f"mcp_{server_name}_{tool.name}"
+            for tool in client.tools:
+                tool_id = f"mcp_{server_name}_{tool.name}"
+                # 只处理路由索引归属本 server 的 tool_id：server/tool 拼接可能
+                # 撞出相同 ID（如 server a_b + tool c 与 server a + tool b_c），
+                # 路由引擎按先到先得去重，非归属方若也注册 chat 注入会转发到
+                # 别人的 entry、注销时还会拆掉别人的注入。
+                if self._route_engine is None or self._route_engine.get_tool_server(tool_id) != server_name:
+                    continue
+                if inject_flag:
                     if tool_id in self._chat_tools:
                         continue
                     if await self._register_chat_tool(
@@ -2430,9 +2514,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                         schema=tool.input_schema,
                     ):
                         applied += 1
-            else:
-                for tool in client.tools:
-                    tool_id = f"mcp_{server_name}_{tool.name}"
+                else:
                     if await self._unregister_chat_tool(tool_id):
                         applied += 1
 
