@@ -197,7 +197,15 @@ class MigrationsMixin:
         # directory symlink in place, and mkdir(exist_ok=True) then succeeds
         # through it -- so without this we would stage into whatever it
         # targets, outside memory_dir entirely.
-        if base.is_symlink() or (
+        # The PROJECT side matters too. If it holds an entry of this name, our
+        # staging root occupies the very destination that entry would migrate
+        # to: the loop then sees dest_path already present and skips it, the
+        # finally removes the staging root, and that entry has silently never
+        # migrated while looking as though it had.
+        taken_by_project = (
+            self.project_memory_dir / _MIGRATION_STAGING_DIR
+        ).exists()
+        if base.is_symlink() or taken_by_project or (
             base.exists() and not (base / _MIGRATION_STAGING_SENTINEL).exists()
         ):
             base = self.memory_dir / (
@@ -241,8 +249,14 @@ class MigrationsMixin:
         # 「它没拷过来」——云端导入会有意删掉受管文件并 unlink，用户也会
         # 删。往里补会在每次启动复活它们，拿数据搁浅换数据删不掉，是更糟
         # 的一边。
-        staging_root = self._prepare_migration_staging_root()
+        # INSIDE the try. A full disk, a read-only root or a permission problem
+        # makes creating the staging root raise, and this runs on the startup
+        # path -- outside the handler it would take get_config_manager() down
+        # with it and migrate nothing. A migration that cannot start is a
+        # migration skipped, not a broken launch.
+        staging_root = None
         try:
+            staging_root = self._prepare_migration_staging_root()
             for item in self.project_memory_dir.iterdir():
                 # 每个条目单独兜底。这个 try 原本只包在整个循环外面，于是
                 # 第一个失败的条目会把它后面所有角色和散文件一起留在项目
@@ -321,7 +335,8 @@ class MigrationsMixin:
         except Exception as e:
             print(f"Warning: Failed to migrate memory files: {e}", file=sys.stderr)
         finally:
-            shutil.rmtree(staging_root, ignore_errors=True)
+            if staging_root is not None:
+                shutil.rmtree(staging_root, ignore_errors=True)
 
     def migrate_legacy_documents_memory(self):
         """

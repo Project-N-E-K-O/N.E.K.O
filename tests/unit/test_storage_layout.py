@@ -809,3 +809,79 @@ def test_a_symlink_on_the_staging_path_is_never_treated_as_ours(tmp_path):
     assert (runtime_root / "Carol" / "facts.json").read_text(
         encoding="utf-8"
     ) == "[1]", "the migration did not complete around it"
+
+
+@pytest.mark.unit
+def test_staging_failure_does_not_take_startup_down(tmp_path):
+    """A migration that cannot start is skipped, not a broken launch.
+
+    Preparing the staging root touches the disk, so a full or read-only
+    runtime root makes it raise. This runs on the startup path from
+    ``get_config_manager()``; outside the handler it would take the launch
+    down with it and migrate nothing.
+    """
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+
+    def _no_room(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    with patch.object(
+        type(config_manager), "_prepare_migration_staging_root", _no_room
+    ):
+        # Must not raise. The caller is startup.
+        config_manager.migrate_memory_files()
+
+    assert not (runtime_root / "Carol").exists(), (
+        "nothing should have migrated, but nothing should have crashed either"
+    )
+
+    # And a later start, with room again, still completes.
+    config_manager.migrate_memory_files()
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]"
+
+
+@pytest.mark.unit
+def test_a_project_entry_named_like_staging_still_migrates(tmp_path):
+    """The staging root must not squat on a destination a seed needs.
+
+    With the staging root at ``memory/<staging name>``, a project entry of
+    the same name finds its destination already occupied, is skipped as
+    "already there", and then the ``finally`` deletes the staging root -- so
+    it never migrates while looking as though it did.
+    """
+    from utils.config_manager.migrations import _MIGRATION_STAGING_DIR
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    (project_root / _MIGRATION_STAGING_DIR).mkdir(parents=True)
+    (project_root / _MIGRATION_STAGING_DIR / "facts.json").write_text(
+        '["a real character"]', encoding="utf-8"
+    )
+
+    config_manager.migrate_memory_files()
+
+    assert (
+        runtime_root / _MIGRATION_STAGING_DIR / "facts.json"
+    ).read_text(encoding="utf-8") == '["a real character"]', (
+        "the staging root squatted on this entry's destination, so it was "
+        "skipped and then deleted with the staging root"
+    )
+    leftovers = sorted(
+        p.name for p in runtime_root.iterdir()
+        if p.name.startswith(_MIGRATION_STAGING_DIR + "-")
+    )
+    assert leftovers == [], "a staging root was left behind: %s" % leftovers
