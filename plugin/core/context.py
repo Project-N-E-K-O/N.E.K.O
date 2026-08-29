@@ -95,15 +95,14 @@ def _inline_binary_carriers(
 ) -> tuple[tuple[str, int], ...]:
     """Return ``(carrier label, wire bytes)`` per inline payload, in wire order.
 
-    An empty tuple is the gate that keeps the payload size probe off the hot
-    path.  A push only has a realistic chance of blowing
-    MESSAGE_PLANE_PAYLOAD_MAX_BYTES when it ships its bytes inline; text cues,
-    ui_action cues and url-carrying media parts all stay in the low kilobytes
-    no matter how many of them a plugin emits.  Those are also the
-    overwhelming majority of pushes -- a screenshot notice, a log tail, a
-    per-frame status cue -- and making every one of them pay a second msgpack
-    pack just so the rare image push can be measured would be a permanent tax
-    levied for an exceptional case.
+    This used to double as a gate: an empty tuple skipped the size probe
+    entirely, on the theory that only inline bytes can realistically blow
+    MESSAGE_PLANE_PAYLOAD_MAX_BYTES.  That gate is gone.  The host measures the
+    WHOLE envelope, so an oversized text or metadata push was dropped there
+    while push_message() had already answered submitted=True -- and the cost it
+    was avoiding turned out to be 0.19us per typical cue, measured.  Every
+    payload is probed now, and an empty tuple here means only "nothing travels
+    inline", never "skip the check".
 
     The labels and sizes exist so the rejection can name the payload that
     actually blew the cap.  ``ctx.images.upload()`` is the remedy for an image
@@ -1344,7 +1343,25 @@ class PluginContext:
             totals = _inline_carrier_totals(carriers)
             labels = [label for label, _size in totals]
             dominant = totals[0][0] if totals else ""
-            if not totals:
+            # 内联载体解释得了这次超限吗？把它们全部拿掉之后还剩多少。
+            #
+            # 只看 totals 排序会把锅永远扣在内联载体上，哪怕它根本不是元凶：
+            # 600 KiB 的 metadata 配一张 1 字节的图，dominant 仍是 "image"，
+            # 于是作者被告知去 ctx.images.upload() —— 照做之后依然超限，因为
+            # 那张图本来就不占地方。建议给错方向比不给建议更糟，它让人以为
+            # 自己已经改对了。
+            carrier_bytes = sum(size_b for _label, size_b in totals)
+            non_inline = max(0, size - carrier_bytes)
+            if totals and non_inline > limit:
+                # 卸掉全部内联仍然过不去：真正撑爆的是文本或 metadata。
+                remedy = (
+                    "The inline payloads are not what blew this cap: even with "
+                    f"all of them removed the push is about {non_inline}B, still "
+                    f"over the {limit}B limit. The text parts or the metadata "
+                    "are what to shrink here; offloading the attachments alone "
+                    "will not get this push through."
+                )
+            elif not totals:
                 # No inline carrier at all: the text parts or the metadata are
                 # what spent the budget. The base64 explanation below would be
                 # actively misleading here -- there is nothing base64-encoded to

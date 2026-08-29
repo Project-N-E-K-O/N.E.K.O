@@ -721,7 +721,16 @@ class _StreamingMixin:
                 _restore_consumed_queues()
                 raise
             if _budget_notice:
-                logger.warning(
+                # 级别跟着「有没有东西真的没了」走，与弹窗同一个判据。rung 0 是
+                # 无条件的，所以随手拖进来的一张手机照片每轮都会产生一条 notice；
+                # 全按 warning 打，日志里就分不出「图小了一点」和「有几张整张没
+                # 送出去」了——而后者才是排查时要一眼找到的那类。
+                _budget_log = (
+                    logger.warning
+                    if _budget_notice.get("user_visible")
+                    else logger.info
+                )
+                _budget_log(
                     "Turn images fitted for the %d-byte budget: %d -> %d image(s) "
                     "(normalized=%s sampled=%s compressed=%s dropped=%d)",
                     TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,

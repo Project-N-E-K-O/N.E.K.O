@@ -1022,3 +1022,76 @@ def test_oversized_text_only_push_is_rejected_without_inline_carriers(
     # No inline carrier -> none of the attachment-shaped advice applies.
     assert "ctx.images.upload" not in reported
     assert "base64" not in reported
+
+
+@pytest.mark.plugin_unit
+def test_metadata_driven_overflow_does_not_blame_a_tiny_inline_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The remedy must follow what actually spent the budget.
+
+    ``_inline_carrier_totals`` only ever sees inline carriers, so a push whose
+    bulk is text or metadata still ranks its one tiny image as "dominant" and
+    used to tell the author to run ctx.images.upload(). Following that advice
+    changes nothing: the image was never the problem, and the push stays over
+    the cap -- advice pointing the wrong way is worse than none, because the
+    author believes they have already fixed it (Codex).
+
+    So the branch now asks a different question first: with every inline
+    carrier removed, is this push still oversized? Here it is, by a wide
+    margin, and the remedy has to say so.
+    """
+    monkeypatch.setattr(context_module, "zmq", None)
+    monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    queue = _Queue()
+    ctx, logger = _context(tmp_path, message_queue=queue)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="respond",
+        parts=[
+            {"type": "text", "text": "y" * 16384},
+            _inline_image_part(1),
+        ],
+    )
+
+    assert result == {
+        "ok": False,
+        "submitted": False,
+        "reason": "payload_too_large",
+    }
+    assert queue.items == []
+    reported = repr(logger.records)
+    assert "payload_too_large" in reported
+    # The one-byte image is not the fix, so it must not be offered as one.
+    assert "ctx.images.upload" not in reported
+    assert "not what blew this cap" in reported
+
+
+@pytest.mark.plugin_unit
+def test_image_driven_overflow_still_points_at_the_upload_helper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The counterpart: when the image IS the cause, keep naming the helper.
+
+    Without this, the fix above could degrade into "never mention the upload
+    helper" and the suite would not notice -- the case the helper exists for
+    is exactly an oversized inline image.
+    """
+    monkeypatch.setattr(context_module, "zmq", None)
+    monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    queue = _Queue()
+    ctx, logger = _context(tmp_path, message_queue=queue)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="respond",
+        parts=[{"type": "text", "text": "look"}, _inline_image_part(8192)],
+    )
+
+    assert result["reason"] == "payload_too_large"
+    reported = repr(logger.records)
+    assert "ctx.images.upload" in reported
+    assert "not what blew this cap" not in reported

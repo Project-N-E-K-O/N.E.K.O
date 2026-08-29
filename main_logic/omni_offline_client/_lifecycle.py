@@ -245,7 +245,15 @@ class _LifecycleMixin:
                 )
                 _budget_images, _budget_notice = list(images), None
             if _budget_notice:
-                logger.warning(
+                # 与 _streaming.py 同一判据：真丢了东西才 warning，纯归一化走
+                # info。rung 0 无条件执行，主动轮又是自发的，全按 warning 打等于
+                # 让「图小了一点」和「有几张没送出去」在日志里长得一模一样。
+                _budget_log = (
+                    logger.warning
+                    if _budget_notice.get("user_visible")
+                    else logger.info
+                )
+                _budget_log(
                     "prompt_ephemeral images fitted for the %d-byte budget: "
                     "%d -> %d image(s) (normalized=%s sampled=%s compressed=%s dropped=%d)",
                     TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,

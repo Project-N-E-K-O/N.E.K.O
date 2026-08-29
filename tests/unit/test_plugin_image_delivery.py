@@ -3487,3 +3487,98 @@ async def test_one_url_image_reaches_chat_by_reference_and_the_model_at_720p(
     width, height = _image_size(model_b64)
     assert width <= MODEL_IMAGE_MAX_WIDTH
     assert height <= COMPRESS_TARGET_HEIGHT
+
+
+@pytest.mark.asyncio
+async def test_routine_normalization_is_logged_below_warning(monkeypatch) -> None:
+    """Log level follows the same "did anything actually go missing" question.
+
+    rung 0 is unconditional, so an ordinary attached photo produces a notice on
+    essentially every turn that carries one. Emitting all of them at WARNING
+    makes "the picture got smaller" and "whole frames never reached the model"
+    indistinguishable in the log, and the second one is what someone greps for
+    at 2am (Codex).
+
+    The module logger is swapped rather than using caplog: this project's
+    loggers do not propagate into the stdlib root handler, so caplog collects
+    nothing here and the test would pass by observing an empty list.
+
+    Both directions asserted -- a one-sided version would pass just as happily
+    against a branch that logged everything at info, burying the case that
+    matters.
+    """
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import normalize_image_for_model
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def _make(self, level):
+            def _log(message, *args, **kwargs):
+                self.calls.append((level, str(message)))
+            return _log
+
+        def __getattr__(self, name):
+            return self._make(name)
+
+    def _budget_levels(rec):
+        return [lvl for lvl, msg in rec.calls if "images fitted for the" in msg]
+
+    # Quiet: one oversized frame, budget untouched. Normalization only.
+    recorder = _Recorder()
+    monkeypatch.setattr(_lifecycle, "logger", recorder)
+    client, _sent = _offline_client_for_ephemeral()
+    await client.prompt_ephemeral("======主动搭话======", images=[_jpeg_b64(1600, 1200)])
+
+    assert _budget_levels(recorder) == ["info"], (
+        f"routine normalization should log once at info, got {_budget_levels(recorder)}"
+    )
+
+    # Loud: whole frames dropped.
+    recorder = _Recorder()
+    monkeypatch.setattr(_lifecycle, "logger", recorder)
+    frames = [_jpeg_b64(1600, 1200) for _ in range(3)]
+    one = len(base64.b64decode(normalize_image_for_model(frames[0])))
+    monkeypatch.setattr(_lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one * 1.5))
+    client, _sent = _offline_client_for_ephemeral()
+    await client.prompt_ephemeral("======主动搭话======", images=frames)
+
+    assert _budget_levels(recorder) == ["warning"], (
+        f"losing whole frames must stay at warning, got {_budget_levels(recorder)}"
+    )
+
+
+def test_every_budget_notice_log_picks_its_level_from_user_visible() -> None:
+    """Both notice call sites must share the level rule, not just the tested one.
+
+    The behavioural test above drives prompt_ephemeral (_lifecycle.py). The
+    other call site is stream_text (_streaming.py), whose fixture is far
+    heavier, and a mutation that reverts ONLY that one would otherwise sail
+    through green -- verified: flipping _streaming.py back to an unconditional
+    logger.warning failed nothing.
+
+    So this pins the shape at both sites. It is deliberately a source
+    assertion and deliberately narrow: it does not claim the logging works,
+    only that neither site has drifted back to a hardcoded level while the
+    other kept the rule.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    sites = [
+        root / "main_logic" / "omni_offline_client" / "_streaming.py",
+        root / "main_logic" / "omni_offline_client" / "_lifecycle.py",
+    ]
+    for path in sites:
+        text = path.read_text(encoding="utf-8")
+        assert "images fitted for the" in text, f"{path.name}: notice log vanished"
+        # The level must be chosen from the notice, never hardcoded at the call.
+        assert re.search(
+            r"_budget_log\s*=\s*\(\s*logger\.warning\s*if\s*_budget_notice\.get\(\s*[\"']user_visible[\"']\s*\)\s*else\s*logger\.info\s*\)",
+            text,
+        ), f"{path.name}: budget notice no longer picks its level from user_visible"
+        assert not re.search(
+            r"logger\.warning\(\s*\n\s*[\"']((prompt_ephemeral )?[Tt]urn )?[Ii]mages fitted", text
+        ), f"{path.name}: budget notice is hardcoded to warning again"
