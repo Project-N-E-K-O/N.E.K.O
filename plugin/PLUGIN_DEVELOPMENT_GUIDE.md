@@ -395,10 +395,25 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。
 >   推荐配合 `ai_behavior="blind"` + `ui_action` 走纯前端展示。
 >
 > **大小限制**：inline part 通过 message_plane 走 ZMQ，整条 payload 上限是
-> `MESSAGE_PLANE_PAYLOAD_MAX_BYTES`（默认 256 KB）。1080p 截图建议先压成
-> JPEG q70 或 256x256 PNG。较大图片使用独立的临时图片上传 interface；它会
-> 在线程池中规范化为最长边不超过 2048 的 JPEG，并通过独立 media transport
-> 上传，不占用 `push_message` 的 256 KB payload：
+> `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 262144（256 **KiB** = 256*1024，不是
+> 十进制的 256 KB）。但这个数字**不是**你能塞进去的图片大小：wire envelope
+> 为了照顾还没迁到 v2 的下游消费者，把同一张 inline 图带了**两遍**——一份
+> base64 放在 `parts[].binary_base64`（+33%），一份原始 bytes 放在 legacy 的
+> `binary_data` 字段（`plugin/core/context.py` 的 `_build_wire_payload`）。
+> 两份加起来约是原图的 2.34 倍，所以一张 inline 图的**实际**可用上限只有
+> **约 110 KiB**，而不是 256 KiB。
+>
+> 超限的后果是**整条 push 被丢掉**，不是「图掉了、文字还在」：host 侧
+> （`plugin/message_plane/ingest_server.py`）按整条 payload 量字节，超了就记一条
+> `payload_too_big` 然后跳过，同一条消息里的 text part 和 `ui_action` 陪葬。
+> 而 `push_message()` 在 ZMQ send 返回后就给你 `submitted=True`——它的含义是
+> 「已交给传输」，不是「host 收下了」，所以这种丢弃在插件侧**完全静默**，没有
+> 任何返回值或异常能让你察觉。1080p 截图别指望 inline 走：先压成 JPEG q70 或
+> 256x256 PNG，再大就用下面的上传接口。
+>
+> 较大图片使用独立的临时图片上传 interface；它会在线程池中规范化为最长边不超过
+> 2048 的 JPEG，并通过独立 media transport 上传，不占用 `push_message` 的
+> 256 KiB payload：
 >
 > ```python
 > image_part = await ctx.images.upload(image_bytes, mime="image/png")
@@ -415,6 +430,35 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。
 > handler（`startup` / `freeze` / `unfreeze` / `shutdown` / `config_change`）
 > 执行时不处理这类 request/response 上传，调用会立即抛出 `RuntimeError`，
 > 而不是等待 timeout。
+>
+> **`upload()` 的硬失败**——下面每一条都是**抛异常**，不是静默降级成一张小图，
+> 所以喂用户提供的图片时必须自己 `try`：
+>
+> | 关卡 | 常量 / 判据 | 越界结果 |
+> |---|---|---|
+> | 源图字节 | `MAX_SOURCE_IMAGE_BYTES` = 33554432（32 MiB） | `ValueError` |
+> | 源图像素 | `MAX_SOURCE_IMAGE_PIXELS` = 16777216（16 MP，宽 x 高） | `ValueError` |
+> | 归一化后字节 | `MAX_UPLOADED_IMAGE_BYTES` = 8388608（8 MiB） | `ValueError` |
+> | 解码槽等待 | 全进程只有 2 个解码槽，排队时间计入你给的 `timeout`（默认 3s，上限 30s） | `TimeoutError` |
+> | 输出最长边 | `MAX_IMAGE_EDGE` = 2048 | 不报错，等比缩小 |
+>
+> 归一化后字节那条容易被漏掉：源图过了 32 MiB / 16 MP 两关，重编码出来的 JPEG
+> 仍可能超过 8 MiB（噪点多的大图压不动），这时抛的异常在**解码之后**，你已经
+> 付过 CPU 了。此外 downlink 尚未就绪、transport 不回包同样是 `TimeoutError`；
+> 空 bytes 是 `ValueError`，非 bytes 是 `TypeError`。
+>
+> **动图会被拍平**：`normalize_image_to_jpeg` 只取第 0 帧，输出恒为单帧 JPEG，
+> 既不报错也不打日志（实测 4 帧 GIF 进、1 帧 JPEG 出）。`mime=` 参数只是给调用
+> 方自己标注用的，真实格式由 Pillow 探测、输出永远是 JPEG。要动效请配合
+> `ui_action` 让前端自己播。
+>
+> **传得更清晰买的是 chat 显示效果，不是模型精度**：进模型的那条路另有一套判据。
+> 一个回合的图片总字节超过 `TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES`（8 MiB）时，
+> 宿主会先抽样（只留头/中/尾三张），再把活下来的每张**重编码成 720p JPEG q80**
+> （`utils/screenshot_utils.py` 的 `COMPRESS_TARGET_HEIGHT` /
+> `COMPRESS_JPEG_QUALITY`），两步都不够才从最旧的开始丢。所以按 2048 长边传上去
+> 的图，到模型眼前可能已经是 720p——传得更大只会让这一轮更早撞上这条重编码/丢弃
+> 的阶梯，并不会让模型看得更准。
 
 ##### 常见组合
 

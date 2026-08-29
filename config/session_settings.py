@@ -174,7 +174,12 @@ OMNI_RECENT_RESPONSES_MAX = 3
 OMNI_WS_FRAME_LIMIT_BYTES = 250_000
 """omni_realtime WebSocket 帧大小安全阈值。
 - 用途：发送前检查 payload size，超过则拒绝（低于 256KB 服务器上限）。
-- 上游：序列化后的 WS 帧字节数（不是 token）。"""
+- 上游：序列化后的 WS 帧字节数（不是 token）。
+- 交叉引用：main_logic/proactive_delivery.py 的
+  TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES（8 MiB / 轮）是**文本路径**的图片预算，
+  两者不是同一道闸。realtime 路径上先撞的是这条 250KB 单帧限制，而且是在
+  base64 把图撑大 ~4/3 之后的 JSON 上量的（折合约 180KB 图片字节，比 8 MiB
+  紧约 45 倍）——过了那边的预算不代表这边发得出去。改任一个都要回看另一个。"""
 
 # ---- Main: proactive search & emotion ----
 PROACTIVE_PHASE1_FETCH_PER_SOURCE = 10

@@ -2849,3 +2849,129 @@ async def test_cancelled_budget_fitting_gives_both_image_queues_back():
     assert client._pending_plugin_images == ["plugin-frame"]
     # 这一轮什么都没提交。
     assert client._conversation_history == []
+
+
+# ---------------------------------------------------------------------------
+# The numbers PLUGIN_DEVELOPMENT_GUIDE.md hands plugin authors.
+#
+# Every ceiling below had zero tests: the inline payload cap, the four upload
+# ceilings, and the double-carry that makes the inline cap mean roughly half of
+# what it says. A plugin author reads those figures out of the guide and sizes
+# their screenshots against them, so a constant raised without touching the
+# prose is not a doc nit -- it is a contract the host stopped honouring while
+# still advertising it. Pin both halves and match them against each other.
+# ---------------------------------------------------------------------------
+
+
+def _guide_text() -> str:
+    from pathlib import Path
+
+    guide = (
+        Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
+    )
+    return guide.read_text(encoding="utf-8")
+
+
+def test_message_plane_payload_ceiling_is_pinned_and_documented() -> None:
+    """The inline push cap is 256 KiB, and the guide must print that number.
+
+    The guide used to say "256 KB", which reads as 256000 and is not what the
+    ingest server measures against. Pin the shipped default and require the
+    guide to carry the exact byte count, so raising the cap without touching
+    the prose fails here rather than in a plugin author's head.
+    """
+    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    assert MESSAGE_PLANE_PAYLOAD_MAX_BYTES == 256 * 1024
+
+    text = _guide_text()
+    assert (
+        f"`MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = {MESSAGE_PLANE_PAYLOAD_MAX_BYTES}"
+        in text
+    )
+    # KiB, spelled out, because the whole point of the correction is that the
+    # unit was wrong and not just the formatting.
+    assert f"（{MESSAGE_PLANE_PAYLOAD_MAX_BYTES // 1024} **KiB**" in text
+
+
+def test_image_upload_ceilings_are_pinned_and_documented() -> None:
+    """The four upload ceilings, pinned as literals and matched to the guide.
+
+    These are the limits that turn into a raised exception in a plugin's face
+    (32 MiB source, 16 MP source, 8 MiB normalized output) plus the silent
+    downscale edge. All four were undocumented and untested; both gaps are
+    closed here in one place so neither side can drift alone.
+    """
+    from plugin.sdk.shared.core.images import (
+        MAX_IMAGE_EDGE,
+        MAX_SOURCE_IMAGE_BYTES,
+        MAX_SOURCE_IMAGE_PIXELS,
+        MAX_UPLOADED_IMAGE_BYTES,
+    )
+
+    assert MAX_IMAGE_EDGE == 2048
+    assert MAX_UPLOADED_IMAGE_BYTES == 8 * 1024 * 1024
+    assert MAX_SOURCE_IMAGE_BYTES == 32 * 1024 * 1024
+    assert MAX_SOURCE_IMAGE_PIXELS == 16 * 1024 * 1024
+
+    text = _guide_text()
+    assert f"`MAX_IMAGE_EDGE` = {MAX_IMAGE_EDGE}" in text
+    assert f"`MAX_UPLOADED_IMAGE_BYTES` = {MAX_UPLOADED_IMAGE_BYTES}" in text
+    assert f"`MAX_SOURCE_IMAGE_BYTES` = {MAX_SOURCE_IMAGE_BYTES}" in text
+    assert f"`MAX_SOURCE_IMAGE_PIXELS` = {MAX_SOURCE_IMAGE_PIXELS}" in text
+
+
+def test_an_inline_image_rides_the_wire_envelope_twice(monkeypatch) -> None:
+    """One inline image is carried base64 AND raw in the same envelope.
+
+    This is why the guide now says the effective inline ceiling is ~110 KiB
+    rather than the 256 KiB the constant advertises: the v2 part carries the
+    image as base64 (+33%) and the legacy ``binary_data`` field carries the
+    same bytes again, so the envelope costs ~2.34x the picture. An image at
+    half the documented cap already does not fit.
+    """
+    import logging
+    import queue
+    from pathlib import Path
+
+    import ormsgpack
+
+    from plugin.core import context as context_module
+    from plugin.core.context import PluginContext
+    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    # No ZMQ endpoint in a unit test: fall through to the legacy host queue,
+    # which hands us the very same _build_wire_payload envelope the ingest
+    # server would have measured.
+    monkeypatch.setattr(context_module, "zmq", None)
+
+    message_queue: "queue.Queue" = queue.Queue()
+    ctx = PluginContext(
+        plugin_id="demo_plugin",
+        config_path=Path("plugin.toml"),
+        logger=logging.getLogger("test"),
+        status_queue=queue.Queue(),
+        message_queue=message_queue,
+    )
+
+    raw = bytes(128 * 1024)
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="respond",
+        parts=[
+            {"type": "text", "text": "look"},
+            {"type": "image", "data": raw, "mime": "image/png"},
+        ],
+    )
+    assert result["submitted"] is True
+
+    payload = message_queue.get_nowait()
+    assert base64.b64decode(payload["parts"][1]["binary_base64"]) == raw
+    assert payload["binary_data"] == raw
+
+    packed = len(ormsgpack.packb(payload))
+    assert packed > 2.3 * len(raw)
+    # An image at half the advertised cap is already over it, which is the
+    # whole reason the guide prints an effective number.
+    assert packed > MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+    assert "约 110 KiB" in _guide_text()

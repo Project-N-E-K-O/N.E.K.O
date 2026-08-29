@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import re
@@ -80,6 +81,32 @@ RPS_AVATAR_WIN_KEY = "chat.avatarToolRpsResultAvatarWin"
 RPS_AVATAR_WIN_PLACEHOLDERS = ["name"]
 RPS_ANNOUNCEMENT_PLACEHOLDERS = ["userGesture", "name", "avatarGesture", "result"]
 
+# Backend status codes reach the user through translateStatusMessage in
+# static/i18n-i18next.js, and i18next falls back to echoing the key when a
+# translation is missing. A code with no errors.<CODE> entry therefore shows the
+# raw token "errors.TURN_IMAGES_TRIMMED" in the toast instead of a sentence, in
+# every language at once. Pinning individual codes by hand never kept up, so the
+# scan below reads the emit sites straight out of the source tree.
+STATUS_CODE_SOURCE_ROOTS = ("main_logic", "app")
+# The two coroutines that carry a status payload to the websocket. Anything
+# json.dumps-ed into one of them lands in translateStatusMessage.
+STATUS_MESSAGE_SINKS = frozenset({"on_status_message", "send_status"})
+# A scanner that quietly matches nothing is the dangerous failure mode here: it
+# would keep this file green while every future status code ships untranslated.
+# The floor is well under the count at the time of writing (30) so that ordinary
+# churn does not trip it, but far above zero so a broken matcher cannot hide.
+MIN_DISCOVERED_STATUS_CODES = 25
+# Sentinels covering both call shapes the scanner has to understand: an awaited
+# ``self.on_status_message(json.dumps({...}))`` and a plain
+# ``await self.send_status(json.dumps({...}))``, in two different packages. A
+# matcher that only handles one of them still clears the floor above.
+EXPECTED_DISCOVERED_STATUS_CODES = frozenset({
+    "TURN_IMAGES_TRIMMED",
+    "API_KEY_REJECTED",
+    "ASR_MULTIMODAL_TURN_FAILED",
+    "OPENCLAW_COMMAND_DISPATCH_FAILED",
+})
+
 
 @pytest.fixture(scope="session", autouse=True)
 def mock_memory_server():
@@ -87,6 +114,79 @@ def mock_memory_server():
     yield
 
 
+
+
+def _status_sink_name(node: ast.Call) -> str | None:
+    """Return the bare callee name of a call, ignoring whatever it hangs off."""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+def _literal_status_code(node) -> str | None:
+    """Pull the literal "code" value out of a dict display, if there is one."""
+    if not isinstance(node, ast.Dict):
+        return None
+    for key, value in zip(node.keys, node.values):
+        if (
+            isinstance(key, ast.Constant)
+            and key.value == "code"
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            return value.value
+    return None
+
+
+def _iter_status_source_files():
+    ignored_dirs = {"__pycache__", "node_modules", "dist", "build"}
+    for root_name in STATUS_CODE_SOURCE_ROOTS:
+        source_root = REPO_ROOT / root_name
+        if not source_root.exists():
+            continue
+        for dirpath, dirnames, filenames in os.walk(source_root):
+            dirnames[:] = [name for name in dirnames if name not in ignored_dirs]
+            for filename in filenames:
+                if filename.endswith(".py"):
+                    yield Path(dirpath) / filename
+
+
+def _discover_emitted_status_codes() -> dict[str, list[str]]:
+    """Map every literal status code emitted toward the frontend to its sites.
+
+    Only literal payloads are collected. A code assembled at runtime cannot be
+    resolved statically, and guessing at one would produce false failures that
+    train people to add exemptions instead of translations.
+    """
+    discovered: dict[str, list[str]] = {}
+
+    for path in _iter_status_source_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if _status_sink_name(node) not in STATUS_MESSAGE_SINKS:
+                continue
+            # The payload is normally the first positional argument, but walk
+            # every argument sub-tree so a keyword form or a wrapped call is
+            # still seen.
+            arguments = list(node.args) + [keyword.value for keyword in node.keywords]
+            for argument in arguments:
+                for inner in ast.walk(argument):
+                    if not isinstance(inner, ast.Call):
+                        continue
+                    if _status_sink_name(inner) != "dumps":
+                        continue
+                    for payload in inner.args:
+                        code = _literal_status_code(payload)
+                        if code:
+                            location = f"{path.relative_to(REPO_ROOT).as_posix()}:{inner.lineno}"
+                            discovered.setdefault(code, []).append(location)
+
+    return discovered
 
 
 def _flatten_leaf_strings(payload, prefix=""):
@@ -365,3 +465,43 @@ def test_error_placeholder_i18n_calls_pass_error_params():
                     missing_error_params.append(f"{path.relative_to(REPO_ROOT)}:{line}: {key}")
 
     assert missing_error_params == []
+
+
+@pytest.mark.unit
+def test_status_code_scanner_actually_finds_the_known_emitters():
+    """Guard the guard: a scanner that matches nothing must not pass as clean."""
+    missing_roots = [
+        root_name
+        for root_name in STATUS_CODE_SOURCE_ROOTS
+        if not (REPO_ROOT / root_name).is_dir()
+    ]
+    assert missing_roots == []
+
+    discovered = _discover_emitted_status_codes()
+
+    assert len(discovered) >= MIN_DISCOVERED_STATUS_CODES, (
+        f"only {len(discovered)} status code(s) discovered under "
+        f"{list(STATUS_CODE_SOURCE_ROOTS)}; the scanner is probably no longer "
+        f"matching the emit sites: {sorted(discovered)}"
+    )
+    assert EXPECTED_DISCOVERED_STATUS_CODES - set(discovered) == set()
+
+
+@pytest.mark.unit
+def test_emitted_status_codes_are_translated_in_all_locales():
+    discovered = _discover_emitted_status_codes()
+    locale_paths = sorted(LOCALES_DIR.glob("*.json"))
+    assert {path.name for path in locale_paths} == RPS_LOCALE_FILES
+
+    untranslated: dict[str, list[str]] = {}
+    for locale_path in locale_paths:
+        errors = json.loads(locale_path.read_text(encoding="utf-8")).get("errors", {})
+        missing = [
+            f"{code} (emitted at {', '.join(sorted(sites))})"
+            for code, sites in sorted(discovered.items())
+            if not isinstance(errors.get(code), str) or not errors[code].strip()
+        ]
+        if missing:
+            untranslated[locale_path.name] = missing
+
+    assert untranslated == {}

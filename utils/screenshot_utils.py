@@ -76,7 +76,19 @@ def compress_screenshot(
     target_h: int = COMPRESS_TARGET_HEIGHT,
     quality: int = COMPRESS_JPEG_QUALITY,
 ) -> bytes:
-    """Resize to *target_h*p (keep aspect ratio) and encode as JPEG."""
+    """Bound the HEIGHT to *target_h* (keeping aspect ratio) and encode as JPEG.
+
+    HEIGHT ONLY, and only downward. Width is whatever the aspect ratio makes
+    it and is never clamped, so this is not a general size bound the way its
+    name suggests: 5120x1440 comes out 2560x720, but 16000x400 comes out
+    16000x400 untouched -- its height already fits, so nothing runs. An
+    ultrawide or a stitched multi-monitor grab can therefore pass through here
+    at full width, and the JPEG can stay large even though the call "compressed"
+    it. Callers that need an actual pixel or byte ceiling (WebSocket frame
+    limits, upload limits, per-turn image budgets) must impose it themselves;
+    this only guarantees the 720p-class vertical resolution the frontend and
+    the screen-share path already agree on.
+    """
     w, h = img.size
     if h > target_h:
         ratio = target_h / h

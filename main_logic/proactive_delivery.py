@@ -121,7 +121,8 @@ PLUGIN_PENDING_IMAGE_MAX_COUNT = 3
 PLUGIN_PENDING_IMAGE_MAX_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
 USER_PENDING_IMAGE_MAX_BYTES = 2 * CALLBACK_IMAGE_MAX_TOTAL_BYTES
 
-# What ONE outgoing request may carry, across every source at once.
+# What ONE outgoing request on the TEXT path may carry, across every source
+# at once.
 #
 # The per-source quotas above deliberately do not talk to each other -- that is
 # the whole point of splitting them, so neither source can spend the other's
@@ -138,6 +139,19 @@ USER_PENDING_IMAGE_MAX_BYTES = 2 * CALLBACK_IMAGE_MAX_TOTAL_BYTES
 #
 # This is a CEILING, not a quota — it never grants budget a per-source quota
 # withheld. It only trims what the per-source quotas already let through.
+#
+# And it is NOT the binding limit everywhere. On the realtime WebSocket path a
+# far smaller one binds first: config.session_settings OMNI_WS_FRAME_LIMIT_BYTES
+# is 250_000 bytes for ONE serialized frame, measured on the JSON — i.e. after
+# base64 has already inflated every image by ~4/3 — so roughly 180 KB of actual
+# image bytes, some 45x tighter than the 8 MiB here. That path enforces it on
+# its own and never consults this figure: omni_realtime_client/_responses.py
+# re-compresses the item event and raises RealtimeImagePayloadTooLargeError if
+# that still does not fit, and _transport.py does the same per frame (raising
+# only when the caller asked for it, otherwise refusing the send). So passing
+# this budget tells you nothing about whether a realtime turn will fit. Change
+# either number and check the other: the cross-reference is written on both
+# sides for that reason.
 TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
 
 # What the manager queue may HOLD, as opposed to what one release may send.
@@ -270,6 +284,15 @@ async def fit_images_to_turn_budget(
 
     Never drops the turn itself, and never drops images without reporting it:
     the returned notice is meant for the user, not just the log.
+
+    All three steps sit BEHIND an early return. The first thing this does is
+    total the payloads, and when the total already fits it hands the list back
+    unchanged with ``notice=None`` — nothing is sampled, nothing is re-encoded,
+    nothing is dropped. So this is a CEILING like
+    ``trim_images_to_turn_budget``, not a normalizer: images under budget reach
+    the provider exactly as they arrived, at whatever resolution and encoding
+    that was. A caller that wants every frame at 720p JPEG regardless of size
+    has to compress them itself before getting here.
 
     Returns ``(kept, notice)``; ``notice`` is None when nothing was needed.
     """
