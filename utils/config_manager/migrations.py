@@ -286,6 +286,14 @@ class MigrationsMixin:
                                 try:
                                     staged_file.unlink()
                                 except OSError:
+                                    # Best effort, and deliberately silent:
+                                    # this runs while an earlier failure is
+                                    # propagating, so raising here would
+                                    # replace the real cause with a cleanup
+                                    # error. What is left behind is inside
+                                    # the staging root, which comes down
+                                    # wholesale in the outer finally and is
+                                    # reclaimed by the next run regardless.
                                     pass
                         print(f"Migrated memory file: {item.name}")
                         continue
