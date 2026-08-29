@@ -29,6 +29,13 @@ from pathlib import Path
 from config import CONFIG_FILES, DEFAULT_CONFIG_DATA
 
 
+# Staging lives in ONE directory this migration owns. The sentinel inside it
+# is what proves ownership -- a dot-prefixed character name is legal, so a
+# name match alone would have deleted a real character's memory.
+_MIGRATION_STAGING_DIR = ".migrating-staging"
+_MIGRATION_STAGING_SENTINEL = ".staging-owner"
+
+
 class MigrationsMixin:
     """One-shot startup migrations into the runtime root."""
 
@@ -170,6 +177,37 @@ class MigrationsMixin:
                 else:
                     self._log(f"[ConfigManager] ✗ Source config not found: {project_config_path}")
     
+    def _prepare_migration_staging_root(self):
+        """Return a staging directory this migration OWNS, proven by a sentinel.
+
+        Sweeping every ``.migrating-*`` entry in the memory root was
+        destructive: a dot-prefixed character name is accepted by the
+        runtime, so a real character called ``.migrating-Carol`` had its live
+        memory recursively deleted and, if no seed of that name existed,
+        lost outright. Ownership is proven by a file we wrote, never
+        inferred from the name.
+
+        Everything staged goes inside this one directory, so a run killed
+        outright leaves exactly one thing behind and the next run reclaims
+        it. If the name is already taken by something that is not ours, a
+        unique one is used and the stranger is left untouched.
+        """
+        base = self.memory_dir / _MIGRATION_STAGING_DIR
+        # A symlink is never ours, whatever it points at. rmtree leaves a
+        # directory symlink in place, and mkdir(exist_ok=True) then succeeds
+        # through it -- so without this we would stage into whatever it
+        # targets, outside memory_dir entirely.
+        if base.is_symlink() or (
+            base.exists() and not (base / _MIGRATION_STAGING_SENTINEL).exists()
+        ):
+            base = self.memory_dir / (
+                _MIGRATION_STAGING_DIR + "-" + uuid.uuid4().hex
+            )
+        shutil.rmtree(base, ignore_errors=True)
+        base.mkdir(parents=True, exist_ok=True)
+        (base / _MIGRATION_STAGING_SENTINEL).write_text("", encoding="utf-8")
+        return base
+
     def migrate_memory_files(self):
         """
         Migrate memory files to Documents
@@ -203,19 +241,8 @@ class MigrationsMixin:
         # 「它没拷过来」——云端导入会有意删掉受管文件并 unlink，用户也会
         # 删。往里补会在每次启动复活它们，拿数据搁浅换数据删不掉，是更糟
         # 的一边。
-        staging_prefix = ".migrating-"
+        staging_root = self._prepare_migration_staging_root()
         try:
-            # 上一次中断留下的暂存目录或暂存文件：它从没 rename 就位，所以
-            # 不是任何角色的数据，直接清掉，免得在磁盘上越堆越多。
-            for stale in self.memory_dir.glob(staging_prefix + "*"):
-                if stale.is_dir():
-                    shutil.rmtree(stale, ignore_errors=True)
-                else:
-                    try:
-                        stale.unlink()
-                    except OSError:
-                        pass
-
             for item in self.project_memory_dir.iterdir():
                 # 每个条目单独兜底。这个 try 原本只包在整个循环外面，于是
                 # 第一个失败的条目会把它后面所有角色和散文件一起留在项目
@@ -242,9 +269,15 @@ class MigrationsMixin:
                         # 同样要原子化。散文件这一支原先是裸 copy2，中断会
                         # 在目标留下一个被截断的文件——而「目标已存在就跳过」
                         # 会把它永久当成迁移完成，正是目录那支要避免的东西。
-                        staged_file = self.memory_dir / (
-                            staging_prefix + uuid.uuid4().hex + "-" + item.name
+                        # mkstemp, NOT a name built from item.name: a source
+                        # already close to the filesystem name limit pushes
+                        # the staged name over it and the copy fails with
+                        # ENAMETOOLONG.
+                        handle, staged_name = tempfile.mkstemp(
+                            dir=str(staging_root)
                         )
+                        os.close(handle)
+                        staged_file = Path(staged_name)
                         try:
                             shutil.copy2(item, staged_file)
                             os.replace(staged_file, dest_path)
@@ -263,9 +296,9 @@ class MigrationsMixin:
                     # 同盘暂存 → 原子 rename。暂存目录用点前缀，且只在这
                     # 一小段时间内存在；角色枚举只看目录名与已知文件模式，
                     # 不会把它当成角色。
-                    staging = Path(tempfile.mkdtemp(
-                        prefix=staging_prefix, dir=str(self.memory_dir),
-                    )) / item.name
+                    staging = Path(
+                        tempfile.mkdtemp(dir=str(staging_root))
+                    ) / item.name
                     try:
                         shutil.copytree(item, staging)
                         staging.rename(dest_path)
@@ -279,6 +312,8 @@ class MigrationsMixin:
                     )
         except Exception as e:
             print(f"Warning: Failed to migrate memory files: {e}", file=sys.stderr)
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
 
     def migrate_legacy_documents_memory(self):
         """
