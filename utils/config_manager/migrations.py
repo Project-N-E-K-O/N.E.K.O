@@ -190,18 +190,42 @@ class MigrationsMixin:
         try:
             for item in self.project_memory_dir.iterdir():
                 dest_path = self.memory_dir / item.name
-                
-                # 如果目标已存在，跳过
-                if dest_path.exists():
-                    continue
-                
-                # 复制文件或目录
+
+                # 单个文件：目标已存在就跳过，运行时的那份是权威
                 if item.is_file():
+                    if dest_path.exists():
+                        continue
                     shutil.copy2(item, dest_path)
                     print(f"Migrated memory file: {item.name}")
-                elif item.is_dir():
+                    continue
+
+                if not item.is_dir():
+                    continue
+
+                if not dest_path.exists():
                     shutil.copytree(item, dest_path)
                     print(f"Migrated memory directory: {item.name}")
+                    continue
+
+                # 目录已存在时按 FILE 补齐，而不是整个跳过。跳过粒度原本是
+                # 顶层条目：运行时只要有一个 memory/<name>/ 目录——哪怕是首次
+                # 运行中断留下的、或只装着一个 recent.json——项目根下该角色的
+                # 其余文件就再也进不来。而没有任何读者会去看项目根：facts、
+                # persona、settings、三个 sidecar 以及时间索引全部经由
+                # ensure_character_dir(memory_dir, name) 解析，项目根只在枚举
+                # 时被扫到。于是这个角色会被列进选择器，然后分析出一片空白。
+                filled = 0
+                for source in item.rglob("*"):
+                    if source.is_dir():
+                        continue
+                    target = dest_path / source.relative_to(item)
+                    if target.exists():
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
+                    filled += 1
+                if filled:
+                    print(f"Filled {filled} missing memory file(s) in: {item.name}")
         except Exception as e:
             print(f"Warning: Failed to migrate memory files: {e}", file=sys.stderr)
 
