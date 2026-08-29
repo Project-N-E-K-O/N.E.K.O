@@ -189,43 +189,75 @@ class MigrationsMixin:
         # 迁移所有记忆文件
         try:
             for item in self.project_memory_dir.iterdir():
-                dest_path = self.memory_dir / item.name
+                # 每个条目单独兜底。这个 try 原本只包在整个循环外面，于是
+                # 第一个失败的条目会把它后面所有角色和散文件一起留在项目
+                # 根里——比这次要修的那个缺口更糟。
+                try:
+                    dest_path = self.memory_dir / item.name
 
-                # 单个文件：目标已存在就跳过，运行时的那份是权威
-                if item.is_file():
-                    if dest_path.exists():
+                    # 单个文件：目标已存在就跳过，运行时的那份是权威
+                    if item.is_file():
+                        if dest_path.exists():
+                            continue
+                        shutil.copy2(item, dest_path)
+                        print(f"Migrated memory file: {item.name}")
                         continue
-                    shutil.copy2(item, dest_path)
-                    print(f"Migrated memory file: {item.name}")
-                    continue
 
-                if not item.is_dir():
-                    continue
-
-                if not dest_path.exists():
-                    shutil.copytree(item, dest_path)
-                    print(f"Migrated memory directory: {item.name}")
-                    continue
-
-                # 目录已存在时按 FILE 补齐，而不是整个跳过。跳过粒度原本是
-                # 顶层条目：运行时只要有一个 memory/<name>/ 目录——哪怕是首次
-                # 运行中断留下的、或只装着一个 recent.json——项目根下该角色的
-                # 其余文件就再也进不来。而没有任何读者会去看项目根：facts、
-                # persona、settings、三个 sidecar 以及时间索引全部经由
-                # ensure_character_dir(memory_dir, name) 解析，项目根只在枚举
-                # 时被扫到。于是这个角色会被列进选择器，然后分析出一片空白。
-                filled = 0
-                for source in item.rglob("*"):
-                    if source.is_dir():
+                    if not item.is_dir():
                         continue
-                    target = dest_path / source.relative_to(item)
-                    if target.exists():
+
+                    # 开始前打标记、成功后删掉。有标记 = 那一次拷贝没跑完。
+                    marker = self.memory_dir / f".migrating_{item.name}"
+                    if not dest_path.exists():
+                        marker.touch()
+                        shutil.copytree(item, dest_path)
+                        marker.unlink(missing_ok=True)
+                        print(f"Migrated memory directory: {item.name}")
                         continue
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source, target)
-                    filled += 1
-                if filled:
-                    print(f"Filled {filled} missing memory file(s) in: {item.name}")
+
+                    if not dest_path.is_dir():
+                        # 运行时根下同名的是普通文件。补齐会在一个文件底下
+                        # mkdir 而抛异常；而两边都不该为了对方被毁掉，所以
+                        # 记一笔跳过，项目根那份原样留着。
+                        print(
+                            f"Warning: skip {item.name}: runtime path is a file,"
+                            " not a directory",
+                            file=sys.stderr,
+                        )
+                        continue
+
+                    # 只补「那次拷贝被中断」的目录。顶层跳过原本让首次运行中断
+                    # 留下的半份目录永远补不齐，而没有任何读者会去看项目根：
+                    # facts、persona、settings、三个 sidecar 以及时间索引全部经由
+                    # ensure_character_dir(memory_dir, name) 解析，项目根只在枚举
+                    # 时被扫到，于是那个角色会被列进选择器却分析出一片空白。
+                    #
+                    # 但「文件不在运行时根」并不等于「它没拷过来」——云端导入会
+                    # 有意删掉受管文件（operations.py 记录删除并 unlink），用户也
+                    # 会删。无条件补齐会在每次启动把它们复活，用数据搁浅换数据
+                    # 复活，比原来的缺口更糟。标记是唯一能区分两者的东西：它只
+                    # 在拷贝进行中存在，而那时这个角色还从没活过，不可能有人删
+                    # 过它的东西。
+                    if not marker.exists():
+                        continue
+                    filled = 0
+                    for source in item.rglob("*"):
+                        if source.is_dir():
+                            continue
+                        target = dest_path / source.relative_to(item)
+                        if target.exists():
+                            continue
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source, target)
+                        filled += 1
+                    if filled:
+                        print(f"Filled {filled} missing memory file(s) in: {item.name}")
+                    marker.unlink(missing_ok=True)
+                except Exception as exc:
+                    print(
+                        f"Warning: Failed to migrate memory entry {item.name}: {exc}",
+                        file=sys.stderr,
+                    )
         except Exception as e:
             print(f"Warning: Failed to migrate memory files: {e}", file=sys.stderr)
 
