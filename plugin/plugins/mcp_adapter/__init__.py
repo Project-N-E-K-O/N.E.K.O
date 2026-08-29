@@ -49,6 +49,9 @@ _LLM_TOOL_TIMEOUT_SLACK_S = 15.0
 _LLM_TOOL_TIMEOUT_CAP_S = 300.0
 _RUN_POLL_INTERVAL_S = 0.5
 _RUN_TERMINAL_STATUSES = frozenset(("succeeded", "failed", "canceled", "timeout"))
+# 跨插件 LLM tool 名查重缓存 TTL；序号去重的上限（防极端场景无界循环）
+_FOREIGN_NAME_CACHE_TTL_S = 5.0
+_LLM_TOOL_NAME_MAX_SUFFIX = 100
 
 
 class _MCPInternalTransport:
@@ -1142,6 +1145,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._servers_config: Dict[str, Dict[str, object]] = {}
         # 已注入聊天上下文的 MCP tools：tool_id -> {"llm_name", "server_name", "tool_name"}
         self._chat_tools: Dict[str, Dict[str, str]] = {}
+        # 跨插件 LLM tool 名查重缓存：(fetched_at, foreign_names)
+        self._foreign_llm_names_cache: Optional[tuple[float, frozenset]] = None
         
         # Gateway Core 组件
         self._route_engine: Optional[MCPRouteEngine] = None
@@ -1329,19 +1334,78 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             return False
         return self._coerce_bool(cfg.get("inject_to_chat", False), False)
 
-    def _alloc_llm_tool_name(self, tool_id: str) -> str:
+    def _chat_tool_timeout(self) -> float:
+        """聊天注入工具的总预算（秒）：MCP 超时 + 转发余量，受 main_server
+        ``/api/tools/register`` 的 300s 上限约束。注册超时、轮询期限、run 侧
+        entry_timeout 全部从这一个预算推导，保证工具超预算时 run 看门狗先于
+        聊天端轮询期限取消，不会出现"聊天已报超时、run 后来又 succeeded"。"""
+        return min(self._tool_timeout + _LLM_TOOL_TIMEOUT_SLACK_S, _LLM_TOOL_TIMEOUT_CAP_S)
+
+    async def _fetch_foreign_llm_tool_names(self) -> frozenset:
+        """查询 main_server 上其它 source 已占用的 LLM tool 名。
+
+        main_server 的 tool registry 以名字为全局键、replace 语义注册，跨插件
+        重名会把对方的工具挤掉（模型调用被重定向）。注册前先查一次
+        ``GET /api/tools``（含各 role 的 source 标注），把非本插件 source 的
+        名字纳入查重。查询失败时 fail-open 返回空集，不阻塞注入——行为退化为
+        与未查重时一致。带短 TTL 缓存，避免同一批 tool 注册重复打接口。
+        """
+        from config import MAIN_SERVER_PORT
+
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        cached = self._foreign_llm_names_cache
+        if cached is not None and now - cached[0] < _FOREIGN_NAME_CACHE_TTL_S:
+            return cached[1]
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(5.0, connect=2.0),
+                proxy=None,
+                trust_env=False,
+            ) as client:
+                resp = await client.get(f"http://127.0.0.1:{int(MAIN_SERVER_PORT)}/api/tools")
+            body = resp.json() if resp.status_code == 200 else None
+        except (httpx.HTTPError, OSError, ValueError):
+            body = None
+
+        foreign: set[str] = set()
+        tools_by_role = body.get("tools_by_role") if isinstance(body, dict) else None
+        if isinstance(tools_by_role, dict):
+            own_source = f"plugin:{self.plugin_id}"
+            for role_tools in tools_by_role.values():
+                if not isinstance(role_tools, list):
+                    continue
+                for tool in role_tools:
+                    if not isinstance(tool, dict):
+                        continue
+                    name = tool.get("name")
+                    if not isinstance(name, str) or not name:
+                        continue
+                    if str(tool.get("source") or "") != own_source:
+                        foreign.add(name)
+
+        frozen = frozenset(foreign)
+        self._foreign_llm_names_cache = (now, frozen)
+        return frozen
+
+    def _alloc_llm_tool_name(self, tool_id: str, taken: frozenset = frozenset()) -> Optional[str]:
         """把 MCP tool_id 映射为合法且唯一的 LLM tool 名。
 
         main_server 要求 tool 名匹配 ``[A-Za-z0-9_.\\-]{1,64}``；server/tool
-        名可能含非 ASCII 字符，统一折叠为 "_"，冲突时追加运行期序号去重。
+        名可能含非 ASCII 字符，统一折叠为 "_"。``taken`` 是跨插件查重得到
+        的已占用名（与本插件已注册名一起参与去重），冲突时追加运行期序号。
+        序号耗尽仍冲突时返回 None，由调用方跳过注入。
         """
         base = re.sub(r"[^A-Za-z0-9_.\-]+", "_", tool_id).strip("._-")
         if not base:
             base = "mcp_tool"
-        base = base[:60]
+        base = base[:56]
         candidate = base
         suffix = 2
-        while candidate in self._llm_tools:
+        while candidate in self._llm_tools or candidate in taken:
+            if suffix > _LLM_TOOL_NAME_MAX_SUFFIX:
+                return None
             candidate = f"{base}_{suffix}"
             suffix += 1
         return candidate
@@ -1358,7 +1422,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         """把单个 MCP tool 注册为聊天上下文可用的 LLM tool。"""
         if tool_id in self._chat_tools:
             return True
-        llm_name = self._alloc_llm_tool_name(tool_id)
+        foreign = await self._fetch_foreign_llm_tool_names()
+        llm_name = self._alloc_llm_tool_name(tool_id, foreign)
+        if llm_name is None:
+            self.ctx.logger.warning(
+                f"Skip chat injection for MCP tool '{tool_id}': no free LLM tool name"
+            )
+            return False
         try:
             self.register_llm_tool(
                 name=llm_name,
@@ -1369,7 +1439,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     server_name=server_name,
                     tool_name=tool_name,
                 ),
-                timeout=min(self._tool_timeout + _LLM_TOOL_TIMEOUT_SLACK_S, _LLM_TOOL_TIMEOUT_CAP_S),
+                timeout=self._chat_tool_timeout(),
             )
         except Exception as exc:
             self.ctx.logger.warning(
@@ -1387,19 +1457,24 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         return True
 
     async def _unregister_chat_tool(self, tool_id: str) -> bool:
-        info = self._chat_tools.pop(tool_id, None)
+        info = self._chat_tools.get(tool_id)
         if info is None:
             return False
         llm_name = str(info.get("llm_name") or "")
         if not llm_name:
+            self._chat_tools.pop(tool_id, None)
             return False
         try:
             removed = self.unregister_llm_tool(llm_name)
         except Exception as exc:
+            # 注销失败时保留映射，set_chat_injection 可重试；过早 pop 会让
+            # 残留的 LLM tool 失去清理入口（面板显示已停用但聊天里还在）。
             self.ctx.logger.warning(
                 f"Failed to remove chat injection for MCP tool '{tool_id}': {exc}"
             )
             return False
+        # removed=False 说明 SDK 已不再跟踪该名（重复注销等），同样清理映射
+        self._chat_tools.pop(tool_id, None)
         if removed:
             self.ctx.logger.info(
                 f"Removed chat injection for MCP tool '{tool_id}' (LLM tool '{llm_name}')"
@@ -1480,13 +1555,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         管理界面的"运行记录"。返回 {"status", "success", "data", "error"}。
         """
         base = self._resolve_plugin_server_origin()
-        timeout_s = min(self._tool_timeout + _LLM_TOOL_TIMEOUT_SLACK_S, _LLM_TOOL_TIMEOUT_CAP_S)
+        timeout_s = self._chat_tool_timeout()
         poll_deadline = asyncio.get_running_loop().time() + max(timeout_s - 5.0, 5.0)
         run_args = dict(arguments) if isinstance(arguments, dict) else {}
-        # entry_timeout 覆盖 run 侧守卫超时（默认 RUN_EXECUTION_TIMEOUT），
-        # 与 entry 注册时的 timeout（tool_timeout + 5）对齐，避免长 MCP 调用
-        # 被 run 守卫提前掐断。
-        run_args["_ctx"] = {"entry_timeout": self._tool_timeout + 5.0}
+        # entry_timeout 覆盖 run 侧守卫超时（默认 RUN_EXECUTION_TIMEOUT）与
+        # entry 看门狗：预算 - 10s，先于聊天端轮询期限（预算 - 5s）触发取消，
+        # 避免超预算的 MCP 调用在聊天端已报超时后 run 又单独 succeeded。
+        run_args["_ctx"] = {"entry_timeout": max(timeout_s - 10.0, 5.0)}
 
         try:
             async with httpx.AsyncClient(

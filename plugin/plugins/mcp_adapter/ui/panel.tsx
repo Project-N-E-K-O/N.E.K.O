@@ -168,6 +168,19 @@ auto_connect = true`
 
   const parseArgs = (value) => String(value || "").split(",").map((item) => item.trim()).filter(Boolean)
 
+  // Accept only boolean or literal "true"/"false"; ignore any other type so it
+  // falls back to the backend default. A string "false" must NOT be coerced to
+  // true by !! (would silently enable chat injection on JSON import).
+  const resolveInjectToChatValue = (server: Partial<ServerFormValues> | ImportServerConfig): boolean | undefined => {
+    let raw: unknown
+    if ("injectToChat" in server) raw = server.injectToChat
+    else if ("inject_to_chat" in server) raw = server.inject_to_chat
+    if (typeof raw === "boolean") return raw
+    if (raw === "true") return true
+    if (raw === "false") return false
+    return undefined
+  }
+
   const buildServerPayload = (server: Partial<ServerFormValues> | ImportServerConfig, autoConnectOverride?: boolean) => {
     const name = String(server.name || "").trim()
     const transport = String(server.transport || "stdio").trim() || "stdio"
@@ -178,8 +191,8 @@ auto_connect = true`
       auto_connect: autoConnectOverride === undefined ? !!server.autoConnect : !!autoConnectOverride,
     }
     if ("enabled" in server && server.enabled !== undefined) payload.enabled = !!server.enabled
-    if ("injectToChat" in server && server.injectToChat !== undefined) payload.inject_to_chat = !!server.injectToChat
-    else if ("inject_to_chat" in server && server.inject_to_chat !== undefined) payload.inject_to_chat = !!server.inject_to_chat
+    const injectToChat = resolveInjectToChatValue(server)
+    if (injectToChat !== undefined) payload.inject_to_chat = injectToChat
     if (transport === "stdio") {
       const command = String(server.command || "").trim()
       if (!command) throw new Error(t("panel.form.errors.commandRequired"))
