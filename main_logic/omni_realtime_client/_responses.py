@@ -755,14 +755,29 @@ class _ResponseMixin:
         a debt that outlives that window is stale -- and honouring it would skip
         the settlement of a turn that is not the cancelled one, leaving an
         external token nobody settles and a session that reads busy.
+
+        The clock does not run until the interrupt reaches the provider. Gemini
+        is interrupted by the successor's content, so until that send lands
+        nothing else has been submitted and the first terminal can only be the
+        cancelled turn's -- expiring in that window would hand its terminal to a
+        successor that does not exist yet. The send both re-stamps the deadline
+        and lowers the flag, but it does so after its await returns, and the
+        receive loop can deliver that terminal inside the gap.
         """
         if not getattr(self, "_gemini_cancelled_terminal_pending", False):
             return False
         self._gemini_cancelled_terminal_pending = False
         deadline = getattr(self, "_gemini_cancelled_terminal_deadline", None)
+        awaiting_delivery = getattr(
+            self, "_gemini_cancelled_terminal_awaiting_delivery", False
+        )
         self._gemini_cancelled_terminal_deadline = None
         self._gemini_cancelled_terminal_awaiting_delivery = False
-        if deadline is not None and time.monotonic() >= deadline:
+        if (
+            deadline is not None
+            and not awaiting_delivery
+            and time.monotonic() >= deadline
+        ):
             logger.debug(
                 "Gemini: cancelled-terminal debt expired unconsumed; this "
                 "terminal settles the current turn instead"
