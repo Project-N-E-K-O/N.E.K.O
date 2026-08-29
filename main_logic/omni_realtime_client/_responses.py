@@ -773,6 +773,7 @@ class _ResponseMixin:
         )
         self._gemini_cancelled_terminal_deadline = None
         self._gemini_cancelled_terminal_awaiting_delivery = False
+        self._gemini_cancelled_terminal_id = None
         if (
             deadline is not None
             and not awaiting_delivery

@@ -2262,6 +2262,10 @@ class _TransportMixin:
         # 一次；这里先打是为了让下面任何一条 return 路径都带着期限离开，不至于落进
         # deadline is None 的 fail-open。只允许重打一次，免得后续每次发送都续命。
         self._gemini_cancelled_terminal_awaiting_delivery = True
+        # 身份：让 _gemini_send_user_turn 能认出「这笔欠账是不是我这次发送送达的」。
+        # 那边是 await 之后才读全局状态的，没有身份的话，一次**更早**发起、此刻才
+        # 返回的发送会把刚武装的这笔当成自己送的，提前起算 TTL。
+        self._gemini_cancelled_terminal_id = object()
 
         # 1. Cancel the current response
         # Presence, not truthiness — the third site in this file where a
@@ -3079,6 +3083,7 @@ class _TransportMixin:
         self._gemini_cancelled_terminal_pending = False
         self._gemini_cancelled_terminal_deadline = None
         self._gemini_cancelled_terminal_awaiting_delivery = False
+        self._gemini_cancelled_terminal_id = None
         self._raw_speech_started_scope_pending_transcript = False
         self._raw_speech_started_scoped_item_ids = []
         # Provider response identity and interruption state belong to the

@@ -357,6 +357,14 @@ class _GeminiMixin:
             parts=parts,
             role="user",
         )
+        # 身份要在**发送之前**取。这个 await 期间可能有一笔新欠账被武装，而它不是
+        # 这次发送送达的 —— 事后只读全局状态，会让一次更早发起、此刻才返回的发送
+        # 把它错认成自己送的，从而在后继内容还没上线时就起算 TTL。
+        delivering_debt_id = (
+            getattr(self, "_gemini_cancelled_terminal_id", None)
+            if getattr(self, "_gemini_cancelled_terminal_awaiting_delivery", False)
+            else None
+        )
         await self._gemini_session.send_client_content(
             turns=[content],
             turn_complete=True,
@@ -367,8 +375,14 @@ class _GeminiMixin:
         # 中断之前就到点，A 的终结随后被当成当前回合去结算了后继的 token —— 正是
         # 这个改动要修的那个回归。
         # 只重打一次：每次发送都续命的话，一笔始终没被终结抵掉的欠账会被无限延寿。
+        # 两个字段都走 getattr：这条 send 会被没走完整构造的替身客户端直接调用
+        # （tests/unit/test_proactive_sm_integration.py 就有一个），而
+        # _consume_cancelled_terminal() 对同一组字段本来也是这么读的。
         if (
-            self._gemini_cancelled_terminal_pending
+            delivering_debt_id is not None
+            and getattr(self, "_gemini_cancelled_terminal_id", None)
+            is delivering_debt_id
+            and getattr(self, "_gemini_cancelled_terminal_pending", False)
             and getattr(
                 self, "_gemini_cancelled_terminal_awaiting_delivery", False
             )
@@ -913,6 +927,7 @@ class _GeminiMixin:
                         # 是成对清的，留一个孤儿期限只会让状态读起来有歧义。
                         self._gemini_cancelled_terminal_deadline = None
                         self._gemini_cancelled_terminal_awaiting_delivery = False
+                        self._gemini_cancelled_terminal_id = None
                     if _is_new_turn and _can_clear_interrupted:
                         # Gemini has no response.created event; clear stale interrupt state only
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.

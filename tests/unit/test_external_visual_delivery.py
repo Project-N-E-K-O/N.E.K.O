@@ -1643,6 +1643,7 @@ async def test_a_slow_handoff_restarts_the_debt_deadline_at_the_gemini_send():
     # 打断已经发生，但 ASR 交接 + 压图拖过了 TTL：期限已经到点。
     client._gemini_cancelled_terminal_pending = True
     client._gemini_cancelled_terminal_awaiting_delivery = True
+    client._gemini_cancelled_terminal_id = object()
     client._gemini_cancelled_terminal_deadline = time.monotonic() - 1.0
 
     await client._gemini_send_user_turn("successor")
@@ -1724,6 +1725,45 @@ async def test_the_debt_does_not_expire_before_the_interrupt_is_delivered():
     assert client._gemini_external_outcome_token is token
     assert client._gemini_cancelled_terminal_pending is False
     assert client._gemini_cancelled_terminal_awaiting_delivery is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_only_the_send_that_delivered_the_debt_restarts_its_clock():
+    """A send restamps the debt it delivered, not whatever is armed on return.
+
+    An earlier send can still be inside ``send_client_content`` when a barge-in
+    arms a fresh debt. Reading the flags after that await lets the earlier send
+    claim the new debt, lowering awaiting-delivery and starting the TTL while
+    the successor's content has not been sent at all -- so a slow handoff
+    afterwards spends the window before the provider is interrupted.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client.note_user_turn_started = MagicMock()
+
+    armed = {}
+
+    async def _arm_midflight(**_kw):
+        # 这次发送在飞的时候，用户抢话武装了一笔**新**欠账。
+        client._gemini_cancelled_terminal_pending = True
+        client._gemini_cancelled_terminal_awaiting_delivery = True
+        client._gemini_cancelled_terminal_id = object()
+        client._gemini_cancelled_terminal_deadline = time.monotonic() + 60.0
+        armed["id"] = client._gemini_cancelled_terminal_id
+
+    client._gemini_session = SimpleNamespace(
+        send_client_content=AsyncMock(side_effect=_arm_midflight),
+    )
+    # 这次发送开始时没有任何欠账挂着。
+    client._gemini_cancelled_terminal_pending = False
+    client._gemini_cancelled_terminal_awaiting_delivery = False
+    client._gemini_cancelled_terminal_id = None
+
+    await client._gemini_send_user_turn("earlier turn")
+
+    # 那笔欠账不是这次发送送达的：它必须仍然在等自己的送达。
+    assert client._gemini_cancelled_terminal_id is armed["id"]
+    assert client._gemini_cancelled_terminal_awaiting_delivery is True
     await client.close()
 
 
