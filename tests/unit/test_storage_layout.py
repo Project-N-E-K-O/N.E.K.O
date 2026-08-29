@@ -885,3 +885,70 @@ def test_a_project_entry_named_like_staging_still_migrates(tmp_path):
         if p.name.startswith(_MIGRATION_STAGING_DIR + "-")
     )
     assert leftovers == [], "a staging root was left behind: %s" % leftovers
+
+
+@pytest.mark.unit
+def test_fallback_staging_roots_do_not_accumulate(tmp_path):
+    """The unique-name path has to reclaim its own leavings too.
+
+    When the base staging name is unavailable every run mints a fresh uuid, so
+    a run killed after creating one leaves a root nobody will ever name again
+    -- and full staging copies pile up, run after run. The ownership rule is
+    the same as for the base name: a sentinel we wrote, never a symlink.
+
+    This is the combination the earlier tests missed: a project-side name
+    collision AND a hard kill AND a retry.
+    """
+    from utils.config_manager import migrations as migrations_module
+    from utils.config_manager.migrations import (
+        _MIGRATION_STAGING_DIR,
+        _MIGRATION_STAGING_SENTINEL,
+    )
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    # Holding the base name on the project side forces the unique-name path.
+    (project_root / _MIGRATION_STAGING_DIR).mkdir(parents=True)
+    (project_root / _MIGRATION_STAGING_DIR / "facts.json").write_text(
+        '["seed"]', encoding="utf-8"
+    )
+    (project_root / "Carol").mkdir()
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+
+    def fallback_roots():
+        return sorted(
+            path.name for path in runtime_root.iterdir()
+            if path.name.startswith(_MIGRATION_STAGING_DIR + "-")
+        )
+
+    # A run killed before it could clean up. Only the FINAL cleanup is
+    # disabled: a real kill does not stop the NEXT run from using rmtree, and
+    # neutering it for the whole run would disable the reclaim as well and test
+    # nothing -- which is exactly how the first version of this test failed.
+    with patch.object(migrations_module.shutil, "rmtree", lambda *a, **k: None):
+        config_manager.migrate_memory_files()
+
+    killed = fallback_roots()
+    assert len(killed) == 1, "the kill left no staging root: %s" % killed
+    assert (runtime_root / killed[0] / _MIGRATION_STAGING_SENTINEL).exists()
+
+    # Something that is NOT ours, which the reclaim has to leave alone.
+    stranger = runtime_root / (_MIGRATION_STAGING_DIR + "-not-ours")
+    stranger.mkdir()
+    (stranger / "facts.json").write_text('["keep"]', encoding="utf-8")
+
+    config_manager.migrate_memory_files()
+
+    assert fallback_roots() == [_MIGRATION_STAGING_DIR + "-not-ours"], (
+        "either our roots accumulated or the stranger was reclaimed: %s"
+        % fallback_roots()
+    )
+    assert (stranger / "facts.json").read_text(encoding="utf-8") == '["keep"]'
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]"

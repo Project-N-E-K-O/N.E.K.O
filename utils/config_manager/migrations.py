@@ -208,6 +208,19 @@ class MigrationsMixin:
         if base.is_symlink() or taken_by_project or (
             base.exists() and not (base / _MIGRATION_STAGING_SENTINEL).exists()
         ):
+            # Reclaim OUR earlier fallback roots before minting another one.
+            # Each run on this path picks a fresh uuid, so a run killed after
+            # creating one leaves it referenced by nobody: the next run mints
+            # a different name and the old copy sits there forever. Repeat
+            # that and full staging copies accumulate. Same ownership rule as
+            # the base name -- a sentinel we wrote, and never a symlink.
+            for previous in self.memory_dir.glob(
+                _MIGRATION_STAGING_DIR + "-*"
+            ):
+                if previous.is_symlink() or not previous.is_dir():
+                    continue
+                if (previous / _MIGRATION_STAGING_SENTINEL).exists():
+                    shutil.rmtree(previous, ignore_errors=True)
             base = self.memory_dir / (
                 _MIGRATION_STAGING_DIR + "-" + uuid.uuid4().hex
             )
