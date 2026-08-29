@@ -52,6 +52,9 @@ _RUN_TERMINAL_STATUSES = frozenset(("succeeded", "failed", "canceled", "timeout"
 # 跨插件 LLM tool 名查重缓存 TTL；序号去重的上限（防极端场景无界循环）
 _FOREIGN_NAME_CACHE_TTL_S = 5.0
 _LLM_TOOL_NAME_MAX_SUFFIX = 100
+# 注册后确认远端生效的轮询窗口（register_llm_tool 只是把注册排队到 host）
+_REMOTE_CONFIRM_TIMEOUT_S = 5.0
+_REMOTE_CONFIRM_INTERVAL_S = 0.2
 
 
 class _MCPInternalTransport:
@@ -1145,6 +1148,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._servers_config: Dict[str, Dict[str, object]] = {}
         # 已注入聊天上下文的 MCP tools：tool_id -> {"llm_name", "server_name", "tool_name"}
         self._chat_tools: Dict[str, Dict[str, str]] = {}
+        # 本地已注册、待远端确认的聊天注入（同结构）；确认后转入 _chat_tools
+        self._pending_chat_tools: Dict[str, Dict[str, str]] = {}
+        # 串行化 chat 注入的注册/注销与 set_chat_injection 的"持久化+应用"，
+        # 防止并发 toggle 交错（映射覆盖、注册途中被清理）
+        self._chat_tools_lock = asyncio.Lock()
         # 跨插件 LLM tool 名查重缓存：(fetched_at, foreign_names)
         self._foreign_llm_names_cache: Optional[tuple[float, frozenset]] = None
         
@@ -1298,22 +1306,26 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             llm_result_fields=["summary"],
         )
 
-        # 按该 server 的配置注入聊天上下文（LLM tool）。注入失败只记日志，
-        # 不影响动态 entry 本身——原调用路径（POST /runs）依然可用。
+        # 按该 server 的配置注入聊天上下文（LLM tool）：只做本地登记（进
+        # pending），远端确认由 _register_mcp_tools 在整批注册完后统一做。
+        # 注入失败只记日志，不影响动态 entry 本身——原调用路径（POST /runs）
+        # 依然可用。
         if registered and self._is_chat_injection_enabled(server_name):
-            await self._register_chat_tool(
-                tool_id=tool_id,
-                server_name=server_name,
-                tool_name=tool_name,
-                description=description,
-                schema=schema,
-            )
+            async with self._chat_tools_lock:
+                await self._register_chat_tool_local_locked(
+                    tool_id=tool_id,
+                    server_name=server_name,
+                    tool_name=tool_name,
+                    description=description,
+                    schema=schema,
+                )
 
         return registered
 
     async def _on_tool_unregister(self, tool_id: str) -> bool:
         """Gateway Core 工具注销回调 - 注销动态 entry 与聊天注入。"""
-        await self._unregister_chat_tool(tool_id)
+        async with self._chat_tools_lock:
+            await self._unregister_chat_tool_locked(tool_id)
         return self.unregister_dynamic_entry(tool_id)
 
     # ------------------------------------------------------------------
@@ -1411,7 +1423,100 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             suffix += 1
         return candidate
 
-    async def _register_chat_tool(
+    async def _confirm_pending_chat_tools_locked(self, server_name: str) -> int:
+        """批量确认某 server 的 pending 聊天注入是否已在 main_server 生效。
+
+        ``register_llm_tool`` 只是把注册排队到 host（异步、失败仅由 host 记
+        日志），main_server 不可用或名字被跨 source 守卫拒绝都发生在这条路
+        上，因此本地登记（pending）后必须确认。整批共享一个截止时间——工具
+        数量不会放大连接停顿（最坏也只有一个窗口）；确认通过的移入
+        ``_chat_tools``，未确认的回滚本地注册。以 (name,
+        source=plugin:{self}) 同时匹配为准——名字存在但归属其它 source 时
+        永远匹配不上。需持有 ``_chat_tools_lock``。
+        """
+        pending_ids = [
+            tid for tid, info in self._pending_chat_tools.items()
+            if info.get("server_name") == server_name
+        ]
+        if not pending_ids:
+            return 0
+        from config import MAIN_SERVER_PORT
+
+        own_source = f"plugin:{self.plugin_id}"
+        names_by_id = {tid: str(self._pending_chat_tools[tid].get("llm_name") or "") for tid in pending_ids}
+        pending_names = {name for name in names_by_id.values() if name}
+        confirmed_names: set[str] = set()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _REMOTE_CONFIRM_TIMEOUT_S
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(2.0, connect=1.0),
+                proxy=None,
+                trust_env=False,
+            ) as client:
+                while pending_names and loop.time() < deadline:
+                    try:
+                        resp = await client.get(f"http://127.0.0.1:{int(MAIN_SERVER_PORT)}/api/tools")
+                        if resp.status_code == 200:
+                            body = resp.json()
+                            tools_by_role = body.get("tools_by_role") if isinstance(body, dict) else None
+                            if isinstance(tools_by_role, dict):
+                                for role_tools in tools_by_role.values():
+                                    if not isinstance(role_tools, list):
+                                        continue
+                                    for tool in role_tools:
+                                        if not isinstance(tool, dict):
+                                            continue
+                                        name = tool.get("name")
+                                        if (
+                                            name in pending_names
+                                            and str(tool.get("source") or "") == own_source
+                                        ):
+                                            confirmed_names.add(str(name))
+                            pending_names -= confirmed_names
+                    except (httpx.HTTPError, OSError, ValueError):
+                        pass
+                    if pending_names and loop.time() < deadline:
+                        await asyncio.sleep(min(_REMOTE_CONFIRM_INTERVAL_S, max(deadline - loop.time(), 0.0)))
+        except (httpx.HTTPError, OSError, ValueError):
+            pass
+
+        def _rollback(llm_name: str) -> None:
+            try:
+                self.unregister_llm_tool(llm_name)
+            except Exception:
+                pass
+
+        if not self._is_chat_injection_enabled(server_name):
+            # 确认期间配置被翻转（如并发的 disable 已持久化 false）：全部回滚
+            for tid in pending_ids:
+                info = self._pending_chat_tools.pop(tid, None)
+                if info:
+                    _rollback(str(info.get("llm_name") or ""))
+            self.ctx.logger.info(
+                f"Chat injection disabled while confirming tools of server '{server_name}'; rolled back"
+            )
+            return 0
+
+        confirmed_count = 0
+        for tid in pending_ids:
+            info = self._pending_chat_tools.pop(tid, None)
+            if info is None:
+                continue
+            llm_name = str(info.get("llm_name") or "")
+            if llm_name in confirmed_names:
+                self._chat_tools[tid] = info
+                confirmed_count += 1
+            else:
+                _rollback(llm_name)
+        if confirmed_count < len(pending_ids):
+            self.ctx.logger.warning(
+                f"Remote registration confirmed for {confirmed_count}/{len(pending_ids)} "
+                f"chat tool(s) of server '{server_name}'; unconfirmed ones rolled back"
+            )
+        return confirmed_count
+
+    async def _register_chat_tool_local_locked(
         self,
         *,
         tool_id: str,
@@ -1420,8 +1525,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         description: str,
         schema: Optional[Dict[str, object]],
     ) -> bool:
-        """把单个 MCP tool 注册为聊天上下文可用的 LLM tool。"""
-        if tool_id in self._chat_tools:
+        """把单个 MCP tool 本地登记为聊天注入（进 pending，待批量确认）。
+
+        需持有 ``_chat_tools_lock``。远端确认由
+        ``_confirm_pending_chat_tools_locked`` 批量完成——注册路径（连接回调、
+        开关启用）不应在此处逐工具等待确认，否则工具数量会放大停顿。
+        """
+        if tool_id in self._chat_tools or tool_id in self._pending_chat_tools:
             return True
         foreign = await self._fetch_foreign_llm_tool_names()
         llm_name = self._alloc_llm_tool_name(tool_id, foreign)
@@ -1447,22 +1557,22 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 f"Failed to inject MCP tool '{tool_id}' into chat context: {exc}"
             )
             return False
-        self._chat_tools[tool_id] = {
+        self._pending_chat_tools[tool_id] = {
             "llm_name": llm_name,
             "server_name": server_name,
             "tool_name": tool_name,
         }
-        self.ctx.logger.info(
-            f"Injected MCP tool '{tool_id}' into chat context as LLM tool '{llm_name}'"
-        )
         return True
 
-    async def _remote_unregister_llm_tool(self, llm_name: str) -> bool:
-        """直接同步调 main_server 注销 LLM tool，返回远端是否确认清理。
+    async def _remote_unregister_llm_tool(self, llm_name: str) -> str:
+        """直接同步调 main_server 注销 LLM tool。
 
-        SDK 的 ``unregister_llm_tool`` 只保证本地清理；IPC → host → main_server
-        的远端注销是异步的，失败仅由 host 记日志，插件无法观察到结果。为了
-        让"停用注入"的状态可靠，先同步调远端并确认，再做本地注销。
+        返回 "removed"（已移除或本就不存在）/ "refused"（名字归属其它
+        source，服务端拒绝删除——说明我们的注册从未生效）/ "failed"（远端
+        暂时不可达）。SDK 的 ``unregister_llm_tool`` 只保证本地清理，远端
+        注销是异步且失败仅由 host 记日志的，插件无法观察到结果；带
+        ``expected_source`` 让服务端校验现属 source，跨 source 场景下绝不
+        误删别的插件占用的同名工具。
         """
         from config import MAIN_SERVER_PORT
 
@@ -1474,52 +1584,84 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             ) as client:
                 resp = await client.post(
                     f"http://127.0.0.1:{int(MAIN_SERVER_PORT)}/api/tools/unregister",
-                    json={"name": llm_name, "role": None},
+                    json={
+                        "name": llm_name,
+                        "role": None,
+                        "expected_source": f"plugin:{self.plugin_id}",
+                    },
                 )
             if resp.status_code >= 400:
-                return False
+                return "failed"
             body = resp.json()
         except (httpx.HTTPError, OSError, ValueError):
-            return False
+            return "failed"
         if not isinstance(body, dict):
-            return True
-        # 判定对齐 llm_tool_registry.unregister_remote_tool：failed_roles 非空
-        # 视为部分失败（部分 role 还挂着），保留状态供重试；removed=False 表示
-        # 远端本就没有该工具，视为已清理。
-        return not body.get("failed_roles")
+            return "removed"
+        # failed_roles 优先于 refused_roles 判定：partial failure（部分 role
+        # 仍挂着我们的工具）比"名字整体归属别人"更需要保留映射重试
+        if body.get("failed_roles"):
+            return "failed"
+        if body.get("refused_roles"):
+            return "refused"
+        return "removed"
 
-    async def _unregister_chat_tool(self, tool_id: str) -> bool:
+    async def _unregister_chat_tool_locked(self, tool_id: str) -> str:
+        """注销单个聊天注入。返回 "removed" / "absent" / "refused" / "failed"。
+
+        需持有 ``_chat_tools_lock``。pending（未确认）的映射走 SDK 注销（远端
+        注销由 host 异步完成且带 source 校验）；confirmed 的映射先同步确认
+        远端移除。"refused" 表示该名在 main_server 上归属其它 source——本地
+        映射与本地注册一并作废，但不触碰别人的工具；"failed" 表示远端暂时
+        不可达——保留映射供重试。
+        """
+        pending = self._pending_chat_tools.pop(tool_id, None)
+        if pending is not None:
+            llm_name = str(pending.get("llm_name") or "")
+            if llm_name:
+                try:
+                    self.unregister_llm_tool(llm_name)
+                except Exception as exc:
+                    self.ctx.logger.warning(
+                        f"Failed to roll back pending chat tool '{llm_name}' (MCP tool '{tool_id}'): {exc}"
+                    )
+            return "removed"
+
         info = self._chat_tools.get(tool_id)
         if info is None:
-            return False
+            return "absent"
         llm_name = str(info.get("llm_name") or "")
         if not llm_name:
             self._chat_tools.pop(tool_id, None)
-            return False
-        # 先同步确认远端移除，再做本地注销；远端失败时保留映射（可在下次
-        # 切换开关/断开时重试），避免"面板显示已停用但 main_server 还挂着
-        # 死回调工具、且没有映射可用于清理"的僵尸状态。
-        remote_removed = await self._remote_unregister_llm_tool(llm_name)
-        if not remote_removed:
+            return "absent"
+        remote = await self._remote_unregister_llm_tool(llm_name)
+        if remote == "failed":
+            # 远端未确认移除时保留映射（可在下次切换开关/断开时重试），
+            # 避免"面板显示已停用但 main_server 还挂着死回调工具"的僵尸态。
             self.ctx.logger.warning(
                 f"Remote unregister not confirmed for chat tool '{llm_name}' "
                 f"(MCP tool '{tool_id}'); keeping mapping for retry"
             )
-            return False
+            return "failed"
+        self._chat_tools.pop(tool_id, None)
         try:
-            removed = self.unregister_llm_tool(llm_name)
+            self.unregister_llm_tool(llm_name)
         except Exception as exc:
             self.ctx.logger.warning(
-                f"Failed to remove chat injection for MCP tool '{tool_id}': {exc}"
+                f"Local cleanup after remote unregister failed for MCP tool '{tool_id}': {exc}"
             )
-            return False
-        # removed=False 说明 SDK 已不再跟踪该名（重复注销等），同样清理映射
-        self._chat_tools.pop(tool_id, None)
-        if removed:
+        if remote == "refused":
+            # 名字归属已翻转到其它 source（如 main_server 重启后被占名）：
+            # 上面的 SDK 注销只会移除我们自己的本地注册，远端拒绝即止，
+            # 不会触碰别人的工具；映射作废，下次启用会换名注册。
             self.ctx.logger.info(
-                f"Removed chat injection for MCP tool '{tool_id}' (LLM tool '{llm_name}')"
+                f"Chat tool '{llm_name}' is owned by another source on main_server; "
+                f"dropping local registration for MCP tool '{tool_id}'"
             )
-        return removed
+            return "refused"
+        self.ctx.logger.info(
+            f"Removed chat injection for MCP tool '{tool_id}' (LLM tool '{llm_name}')"
+        )
+        return "removed"
 
     def _build_chat_tool_handler(self, *, tool_id: str, server_name: str, tool_name: str) -> Callable[..., Any]:
         """构造聊天注入工具的处理器：转发到 POST /runs 以产生运行记录。"""
@@ -2051,13 +2193,18 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     async def _register_mcp_tools(self, server_name: str, client: MCPClient) -> None:
         """
         使用 Gateway Core 注册 MCP tools。
-        
+
         通过 MCPRouteEngine.register_server_tools 方法：
         1. 更新路由引擎的工具索引
-        2. 触发回调注册为动态 entry（出现在前端管理面板）
+        2. 触发回调注册为动态 entry（出现在前端管理面板），开启注入的
+           server 会在回调里登记本地 LLM tool（进 pending）
+        3. 批量确认 pending 的远端生效（一次共享截止时间，工具数量不放大
+           连接停顿），未确认的回滚
         """
         if self._route_engine:
             await self._route_engine.register_server_tools(server_name, client)
+        async with self._chat_tools_lock:
+            await self._confirm_pending_chat_tools_locked(server_name)
 
     def _cancel_reconnect_task(self, server_name: str) -> bool:
         task = self._reconnect_tasks.pop(server_name, None)
@@ -2153,6 +2300,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         self._clients.clear()
         self._chat_tools.clear()
+        self._pending_chat_tools.clear()
         self._gateway_core = None
         self._policy = None
 
@@ -2502,58 +2650,108 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     )
     async def set_chat_injection(self, server_name: str, inject_to_chat: bool, **_):
         """配置单个 MCP server 是否把 tools 注入聊天上下文"""
-        config = await self.config.dump()
-        servers_config = config.get("mcp_servers", {})
-        server_cfg = servers_config.get(server_name)
-        if not isinstance(server_cfg, dict):
-            return Err(SdkError(f"Server '{server_name}' not found in config"))
-
         inject_flag = self._coerce_bool(inject_to_chat, False)
-        server_cfg["inject_to_chat"] = inject_flag
-        try:
-            await self._persist_servers_config(servers_config)
-        except Exception as exc:
-            self.ctx.logger.exception(
-                f"Failed to persist chat injection flag for MCP server '{server_name}': {exc}"
-            )
-            return Err(SdkError(f"Failed to save server config: {exc}"))
-        self._servers_config = servers_config
+        # 整个"持久化 + 应用"过程持锁串行：并发 enable/disable 交错会让
+        # 注册互相覆盖映射、或让 disable 在 enable 注册途中清掉它的结果。
+        # config.dump 也在锁内——回滚时重新 dump 新鲜配置再持久化，避免
+        # 并发的 add_server 被 stale dump 的删除语义误清。
+        async with self._chat_tools_lock:
+            config = await self.config.dump()
+            servers_config = config.get("mcp_servers", {})
+            server_cfg = servers_config.get(server_name)
+            if not isinstance(server_cfg, dict):
+                return Err(SdkError(f"Server '{server_name}' not found in config"))
 
-        # 已连接的 server 立即生效；未连接的只在下次连接时生效
-        client = self._clients.get(server_name)
-        applied = 0
-        if client is not None:
-            for tool in client.tools:
-                tool_id = f"mcp_{server_name}_{tool.name}"
-                # 只处理路由索引归属本 server 的 tool_id：server/tool 拼接可能
-                # 撞出相同 ID（如 server a_b + tool c 与 server a + tool b_c），
-                # 路由引擎按先到先得去重，非归属方若也注册 chat 注入会转发到
-                # 别人的 entry、注销时还会拆掉别人的注入。
-                if self._route_engine is None or self._route_engine.get_tool_server(tool_id) != server_name:
-                    continue
-                if inject_flag:
-                    if tool_id in self._chat_tools:
+            previous_flag = self._is_chat_injection_enabled(server_name)
+            server_cfg["inject_to_chat"] = inject_flag
+            try:
+                await self._persist_servers_config(servers_config)
+            except Exception as exc:
+                self.ctx.logger.exception(
+                    f"Failed to persist chat injection flag for MCP server '{server_name}': {exc}"
+                )
+                return Err(SdkError(f"Failed to save server config: {exc}"))
+            self._servers_config = servers_config
+
+            client = self._clients.get(server_name)
+            applied = 0
+            failed_tool_ids: List[str] = []
+            if client is not None:
+                for tool in client.tools:
+                    tool_id = f"mcp_{server_name}_{tool.name}"
+                    # 只处理路由索引归属本 server 的 tool_id：server/tool 拼接可能
+                    # 撞出相同 ID（如 server a_b + tool c 与 server a + tool b_c），
+                    # 路由引擎按先到先得去重，非归属方若也注册 chat 注入会转发到
+                    # 别人的 entry、注销时还会拆掉别人的注入。
+                    if self._route_engine is None or self._route_engine.get_tool_server(tool_id) != server_name:
                         continue
-                    if await self._register_chat_tool(
-                        tool_id=tool_id,
-                        server_name=server_name,
-                        tool_name=tool.name,
-                        description=tool.description or f"MCP tool from {server_name}",
-                        schema=tool.input_schema,
-                    ):
+                    if inject_flag:
+                        if tool_id in self._chat_tools or tool_id in self._pending_chat_tools:
+                            continue
+                        await self._register_chat_tool_local_locked(
+                            tool_id=tool_id,
+                            server_name=server_name,
+                            tool_name=tool.name,
+                            description=tool.description or f"MCP tool from {server_name}",
+                            schema=tool.input_schema,
+                        )
+                    else:
+                        outcome = await self._unregister_chat_tool_locked(tool_id)
+                        if outcome == "removed":
+                            applied += 1
+                        elif outcome == "failed":
+                            failed_tool_ids.append(tool_id)
+            else:
+                # server 未连接：按映射里的 server_name 扫描残留注入（如断连
+                # 时远端不可达保留下来的映射），一样走清理，不谎报已停用。
+                mapped_ids = [
+                    tid for tid, info in self._chat_tools.items()
+                    if info.get("server_name") == server_name
+                ]
+                for tool_id in mapped_ids:
+                    outcome = await self._unregister_chat_tool_locked(tool_id)
+                    if outcome == "removed":
                         applied += 1
-                else:
-                    if await self._unregister_chat_tool(tool_id):
-                        applied += 1
+                    elif outcome == "failed":
+                        failed_tool_ids.append(tool_id)
 
-        state_text = "enabled" if inject_flag else "disabled"
-        return Ok({
-            "message": f"Chat injection {state_text} for server '{server_name}' ({applied} tool(s) updated)",
-            "server_name": server_name,
-            "inject_to_chat": inject_flag,
-            "connected": client is not None,
-            "applied": applied,
-        })
+            if inject_flag:
+                # 本地登记完后批量确认远端生效（一次共享截止时间）
+                applied = await self._confirm_pending_chat_tools_locked(server_name)
+
+            if not inject_flag and failed_tool_ids:
+                # 禁用清理未完成（远端暂时不可达等）：回滚标志让面板如实反映
+                # "仍然启用"，失败工具的映射保留供下次重试。回滚用新鲜 dump，
+                # 避免锁外并发 add/remove 的配置被 stale 删除语义误清。
+                if previous_flag != inject_flag:
+                    fresh_config = await self.config.dump()
+                    fresh_servers = fresh_config.get("mcp_servers", {})
+                    if isinstance(fresh_servers.get(server_name), dict):
+                        fresh_servers[server_name]["inject_to_chat"] = previous_flag
+                        try:
+                            await self._persist_servers_config(fresh_servers)
+                        except Exception:
+                            self.ctx.logger.exception(
+                                f"Failed to roll back chat injection flag for MCP server '{server_name}'"
+                            )
+                    self._servers_config.get(server_name, {})["inject_to_chat"] = previous_flag
+                self.ctx.logger.warning(
+                    f"Chat injection cleanup incomplete for server '{server_name}': "
+                    f"{len(failed_tool_ids)} tool(s) still active"
+                )
+                return Err(SdkError(
+                    f"Failed to disable chat injection for server '{server_name}': "
+                    f"{len(failed_tool_ids)} tool(s) still active (remote unregister not confirmed); retry later"
+                ))
+
+            state_text = "enabled" if inject_flag else "disabled"
+            return Ok({
+                "message": f"Chat injection {state_text} for server '{server_name}' ({applied} tool(s) updated)",
+                "server_name": server_name,
+                "inject_to_chat": inject_flag,
+                "connected": client is not None,
+                "applied": applied,
+            })
     
     @ui.action(label=tr("actions.addServer.label", default="Add Server"), tone="success", group="server", order=5, refresh_context=True)
     @plugin_entry(
@@ -2729,13 +2927,26 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
 
             self._cancel_connect_task(name)
             self._cancel_reconnect_task(name)
-            
+
             # 如果已连接，先断开
             if name in self._clients:
                 await self._unregister_mcp_tools(name)
                 client = self._clients.pop(name)
                 await client.disconnect()
-            
+
+            # 清理该 server 的聊天注入残留（断连期间远端不可达而保留的映射、
+            # 未确认的 pending 登记等），否则移除后无法再通过开关触达它们
+            async with self._chat_tools_lock:
+                mapped_ids = [
+                    tid for tid, info in self._chat_tools.items()
+                    if info.get("server_name") == name
+                ] + [
+                    tid for tid, info in self._pending_chat_tools.items()
+                    if info.get("server_name") == name
+                ]
+                for tool_id in mapped_ids:
+                    await self._unregister_chat_tool_locked(tool_id)
+
             # 从配置中移除
             del servers_config[name]
             
