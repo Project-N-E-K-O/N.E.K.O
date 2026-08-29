@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from pathlib import Path
 from types import MethodType
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -1500,6 +1501,165 @@ async def test_one_event_with_both_terminal_flags_spends_the_debt_once():
     assert client._gemini_external_outcome_token is token
     assert client._gemini_cancelled_terminal_pending is False
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_late_content_from_the_cancelled_turn_keeps_the_debt():
+    """The cancelled turn's own late content must not void its debt.
+
+    Voiding on ``_is_new_turn`` alone is satisfied by that content: the user
+    already spoke after the AI's last frame, which is exactly what the
+    cancellation means. The debt then dies before the terminal it was owed,
+    and that terminal settles the freshly minted external token -- the turn
+    reads idle while it is still in flight.
+
+    The line below this one declares the new turn under the stricter
+    ``_is_new_turn and _can_clear_interrupted``; voiding has to use the same
+    definition of "the old turn is over".
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client.on_new_message = None
+    client.on_text_delta = None
+    client._settle_gemini_proactive_inject = MagicMock()
+
+    token = object()
+    client._gemini_external_outcome_token = token
+    client._gemini_cancelled_terminal_pending = True
+    # handle_interruption() 之后的状态：这一轮被叫停，不再 responding。
+    client._is_responding = False
+    client._interrupted = True
+    # 外部回合把用户活动刷到了 AI 最后一帧之后，且仍在 3s 窗口内。
+    client._ai_recent_activity_time = time.time()
+    client._user_recent_activity_time = client._ai_recent_activity_time + 0.1
+
+    late_content = SimpleNamespace(
+        model_turn=SimpleNamespace(parts=[]),
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=False,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=late_content, tool_call=None),
+        connection_generation=1,
+    )
+    # 被取消那一轮的迟到内容不是「新回合开始」的证据。
+    assert client._gemini_cancelled_terminal_pending is True
+
+    real_terminal = SimpleNamespace(
+        model_turn=None,
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=True,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=real_terminal, tool_call=None),
+        connection_generation=1,
+    )
+    # 那条终结属于被取消的旧回合，不能拿去结算新铸的 token。
+    assert client._gemini_external_outcome_token is token
+    assert client._gemini_cancelled_terminal_pending is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_an_expired_debt_does_not_eat_a_legitimate_terminal():
+    """A debt that outlived its window is spent but not honoured.
+
+    The turn-start void only runs when AI content arrives before the terminal.
+    A bare ``turn_complete`` -- which this provider does emit -- skips it, so
+    without a deadline a stale debt waits indefinitely and absorbs a terminal
+    that belongs to someone else. That leaves an external token nobody settles
+    and a session pinned busy, which is the worse of the two failure
+    directions.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client.on_new_message = None
+    client.on_text_delta = None
+    client._settle_gemini_proactive_inject = MagicMock()
+
+    token = object()
+    client._gemini_external_outcome_token = token
+    client._gemini_cancelled_terminal_pending = True
+    client._gemini_cancelled_terminal_deadline = time.monotonic() - 0.001
+    client._is_responding = True
+    client._interrupted = True
+
+    bare_terminal = SimpleNamespace(
+        model_turn=None,
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=True,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=bare_terminal, tool_call=None),
+        connection_generation=1,
+    )
+
+    # 过期的欠账被花掉但不认账：这条终结照常结算当前回合。
+    assert client._gemini_cancelled_terminal_pending is False
+    assert client._gemini_cancelled_terminal_deadline is None
+    assert client._gemini_external_outcome_token is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_connection_does_not_inherit_the_debt():
+    """The debt belongs to the connection that armed it.
+
+    The replacement's first terminal is its own. Absorbed by the predecessor's
+    debt, the turn that produced it never settles its token.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._gemini_cancelled_terminal_pending = True
+    client._gemini_cancelled_terminal_deadline = time.monotonic() + 60.0
+
+    client._on_connection_attached()
+
+    assert client._gemini_cancelled_terminal_pending is False
+    assert client._gemini_cancelled_terminal_deadline is None
+    await client.close()
+
+
+@pytest.mark.unit
+def test_arming_the_cancellation_debt_always_sets_a_deadline():
+    """The expiry fails open on a missing deadline, so arming must set one.
+
+    ``_consume_cancelled_terminal`` treats ``deadline is None`` as "never
+    expires" so that state built directly by tests keeps the old semantics. A
+    production arming site that forgot the deadline would silently opt out of
+    the bound.
+    """
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "main_logic"
+        / "omni_realtime_client"
+        / "_transport.py"
+    ).read_text(encoding="utf-8").split(chr(10))
+
+    arming = [
+        index
+        for index, line in enumerate(source)
+        if line.strip() == "self._gemini_cancelled_terminal_pending = True"
+    ]
+    assert arming, "the arming site moved; update this guard"
+    for index in arming:
+        window = chr(10).join(source[index : index + 8])
+        assert "self._gemini_cancelled_terminal_deadline = (" in window, (
+            f"line {index + 1}: arming the debt must also set its deadline, "
+            f"got: {window!r}"
+        )
 
 
 @pytest.mark.asyncio

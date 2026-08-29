@@ -556,6 +556,8 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Keep a distinct token because the submit coroutine itself may already
         # be finished when the next external-ASR utterance starts.
         self._gemini_external_outcome_token: Optional[object] = None
+        self._gemini_cancelled_terminal_pending = False
+        self._gemini_cancelled_terminal_deadline: Optional[float] = None
         self._gemini_external_quarantine_task: Optional[asyncio.Task] = None
         self._gemini_proactive_outcome_owner: Optional[tuple] = None
 

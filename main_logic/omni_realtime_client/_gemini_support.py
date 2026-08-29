@@ -860,10 +860,22 @@ class _GeminiMixin:
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch
                     self._current_turn_host_id = self._read_host_turn_id()
-                    if _is_new_turn:
+                    if _is_new_turn and _can_clear_interrupted:
                         # 新回合开始就说明旧回合已经收场：欠账作废，免得旧回合
                         # 永不终结时把下一条**合法**终结也吃掉，让 token 永远结算
                         # 不掉、会话被钉成「忙」而主动搭话彻底哑掉。
+                        #
+                        # ⚠️ 判据必须与下面宣告新回合的那条**一字不差**。只看
+                        # _is_new_turn 时，被取消那一轮的迟到内容自己就满足它
+                        # （用户已经在 AI 最后一帧之后发过声），于是欠账在它真正
+                        # 的终结到达之前就被清掉，那条终结转而去结算刚铸出的
+                        # external token —— 回合还在飞就显示空闲。
+                        #
+                        # 反向风险（旧回合永不终结）有两道界，都不依赖这里：
+                        # _interrupted 为真时两个 _ai_recent_activity_time 刷新点
+                        # 都被跳过，3s 后 _still_within_ai_window 转假、本判据自动
+                        # 放行；而「此后再无 AI 内容」那种连本分支都进不来的情形，
+                        # 由 _consume_cancelled_terminal() 的期限兜底。
                         self._gemini_cancelled_terminal_pending = False
                     if _is_new_turn and _can_clear_interrupted:
                         # Gemini has no response.created event; clear stale interrupt state only
