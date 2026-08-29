@@ -311,6 +311,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
 
     async def disconnect(self) -> None:
         self._closing = True
+        self._cancel_inbound_sink_tasks()
         for task in [self._heartbeat_task, self._receive_task]:
             if task and not task.done():
                 task.cancel()

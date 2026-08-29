@@ -322,6 +322,7 @@ class QQClient(QQConnectionBase):
     async def disconnect(self):
         """Tear down the connection and clean up resources."""
         self._closing = True
+        self._cancel_inbound_sink_tasks()
 
         # Cancel all pending requests
         for future in list(self._pending_actions.values()):

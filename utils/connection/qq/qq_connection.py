@@ -223,6 +223,20 @@ class QQConnectionBase(ABC):
             # 已在 drop-oldest 时从队首清除;cancel 后 done_callback 又触发一次,忽略。
             pass
 
+    def _cancel_inbound_sink_tasks(self) -> None:
+        """Cancel lingering inbound-sink tasks (called from each ``disconnect()``).
+
+        Drop-oldest bounds the backlog, but tasks still running when the
+        connection tears down would otherwise linger until their sink finishes;
+        cancel them so nothing outlives the connection.
+        """
+        tasks = getattr(self, "_inbound_sink_tasks", None)
+        if not tasks:
+            return
+        for task in list(tasks):
+            task.cancel()
+        tasks.clear()
+
     async def _run_inbound_sink(self, sink: Any, message: dict[str, Any]) -> None:
         """Run one sink call; swallow any failure so the broadcast never raises."""
         try:
