@@ -2273,6 +2273,17 @@ class _TransportMixin:
         if self._current_response_id is not None:
             try:
                 await self.cancel_response(send_guard=connection_still_ours)
+                # provider 是从**取消落地**那一刻起欠这条终结的，不是从我们决定
+                # 取消那一刻。这个 await 会被传输背压拖住，期限若还从上面那次
+                # 打点起算，就可能在这里等着的时候就过期，后继回合拿到一笔已经
+                # 过期的欠账 —— 正好把本次要修的那个回归又放回来。
+                # 上面先武装是为了让任何一条 return 路径都带着期限离开；这里只是
+                # 在真的等过之后把起点校准回来。
+                if self._gemini_cancelled_terminal_pending:
+                    self._gemini_cancelled_terminal_deadline = (
+                        time.monotonic()
+                        + _GEMINI_CANCELLED_TERMINAL_TTL_SECONDS
+                    )
             except ConnectionError:
                 if (
                     connection_still_ours is not None

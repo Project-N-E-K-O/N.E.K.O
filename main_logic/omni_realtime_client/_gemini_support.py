@@ -877,6 +877,9 @@ class _GeminiMixin:
                         # 放行；而「此后再无 AI 内容」那种连本分支都进不来的情形，
                         # 由 _consume_cancelled_terminal() 的期限兜底。
                         self._gemini_cancelled_terminal_pending = False
+                        # 期限跟着欠账一起清：另外两条退路（消费、连接替换）都
+                        # 是成对清的，留一个孤儿期限只会让状态读起来有歧义。
+                        self._gemini_cancelled_terminal_deadline = None
                     if _is_new_turn and _can_clear_interrupted:
                         # Gemini has no response.created event; clear stale interrupt state only
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.

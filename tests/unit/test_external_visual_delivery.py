@@ -1568,6 +1568,80 @@ async def test_late_content_from_the_cancelled_turn_keeps_the_debt():
 
 
 @pytest.mark.asyncio
+async def test_voiding_the_debt_also_drops_its_deadline():
+    """The two fields are one piece of state; retiring one orphans the other.
+
+    The consume and connection-replacement paths already clear them together.
+    A deadline left behind by the turn-start void is inert only because the one
+    arming site always overwrites it -- a second arming site would inherit it.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client.on_new_message = None
+    client.on_text_delta = None
+    client._settle_gemini_proactive_inject = MagicMock()
+    client._gemini_cancelled_terminal_pending = True
+    client._gemini_cancelled_terminal_deadline = time.monotonic() + 60.0
+    client._is_responding = False
+    client._interrupted = False
+    client._user_recent_activity_time = 200.0
+    client._ai_recent_activity_time = 100.0
+
+    content_start = SimpleNamespace(
+        model_turn=SimpleNamespace(parts=[]),
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=False,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=content_start, tool_call=None),
+        connection_generation=1,
+    )
+
+    assert client._gemini_cancelled_terminal_pending is False
+    assert client._gemini_cancelled_terminal_deadline is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_cancel_send_restarts_the_debt_deadline():
+    """The provider owes the terminal from when the cancel lands.
+
+    ``handle_interruption`` arms the debt before awaiting the cancellation
+    send so every early return carries a deadline. If transport backpressure
+    holds that await for longer than the TTL, a deadline stamped before it
+    is already expired by the time the successor turn is submitted, and the
+    cancelled turn's terminal settles the successor -- the regression this
+    whole change exists to prevent. So the stamp is taken again once the send
+    actually completes.
+    """
+    client = _make_client("openai", "gpt-4o-realtime-preview")
+    client._is_responding = True
+    client._current_response_id = "resp-1"
+
+    async def _slow_cancel(*_args, **_kwargs):
+        await asyncio.sleep(0)
+        # 模拟被背压拖过了 TTL：此刻已武装的期限早就到点了。
+        assert client._gemini_cancelled_terminal_deadline is not None
+        client._gemini_cancelled_terminal_deadline = time.monotonic() - 1.0
+
+    client.cancel_response = _slow_cancel
+
+    await client.handle_interruption()
+
+    assert client._gemini_cancelled_terminal_pending is True
+    deadline = client._gemini_cancelled_terminal_deadline
+    assert deadline is not None
+    # 期限从「取消落地」重新起算，不再是过期的那个。
+    assert deadline > time.monotonic()
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_an_expired_debt_does_not_eat_a_legitimate_terminal():
     """A debt that outlived its window is spent but not honoured.
 
