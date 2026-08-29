@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
@@ -79,7 +80,7 @@ class QQConnectionBase(ABC):
     @abstractmethod
     async def send_group_record(
         self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = ""
-    ) -> None:
+    ) -> Optional[str]:
         """Send a group voice message."""
         ...
 
@@ -157,6 +158,9 @@ class QQConnectionBase(ABC):
     # inbound QQ messages to other plugins; a plugin that owns its own connection
     # can also attach its own sink. Never blocks the message pipeline (best-effort).
     _INBOUND_SINK_ATTR = "_inbound_sink"
+    #: 入站 sink 任务集上限;满了 cancel + 丢弃最旧(与 SSE 通道的 drop-oldest 一致)。
+    #: 否则一个慢/永不完成的 sink 会让未完成任务集按消息量无限增长,拖垮连接器进程。
+    _INBOUND_SINK_MAX_BACKLOG = 100
 
     @property
     def inbound_sink(self) -> Any | None:
@@ -192,15 +196,32 @@ class QQConnectionBase(ABC):
 
         ``create_task`` must run inside a live event loop (``receive_message`` is
         always awaited on one); without a reference the task could be collected
-        before it runs, so we track it in a set and discard it on completion.
+        before it runs, so we track it in a FIFO deque and discard it on completion
+        (or when it is dropped as the oldest occupant of the bounded backlog).
         """
         task = asyncio.create_task(self._run_inbound_sink(sink, message))
         tasks = getattr(self, "_inbound_sink_tasks", None)
         if tasks is None:
-            tasks = set()
+            tasks = collections.deque()
             setattr(self, "_inbound_sink_tasks", tasks)
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
+        # 有界 backlog:满了就 cancel + 丢弃最旧(队首)未完成任务。这是 best-effort
+        # 广播,压力下丢旧保新(与 SSE 通道的 drop-oldest 语义一致);否则慢/永不完成
+        # 的 sink 会让任务集按消息量无限增长,最终拖垮连接器进程。
+        while len(tasks) >= self._INBOUND_SINK_MAX_BACKLOG:
+            tasks.popleft().cancel()
+        tasks.append(task)
+        task.add_done_callback(self._discard_inbound_sink_task)
+
+    def _discard_inbound_sink_task(self, task: asyncio.Task) -> None:
+        """Drop a finished (or already-dropped) sink task from the tracked backlog."""
+        tasks = getattr(self, "_inbound_sink_tasks", None)
+        if tasks is None:
+            return
+        try:
+            tasks.remove(task)
+        except ValueError:
+            # 已在 drop-oldest 时从队首清除;cancel 后 done_callback 又触发一次,忽略。
+            pass
 
     async def _run_inbound_sink(self, sink: Any, message: dict[str, Any]) -> None:
         """Run one sink call; swallow any failure so the broadcast never raises."""

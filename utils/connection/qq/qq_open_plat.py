@@ -720,14 +720,19 @@ class QQOpenPlatformConnection(QQConnectionBase):
         backends degrade to text before reaching here. Card images must be pre-resolved
         to URLs in ``ark_obj``; no upload needed here.
         """
-        await self._ensure_token()
-        resp = await self._http.post(
-            f"{self._API_BASE}/v2/groups/{group_id}/messages",
-            json=ark_obj,
-            headers=self._auth_headers(),
-        )
-        data = resp.json()
-        return bool(data.get("id"))
+        try:
+            await self._ensure_token()
+            resp = await self._http.post(
+                f"{self._API_BASE}/v2/groups/{group_id}/messages",
+                json=ark_obj,
+                headers=self._auth_headers(),
+            )
+            data = resp.json()
+            return bool(data.get("id"))
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"[QQOpenPlatform] 发送群 Ark 卡片失败: {e}")
+            return False
 
     async def get_login_status(self) -> dict[str, Any]:
         if self._ws and self._self_id:
