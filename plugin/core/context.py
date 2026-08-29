@@ -1312,8 +1312,19 @@ class PluginContext:
             carriers = _inline_binary_carriers(
                 canonical.get("parts"), legacy_binary_data
             )
-            if not carriers:
-                return None
+            # Every payload is measured, not just the ones carrying inline
+            # bytes. This used to skip out when ``carriers`` was empty, to keep
+            # a second msgpack pack off the high-frequency text cue path -- but
+            # the host measures the WHOLE envelope, so an oversized text or
+            # metadata push was still dropped there as payload_too_big while
+            # push_message() had already answered submitted=True. That is the
+            # exact invisible non-delivery this guard exists to end, left open
+            # for the cheapest possible payload to walk through (CodeRabbit).
+            #
+            # The cost that justified the skip does not survive measurement:
+            # ormsgpack.packb on a typical text cue (248 B) is 0.19 us, and
+            # 50 us on a 200 KB one. Paying a fifth of a microsecond per cue to
+            # close a silent-loss hole is not a trade that needs thinking about.
             if ormsgpack is None:
                 return None
             from plugin.settings import (
@@ -1331,9 +1342,21 @@ class PluginContext:
             if size <= limit:
                 return None
             totals = _inline_carrier_totals(carriers)
-            dominant = totals[0][0]
             labels = [label for label, _size in totals]
-            if dominant == "image":
+            dominant = totals[0][0] if totals else ""
+            if not totals:
+                # No inline carrier at all: the text parts or the metadata are
+                # what spent the budget. The base64 explanation below would be
+                # actively misleading here -- there is nothing base64-encoded to
+                # blame, the payload is simply that big -- so this branch gets
+                # its own wording and the log line drops the ratio arithmetic.
+                remedy = (
+                    "Nothing in this push travels inline, so the text parts or "
+                    "the metadata are what spent the budget: shorten them, or "
+                    "move the bulk into a file or a URL the host can fetch and "
+                    "reference it from a shorter message."
+                )
+            elif dominant == "image":
                 remedy = (
                     "Send large images as a URL part instead: "
                     "`part = await ctx.images.upload(data, mime=...)` returns a "
@@ -1363,20 +1386,35 @@ class PluginContext:
                 # fix looks arbitrary. The per-carrier breakdown is what keeps
                 # the remedy honest when a push carries more than one inline
                 # part: the advice follows the payload that spent the budget.
-                self.logger.error(
-                    "[PluginContext] push_message rejected: reason=payload_too_large "
-                    "plugin_id={} size={}B limit={}B inline={}. Inline bytes travel "
-                    "base64-encoded in parts[].binary_base64, about {}x their raw "
-                    "size, so the effective raw-bytes ceiling for one inline payload "
-                    "is about {}B. {}",
-                    self.plugin_id,
-                    int(size),
-                    limit,
-                    " ".join(f"{label}={size_b}B" for label, size_b in totals),
-                    f"{_INLINE_BASE64_WIRE_RATIO:.2f}",
-                    int(limit / _INLINE_BASE64_WIRE_RATIO),
-                    remedy,
-                )
+                if totals:
+                    self.logger.error(
+                        "[PluginContext] push_message rejected: reason=payload_too_large "
+                        "plugin_id={} size={}B limit={}B inline={}. Inline bytes travel "
+                        "base64-encoded in parts[].binary_base64, about {}x their raw "
+                        "size, so the effective raw-bytes ceiling for one inline payload "
+                        "is about {}B. {}",
+                        self.plugin_id,
+                        int(size),
+                        limit,
+                        " ".join(f"{label}={size_b}B" for label, size_b in totals),
+                        f"{_INLINE_BASE64_WIRE_RATIO:.2f}",
+                        int(limit / _INLINE_BASE64_WIRE_RATIO),
+                        remedy,
+                    )
+                else:
+                    # No base64 arithmetic here: quoting a ratio and an
+                    # "effective raw-bytes ceiling" for a push that carries no
+                    # inline bytes would send the author hunting for an
+                    # attachment that does not exist. The size and the limit are
+                    # the whole story.
+                    self.logger.error(
+                        "[PluginContext] push_message rejected: reason=payload_too_large "
+                        "plugin_id={} size={}B limit={}B inline=none. {}",
+                        self.plugin_id,
+                        int(size),
+                        limit,
+                        remedy,
+                    )
             except Exception:
                 # Diagnostic only. A logging failure (rotation race, bad
                 # formatting arg) must not convert a clean local rejection into

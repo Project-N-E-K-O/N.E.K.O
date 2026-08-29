@@ -560,7 +560,7 @@ def test_oversized_inline_fast_push_is_not_enqueued(
 
 
 @pytest.mark.plugin_unit
-def test_text_only_fast_push_pays_no_size_probe(
+def test_text_only_fast_push_pays_exactly_one_size_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -577,13 +577,24 @@ def test_text_only_fast_push_pays_no_size_probe(
 
     assert result == {"submitted": True}
     assert len(batcher.items) == 1
-    # The batcher does its own packing on its own thread; push_message itself
-    # must pack nothing at all for a text-only cue.
-    assert counter.calls == 0
+    # Exactly one pack: the size probe.
+    #
+    # This asserted ZERO until the probe stopped skipping payloads with no
+    # inline carrier. That skip existed to keep this high-frequency path cheap,
+    # and it was the wrong trade: the host measures the WHOLE envelope, so an
+    # oversized text cue was dropped there as payload_too_big while
+    # push_message() had already answered submitted=True. Measured before
+    # removing it -- 0.19 us to pack a 248 B cue -- which is what the silence
+    # was buying.
+    #
+    # What still needs pinning is that the probe costs ONE pack, not one per
+    # part: this number going up with the part count is the regression to
+    # catch. The batcher does its own packing later, on its own thread.
+    assert counter.calls == 1
 
 
 @pytest.mark.plugin_unit
-def test_text_only_slow_push_packs_only_the_envelope(
+def test_text_only_slow_push_packs_probe_then_envelope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -599,9 +610,14 @@ def test_text_only_slow_push_packs_only_the_envelope(
 
     assert result == {"submitted": True}
     assert len(socket.sent) == 1
-    # One pack: the ZMQ envelope. A second one would mean the probe went
-    # unconditional and every text cue now pays for the rare image push.
-    assert counter.calls == 1
+    # Two packs: the size probe, then the ZMQ envelope.
+    #
+    # This asserted ONE while the probe skipped carrier-free payloads. That
+    # skip is gone: the host measures the whole envelope regardless, so a big
+    # text cue was being dropped there after the author was told it went out.
+    # A THIRD pack would mean something started packing per part rather than
+    # once per push, which is the cost regression worth catching here.
+    assert counter.calls == 2
 
 
 @pytest.mark.plugin_unit
@@ -959,3 +975,50 @@ def test_within_budget_push_still_reaches_the_legacy_queue(
 
     assert result == {"submitted": True}
     assert len(queue.items) == 1
+
+
+@pytest.mark.plugin_unit
+def test_oversized_text_only_push_is_rejected_without_inline_carriers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A push with no inline bytes is measured too, and told the truth about why.
+
+    The size probe used to return early when the payload carried no inline
+    carrier, to keep a second msgpack pack off the high-frequency text cue path.
+    But the host measures the WHOLE envelope, so an oversized text or metadata
+    push was still discarded there as payload_too_big after push_message() had
+    answered submitted=True -- the invisible non-delivery this guard exists to
+    end, left open for the cheapest payload to walk through (CodeRabbit).
+
+    Measured before removing the skip: packb on a typical 248 B text cue is
+    0.19 us. That is what the hole was buying.
+
+    The remedy text matters as much as the verdict here: with no carrier there
+    is nothing base64-encoded to blame, so advice about ctx.images.upload() or
+    about a 4/3 wire ratio would send the author looking for an attachment that
+    does not exist.
+    """
+    monkeypatch.setattr(context_module, "zmq", None)
+    monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    queue = _Queue()
+    ctx, logger = _context(tmp_path, message_queue=queue)
+
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="read",
+        parts=[{"type": "text", "text": "x" * 8192}],
+    )
+
+    assert result == {
+        "ok": False,
+        "submitted": False,
+        "reason": "payload_too_large",
+    }
+    assert queue.items == []
+    reported = repr(logger.records)
+    assert "payload_too_large" in reported
+    assert "inline=none" in reported
+    # No inline carrier -> none of the attachment-shaped advice applies.
+    assert "ctx.images.upload" not in reported
+    assert "base64" not in reported
