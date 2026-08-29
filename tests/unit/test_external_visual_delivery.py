@@ -1586,7 +1586,11 @@ async def test_voiding_the_debt_also_drops_its_deadline():
     client._gemini_cancelled_terminal_pending = True
     client._gemini_cancelled_terminal_deadline = time.monotonic() + 60.0
     client._is_responding = False
-    client._interrupted = False
+    # 外部 ASR 送的是文本，provider 不回 input_transcription，所以打断标志会一直
+    # 挂着 —— 用生产上的状态，别用 _interrupted=False 把判据绕过去。这里靠的是
+    # AI 静默超窗（_can_clear_interrupted 的第三个析取项）。
+    client._interrupted = True
+    client._gemini_user_transcript_after_interrupt = False
     client._user_recent_activity_time = 200.0
     client._ai_recent_activity_time = 100.0
 

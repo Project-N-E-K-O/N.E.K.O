@@ -888,6 +888,21 @@ class _GeminiMixin:
                         # 的终结到达之前就被清掉，那条终结转而去结算刚铸出的
                         # external token —— 回合还在飞就显示空闲。
                         #
+                        # ⚠️ 已知残留、经产品判断后接受，别再改回松判据：
+                        # 「A 的迟到内容」与「后继 B 的第一条内容」在协议层长得
+                        # 一模一样（都是 model_turn / output_transcription、都不带
+                        # 回合标识、都在打断之后），_turn_epoch 对两者也都自增，
+                        # 区分不出来。于是只有两种取法，互斥：
+                        #   看到内容就作废 → A 的终结去结算了 B 的 token，B 还在
+                        #     说话会话已读作空闲（抢话时的**常见**路径）；
+                        #   不作废（现在这样）→ 欠账是虚的、或 A 两种终结都没发
+                        #     时，B 自己的终结被吃掉，B 的 token 没人结算。
+                        # 取后者：那条残留只影响主动搭话（is_active_response 的
+                        # 读取点全在 proactive 一线），而且第一道闸
+                        # proactive.py 的 trigger_agent_callbacks 在**生成台词之前**
+                        # 就 defer 掉，是纯跳过、不烧 token，用户自己的对话链路
+                        # 一个读取点都不碰、不会卡顿。
+                        #
                         # 反向风险（旧回合永不终结）有两道界，都不依赖这里：
                         # _interrupted 为真时两个 _ai_recent_activity_time 刷新点
                         # 都被跳过，3s 后 _still_within_ai_window 转假、本判据自动
