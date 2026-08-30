@@ -2235,3 +2235,130 @@ def test_the_flush_phase_keeps_the_workspace_alive_too(tmp_path):
         "the workspace was not kept alive during the flush itself: %r beats "
         "inside _fsync_tree" % (during_flush,)
     )
+
+
+@pytest.mark.unit
+def test_a_symlinked_staging_parent_keeps_its_own_ledger(tmp_path):
+    """Preparation refuses to use a link at the reserved name. So must this.
+
+    A link there points at somebody else's directory, so a file called
+    "minted" inside it is theirs -- and reading it is the smaller half of the
+    problem: with no valid records in it, the tidy-up at the end of
+    reclamation reaches `ledger.unlink()` and deletes it.
+    """
+    from utils.config_manager.migrations import (
+        _MIGRATION_LEDGER_NAME,
+        _MIGRATION_STAGING_DIR,
+    )
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+
+    outside = tmp_path / "somebody-elses"
+    outside.mkdir()
+    theirs = outside / _MIGRATION_LEDGER_NAME
+    theirs.write_text("not ours at all", encoding="utf-8")
+
+    parent = Path(config_manager.app_docs_dir) / _MIGRATION_STAGING_DIR
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        parent.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform will not create symlinks unprivileged")
+
+    config_manager.migrate_memory_files()
+
+    assert theirs.read_text(encoding="utf-8") == "not ours at all", (
+        "a ledger behind a symlinked staging parent was read and removed"
+    )
+    assert parent.is_symlink(), "the link itself was not preserved"
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]", "the migration did not complete around the link"
+
+
+@pytest.mark.unit
+def test_a_workspace_that_lost_its_marker_stays_recorded(tmp_path):
+    """Cleanup can remove the marker and then fail on a file still open.
+
+    The marker stays REQUIRED -- without it a corrupted ledger naming a
+    ".mig-"-prefixed character directory would have it deleted, and a
+    directory left behind is the cheaper mistake. But forgetting the RECORD
+    as well throws away the only thing that points at a workspace still
+    sitting in the namespace.
+    """
+    from utils.config_manager.migrations import (
+        _MIGRATION_STAGING_STALE_SECONDS,
+        _MIGRATION_WORKSPACE_PREFIX,
+    )
+
+    config_manager = _make_config_manager(tmp_path)
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    config_manager.project_memory_dir = tmp_path / "no-such-project-memory"
+
+    # Recorded and shaped, but its marker went in a half-finished cleanup.
+    stripped = runtime_root / (_MIGRATION_WORKSPACE_PREFIX + "half-cleaned")
+    stripped.mkdir()
+    (stripped / "still-here.json").write_text("[9]", encoding="utf-8")
+
+    ledger = config_manager._migration_ledger_path()
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(str(stripped) + "\n", encoding="utf-8")
+    stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
+    os.utime(stripped, (stale, stale))
+
+    config_manager.migrate_memory_files()
+
+    assert stripped.is_dir(), "an unmarked directory was deleted after all"
+    assert ledger.exists() and str(stripped) in ledger.read_text(
+        encoding="utf-8"
+    ), "the only record of a workspace still on disk was thrown away"
+
+
+@pytest.mark.unit
+def test_a_cloud_import_leaves_a_migration_workspace_alone(tmp_path):
+    """The import treats every unimported directory in memory/ as stale.
+
+    On the cross-device layout the migration has to stage INSIDE memory_dir,
+    and an import can run while that copy is in flight -- so the sweep would
+    remove a half-copied character tree out from under the process writing
+    it.
+    """
+    from utils.cloudsave_runtime.operations import (
+        bootstrap_local_cloudsave_environment,
+        export_local_cloudsave_snapshot,
+        import_local_cloudsave_snapshot,
+    )
+    from utils.config_manager.migrations import _MIGRATION_WORKSPACE_PREFIX
+
+    config_manager = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(config_manager)
+    memory_root = Path(config_manager.memory_dir)
+    memory_root.mkdir(parents=True, exist_ok=True)
+    export_local_cloudsave_snapshot(config_manager)
+
+    # Both appear AFTER the snapshot, so neither is in the imported set.
+    workspace = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "live")
+    (workspace / "d").mkdir(parents=True)
+    (workspace / "d" / "half.json").write_text("[1]", encoding="utf-8")
+    genuinely_stale = memory_root / "Ghost"
+    genuinely_stale.mkdir()
+    (genuinely_stale / "facts.json").write_text("[9]", encoding="utf-8")
+
+    import_local_cloudsave_snapshot(config_manager)
+
+    assert (workspace / "d" / "half.json").exists(), (
+        "the import deleted a migration workspace as stale runtime data"
+    )
+    # The dual, so this is not passing by the sweep having stopped working.
+    assert not genuinely_stale.exists(), (
+        "a directory that really was stale survived the import"
+    )

@@ -1401,10 +1401,24 @@ def import_local_cloudsave_snapshot(
                 if relative_path not in staged_entries and target_path.exists():
                     delete_file_targets.add(target_path)
 
+        from utils.config_manager.migrations import (
+            _MIGRATION_WORKSPACE_PREFIX,
+        )
+
         memory_root = Path(config_manager.memory_dir)
         if memory_root.exists():
             for child in memory_root.iterdir():
-                if child.is_dir() and child.name not in imported_character_names:
+                if not child.is_dir():
+                    continue
+                if child.name.startswith(_MIGRATION_WORKSPACE_PREFIX):
+                    # A startup migration WORKSPACE, not stale runtime
+                    # data. When memory/ is a junction onto another
+                    # volume the migration has to stage inside it, and
+                    # this import can run while that copy is in flight --
+                    # so removing it here deletes a half-copied character
+                    # tree out from under the process writing it.
+                    continue
+                if child.name not in imported_character_names:
                     delete_dir_targets.add(child)
 
         recent_targets = {

@@ -300,6 +300,9 @@ _MIGRATION_LEDGER_NAME = "minted"
 # _MIGRATION_LOCK sees to that -- and because the after-fork hook has to
 # be able to reach it: a child inherits the open file description and
 # goes on holding a lock on a workspace it is not migrating into.
+# Written and read only through ``global`` inside the two functions above,
+# which is what a lock held for the length of a run looks like -- and why
+# a reader can take this binding for dead.
 _MIGRATION_WORKSPACE_LOCK = None
 
 
@@ -330,6 +333,10 @@ def _claim_workspace(path):
     leaves the age check exactly as it was.
     """
     marker = os.path.join(str(path), _MIGRATION_WORKSPACE_LOCK_NAME)
+    # The handle is RETURNED STILL OPEN, on purpose: holding it open is
+    # what holds the lock, and the lock is the whole point. The caller
+    # keeps it in _MIGRATION_WORKSPACE_LOCK for the length of the run and
+    # _release_inherited_workspace_lock closes it.
     try:
         handle = open(marker, "a+b")
         handle.write(b"1")
@@ -723,6 +730,14 @@ class MigrationsMixin:
         workspace that is fresh, or that somebody still holds, stays.
         """
         ledger = self._migration_ledger_path()
+        parent = ledger.parent
+        if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+            # The same refusal preparation makes, for the same reason and
+            # one step earlier: a link at the reserved name points at
+            # somebody else's directory, so anything called "minted" in
+            # there is theirs. Reading it is bad enough; the tidy-up at
+            # the end of this function would then UNLINK it.
+            return
         try:
             recorded = ledger.read_text(encoding="utf-8").splitlines()
         except OSError:
@@ -782,6 +797,16 @@ class MigrationsMixin:
             if not (entry / _MIGRATION_WORKSPACE_LOCK_NAME).exists():
                 # Recorded, in the right place, named right -- and still
                 # not carrying what we put in every workspace we make.
+                # The marker stays required: without it, a corrupted
+                # ledger naming a ".mig-"-prefixed CHARACTER directory
+                # would have it deleted, and a directory left behind is
+                # the cheaper of the two mistakes.
+                #
+                # But the record is KEPT. A cleanup that removed the
+                # marker and then failed on a file still open would
+                # otherwise have the next run drop the only thing that
+                # points at a workspace still sitting there.
+                remaining.append(recorded_path)
                 continue
             if _workspace_is_live(entry):
                 remaining.append(recorded_path)
