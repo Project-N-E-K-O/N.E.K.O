@@ -2346,19 +2346,32 @@ def test_a_cloud_import_leaves_a_migration_workspace_alone(tmp_path):
     export_local_cloudsave_snapshot(config_manager)
 
     # Both appear AFTER the snapshot, so neither is in the imported set.
+    from utils.config_manager.migrations import _MIGRATION_WORKSPACE_LOCK_NAME
+
     workspace = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "live")
     (workspace / "d").mkdir(parents=True)
     (workspace / "d" / "half.json").write_text("[1]", encoding="utf-8")
+    (workspace / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
     genuinely_stale = memory_root / "Ghost"
     genuinely_stale.mkdir()
     (genuinely_stale / "facts.json").write_text("[9]", encoding="utf-8")
+    # A CHARACTER whose name carries the prefix -- legal, and deleted from
+    # the imported set. Exempting on the prefix alone would keep it alive
+    # through every import, which is the mirror image of the bug above.
+    prefixed_character = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "Carol")
+    prefixed_character.mkdir()
+    (prefixed_character / "facts.json").write_text("[8]", encoding="utf-8")
 
     import_local_cloudsave_snapshot(config_manager)
 
     assert (workspace / "d" / "half.json").exists(), (
         "the import deleted a migration workspace as stale runtime data"
     )
-    # The dual, so this is not passing by the sweep having stopped working.
+    # The duals, so this is not passing by the sweep having stopped working.
     assert not genuinely_stale.exists(), (
         "a directory that really was stale survived the import"
+    )
+    assert not prefixed_character.exists(), (
+        "a character whose name carries the workspace prefix was exempted "
+        "from the import, so deleting it can never take effect"
     )

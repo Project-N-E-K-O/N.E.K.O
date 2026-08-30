@@ -1402,6 +1402,7 @@ def import_local_cloudsave_snapshot(
                     delete_file_targets.add(target_path)
 
         from utils.config_manager.migrations import (
+            _MIGRATION_WORKSPACE_LOCK_NAME,
             _MIGRATION_WORKSPACE_PREFIX,
         )
 
@@ -1410,13 +1411,22 @@ def import_local_cloudsave_snapshot(
             for child in memory_root.iterdir():
                 if not child.is_dir():
                     continue
-                if child.name.startswith(_MIGRATION_WORKSPACE_PREFIX):
+                if child.name.startswith(_MIGRATION_WORKSPACE_PREFIX) and (
+                    child / _MIGRATION_WORKSPACE_LOCK_NAME
+                ).exists():
                     # A startup migration WORKSPACE, not stale runtime
                     # data. When memory/ is a junction onto another
                     # volume the migration has to stage inside it, and
                     # this import can run while that copy is in flight --
                     # so removing it here deletes a half-copied character
                     # tree out from under the process writing it.
+                    #
+                    # The MARKER as well as the prefix, because ".mig-x"
+                    # is a legal character name: exempting on the prefix
+                    # alone would keep a deleted character alive through
+                    # every import. Same ownership rule the migration own
+                    # reclamation uses, and a character directory holds no
+                    # ".lock".
                     continue
                 if child.name not in imported_character_names:
                     delete_dir_targets.add(child)
