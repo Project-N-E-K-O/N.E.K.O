@@ -925,6 +925,8 @@ def test_both_publishes_share_one_busy_backoff(tmp_path):
         try:
             call()
         except OSError:
+            # The point is the attempt COUNT, and every attempt raises here
+            # by construction; the last one comes back out to the caller.
             pass
         finally:
             setattr(file_utils.os, primitive, real_primitive)

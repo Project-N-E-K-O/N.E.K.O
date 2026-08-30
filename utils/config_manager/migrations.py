@@ -71,6 +71,27 @@ _MIGRATION_HEARTBEAT_SECONDS = 30
 _MIGRATION_LOCK = threading.Lock()
 
 
+def _release_inherited_workspace_lock() -> None:
+    """Drop the workspace lock this process inherited but does not own.
+
+    ``fork`` copies the open file description, so the child goes on
+    holding the advisory lock on a workspace it is not migrating into.
+    If the parent is then killed, every later run reads that workspace as
+    LIVE for as long as the child survives, and its staged tree stays.
+    """
+    global _MIGRATION_WORKSPACE_LOCK
+
+    handle = _MIGRATION_WORKSPACE_LOCK
+    _MIGRATION_WORKSPACE_LOCK = None
+    if handle is None:
+        return
+    try:
+        handle.close()
+    except OSError:
+        # Releasing a lock this process was never entitled to hold.
+        pass
+
+
 def _reset_migration_lock_after_fork() -> None:
     """Give the child a fresh lock, because it inherited a held one.
 
@@ -87,6 +108,7 @@ def _reset_migration_lock_after_fork() -> None:
     global _MIGRATION_LOCK
 
     _MIGRATION_LOCK = threading.Lock()
+    _release_inherited_workspace_lock()
 
 
 if hasattr(os, "register_at_fork"):
@@ -256,6 +278,13 @@ _MIGRATION_WORKSPACE_LOCK_NAME = ".lock"
 # reproduce, and reclaiming on the strength of them means deleting a
 # whole character. A path only reaches this file because we created it.
 _MIGRATION_LEDGER_NAME = "minted"
+
+# The live workspace lock, held for the length of one run. Module state
+# rather than instance state because only one migration runs at a time --
+# _MIGRATION_LOCK sees to that -- and because the after-fork hook has to
+# be able to reach it: a child inherits the open file description and
+# goes on holding a lock on a workspace it is not migrating into.
+_MIGRATION_WORKSPACE_LOCK = None
 
 
 def _hold_workspace_lock(handle):
@@ -573,16 +602,9 @@ class MigrationsMixin:
         ``memory_dir`` it is the namespace itself.
         """
         try:
-            handle = getattr(self, "_migration_workspace_lock", None)
-            if handle is not None:
-                # Before the removal, not after: on Windows an open file
-                # cannot be unlinked, and this one is inside the tree.
-                self._migration_workspace_lock = None
-                try:
-                    handle.close()
-                except OSError:
-                    # Releasing a lock we are about to drop anyway.
-                    pass
+            # Before the removal, not after: on Windows an open file
+            # cannot be unlinked, and this one is inside the tree.
+            _release_inherited_workspace_lock()
             if workspace is not None:
                 _force_rmtree(workspace)
             parent, owned = self._migration_staging_parent()
@@ -684,13 +706,36 @@ class MigrationsMixin:
             # No record, nothing reclaimable. Not an error: the layout
             # that writes one is the exotic one.
             return
+        except UnicodeDecodeError:
+            # Truncated mid-character by a kill, or a file that was
+            # never ours. This is NOT an OSError, so it escaped the
+            # handler above, came out of a finally on the startup path,
+            # and would have failed the launch on every attempt --
+            # reclamation is best effort and must never do that.
+            return
         kept = Path(keep) if keep is not None else None
+        namespace = Path(self.memory_dir)
         remaining = []
         for line in recorded:
             recorded_path = line.strip()
             if not recorded_path:
                 continue
             entry = Path(recorded_path)
+            # The record is the one claim a character cannot forge, and
+            # that is the ONLY thing it is. It is not a licence to
+            # delete: this file could predate the migration, be written
+            # by something else, or be corrupted, and every line was
+            # taken as a path to remove recursively -- including one
+            # naming a directory outside the application root entirely.
+            #
+            # So shape and containment are required TOO. Each condition
+            # can only ever refuse, so together they are strictly safer
+            # than any one of them, and a line that fails them is
+            # forgotten rather than kept: nothing will ever act on it.
+            if entry.parent != namespace:
+                continue
+            if not entry.name.startswith(_MIGRATION_WORKSPACE_PREFIX):
+                continue
             if kept is not None and entry == kept:
                 # This run's own, already removed above -- unless the removal
                 # did not take. Dropping the record unconditionally made a
@@ -710,6 +755,10 @@ class MigrationsMixin:
                     continue
             except OSError:
                 remaining.append(recorded_path)
+                continue
+            if not (entry / _MIGRATION_WORKSPACE_LOCK_NAME).exists():
+                # Recorded, in the right place, named right -- and still
+                # not carrying what we put in every workspace we make.
                 continue
             if _workspace_is_live(entry):
                 remaining.append(recorded_path)
@@ -802,8 +851,10 @@ class MigrationsMixin:
 
     def _claimed_workspace(self, path):
         """Hold this workspace's lock for the rest of the run."""
+        global _MIGRATION_WORKSPACE_LOCK
+
         workspace = Path(path)
-        self._migration_workspace_lock = _claim_workspace(workspace)
+        _MIGRATION_WORKSPACE_LOCK = _claim_workspace(workspace)
         return workspace
 
     def migrate_memory_files(self):
@@ -944,10 +995,20 @@ class MigrationsMixin:
                                 continue
                             except OSError:
                                 # No no-replace primitive here -- FAT, or
-                                # a network filesystem without links. The
-                                # check-then-replace it had before is
-                                # what remains, and if the real failure
-                                # was something else this raises it again.
+                                # a network filesystem without links.
+                                # Removing the fallback would mean loose
+                                # seeds never migrate at all on those
+                                # roots, so it stays; what it does not do
+                                # is take the earlier check on trust.
+                                # Re-asked HERE, one statement before the
+                                # overwrite, which is the tightest this
+                                # window gets without a primitive the
+                                # filesystem does not have.
+                                if (
+                                    dest_path.is_symlink()
+                                    or dest_path.exists()
+                                ):
+                                    continue
                                 replace_with_busy_retry(
                                     staged_file, dest_path
                                 )

@@ -2028,3 +2028,146 @@ def test_a_stray_file_in_the_staging_parent_is_left_alone(tmp_path):
     assert (runtime_root / "Carol" / "facts.json").read_text(
         encoding="utf-8"
     ) == "[1]", "the stray file stopped the migration"
+
+
+@pytest.mark.unit
+def test_a_ledger_line_is_not_a_licence_to_delete(tmp_path):
+    """The record is the one claim a character cannot forge. That is ALL it is.
+
+    Every nonempty line was taken as a path to remove recursively, so a
+    "minted" file that predates this migration, is written by something
+    else, or is simply corrupted could name any directory on the machine --
+    including one outside the application root -- and startup would delete
+    it.
+
+    Shape and containment are required as well now. Each condition can only
+    ever refuse, so together they are strictly safer than any one alone.
+    """
+    from utils.config_manager.migrations import (
+        _MIGRATION_STAGING_STALE_SECONDS,
+        _MIGRATION_WORKSPACE_LOCK_NAME,
+        _MIGRATION_WORKSPACE_PREFIX,
+    )
+
+    config_manager = _make_config_manager(tmp_path)
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    config_manager.project_memory_dir = tmp_path / "no-such-project-memory"
+
+    # Somewhere else entirely, holding something that matters -- and shaped
+    # EXACTLY like a workspace, prefix and marker included. Anything less and
+    # the marker check refuses it on its own, so containment would never be
+    # the reason and could be removed with this test still passing.
+    elsewhere = tmp_path / (_MIGRATION_WORKSPACE_PREFIX + "not-the-app-root")
+    elsewhere.mkdir()
+    (elsewhere / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
+    (elsewhere / "important.txt").write_text("keep", encoding="utf-8")
+
+    # And a shaped-but-unmarked neighbour inside the namespace, to show the
+    # conditions are all required rather than any one of them sufficing.
+    unmarked = runtime_root / (_MIGRATION_WORKSPACE_PREFIX + "no-marker")
+    unmarked.mkdir()
+    (unmarked / "facts.json").write_text("keep", encoding="utf-8")
+
+    ledger = config_manager._migration_ledger_path()
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        "\n".join([str(elsewhere), str(unmarked)]) + "\n", encoding="utf-8"
+    )
+    stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
+    for path in (elsewhere, unmarked):
+        os.utime(path, (stale, stale))
+
+    config_manager.migrate_memory_files()
+
+    assert (elsewhere / "important.txt").read_text(encoding="utf-8") == "keep", (
+        "a ledger line naming a directory outside the namespace was obeyed"
+    )
+    assert (unmarked / "facts.json").read_text(encoding="utf-8") == "keep", (
+        "a recorded directory with no marker was removed"
+    )
+
+    # The dual: recorded, contained, shaped AND marked really is reclaimed,
+    # so none of the above is passing by refusing everything.
+    proper = runtime_root / (_MIGRATION_WORKSPACE_PREFIX + "real")
+    proper.mkdir()
+    (proper / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
+    # The first run consumed every line and took the empty parent with
+    # it, which is itself the tidy-up working.
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(str(proper) + "\n", encoding="utf-8")
+    os.utime(proper, (stale, stale))
+
+    config_manager.migrate_memory_files()
+
+    assert not proper.exists(), "a properly recorded workspace was not reclaimed"
+
+
+@pytest.mark.unit
+def test_a_ledger_that_will_not_decode_does_not_fail_the_launch(tmp_path):
+    """UnicodeDecodeError is not an OSError.
+
+    So a ledger truncated mid-character by a kill -- or a "minted" file that
+    was never ours -- escaped the handler, came out of a finally on the
+    startup path, and would have failed the launch on every attempt.
+    Reclamation is best effort and must never do that.
+    """
+    config_manager = _make_config_manager(tmp_path)
+    runtime_root = tmp_path / "runtime-memory"
+    project_root = tmp_path / "project-memory"
+    config_manager.memory_dir = runtime_root
+    config_manager.project_memory_dir = project_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+
+    ledger = config_manager._migration_ledger_path()
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    # A path cut in the middle of a multibyte character.
+    ledger.write_bytes("C:/x/.mig-\u732b".encode("utf-8")[:-1])
+
+    # Must not raise: the caller is startup.
+    config_manager.migrate_memory_files()
+
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]", "an undecodable ledger stopped the migration"
+
+
+@pytest.mark.unit
+def test_a_forked_child_releases_the_workspace_lock_it_inherited(tmp_path):
+    """fork copies the open file description, not the reason for holding it.
+
+    So the child goes on holding the advisory lock on a workspace it is not
+    migrating into, and if the parent is killed every later run reads that
+    workspace as LIVE for as long as the child survives. The earlier hook
+    replaced the module lock and left this one.
+    """
+    from utils.config_manager import migrations as migrations_module
+    from utils.config_manager.migrations import _MIGRATION_WORKSPACE_PREFIX
+
+    config_manager = _make_config_manager(tmp_path)
+    workspace = Path(config_manager.app_docs_dir) / (
+        _MIGRATION_WORKSPACE_PREFIX + "inherited"
+    )
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    previous = migrations_module._MIGRATION_WORKSPACE_LOCK
+    try:
+        config_manager._claimed_workspace(workspace)
+        if migrations_module._MIGRATION_WORKSPACE_LOCK is None:
+            pytest.skip("this filesystem will not hold an advisory lock")
+        assert migrations_module._workspace_is_live(workspace), (
+            "the fixture never actually held the lock"
+        )
+
+        migrations_module._reset_migration_lock_after_fork()
+
+        assert migrations_module._MIGRATION_WORKSPACE_LOCK is None
+        assert not migrations_module._workspace_is_live(workspace), (
+            "the child kept holding a lock on a workspace it does not own"
+        )
+    finally:
+        migrations_module._release_inherited_workspace_lock()
+        migrations_module._MIGRATION_WORKSPACE_LOCK = previous
