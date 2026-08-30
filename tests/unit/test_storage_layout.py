@@ -728,6 +728,8 @@ def test_staging_workspaces_do_not_accumulate_across_kills(tmp_path):
     from utils.config_manager.migrations import (
         _MIGRATION_STAGING_DIR,
         _MIGRATION_STAGING_STALE_SECONDS,
+        _MIGRATION_WORKSPACE_LOCK_NAME,
+        _MIGRATION_WORKSPACE_PREFIX,
     )
 
     config_manager = _make_config_manager(tmp_path)
@@ -762,9 +764,12 @@ def test_staging_workspaces_do_not_accumulate_across_kills(tmp_path):
 
     # A concurrent process, mid-copy. It must survive a run that finishes
     # first, along with the parent it is still using.
-    live = parent / ".other-run"
+    live = parent / (_MIGRATION_WORKSPACE_PREFIX + "other-run")
     live.mkdir()
     (live / "d").mkdir()
+    # Marked and aged out on paper -- so what saves it below is its mtime,
+    # not a missing marker.
+    (live / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
 
     # And something that is NOT the shape mkdtemp gives us, aged past the
     # threshold. This name is reserved by the app, but "reserved" is not
@@ -776,7 +781,7 @@ def test_staging_workspaces_do_not_accumulate_across_kills(tmp_path):
     config_manager.migrate_memory_files()
 
     survivors = sorted(q.name for q in parent.iterdir())
-    assert survivors == [".other-run", "not-ours"], (
+    assert survivors == [live.name, "not-ours"], (
         "expected only the concurrent run's workspace and the stranger to "
         "survive, saw %r (kills had left %r)" % (survivors, abandoned)
     )
@@ -925,6 +930,8 @@ def test_staging_is_reclaimed_even_when_the_seed_root_is_gone(tmp_path):
     from utils.config_manager.migrations import (
         _MIGRATION_STAGING_DIR,
         _MIGRATION_STAGING_STALE_SECONDS,
+        _MIGRATION_WORKSPACE_LOCK_NAME,
+        _MIGRATION_WORKSPACE_PREFIX,
     )
 
     config_manager = _make_config_manager(tmp_path)
@@ -935,9 +942,12 @@ def test_staging_is_reclaimed_even_when_the_seed_root_is_gone(tmp_path):
     config_manager.project_memory_dir = tmp_path / "no-such-project-memory"
 
     parent = Path(config_manager.app_docs_dir) / _MIGRATION_STAGING_DIR
-    abandoned = parent / ".killed-run"
+    abandoned = parent / (_MIGRATION_WORKSPACE_PREFIX + "killed")
     (abandoned / "d" / "Carol").mkdir(parents=True)
     (abandoned / "d" / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+    # The marker a real run leaves. Reclamation asks for it in BOTH parents,
+    # so a fixture without one is not testing the reclaim at all.
+    (abandoned / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
     stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
     for path in (abandoned / "d" / "Carol", abandoned / "d", abandoned):
         os.utime(path, (stale, stale))
@@ -1410,12 +1420,21 @@ def test_a_cross_device_workspace_is_reclaimed_like_any_other(tmp_path):
     bystander.mkdir()
     (bystander / "facts.json").write_text("[keep]", encoding="utf-8")
 
+    # And one the other way round: an ordinary character name that happens to
+    # hold a file called ".lock". The two conditions are independent on
+    # purpose, so each has to be shown to carry weight on its own.
+    marked = runtime_root / "Dave"
+    marked.mkdir()
+    (marked / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
+    (marked / "facts.json").write_text("[keep]", encoding="utf-8")
+
     stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
     for path in (
         abandoned / "d" / "Dave",
         abandoned / "d",
         abandoned,
         bystander,
+        marked,
     ):
         os.utime(path, (stale, stale))
 
@@ -1428,13 +1447,15 @@ def test_a_cross_device_workspace_is_reclaimed_like_any_other(tmp_path):
     assert (bystander / "facts.json").read_text(encoding="utf-8") == "[keep]", (
         "a character whose name carries the workspace prefix was swept"
     )
+    assert (marked / "facts.json").read_text(encoding="utf-8") == "[keep]", (
+        "a character holding a .lock was swept on the strength of the marker"
+    )
     assert (runtime_root / "Carol" / "facts.json").read_text(
         encoding="utf-8"
     ) == "[1]"
-    assert sorted(q.name for q in runtime_root.iterdir()) == [
-        bystander.name,
-        "Carol",
-    ], "staging was left behind in the character namespace"
+    assert sorted(q.name for q in runtime_root.iterdir()) == sorted(
+        [bystander.name, "Carol", marked.name]
+    ), "staging was left behind in the character namespace"
 
 
 @pytest.mark.unit
@@ -1454,6 +1475,8 @@ def test_a_locked_workspace_is_never_aged_out(tmp_path):
     from utils.config_manager.migrations import (
         _MIGRATION_STAGING_DIR,
         _MIGRATION_STAGING_STALE_SECONDS,
+        _MIGRATION_WORKSPACE_LOCK_NAME,
+        _MIGRATION_WORKSPACE_PREFIX,
     )
 
     config_manager = _make_config_manager(tmp_path)
@@ -1469,21 +1492,26 @@ def test_a_locked_workspace_is_never_aged_out(tmp_path):
     parent.mkdir(parents=True, exist_ok=True)
 
     # Two aged workspaces. One is held by a "live" run, one is not.
-    held = parent / ".still-running"
-    dropped = parent / ".killed-run"
-    for workspace in (held, dropped):
+    held = parent / (_MIGRATION_WORKSPACE_PREFIX + "still-running")
+    dropped = parent / (_MIGRATION_WORKSPACE_PREFIX + "killed-run")
+    # And one that carries the name but not the marker, so nothing proves it
+    # was ever ours. The rule is the same in both parents, and here it costs
+    # only a directory; inside memory_dir the same rule is what stands
+    # between the sweep and somebody's character.
+    unproven = parent / (_MIGRATION_WORKSPACE_PREFIX + "not-proven")
+    for workspace in (held, dropped, unproven):
         (workspace / "d").mkdir(parents=True)
         (workspace / "d" / "big.json").write_text("[9]", encoding="utf-8")
 
     handle = migrations_module._claim_workspace(held)
     if handle is None:
         pytest.skip("this filesystem will not hold an advisory lock")
-    # A killed run may never have claimed one at all, which is exactly what
-    # the age check is for -- so this one gets a marker it does NOT hold.
-    (dropped / ".lock").write_bytes(b"1")
+    # A killed run leaves its marker behind and holds nothing, which is
+    # exactly what the age check is for.
+    (dropped / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
 
     stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
-    for workspace in (held, dropped):
+    for workspace in (held, dropped, unproven):
         os.utime(workspace, (stale, stale))
 
     try:
@@ -1493,6 +1521,9 @@ def test_a_locked_workspace_is_never_aged_out(tmp_path):
 
     assert held.is_dir() and (held / "d" / "big.json").exists(), (
         "an aged but LOCKED workspace was deleted out from under its owner"
+    )
+    assert unproven.is_dir(), (
+        "a directory with no marker was swept on the strength of its name"
     )
     assert not dropped.exists(), (
         "an aged, unlocked workspace was not reclaimed"
@@ -1831,7 +1862,6 @@ def test_a_long_copy_keeps_its_workspace_from_ageing_out(tmp_path):
 
     touched = []
     real_utime = migrations_module.os.utime
-    real_monotonic = migrations_module.time.monotonic
     clock = [0.0]
 
     def _record(path, times=None, **kwargs):

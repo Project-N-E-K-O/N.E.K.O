@@ -521,14 +521,24 @@ class MigrationsMixin:
         this parent; removing it whole meant whichever finished first
         deleted the other's live copy.
 
-        Inside ``memory_dir`` the parent is not ours, so position proves
-        nothing and two further things are required: the name carries our
-        prefix, and the directory actually holds a lock marker. A character
-        directory holds ``facts.json``, ``persona.json``, ``settings.json``,
-        the time index and its sidecars -- never a ``.lock``. The marker
-        cannot authorise anything on its own either; its ABSENCE is what
-        vetoes, so the failure direction is "left behind", not "deleted".
-        And the parent is never removed there, because it is the namespace.
+        Ownership is PROVED rather than inferred from position, and the
+        same way in both parents: the name carries our prefix and the
+        directory holds a lock marker. Inside ``memory_dir`` that is the
+        only thing standing between the sweep and somebody's character --
+        a character directory holds ``facts.json``, ``persona.json``,
+        ``settings.json``, the time index and its sidecars, never a
+        ``.lock``. Beside it, the reserved name is far less likely to be
+        anyone else's, but "far less likely" is not a reason to hold two
+        rules, and being wrong there deletes data just the same.
+
+        The marker cannot authorise anything on its own; its ABSENCE is
+        what vetoes, so the failure direction is "left behind", never
+        "deleted". The price is a run killed in the moment between minting
+        a workspace and claiming it: that one is never reclaimed, and it
+        keeps the parent alive with it. A directory, not data.
+
+        The parent is removed only where it is ours -- inside
+        ``memory_dir`` it is the namespace itself.
         """
         try:
             handle = getattr(self, "_migration_workspace_lock", None)
@@ -553,13 +563,7 @@ class MigrationsMixin:
                 return
             cutoff = time.time() - _MIGRATION_STAGING_STALE_SECONDS
             for entry in parent.iterdir():
-                if owned:
-                    # We created this directory and nothing else has any
-                    # business in it, so the shape we mint is enough.
-                    if not entry.name.startswith("."):
-                        continue
-                elif not entry.name.startswith(_MIGRATION_WORKSPACE_PREFIX):
-                    # The character namespace. Position proves nothing here.
+                if not entry.name.startswith(_MIGRATION_WORKSPACE_PREFIX):
                     continue
                 try:
                     if entry.stat().st_mtime >= cutoff:
@@ -578,9 +582,7 @@ class MigrationsMixin:
                         # again.
                         pass
                     continue
-                if not owned and not (
-                    entry / _MIGRATION_WORKSPACE_LOCK_NAME
-                ).exists():
+                if not (entry / _MIGRATION_WORKSPACE_LOCK_NAME).exists():
                     # No marker, no proof it was ever a workspace of ours.
                     continue
                 if _workspace_is_live(entry):
@@ -661,6 +663,10 @@ class MigrationsMixin:
                     raise
                 # Another run's cleanup took the parent between the two
                 # calls. Ask again from the top.
+        # Unreachable: the last pass re-raises rather than falling out.
+        # Spelled anyway, because a loop that can end without returning
+        # reads as one that returns None on some path.
+        raise RuntimeError("migration staging preparation did not settle")
 
     def _claimed_workspace(self, path):
         """Hold this workspace's lock for the rest of the run."""
