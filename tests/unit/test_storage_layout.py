@@ -859,3 +859,100 @@ def test_an_unreadable_project_root_does_not_take_startup_down(tmp_path):
 
     # Must not raise. The caller is startup.
     config_manager.migrate_memory_files()
+
+
+@pytest.mark.unit
+def test_a_plain_file_at_the_staging_name_does_not_stop_the_migration(tmp_path):
+    """mkdir(exist_ok=True) raises FileExistsError when the path is a FILE.
+
+    That ends the whole loop, so nothing migrates -- on every start, forever,
+    because nothing clears the squatter. Verified: mkdir(parents=True,
+    exist_ok=True) over a plain file raises rather than passing.
+
+    Removing it rather than working around it is the point. Minting a unique
+    name beside it would bring back the fallback roots this design removed, and
+    with them the accumulate-after-a-kill problem. The name lives in
+    app_docs_dir, outside the character namespace, where nothing but this
+    migration has any business -- which is what makes removal safe here and
+    would not have been inside memory/.
+    """
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+    (project_root / "loose.json").write_text("[2]", encoding="utf-8")
+
+    squatter = Path(config_manager.app_docs_dir) / ".mig-staging"
+    squatter.parent.mkdir(parents=True, exist_ok=True)
+    squatter.write_text("not a directory", encoding="utf-8")
+
+    config_manager.migrate_memory_files()
+
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]", "a squatting file stopped the whole migration"
+    assert (runtime_root / "loose.json").read_text(encoding="utf-8") == "[2]"
+    # The staging parent comes down with everything else.
+    assert not squatter.exists()
+
+
+@pytest.mark.unit
+def test_the_publish_is_flushed_on_both_branches(tmp_path):
+    """os.replace publishes a NAME, and the name lives in the parent directory.
+
+    Flushing the staged data is only half of it -- a power loss can still lose
+    the entry. And since the migration skips a destination that exists, a
+    half-published name is not something a later start repairs.
+
+    Asserted through the calls rather than by pulling the power: the file
+    branch flushes its staged file and then the destination's parent, and the
+    directory branch flushes the staged tree and then the parent. Directory
+    flushing is best effort -- Windows cannot open a directory for reading at
+    all -- so what is pinned is that it is ATTEMPTED, not that it succeeds.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+    (project_root / "loose.json").write_text("[2]", encoding="utf-8")
+
+    flushed_dirs = []
+    flushed_trees = []
+    real_dir = migrations_module._fsync_directory
+    real_tree = migrations_module._fsync_tree
+
+    def _record_dir(path):
+        flushed_dirs.append(Path(path))
+        return real_dir(path)
+
+    def _record_tree(path):
+        flushed_trees.append(Path(path))
+        return real_tree(path)
+
+    with patch.object(migrations_module, "_fsync_directory", _record_dir),             patch.object(migrations_module, "_fsync_tree", _record_tree):
+        config_manager.migrate_memory_files()
+
+    assert (runtime_root / "Carol" / "facts.json").exists()
+    assert (runtime_root / "loose.json").exists()
+    assert flushed_trees, "the staged directory tree was never flushed"
+    # ONCE PER BRANCH -- the fixture publishes one directory and one loose
+    # file, and each has to flush the destination parent after its own
+    # rename. Asserting mere membership would pass with either branch
+    # missing it, which is how the first version of this guard let a
+    # removal through.
+    assert flushed_dirs.count(runtime_root) == 2, (
+        "expected the destination parent flushed once per publish, saw %r"
+        % (flushed_dirs,)
+    )

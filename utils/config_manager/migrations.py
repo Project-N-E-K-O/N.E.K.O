@@ -50,6 +50,45 @@ _MIGRATION_STAGING_DIR = ".mig-staging"
 _MIGRATION_LOCK = threading.Lock()
 
 
+def _fsync_directory(path):
+    """Flush a directory entry, where the platform allows it.
+
+    ``os.replace`` publishes a NAME, and the name lives in the parent
+    directory -- so fsyncing the staged data is only half of it: a power
+    loss can still lose the entry and leave the destination missing, or
+    present but unlinked from its data. Since the migration skips a
+    destination that exists, a half-published name is not something a
+    later start repairs.
+
+    Best effort on purpose. Windows cannot open a directory for reading at
+    all -- ``os.open`` raises PermissionError -- so this is a POSIX-only
+    guarantee, and durability is not worth failing a startup migration
+    over.
+    """
+    try:
+        handle = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        os.close(handle)
+
+
+def _fsync_tree(root):
+    """Flush every file in a staged tree, then its directories."""
+    for directory, _subdirs, files in os.walk(str(root)):
+        for name in files:
+            try:
+                with open(os.path.join(directory, name), "rb+") as handle:
+                    os.fsync(handle.fileno())
+            except OSError:
+                pass
+        _fsync_directory(directory)
+
+
 class MigrationsMixin:
     """One-shot startup migrations into the runtime root."""
 
@@ -212,8 +251,19 @@ class MigrationsMixin:
         is safe because ``_MIGRATION_LOCK`` means no other run is holding one.
         """
         parent = Path(self.app_docs_dir) / _MIGRATION_STAGING_DIR
-        if parent.is_symlink():
-            # Never follow a link out of the tree we are allowed to write.
+        # Anything at this name that is not our directory is removed, not
+        # worked around. A link would be followed out of the tree we are
+        # allowed to write; a plain FILE makes mkdir raise FileExistsError,
+        # which ends the whole loop and migrates nothing -- on every start,
+        # forever, since nothing clears it.
+        #
+        # Minting a unique name beside it instead would bring back the
+        # fallback roots this design removed, and with them the
+        # accumulate-after-a-kill problem. The name sits in app_docs_dir,
+        # outside the character namespace, and nothing but this migration
+        # has any business there -- which is what makes removal safe here
+        # and would not have been inside memory/.
+        if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
             parent.unlink()
         parent.mkdir(parents=True, exist_ok=True)
         # No sweep here. The whole parent comes down in the caller's finally,
@@ -326,6 +376,8 @@ class MigrationsMixin:
                             with open(staged_file, "rb+") as handle:
                                 os.fsync(handle.fileno())
                             os.replace(staged_file, dest_path)
+                            # The NAME too, not just its contents.
+                            _fsync_directory(dest_path.parent)
                         finally:
                             if staged_file.exists():
                                 try:
@@ -356,7 +408,12 @@ class MigrationsMixin:
                     staging = workspace / "d"
                     try:
                         shutil.copytree(item, staging)
+                        # Same two steps as the file branch, over a tree:
+                        # the copied contents first, then the published
+                        # NAME. copytree only closes what it writes.
+                        _fsync_tree(staging)
                         staging.rename(dest_path)
+                        _fsync_directory(dest_path.parent)
                         print(f"Migrated memory directory: {item.name}")
                     finally:
                         shutil.rmtree(workspace, ignore_errors=True)
