@@ -19,6 +19,7 @@ from typing import Sequence
 from config import MAX_MULTIMODAL_TURN_IMAGES
 from main_logic.agent_event_bus import (
     publish_provider_frame_observed_best_effort,
+    spawn_bounded_frame_copy,
 )
 from main_logic.proactive_delivery import (
     PLUGIN_PENDING_IMAGE_MAX_BYTES,
@@ -196,24 +197,17 @@ class _MediaMixin:
         inputs just relocates the race: the task would read session state as it
         is when it finally runs, not as it was at delivery.
 
+        Bounded: while the far loop is stalled every pending copy still holds
+        its base64, so past the cap new ones are refused rather than queued.
+
         Returns the task so tests and teardown can join it; nothing on the turn
         path does.
         """
-        try:
-            task = asyncio.create_task(coro)
-        except RuntimeError:
-            # No running loop (``__new__``-built doubles, teardown). Close the
-            # coroutine so it does not warn, and drop the copy -- a missing
-            # frame is the safe direction.
-            coro.close()
-            return None
         tasks = getattr(self, "_bus_bg_tasks", None)
         if tasks is None:
             tasks = set()
             self._bus_bg_tasks = tasks
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
-        return task
+        return spawn_bounded_frame_copy(coro, tasks, label="offline bus copy")
 
     def _publish_pending_tool_frames(
         self,

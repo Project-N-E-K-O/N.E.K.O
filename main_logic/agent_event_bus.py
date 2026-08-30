@@ -821,6 +821,55 @@ async def publish_provider_frame_observed_best_effort(
     return sent
 
 
+_frame_copy_drops: Dict[str, int] = {}
+
+
+def spawn_bounded_frame_copy(coro, inflight: set, *, label: str):
+    """Schedule a best-effort frame copy, refusing new ones once N are pending.
+
+    Both clients publish frames off the turn now, because the hop can cross
+    loops through an un-timed ``run_coroutine_threadsafe`` and must never hold
+    up a reply. That fix has a cost this bounds: while the far loop is stalled,
+    every scheduled copy parks inside the handoff still holding its base64, and
+    the sender keeps scheduling more. ``AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT`` on
+    the agent side cannot help -- it sits on the far side of the stuck hop.
+
+    Reuses that cap rather than deriving a second one. It is the same quantity
+    (multi-megabyte frames retained while a loop cannot drain them), and a
+    second, independently guessed bound is the thing that drifts.
+
+    Refuses the NEW copy rather than evicting an old one, the same direction
+    the rest of this path takes: cancelling an already-scheduled task does not
+    remove its callback from the loop's ready queue, so the bytes stay resident
+    and the eviction buys nothing.
+
+    ``inflight`` doubles as the GC root -- a task nothing references can be
+    collected mid-flight -- so callers need no second set.
+    """
+    if len(inflight) >= AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT:
+        coro.close()
+        drops = _frame_copy_drops.get(label, 0) + 1
+        _frame_copy_drops[label] = drops
+        # Powers of two only, as the agent-side handoff does: a stalled bridge
+        # would otherwise turn one incident into a log flood.
+        if (drops & (drops - 1)) == 0:
+            logger.warning(
+                "[EventBus] %s behind: frame copy dropped (cap=%d dropped_total=%d)",
+                label, AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT, drops,
+            )
+        return None
+    try:
+        task = asyncio.create_task(coro)
+    except RuntimeError:
+        # No running loop (``__new__``-built doubles, teardown). Close the
+        # coroutine so it does not warn; a missing copy is the safe direction.
+        coro.close()
+        return None
+    inflight.add(task)
+    task.add_done_callback(inflight.discard)
+    return task
+
+
 CONVERSATION_TURN_OBSERVED_EVENT = "conversation_turn_observed"
 
 

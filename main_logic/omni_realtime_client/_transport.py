@@ -1455,7 +1455,7 @@ class _TransportMixin:
             # on a later loop iteration, and the receive loop can rotate the
             # speech id in that gap. Then the frame would be filed under the
             # turn that followed the one it was actually sent in.
-            self._fire_task(
+            self._fire_frame_copy(
                 self._publish_provider_frame_task(
                     image_b64,
                     source=str(source or "unknown"),

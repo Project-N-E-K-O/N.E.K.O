@@ -798,7 +798,7 @@ class _ResponseMixin:
         if not frames:
             return None
         try:
-            return self._fire_task(
+            return self._fire_frame_copy(
                 self._publish_turn_frames_task(
                     frames,
                     turn_id=turn_id,

@@ -694,3 +694,69 @@ def test_a_stalled_bus_does_not_hold_up_the_reply():
     # 回合照常构建、照常提交，尽管那次抄送到现在都没返回。
     assert len(_attached_b64(captured)) == 1
     assert captured[0][-1] is client._conversation_history[-1]
+
+
+def test_pending_bus_copies_are_bounded_not_unbounded():
+    """A stalled bridge must not turn into unbounded retained base64.
+
+    Taking the publish off the response path traded one failure for another:
+    every scheduled copy parks inside the untimed handoff still holding its
+    frame, and the sender keeps scheduling more. The agent-side cap cannot
+    help -- it lives on the far side of the very hop that is stuck.
+
+    Refusing the NEW copy rather than evicting an old one is deliberate:
+    cancelling a scheduled task does not take its callback out of the loop's
+    ready queue, so the bytes stay resident and the eviction buys nothing.
+
+    Mutation: drop the cap check in ``spawn_bounded_frame_copy``.
+    """
+    from main_logic.agent_event_bus import (
+        AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT as CAP,
+        spawn_bounded_frame_copy,
+    )
+
+    async def _check():
+        inflight: set = set()
+
+        async def _parked():
+            await asyncio.Event().wait()
+
+        admitted = [
+            spawn_bounded_frame_copy(_parked(), inflight, label="test")
+            for _ in range(CAP)
+        ]
+        assert all(t is not None for t in admitted), "上限之内就被拒了"
+        assert len(inflight) == CAP
+
+        refused = spawn_bounded_frame_copy(_parked(), inflight, label="test")
+        assert refused is None, "越过上限还在收"
+        assert len(inflight) == CAP, "被拒的那条不该留在集合里"
+
+        for task in admitted:
+            task.cancel()
+        await asyncio.gather(*admitted, return_exceptions=True)
+
+    asyncio.run(_check())
+
+
+def test_a_finished_bus_copy_frees_its_slot():
+    """The cap is in-flight, not lifetime. A completed copy must not hold one.
+
+    Mutation: drop the ``add_done_callback`` discard.
+    """
+    from main_logic.agent_event_bus import spawn_bounded_frame_copy
+
+    async def _check():
+        inflight: set = set()
+
+        async def _quick():
+            return None
+
+        task = spawn_bounded_frame_copy(_quick(), inflight, label="test")
+        assert task is not None
+        await task
+        for _ in range(10):
+            await _REAL_SLEEP(0)
+        assert inflight == set(), "跑完的抄送仍占着名额"
+
+    asyncio.run(_check())
