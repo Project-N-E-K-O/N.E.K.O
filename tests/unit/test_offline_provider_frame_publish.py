@@ -25,6 +25,7 @@ twice.
 from __future__ import annotations
 
 import asyncio
+import time
 import base64
 import io
 import json
@@ -172,6 +173,36 @@ def _has_image_parts(captured: list) -> bool:
 _REAL_SLEEP = asyncio.sleep
 
 
+async def _drain_background_tasks(timeout: float = 2.0) -> None:
+    """Wait for the fired bus copies, then make sure none outlive this loop.
+
+    Waiting on the TASKS rather than counting event-loop turns: a fixed number
+    of ``sleep(0)`` is not a completion condition, so under load it reads a
+    half-finished copy -- or leaves one pending for the next test, which then
+    spends its patch on a frame from a turn that ended long ago.
+
+    A deliberately stalled copy never finishes, so the wait is bounded and
+    whatever is left is cancelled and collected HERE rather than abandoned at
+    loop close. ``asyncio.wait`` runs on the loop clock, so the module-wide
+    ``asyncio.sleep`` patch in the retry-ladder tests cannot defeat it.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        pending = [
+            task for task in asyncio.all_tasks()
+            if task is not asyncio.current_task()
+        ]
+        if not pending:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            return
+        await asyncio.wait(pending, timeout=remaining)
+
+
 async def _settled(coro):
     """Run a turn, then let its fire-and-forget bus copies finish.
 
@@ -185,15 +216,8 @@ async def _settled(coro):
     finally:
         # In a ``finally`` on purpose. A turn that raises still fired its bus
         # copies, and skipping the drain there leaves a task pending at loop
-        # close -- which then surfaces inside the NEXT test, spending its patch
-        # on a frame from a turn that ended long ago.
-        #
-        # NOT ``asyncio.sleep``: the retry-ladder tests patch it module-wide
-        # (see ``_SLEEP``), and a patched no-op sleep never yields, so the
-        # copies would never get a turn and every assertion here would read
-        # zero.
-        for _ in range(50):
-            await _REAL_SLEEP(0)
+        # close -- which then surfaces inside the NEXT test.
+        await _drain_background_tasks()
 
 
 def _run_turn(coro):

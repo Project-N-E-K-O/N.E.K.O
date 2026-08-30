@@ -777,7 +777,7 @@ class _LifecycleMixin:
             # 位置在整个 finally 的**最后**，收尾回调之后：这是一次礼节性抄送，
             # 不能在任何用户看得见的东西（TTS 收尾、轮次结束、request-id 清理）
             # 前面新开一个取消点。
-            if content_committed:
+            if content_committed and _bus_instruction_task is not None:
                 # 顺序靠**串联**，不靠等待。指令和回复是同一轮，插件必须按这个
                 # 顺序读到；但在 finally 里 await 那条任务，会让一个卡住的
                 # bridge 直接挂住主动搭话的收尾——这正是上一轮把发布挪出返回
@@ -785,6 +785,12 @@ class _LifecycleMixin:
                 #
                 # 所以把回复的抄送挂在指令那条任务**后面**，整串一起 fire：
                 # 顺序保住了，回合一步都不用等，也不用为此发明一个超时。
+                #
+                # 任务为 None 时**整条回复都不发**（上面的判据）。None 有两种来
+                # 源，而两种的结论一样：要么这一轮压根没走到指令发布点，要么在
+                # 途抄送已经到顶、指令被拒——两种情况下总线上都没有那条指令，
+                # 而带着 message_count=2 的回复会告诉插件「你手上是完整的一轮」。
+                # 那是一句撒谎的记录，比少一条记录糟得多。
                 self._fire_bus_task(
                     self._publish_reply_after_instruction(
                         _bus_instruction_task,
@@ -859,6 +865,11 @@ class _LifecycleMixin:
         propagates and this reply is dropped with it. Correct: a reply on the
         bus with no instruction in front of it reads as a sentence with no
         cause.
+
+        ``instruction_task`` is never ``None`` here -- the caller drops the
+        whole reply in that case rather than publishing an orphan. The guard
+        stays as a belt for a direct caller, and it is the reason the caller's
+        check cannot be relaxed into "wait if we have one".
         """
         if instruction_task is not None:
             await instruction_task

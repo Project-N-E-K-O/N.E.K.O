@@ -433,3 +433,32 @@ async def test_a_one_shot_cue_image_reuses_the_ambient_generation(monkeypatch):
     assert recorder.calls[0]["generation"] == recorder.calls[1]["generation"]
     assert recorder.calls[1]["source"] == "proactive"
     await client.close()
+
+
+@pytest.mark.unit
+async def test_close_cancels_the_in_flight_frame_copies():
+    """The dual of the offline client's ``_cancel_bus_copies``.
+
+    ``_bg_tasks`` is never cancelled on close, so a copy parked in the
+    cross-loop handoff would outlive the session holding its base64 -- and
+    publish a frame from a retired session if the bridge later recovered.
+
+    Mutation: drop the ``_cancel_frame_copies`` call from ``close()``, or the
+    ``cancel()`` loop inside it.
+    """
+    client = _make_client("qwen-omni-turbo")
+    started = asyncio.Event()
+
+    async def _parked():
+        started.set()
+        await asyncio.Event().wait()
+
+    task = client._fire_frame_copy(_parked())
+    assert task is not None
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    await asyncio.wait_for(client.close(), timeout=5)
+
+    assert task.done(), "close 返回时抄送还在跑"
+    assert task.cancelled()
+    assert not client._frame_copy_tasks, "集合没被清空"

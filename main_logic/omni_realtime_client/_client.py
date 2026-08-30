@@ -595,6 +595,25 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
+    async def _cancel_frame_copies(self) -> None:
+        """End every in-flight frame copy. The dual of the offline client's.
+
+        ``_bg_tasks`` is never cancelled on close, so without this a copy
+        parked in the cross-loop handoff outlives the session holding its
+        base64, and publishes a frame from a retired session if the bridge
+        later recovers. Cancel then collect -- a cancelled task has not
+        stopped until it has been awaited.
+        """
+        tasks = getattr(self, "_frame_copy_tasks", None)
+        if not tasks:
+            return
+        # Snapshot: the done-callbacks discard from the live sets as they end.
+        draining = list(tasks)
+        for task in draining:
+            task.cancel()
+        await asyncio.gather(*draining, return_exceptions=True)
+        tasks.clear()
+
     def _fire_frame_copy(self, coro):
         """``_fire_task`` for frame copies only, and bounded.
 

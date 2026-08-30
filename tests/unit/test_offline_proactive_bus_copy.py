@@ -54,6 +54,7 @@ reaches both publishers.
 from __future__ import annotations
 
 import asyncio
+import time
 import threading
 import base64
 import io
@@ -635,6 +636,36 @@ def test_the_turn_publisher_still_re_raises_cancellation():
 _REAL_SLEEP = asyncio.sleep
 
 
+async def _drain_background_tasks(timeout: float = 2.0) -> None:
+    """Wait for the fired bus copies, then make sure none outlive this loop.
+
+    Waiting on the TASKS rather than counting event-loop turns: a fixed number
+    of ``sleep(0)`` is not a completion condition, so under load it reads a
+    half-finished copy -- or leaves one pending for the next test, which then
+    spends its patch on a frame from a turn that ended long ago.
+
+    A deliberately stalled copy never finishes, so the wait is bounded and
+    whatever is left is cancelled and collected HERE rather than abandoned at
+    loop close. ``asyncio.wait`` runs on the loop clock, so the module-wide
+    ``asyncio.sleep`` patch in the retry-ladder tests cannot defeat it.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        pending = [
+            task for task in asyncio.all_tasks()
+            if task is not asyncio.current_task()
+        ]
+        if not pending:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            return
+        await asyncio.wait(pending, timeout=remaining)
+
+
 async def _settled(coro):
     """Run a turn, then let its fire-and-forget bus copies finish.
 
@@ -648,15 +679,8 @@ async def _settled(coro):
     finally:
         # In a ``finally`` on purpose. A turn that raises still fired its bus
         # copies, and skipping the drain there leaves a task pending at loop
-        # close -- which then surfaces inside the NEXT test, spending its patch
-        # on a frame from a turn that ended long ago.
-        #
-        # NOT ``asyncio.sleep``: the retry-ladder tests patch it module-wide
-        # (see ``_SLEEP``), and a patched no-op sleep never yields, so the
-        # copies would never get a turn and every assertion here would read
-        # zero.
-        for _ in range(50):
-            await _REAL_SLEEP(0)
+        # close -- which then surfaces inside the NEXT test.
+        await _drain_background_tasks()
 
 
 def _run_turn(coro):
@@ -937,7 +961,9 @@ def test_close_cancels_and_collects_the_in_flight_bus_copies():
         assert task is not None
         await asyncio.wait_for(started.wait(), timeout=5)
 
-        await client._cancel_bus_copies()
+        # 自带 deadline：没有 cancel 的版本会在这里**永久挂住**而不是失败，
+        # 那样跑测的进程会连着调用它的脚本一起卡死。守卫必须自己失败。
+        await asyncio.wait_for(client._cancel_bus_copies(), timeout=5)
 
         assert task.done(), "close 返回时抄送还在跑"
         assert task.cancelled()
@@ -977,3 +1003,49 @@ def test_a_stalled_instruction_copy_does_not_hold_up_the_proactive_turn():
             return committed
 
     assert asyncio.run(_turn()) is True
+
+
+def test_a_refused_instruction_copy_takes_the_reply_with_it(monkeypatch):
+    """No instruction on the bus means no reply on the bus either.
+
+    The reply carries ``message_count=2`` -- it tells a plugin "you are holding
+    a complete round". Publishing it when the instruction copy was refused at
+    the in-flight cap makes that a lie, and a lying record is worse than a
+    missing one.
+
+    Deterministic rather than racy: with the cap at 1 the frame copy takes the
+    only slot, so the instruction is refused in the same event-loop tick.
+
+    Mutation: relax the caller's check to ``if content_committed:``.
+    """
+    from main_logic import agent_event_bus
+
+    monkeypatch.setattr(agent_event_bus, "AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT", 1)
+
+    client, _captured = _make_client()
+    spies = _spies()
+    frames, turns = spies
+
+    committed = _run(client, spies, images=[_png_b64(320, 200)])
+
+    assert committed is True, "回合本身不该受影响"
+    assert frames.calls, "前提没成立：帧抄送没占住那个名额"
+    assert turns.turn_types == [], (
+        f"指令被拒，回复却上了总线: {turns.turn_types}"
+    )
+
+
+def test_the_cap_is_what_refused_it_not_something_else(monkeypatch):
+    """Premise guard for the test above: without the cap, both turns publish.
+
+    If the instruction stopped being published for an unrelated reason, the
+    test above would pass while proving nothing.
+    """
+    client, _captured = _make_client()
+    spies = _spies()
+    frames, turns = spies
+
+    _run(client, spies, images=[_png_b64(320, 200)])
+
+    assert frames.calls
+    assert turns.turn_types == ["proactive_instruction", "proactive_reply"]

@@ -3825,6 +3825,14 @@ class _TransportMixin:
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
+        # Before the teardown, and deliberately not inside ``_detach_for_close``
+        # (which is synchronous by contract). These copies belong to THIS
+        # instance's own set, so a replacement session attaching mid-teardown
+        # gets a fresh one and nothing races. Left alive, a copy parked in the
+        # cross-loop handoff keeps its base64 and publishes a frame from a
+        # retired session if the bridge recovers -- the offline client is
+        # drained the same way, in ``_cancel_bus_copies``.
+        await self._cancel_frame_copies()
         await self._own_teardown("_close_task", self._detach_for_close)
 
     def _detach_for_close(self):
