@@ -353,11 +353,23 @@ I.mod = window.appUi;
     I.showStatusToast = function showStatusToast(message, duration, options = {}) {
         if (duration == null) duration = 3000;
         const priority = (options && options.important) ? 100 : ((options && options.priority) || 0);
+
         const statusToast = I.S.dom.statusToast || document.getElementById('status-toast');
         const statusElement = I.S.dom.statusElement || document.getElementById('status');
-        if (!statusToast) { console.error(window.t('console.statusToastNotFound')); return; }
+
+        if (!statusToast) {
+            console.error(window.t('console.statusToastNotFound'));
+            return;
+        }
         I.S.dom.statusToast = statusToast;
         if (statusElement) I.S.dom.statusElement = statusElement;
+
+        function scheduleHide(ms) {
+            if (I.S.statusToastTimeout) clearTimeout(I.S.statusToastTimeout);
+            I.S._statusToastRemaining = ms;
+            I.S._statusToastStart = Date.now();
+            I.S.statusToastTimeout = setTimeout(hideNow, ms);
+        }
 
         function hideNow() {
             if (I.S._statusToastShowTimer) { clearTimeout(I.S._statusToastShowTimer); I.S._statusToastShowTimer = null; }
@@ -372,12 +384,6 @@ I.mod = window.appUi;
             const _cb3 = statusToast.querySelector('#status-toast-close');
             if (_cb3) { _cb3.disabled = true; _cb3.tabIndex = -1; _cb3.setAttribute('aria-hidden','true'); }
             I.S._statusToastCleanupTimer = setTimeout(() => { const t = statusToast.querySelector('#status-toast-text'); if (t) t.textContent = ''; Array.from(statusToast.childNodes).forEach(n => { if (n.nodeType === 3) n.textContent = ''; }); I.S._statusToastPriority = 0; I.S._statusToastCleanupTimer = null; if (I.mod.api && I.mod.api.setMouseThrough && !document.getElementById('prominent-notice-overlay')) I.mod.api.setMouseThrough(true); }, 400);
-        }
-        function scheduleHide(ms) {
-            if (I.S.statusToastTimeout) clearTimeout(I.S.statusToastTimeout);
-            I.S._statusToastRemaining = ms;
-            I.S._statusToastStart = Date.now();
-            I.S.statusToastTimeout = setTimeout(hideNow, ms);
         }
 
         if (!message || message.trim() === '') {
@@ -415,11 +421,11 @@ I.mod = window.appUi;
             closeBtn.setAttribute('aria-label', 'close');
             statusToast.appendChild(closeBtn);
         }
-        Array.from(statusToast.childNodes).forEach(n => { if (n !== textEl && n !== closeBtn && n.nodeType === 3) n.textContent = ''; });
         if (I.S._statusToastCleanupTimer) {
             clearTimeout(I.S._statusToastCleanupTimer);
             I.S._statusToastCleanupTimer = null;
         }
+        Array.from(statusToast.childNodes).forEach(n => { if (n !== textEl && n !== closeBtn && n.nodeType === 3) n.textContent = ''; });
         textEl.textContent = message;
         closeBtn.disabled = false; closeBtn.tabIndex = 0; closeBtn.removeAttribute('aria-hidden');
         closeBtn.onclick = (e) => { e.stopPropagation(); hideNow(); };
@@ -468,7 +474,9 @@ I.mod = window.appUi;
             I.S._statusToastStart = Date.now();
         } else scheduleHide(duration);
 
-        if (statusElement) statusElement.textContent = message || '';
+        if (statusElement) {
+            statusElement.textContent = message || '';
+        }
     }
 
     I.mod.showStatusToast = I.showStatusToast;

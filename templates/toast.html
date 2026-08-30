@@ -90,9 +90,11 @@
                 if (showTimer) { clearTimeout(showTimer); showTimer=null; }
                 if (statusTimeout) { clearTimeout(statusTimeout); statusTimeout = null; }
                 if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
-                var _cb2=statusToast.querySelector('#status-toast-close'); if(_cb2){ _cb2.disabled=true; _cb2.tabIndex=-1; _cb2.setAttribute('aria-hidden','true'); if(document.activeElement===_cb2) _cb2.blur(); }
                 if (statusToast._enter) { statusToast.removeEventListener('mouseenter', statusToast._enter); statusToast._enter = null; }
                 if (statusToast._leave) { statusToast.removeEventListener('mouseleave', statusToast._leave); statusToast._leave = null; }
+                if (statusToast._focusIn) { statusToast.removeEventListener('focusin', statusToast._focusIn); statusToast._focusIn = null; }
+                if (statusToast._focusOut) { statusToast.removeEventListener('focusout', statusToast._focusOut); statusToast._focusOut = null; }
+                var _cb2=statusToast.querySelector('#status-toast-close'); if(_cb2){ _cb2.disabled=true; _cb2.tabIndex=-1; _cb2.setAttribute('aria-hidden','true'); if(document.activeElement===_cb2) _cb2.blur(); }
                 statusToast.classList.remove('show');
                 statusToast.classList.add('hide');
                 cleanupTimer = setTimeout(function() { var t=statusToast.querySelector('#status-toast-text'); if(t) t.textContent=''; Array.from(statusToast.childNodes).forEach(function(n){ if(n.nodeType===3) n.textContent=''; }); cleanupTimer=null; if (api && api.setMouseThrough && !document.getElementById('prominent-notice-overlay')) api.setMouseThrough(true); }, 400);
