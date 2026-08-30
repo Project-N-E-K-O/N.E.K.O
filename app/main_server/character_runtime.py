@@ -1419,14 +1419,6 @@ async def _handle_agent_event(event: dict):
                     # Respond images stream at manager release. Read images are
                     # best-effort input to the current session and are not queued.
                     "media_images": deferred_callback_images,
-                    # Opt-in request for the host's own live screen-share frame,
-                    # resolved at the delivery point rather than here: the
-                    # pacing manager may hold this cue for seconds, and a
-                    # plugin that wants to see the screen wants to see it as
-                    # she speaks, not as the cue was queued.
-                    "attach_live_frame": (
-                        event_metadata.get("attach_live_frame") is True
-                    ),
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",

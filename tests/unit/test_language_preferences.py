@@ -163,9 +163,6 @@ class _LifecycleHarness(LifecycleMixin):
     def _reset_proactive_gate(self):
         pass
 
-    def _clear_live_vision_share(self):
-        pass
-
     async def _close_independent_asr(self, **_kwargs):
         pass
 

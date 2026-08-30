@@ -39,20 +39,6 @@ from main_logic.tool_calling import (
 
 
 class _ToolingMixin:
-    def _provider_submission_is_authorized(self, authorization_guard) -> bool:
-        if authorization_guard is None:
-            return True
-        try:
-            authorized = bool(authorization_guard())
-        except Exception:
-            authorized = False
-        if not authorized:
-            logger.info(
-                "OmniOfflineClient: image authorization was revoked before "
-                "provider submission"
-            )
-        return authorized
-
     def set_tools(self, tool_definitions: Optional[List[ToolDefinition]]) -> None:
         """Replace the active tool list. Takes effect on the next
         ``stream_text`` / ``prompt_ephemeral`` call. Pass ``None`` or
@@ -596,7 +582,6 @@ class _ToolingMixin:
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         tool_image_slots = overrides.pop("_tool_image_slots", None)
-        authorization_guard = overrides.pop("_authorization_guard", None)
         tools_payload = self._openai_tools_payload()
         if tools_payload:
             overrides.setdefault("tools", tools_payload)
@@ -612,8 +597,6 @@ class _ToolingMixin:
         # 封顶日志据此别谎称迭代被耗尽。
         zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
-            if not self._provider_submission_is_authorized(authorization_guard):
-                return
             deltas_per_chunk: list = []
             finish_reason: Optional[str] = None
             # 累积本轮已 yield 给上游的 text，下面 finish_reason=tool_calls
@@ -800,8 +783,6 @@ class _ToolingMixin:
         final_overrides = {
             k: v for k, v in overrides.items() if k not in ("tools", "tool_choice")
         }
-        if not self._provider_submission_is_authorized(authorization_guard):
-            return
         final_finish_reason: Optional[str] = None
         final_prompt_tokens: Optional[int] = None
         async for chunk in self.llm.astream(messages, **final_overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.

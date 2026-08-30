@@ -564,28 +564,3 @@ async def test_proactive_native_image_can_send_without_audio_buffer():
     ]
     assert any(event.get("type") == "input_image_buffer.append" for event in events)
     await client.close()
-
-
-@pytest.mark.unit
-async def test_image_authorization_is_rechecked_after_waiting_for_send_slot():
-    client = _make_client("qwen-omni-turbo")
-    allowed = True
-    client._send_semaphore = asyncio.Semaphore(0)
-    try:
-        send_task = asyncio.create_task(
-            client.stream_image(
-                DUMMY_IMAGE_B64,
-                bypass_rate_limit=True,
-                authorization_guard=lambda: allowed,
-            )
-        )
-        await asyncio.sleep(0)
-        allowed = False
-    finally:
-        client._send_semaphore.release()
-
-    result = await send_task
-    assert result.accepted is False
-    assert result.rejection_reason == "live_frame_permission_revoked"
-    client.ws.send.assert_not_awaited()
-    await client.close()

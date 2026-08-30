@@ -32,7 +32,6 @@ Channel tags
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import pickle
 import queue
@@ -75,12 +74,6 @@ class _SingleClientCurveCredentials:
 
     def callback(self, _domain: str, key: bytes) -> bool:
         return secrets.compare_digest(key, self._expected_key)
-
-
-def _derive_permission_generation(uplink_token: str) -> str:
-    if not uplink_token:
-        return ""
-    return hashlib.sha256(uplink_token.encode("utf-8")).hexdigest()
 
 
 def _normalize_uplink_extension(value: object) -> object:
@@ -262,10 +255,6 @@ class HostTransport:
     def downlink_curve_credentials(self) -> tuple[bytes, bytes, bytes]:
         return self._downlink_curve_credentials
 
-    @property
-    def permission_generation(self) -> str:
-        return _derive_permission_generation(self._uplink_token)
-
     # ── send helpers ─────────────────────────────────────────────
 
     async def send_command(self, msg: dict) -> None:
@@ -427,10 +416,6 @@ class ChildTransport:
         self._message_uplink_endpoint = message_uplink_endpoint or uplink_endpoint
         self._uplink_token = uplink_token
         self._closed = False
-
-    @property
-    def permission_generation(self) -> str:
-        return _derive_permission_generation(self._uplink_token)
 
     # ── downlink (async, event-loop only) ────────────────────────
 

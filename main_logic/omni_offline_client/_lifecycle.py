@@ -80,11 +80,10 @@ def _slop_reduced_for_genai(messages):
 
 
 class _LifecycleMixin:
-    def _begin_response_generation(self, owner: object | None = None) -> int:
+    def _begin_response_generation(self) -> int:
         generation = int(getattr(self, "_response_generation", 0)) + 1
         self._response_generation = generation
         self._active_response_generation = generation
-        self._active_response_owner = owner if owner is not None else object()
         self._is_responding = True
         return generation
 
@@ -110,20 +109,13 @@ class _LifecycleMixin:
         if getattr(self, "_active_response_generation", None) != generation:
             return False
         self._active_response_generation = None
-        self._active_response_owner = None
         self._is_responding = False
         return True
 
-    def _cancel_response_generation(self, *, owner: object | None = None) -> bool:
-        if (
-            owner is not None
-            and getattr(self, "_active_response_owner", None) is not owner
-        ):
-            return False
+    def _cancel_response_generation(self) -> bool:
         if getattr(self, "_active_response_generation", None) is None:
             return False
         self._active_response_generation = None
-        self._active_response_owner = None
         self._is_responding = False
         return True
 
@@ -192,8 +184,6 @@ class _LifecycleMixin:
         persist_response: bool = True,
         on_committed: Optional[Callable[[], None]] = None,
         on_committed_text: Optional[Callable[[str], None]] = None,
-        response_owner: object | None = None,
-        authorization_guard: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Send a fire-and-forget instruction to the LLM and stream the response.
 
@@ -295,7 +285,7 @@ class _LifecycleMixin:
         # own pulse, never for a newer user stream_text that interleaved and
         # re-pulsed under a fresher seq (Codex P2).
         _reasoning_owner_seq = self._begin_reasoning_stream()
-        response_generation = self._begin_response_generation(response_owner)
+        response_generation = self._begin_response_generation()
 
         try:
             set_call_type("proactive")
@@ -321,23 +311,9 @@ class _LifecycleMixin:
                     break
 
                 try:
-                    if authorization_guard is not None:
-                        try:
-                            authorized = bool(authorization_guard())
-                        except Exception:
-                            authorized = False
-                        if not authorized:
-                            logger.info(
-                                "prompt_ephemeral: image authorization was revoked before provider submission"
-                            )
-                            assistant_message = ""
-                            return False
                     # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
                     # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
-                    async for chunk in self._astream_visible_with_tools(
-                        messages_to_send,
-                        _authorization_guard=authorization_guard,
-                    ):
+                    async for chunk in self._astream_visible_with_tools(messages_to_send):
                         if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                             logger.debug(f"🔍 [Usage-Proactive] {chunk.usage_metadata}")
                         if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
@@ -604,9 +580,10 @@ class _LifecycleMixin:
     async def close(self) -> None:
         """Close the client and cleanup resources."""
         await self._cancel_external_voice_submit_task()
-        # Supersedes the bare ``_is_responding = False``: cancelling the
-        # generation also retires the active owner, so a proactive turn that
-        # is mid-flight cannot resume against a closed client.
+        # Supersedes the bare ``_is_responding = False``: retiring the active
+        # generation also stops a mid-flight turn from resuming (its
+        # ``_resume_response_generation`` no longer matches) against a closed
+        # client.
         self._cancel_response_generation()
         self._conversation_history = []
         self._pending_images.clear()

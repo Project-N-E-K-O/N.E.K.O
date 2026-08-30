@@ -376,7 +376,6 @@ class _GenaiMixin:
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         tool_image_slots = overrides.pop("_tool_image_slots", None)
-        authorization_guard = overrides.pop("_authorization_guard", None)
         if not _ensure_genai():
             raise _GenaiToolsUnsupported("google-genai SDK not importable")
         types = _genai_types
@@ -409,8 +408,6 @@ class _GenaiMixin:
         # 迭代被耗尽（cap=3 时我们可能在第 1 轮就跳出）。
         zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
-            if not self._provider_submission_is_authorized(authorization_guard):
-                return
             system_instruction, contents = _genai_messages_to_contents(
                 _slop_reduced_for_genai(messages)
             )
@@ -782,8 +779,6 @@ class _GenaiMixin:
         if final_system_instruction:
             final_cfg_kw["system_instruction"] = final_system_instruction
         final_config = types.GenerateContentConfig(**final_cfg_kw)
-        if not self._provider_submission_is_authorized(authorization_guard):
-            return
         final_stream = await self._genai_client.aio.models.generate_content_stream(
             model=self.model,
             contents=final_contents,

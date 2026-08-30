@@ -792,7 +792,6 @@ def _plugin_process_runner(
             config_path=config_path,
             status_queue=status_sender,
             message_queue=message_sender,
-            permission_generation=child_transport.permission_generation,
             _plugin_comm_queue=comm_sender,
             _zmq_ipc_client=None,
             _cmd_queue=None,

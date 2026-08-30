@@ -194,9 +194,9 @@ class PluginCommunicationResourceManager:
         # Let both independent consumers drain briefly, then cancel together.
         graceful = min(0.5, float(timeout)) if timeout is not None else 0.5
         # Each consumer is drained then cancelled individually, and a
-        # cross-loop one is awaited to completion: the purge below must not
-        # start until the consumer that could still enqueue has actually
-        # stopped, or a message can land back in the queue after the sweep.
+        # cross-loop one is awaited to completion: the cleanup below must not
+        # start while a consumer can still resolve a pending future or enqueue
+        # another message.
         consumer_tasks = [
             self._uplink_consumer_task,
             self._message_consumer_task,
@@ -236,21 +236,6 @@ class PluginCommunicationResourceManager:
                     )
                 else:
                     task.cancel()
-
-        # Private proactive payloads bypass the shared message plane. Purge
-        # this plugin's queued copies after its uplink consumer stops so none
-        # can be dispatched after the lifecycle permission sweeps complete.
-        from plugin.server.messaging.proactive_bridge import (
-            discard_private_payloads,
-        )
-
-        discarded_private_payloads = discard_private_payloads(self.plugin_id)
-        if discarded_private_payloads:
-            self.logger.debug(
-                "Discarded {} queued private proactive payload(s) for plugin {}",
-                discarded_private_payloads,
-                self.plugin_id,
-            )
 
         self._cleanup_pending_futures()
 
@@ -680,21 +665,11 @@ class PluginCommunicationResourceManager:
     # ── message routing ──────────────────────────────────────────
 
     async def _route_message(self, msg: dict) -> None:
-        # This marker is trusted only when added below by the authenticated
-        # host. A plugin must not be able to suppress ordinary shared-plane
-        # proactive delivery by forging it on the uplink.
+        # The uplink is authenticated per plugin, so stamp the sender here on
+        # a copy: a plugin must not be able to speak for another one by
+        # putting someone else's id in the payload.
         msg = dict(msg)
-        msg.pop("_proactive_bridge_suppressed", None)
         msg["plugin_id"] = self.plugin_id
-        metadata_obj = msg.get("metadata")
-        metadata = dict(metadata_obj) if isinstance(metadata_obj, dict) else {}
-        metadata.pop("plugin_host_generation", None)
-        host_generation = str(
-            getattr(self.transport, "permission_generation", "") or ""
-        ).strip()
-        if host_generation:
-            metadata["plugin_host_generation"] = host_generation
-        msg["metadata"] = metadata
         handler_name = self._MESSAGE_ROUTING.get(msg.get("type", ""))
         if handler_name:
             await getattr(self, handler_name)(msg)
@@ -702,39 +677,6 @@ class PluginCommunicationResourceManager:
         se = self._shutdown_event
         if se and se.is_set():
             return
-
-        live_frame_token = metadata.get("live_frame_permission_token")
-        if isinstance(live_frame_token, str) and live_frame_token:
-            # CH_MSG is authenticated by this host's uplink transport. Bind
-            # the source to that authenticated plugin and keep the capability
-            # on a private path into proactive delivery.
-            private_msg = dict(msg)
-            private_metadata = dict(metadata)
-            private_msg["metadata"] = private_metadata
-            private_enqueued = False
-            try:
-                from plugin.server.messaging.proactive_bridge import (
-                    enqueue_private_payload,
-                )
-
-                private_enqueued = bool(enqueue_private_payload(private_msg))
-                if not private_enqueued:
-                    self.logger.warning(
-                        "Private proactive bridge queue rejected message from plugin {}",
-                        self.plugin_id,
-                    )
-            except Exception:
-                self.logger.warning(
-                    "Failed to enqueue private proactive message from plugin {}",
-                    self.plugin_id,
-                )
-
-            redacted_metadata = dict(metadata)
-            redacted_metadata.pop("live_frame_permission_token", None)
-            msg = dict(private_msg)
-            msg["metadata"] = redacted_metadata
-            if private_enqueued:
-                msg["_proactive_bridge_suppressed"] = True
         await self._forward_message(msg)
 
     async def _forward_message(self, msg: Dict[str, Any]) -> None:
@@ -805,13 +747,6 @@ class PluginCommunicationResourceManager:
             if comm_queue is not None:
                 trusted_msg = dict(msg)
                 trusted_msg["from_plugin"] = self.plugin_id
-                if trusted_msg.get("type") in {
-                    "LIVE_FRAME_PERMISSION_SET",
-                    "PLUGIN_DELIVERY_PERMISSION_SET",
-                }:
-                    trusted_msg["host_generation"] = str(
-                        getattr(self.transport, "permission_generation", "") or ""
-                    )
                 await comm_queue.put(trusted_msg)
         except Exception as e:
             self.logger.warning("Failed to route comm message from plugin {}: {}", self.plugin_id, e)

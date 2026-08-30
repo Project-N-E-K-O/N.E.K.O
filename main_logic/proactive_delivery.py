@@ -66,7 +66,6 @@ logger = logging.getLogger("main_logic.proactive_delivery")
 
 DELIVERY_ACK_FUTURE_KEY = "_proactive_delivery_ack_future"
 DELIVERY_RETRACTED_KEY = "_proactive_delivery_retracted"
-PROACTIVE_RESPONSE_OWNER_KEY = "_proactive_response_owner"
 CALLBACK_EXPIRES_AT_KEY = "_expires_at_monotonic"
 VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
 SWAP_PRIME_DELIVERY_CLAIM_KEY = "_swap_prime_delivery_claimed"
@@ -609,27 +608,6 @@ class ProactiveDeliveryManager:
             if same_callback or same_delivery:
                 removed = True
                 resolve_callback_delivery_ack(queued, False)
-                continue
-            remaining.append(cue)
-        self._queue = remaining
-        return removed
-
-    def retract_from_source(self, source_name: str) -> int:
-        """Remove every not-yet-released cue that still names ``source_name``."""
-        source = str(source_name or "").strip()
-        if not source:
-            return 0
-        remaining: list[_QueuedCue] = []
-        removed = 0
-        for cue in self._queue:
-            queued = cue.callback
-            if (
-                isinstance(queued, dict)
-                and str(queued.get("source_name") or "").strip() == source
-            ):
-                queued[DELIVERY_RETRACTED_KEY] = True
-                resolve_callback_delivery_ack(queued, False)
-                removed += 1
                 continue
             remaining.append(cue)
         self._queue = remaining

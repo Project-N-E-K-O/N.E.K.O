@@ -13,9 +13,6 @@ from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
 from plugin.server.application.install_source import StartupReconciler, get_install_source_manager
 from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
-from plugin.server.application.messages.live_vision_service import (
-    live_vision_query_service,
-)
 from plugin.server.application.plugins.layout_migration import migrate_legacy_plugin_layout
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
@@ -29,12 +26,6 @@ from plugin.settings import PLUGIN_SHUTDOWN_TIMEOUT, PLUGIN_SHUTDOWN_TOTAL_TIMEO
 from utils.logger_config import get_module_logger
 
 _EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
-_SHUTDOWN_PERMISSION_REVOKE_TIMEOUT = 0.4
-_AUTOSTART_PERMISSION_REVOKE_ATTEMPTS = 16
-_AUTOSTART_PERMISSION_REVOKE_ATTEMPT_TIMEOUT = 1.0
-_AUTOSTART_PERMISSION_REVOKE_RETRY_SECONDS = 1.0
-_PERMISSION_REHYDRATE_INTERVAL_SECONDS = 2.0
-_PERMISSION_REHYDRATE_TIMEOUT_SECONDS = 1.0
 
 if _EMBEDDED_BY_AGENT:
     logger = get_module_logger(__name__, "Agent")
@@ -59,55 +50,6 @@ class ServerLifecycleService:
         self._message_plane_runner: MessagePlaneRunner | None = None
         self._plugin_registry_service = PluginRegistryService()
         self._plugin_lifecycle_service = PluginLifecycleService()
-        self._permission_rehydration_task: asyncio.Task[None] | None = None
-
-    async def _permission_rehydration_loop(self) -> None:
-        while True:
-            await asyncio.sleep(_PERMISSION_REHYDRATE_INTERVAL_SECONDS)
-            await self._maintain_plugin_permissions()
-
-    async def _maintain_plugin_permissions(self) -> None:
-        active_host_generations: dict[str, str] = {}
-        for plugin_id, host in self._get_plugin_hosts_snapshot().items():
-            try:
-                is_alive = getattr(host, "is_alive", None)
-                if not callable(is_alive) or not bool(is_alive()):
-                    continue
-            except (AttributeError, RuntimeError, OSError, TypeError, ValueError):
-                continue
-            transport = getattr(host, "transport", None)
-            generation = str(
-                getattr(transport, "permission_generation", "") or ""
-            ).strip()
-            if generation:
-                active_host_generations[plugin_id] = generation
-
-        await live_vision_query_service.revoke_inactive_permissions(
-            active_host_generations,
-            timeout=_PERMISSION_REHYDRATE_TIMEOUT_SECONDS,
-        )
-        await live_vision_query_service.rehydrate_active_permissions(
-            timeout=_PERMISSION_REHYDRATE_TIMEOUT_SECONDS,
-        )
-
-    def _start_permission_rehydration(self) -> None:
-        task = self._permission_rehydration_task
-        if task is None or task.done():
-            self._permission_rehydration_task = asyncio.create_task(
-                self._permission_rehydration_loop(),
-                name="plugin-permission-rehydration",
-            )
-
-    async def _stop_permission_rehydration(self) -> None:
-        task = self._permission_rehydration_task
-        self._permission_rehydration_task = None
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -193,54 +135,6 @@ class ServerLifecycleService:
         if not healthy:
             logger.warning("message_plane health check returned false; it may still be starting")
 
-    async def _revoke_permissions_before_autostart(
-        self,
-        plugin_ids: list[str],
-    ) -> set[str]:
-        pending_ids = list(plugin_ids)
-        last_results: dict[str, object] = {}
-        for attempt in range(_AUTOSTART_PERMISSION_REVOKE_ATTEMPTS):
-            results = await asyncio.gather(
-                *(
-                    asyncio.wait_for(
-                        self._plugin_lifecycle_service.revoke_plugin_permissions(
-                            plugin_id
-                        ),
-                        timeout=_AUTOSTART_PERMISSION_REVOKE_ATTEMPT_TIMEOUT,
-                    )
-                    for plugin_id in pending_ids
-                ),
-                return_exceptions=True,
-            )
-            retry_ids: list[str] = []
-            for plugin_id, result in zip(pending_ids, results, strict=True):
-                if result is False or isinstance(result, BaseException):
-                    retry_ids.append(plugin_id)
-                    last_results[plugin_id] = result
-            if not retry_ids:
-                return set()
-            pending_ids = retry_ids
-            if attempt + 1 < _AUTOSTART_PERMISSION_REVOKE_ATTEMPTS:
-                if attempt == 0:
-                    logger.warning(
-                        "main_server permission endpoint unavailable during startup; "
-                        "retrying plugin revocation before autostart: plugin_count={}",
-                        len(pending_ids),
-                    )
-                await asyncio.sleep(_AUTOSTART_PERMISSION_REVOKE_RETRY_SECONDS)
-
-        for plugin_id in pending_ids:
-            result = last_results.get(plugin_id)
-            if isinstance(result, BaseException):
-                logger.error(
-                    "plugin permission revocation raised at startup: "
-                    "plugin_id={}, err_type={}, err={}",
-                    plugin_id,
-                    type(result).__name__,
-                    str(result),
-                )
-        return set(pending_ids)
-
     async def _refresh_registry_and_start_autostart_plugins(self) -> None:
         try:
             refresh_result = await self._plugin_registry_service.refresh_registry()
@@ -250,15 +144,6 @@ class ServerLifecycleService:
                 len(refresh_result.get("updated", [])),
                 len(refresh_result.get("removed", [])),
                 len(refresh_result.get("failed", [])),
-            )
-            with state.acquire_plugins_read_lock():
-                registered_plugin_ids = sorted(
-                    plugin_id
-                    for plugin_id in state.plugins
-                    if isinstance(plugin_id, str) and plugin_id
-                )
-            failed_revocation_ids = await self._revoke_permissions_before_autostart(
-                registered_plugin_ids
             )
             autostart_plugin_ids = await self._plugin_registry_service.list_autostart_plugin_ids()
         except Exception as exc:
@@ -274,12 +159,6 @@ class ServerLifecycleService:
             return
 
         for plugin_id in autostart_plugin_ids:
-            if plugin_id in failed_revocation_ids:
-                logger.error(
-                    "skipping plugin autostart because permission revocation failed: plugin_id={}",
-                    plugin_id,
-                )
-                continue
             try:
                 await self._plugin_lifecycle_service.start_plugin(plugin_id, refresh_registry=False)
                 logger.debug("autostart plugin started: plugin_id={}", plugin_id)
@@ -349,7 +228,6 @@ class ServerLifecycleService:
         await self._migrate_layout_and_reconcile_install_sources()
 
         await ensure_plugin_messaging_started()
-        self._start_permission_rehydration()
 
         try:
             cleaned_profiles = await self._plugin_lifecycle_service.retry_deferred_profile_cleanup()
@@ -415,42 +293,23 @@ class ServerLifecycleService:
 
         per_host_timeout = PLUGIN_SHUTDOWN_TIMEOUT + 0.5
 
-        async def _shutdown_one(plugin_id: str, host_obj: object) -> None:
-            revoke_failed = False
+        async def _shutdown_one(plugin_id: str, host_obj: _PluginHostContract) -> None:
             try:
-                if not isinstance(host_obj, _PluginHostContract):
-                    logger.warning(
-                        "invalid plugin host object skipped during shutdown: plugin_id={}, host_type={}",
-                        plugin_id,
-                        type(host_obj).__name__,
-                    )
-                else:
+                await asyncio.wait_for(
+                    host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT),
+                    timeout=per_host_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "plugin {} shutdown timed out after {:.1f}s, force-killing",
+                    plugin_id, per_host_timeout,
+                )
+                proc = getattr(host_obj, "process", None)
+                if proc is not None and proc.is_alive():
                     try:
-                        await asyncio.wait_for(
-                            host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT),
-                            timeout=per_host_timeout,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "plugin {} shutdown timed out after {:.1f}s, force-killing",
-                            plugin_id, per_host_timeout,
-                        )
-                        proc = getattr(host_obj, "process", None)
-                        if proc is not None and proc.is_alive():
-                            try:
-                                proc.terminate()
-                            except Exception:
-                                pass
-            finally:
-                revoked = await self._plugin_lifecycle_service.revoke_plugin_permissions(
-                    plugin_id,
-                    timeout=_SHUTDOWN_PERMISSION_REVOKE_TIMEOUT,
-                )
-                revoke_failed = revoked is False
-            if revoke_failed:
-                raise RuntimeError(
-                    f"plugin permission revoke failed for {plugin_id}"
-                )
+                        proc.terminate()
+                    except Exception:
+                        pass
 
         tasks: list[asyncio.Task[None]] = []
         for plugin_id, host_obj in hosts_snapshot.items():
@@ -458,6 +317,13 @@ class ServerLifecycleService:
                 emit_lifecycle_event({"type": "plugin_shutdown_requested", "plugin_id": plugin_id, "time": now_iso()})
             except Exception as exc:
                 logger.warning("failed to emit plugin_shutdown_requested event: plugin_id={}, err={}", plugin_id, exc)
+            if not isinstance(host_obj, _PluginHostContract):
+                logger.warning(
+                    "invalid plugin host object skipped during shutdown: plugin_id={}, host_type={}",
+                    plugin_id,
+                    type(host_obj).__name__,
+                )
+                continue
             tasks.append(asyncio.create_task(_shutdown_one(plugin_id, host_obj)))
 
         if not tasks:
@@ -475,28 +341,6 @@ class ServerLifecycleService:
                 )
         return had_errors
 
-    async def _revoke_host_permissions(self) -> bool:
-        plugin_ids = sorted(self._get_plugin_hosts_snapshot())
-        if not plugin_ids:
-            return False
-        results = await asyncio.gather(*(
-            self._plugin_lifecycle_service.revoke_plugin_permissions(
-                plugin_id,
-                timeout=_SHUTDOWN_PERMISSION_REVOKE_TIMEOUT,
-            )
-            for plugin_id in plugin_ids
-        ), return_exceptions=True)
-        had_errors = False
-        for plugin_id, result in zip(plugin_ids, results):
-            if result is False or isinstance(result, BaseException):
-                had_errors = True
-                logger.warning(
-                    "failed to revoke plugin permissions during shutdown: plugin_id={}, result={}",
-                    plugin_id,
-                    result,
-                )
-        return had_errors
-
     async def _shutdown_internal(self) -> _ShutdownResult:
         try:
             emit_lifecycle_event({"type": "server_shutdown_begin", "plugin_id": "server", "time": now_iso()})
@@ -504,8 +348,6 @@ class ServerLifecycleService:
             logger.warning("failed to emit server_shutdown_begin event: {}", exc)
 
         had_errors = False
-
-        await self._stop_permission_rehydration()
 
         # Phase 1: sync signals (instant)
         for stop_fn, label in [
@@ -592,7 +434,6 @@ class ServerLifecycleService:
             result = await asyncio.wait_for(self._shutdown_internal(), timeout=PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
         except asyncio.TimeoutError:
             logger.error("server shutdown timed out after {}s", PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
-            await self._revoke_host_permissions()
             try:
                 await asyncio.wait_for(
                     asyncio.to_thread(state.close_plugin_resources),

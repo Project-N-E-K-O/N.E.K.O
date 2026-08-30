@@ -204,7 +204,6 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
             uplink_token: str,
         ) -> None:
             del downlink_endpoint, uplink_endpoint, uplink_token
-            self.permission_generation = "child-permission-generation"
 
         def channel_sender(self, channel: str) -> _Sender:
             del channel
@@ -250,7 +249,6 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
     assert closed == ["context", "transport"]
     assert payloads[-1]["status"] == "error"
     assert host_tokens_seen_during_import == [None]
-    assert contexts[0]["permission_generation"] == "child-permission-generation"
 
 
 @pytest.mark.plugin_unit
@@ -318,7 +316,6 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
             uplink_token: str,
         ) -> None:
             del downlink_endpoint, uplink_endpoint, uplink_token
-            self.permission_generation = "test-permission-generation"
             self.stopped = False
 
         def channel_sender(self, channel: str) -> _Sender:
@@ -400,7 +397,6 @@ def test_plugin_process_runner_uses_timeout_when_reporting_crash(
             uplink_token: str,
         ) -> None:
             del downlink_endpoint, uplink_endpoint, uplink_token
-            self.permission_generation = "test-permission-generation"
 
         def channel_sender(self, channel: str) -> _Sender:
             return _Sender(channel)
@@ -507,7 +503,6 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
             uplink_token: str,
         ) -> None:
             del downlink_endpoint, uplink_endpoint, uplink_token
-            self.permission_generation = "test-permission-generation"
 
         def channel_sender(self, channel: str) -> _Sender:
             return _Sender(channel)

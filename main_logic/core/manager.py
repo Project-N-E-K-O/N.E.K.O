@@ -109,16 +109,6 @@ class LLMSessionManager(
         self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
         self._screenshot_future: asyncio.Future | None = None
         self._avatar_position: dict | None = None  # 前端传来的 Avatar 归一化坐标 {centerX, centerY, width, height}
-        # The screen/camera share, kept here rather than read back off the
-        # session client. The client's ``_latest_image_b64`` is an ambient
-        # slot that a dropped avatar image, a pasted user image, or a plugin's
-        # own picture all overwrite, so a consumer asking for "the shared
-        # screen" could be handed any of those. This slot has exactly one
-        # writer: an accepted screen/camera frame. See ``live_vision_snapshot``.
-        self._live_vision_source: str = ""
-        self._live_vision_last_frame_at: float = 0.0
-        self._live_vision_frame_b64: str = ""
-        self._live_vision_expiry_handle: asyncio.TimerHandle | None = None
         # request_fresh_screenshot 与 resolve_screenshot_request 之间的一次性交接槽。
         # 与 _avatar_position 分开是刻意的：后者被每一条 stream_data 覆写（屏幕分享帧、
         # 主动视觉单帧都会写），拿它去配对 Phase 2 的那张截图，坐标会被中途到达的
@@ -207,9 +197,6 @@ class LLMSessionManager(
         self.pending_extra_replies: list[dict] = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
-        # Callbacks checked out by the text delivery path remain reachable so
-        # source revocation can stop them before any response is committed.
-        self._inflight_agent_callbacks: list[dict] = []
         self._tool_image_fallback_budget_lock = asyncio.Lock()
         self._tool_image_fallback_budget_turn_id: str | None = None
         self._tool_image_fallback_budget_count = 0

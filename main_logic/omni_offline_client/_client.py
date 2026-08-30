@@ -253,7 +253,6 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self._is_responding = False
         self._response_generation = 0
         self._active_response_generation: int | None = None
-        self._active_response_owner: object | None = None
         self._conversation_history = []
         self._instructions = ""
         self._stream_task = None

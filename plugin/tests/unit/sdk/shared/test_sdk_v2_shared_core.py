@@ -148,49 +148,6 @@ async def test_sdk_context_forwards_replace_own_config() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sdk_context_exposes_live_vision_permission_setters() -> None:
-    calls: list[tuple[str, dict[str, object]]] = []
-
-    class _LiveVisionCtx(_CoreCtx):
-        async def set_live_frame_permission_async(self, **kwargs: object) -> object:
-            calls.append(("frame", dict(kwargs)))
-            return {"ok": True, "applied": True}
-
-        async def set_plugin_delivery_permission_async(self, **kwargs: object) -> object:
-            calls.append(("delivery", dict(kwargs)))
-            return {"ok": True, "applied": True}
-
-    ctx = SdkContext(_LiveVisionCtx())
-
-    frame = await ctx.set_live_frame_permission(
-        token="frame-generation",
-        enabled=True,
-        timeout=4.0,
-    )
-    delivery = await ctx.set_plugin_delivery_permission(
-        token="delivery-generation",
-        enabled=False,
-        timeout=5.0,
-    )
-
-    assert frame == {"ok": True, "applied": True}
-    assert delivery == {"ok": True, "applied": True}
-    assert calls == [
-        (
-            "frame",
-            {"token": "frame-generation", "enabled": True, "timeout": 4.0},
-        ),
-        (
-            "delivery",
-            {"token": "delivery-generation", "enabled": False, "timeout": 5.0},
-        ),
-    ]
-    assert hasattr(core_types.PluginContextProtocol, "get_live_vision")
-    assert hasattr(core_types.PluginContextProtocol, "set_live_frame_permission")
-    assert hasattr(core_types.PluginContextProtocol, "set_plugin_delivery_permission")
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("success", "persisted"),
     ((True, False), (True, None), (False, True)),

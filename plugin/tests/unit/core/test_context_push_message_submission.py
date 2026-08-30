@@ -49,14 +49,8 @@ def _context(
     tmp_path: Path,
     *,
     message_queue: object = None,
-    permission_generation: str = "",
 ) -> tuple[PluginContext, _Logger]:
     logger = _Logger()
-    generation_args = (
-        {"permission_generation": permission_generation}
-        if permission_generation
-        else {}
-    )
     return (
         PluginContext(
             plugin_id="demo",
@@ -64,35 +58,29 @@ def _context(
             logger=logger,  # type: ignore[arg-type]
             status_queue=None,
             message_queue=message_queue,
-            **generation_args,
         ),
         logger,
     )
 
 
 @pytest.mark.plugin_unit
-def test_plugin_messages_use_authenticated_host_uplink_instead_of_direct_ingest(
+def test_plugin_messages_use_the_host_uplink_instead_of_direct_ingest(
     tmp_path: Path,
 ) -> None:
     host_queue = _Queue()
-    ctx, _logger = _context(
-        tmp_path,
-        message_queue=host_queue,
-        permission_generation="trusted-host-generation",
-    )
+    ctx, _logger = _context(tmp_path, message_queue=host_queue)
 
     result = ctx.push_message(
         visibility=[],
         ai_behavior="respond",
         parts=[{"type": "text", "text": "authenticated cue"}],
-        metadata={"plugin_host_generation": "forged-generation"},
+        metadata={"plugin_id": "impersonated-plugin"},
     )
 
     assert result == {"submitted": True}
+    # The host stamps the sender itself, so a plugin cannot pass itself off as
+    # another one by putting an id in its own payload.
     assert host_queue.items[0]["plugin_id"] == "demo"
-    assert host_queue.items[0]["metadata"]["plugin_host_generation"] == (
-        "trusted-host-generation"
-    )
 
 
 @pytest.mark.plugin_unit
@@ -108,24 +96,6 @@ def test_fast_mode_uses_the_authenticated_batching_uplink(
     assert result == {"submitted": True}
     assert host_queue.items == []
     assert len(host_queue.fast_items) == 1
-
-
-@pytest.mark.plugin_unit
-def test_live_frame_token_bypasses_shared_message_plane(
-    tmp_path: Path,
-) -> None:
-    private_queue = _Queue()
-    ctx, _logger = _context(tmp_path, message_queue=private_queue)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": "private live-frame cue"}],
-        metadata={"live_frame_permission_token": "generation-secret"},
-    )
-
-    assert result == {"submitted": True}
-    assert private_queue.items[0]["metadata"]["live_frame_permission_token"] == "generation-secret"
 
 
 @pytest.mark.plugin_unit

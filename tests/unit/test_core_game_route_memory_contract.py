@@ -3263,7 +3263,7 @@ async def test_focus_pulse_is_cleared_when_its_own_send_is_cancelled(monkeypatch
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("replacement_stage", ["processing", "sending"])
-async def test_live_vision_frame_from_replaced_session_is_discarded(
+async def test_screen_frame_from_replaced_session_is_discarded(
     monkeypatch,
     replacement_stage,
 ):
@@ -3277,7 +3277,6 @@ async def test_live_vision_frame_from_replaced_session_is_discarded(
     mgr._starting_session_count = 0
     mgr._session_start_circuit_open = False
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
-    mgr._note_live_vision_frame = Mock()
 
     async def _process_screen_data(_data):
         if replacement_stage == "processing":
@@ -3301,5 +3300,4 @@ async def test_live_vision_frame_from_replaced_session_is_discarded(
     else:
         original_session.stream_image.assert_awaited_once_with("img-b64")
     replacement_session.stream_image.assert_not_awaited()
-    mgr._note_live_vision_frame.assert_not_called()
     assert mgr.sync_message_queue.messages == []

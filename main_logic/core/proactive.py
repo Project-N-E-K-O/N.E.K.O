@@ -39,7 +39,6 @@ from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
-    PROACTIVE_RESPONSE_OWNER_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
     VOICE_DELIVERY_COMMITTED_KEY,
     callback_is_expired,
@@ -56,7 +55,6 @@ from ._shared import (
     FreshScreenshot,
 )
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget
-from .live_frame_permissions import allows_live_frame, allows_plugin_delivery
 
 
 class ProactiveMixin:
@@ -618,22 +616,6 @@ class ProactiveMixin:
         print(f"[{self.lanlan_name}] Proactive stream delivered: {(full_text or '')[:40]}…")
         return True
 
-    @staticmethod
-    def _plugin_delivery_token(callback: dict) -> str:
-        metadata = callback.get("metadata")
-        if not isinstance(metadata, dict):
-            return ""
-        raw = metadata.get("plugin_delivery_token")
-        return str(raw) if raw else ""
-
-    @staticmethod
-    def _plugin_host_generation(callback: dict) -> str:
-        metadata = callback.get("metadata")
-        if not isinstance(metadata, dict):
-            return ""
-        raw = metadata.get("plugin_host_generation")
-        return str(raw) if raw else ""
-
     def filter_deliverable_callbacks(self, callbacks: list) -> list:
         """Drop undeliverable callbacks and their paired voice mirrors."""
         deliverable = []
@@ -643,12 +625,6 @@ class ProactiveMixin:
                 deliverable.append(callback)
                 continue
             if callback_is_expired(callback):
-                callback[DELIVERY_RETRACTED_KEY] = True
-            elif not allows_plugin_delivery(
-                str(callback.get("source_name") or ""),
-                self._plugin_delivery_token(callback),
-                self._plugin_host_generation(callback),
-            ):
                 callback[DELIVERY_RETRACTED_KEY] = True
             if callback.get(DELIVERY_RETRACTED_KEY):
                 dropped.append(callback)
@@ -699,83 +675,6 @@ class ProactiveMixin:
             )
         ]
         return deliverable
-
-    def retract_callbacks_from_source(self, source_name: str) -> int:
-        """Cancel queued host deliveries that still belong to ``source_name``."""
-        source = str(source_name or "").strip()
-        if not source:
-            return 0
-        matching = []
-        candidates = list(getattr(self, "pending_agent_callbacks", None) or [])
-        candidates.extend(
-            getattr(self, "_inflight_agent_callbacks", None) or []
-        )
-        seen_callback_ids: set[int] = set()
-        for callback in candidates:
-            callback_id = id(callback)
-            if callback_id in seen_callback_ids:
-                continue
-            seen_callback_ids.add(callback_id)
-            if (
-                isinstance(callback, dict)
-                and str(callback.get("source_name") or "").strip() == source
-                and not callback.get(VOICE_DELIVERY_COMMITTED_KEY)
-                and not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
-            ):
-                callback[DELIVERY_RETRACTED_KEY] = True
-                matching.append(callback)
-        inflight_callbacks = getattr(self, "_inflight_agent_callbacks", None) or []
-        inflight_callback_ids = {id(callback) for callback in inflight_callbacks}
-        if any(id(callback) in inflight_callback_ids for callback in matching):
-            session = getattr(self, "session", None)
-            if isinstance(session, OmniOfflineClient):
-                response_owners = {
-                    callback.get(PROACTIVE_RESPONSE_OWNER_KEY)
-                    for callback in matching
-                    if callback.get(PROACTIVE_RESPONSE_OWNER_KEY) is not None
-                }
-                cancel_generation = getattr(
-                    session,
-                    "_cancel_response_generation",
-                    None,
-                )
-                cancelled = False
-                if callable(cancel_generation):
-                    cancelled = any(
-                        cancel_generation(owner=owner)
-                        for owner in response_owners
-                    )
-                else:
-                    session._is_responding = False
-                    cancelled = True
-                if cancelled:
-                    self.current_speech_id = str(uuid4())
-        manager = getattr(self, "proactive_manager", None)
-        retract = getattr(manager, "retract_from_source", None)
-        if callable(retract):
-            retract(source)
-        if matching:
-            self.filter_deliverable_callbacks(matching)
-        extras = [
-            extra
-            for extra in list(getattr(self, "pending_extra_replies", None) or [])
-            if isinstance(extra, dict)
-            and str(extra.get("source_name") or "").strip() == source
-            and not extra.get(VOICE_DELIVERY_COMMITTED_KEY)
-            and not extra.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
-        ]
-        if extras:
-            extra_ids = {id(extra) for extra in extras}
-            self._clear_voice_delivery_committed(extras)
-            for extra in extras:
-                extra[DELIVERY_RETRACTED_KEY] = True
-                resolve_callback_delivery_ack(extra, False)
-            self.pending_extra_replies = [
-                extra
-                for extra in (getattr(self, "pending_extra_replies", None) or [])
-                if id(extra) not in extra_ids
-            ]
-        return len(matching)
 
     def _purge_undeliverable_callbacks(self) -> None:
         callbacks = [
@@ -1595,11 +1494,6 @@ class ProactiveMixin:
             cb for cb in self.pending_agent_callbacks
             if id(cb) not in snapshot_ids
         ]
-        inflight_callbacks = getattr(self, "_inflight_agent_callbacks", None)
-        if inflight_callbacks is None:
-            inflight_callbacks = []
-            self._inflight_agent_callbacks = inflight_callbacks
-        inflight_callbacks.extend(callbacks_snapshot)
 
         delivered = False
         # Image-budget overflow parked by _deliver_agent_callbacks_text. It is
@@ -1626,15 +1520,13 @@ class ProactiveMixin:
                     callbacks_snapshot[:] = []
         except Exception as e:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
-            self.pending_agent_callbacks.extend(
-                self.filter_deliverable_callbacks(callbacks_snapshot)
-            )
+            # Filter into a local before extending: filter_deliverable_callbacks
+            # rebinds self.pending_agent_callbacks, and Python binds ``.extend``
+            # to the list that is current BEFORE the argument is evaluated — so
+            # extending inline would append the survivors to an orphaned list.
+            _requeue = self.filter_deliverable_callbacks(callbacks_snapshot)
+            self.pending_agent_callbacks.extend(_requeue)
         finally:
-            self._inflight_agent_callbacks = [
-                callback
-                for callback in self._inflight_agent_callbacks
-                if id(callback) not in snapshot_ids
-            ]
             # Runs after the except-path restore above, so the deferred tail
             # lands behind the prefix it was split from either way.
             _overflow = getattr(self, "_proactive_image_overflow", None)
@@ -1869,12 +1761,10 @@ class ProactiveMixin:
                     await self.send_cancel_topic_hint(turn_id=proactive_sid)
                 self.proactive_manager.release_inflight_noop()
                 return False
-            # Rebuild after the topic-hint awaits: callbacks may have been
-            # filtered, and offline prompt_ephemeral never calls stream_image.
-            (
-                _proactive_images,
-                _proactive_image_authorization_guard,
-            ) = self._collect_text_proactive_images_guarded(active_callbacks)
+            _proactive_images: list = []
+            for _cb in active_callbacks:
+                if isinstance(_cb, dict):
+                    _proactive_images.extend(_cb.get("media_images") or [])
             # Preserve the full language code until callback rendering.
             _lang = normalize_language_code(self.user_language, format='full')
             instruction = _build_callback_instruction(
@@ -1895,9 +1785,6 @@ class ProactiveMixin:
                     resolve_callback_delivery_ack(cb, delivered)
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
-            response_owner = object()
-            for cb in active_callbacks:
-                cb[PROACTIVE_RESPONSE_OWNER_KEY] = response_owner
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
             # with text_start/text_end. text_end clears the manager's in-flight
@@ -1914,9 +1801,7 @@ class ProactiveMixin:
                     delivered = await self.session.prompt_ephemeral(
                         instruction,
                         images=_proactive_images or None,
-                        authorization_guard=_proactive_image_authorization_guard,
                         on_committed=lambda: _resolve_text_delivery_ack(True),
-                        response_owner=response_owner,
                     )
                 except Exception as exc:
                     if ack_resolved:
@@ -1933,9 +1818,6 @@ class ProactiveMixin:
                             await self.send_cancel_topic_hint(turn_id=proactive_sid)
                         raise
             finally:
-                for cb in active_callbacks:
-                    if cb.get(PROACTIVE_RESPONSE_OWNER_KEY) is response_owner:
-                        cb.pop(PROACTIVE_RESPONSE_OWNER_KEY, None)
                 _proactive_expected_sid.reset(_sid_token)
                 try:
                     self.lifecycle_bus.emit("text_end")
@@ -1964,9 +1846,11 @@ class ProactiveMixin:
                 # send its own fresh teaser).
                 if topic_hint_sent:
                     await self.send_cancel_topic_hint(turn_id=proactive_sid)
-                self.pending_agent_callbacks.extend(
-                    self.filter_deliverable_callbacks(active_callbacks)
-                )
+                # Same evaluation-order trap as the trigger_agent_callbacks
+                # except path: filter into a local first, because the filter
+                # rebinds self.pending_agent_callbacks.
+                _requeue = self.filter_deliverable_callbacks(active_callbacks)
+                self.pending_agent_callbacks.extend(_requeue)
                 return False
 
     def _is_voice_session_active_or_starting(self) -> bool:
@@ -2418,22 +2302,6 @@ class ProactiveMixin:
             if callable(on_session_unsafe):
                 on_session_unsafe()
 
-        # Every cue below is rendered into the same model turn. Attach the
-        # shared desktop only when every callback in that turn independently
-        # holds permission; otherwise an unprivileged callback could influence
-        # a response grounded in pixels it was never allowed to see.
-        live_frame = self._resolve_batch_live_frame_b64(callbacks)
-        if live_frame:
-            await self._stream_live_frame_b64(
-                live_frame,
-                session,
-                si,
-                authorization_guard=self._live_frame_permission_guard(
-                    callbacks,
-                    live_frame,
-                ),
-            )
-
         for cb in callbacks:
             if not isinstance(cb, dict):
                 continue
@@ -2648,197 +2516,6 @@ class ProactiveMixin:
             for event_id in registered_description_event_ids:
                 session._inject_rejection_handlers.pop(event_id, None)
         return all_ok
-
-    def _resolve_cb_live_frame_b64(self, cb: dict) -> str:
-        """Return the screen-share frame a callback asked for, or ``""``.
-
-        Shared by the voice ``stream_image`` path and the offline text path
-        that passes images explicitly into ``prompt_ephemeral``. Camera shares
-        are rejected: that is the user's room, not their desktop.
-        """
-        if not isinstance(cb, dict) or not cb.get("attach_live_frame"):
-            return ""
-        metadata = cb.get("metadata")
-        token = ""
-        host_generation = ""
-        if isinstance(metadata, dict):
-            raw_token = metadata.get("live_frame_permission_token")
-            if raw_token:
-                token = str(raw_token)
-            raw_host_generation = metadata.get("plugin_host_generation")
-            if raw_host_generation:
-                host_generation = str(raw_host_generation).strip()
-        if not token or not allows_live_frame(
-            str(cb.get("source_name") or ""),
-            token,
-            host_generation,
-        ):
-            return ""
-        state = self.live_vision_snapshot()
-        if not state["active"] or state["source"] != "screen":
-            return ""
-        # The manager's own slot, not the session's ambient ``_latest_image_b64``:
-        # that one is also written by avatar drops, pasted images and other
-        # plugins' pictures, any of which would otherwise be delivered here as
-        # though it were the user's screen.
-        return self.live_vision_frame_b64() or ""
-
-    def _resolve_batch_live_frame_b64(self, callbacks: list) -> str:
-        """Return one shared frame only when every callback may see it."""
-        frame = ""
-        for cb in callbacks:
-            if not isinstance(cb, dict):
-                return ""
-            callback_frame = self._resolve_cb_live_frame_b64(cb)
-            if not callback_frame:
-                return ""
-            if frame and callback_frame != frame:
-                return ""
-            frame = callback_frame
-        return frame
-
-    def _live_frame_permission_guard(
-        self,
-        callbacks: list,
-        expected_frame: str,
-    ):
-        grants: list[tuple[str, str, str]] = []
-        for cb in callbacks:
-            if not isinstance(cb, dict):
-                return lambda: False
-            metadata = cb.get("metadata")
-            if not isinstance(metadata, dict):
-                return lambda: False
-            source = str(cb.get("source_name") or "").strip()
-            token = str(metadata.get("live_frame_permission_token") or "").strip()
-            host_generation = str(
-                metadata.get("plugin_host_generation") or ""
-            ).strip()
-            if not source or not token:
-                return lambda: False
-            grants.append((source, token, host_generation))
-
-        def _is_still_authorized() -> bool:
-            state = self.live_vision_snapshot()
-            if not state["active"] or state["source"] != "screen":
-                return False
-            if self.live_vision_frame_b64() != expected_frame:
-                return False
-            return all(
-                allows_live_frame(source, token, host_generation)
-                for source, token, host_generation in grants
-            )
-
-        return _is_still_authorized
-
-    def _collect_text_proactive_images(self, callbacks: list) -> list:
-        """Build the image list for offline ``prompt_ephemeral``.
-
-        Voice delivery streams the live frame via ``stream_image``; text mode
-        must put that same frame on the explicit ``images`` argument or the
-        model is told a share is attached when none was sent.
-        """
-        images, _authorization_guard = (
-            self._collect_text_proactive_images_guarded(callbacks)
-        )
-        return images
-
-    def _collect_text_proactive_images_guarded(self, callbacks: list):
-        """Return offline images plus a final-send guard for a live frame."""
-        images: list = []
-        authorization_guard = None
-        live_frame = self._resolve_batch_live_frame_b64(callbacks)
-        if live_frame:
-            # Offline sessions usually lack native multimodal on the base
-            # model; prompt_ephemeral switches to vision_model when images are
-            # present. Skip when neither path exists.
-            session = getattr(self, "session", None)
-            can_vision = bool(
-                getattr(session, "_supports_native_image", False)
-                or getattr(session, "vision_model", None)
-            )
-            if can_vision:
-                images.append(live_frame)
-                authorization_guard = self._live_frame_permission_guard(
-                    callbacks,
-                    live_frame,
-                )
-        for cb in callbacks:
-            if not isinstance(cb, dict):
-                continue
-            images.extend(cb.get("media_images") or [])
-        return images, authorization_guard
-
-    async def _stream_live_frame_b64(
-        self,
-        frame: str,
-        session,
-        si,
-        *,
-        authorization_guard=None,
-    ) -> bool:
-        """Stream a resolved live frame without changing delivery semantics.
-
-        Opportunistic, and that is the whole difference from ``media_images``.
-        A callback's own pictures are part of what it wants to say, so losing
-        one defers the entire delivery; the live frame is merely context the
-        host happens to be holding. When it is missing or the send fails the
-        call-out still goes out, because a silent character is worse than a
-        blind one. Failures therefore never touch ``all_ok``, and
-        ``on_rejected`` is deliberately not passed: a rejected frame must not
-        drag the callback into the retry machinery.
-
-        Skipped without native vision. There the frame would detour through
-        the vision model, which is exactly the round trip a caller opts into
-        this path to avoid — and the plugin still has its own screenshot tool
-        for that case.
-        """
-        # Read native support off the session actually being streamed to, not
-        # off ``self.session``: the caller may be delivering into a session it
-        # captured earlier in the release path.
-        if not getattr(session, "_supports_native_image", False):
-            return False
-        if not frame:
-            return False
-        if authorization_guard is not None and not authorization_guard():
-            return False
-        try:
-            result = await si(
-                frame,
-                bypass_rate_limit=True,
-                cache_latest=False,
-                authorization_guard=authorization_guard,
-            )
-        except Exception as e:
-            logger.warning(
-                "[%s] live-frame attach failed; delivering call-out without it: %s",
-                self.lanlan_name, e,
-            )
-            return False
-        # ``stream_image`` answers with an ``ImageStageResult``; a bare
-        # ``result is False`` would never match and would report every
-        # rejected frame as attached.
-        if not getattr(result, "accepted", result is not False):
-            return False
-        state = self.live_vision_snapshot()
-        logger.debug(
-            "[%s] attached live share frame to proactive cue (age=%.1fs)",
-            self.lanlan_name, state.get("age_seconds") or 0.0,
-        )
-        return True
-
-    async def _stream_cb_live_frame(self, cb: dict, session, si) -> bool:
-        """Give one callback's turn the live screen-share frame it asked for."""
-        live_frame = self._resolve_cb_live_frame_b64(cb)
-        return await self._stream_live_frame_b64(
-            live_frame,
-            session,
-            si,
-            authorization_guard=self._live_frame_permission_guard(
-                [cb],
-                live_frame,
-            ),
-        )
 
     @staticmethod
     def _session_media_identity(session: object) -> str | None:

@@ -167,7 +167,6 @@ class PluginContext:
     _effective_config: Optional[Dict[str, Any]] = None
     _effective_config_uncertain: bool = False
     _current_lanlan: Optional[str] = None
-    permission_generation: str = ""
 
     @property
     def bus(self) -> "BusHubProtocol":
@@ -1023,10 +1022,6 @@ class PluginContext:
         canonical_metadata = dict(canonical.get("metadata") or {})
         if target_lanlan and "target_lanlan" not in canonical_metadata:
             canonical_metadata["target_lanlan"] = target_lanlan
-        canonical_metadata.pop("plugin_host_generation", None)
-        permission_generation = str(self.permission_generation or "").strip()
-        if permission_generation:
-            canonical_metadata["plugin_host_generation"] = permission_generation
         # Synthesize legacy fields for downstream readers that haven't
         # migrated to v2 yet (notably plugin/server/application/messages/
         # query_service.py).  These are derived, not authoritative — the
@@ -1128,21 +1123,12 @@ class PluginContext:
             }
 
         # Plugin-originated messages cross the authenticated per-host uplink.
-        # The host binds plugin_id and generation to that transport before any
-        # shared-state write, so plugin code cannot self-assert another host's
-        # identity by opening the public message-plane ingest socket directly.
+        # The host binds plugin_id to that transport before any shared-state
+        # write, so plugin code cannot self-assert another plugin's identity by
+        # opening the public message-plane ingest socket directly.
         if self.message_queue is not None:
             try:
-                live_frame_token = canonical_metadata.get(
-                    "live_frame_permission_token"
-                )
-                use_fast_uplink = (
-                    bool(fast_mode)
-                    and not (
-                        isinstance(live_frame_token, str)
-                        and live_frame_token
-                    )
-                )
+                use_fast_uplink = bool(fast_mode)
                 authenticated_payload = _build_wire_payload(
                     message_id=str(uuid.uuid4()),
                     ts=(
@@ -1760,149 +1746,6 @@ class PluginContext:
             )
         except TimeoutError as e:
             raise TimeoutError(f"System config get timed out after {timeout}s") from e
-
-    def get_live_vision_sync(
-        self,
-        *,
-        role: str = "",
-        include_frame: bool = False,
-        permission_token: str = "",
-        timeout: float = 3.0,
-    ) -> Dict[str, Any]:
-        """同步版本:查询主对话是否正在共享屏幕"""
-        return self._send_request_and_wait(
-            method_name="get_live_vision",
-            request_type="LIVE_VISION_GET",
-            request_data={
-                "role": role,
-                "include_frame": bool(include_frame),
-                "host_generation": str(self.permission_generation or "").strip(),
-                "token": str(permission_token or ""),
-            },
-            timeout=timeout,
-            wrap_result=True,
-            error_log_template=None,
-        )
-
-    async def get_live_vision_async(
-        self,
-        *,
-        role: str = "",
-        include_frame: bool = False,
-        permission_token: str = "",
-        timeout: float = 3.0,
-    ) -> Dict[str, Any]:
-        """异步版本:查询主对话是否正在共享屏幕"""
-        return await self._send_request_and_wait_async(
-            method_name="get_live_vision",
-            request_type="LIVE_VISION_GET",
-            request_data={
-                "role": role,
-                "include_frame": bool(include_frame),
-                "host_generation": str(self.permission_generation or "").strip(),
-                "token": str(permission_token or ""),
-            },
-            timeout=timeout,
-            wrap_result=True,
-            error_log_template=None,
-        )
-
-    def get_live_vision(
-        self,
-        *,
-        role: str = "",
-        include_frame: bool = False,
-        permission_token: str = "",
-        timeout: float = 3.0,
-    ):
-        """智能版本:自动检测执行环境,选择同步或异步执行方式
-
-        Returns:
-            在事件循环中返回协程,否则返回结果字典
-        """
-        if self._is_in_event_loop():
-            return self.get_live_vision_async(
-                role=role,
-                include_frame=include_frame,
-                permission_token=permission_token,
-                timeout=timeout,
-            )
-        return self.get_live_vision_sync(
-            role=role,
-            include_frame=include_frame,
-            permission_token=permission_token,
-            timeout=timeout,
-        )
-
-    async def set_live_frame_permission_async(
-        self,
-        *,
-        token: str,
-        enabled: bool,
-        timeout: float = 3.0,
-    ) -> Dict[str, Any]:
-        if not isinstance(enabled, bool):
-            raise TypeError("enabled must be a bool")
-        return await self._send_request_and_wait_async(
-            method_name="set_live_frame_permission",
-            request_type="LIVE_FRAME_PERMISSION_SET",
-            request_data={
-                "host_generation": str(self.permission_generation or "").strip(),
-                "token": token,
-                "enabled": enabled,
-            },
-            timeout=timeout,
-            wrap_result=True,
-            error_log_template=None,
-        )
-
-    async def set_live_frame_permission(
-        self,
-        *,
-        token: str,
-        enabled: bool,
-        timeout: float = 3.0,
-    ) -> Dict[str, Any]:
-        return await self.set_live_frame_permission_async(
-            token=token,
-            enabled=enabled,
-            timeout=timeout,
-        )
-
-    async def set_plugin_delivery_permission_async(
-        self,
-        *,
-        token: str,
-        enabled: bool,
-        timeout: float = 3.0,
-    ) -> Dict[str, Any]:
-        if not isinstance(enabled, bool):
-            raise TypeError("enabled must be a bool")
-        return await self._send_request_and_wait_async(
-            method_name="set_plugin_delivery_permission",
-            request_type="PLUGIN_DELIVERY_PERMISSION_SET",
-            request_data={
-                "host_generation": str(self.permission_generation or "").strip(),
-                "token": token,
-                "enabled": enabled,
-            },
-            timeout=timeout,
-            wrap_result=True,
-            error_log_template=None,
-        )
-
-    async def set_plugin_delivery_permission(
-        self,
-        *,
-        token: str,
-        enabled: bool,
-        timeout: float = 3.0,
-    ) -> Dict[str, Any]:
-        return await self.set_plugin_delivery_permission_async(
-            token=token,
-            enabled=enabled,
-            timeout=timeout,
-        )
 
     def query_memory_sync(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
         """同步版本:查询内存数据"""

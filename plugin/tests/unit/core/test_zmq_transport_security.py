@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import pickle
 import threading
 from pathlib import Path
@@ -41,11 +40,11 @@ def test_uplink_decoder_rejects_pickle_without_executing_it() -> None:
 @pytest.mark.plugin_unit
 def test_uplink_messagepack_round_trip_preserves_channel_and_payload() -> None:
     payload = {
-        "type": "LIVE_FRAME_PERMISSION_SET",
+        "type": "PLUGIN_TO_PLUGIN",
         "from_plugin": "demo-plugin",
         "request_id": "request-1",
         "enabled": True,
-        "token": "generation-one",
+        "note": "round-trip",
         "binary": b"safe-bytes",
     }
 
@@ -70,7 +69,7 @@ def test_uplink_decoder_rejects_another_plugin_host_channel_token() -> None:
         "attacker-channel-token",
         zmq_transport.CH_COMM,
         {
-            "type": "LIVE_FRAME_PERMISSION_SET",
+            "type": "PLUGIN_TO_PLUGIN",
             "from_plugin": "victim-plugin",
             "request_id": "request-1",
         },
@@ -81,25 +80,6 @@ def test_uplink_decoder_rejects_another_plugin_host_channel_token() -> None:
             encoded,
             expected_token="victim-channel-token",
         )
-
-
-@pytest.mark.plugin_unit
-def test_host_and_child_share_a_non_secret_permission_generation() -> None:
-    host = zmq_transport.HostTransport()
-    child = zmq_transport.ChildTransport(
-        host.downlink_endpoint,
-        host.uplink_endpoint,
-        host.uplink_token,
-        downlink_curve=host.downlink_curve_credentials,
-    )
-    try:
-        expected = hashlib.sha256(host.uplink_token.encode("utf-8")).hexdigest()
-        assert host.permission_generation == expected
-        assert child.permission_generation == expected
-        assert host.permission_generation != host.uplink_token
-    finally:
-        child.close()
-        host.close()
 
 
 @pytest.mark.plugin_unit

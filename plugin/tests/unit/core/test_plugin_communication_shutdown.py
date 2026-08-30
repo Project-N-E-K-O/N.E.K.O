@@ -23,8 +23,6 @@ class _Transport:
 @pytest.mark.asyncio
 async def test_message_routing_cannot_block_control_results() -> None:
     class _DualTransport:
-        permission_generation = "generation-one"
-
         def __init__(self) -> None:
             self.control: asyncio.Queue = asyncio.Queue()
             self.messages: asyncio.Queue = asyncio.Queue()
@@ -133,11 +131,7 @@ async def test_comm_manager_shutdown_tolerates_cross_loop_uplink_task() -> None:
 
 
 @pytest.mark.asyncio
-async def test_comm_manager_shutdown_waits_for_cross_loop_consumer_before_purge(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from plugin.server.messaging import proactive_bridge
-
+async def test_comm_manager_shutdown_waits_for_cross_loop_consumer_before_cleanup() -> None:
     manager = PluginCommunicationResourceManager(
         plugin_id="demo",
         transport=_Transport(),
@@ -174,11 +168,12 @@ async def test_comm_manager_shutdown_waits_for_cross_loop_consumer_before_purge(
             loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
         loop.close()
 
-    def _discard(_plugin_id: str) -> int:
-        order.append("purged")
-        return 0
+    # A consumer still running can resolve a pending future, so cancelling
+    # them is the step that must not start early.
+    def _cleanup() -> None:
+        order.append("cleaned")
 
-    monkeypatch.setattr(proactive_bridge, "discard_private_payloads", _discard)
+    manager._cleanup_pending_futures = _cleanup  # type: ignore[method-assign]
     thread = threading.Thread(target=_runner, daemon=True)
     thread.start()
     assert loop_ready.wait(timeout=1.0)
@@ -199,15 +194,11 @@ async def test_comm_manager_shutdown_waits_for_cross_loop_consumer_before_purge(
 
     assert shutdown_waited is True
     assert order_before_release == []
-    assert order == ["consumer_stopped", "purged"]
+    assert order == ["consumer_stopped", "cleaned"]
 
 
 @pytest.mark.asyncio
-async def test_comm_manager_shutdown_times_out_when_cross_loop_is_blocked(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from plugin.server.messaging import proactive_bridge
-
+async def test_comm_manager_shutdown_times_out_when_cross_loop_is_blocked() -> None:
     manager = PluginCommunicationResourceManager(
         plugin_id="demo",
         transport=_Transport(),
@@ -216,7 +207,7 @@ async def test_comm_manager_shutdown_times_out_when_cross_loop_is_blocked(
     loop_ready = threading.Event()
     loop_blocked = threading.Event()
     allow_loop = threading.Event()
-    purged: list[str] = []
+    cleaned: list[str] = []
     holder: dict[str, object] = {}
 
     def _runner() -> None:
@@ -238,11 +229,7 @@ async def test_comm_manager_shutdown_times_out_when_cross_loop_is_blocked(
             loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
         loop.close()
 
-    monkeypatch.setattr(
-        proactive_bridge,
-        "discard_private_payloads",
-        lambda plugin_id: purged.append(plugin_id),
-    )
+    manager._cleanup_pending_futures = lambda: cleaned.append("cleaned")  # type: ignore[method-assign]
     thread = threading.Thread(target=_runner, daemon=True)
     thread.start()
     assert loop_ready.wait(timeout=1.0)
@@ -254,7 +241,7 @@ async def test_comm_manager_shutdown_times_out_when_cross_loop_is_blocked(
         assert shutdown_task in done
         with pytest.raises(TimeoutError):
             await shutdown_task
-        assert purged == []
+        assert cleaned == []
     finally:
         if not shutdown_task.done():
             shutdown_task.cancel()
@@ -263,29 +250,6 @@ async def test_comm_manager_shutdown_times_out_when_cross_loop_is_blocked(
         assert isinstance(loop, asyncio.AbstractEventLoop)
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=1.0)
-
-
-@pytest.mark.asyncio
-async def test_comm_manager_shutdown_purges_private_proactive_payloads(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from plugin.server.messaging import proactive_bridge
-
-    purged: list[str] = []
-    monkeypatch.setattr(
-        proactive_bridge,
-        "discard_private_payloads",
-        lambda plugin_id: purged.append(plugin_id),
-    )
-    manager = PluginCommunicationResourceManager(
-        plugin_id="stopped-plugin",
-        transport=_Transport(),
-        logger=_Logger(),
-    )
-
-    await manager.shutdown(timeout=0.1)
-
-    assert purged == ["stopped-plugin"]
 
 
 @pytest.mark.asyncio
@@ -339,7 +303,6 @@ async def test_route_comm_overwrites_the_plugin_supplied_identity(
 ) -> None:
     transport = _Transport()
     transport.uplink_token = "raw-uplink-secret"
-    transport.permission_generation = "trusted-host-generation"
     manager = PluginCommunicationResourceManager(
         plugin_id="authenticated-plugin",
         transport=transport,
@@ -350,18 +313,16 @@ async def test_route_comm_overwrites_the_plugin_supplied_identity(
 
     await manager._route_comm(
         {
-            "type": "LIVE_FRAME_PERMISSION_SET",
+            "type": "PLUGIN_QUERY",
             "from_plugin": "victim-plugin",
-            "host_generation": "attacker-host-generation",
             "request_id": "request-1",
-            "token": "attacker-generation",
-            "enabled": True,
         }
     )
 
+    # ``from_plugin`` is the reply address the request router answers on, so a
+    # plugin naming someone else here would redirect another plugin's replies.
     routed = queue.get_nowait()
     assert routed["from_plugin"] == "authenticated-plugin"
-    assert routed["host_generation"] == "trusted-host-generation"
 
 
 @pytest.mark.asyncio
@@ -378,27 +339,19 @@ async def test_route_comm_does_not_expose_the_raw_uplink_token(
     queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     monkeypatch.setattr(state, "_plugin_comm_queue", queue)
 
-    await manager._route_comm(
-        {
-            "type": "LIVE_FRAME_PERMISSION_SET",
-            "host_generation": "attacker-host-generation",
-        }
-    )
+    await manager._route_comm({"type": "PLUGIN_QUERY"})
 
     routed = queue.get_nowait()
-    assert routed["host_generation"] == ""
     assert "raw-uplink-secret" not in repr(routed)
 
 
 @pytest.mark.asyncio
-async def test_message_route_overwrites_identity_and_generation_for_every_push(
+async def test_message_route_overwrites_the_plugin_supplied_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    transport = _Transport()
-    transport.permission_generation = "trusted-host-generation"
     manager = PluginCommunicationResourceManager(
         plugin_id="authenticated-plugin",
-        transport=transport,
+        transport=_Transport(),
         logger=_Logger(),
     )
     target_queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
@@ -415,121 +368,16 @@ async def test_message_route_overwrites_identity_and_generation_for_every_push(
             "type": "MESSAGE_PUSH",
             "plugin_id": "victim-plugin",
             "parts": [{"type": "text", "text": "forged cue"}],
-            "metadata": {
-                "plugin_host_generation": "attacker-host-generation",
-                "public_hint": "keep-me",
-            },
+            "metadata": {"public_hint": "keep-me"},
         }
     )
 
+    # Both the stored record and the forwarded copy have to carry the sender
+    # the host authenticated, not the one the payload claims.
     forwarded = target_queue.get_nowait()
     for payload in (stored[0], forwarded):
         assert payload["plugin_id"] == "authenticated-plugin"
-        assert payload["metadata"] == {
-            "plugin_host_generation": "trusted-host-generation",
-            "public_hint": "keep-me",
-        }
-
-
-@pytest.mark.asyncio
-async def test_token_bearing_message_uses_private_bridge_and_redacts_shared_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from plugin.server.messaging import proactive_bridge
-
-    transport = _Transport()
-    transport.uplink_token = "raw-uplink-secret"
-    transport.permission_generation = "trusted-host-generation"
-    manager = PluginCommunicationResourceManager(
-        plugin_id="authenticated-plugin",
-        transport=transport,
-        logger=_Logger(),
-    )
-    target_queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-    manager._message_target_queue = target_queue
-    stored: list[dict[str, object]] = []
-    private: list[dict[str, object]] = []
-    monkeypatch.setattr(state, "append_message_record", lambda record: stored.append(copy.deepcopy(record)))
-    monkeypatch.setattr(
-        proactive_bridge,
-        "enqueue_private_payload",
-        lambda payload: private.append(copy.deepcopy(payload)) or True,
-        raising=False,
-    )
-
-    await manager._route_message(
-        {
-            "type": "MESSAGE_PUSH",
-            "message_id": "private-message",
-            "plugin_id": "authenticated-plugin",
-            "_proactive_bridge_suppressed": "forged-by-plugin",
-            "parts": [{"type": "text", "text": "private live-frame cue"}],
-            "metadata": {
-                "live_frame_permission_token": "generation-secret",
-                "public_hint": "keep-me",
-            },
-        }
-    )
-
-    assert private[0]["metadata"]["live_frame_permission_token"] == "generation-secret"
-    assert private[0]["metadata"]["plugin_host_generation"] == "trusted-host-generation"
-    assert "_proactive_bridge_suppressed" not in private[0]
-    assert "generation-secret" not in repr(stored)
-    assert stored[0]["metadata"]["plugin_host_generation"] == "trusted-host-generation"
-    assert "raw-uplink-secret" not in repr(private)
-    assert stored[0]["_proactive_bridge_suppressed"] is True
-    forwarded = target_queue.get_nowait()
-    assert forwarded["metadata"] == {
-        "plugin_host_generation": "trusted-host-generation",
-        "public_hint": "keep-me",
-    }
-    assert forwarded["_proactive_bridge_suppressed"] is True
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("enqueue_failure", ["rejected", "raised"])
-async def test_token_bearing_message_falls_back_to_redacted_shared_delivery(
-    monkeypatch: pytest.MonkeyPatch,
-    enqueue_failure: str,
-) -> None:
-    from plugin.server.messaging import proactive_bridge
-
-    transport = _Transport()
-    transport.uplink_token = "raw-uplink-secret"
-    transport.permission_generation = "trusted-host-generation"
-    manager = PluginCommunicationResourceManager(
-        plugin_id="authenticated-plugin",
-        transport=transport,
-        logger=_Logger(),
-    )
-    target_queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-    manager._message_target_queue = target_queue
-    monkeypatch.setattr(state, "append_message_record", lambda _record: None)
-
-    if enqueue_failure == "raised":
-        def _enqueue(_payload: dict[str, object]) -> bool:
-            raise RuntimeError("private queue unavailable")
-    else:
-        def _enqueue(_payload: dict[str, object]) -> bool:
-            return False
-    monkeypatch.setattr(
-        proactive_bridge,
-        "enqueue_private_payload",
-        _enqueue,
-        raising=False,
-    )
-
-    await manager._route_message(
-        {
-            "type": "MESSAGE_PUSH",
-            "parts": [{"type": "text", "text": "fallback cue"}],
-            "metadata": {"live_frame_permission_token": "generation-secret"},
-        }
-    )
-
-    forwarded = target_queue.get_nowait()
-    assert "live_frame_permission_token" not in forwarded["metadata"]
-    assert "_proactive_bridge_suppressed" not in forwarded
+        assert payload["metadata"] == {"public_hint": "keep-me"}
 
 
 @pytest.mark.asyncio

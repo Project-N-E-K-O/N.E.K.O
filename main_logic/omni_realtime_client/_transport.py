@@ -587,7 +587,6 @@ class _TransportMixin:
         callback_owned_visual: bool = False,
         send_guard: Callable[[], bool] | None = None,
         pre_send: Callable[[dict], None] | None = None,
-        authorization_guard: Optional[Callable[[], bool]] = None,
     ) -> bool:
         if send_guard is not None and not send_guard():
             raise ConnectionError("realtime event owner is no longer current")
@@ -631,12 +630,6 @@ class _TransportMixin:
                     )
                 if not self.ws:
                     return False
-                # Third gate, distinct from send_guard (ownership) and the
-                # visual-mode fence (routing): whether the permission that
-                # authorized these pixels is still granted. Waiting on the
-                # semaphore is a real yield point, so it can lapse here.
-                if authorization_guard is not None and not authorization_guard():
-                    return False
                 if pre_send is not None:
                     # 临界区之内、序列化**之前**的最后一次就地改写机会。等信号量
                     # 是真实让出点，调用方在此之前做的任何判据都可能在这段等待里
@@ -673,8 +666,6 @@ class _TransportMixin:
                     raise _RealtimeEventOwnerRetired(
                         "realtime event owner is no longer current"
                     )
-                if authorization_guard is not None and not authorization_guard():
-                    return False
                 if expected_visual_mode is not None:
                     expected_mode = VisualDeliveryMode(expected_visual_mode)
                     current_mode = getattr(
@@ -1099,7 +1090,6 @@ class _TransportMixin:
         cache_latest: bool = True,
         event_id: str | None = None,
         on_rejected: Optional[Callable[[str], None]] = None,
-        authorization_guard: Optional[Callable[[], bool]] = None,
     ) -> ImageStageResult:
         """Stream raw image data to the API.
 
@@ -1299,18 +1289,6 @@ class _TransportMixin:
             if self._is_gemini:
                 if self._gemini_session:
                     try:
-                        if (
-                            authorization_guard is not None
-                            and not authorization_guard()
-                        ):
-                            return ImageStageResult(
-                                accepted=False,
-                                mode=VisualDeliveryMode.NATIVE.value,
-                                generation=getattr(
-                                    self, "_latest_image_generation", 0
-                                ),
-                                rejection_reason="live_frame_permission_revoked",
-                            )
                         image_bytes = base64.b64decode(image_b64)
                         if (
                             getattr(
@@ -1342,18 +1320,6 @@ class _TransportMixin:
                                     self, "_latest_image_generation", 0
                                 ),
                                 rejection_reason="raw_visual_delivery_blocked",
-                            )
-                        if (
-                            authorization_guard is not None
-                            and not authorization_guard()
-                        ):
-                            return ImageStageResult(
-                                accepted=False,
-                                mode=VisualDeliveryMode.NATIVE.value,
-                                generation=getattr(
-                                    self, "_latest_image_generation", 0
-                                ),
-                                rejection_reason="live_frame_permission_revoked",
                             )
                         await self._gemini_session.send_realtime_input(
                             media={"data": image_bytes, "mime_type": "image/jpeg"}
@@ -1396,7 +1362,6 @@ class _TransportMixin:
                     raise_on_oversize=bypass_rate_limit,
                     expected_visual_mode=delivery_mode,
                     callback_owned_visual=callback_owned_raw_image,
-                    authorization_guard=authorization_guard,
                 )
                 if not sent and rejection_event_id is not None:
                     self._inject_rejection_handlers.pop(rejection_event_id, None)
@@ -1408,14 +1373,7 @@ class _TransportMixin:
                     mode=VisualDeliveryMode.NATIVE.value,
                     generation=getattr(self, "_latest_image_generation", 0),
                     rejection_reason=(
-                        # A guard that has since flipped is the more specific
-                        # answer: the frame was authorized when it entered and
-                        # lost that authorization while it waited.
-                        "live_frame_permission_revoked"
-                        if not sent
-                        and authorization_guard is not None
-                        and not authorization_guard()
-                        else "raw_visual_delivery_blocked"
+                        "raw_visual_delivery_blocked"
                         if not sent
                         and getattr(self, "_raw_visual_delivery_blocked", False)
                         and not callback_owned_raw_image
@@ -1511,7 +1469,6 @@ class _TransportMixin:
                     raise_on_oversize=bypass_rate_limit,
                     expected_visual_mode=delivery_mode,
                     callback_owned_visual=callback_owned_raw_image,
-                    authorization_guard=authorization_guard,
                 )
                 if not sent and rejection_event_id is not None:
                     self._inject_rejection_handlers.pop(rejection_event_id, None)
@@ -1523,14 +1480,7 @@ class _TransportMixin:
                     mode=VisualDeliveryMode.NATIVE.value,
                     generation=getattr(self, "_latest_image_generation", 0),
                     rejection_reason=(
-                        # A guard that has since flipped is the more specific
-                        # answer: the frame was authorized when it entered and
-                        # lost that authorization while it waited.
-                        "live_frame_permission_revoked"
-                        if not sent
-                        and authorization_guard is not None
-                        and not authorization_guard()
-                        else "raw_visual_delivery_blocked"
+                        "raw_visual_delivery_blocked"
                         if not sent
                         and getattr(self, "_raw_visual_delivery_blocked", False)
                         and not callback_owned_raw_image
