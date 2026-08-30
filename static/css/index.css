@@ -148,7 +148,8 @@ body {
 }
 
 #status-toast-text{position:relative;z-index:1;flex:1;min-width:0;overflow-wrap:anywhere}
-#status-toast-close{position:absolute;top:6px;right:8px;z-index:2;width:22px;height:22px;border:none;border-radius:50%;background:rgba(255,255,255,0.22);cursor:pointer;padding:0;opacity:0.85;transition:background 0.15s,opacity 0.15s;pointer-events:auto;text-shadow:none;font-size:0;line-height:0}
+#status-toast-close{position:absolute;top:6px;right:8px;z-index:2;width:22px;height:22px;border:none;border-radius:50%;background:rgba(255,255,255,0.22);cursor:pointer;padding:0;opacity:0.85;transition:background 0.15s,opacity 0.15s;text-shadow:none;font-size:0;line-height:0}
+#status-toast.show #status-toast-close{pointer-events:auto}
 #status-toast-close::before,#status-toast-close::after{content:"";position:absolute;left:50%;top:50%;width:10px;height:2px;border-radius:999px;background:#fff;pointer-events:none}
 #status-toast-close::before{transform:translate(-50%,-50%) rotate(45deg)}
 #status-toast-close::after{transform:translate(-50%,-50%) rotate(-45deg)}
@@ -156,6 +157,10 @@ body {
 #status-toast-close:active{transform:scale(0.92)}
 #status-toast-close:focus-visible{outline:2px solid rgba(255,255,255,0.9);outline-offset:2px}
 #status-toast{padding-right:36px}
+
+@media (max-width:600px){
+    #status-toast{padding-right:36px}
+}
 
 /* 状态提示气泡框滑动出动画 */
 #status-toast.hide {

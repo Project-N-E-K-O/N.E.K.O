@@ -131,6 +131,8 @@
             showTimer = setTimeout(function() { statusToast.classList.add('show'); showTimer=null; }, 10);
             if (statusToast._enter) statusToast.removeEventListener('mouseenter', statusToast._enter);
             if (statusToast._leave) statusToast.removeEventListener('mouseleave', statusToast._leave);
+            if (statusToast._focusIn) statusToast.removeEventListener('focusin', statusToast._focusIn);
+            if (statusToast._focusOut) statusToast.removeEventListener('focusout', statusToast._focusOut);
             statusToast._enter = function() {
                 if (!statusTimeout) return;
                 clearTimeout(statusTimeout); statusTimeout = null;
@@ -142,9 +144,19 @@
                 if (statusTimeout || statusToast.classList.contains('hide')) return;
                 scheduleHide(toastRemaining!=null ? toastRemaining : duration);
             };
+            statusToast._focusIn = function() {
+                if (!statusTimeout) return;
+                clearTimeout(statusTimeout); statusTimeout = null;
+            };
+            statusToast._focusOut = function() {
+                if (statusTimeout || statusToast.classList.contains('hide')) return;
+                scheduleHide(toastRemaining!=null ? toastRemaining : duration);
+            };
             statusToast.addEventListener('mouseenter', statusToast._enter);
             statusToast.addEventListener('mouseleave', statusToast._leave);
-            if (statusToast.matches(':hover')) { toastRemaining = duration; toastStart = Date.now(); }
+            statusToast.addEventListener('focusin', statusToast._focusIn);
+            statusToast.addEventListener('focusout', statusToast._focusOut);
+            if (statusToast.matches(':hover, :focus-within')) { toastRemaining = duration; toastStart = Date.now(); }
             else scheduleHide(duration);
         }
 
@@ -422,8 +434,8 @@
                 overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
                 setTimeout(function() {
                     overlay.remove();
-                    // 恢复鼠标穿透
-                    if (api) api.setMouseThrough(true);
+                    // 恢复鼠标穿透：仅当 #status-toast 不再展示时才恢复
+                    if (api && !document.getElementById('status-toast').classList.contains('show')) api.setMouseThrough(true);
                     onDismiss();
                 }, 200);
             }
