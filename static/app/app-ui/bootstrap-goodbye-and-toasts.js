@@ -354,21 +354,51 @@ I.mod = window.appUi;
         if (duration == null) duration = 3000;
         const priority = (options && options.important) ? 100 : ((options && options.priority) || 0);
 
+        const statusToast = I.S.dom.statusToast || document.getElementById('status-toast');
+        const statusElement = I.S.dom.statusElement || document.getElementById('status');
+
+        if (!statusToast) {
+            console.error(window.t('console.statusToastNotFound'));
+            return;
+        }
+        I.S.dom.statusToast = statusToast;
+        if (statusElement) I.S.dom.statusElement = statusElement;
+
+        function hideNow() {
+            if (I.S._statusToastShowTimer) { clearTimeout(I.S._statusToastShowTimer); I.S._statusToastShowTimer = null; }
+            if (I.S.statusToastTimeout) { clearTimeout(I.S.statusToastTimeout); I.S.statusToastTimeout = null; }
+            if (I.S._statusToastCleanupTimer) { clearTimeout(I.S._statusToastCleanupTimer); I.S._statusToastCleanupTimer = null; }
+            if (statusToast._toastEnter) { statusToast.removeEventListener('mouseenter', statusToast._toastEnter); statusToast._toastEnter = null; }
+            if (statusToast._toastLeave) { statusToast.removeEventListener('mouseleave', statusToast._toastLeave); statusToast._toastLeave = null; }
+            if (statusToast._toastFocusIn) { statusToast.removeEventListener('focusin', statusToast._toastFocusIn); statusToast._toastFocusIn = null; }
+            if (statusToast._toastFocusOut) { statusToast.removeEventListener('focusout', statusToast._toastFocusOut); statusToast._toastFocusOut = null; }
+            statusToast.classList.remove('show');
+            statusToast.classList.add('hide');
+            const _cb3 = statusToast.querySelector('#status-toast-close');
+            if (_cb3) { _cb3.disabled = true; _cb3.tabIndex = -1; _cb3.setAttribute('aria-hidden','true'); }
+            I.S._statusToastCleanupTimer = setTimeout(() => { const t = statusToast.querySelector('#status-toast-text'); if (t) t.textContent = ''; Array.from(statusToast.childNodes).forEach(n => { if (n.nodeType === 3) n.textContent = ''; }); I.S._statusToastPriority = 0; I.S._statusToastCleanupTimer = null; if (I.mod.api && I.mod.api.setMouseThrough && !document.getElementById('prominent-notice-overlay')) I.mod.api.setMouseThrough(true); }, 400);
+        }
+        function scheduleHide(ms) {
+            if (I.S.statusToastTimeout) clearTimeout(I.S.statusToastTimeout);
+            I.S._statusToastRemaining = ms;
+            I.S._statusToastStart = Date.now();
+            I.S.statusToastTimeout = setTimeout(hideNow, ms);
+        }
+
         if (!message || message.trim() === '') {
-            const statusToast = I.S.dom.statusToast;
-            if (statusToast) {
-                if (I.S._statusToastShowTimer) { clearTimeout(I.S._statusToastShowTimer); I.S._statusToastShowTimer = null; }
-                if (I.S.statusToastTimeout) { clearTimeout(I.S.statusToastTimeout); I.S.statusToastTimeout = null; }
-                if (I.S._statusToastCleanupTimer) { clearTimeout(I.S._statusToastCleanupTimer); I.S._statusToastCleanupTimer = null; }
-                const _cb2 = statusToast.querySelector('#status-toast-close');
-                if (_cb2) { _cb2.disabled = true; _cb2.tabIndex = -1; _cb2.setAttribute('aria-hidden','true'); if (document.activeElement === _cb2) _cb2.blur(); }
-                if (statusToast._toastEnter) { statusToast.removeEventListener('mouseenter', statusToast._toastEnter); statusToast._toastEnter = null; }
-                if (statusToast._toastLeave) { statusToast.removeEventListener('mouseleave', statusToast._toastLeave); statusToast._toastLeave = null; }
-                statusToast.classList.remove('show');
-                statusToast.classList.add('hide');
-                I.S._statusToastCleanupTimer = setTimeout(() => { const t = statusToast.querySelector('#status-toast-text'); if (t) t.textContent = ''; Array.from(statusToast.childNodes).forEach(n => { if (n.nodeType === 3) n.textContent = ''; }); I.S._statusToastCleanupTimer = null; }, 400);
-                I.S._statusToastRemaining = null; I.S._statusToastStart = null;
-            }
+            if (I.S._statusToastShowTimer) { clearTimeout(I.S._statusToastShowTimer); I.S._statusToastShowTimer = null; }
+            if (I.S.statusToastTimeout) { clearTimeout(I.S.statusToastTimeout); I.S.statusToastTimeout = null; }
+            if (I.S._statusToastCleanupTimer) { clearTimeout(I.S._statusToastCleanupTimer); I.S._statusToastCleanupTimer = null; }
+            if (statusToast._toastEnter) { statusToast.removeEventListener('mouseenter', statusToast._toastEnter); statusToast._toastEnter = null; }
+            if (statusToast._toastLeave) { statusToast.removeEventListener('mouseleave', statusToast._toastLeave); statusToast._toastLeave = null; }
+            if (statusToast._toastFocusIn) { statusToast.removeEventListener('focusin', statusToast._toastFocusIn); statusToast._toastFocusIn = null; }
+            if (statusToast._toastFocusOut) { statusToast.removeEventListener('focusout', statusToast._toastFocusOut); statusToast._toastFocusOut = null; }
+            const _cb2 = statusToast.querySelector('#status-toast-close');
+            if (_cb2) { _cb2.disabled = true; _cb2.tabIndex = -1; _cb2.setAttribute('aria-hidden','true'); if (document.activeElement === _cb2) _cb2.blur(); }
+            statusToast.classList.remove('show');
+            statusToast.classList.add('hide');
+            I.S._statusToastCleanupTimer = setTimeout(() => { const t = statusToast.querySelector('#status-toast-text'); if (t) t.textContent = ''; Array.from(statusToast.childNodes).forEach(n => { if (n.nodeType === 3) n.textContent = ''; }); I.S._statusToastCleanupTimer = null; if (I.mod.api && I.mod.api.setMouseThrough && !document.getElementById('prominent-notice-overlay')) I.mod.api.setMouseThrough(true); }, 400);
+            I.S._statusToastRemaining = null; I.S._statusToastStart = null;
             I.S._statusToastPriority = 0;
             return;
         }
@@ -380,18 +410,10 @@ I.mod = window.appUi;
 
         console.log(window.t('console.statusToastShow'), message, window.t('console.statusToastDuration'), duration);
 
-        const statusToast = I.S.dom.statusToast || document.getElementById('status-toast');
-        const statusElement = I.S.dom.statusElement || document.getElementById('status');
-
-        if (!statusToast) {
-            console.error(window.t('console.statusToastNotFound'));
-            return;
-        }
-        I.S.dom.statusToast = statusToast;
-        if (statusElement) {
-            I.S.dom.statusElement = statusElement;
-        }
-
+        let textEl = statusToast.querySelector('#status-toast-text');
+        if (!textEl) { textEl = document.createElement('span'); textEl.id = 'status-toast-text'; statusToast.appendChild(textEl); }
+        Array.from(statusToast.childNodes).forEach(n => { if (n !== textEl && n !== closeBtn && n.nodeType === 3) n.textContent = ''; });
+        textEl.textContent = message;
         let closeBtn = statusToast.querySelector('#status-toast-close');
         if (!closeBtn) {
             closeBtn = document.createElement('button');
@@ -425,7 +447,7 @@ I.mod = window.appUi;
         };
         statusToast._toastLeave = () => {
             if (I.S.statusToastTimeout || statusToast.classList.contains('hide')) return;
-            scheduleHide(I.S._statusToastRemaining != null ? I.S._statusToastRemaining : duration);
+            if (!statusToast.matches(':hover, :focus-within')) scheduleHide(I.S._statusToastRemaining != null ? I.S._statusToastRemaining : duration);
         };
         statusToast._toastFocusIn = () => {
             if (!I.S.statusToastTimeout) return;
@@ -433,7 +455,7 @@ I.mod = window.appUi;
         };
         statusToast._toastFocusOut = () => {
             if (I.S.statusToastTimeout || statusToast.classList.contains('hide')) return;
-            scheduleHide(I.S._statusToastRemaining != null ? I.S._statusToastRemaining : duration);
+            if (!statusToast.matches(':hover, :focus-within')) scheduleHide(I.S._statusToastRemaining != null ? I.S._statusToastRemaining : duration);
         };
         statusToast.addEventListener('mouseenter', statusToast._toastEnter);
         statusToast.addEventListener('mouseleave', statusToast._toastLeave);
@@ -444,7 +466,6 @@ I.mod = window.appUi;
             I.S._statusToastStart = Date.now();
         } else scheduleHide(duration);
 
-        // 同时更新隐藏的 status 元素（保持兼容性）
         if (statusElement) {
             statusElement.textContent = message || '';
         }
