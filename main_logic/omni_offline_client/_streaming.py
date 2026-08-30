@@ -1068,10 +1068,17 @@ class _StreamingMixin:
                             if _pending_bus_frames is not None:
                                 _bus_images, _bus_sources = _pending_bus_frames
                                 _pending_bus_frames = None
-                                await self._publish_provider_frames(
-                                    _bus_images,
-                                    _bus_sources,
-                                    turn_id=turn_id,
+                                # 只发布、不等待。这条 hop 可能跨 loop（见
+                                # _fire_bus_task），而这里正卡在用户回复的第一个
+                                # chunk 上：一个卡住的 bridge 不该换来一次沉默的
+                                # 回合。要抄的字节和标签在上面就已经冻结好了，
+                                # 任务里不再读任何活状态。
+                                self._fire_bus_task(
+                                    self._publish_provider_frames(
+                                        _bus_images,
+                                        _bus_sources,
+                                        turn_id=turn_id,
+                                    )
                                 )
                             if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                                 chunk_usage = chunk.usage_metadata

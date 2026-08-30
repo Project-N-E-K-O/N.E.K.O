@@ -217,7 +217,7 @@ def _spies():
 def _run(client, spies, *, instruction: str = _INSTRUCTION, **kwargs):
     frames, turns = spies
     with patch(_FRAME_PUBLISHER, frames), patch(_TURN_PUBLISHER, turns):
-        return asyncio.run(client.prompt_ephemeral(instruction, **kwargs))
+        return _run_turn(client.prompt_ephemeral(instruction, **kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +480,7 @@ def test_the_copied_reply_is_the_sanitized_committed_text():
     frames, turns = _spies()
 
     with patch(_FRAME_PUBLISHER, frames), patch(_TURN_PUBLISHER, turns):
-        committed = asyncio.run(client.prompt_ephemeral(
+        committed = _run_turn(client.prompt_ephemeral(
             _INSTRUCTION, on_committed_text=seen.append,
         ))
 
@@ -560,7 +560,7 @@ def test_a_failing_conversation_bus_never_costs_the_turn():
         raise RuntimeError("plane down")
 
     with patch(_FRAME_PUBLISHER, _FrameSpy()), patch(_TURN_PUBLISHER, _explode):
-        committed = asyncio.run(client.prompt_ephemeral(_INSTRUCTION))
+        committed = _run_turn(client.prompt_ephemeral(_INSTRUCTION))
 
     assert committed is True
     assert client.on_response_done.await_count == 1
@@ -593,12 +593,40 @@ def test_bus_cancellation_is_not_swallowed():
 
     with patch(_FRAME_PUBLISHER, _FrameSpy()), patch(_TURN_PUBLISHER, _cancel):
         with pytest.raises(asyncio.CancelledError):
-            asyncio.run(client.prompt_ephemeral(_INSTRUCTION))
+            _run_turn(client.prompt_ephemeral(_INSTRUCTION))
 
 
 # ---------------------------------------------------------------------------
 # 5. The hop into the ``conversations`` store.
 # ---------------------------------------------------------------------------
+
+
+
+# Bound at import, before any test can patch the module attribute out from
+# under us. ``_settled`` needs a yield that really yields.
+_REAL_SLEEP = asyncio.sleep
+
+
+async def _settled(coro):
+    """Run a turn, then let its fire-and-forget bus copies finish.
+
+    The publish no longer sits on the response path -- a cross-loop hop with no
+    timeout must never hold up the user's reply -- so a turn can return before
+    a single frame has reached the spy. Draining here is what keeps these
+    assertions about the publish rather than about scheduling luck.
+    """
+    result = await coro
+    # NOT ``asyncio.sleep``: the retry-ladder tests patch it module-wide (see
+    # ``_SLEEP``), and a patched no-op sleep never yields, so the background
+    # copies would never get a turn and every assertion here would read zero.
+    for _ in range(50):
+        await _REAL_SLEEP(0)
+    return result
+
+
+def _run_turn(coro):
+    """``asyncio.run`` for a turn, with the bus copies drained before teardown."""
+    return asyncio.run(_settled(coro))
 
 
 def _turn_event(**overrides: Any) -> Dict[str, Any]:

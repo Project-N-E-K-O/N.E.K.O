@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from typing import Sequence
 
 from config import MAX_MULTIMODAL_TURN_IMAGES
@@ -178,12 +179,48 @@ class _MediaMixin:
             f"(source={source}, {source} total: {len(queue)})"
         )
 
-    async def _publish_pending_tool_frames(
+    def _fire_bus_task(self, coro):
+        """Run a best-effort bus copy off the turn, with GC protection.
+
+        Every publish on this path can end up crossing loops:
+        ``publish_session_event_threadsafe`` hands a cross-thread call to the
+        bridge's owner loop through an UN-TIMED ``run_coroutine_threadsafe``.
+        Awaiting that inside the model stream lets a stalled bridge hold up the
+        first chunk, and with it the user's reply -- for a copy that is
+        explicitly optional. The realtime client's ``_fire_task`` exists for
+        this exact reason; the offline client has no such helper, so the media
+        layer keeps its own rather than reaching across into another client.
+
+        The caller must have snapshotted everything the coroutine reads BEFORE
+        calling this. Moving the publish off the turn without freezing its
+        inputs just relocates the race: the task would read session state as it
+        is when it finally runs, not as it was at delivery.
+
+        Returns the task so tests and teardown can join it; nothing on the turn
+        path does.
+        """
+        try:
+            task = asyncio.create_task(coro)
+        except RuntimeError:
+            # No running loop (``__new__``-built doubles, teardown). Close the
+            # coroutine so it does not warn, and drop the copy -- a missing
+            # frame is the safe direction.
+            coro.close()
+            return None
+        tasks = getattr(self, "_bus_bg_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._bus_bg_tasks = tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
+
+    def _publish_pending_tool_frames(
         self,
         pending: list | None,
         *,
         turn_id: str | None = None,
-    ) -> None:
+    ):
         """Publish the tool images a just-answered request carried. Best effort.
 
         ``pending`` is filled by ``_append_tool_result_images`` at the moment
@@ -197,8 +234,10 @@ class _MediaMixin:
         a plugin a picture; over-publishing is the host asserting a delivery
         that never happened.
 
-        The list is cleared BEFORE the await so a second chunk, a retry or a
-        re-entry cannot copy the same frames twice.
+        The drain itself -- read the list, empty it -- is SYNCHRONOUS, and
+        only the publish moves off. Emptying it inside the task would put the
+        clear after a suspension point, and a later round could drain the same
+        frames again before the first task ever ran.
 
         ``source`` is ``plugin`` for every one of these, which is what they
         are: media a plugin handed the model, not a picture the user shared
@@ -208,16 +247,16 @@ class _MediaMixin:
         every such filter.
         """
         if not pending:
-            return
+            return None
         drained = list(pending)
         pending.clear()
-        await self._publish_provider_frames(
+        return self._fire_bus_task(self._publish_provider_frames(
             [frame[0] for frame in drained],
             [_FRAME_SOURCE_PLUGIN] * len(drained),
             turn_id=turn_id,
             mimes=[frame[1] for frame in drained],
             metadatas=[{"tool_name": frame[2]} for frame in drained],
-        )
+        ))
 
     async def _publish_provider_frames(
         self,

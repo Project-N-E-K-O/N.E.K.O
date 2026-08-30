@@ -735,7 +735,7 @@ class _ToolingMixin:
                     # 的，请求要到第一次 __anext__ 才真正发出，能拿到 chunk 就
                     # 说明带着上一轮工具图的这次请求已经被 provider 收下。
                     tool_frames_published = True
-                    await self._publish_pending_tool_frames(
+                    self._publish_pending_tool_frames(
                         tool_bus_frames, turn_id=tool_frames_turn_id
                     )
                 if getattr(chunk, "content", None):
@@ -922,7 +922,7 @@ class _ToolingMixin:
         async for chunk in self.llm.astream(messages, **final_overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
             if not tool_frames_published:
                 tool_frames_published = True
-                await self._publish_pending_tool_frames(
+                self._publish_pending_tool_frames(
                     tool_bus_frames, turn_id=tool_frames_turn_id
                 )
             if chunk.finish_reason:

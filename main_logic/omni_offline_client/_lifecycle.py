@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import contextlib
 import functools
 import uuid
@@ -460,6 +461,10 @@ class _LifecycleMixin:
         # 图。一个槽装两样，是为了让「一轮只发一次」只有一处清标记 —— 两个槽两处
         # 清，就是下一次有人只清了其中一个的地方。None = 已经发过了。
         _pending_bus_delivery = (instruction, _bus_frames)
+        # 指令那条抄送的任务句柄。回复在 finally 末尾发布，两条属于同一轮，
+        # 插件读到的顺序必须是「指令、回复」——发布一旦离开回合的返回路径，
+        # 这个顺序就只剩调度保证，而调度不保证任何事。
+        _bus_instruction_task = None
 
         # Retry 策略与 stream_text 对偶（max_retries=3, [1, 2]s 间隔）。
         # 但主动搭话语义不同：用户没在等回复，retry 用尽时**静默吞掉**，
@@ -518,17 +523,24 @@ class _LifecycleMixin:
                         if _pending_bus_delivery is not None:
                             _bus_instruction, _bus_frames_to_send = _pending_bus_delivery
                             _pending_bus_delivery = None
+                            # 与 stream_text 同一判据：抄送不占用回复的返回
+                            # 路径。两者都在上面冻结过了，任务里不读活状态。
                             if _bus_frames_to_send:
-                                await self._publish_provider_frames(
-                                    _bus_frames_to_send,
-                                    [_FRAME_SOURCE_PROACTIVE] * len(_bus_frames_to_send),
-                                    turn_id=_bus_turn_id,
+                                self._fire_bus_task(
+                                    self._publish_provider_frames(
+                                        _bus_frames_to_send,
+                                        [_FRAME_SOURCE_PROACTIVE]
+                                        * len(_bus_frames_to_send),
+                                        turn_id=_bus_turn_id,
+                                    )
                                 )
-                            await self._publish_conversation_turn(
-                                _bus_instruction,
-                                turn_type=_BUS_TURN_TYPE_INSTRUCTION,
-                                conversation_id=_bus_turn_id,
-                                message_count=1,
+                            _bus_instruction_task = self._fire_bus_task(
+                                self._publish_conversation_turn(
+                                    _bus_instruction,
+                                    turn_type=_BUS_TURN_TYPE_INSTRUCTION,
+                                    conversation_id=_bus_turn_id,
+                                    message_count=1,
+                                )
                             )
                         if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                             logger.debug(f"🔍 [Usage-Proactive] {chunk.usage_metadata}")
@@ -766,6 +778,14 @@ class _LifecycleMixin:
             # 不能在任何用户看得见的东西（TTS 收尾、轮次结束、request-id 清理）
             # 前面新开一个取消点。
             if content_committed:
+                if _bus_instruction_task is not None:
+                    # 让指令先落地。这里已经在整个 finally 的最后、所有用户可见
+                    # 的收尾之后，等一下不会挡住任何人；而顺序反过来的话，插件
+                    # 读到的就是一句没有由来的回复。任务自己吞掉所有失败，所以
+                    # 这个 await 只会因为它结束而结束。
+                    await asyncio.gather(
+                        _bus_instruction_task, return_exceptions=True
+                    )
                 await self._publish_conversation_turn(
                     committed_text,
                     turn_type=_BUS_TURN_TYPE_REPLY,

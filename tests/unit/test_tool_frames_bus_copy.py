@@ -14,6 +14,8 @@ budget actually admitted.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from main_logic.omni_offline_client._media import _MediaMixin
@@ -131,8 +133,27 @@ def _image_result(images, name="demo_tool") -> ToolResult:
     )
 
 
+# Bound at import so a module-wide sleep patch cannot turn the settle into a
+# no-op: a drain that never yields reads zero and every assertion here would
+# pass for the wrong reason.
+_REAL_SLEEP = asyncio.sleep
+
+
+async def _settle():
+    """Let the fire-and-forget bus copies run.
+
+    The publish is off the response path -- a cross-loop hop with no timeout
+    must not hold up the reply -- so a turn returns before any frame reaches
+    the spy. Without this, every assertion below is about scheduling luck.
+    """
+    for _ in range(50):
+        await _REAL_SLEEP(0)
+
+
 async def _drain(client):
-    return [chunk async for chunk in client._astream_visible_with_tools([])]
+    chunks = [chunk async for chunk in client._astream_visible_with_tools([])]
+    await _settle()
+    return chunks
 
 
 # --------------------------------------------------------------- staging half
@@ -270,6 +291,9 @@ async def test_a_request_the_provider_rejected_publishes_nothing(monkeypatch):
     )
     with pytest.raises(RuntimeError):
         await _drain(client)
+    # 异常路径不经过 _drain 里的 settle，这里补上——否则"没发布"可能只是
+    # 后台任务还没轮到，而不是它真的没被创建。
+    await _settle()
 
     assert published == [], "published a frame no provider ever took"
 
@@ -564,6 +588,7 @@ async def test_genai_publishes_a_tool_image_once_the_next_request_answers(
         messages, _tool_bus_frames=bus_frames,
     ):
         pass
+    await _settle()
 
     assert len(calls) >= 2, "前提没成立：genai 循环没跑到第二次请求"
     assert len(published) == 1, "genai 路径的工具图没上总线"
@@ -598,6 +623,7 @@ async def test_genai_publishes_nothing_when_no_follow_up_request_runs(
         [{"role": "user", "content": "看看"}], _tool_bus_frames=[],
     ):
         pass
+    await _settle()
 
     # 封顶后仍会跑 forced-finalize，所以"没有后继请求"在这条路上不存在；
     # 真正的非投递是那次请求一个 chunk 都没吐出来。

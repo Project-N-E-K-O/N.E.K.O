@@ -488,7 +488,7 @@ class _GenaiMixin:
                 async for chunk in stream:
                     if not tool_frames_published:
                         tool_frames_published = True
-                        await self._publish_pending_tool_frames(
+                        self._publish_pending_tool_frames(
                             tool_bus_frames, turn_id=tool_frames_turn_id
                         )
                     # prompt_feedback.block_reason：Gemini 整段 input 被 safety
@@ -818,7 +818,7 @@ class _GenaiMixin:
         async for chunk in final_stream:
             if not tool_frames_published:
                 tool_frames_published = True
-                await self._publish_pending_tool_frames(
+                self._publish_pending_tool_frames(
                     tool_bus_frames, turn_id=tool_frames_turn_id
                 )
             # 与常规 genai 分支对偶地采集空回复诊断：block_reason / finish_reason /

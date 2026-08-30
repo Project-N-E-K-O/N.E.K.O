@@ -28,6 +28,7 @@ import asyncio
 import base64
 import io
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -165,6 +166,34 @@ def _has_image_parts(captured: list) -> bool:
     )
 
 
+
+# Bound at import, before any test can patch the module attribute out from
+# under us. ``_settled`` needs a yield that really yields.
+_REAL_SLEEP = asyncio.sleep
+
+
+async def _settled(coro):
+    """Run a turn, then let its fire-and-forget bus copies finish.
+
+    The publish no longer sits on the response path -- a cross-loop hop with no
+    timeout must never hold up the user's reply -- so a turn can return before
+    a single frame has reached the spy. Draining here is what keeps these
+    assertions about the publish rather than about scheduling luck.
+    """
+    result = await coro
+    # NOT ``asyncio.sleep``: the retry-ladder tests patch it module-wide (see
+    # ``_SLEEP``), and a patched no-op sleep never yields, so the background
+    # copies would never get a turn and every assertion here would read zero.
+    for _ in range(50):
+        await _REAL_SLEEP(0)
+    return result
+
+
+def _run_turn(coro):
+    """``asyncio.run`` for a turn, with the bus copies drained before teardown."""
+    return asyncio.run(_settled(coro))
+
+
 class _Spy:
     """Records every frame handed to the bus publisher."""
 
@@ -211,7 +240,7 @@ def test_a_small_single_attachment_turn_is_still_re_encoded_to_the_profile():
     client, captured = _make_client()
     client._pending_images = [source]
     with patch(_PUBLISHER, _Spy()):
-        asyncio.run(client.stream_text("这是什么"))
+        _run_turn(client.stream_text("这是什么"))
 
     sent = _attached_b64(captured)
     assert len(sent) == 1
@@ -236,7 +265,7 @@ def test_routine_recompression_never_toasts_the_user():
     client.on_status_message = AsyncMock()
     client._pending_images = [_png_b64(1600, 1200)]
     with patch(_PUBLISHER, _Spy()):
-        asyncio.run(client.stream_text("看看这个"))
+        _run_turn(client.stream_text("看看这个"))
 
     assert _attached_b64(captured), "no turn was built"
     # 这条流以 RuntimeError 收场，finally 会补一条 LLM_NO_RESPONSE —— 断言必须
@@ -263,7 +292,7 @@ def test_the_bus_gets_the_compressed_bytes_not_the_callers_original():
     client._pending_images = [source]
     spy = _Spy()
     with patch(_PUBLISHER, spy):
-        asyncio.run(client.stream_text("这是什么"))
+        _run_turn(client.stream_text("这是什么"))
 
     sent = _attached_b64(captured)
     assert spy.images == sent
@@ -288,7 +317,7 @@ def test_each_frame_is_labelled_with_the_queue_it_came_from():
 
     spy = _Spy()
     with patch(_PUBLISHER, spy):
-        asyncio.run(client.stream_text("这几张图"))
+        _run_turn(client.stream_text("这几张图"))
 
     assert spy.sources == ["screen", "plugin", "user"]
     # 标签是按位对齐的，不是"恰好三条"：颜色能把每一条钉回它自己的来源。
@@ -306,7 +335,7 @@ def test_callback_media_is_labelled_plugin_not_user():
     client, _captured = _make_client()
     spy = _Spy()
     with patch(_PUBLISHER, spy):
-        asyncio.run(client.stream_text(
+        _run_turn(client.stream_text(
             "在说什么",
             system_prefix="======[系统通知] x======",
             system_prefix_images=[_png_b64(300, 200)],
@@ -336,7 +365,7 @@ def test_labels_degrade_to_unknown_once_the_ladder_changes_the_count():
         "main_logic.omni_offline_client._streaming.fit_images_to_turn_budget",
         _fit_that_drops_one,
     ), patch(_PUBLISHER, spy):
-        asyncio.run(client.stream_text("这几张图"))
+        _run_turn(client.stream_text("这几张图"))
 
     assert len(_attached_b64(captured)) == 1
     assert spy.sources == ["unknown"]
@@ -354,7 +383,7 @@ def test_an_independent_asr_turn_carries_its_turn_id_onto_the_bus():
     client, captured = _make_client()
     spy = _Spy()
     with patch(_PUBLISHER, spy):
-        accepted = asyncio.run(client.submit_multimodal_turn(
+        accepted = _run_turn(client.submit_multimodal_turn(
             "刚才说的是这个",
             [_png_b64(300, 200), _png_b64(320, 200)],
             turn_id="utterance-77",
@@ -376,7 +405,7 @@ def test_an_ordinary_text_turn_publishes_no_turn_id():
     client._pending_images = [_png_b64(300, 200)]
     spy = _Spy()
     with patch(_PUBLISHER, spy):
-        asyncio.run(client.stream_text("这是什么"))
+        _run_turn(client.stream_text("这是什么"))
 
     assert [call["turn_id"] for call in spy.calls] == [None]
 
@@ -401,7 +430,7 @@ def test_a_dropped_proactive_screenshot_never_reaches_the_bus():
 
     spy = _Spy()
     with patch(_PUBLISHER, spy):
-        asyncio.run(client.stream_text("纯文本"))
+        _run_turn(client.stream_text("纯文本"))
 
     assert captured, "the stream was never reached"
     assert not _has_image_parts(captured), "the screenshot should have been dropped"
@@ -447,7 +476,7 @@ def test_a_turn_that_dies_between_fitting_and_committing_publishes_nothing():
         _fit_with_a_visible_notice,
     ), patch(_PUBLISHER, spy):
         with pytest.raises(asyncio.CancelledError):
-            asyncio.run(client.stream_text("看看这个"))
+            _run_turn(client.stream_text("看看这个"))
 
     assert spy.calls == []
     # 回滚仍然完整，两条队列都原样还了回来。
@@ -469,30 +498,55 @@ def test_a_failing_bus_never_costs_the_user_the_turn():
         raise RuntimeError("plane down")
 
     with patch(_PUBLISHER, _explode):
-        asyncio.run(client.stream_text("这是什么"))
+        _run_turn(client.stream_text("这是什么"))
 
     # 回合照常构建、照常提交。
     assert len(_attached_b64(captured)) == 2
     assert captured[0][-1] is client._conversation_history[-1]
 
 
-def test_bus_cancellation_is_not_swallowed():
-    """A cancelled publish is the session being torn down, not a bus hiccup.
+def test_a_cancelled_bus_publish_no_longer_reaches_the_turn():
+    """The copy runs off the response path, so its cancellation stays there.
 
-    Swallowing it would let a turn keep streaming through a teardown.
-
-    Mutation: catch ``BaseException`` (or drop the CancelledError re-raise) in
-    ``_publish_provider_frames``.
+    This used to propagate, because the turn awaited the publish. It must not
+    any more: the whole point of moving the hop off the reply is that nothing
+    the bus does -- stalling, failing, being torn down -- can cost the user a
+    sentence.
     """
-    client, _captured = _make_client()
+    client, captured = _make_client()
     client._pending_images = [_png_b64(300, 200)]
 
     async def _cancel(*_args, **_kwargs):
         raise asyncio.CancelledError()
 
     with patch(_PUBLISHER, _cancel):
+        _run_turn(client.stream_text("这是什么"))
+
+    assert len(_attached_b64(captured)) == 1
+    assert captured[0][-1] is client._conversation_history[-1]
+
+
+def test_the_publish_helper_still_re_raises_cancellation():
+    """The dual of the test above, one layer down.
+
+    Moving the publish into a task is not a licence to swallow teardown there.
+    A background copy that caught ``CancelledError`` and carried on would keep
+    writing frames out of a session that is being closed.
+
+    Mutation: catch ``BaseException`` (or drop the CancelledError re-raise) in
+    ``_publish_provider_frames``.
+    """
+    client, _captured = _make_client()
+
+    async def _cancel(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    async def _call():
+        await client._publish_provider_frames([_png_b64(8, 8)], ["user"])
+
+    with patch(_PUBLISHER, _cancel):
         with pytest.raises(asyncio.CancelledError):
-            asyncio.run(client.stream_text("这是什么"))
+            asyncio.run(_call())
 
 
 # ---------------------------------------------------------------------------
@@ -518,7 +572,7 @@ def test_a_request_the_provider_rejected_publishes_nothing():
 
     spy = _Spy()
     with patch(_PUBLISHER, spy):
-        asyncio.run(client.stream_text("这是什么"))
+        _run_turn(client.stream_text("这是什么"))
 
     assert captured, "the provider call was never attempted"
     assert _has_image_parts(captured), "this turn has to be carrying frames"
@@ -544,7 +598,7 @@ def test_every_provider_attempt_failing_leaves_the_bus_empty():
 
     spy = _Spy()
     with patch(_PUBLISHER, spy), patch(_SLEEP, _no_backoff):
-        asyncio.run(client.stream_text("这是什么"))
+        _run_turn(client.stream_text("这是什么"))
 
     assert len(captured) == 3, (
         f"the fixture must exercise all three attempts, saw {len(captured)}"
@@ -573,7 +627,7 @@ def test_a_raising_input_transcript_callback_publishes_nothing():
     spy = _Spy()
     with patch(_PUBLISHER, spy):
         with pytest.raises(RuntimeError, match="transcript sink is down"):
-            asyncio.run(client.stream_text("这是什么"))
+            _run_turn(client.stream_text("这是什么"))
 
     assert captured == [], "the provider must never have been called"
     assert spy.calls == []
@@ -596,10 +650,47 @@ def test_the_bus_sees_a_retried_turn_once_not_once_per_attempt():
 
     spy = _Spy()
     with patch(_PUBLISHER, spy), patch(_SLEEP, _no_backoff):
-        asyncio.run(client.stream_text("这是什么"))
+        _run_turn(client.stream_text("这是什么"))
 
     assert len(captured) == 3, (
         f"the fixture must exercise all three attempts, saw {len(captured)}"
     )
     assert len(spy.calls) == 1
     assert spy.images == _attached_b64(captured)
+
+
+def test_a_stalled_bus_does_not_hold_up_the_reply():
+    """The reason the publish left the response path at all.
+
+    ``publish_session_event_threadsafe`` hands a cross-thread publish to the
+    bridge's owner loop through an un-timed ``run_coroutine_threadsafe``. While
+    the turn awaited that, a stalled bridge meant a stalled reply -- the user
+    waiting on a copy that is explicitly optional. The realtime path settled
+    this one round earlier; this is the offline dual.
+
+    Mutation: await ``_publish_provider_frames`` at the publish point in
+    ``_streaming`` instead of firing it. This test then hangs rather than
+    fails, so it carries its own deadline.
+    """
+    entered = threading.Event()
+
+    async def _never_returns(*_args, **_kwargs):
+        entered.set()
+        await asyncio.Event().wait()   # never set
+
+    client, captured = _make_client()
+    client._pending_images = [_png_b64(300, 200)]
+
+    async def _turn():
+        await asyncio.wait_for(client.stream_text("这是什么"), timeout=5)
+        # 抄送确实被排上了，而且确实卡住了——否则本用例什么都没证明。
+        for _ in range(50):
+            await _REAL_SLEEP(0)
+        assert entered.is_set(), "前提没成立：publish 根本没被调用"
+
+    with patch(_PUBLISHER, _never_returns):
+        asyncio.run(_turn())
+
+    # 回合照常构建、照常提交，尽管那次抄送到现在都没返回。
+    assert len(_attached_b64(captured)) == 1
+    assert captured[0][-1] is client._conversation_history[-1]
