@@ -1049,3 +1049,56 @@ def test_the_cap_is_what_refused_it_not_something_else(monkeypatch):
 
     assert frames.calls
     assert turns.turn_types == ["proactive_instruction", "proactive_reply"]
+
+
+def test_a_proactive_tool_image_carries_the_turn_id():
+    """A tool image inside a proactive turn belongs to that turn.
+
+    The instruction, the reply and the turn's own frames all use one id; a
+    tool frame published with ``turn_id=None`` cannot be correlated with any of
+    them, which is the whole reason the field exists.
+
+    Mutation: drop ``_tool_frames_turn_id`` from the proactive tool-loop call.
+    """
+    client, _captured = _make_client()
+    seen: list = []
+
+    async def _capture(messages, **overrides):
+        seen.append(overrides.get("_tool_frames_turn_id"))
+        yield _text("看到了")
+
+    client._astream_visible_with_tools = _capture
+    spies = _spies()
+    _frames, turns = spies
+
+    _run(client, spies)
+
+    assert seen and seen[0], "工具帧的 turn_id 没被传进 tool loop"
+    # 与同一轮的对话记录同一个 id，而不是另外生成的某个值——否则「传了个
+    # turn_id」和「传了这一轮的 turn_id」这两件事分不开。
+    assert turns.calls, "前提没成立：这一轮没有对话记录可比对"
+    assert seen[0] == turns.calls[0]["conversation_id"]
+
+
+def test_close_stops_new_bus_copies_from_starting():
+    """Draining is not enough on its own.
+
+    A stream parked on its first chunk wakes after the drain and would fire a
+    fresh copy, which then outlives the closed session with nothing left to
+    collect it.
+
+    Mutation: drop the ``_bus_copies_closed`` latch (keep only the drain).
+    """
+    client, _captured = _make_client()
+
+    async def _check():
+        await client._cancel_bus_copies()
+
+        async def _late():
+            return None
+
+        assert client._fire_bus_task(_late()) is None, (
+            "close 之后仍然接受了新的抄送"
+        )
+
+    asyncio.run(_check())

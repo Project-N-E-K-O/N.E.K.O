@@ -203,6 +203,12 @@ class _MediaMixin:
         Returns the task so tests and teardown can join it; nothing on the turn
         path does.
         """
+        if getattr(self, "_bus_copies_closed", False):
+            # close() has begun. A copy started now would outlive the session
+            # it describes, and the drain has already run -- nothing would ever
+            # collect it. Closing the coroutine keeps it from warning.
+            coro.close()
+            return None
         tasks = getattr(self, "_bus_bg_tasks", None)
         if tasks is None:
             tasks = set()
@@ -223,6 +229,9 @@ class _MediaMixin:
         a copy that fails on its way out from turning into a teardown error;
         by this point nobody is going to read it either way.
         """
+        # Set by close() before it calls this, so the set cannot grow while
+        # it drains. Set here too for a direct caller.
+        self._bus_copies_closed = True
         tasks = getattr(self, "_bus_bg_tasks", None)
         if not tasks:
             return

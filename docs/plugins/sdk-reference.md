@@ -331,7 +331,7 @@ A plugin cannot ask for a capture. A frame the session's own throttle or deliver
 
 Each record carries `image_base64` (one copy — there is no raw-bytes twin to read), `mime`, `source`, `captured_at`, `turn_id`, `generation`, and `frame_id`. `source` is the channel the host attributed the frame to: `screen`, `camera`, `plugin`, `callback`, `proactive`, `user`, or `unknown` once a turn was reshaped and the host could no longer say. Dedupe on `frame_id`: `generation` orders ambient frames but does not advance for one-shot cue images, so two records can share one.
 
-Pictures a tool handed back are on this bus too, once the follow-up request that carried them was answered. They arrive with `source="plugin"` and a `metadata` of `{"tool_name": "..."}`. Read `source` before you read the pixels: a `plugin` frame is media some plugin gave the model — possibly not yours — and is not a picture the user shared with the character.
+Pictures a tool handed back are on this bus too, once the follow-up request that carried them was answered. They arrive with `source="plugin"` and a `metadata` of `{"tool_name": "..."}`. One size caveat, and it is a real one: a tool may return up to 2 MiB of base64, while a record over `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES` (512 KiB by default) is refused by the bridge. A large tool image therefore reaches the model but not this bus. That is the same "dropped by design" rule as everything else here, not a promise being broken — but if you need those frames, raise that setting. Read `source` before you read the pixels: a `plugin` frame is media some plugin gave the model — possibly not yours — and is not a picture the user shared with the character.
 
 ### Priority levels
 

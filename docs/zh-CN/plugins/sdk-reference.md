@@ -329,7 +329,7 @@ latest = frames.sort(by="timestamp", reverse=True).limit(1)
 
 每条记录带有 `image_base64`（只有一份，不存在可读的裸字节副本）、`mime`、`source`、`captured_at`、`turn_id`、`generation` 和 `frame_id`。`source` 是宿主给这一帧归的通道：`screen`、`camera`、`plugin`、`callback`、`proactive`、`user`，以及这一轮被重排后宿主已经说不准时的 `unknown`。请按 `frame_id` 去重：`generation` 只为常驻画面排序，一次性提示图不会让它前进，所以两条记录可能共用同一个值。
 
-工具返回的图片也在这条总线上——前提是携带它们的那次后继请求已经得到应答。这类帧的 `source` 为 `"plugin"`，`metadata` 为 `{"tool_name": "..."}`。读像素之前先读 `source`：标为 `plugin` 的帧是某个插件交给模型的媒体（未必是你自己的），不是用户共享给角色的画面。
+工具返回的图片也在这条总线上——前提是携带它们的那次后继请求已经得到应答。这类帧的 `source` 为 `"plugin"`，`metadata` 为 `{"tool_name": "..."}`。这里有一条真实的尺寸限制：工具最多可以返回 2 MiB base64，而超过 `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES`（默认 512 KiB）的记录会被 bridge 拒收。也就是说，一张大的工具图会到达模型、但不会到达这条总线。这与本节其它「按设计丢弃」的规则同性质，不是契约被违反——但如果你确实需要这些帧，请调高那个设置。读像素之前先读 `source`：标为 `plugin` 的帧是某个插件交给模型的媒体（未必是你自己的），不是用户共享给角色的画面。
 
 ### 优先级等级
 

@@ -511,7 +511,13 @@ class _LifecycleMixin:
                 try:
                     # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
                     # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
-                    async for chunk in self._astream_visible_with_tools(messages_to_send):
+                    async for chunk in self._astream_visible_with_tools(
+                        messages_to_send,
+                        # 这一轮里工具返回的图也归这一轮：没有它，主动搭话轮
+                        # 里的工具图会以 turn_id=None 上总线，插件没法把它和
+                        # 同一轮的指令/回复对上——而那正是 turn_id 存在的理由。
+                        _tool_frames_turn_id=_bus_turn_id,
+                    ):
                         # 插件总线：provider 已经吐出东西了 —— 这一轮的指令连同那
                         # 批图确凿地被它收下了。这是本函数里最早能这么断言的地方，
                         # astream 是惰性的，请求要到第一次 __anext__ 才真正发出去。
@@ -877,6 +883,10 @@ class _LifecycleMixin:
 
     async def close(self) -> None:
         """Close the client and cleanup resources."""
+        # ``_cancel_bus_copies`` latches before it drains, which is what makes
+        # this safe: draining alone races -- a stream parked on its first chunk
+        # wakes up after the drain, fires a fresh copy, and that one outlives
+        # the closed session, the exact thing the drain exists to prevent.
         await self._cancel_bus_copies()
         await self._cancel_external_voice_submit_task()
         # Supersedes the bare ``_is_responding = False``: retiring the active

@@ -329,7 +329,11 @@ def _make_offline_for_ephemeral():
     c._notify_reasoning_done = AsyncMock()
 
     def _set_chunks(chunks):
-        async def _fake(messages):
+        async def _fake(messages, **_overrides):
+            # ``**_overrides``: the real signature forwards per-turn options
+            # (e.g. the tool-frame turn id) that this fixture does not model.
+            # Pinning the bare signature made an added option look like a
+            # prompt_ephemeral crash rather than a fixture gap.
             for ch in chunks:
                 yield ch
         c._astream_visible_with_tools = _fake
