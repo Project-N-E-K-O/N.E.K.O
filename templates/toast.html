@@ -105,6 +105,7 @@
             var textEl = statusToast.querySelector('#status-toast-text');
             if (!textEl) { textEl=document.createElement('span'); textEl.id='status-toast-text'; textEl.style.cssText='position:relative;z-index:1;flex:1;min-width:0;overflow-wrap:anywhere;'; statusToast.appendChild(textEl); }
             Array.from(statusToast.childNodes).forEach(function(n){ if(n!==textEl && n.nodeType===3) n.textContent=''; });
+            if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
             textEl.textContent = message;
             var closeBtn = statusToast.querySelector('#status-toast-close');
             if (!closeBtn) {

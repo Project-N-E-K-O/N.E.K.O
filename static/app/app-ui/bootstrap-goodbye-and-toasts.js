@@ -416,6 +416,10 @@ I.mod = window.appUi;
             statusToast.appendChild(closeBtn);
         }
         Array.from(statusToast.childNodes).forEach(n => { if (n !== textEl && n !== closeBtn && n.nodeType === 3) n.textContent = ''; });
+        if (I.S._statusToastCleanupTimer) {
+            clearTimeout(I.S._statusToastCleanupTimer);
+            I.S._statusToastCleanupTimer = null;
+        }
         textEl.textContent = message;
         closeBtn.disabled = false; closeBtn.tabIndex = 0; closeBtn.removeAttribute('aria-hidden');
         closeBtn.onclick = (e) => { e.stopPropagation(); hideNow(); };
