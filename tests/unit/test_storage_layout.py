@@ -1,3 +1,6 @@
+import os
+import shutil
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -709,14 +712,23 @@ def test_staging_never_appears_in_the_character_namespace(tmp_path):
 
 @pytest.mark.unit
 def test_staging_workspaces_do_not_accumulate_across_kills(tmp_path):
-    """A run killed outright leaves a workspace; the next run clears it.
+    """A run killed outright leaves a workspace; a later run clears it.
 
-    Each run gets its own workspace so concurrent runs cannot delete each
-    other's, which means leavings can only be cleared by a later run. Without
-    that, full memory copies pile up until the disk fills.
+    Both directions, because they pull against each other. The parent is
+    reachable by a second PROCESS -- _MIGRATION_LOCK covers threads only and
+    the single-instance lock can fail open -- so removing the parent whole,
+    which is what this used to do, deleted the other run's live copy out from
+    under it. But leaving everything would let full memory copies pile up
+    until the disk fills.
+
+    So: this run's own workspace goes, stale siblings go, a FRESH sibling
+    stays, and the parent goes only once nothing is left in it.
     """
     from utils.config_manager import migrations as migrations_module
-    from utils.config_manager.migrations import _MIGRATION_STAGING_DIR
+    from utils.config_manager.migrations import (
+        _MIGRATION_STAGING_DIR,
+        _MIGRATION_STAGING_STALE_SECONDS,
+    )
 
     config_manager = _make_config_manager(tmp_path)
     project_root = tmp_path / "project-memory"
@@ -739,18 +751,191 @@ def test_staging_workspaces_do_not_accumulate_across_kills(tmp_path):
             config_manager.migrate_memory_files()
 
     assert parent.is_dir(), "the kills left no staging parent at all"
-    assert len(list(parent.iterdir())) >= 1, "the kills left no workspace"
+    abandoned = sorted(q.name for q in parent.iterdir())
+    assert len(abandoned) >= 1, "the kills left no workspace"
+    # Age them past the threshold. A kill does not date its leavings, so the
+    # test has to -- and a fresh sibling is indistinguishable from a live one,
+    # which is the whole reason the sweep goes by age.
+    stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
+    for entry in parent.iterdir():
+        os.utime(entry, (stale, stale))
 
-    # A clean run clears what the kills left AND takes the parent with it,
-    # so nothing of the migration persists between runs at all.
+    # A concurrent process, mid-copy. It must survive a run that finishes
+    # first, along with the parent it is still using.
+    live = parent / ".other-run"
+    live.mkdir()
+    (live / "d").mkdir()
+
+    config_manager.migrate_memory_files()
+
+    survivors = sorted(q.name for q in parent.iterdir())
+    assert survivors == [".other-run"], (
+        "expected only the concurrent run's workspace to survive, saw %r "
+        "(kills had left %r)" % (survivors, abandoned)
+    )
+    assert (live / "d").is_dir(), "a concurrent run's staged copy was deleted"
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]"
+
+    # And once nothing is live, nothing of the migration persists at all.
+    shutil.rmtree(live)
     config_manager.migrate_memory_files()
     assert not parent.exists(), (
         "staging survived a clean run: %s"
         % (sorted(q.name for q in parent.iterdir()) if parent.is_dir() else parent)
     )
+
+
+@pytest.mark.unit
+def test_a_memory_dir_on_another_volume_stages_on_that_volume(tmp_path):
+    """os.replace and Path.rename raise EXDEV across filesystems.
+
+    memory_dir is normally app_docs_dir/"memory", so the staging sibling is
+    the same volume. But memory can be a junction or a mount onto another
+    one, and then the sibling is not on the destination's filesystem at all:
+    every publish raises EXDEV, the per-entry handler swallows it, and NOTHING
+    migrates -- worse than the plain copy2 this replaced, which never needed
+    them to match.
+
+    Driven through _same_device rather than a real mount, because a test
+    cannot make one. What is pinned is that the answer moves the workspace
+    onto the destination's volume, and that it is taken away again -- inside
+    the character namespace there is no sweep to catch it later.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+    (project_root / "loose.json").write_text("[2]", encoding="utf-8")
+
+    staged_in = []
+    real_mkdtemp = migrations_module.tempfile.mkdtemp
+
+    def _record(*args, **kwargs):
+        staged_in.append(Path(kwargs["dir"]))
+        return real_mkdtemp(*args, **kwargs)
+
+    with patch.object(migrations_module.tempfile, "mkdtemp", _record), \
+            patch.object(migrations_module, "_same_device", lambda *a: False):
+        config_manager.migrate_memory_files()
+
+    assert staged_in == [runtime_root], (
+        "the workspace was not put on the destination's volume: %r" % (staged_in,)
+    )
     assert (runtime_root / "Carol" / "facts.json").read_text(
         encoding="utf-8"
     ) == "[1]"
+    assert (runtime_root / "loose.json").read_text(encoding="utf-8") == "[2]"
+    assert sorted(q.name for q in runtime_root.iterdir()) == [
+        "Carol",
+        "loose.json",
+    ], "staging was left behind in the character namespace"
+
+    # The default layout still stages OUTSIDE it -- the fallback is reached
+    # only when the devices actually differ, not always.
+    staged_in.clear()
+    (project_root / "Dave").mkdir()
+    (project_root / "Dave" / "facts.json").write_text("[3]", encoding="utf-8")
+    with patch.object(migrations_module.tempfile, "mkdtemp", _record):
+        config_manager.migrate_memory_files()
+    assert staged_in and staged_in[0] != runtime_root, (
+        "the default layout staged inside the character namespace: %r"
+        % (staged_in,)
+    )
+
+
+@pytest.mark.unit
+def test_a_writeback_failure_abandons_the_entry_instead_of_publishing_it(tmp_path):
+    """ENOSPC and EIO are what the flush exists to catch.
+
+    Swallowing them publishes a tree whose delayed writes never reached
+    storage -- and because the migration skips a destination that exists,
+    every later start then treats that damaged copy as authoritative and
+    never retries it. That is the exact failure staging was added to remove,
+    reintroduced one level down.
+
+    Both branches: the loose file flushes its staged copy directly, the
+    directory branch flushes a whole tree, and neither may rename afterwards.
+    """
+    import errno
+
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+    (project_root / "loose.json").write_text("[2]", encoding="utf-8")
+
+    def _no_space(path):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    with patch.object(migrations_module, "_fsync_file", _no_space):
+        # Must not raise either -- the caller is startup.
+        config_manager.migrate_memory_files()
+
+    assert not (runtime_root / "Carol").exists(), (
+        "a tree whose writeback failed was published anyway"
+    )
+    assert not (runtime_root / "loose.json").exists(), (
+        "a file whose writeback failed was published anyway"
+    )
+
+    # And it is a real abandonment, not a permanent one: the same seed
+    # migrates on the next start once the disk is healthy again.
+    config_manager.migrate_memory_files()
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]"
+    assert (runtime_root / "loose.json").read_text(encoding="utf-8") == "[2]"
+
+
+@pytest.mark.unit
+def test_staging_is_reclaimed_even_when_the_seed_root_is_gone(tmp_path):
+    """The missing-seed return happens before anything is staged.
+
+    A run killed after copying a large character tree leaves it in the
+    user-data root. If the next installed build no longer ships memory/store,
+    a reclaim that only ran when THIS run had staged something would never be
+    reached again, and the copy would sit there indefinitely.
+    """
+    from utils.config_manager.migrations import (
+        _MIGRATION_STAGING_DIR,
+        _MIGRATION_STAGING_STALE_SECONDS,
+    )
+
+    config_manager = _make_config_manager(tmp_path)
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    # This build ships no seed at all.
+    config_manager.project_memory_dir = tmp_path / "no-such-project-memory"
+
+    parent = Path(config_manager.app_docs_dir) / _MIGRATION_STAGING_DIR
+    abandoned = parent / ".killed-run"
+    (abandoned / "d" / "Carol").mkdir(parents=True)
+    (abandoned / "d" / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+    stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
+    for path in (abandoned / "d" / "Carol", abandoned / "d", abandoned):
+        os.utime(path, (stale, stale))
+
+    config_manager.migrate_memory_files()
+
+    assert not parent.exists(), (
+        "a killed run's copy survived a build with no seed root: %s"
+        % (sorted(q.name for q in parent.iterdir()) if parent.is_dir() else parent)
+    )
 
 
 @pytest.mark.unit

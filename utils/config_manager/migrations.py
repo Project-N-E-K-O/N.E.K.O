@@ -25,6 +25,7 @@ import stat
 import tempfile
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -48,6 +49,12 @@ _MIGRATION_STAGING_DIR = ".mig-staging"
 # workspace parent, and one run's cleanup deletes the other's live copy.
 # Serialising is cheaper than making every step concurrency-safe, and this
 # runs once per process.
+# A workspace nothing has touched for this long is not a live migration,
+# it is what a run killed outright left behind. Generous on purpose: the
+# cost of being wrong is deleting a concurrent run's live copy, and the
+# cost of being slow is one directory surviving one extra start.
+_MIGRATION_STAGING_STALE_SECONDS = 24 * 60 * 60
+
 _MIGRATION_LOCK = threading.Lock()
 
 
@@ -92,11 +99,16 @@ def _fsync_file(path):
     followed by fsync raise OSError EBADF -- the platform wants a writable
     handle. So the mode is widened just long enough to flush and put back,
     which leaves the published file with exactly the mode it arrived with.
+
+    Failures PROPAGATE. ENOSPC and EIO are the conditions this call exists
+    to catch, and a caller that swallows them publishes data that never
+    reached storage -- after which the destination exists and every later
+    start skips it, which is the failure this whole branch set out to
+    remove. Only putting the mode BACK stays silent: the flush has already
+    happened by then, and abandoning a migrated file over a mode bit is
+    worse than publishing one that is writable when its seed was not.
     """
-    try:
-        original = stat.S_IMODE(os.stat(path).st_mode)
-    except OSError:
-        return
+    original = stat.S_IMODE(os.stat(path).st_mode)
     widened = False
     try:
         try:
@@ -117,14 +129,31 @@ def _fsync_file(path):
                 pass
 
 
+def _same_device(left, right):
+    """Whether a rename between these two can work at all.
+
+    ``os.replace`` and ``Path.rename`` raise EXDEV across filesystems, so
+    staging is only atomic when the workspace shares a device with the
+    destination. Unprobeable counts as SAME: the answer only ever picks a
+    staging location, and the default one is right on every install.
+    """
+    try:
+        return os.stat(str(left)).st_dev == os.stat(str(right)).st_dev
+    except OSError:
+        return True
+
+
 def _fsync_tree(root):
-    """Flush every file in a staged tree, then its directories."""
+    """Flush every file in a staged tree, then its directories.
+
+    A file-level failure propagates, so the caller abandons the entry
+    instead of renaming it into place. Directory flushing stays best
+    effort because Windows cannot do it at all -- an unsupported operation
+    and a disk that could not take the write are not the same thing.
+    """
     for directory, _subdirs, files in os.walk(str(root)):
         for name in files:
-            try:
-                _fsync_file(os.path.join(directory, name))
-            except OSError:
-                pass
+            _fsync_file(os.path.join(directory, name))
         _fsync_directory(directory)
 
 
@@ -269,6 +298,81 @@ class MigrationsMixin:
                 else:
                     self._log(f"[ConfigManager] ✗ Source config not found: {project_config_path}")
     
+    def _migration_staging_parent(self):
+        """Where run workspaces live -- on the DESTINATION's filesystem.
+
+        Normally beside ``memory/``, which is a lexical child of
+        ``app_docs_dir`` and therefore the same volume. But ``memory``
+        itself can be a junction or a mount onto another volume, and then
+        the sibling is not on the destination's filesystem at all: every
+        publish raises EXDEV, the per-entry handler swallows it, and
+        nothing migrates -- strictly worse than the plain copy2 this
+        replaced, which had no such requirement.
+
+        So when the devices differ the workspace goes inside
+        ``memory_dir``, the one place guaranteed to be on the right one.
+        Returns whether the parent is OURS as well: inside the character
+        namespace nothing may be removed, reused, or swept, and no fixed
+        name is claimed -- the workspace is minted by ``mkdtemp``, so it
+        cannot collide with a character however that character is named.
+        """
+        default = Path(self.app_docs_dir) / _MIGRATION_STAGING_DIR
+        if _same_device(self.app_docs_dir, self.memory_dir):
+            return default, True
+        return Path(self.memory_dir), False
+
+    def _reclaim_migration_staging(self, workspace):
+        """Remove this run's workspace, and what a killed run left behind.
+
+        Called unconditionally, including on the early return for a missing
+        seed root. A run killed after staging a large tree leaves it in the
+        user-data root, and if the next installed build has no
+        ``memory/store`` the preparation step is never reached again -- so
+        a reclaim that only ran when this run had staged something would
+        never run at all, and the copy would sit there indefinitely.
+
+        Only this run's OWN workspace is removed outright. The parent goes
+        only when it is already empty, and siblings are swept by AGE rather
+        than wholesale -- that is what makes a second process safe.
+        ``_MIGRATION_LOCK`` covers threads only, and the single-instance
+        lock can fail open, so two processes really can share this parent;
+        removing it whole meant whichever finished first deleted the
+        other's live copy out from under it.
+
+        Nothing is swept in the cross-device fallback, where the parent is
+        ``memory_dir`` itself: an age sweep inside the character namespace
+        is exactly the mistake this design removed. A kill there leaves one
+        dot-prefixed directory, which is the narrower price for migrating
+        at all on that layout.
+        """
+        try:
+            if workspace is not None:
+                shutil.rmtree(workspace, ignore_errors=True)
+            parent, owned = self._migration_staging_parent()
+            if not owned:
+                return
+            cutoff = time.time() - _MIGRATION_STAGING_STALE_SECONDS
+            for entry in parent.iterdir():
+                try:
+                    if entry.stat().st_mtime >= cutoff:
+                        continue
+                except OSError:
+                    continue
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    try:
+                        entry.unlink()
+                    except OSError:
+                        pass
+            # Empty only. A live run keeps its own workspace here, and
+            # that is precisely when this must not succeed.
+            parent.rmdir()
+        except OSError:
+            # Reclamation runs in a finally on the startup path. Failing
+            # to tidy up is never worth replacing the real outcome.
+            pass
+
     def _prepare_migration_staging_root(self):
         """Return a private staging workspace, outside the character namespace.
 
@@ -281,15 +385,20 @@ class MigrationsMixin:
         sentinel meant to replace it was just a filename ordinary contents
         could reproduce.
 
-        Each ITEM stages directly inside it rather than under a per-run
-        subdirectory: one component fewer on every staged descendant, which
-        matters because a destination near the platform path limit can fail
-        while staging even though the final path would have fitted. Two runs
-        cannot delete each
-        other's. Leavings from a run killed outright are cleared here, which
-        is safe because ``_MIGRATION_LOCK`` means no other run is holding one.
+        What is returned is one workspace for this RUN, minted inside that
+        parent, and every item stages directly in it -- items run one at a
+        time, so they cannot collide, and the depth is the same as staging
+        in the parent itself. Per-run rather than shared because the parent
+        is reachable by a second PROCESS, which ``_MIGRATION_LOCK`` does
+        nothing about; the run that finished first used to delete the
+        other's live copy along with the parent.
         """
-        parent = Path(self.app_docs_dir) / _MIGRATION_STAGING_DIR
+        parent, owned = self._migration_staging_parent()
+        if not owned:
+            # memory_dir itself, on the cross-device layout. Nothing here
+            # is ours to remove or reuse -- just mint a workspace beside
+            # the characters and take it away again.
+            return Path(tempfile.mkdtemp(dir=str(parent), prefix="."))
         # Anything at this name that is not our directory is removed, not
         # worked around. A link would be followed out of the tree we are
         # allowed to write; a plain FILE makes mkdir raise FileExistsError,
@@ -305,12 +414,9 @@ class MigrationsMixin:
         if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
             parent.unlink()
         parent.mkdir(parents=True, exist_ok=True)
-        # No sweep here. The whole parent comes down in the caller's finally,
-        # so anything a killed run left behind is removed by the next run as a
-        # side effect of that -- an explicit sweep would be a branch nothing
-        # can exercise. Verified: replacing the sweep with a no-op reddened
-        # nothing, which is what sent it.
-        return parent
+        # Dot-prefixed and short. mkdtemp's own default prefix is longer,
+        # and every staged descendant carries this component.
+        return Path(tempfile.mkdtemp(dir=str(parent), prefix="."))
 
     def migrate_memory_files(self):
         """Migrate seeded memory into the runtime root, once, serialised.
@@ -439,11 +545,12 @@ class MigrationsMixin:
                     # 同盘暂存 → 原子 rename。暂存目录用点前缀，且只在这
                     # 一小段时间内存在；角色枚举只看目录名与已知文件模式，
                     # 不会把它当成角色。
-                    # Into the temporary directory ITSELF, not a child of it
-                    # named for the character: that child would add the
-                    # longest component of all to every descendant.
-                    workspace = Path(tempfile.mkdtemp(dir=str(staging_root)))
-                    staging = workspace / "d"
+                    # Straight into the run workspace, under the shortest
+                    # name there is -- not a child named for the character,
+                    # which would add the longest component of all to every
+                    # descendant. Items are sequential, so one name is
+                    # enough, and it is gone again by the end of the entry.
+                    staging = staging_root / "d"
                     try:
                         shutil.copytree(item, staging)
                         # Same two steps as the file branch, over a tree:
@@ -454,7 +561,9 @@ class MigrationsMixin:
                         _fsync_directory(dest_path.parent)
                         print(f"Migrated memory directory: {item.name}")
                     finally:
-                        shutil.rmtree(workspace, ignore_errors=True)
+                        # Only this entry's copy. The workspace is the
+                        # whole run's and the next item needs it.
+                        shutil.rmtree(staging, ignore_errors=True)
                 except Exception as exc:
                     print(
                         f"Warning: Failed to migrate memory entry {item.name}: {exc}",
@@ -463,8 +572,11 @@ class MigrationsMixin:
         except Exception as e:
             print(f"Warning: Failed to migrate memory files: {e}", file=sys.stderr)
         finally:
-            if staging_root is not None:
-                shutil.rmtree(staging_root, ignore_errors=True)
+            # Unconditional, staging_root or not: the early return above
+            # for a missing seed root leaves it None, and that is exactly
+            # the build on which an earlier kill's leavings would otherwise
+            # never be reached again.
+            self._reclaim_migration_staging(staging_root)
 
     def migrate_legacy_documents_memory(self):
         """
