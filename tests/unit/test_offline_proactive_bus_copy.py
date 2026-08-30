@@ -1124,3 +1124,63 @@ def test_close_stops_new_bus_copies_from_starting():
         )
 
     asyncio.run(_check())
+
+
+from main_logic.omni_offline_client._lifecycle import (  # noqa: E402
+    _BUS_TURN_TYPE_INSTRUCTION,
+)
+
+
+def test_a_reply_is_dropped_when_the_instruction_publish_failed():
+    """Waiting for the instruction is not the same as it having landed.
+
+    ``_publish_conversation_turn`` swallows a refusing bridge and a raising
+    one alike, so the task completes either way. Reading only "it finished"
+    lets the reply out with ``message_count=2`` in front of nothing -- the same
+    orphan record the refused-task check exists to prevent, arriving by the
+    other door.
+
+    Mutation: go back to a bare ``await instruction_task`` and ignore its
+    result, or make ``_publish_conversation_turn`` return ``None`` again.
+    """
+    client, _captured = _make_client()
+    frames = _FrameSpy()
+    published: list = []
+
+    async def _refuse_the_instruction(lanlan_name, **kwargs):
+        published.append(kwargs["turn_type"])
+        # 指令被 bridge 拒收（返回 False，不是抛异常——两条路都得覆盖）。
+        return kwargs["turn_type"] != _BUS_TURN_TYPE_INSTRUCTION
+
+    with patch(_FRAME_PUBLISHER, frames), patch(_TURN_PUBLISHER, _refuse_the_instruction):
+        committed = _run_turn(client.prompt_ephemeral(_INSTRUCTION))
+
+    assert committed is True, "回合本身不该受影响"
+    assert published == [_BUS_TURN_TYPE_INSTRUCTION], (
+        f"指令发布失败后，回复仍然被送上了总线: {published}"
+    )
+
+
+def test_a_raising_instruction_publish_also_drops_the_reply():
+    """The dual: the publisher raising, not refusing.
+
+    ``_publish_conversation_turn`` catches it and now reports False, so the
+    two failure shapes converge on the same outcome.
+    """
+    client, _captured = _make_client()
+    frames = _FrameSpy()
+    published: list = []
+
+    async def _explode_on_the_instruction(lanlan_name, **kwargs):
+        published.append(kwargs["turn_type"])
+        if kwargs["turn_type"] == _BUS_TURN_TYPE_INSTRUCTION:
+            raise RuntimeError("plane down")
+        return True
+
+    with patch(_FRAME_PUBLISHER, frames), patch(_TURN_PUBLISHER, _explode_on_the_instruction):
+        committed = _run_turn(client.prompt_ephemeral(_INSTRUCTION))
+
+    assert committed is True
+    assert published == [_BUS_TURN_TYPE_INSTRUCTION], (
+        f"指令发布抛异常后，回复仍然被送上了总线: {published}"
+    )

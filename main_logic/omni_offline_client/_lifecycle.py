@@ -109,7 +109,7 @@ class _LifecycleMixin:
         turn_type: str,
         conversation_id: str,
         message_count: int,
-    ) -> None:
+    ) -> bool:
         """Copy one message of this turn onto the plugin conversation bus.
 
         Best effort, and never raises into the turn -- the dual of
@@ -122,22 +122,30 @@ class _LifecycleMixin:
         whatever it is handed, so every call site has to have already
         established that the thing being copied really happened: the provider
         streamed a chunk (the instruction), or the reply committed.
+
+        Returns whether the record actually reached the socket. Swallowing the
+        failure is right -- it must not reach the turn -- but swallowing it
+        *silently* is not: the proactive reply is only allowed onto the bus
+        behind its instruction, and "the instruction task finished" says
+        nothing about whether the instruction landed. ``False`` covers the
+        publisher refusing, the publisher raising, and an empty text that was
+        never sent at all.
         """
         text = str(content or "")
         if not text.strip():
-            return
+            return False
         # __new__-built instances (tests, legacy callers) never ran __init__,
         # read the name the same defensive way the media helpers read it.
         lanlan_name = str(getattr(self, "lanlan_name", "") or "") or None
         try:
-            await publish_conversation_turn_observed_best_effort(
+            return bool(await publish_conversation_turn_observed_best_effort(
                 lanlan_name,
                 content=text,
                 turn_type=turn_type,
                 conversation_id=conversation_id,
                 source=_BUS_CONVERSATION_SOURCE,
                 message_count=message_count,
-            )
+            ))
         except asyncio.CancelledError:
             raise
         except Exception as publish_error:
@@ -145,6 +153,7 @@ class _LifecycleMixin:
                 "conversation turn not copied to the plugin bus: %s",
                 publish_error,
             )
+            return False
 
     def _begin_response_generation(self) -> int:
         generation = int(getattr(self, "_response_generation", 0)) + 1
@@ -872,13 +881,24 @@ class _LifecycleMixin:
         bus with no instruction in front of it reads as a sentence with no
         cause.
 
+        Waiting is not enough, though: the task **finishing** says nothing
+        about whether the instruction landed. The bridge can refuse the record
+        or raise, and the publisher swallows both -- so the result is read
+        here, and a reply whose instruction never made it is dropped rather
+        than sent out carrying ``message_count=2``.
+
         ``instruction_task`` is never ``None`` here -- the caller drops the
         whole reply in that case rather than publishing an orphan. The guard
         stays as a belt for a direct caller, and it is the reason the caller's
         check cannot be relaxed into "wait if we have one".
         """
         if instruction_task is not None:
-            await instruction_task
+            if not await instruction_task:
+                logger.debug(
+                    "proactive reply not copied: its instruction never reached "
+                    "the bus",
+                )
+                return
         await self._publish_conversation_turn(content, **kwargs)
 
     async def close(self) -> None:
