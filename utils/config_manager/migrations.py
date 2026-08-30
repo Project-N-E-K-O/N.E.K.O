@@ -23,17 +23,31 @@ import os
 import shutil
 import tempfile
 import sys
+import threading
 import uuid
 from pathlib import Path
 
 from config import CONFIG_FILES, DEFAULT_CONFIG_DATA
 
 
-# Staging lives in ONE directory this migration owns. The sentinel inside it
-# is what proves ownership -- a dot-prefixed character name is legal, so a
-# name match alone would have deleted a real character's memory.
-_MIGRATION_STAGING_DIR = ".migrating-staging"
-_MIGRATION_STAGING_SENTINEL = ".staging-owner"
+# Staging lives OUTSIDE the character namespace, beside memory/ rather than
+# inside it. Everything that went wrong with it before came from that one
+# decision: a dot-prefixed character name is legal, so any in-namespace name
+# could collide with a real character, and no ownership marker placed inside
+# the namespace can be trusted -- ordinary contents can reproduce it. Beside
+# memory/ there is nothing to collide with, and it is still the same
+# filesystem, which is what rename needs.
+# Short on purpose. Every staged descendant carries this component plus one
+# temporary name, and a destination close to the platform path limit can
+# fail while staging even though the final path would have fitted.
+_MIGRATION_STAGING_DIR = ".mig-staging"
+
+# Two threads can enter the migration: config_manager/__init__.py notes that
+# ``_config_manager_migrated`` is not thread-safe. Without this they share a
+# workspace parent, and one run's cleanup deletes the other's live copy.
+# Serialising is cheaper than making every step concurrency-safe, and this
+# runs once per process.
+_MIGRATION_LOCK = threading.Lock()
 
 
 class MigrationsMixin:
@@ -178,58 +192,50 @@ class MigrationsMixin:
                     self._log(f"[ConfigManager] ✗ Source config not found: {project_config_path}")
     
     def _prepare_migration_staging_root(self):
-        """Return a staging directory this migration OWNS, proven by a sentinel.
+        """Return a private staging workspace, outside the character namespace.
 
-        Sweeping every ``.migrating-*`` entry in the memory root was
-        destructive: a dot-prefixed character name is accepted by the
-        runtime, so a real character called ``.migrating-Carol`` had its live
-        memory recursively deleted and, if no seed of that name existed,
-        lost outright. Ownership is proven by a file we wrote, never
-        inferred from the name.
+        The parent sits beside ``memory/`` rather than inside it, so nothing
+        here can collide with a character name or be mistaken for one -- and
+        no ownership marker is needed, because nothing but this migration has
+        any business in that directory. Earlier revisions kept staging inside
+        ``memory/`` and every problem found there traced back to that: a
+        name-matched sweep deleted a real ``.migrating-Carol``, and the
+        sentinel meant to replace it was just a filename ordinary contents
+        could reproduce.
 
-        Everything staged goes inside this one directory, so a run killed
-        outright leaves exactly one thing behind and the next run reclaims
-        it. If the name is already taken by something that is not ours, a
-        unique one is used and the stranger is left untouched.
+        Each ITEM stages directly inside it rather than under a per-run
+        subdirectory: one component fewer on every staged descendant, which
+        matters because a destination near the platform path limit can fail
+        while staging even though the final path would have fitted. Two runs
+        cannot delete each
+        other's. Leavings from a run killed outright are cleared here, which
+        is safe because ``_MIGRATION_LOCK`` means no other run is holding one.
         """
-        base = self.memory_dir / _MIGRATION_STAGING_DIR
-        # A symlink is never ours, whatever it points at. rmtree leaves a
-        # directory symlink in place, and mkdir(exist_ok=True) then succeeds
-        # through it -- so without this we would stage into whatever it
-        # targets, outside memory_dir entirely.
-        # The PROJECT side matters too. If it holds an entry of this name, our
-        # staging root occupies the very destination that entry would migrate
-        # to: the loop then sees dest_path already present and skips it, the
-        # finally removes the staging root, and that entry has silently never
-        # migrated while looking as though it had.
-        taken_by_project = (
-            self.project_memory_dir / _MIGRATION_STAGING_DIR
-        ).exists()
-        if base.is_symlink() or taken_by_project or (
-            base.exists() and not (base / _MIGRATION_STAGING_SENTINEL).exists()
-        ):
-            # Reclaim OUR earlier fallback roots before minting another one.
-            # Each run on this path picks a fresh uuid, so a run killed after
-            # creating one leaves it referenced by nobody: the next run mints
-            # a different name and the old copy sits there forever. Repeat
-            # that and full staging copies accumulate. Same ownership rule as
-            # the base name -- a sentinel we wrote, and never a symlink.
-            for previous in self.memory_dir.glob(
-                _MIGRATION_STAGING_DIR + "-*"
-            ):
-                if previous.is_symlink() or not previous.is_dir():
-                    continue
-                if (previous / _MIGRATION_STAGING_SENTINEL).exists():
-                    shutil.rmtree(previous, ignore_errors=True)
-            base = self.memory_dir / (
-                _MIGRATION_STAGING_DIR + "-" + uuid.uuid4().hex
-            )
-        shutil.rmtree(base, ignore_errors=True)
-        base.mkdir(parents=True, exist_ok=True)
-        (base / _MIGRATION_STAGING_SENTINEL).write_text("", encoding="utf-8")
-        return base
+        parent = Path(self.app_docs_dir) / _MIGRATION_STAGING_DIR
+        if parent.is_symlink():
+            # Never follow a link out of the tree we are allowed to write.
+            parent.unlink()
+        parent.mkdir(parents=True, exist_ok=True)
+        # No sweep here. The whole parent comes down in the caller's finally,
+        # so anything a killed run left behind is removed by the next run as a
+        # side effect of that -- an explicit sweep would be a branch nothing
+        # can exercise. Verified: replacing the sweep with a no-op reddened
+        # nothing, which is what sent it.
+        return parent
 
     def migrate_memory_files(self):
+        """Migrate seeded memory into the runtime root, once, serialised.
+
+        Two threads can reach this: config_manager/__init__.py notes that
+        ``_config_manager_migrated`` is not thread-safe. Unserialised they
+        share the staging parent, and one run cleans up while the other
+        is still copying. It runs once per process, so a lock is cheaper
+        than making every step concurrency-safe.
+        """
+        with _MIGRATION_LOCK:
+            self._migrate_memory_files_unlocked()
+
+    def _migrate_memory_files_unlocked(self):
         """
         Migrate memory files to Documents
         
@@ -243,8 +249,6 @@ class MigrationsMixin:
             return
         
         # 如果项目memory/store目录不存在，跳过
-        if not self.project_memory_dir.exists():
-            return
         
         # 一次未完成的拷贝不能留下半份目录。旧写法直接 copytree 到目标位置，
         # 中途断电/进程被杀就会留下一个残缺的 memory/<name>/——而顶层跳过
@@ -269,6 +273,12 @@ class MigrationsMixin:
         # migration skipped, not a broken launch.
         staging_root = None
         try:
+            # Inside the handler, like the staging setup below it. Probing a
+            # path can raise on a permission problem or an unreadable
+            # component, and this runs on the startup path -- outside, that
+            # would fail the launch rather than skip a migration.
+            if not self.project_memory_dir.exists():
+                return
             staging_root = self._prepare_migration_staging_root()
             for item in self.project_memory_dir.iterdir():
                 # 每个条目单独兜底。这个 try 原本只包在整个循环外面，于是
@@ -307,6 +317,14 @@ class MigrationsMixin:
                         staged_file = Path(staged_name)
                         try:
                             shutil.copy2(item, staged_file)
+                            # Durability before publication, the same step
+                            # this repo's atomic-write helpers take: without
+                            # it a power loss after the rename can leave the
+                            # destination NAME on disk with incomplete
+                            # contents, and the next start treats it as
+                            # authoritative and never retries it.
+                            with open(staged_file, "rb+") as handle:
+                                os.fsync(handle.fileno())
                             os.replace(staged_file, dest_path)
                         finally:
                             if staged_file.exists():
@@ -331,15 +349,17 @@ class MigrationsMixin:
                     # 同盘暂存 → 原子 rename。暂存目录用点前缀，且只在这
                     # 一小段时间内存在；角色枚举只看目录名与已知文件模式，
                     # 不会把它当成角色。
-                    staging = Path(
-                        tempfile.mkdtemp(dir=str(staging_root))
-                    ) / item.name
+                    # Into the temporary directory ITSELF, not a child of it
+                    # named for the character: that child would add the
+                    # longest component of all to every descendant.
+                    workspace = Path(tempfile.mkdtemp(dir=str(staging_root)))
+                    staging = workspace / "d"
                     try:
                         shutil.copytree(item, staging)
                         staging.rename(dest_path)
                         print(f"Migrated memory directory: {item.name}")
                     finally:
-                        shutil.rmtree(staging.parent, ignore_errors=True)
+                        shutil.rmtree(workspace, ignore_errors=True)
                 except Exception as exc:
                     print(
                         f"Warning: Failed to migrate memory entry {item.name}: {exc}",

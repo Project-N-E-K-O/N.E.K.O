@@ -594,144 +594,6 @@ def test_an_interrupted_loose_file_copy_publishes_nothing(tmp_path):
         encoding="utf-8"
     ) == '["the whole thing"]'
     assert real_copy2 is migrations_module.shutil.copy2
-
-
-@pytest.mark.unit
-def test_only_staging_we_own_is_reclaimed(tmp_path):
-    """Ownership is proven by a sentinel, never inferred from the name.
-
-    Sweeping every ``.migrating-*`` entry was destructive. A dot-prefixed
-    character name is accepted by the runtime, so a real character called
-    ``.migrating-Carol`` had its live memory recursively deleted -- and with no
-    seed of that name, lost outright. The sweep now reclaims only a staging
-    root carrying the file this migration wrote.
-    """
-    from utils.config_manager.migrations import (
-        _MIGRATION_STAGING_DIR,
-        _MIGRATION_STAGING_SENTINEL,
-    )
-
-    config_manager = _make_config_manager(tmp_path)
-    project_root = tmp_path / "project-memory"
-    runtime_root = tmp_path / "runtime-memory"
-    config_manager.project_memory_dir = project_root
-    config_manager.memory_dir = runtime_root
-    runtime_root.mkdir(parents=True, exist_ok=True)
-    project_root.mkdir(parents=True, exist_ok=True)
-
-    # Ours: a staging root left by a run that was killed outright.
-    owned = runtime_root / _MIGRATION_STAGING_DIR
-    owned.mkdir()
-    (owned / _MIGRATION_STAGING_SENTINEL).write_text("", encoding="utf-8")
-    (owned / "half-copied.json").write_text("half", encoding="utf-8")
-
-    # NOT ours: a character whose name merely looks like staging, and its
-    # memory is the only copy that exists.
-    impostor = runtime_root / ".migrating-Carol"
-    impostor.mkdir()
-    (impostor / "facts.json").write_text('["only copy"]', encoding="utf-8")
-
-    config_manager.migrate_memory_files()
-
-    assert not owned.exists(), "our own staging root was not reclaimed"
-    assert (impostor / "facts.json").read_text(
-        encoding="utf-8"
-    ) == '["only copy"]', (
-        "a real character was deleted because its name looked like staging"
-    )
-
-
-@pytest.mark.unit
-def test_a_stranger_holding_the_staging_name_is_left_alone(tmp_path):
-    """If the staging name is taken by something not ours, work around it.
-
-    Reclaiming it would be the same destruction one step earlier, so a unique
-    name is used instead and the stranger is untouched -- while the migration
-    still has to complete.
-    """
-    from utils.config_manager.migrations import _MIGRATION_STAGING_DIR
-
-    config_manager = _make_config_manager(tmp_path)
-    project_root = tmp_path / "project-memory"
-    runtime_root = tmp_path / "runtime-memory"
-    config_manager.project_memory_dir = project_root
-    config_manager.memory_dir = runtime_root
-    runtime_root.mkdir(parents=True, exist_ok=True)
-
-    stranger = runtime_root / _MIGRATION_STAGING_DIR
-    stranger.mkdir()
-    (stranger / "facts.json").write_text('["not ours"]', encoding="utf-8")
-
-    (project_root / "Carol").mkdir(parents=True)
-    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
-
-    config_manager.migrate_memory_files()
-
-    assert (stranger / "facts.json").read_text(
-        encoding="utf-8"
-    ) == '["not ours"]', "the stranger holding the staging name was destroyed"
-    assert (runtime_root / "Carol" / "facts.json").read_text(
-        encoding="utf-8"
-    ) == "[1]", "the migration did not complete around it"
-    leftovers = sorted(
-        p.name for p in runtime_root.iterdir()
-        if p.name.startswith(_MIGRATION_STAGING_DIR)
-    )
-    assert leftovers == [_MIGRATION_STAGING_DIR], (
-        "a staging root was left behind: %s" % leftovers
-    )
-
-
-@pytest.mark.unit
-def test_a_hard_kill_leaves_staging_the_next_run_can_claim(tmp_path):
-    """The sentinel is only load-bearing across a process that never cleaned up.
-
-    In an ordinary run the ``finally`` removes the staging root, so whether
-    the sentinel was ever written is invisible. It matters exactly once: a
-    run killed outright leaves the root behind, and the next run has to be
-    able to tell that root apart from a character whose name happens to
-    match. Without the sentinel it would decline to reclaim its own leavings
-    and stage under a fresh unique name forever.
-
-    The kill is simulated by neutering the cleanup, not by killing python.
-    """
-    from utils.config_manager import migrations as migrations_module
-    from utils.config_manager.migrations import (
-        _MIGRATION_STAGING_DIR,
-        _MIGRATION_STAGING_SENTINEL,
-    )
-
-    config_manager = _make_config_manager(tmp_path)
-    project_root = tmp_path / "project-memory"
-    runtime_root = tmp_path / "runtime-memory"
-    config_manager.project_memory_dir = project_root
-    config_manager.memory_dir = runtime_root
-    runtime_root.mkdir(parents=True, exist_ok=True)
-    (project_root / "Carol").mkdir(parents=True)
-    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
-
-    with patch.object(migrations_module.shutil, "rmtree", lambda *a, **k: None):
-        config_manager.migrate_memory_files()
-
-    staging = runtime_root / _MIGRATION_STAGING_DIR
-    assert staging.is_dir(), "the simulated kill did not leave staging behind"
-    assert (staging / _MIGRATION_STAGING_SENTINEL).exists(), (
-        "the staging root carries no proof of ownership, so the next run "
-        "cannot tell it from a character of the same name"
-    )
-
-    # Next run: it reclaims its own leavings rather than working around them.
-    config_manager.migrate_memory_files()
-    remaining = sorted(
-        p.name for p in runtime_root.iterdir()
-        if p.name.startswith(_MIGRATION_STAGING_DIR)
-    )
-    assert remaining == [], (
-        "the next run staged under a new name instead of reclaiming: %s"
-        % remaining
-    )
-
-
 @pytest.mark.unit
 def test_a_source_name_near_the_filesystem_limit_still_migrates(tmp_path):
     """The staged name must not grow with the source name.
@@ -764,53 +626,6 @@ def test_a_source_name_near_the_filesystem_limit_still_migrates(tmp_path):
         "a source name near the limit never migrated -- the staged name grew "
         "with it"
     )
-
-
-@pytest.mark.unit
-def test_a_symlink_on_the_staging_path_is_never_treated_as_ours(tmp_path):
-    """rmtree leaves a directory symlink in place, and mkdir then succeeds
-    through it -- so staging would be written wherever it points, outside
-    the memory root. A link is never ours, whatever it targets.
-    """
-    from utils.config_manager.migrations import _MIGRATION_STAGING_DIR
-
-    config_manager = _make_config_manager(tmp_path)
-    project_root = tmp_path / "project-memory"
-    runtime_root = tmp_path / "runtime-memory"
-    config_manager.project_memory_dir = project_root
-    config_manager.memory_dir = runtime_root
-    runtime_root.mkdir(parents=True, exist_ok=True)
-
-    # A BROKEN link, which is the case the sentinel check cannot cover: for a
-    # link to an existing directory, exists() is true and the missing
-    # sentinel already routes us around it. For a broken one exists() is
-    # FALSE, so without the symlink test we would try to rmtree it (which
-    # leaves a link alone) and then mkdir through it -- and this helper runs
-    # BEFORE the try, so the whole migration would raise out of the method.
-    outside = tmp_path / "outside-target-that-does-not-exist"
-    try:
-        (runtime_root / _MIGRATION_STAGING_DIR).symlink_to(
-            outside, target_is_directory=True
-        )
-    except (OSError, NotImplementedError):
-        pytest.skip("this platform will not create symlinks unprivileged")
-
-    (project_root / "Carol").mkdir(parents=True)
-    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
-
-    config_manager.migrate_memory_files()
-
-    assert not outside.exists(), (
-        "staging was created through the broken link, outside the memory root"
-    )
-    assert (runtime_root / _MIGRATION_STAGING_DIR).is_symlink(), (
-        "the link itself was destroyed"
-    )
-    assert (runtime_root / "Carol" / "facts.json").read_text(
-        encoding="utf-8"
-    ) == "[1]", "the migration did not complete around it"
-
-
 @pytest.mark.unit
 def test_staging_failure_does_not_take_startup_down(tmp_path):
     """A migration that cannot start is skipped, not a broken launch.
@@ -850,13 +665,15 @@ def test_staging_failure_does_not_take_startup_down(tmp_path):
 
 
 @pytest.mark.unit
-def test_a_project_entry_named_like_staging_still_migrates(tmp_path):
-    """The staging root must not squat on a destination a seed needs.
+def test_staging_never_appears_in_the_character_namespace(tmp_path):
+    """Staging lives beside memory/, not inside it.
 
-    With the staging root at ``memory/<staging name>``, a project entry of
-    the same name finds its destination already occupied, is skipped as
-    "already there", and then the ``finally`` deletes the staging root -- so
-    it never migrates while looking as though it did.
+    Every problem found with staging in this branch traced back to keeping it
+    inside the character namespace: a dot-prefixed character name is legal, so
+    any name there could collide with a real character, a name-matched sweep
+    deleted one, and the ownership marker meant to replace that was a filename
+    ordinary contents could reproduce. Out of the namespace, there is nothing
+    to collide with and nothing to forge.
     """
     from utils.config_manager.migrations import _MIGRATION_STAGING_DIR
 
@@ -867,43 +684,79 @@ def test_a_project_entry_named_like_staging_still_migrates(tmp_path):
     config_manager.memory_dir = runtime_root
     runtime_root.mkdir(parents=True, exist_ok=True)
 
-    (project_root / _MIGRATION_STAGING_DIR).mkdir(parents=True)
-    (project_root / _MIGRATION_STAGING_DIR / "facts.json").write_text(
-        '["a real character"]', encoding="utf-8"
-    )
+    # A character whose name looks exactly like the staging directory, holding
+    # the only copy of its memory.
+    impostor = runtime_root / _MIGRATION_STAGING_DIR
+    impostor.mkdir()
+    (impostor / "facts.json").write_text('["only copy"]', encoding="utf-8")
+
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
 
     config_manager.migrate_memory_files()
 
-    assert (
-        runtime_root / _MIGRATION_STAGING_DIR / "facts.json"
-    ).read_text(encoding="utf-8") == '["a real character"]', (
-        "the staging root squatted on this entry's destination, so it was "
-        "skipped and then deleted with the staging root"
-    )
-    leftovers = sorted(
-        p.name for p in runtime_root.iterdir()
-        if p.name.startswith(_MIGRATION_STAGING_DIR + "-")
-    )
-    assert leftovers == [], "a staging root was left behind: %s" % leftovers
+    assert (impostor / "facts.json").read_text(
+        encoding="utf-8"
+    ) == '["only copy"]', "a real character was touched by staging cleanup"
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]"
+    assert sorted(p.name for p in runtime_root.iterdir()) == [
+        _MIGRATION_STAGING_DIR,
+        "Carol",
+    ], "staging left something in the character namespace"
 
 
 @pytest.mark.unit
-def test_fallback_staging_roots_do_not_accumulate(tmp_path):
-    """The unique-name path has to reclaim its own leavings too.
+def test_staging_workspaces_do_not_accumulate_across_kills(tmp_path):
+    """A run killed outright leaves a workspace; the next run clears it.
 
-    When the base staging name is unavailable every run mints a fresh uuid, so
-    a run killed after creating one leaves a root nobody will ever name again
-    -- and full staging copies pile up, run after run. The ownership rule is
-    the same as for the base name: a sentinel we wrote, never a symlink.
-
-    This is the combination the earlier tests missed: a project-side name
-    collision AND a hard kill AND a retry.
+    Each run gets its own workspace so concurrent runs cannot delete each
+    other's, which means leavings can only be cleared by a later run. Without
+    that, full memory copies pile up until the disk fills.
     """
     from utils.config_manager import migrations as migrations_module
-    from utils.config_manager.migrations import (
-        _MIGRATION_STAGING_DIR,
-        _MIGRATION_STAGING_SENTINEL,
+    from utils.config_manager.migrations import _MIGRATION_STAGING_DIR
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+
+    parent = Path(config_manager.app_docs_dir) / _MIGRATION_STAGING_DIR
+
+    # Two runs killed before cleanup. Only the final cleanup is disabled: a
+    # real kill does not stop the NEXT run from using rmtree, and neutering it
+    # for the whole run would disable the clearing under test.
+    for _ in range(2):
+        with patch.object(
+            migrations_module.shutil, "rmtree", lambda *a, **k: None
+        ):
+            config_manager.migrate_memory_files()
+
+    assert parent.is_dir(), "the kills left no staging parent at all"
+    assert len(list(parent.iterdir())) >= 1, "the kills left no workspace"
+
+    # A clean run clears what the kills left AND takes the parent with it,
+    # so nothing of the migration persists between runs at all.
+    config_manager.migrate_memory_files()
+    assert not parent.exists(), (
+        "staging survived a clean run: %s"
+        % (sorted(q.name for q in parent.iterdir()) if parent.is_dir() else parent)
     )
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]"
+
+
+@pytest.mark.unit
+def test_a_symlinked_staging_parent_is_not_followed(tmp_path):
+    """The staging parent must not be a route out of the writable tree."""
+    from utils.config_manager.migrations import _MIGRATION_STAGING_DIR
 
     config_manager = _make_config_manager(tmp_path)
     project_root = tmp_path / "project-memory"
@@ -912,43 +765,97 @@ def test_fallback_staging_roots_do_not_accumulate(tmp_path):
     config_manager.memory_dir = runtime_root
     runtime_root.mkdir(parents=True, exist_ok=True)
 
-    # Holding the base name on the project side forces the unique-name path.
-    (project_root / _MIGRATION_STAGING_DIR).mkdir(parents=True)
-    (project_root / _MIGRATION_STAGING_DIR / "facts.json").write_text(
-        '["seed"]', encoding="utf-8"
-    )
-    (project_root / "Carol").mkdir()
+    outside = tmp_path / "outside-target"
+    outside.mkdir()
+    parent = Path(config_manager.app_docs_dir) / _MIGRATION_STAGING_DIR
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        parent.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform will not create symlinks unprivileged")
+
+    (project_root / "Carol").mkdir(parents=True)
     (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
-
-    def fallback_roots():
-        return sorted(
-            path.name for path in runtime_root.iterdir()
-            if path.name.startswith(_MIGRATION_STAGING_DIR + "-")
-        )
-
-    # A run killed before it could clean up. Only the FINAL cleanup is
-    # disabled: a real kill does not stop the NEXT run from using rmtree, and
-    # neutering it for the whole run would disable the reclaim as well and test
-    # nothing -- which is exactly how the first version of this test failed.
-    with patch.object(migrations_module.shutil, "rmtree", lambda *a, **k: None):
-        config_manager.migrate_memory_files()
-
-    killed = fallback_roots()
-    assert len(killed) == 1, "the kill left no staging root: %s" % killed
-    assert (runtime_root / killed[0] / _MIGRATION_STAGING_SENTINEL).exists()
-
-    # Something that is NOT ours, which the reclaim has to leave alone.
-    stranger = runtime_root / (_MIGRATION_STAGING_DIR + "-not-ours")
-    stranger.mkdir()
-    (stranger / "facts.json").write_text('["keep"]', encoding="utf-8")
 
     config_manager.migrate_memory_files()
 
-    assert fallback_roots() == [_MIGRATION_STAGING_DIR + "-not-ours"], (
-        "either our roots accumulated or the stranger was reclaimed: %s"
-        % fallback_roots()
+    # The workspace is removed in the finally either way, so an empty target
+    # at the end proves nothing. What the fix guarantees is that the link is
+    # REPLACED by a real directory before anything is staged.
+    assert not parent.is_symlink(), (
+        "the staging parent is still a link, so everything staged went "
+        "through it and outside the writable tree"
     )
-    assert (stranger / "facts.json").read_text(encoding="utf-8") == '["keep"]'
+    assert outside.is_dir(), "the link target itself was destroyed"
+    assert list(outside.iterdir()) == [], (
+        "content was staged through the link: %s"
+        % [q.name for q in outside.iterdir()]
+    )
     assert (runtime_root / "Carol" / "facts.json").read_text(
         encoding="utf-8"
-    ) == "[1]"
+    ) == "[1]", "the migration did not complete after replacing the link"
+
+
+@pytest.mark.unit
+def test_the_migration_body_runs_under_the_lock(tmp_path):
+    """Two threads can reach the migration, and they must not overlap.
+
+    ``config_manager/__init__.py`` notes that ``_config_manager_migrated``
+    is not thread-safe, so both can enter. Unserialised they clear each
+    other's staging while it is still being copied.
+
+    Asserted by observing the lock from inside the body rather than by
+    racing two threads, which could pass by luck.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    config_manager.project_memory_dir = tmp_path / "project-memory"
+    config_manager.memory_dir = tmp_path / "runtime-memory"
+    (tmp_path / "runtime-memory").mkdir(parents=True, exist_ok=True)
+
+    seen = {}
+
+    def _record(self):
+        seen["locked"] = migrations_module._MIGRATION_LOCK.locked()
+
+    with patch.object(
+        type(config_manager), "_migrate_memory_files_unlocked", _record
+    ):
+        config_manager.migrate_memory_files()
+
+    assert seen.get("locked") is True, (
+        "the body ran without the migration lock held"
+    )
+    assert not migrations_module._MIGRATION_LOCK.locked(), (
+        "the lock was not released"
+    )
+
+
+@pytest.mark.unit
+def test_an_unreadable_project_root_does_not_take_startup_down(tmp_path):
+    """Probing a path can raise, and this runs on the startup path.
+
+    A permission problem or an unreadable component makes ``exists()`` throw
+    rather than return False. Outside the handler that failed the launch
+    instead of skipping one migration.
+    """
+    config_manager = _make_config_manager(tmp_path)
+    runtime_root = tmp_path / "runtime-memory"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    config_manager.memory_dir = runtime_root
+
+    class _Unreadable:
+        def exists(self):
+            raise PermissionError("cannot stat the project memory root")
+
+        def iterdir(self):
+            raise PermissionError("cannot list the project memory root")
+
+        def __truediv__(self, other):
+            return self
+
+    config_manager.project_memory_dir = _Unreadable()
+
+    # Must not raise. The caller is startup.
+    config_manager.migrate_memory_files()
