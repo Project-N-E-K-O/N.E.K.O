@@ -40,6 +40,10 @@ from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.registry_service import PluginRegistryService
+from plugin.server.application.plugins.installation_transactions import (
+    UninstallOwnershipError,
+    require_uninstall_ownership,
+)
 from plugin.server.application.plugins.metadata_scanner import (
     install_isolated_plugin_metadata,
     scan_plugin_metadata_isolated,
@@ -341,16 +345,19 @@ def _get_plugin_config_path(plugin_id: str) -> Path | None:
     return None
 
 
-def _resolve_plugin_dir_sync(plugin_id: str, plugin_meta: dict[str, object] | None) -> Path | None:
+def _resolve_plugin_config_path_sync(
+    plugin_id: str,
+    plugin_meta: dict[str, object] | None,
+) -> Path | None:
     config_path = _resolve_registered_config_path_sync(plugin_meta)
     if config_path is None:
         config_path = _get_plugin_config_path(plugin_id)
     if config_path is None:
         return None
     try:
-        return config_path.parent.resolve()
+        return config_path.resolve()
     except Exception:
-        return config_path.parent
+        return config_path
 
 
 def _path_within_plugin_roots_sync(path: Path) -> bool:
@@ -1687,8 +1694,12 @@ class PluginLifecycleService:
                 error_type="PluginNotFound",
             )
 
-        plugin_dir = await asyncio.to_thread(_resolve_plugin_dir_sync, plugin_id, plugin_meta)
-        if plugin_dir is None:
+        config_path = await asyncio.to_thread(
+            _resolve_plugin_config_path_sync,
+            plugin_id,
+            plugin_meta,
+        )
+        if config_path is None:
             raise _to_domain_error(
                 code="PLUGIN_CONFIG_NOT_FOUND",
                 message=f"Plugin '{plugin_id}' configuration not found",
@@ -1696,6 +1707,30 @@ class PluginLifecycleService:
                 plugin_id=plugin_id,
                 error_type="ConfigNotFound",
             )
+        plugin_dir = config_path.parent
+
+        install_source_manager = get_install_source_manager()
+        try:
+            if install_source_manager is not None:
+                reload_install_source = getattr(install_source_manager, "load", None)
+                if callable(reload_install_source):
+                    await asyncio.to_thread(reload_install_source)
+            await asyncio.to_thread(
+                require_uninstall_ownership,
+                manager=install_source_manager,
+                runtime_plugin_id=plugin_id,
+                config_path=config_path,
+            )
+        except UninstallOwnershipError as exc:
+            raise ServerDomainError(
+                code=exc.code,
+                message=exc.message,
+                status_code=exc.status_code,
+                details={
+                    **exc.details,
+                    "error_type": type(exc).__name__,
+                },
+            ) from exc
 
         path_allowed = await asyncio.to_thread(_path_within_plugin_roots_sync, plugin_dir)
         if not path_allowed:

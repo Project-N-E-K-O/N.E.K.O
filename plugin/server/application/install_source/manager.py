@@ -1611,6 +1611,7 @@ class InstallSourceManager:
                 # Idempotent overwrite: preserve installed_at (Req 9.4)
                 # and only upgrade plugin_id when we've actually read a
                 # non-empty value — never regress a known id back to "".
+                manual_takeover = existing.channel == "manual" and not existing.removed
                 new_entry = dataclasses.replace(
                     existing,
                     plugin_id=plugin_id or existing.plugin_id,
@@ -1620,10 +1621,14 @@ class InstallSourceManager:
                     last_seen_at=now,
                     removed=False,
                     removed_at=None,
-                    package_id=package_id or existing.package_id,
+                    package_id=package_id or (
+                        "" if manual_takeover else existing.package_id
+                    ),
                     profile_dir=profile_dir or (
                         existing.profile_dir
-                        if not existing.removed and existing.profile_installed is True
+                        if not manual_takeover
+                        and not existing.removed
+                        and existing.profile_installed is True
                         else ""
                     ),
                     # Carry the tri-state forward: collapsing a legacy ``None``
@@ -1632,7 +1637,13 @@ class InstallSourceManager:
                     profile_installed=(
                         True
                         if profile_dir
-                        else (existing.profile_installed if not existing.removed else False)
+                        else (
+                            False
+                            if manual_takeover
+                            else existing.profile_installed
+                            if not existing.removed
+                            else False
+                        )
                     ),
                 )
 
@@ -1741,6 +1752,11 @@ class InstallSourceManager:
             old_lock = self._current
             now = self._now_iso()
             existing = self._find_entry(old_lock, root_id, directory_name)
+            manual_takeover = bool(
+                existing is not None
+                and not existing.removed
+                and existing.channel == "manual"
+            )
 
             # Compute previous_version: capture the old market version
             # when this is a genuine upgrade (different version string).
@@ -1803,7 +1819,9 @@ class InstallSourceManager:
                     last_seen_at=now,
                     removed=False,
                     removed_at=None,
-                    package_id=package_id or existing.package_id,
+                    package_id=package_id or (
+                        "" if manual_takeover else existing.package_id
+                    ),
                     profile_dir=profile_dir,
                     profile_installed=bool(profile_dir),
                 )
@@ -1922,6 +1940,11 @@ class InstallSourceManager:
             old_lock = self._current
             now = self._now_iso()
             existing = self._find_entry(old_lock, root_id, directory_name)
+            manual_takeover = (
+                existing is not None
+                and existing.channel == "manual"
+                and not existing.removed
+            )
 
             previous_version: str | None = None
             installed_at = now
@@ -1955,11 +1978,17 @@ class InstallSourceManager:
                 removed=False,
                 removed_at=None,
                 source_detail=detail,
-                package_id=package_id or (existing.package_id if existing is not None else ""),
+                package_id=package_id
+                or (
+                    existing.package_id
+                    if existing is not None and not manual_takeover
+                    else ""
+                ),
                 profile_dir=profile_dir or (
                     existing.profile_dir
                     if is_upgrade
                     and existing is not None
+                    and not manual_takeover
                     and existing.profile_installed is True
                     else ""
                 ),
@@ -1971,7 +2000,9 @@ class InstallSourceManager:
                     if profile_dir
                     else (
                         existing.profile_installed
-                        if is_upgrade and existing is not None
+                        if is_upgrade
+                        and existing is not None
+                        and not manual_takeover
                         else False
                     )
                 ),
@@ -2201,6 +2232,33 @@ class InstallSourceManager:
                 if detail.plugin_market_id == plugin_ref:
                     return entry
         return None
+
+    def find_active_user_entry(self, plugin_ref: str) -> LockEntry | None:
+        """Return the exact active user candidate for a plugin reference.
+
+        Unlike :meth:`find_active_market_entry`, this lookup deliberately
+        includes ``manual`` and ``imported`` channels so a replacement plan
+        can bind confirmation to the ownership state it is about to change.
+        Market entries retain the legacy ``plugin_market_id`` fallback used by
+        clients which do not send ``expected_plugin_toml_id``.
+        """
+
+        if not plugin_ref:
+            return None
+        matches: list[LockEntry] = []
+        for entry in self._current.entries:
+            if entry.removed or entry.root_id != "user":
+                continue
+            matches_declared_id = entry.plugin_id == plugin_ref
+            detail = entry.source_detail
+            matches_market_id = (
+                entry.channel == "market"
+                and isinstance(detail, SourceDetailMarket)
+                and detail.plugin_market_id == plugin_ref
+            )
+            if matches_declared_id or matches_market_id:
+                matches.append(entry)
+        return matches[0] if len(matches) == 1 else None
 
     def snapshot(self) -> LockFile:
         """Return the current in-memory :class:`LockFile` snapshot.

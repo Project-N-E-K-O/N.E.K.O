@@ -764,7 +764,10 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       || response.operation === 'override_builtin'
     ) {
       const plan = installPlan.value
-      ElMessage.success(t(`package.install.${response.operation}Succeeded`, {
+      const successOperation = plan?.reason === 'manual_takeover'
+        ? 'manualTakeover'
+        : response.operation
+      ElMessage.success(t(`package.install.${successOperation}Succeeded`, {
         plugin: plan?.plugin_id || plan?.directory_name || '',
       }))
     } else {

@@ -340,12 +340,15 @@ import { openExternalUrl } from '@/utils/openExternal'
 import {
   deriveMarketPluginAction,
   fetchInstalledProjection,
-  inferManualInstallConflict,
+  inferUnresolvedLocalConflict,
   type MarketInstalledState,
   type MarketPluginAction,
 } from '@/utils/marketPluginInstallState'
 import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
-import { confirmBuiltinOverride } from '@/utils/confirmBuiltinOverride'
+import {
+  confirmBuiltinOverride,
+  confirmManualTakeover,
+} from '@/utils/confirmBuiltinOverride'
 import {
   extractRepoPluginId,
   indexInstalledPluginIdentities,
@@ -633,12 +636,17 @@ function getInstalledState(plugin: MarketPlugin): InstalledMarketEntry | undefin
 
 function getMarketAction(plugin: MarketPlugin): MarketPluginAction {
   const state = getInstalledState(plugin)
-  const manualConflict = inferManualInstallConflict(
+  const unresolvedLocalConflict = inferUnresolvedLocalConflict(
     installedProjectionLoaded.value,
     state,
     marketLocalIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key)),
   )
-  return deriveMarketPluginAction(state, plugin.version, plugin.has_release, manualConflict)
+  return deriveMarketPluginAction(
+    state,
+    plugin.version,
+    plugin.has_release,
+    unresolvedLocalConflict,
+  )
 }
 
 // ─── 工作台：过滤 + 分组 + 布局 ───────────────────────────────────
@@ -1267,6 +1275,34 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
         target_version: string
       }
       if (!(await confirmBuiltinOverride(t, {
+        pluginName: plugin.name,
+        currentVersion: confirmation.current_version,
+        targetVersion: confirmation.target_version,
+      }))) {
+        return
+      }
+      installRequest.confirmation_token = confirmation.confirmation_token
+    } else if (action.effectiveSource === 'manual') {
+      const confirmationResponse = await fetchBridge('/market/takeover-confirmation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(installRequest),
+      })
+      if (!confirmationResponse) {
+        ElMessage.warning(t('market.pairRequired'))
+        return
+      }
+      if (!confirmationResponse.ok) {
+        const error = await confirmationResponse.json().catch(() => ({}))
+        ElMessage.error(resolveApiErrorMessage(error))
+        return
+      }
+      const confirmation = await confirmationResponse.json() as {
+        confirmation_token: string
+        current_version: string
+        target_version: string
+      }
+      if (!(await confirmManualTakeover(t, {
         pluginName: plugin.name,
         currentVersion: confirmation.current_version,
         targetVersion: confirmation.target_version,

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ElMessageBox } from 'element-plus'
 
-import { confirmBuiltinOverride } from './confirmBuiltinOverride'
+import { confirmBuiltinOverride, confirmManualTakeover } from './confirmBuiltinOverride'
 
 vi.mock('element-plus', () => ({
   ElMessageBox: {
@@ -48,5 +48,26 @@ describe('confirmBuiltinOverride', () => {
         targetVersion: '0.1.6',
       })
     ).resolves.toBe(false)
+  })
+
+  it('explains that a manual directory becomes N.E.K.O-managed', async () => {
+    vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as never)
+
+    await expect(
+      confirmManualTakeover(t, {
+        pluginName: 'Study Companion',
+        currentVersion: '0.1.5',
+        targetVersion: '0.1.6',
+      })
+    ).resolves.toBe(true)
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      'package.install.manualTakeoverBody{"current":"0.1.5","target":"0.1.6"}',
+      'package.install.manualTakeoverTitle{"plugin":"Study Companion"}',
+      {
+        type: 'warning',
+        confirmButtonText: 'package.install.manualTakeoverConfirm',
+        cancelButtonText: 'common.cancel',
+      }
+    )
   })
 })
