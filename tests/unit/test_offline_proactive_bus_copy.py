@@ -955,21 +955,27 @@ def test_close_cancels_and_collects_the_in_flight_bus_copies():
 
         async def _parked():
             started.set()
-            await asyncio.Event().wait()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                pass
 
         task = client._fire_bus_task(_parked())
         assert task is not None
         await asyncio.wait_for(started.wait(), timeout=5)
 
-        # 自带 deadline：没有 cancel 的版本会在这里**永久挂住**而不是失败，
-        # 那样跑测的进程会连着调用它的脚本一起卡死。守卫必须自己失败。
-        await asyncio.wait_for(client._cancel_bus_copies(), timeout=5)
+        # 直接 await，不在这里包 wait_for：包一层会白送一次调度让出，
+        # 于是「取消了但不收集」也能让下面的 done() 通过——变异验证抓到过。
+        # deadline 挪到整个 _check() 外面，没有 cancel 的版本仍然会失败而不
+        # 是把跑测进程连同脚本一起挂死。
+        await client._cancel_bus_copies()
 
         assert task.done(), "close 返回时抄送还在跑"
         assert task.cancelled()
         assert not client._bus_bg_tasks, "集合没被清空"
 
-    asyncio.run(_check())
+    # deadline 在最外层：守卫的失败形态必须是「失败」，不是「挂起」。
+    asyncio.run(asyncio.wait_for(_check(), timeout=5))
 
 
 def test_a_stalled_instruction_copy_does_not_hold_up_the_proactive_turn():
@@ -1018,18 +1024,34 @@ def test_a_refused_instruction_copy_takes_the_reply_with_it(monkeypatch):
 
     Mutation: relax the caller's check to ``if content_committed:``.
     """
-    from main_logic import agent_event_bus
-
-    monkeypatch.setattr(agent_event_bus, "AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT", 1)
-
     client, _captured = _make_client()
     spies = _spies()
     frames, turns = spies
 
+    # 只拒掉**指令**那一次 fire。用 cap=1 复现的话，回复的抄送会被同一个 cap
+    # 一起挡住，于是把判据放松也照样是空的——那条守卫就一直在为错误的理由
+    # 变绿（变异验证抓到的正是这一点）。这里精确模拟意见描述的形态：指令被
+    # 拒，而回复到得了发布点（真实时序里，占着名额的帧抄送此时已经跑完）。
+    real_fire = client._fire_bus_task
+    fired: list = []
+
+    def _refuse_the_instruction(coro):
+        fired.append(coro.__qualname__)
+        if len(fired) == 2:
+            coro.close()
+            return None
+        return real_fire(coro)
+
+    client._fire_bus_task = _refuse_the_instruction
+
     committed = _run(client, spies, images=[_png_b64(320, 200)])
 
     assert committed is True, "回合本身不该受影响"
-    assert frames.calls, "前提没成立：帧抄送没占住那个名额"
+    assert frames.calls, "前提没成立：帧抄送没发生"
+    assert len(fired) >= 2, f"前提没成立：指令那次 fire 没发生 ({fired})"
+    assert "_publish_conversation_turn" in fired[1], (
+        f"前提没成立：被拒的不是指令那次 ({fired})"
+    )
     assert turns.turn_types == [], (
         f"指令被拒，回复却上了总线: {turns.turn_types}"
     )
