@@ -102,6 +102,18 @@ class TopicStore:
                 record_id = v
                 break
 
+        # ``generation`` is projected because a light=True read gets ONLY the
+        # index back. The frames contract (plugin/core/bus/frames.py) tells a
+        # puller to dedupe on generation/id; id was already here, so leaving
+        # generation in the payload alone made a light read silently report
+        # generation=None for a frame that has one. None means "this record
+        # carries no generation" -- the projection never invents a value.
+        generation_raw = payload.get("generation")
+        if isinstance(generation_raw, bool) or not isinstance(generation_raw, (int, float)):
+            generation = None
+        else:
+            generation = int(generation_raw)
+
         # 从 metadata 中提取 conversation_id（用于对话上下文关联）
         conversation_id = None
         metadata = payload.get("metadata")
@@ -118,6 +130,7 @@ class TopicStore:
             "type": type_,
             "timestamp": ts,
             "id": record_id,
+            "generation": generation,
             "conversation_id": conversation_id,
         }
 
@@ -290,6 +303,15 @@ class StoreRegistry:
 # _record_drop("store_unresolved")，不会回报给 publisher，于是 standalone 模式
 # 悄悄丢掉全部记录。收成一个构造函数就是为了让"漏注册"不再可能。
 
+# 宿主抄给插件的对话轮（指令 + 她真正说出口的那句）。名字单独立常量而不是让
+# 每个写入方各写一遍字面量：读侧（plugin/core/bus/conversations.py）和注册表原本
+# 就各有一份 "conversations"，再多一份就是漏改时静默丢记录的第三个入口。
+CONVERSATIONS_STORE_NAME = "conversations"
+
+# conversations 也走 topic "all"：BusRpcClientBase 那边 topic 是写死的。
+CONVERSATIONS_TOPIC = "all"
+
+
 # 通用 store：都用 MESSAGE_PLANE_STORE_MAXLEN。
 DEFAULT_STORE_NAMES: tuple[str, ...] = (
     "messages",
@@ -299,7 +321,7 @@ DEFAULT_STORE_NAMES: tuple[str, ...] = (
     "export",
     "memory",
     # conversations 是独立的 store，用于存储对话上下文（与 messages 分离）
-    "conversations",
+    CONVERSATIONS_STORE_NAME,
 )
 
 # 宿主真正推给模型的那几张画面。单列一个 store 而不是复用现成的：

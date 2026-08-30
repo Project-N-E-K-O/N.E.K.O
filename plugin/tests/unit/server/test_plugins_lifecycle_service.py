@@ -3454,8 +3454,15 @@ async def test_concurrent_stops_do_not_teardown_the_same_host_twice(
             entered.set()
             await release.wait()
 
+    # stop_plugin() pops the host and therefore calls
+    # state.invalidate_snapshot_cache("hosts"), so the snapshot cache is
+    # mutated global state this test has to hand back. pytest-randomly means
+    # the victim of a leak is whatever happens to run next, so restore the
+    # same four things every other test in this file restores.
+    plugins_backup = copy.deepcopy(module.state.plugins)
     hosts_backup = dict(module.state.plugin_hosts)
     handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
     try:
         with module.state.acquire_plugin_hosts_write_lock():
             module.state.plugin_hosts.clear()
@@ -3484,12 +3491,17 @@ async def test_concurrent_stops_do_not_teardown_the_same_host_twice(
         assert exc_info.value.code == "PLUGIN_NOT_RUNNING"
     finally:
         release.set()
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
         with module.state.acquire_plugin_hosts_write_lock():
             module.state.plugin_hosts.clear()
             module.state.plugin_hosts.update(hosts_backup)
         with module.state.acquire_event_handlers_write_lock():
             module.state.event_handlers.clear()
             module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
 
 
 @pytest.mark.plugin_unit

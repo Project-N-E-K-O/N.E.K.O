@@ -210,12 +210,6 @@ class _PackCounter:
         return encoded
 
 
-
-
-
-
-
-
 def _inline_image_part(raw_bytes: int) -> dict[str, object]:
     return {
         "type": "image",
@@ -224,7 +218,6 @@ def _inline_image_part(raw_bytes: int) -> dict[str, object]:
     }
 
 
-@pytest.mark.plugin_unit
 def _install_pack_counter(monkeypatch: pytest.MonkeyPatch) -> _PackCounter:
     """Count real ormsgpack packs on the one send path that still exists.
 
@@ -241,6 +234,7 @@ def _install_pack_counter(monkeypatch: pytest.MonkeyPatch) -> _PackCounter:
     return counter
 
 
+@pytest.mark.plugin_unit
 def test_oversized_inline_push_is_rejected_before_the_transport(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

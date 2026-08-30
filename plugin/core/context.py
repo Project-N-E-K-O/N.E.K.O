@@ -1419,7 +1419,7 @@ class PluginContext:
             except Exception as e:
                 try:
                     self.logger.warning(
-                        "[PluginContext] authenticated message uplink failed (%s)",
+                        "[PluginContext] authenticated message uplink failed ({})",
                         type(e).__name__,
                     )
                 except Exception:

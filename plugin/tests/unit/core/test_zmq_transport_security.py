@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import zmq
 
 from plugin.core import zmq_transport
 
@@ -369,3 +370,95 @@ def test_unserializable_uplink_result_returns_an_immediate_error() -> None:
         "data": None,
         "error": "Plugin result is not MessagePack-serializable",
     }
+
+
+@pytest.mark.plugin_unit
+def test_message_uplink_ceiling_is_derived_from_the_ingest_payload_cap() -> None:
+    """The ceiling tracks the two host settings it is derived from.
+
+    Asserting only ``socket == _message_uplink_max_bytes()`` would pass for any
+    formula at all, including one that dropped a term, so the derivation itself
+    is pinned here against the settings module rather than restated as a
+    literal.
+    """
+    import plugin.settings as plugin_settings
+
+    assert zmq_transport._message_uplink_max_bytes() == (
+        int(plugin_settings.MESSAGE_PLANE_PAYLOAD_MAX_BYTES)
+        * int(plugin_settings.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE)
+        + zmq_transport._MESSAGE_ENVELOPE_HEADROOM_BYTES
+    )
+    # A batch is the largest frame legitimate traffic produces, so the ceiling
+    # must clear one full batch of maximum-size payloads. If this ever drops
+    # below that, real pushes start disappearing on the wire.
+    assert zmq_transport._message_uplink_max_bytes() > (
+        int(plugin_settings.MESSAGE_PLANE_PAYLOAD_MAX_BYTES)
+        * int(plugin_settings.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE)
+    )
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_oversized_authenticated_message_never_reaches_the_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A correctly-signed but oversized message frame is not delivered.
+
+    ``push_message()`` rejects oversized payloads locally, but that check runs
+    in plugin code: a plugin that writes an authenticated frame straight onto
+    the message uplink skips it entirely. Only a bound on the socket keeps the
+    host from receiving and decoding the frame.
+
+    Note what is *not* asserted: no exception. libzmq enforces MAXMSGSIZE in
+    the receiving engine, so the frame is dropped (and the peer disconnected)
+    before ``recv()`` is reached -- the observable behaviour is silence.
+    """
+    import plugin.settings as plugin_settings
+
+    # Shrink the derived ceiling so the test can overshoot it with a payload
+    # measured in KB rather than the ~128MB the shipped defaults imply.
+    monkeypatch.setattr(plugin_settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    monkeypatch.setattr(plugin_settings, "PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", 2)
+    ceiling = zmq_transport._message_uplink_max_bytes()
+
+    host = zmq_transport.HostTransport()
+    child = zmq_transport.ChildTransport(
+        host.downlink_endpoint,
+        host.uplink_endpoint,
+        host.uplink_token,
+        message_uplink_endpoint=host.message_uplink_endpoint,
+    )
+    try:
+        assert host._msg_sock.getsockopt(zmq.MAXMSGSIZE) == ceiling
+
+        sender = child.channel_sender(zmq_transport.CH_MSG)
+
+        # Liveness first: an in-bounds frame on the same socket does arrive, so
+        # the silence asserted below is the ceiling and not a dead connection.
+        sender.put_nowait({"type": "MESSAGE_PUSH", "message_id": "small"})
+        assert await host.recv_message(timeout_ms=2000) == (
+            zmq_transport.CH_MSG,
+            {"type": "MESSAGE_PUSH", "message_id": "small"},
+        )
+
+        oversized = {
+            "type": "MESSAGE_PUSH",
+            "message_id": "oversized",
+            "content": "x" * (ceiling * 2),
+        }
+        # Guard the guard: if a future headroom change made this payload fit
+        # under the ceiling, the assertion below would pass for the wrong
+        # reason.
+        assert len(
+            zmq_transport._encode_uplink(
+                host.uplink_token,
+                zmq_transport.CH_MSG,
+                oversized,
+            )
+        ) > ceiling
+        sender.put_nowait(oversized)
+
+        assert await host.recv_message(timeout_ms=1500) is None
+    finally:
+        child.close()
+        host.close()

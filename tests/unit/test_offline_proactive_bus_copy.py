@@ -1,0 +1,792 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""The proactive turn's copy onto the plugin bus: its frames and its words.
+
+``prompt_ephemeral`` is the greeting / agent-callback / avatar-tap channel. It
+runs the SAME budget ladder as ``stream_text`` and attaches the result to the
+model turn, so it puts pictures in front of the model -- but it used to publish
+nothing, and the ``conversations`` store had no writer anywhere in the repo. A
+plugin could therefore never see either half of a proactive turn, while the
+realtime twin published its frames all along.
+
+Three properties are pinned here.
+
+1. The frames a proactive turn attaches reach the frame bus, as the
+   POST-ladder bytes and under a source label of their own. They are not the
+   user's frames: he never shared them and does not know the turn happened, so
+   a plugin filtering on ``"user"`` must not be handed them.
+
+2. Both copies are gated on something that really happened, and the two gates
+   answer different questions. The instruction and the frames ask "did the
+   provider receive this?", answered by the first streamed chunk -- never by
+   local state, because this function still has a three-attempt retry ladder
+   and two cancellation checks below that point, each of which can end the turn
+   with not one byte having reached the provider. The reply asks "did she say
+   it?", answered by commitment: a turn that streamed only a ``[play_music:]``
+   directive committed nothing, and an empty record would be the host inventing
+   an utterance.
+
+3. The record shape is the one ``ConversationRecord`` reads back. The fields
+   already exist -- ``conversation_id`` / ``turn_type`` / ``lanlan_name`` /
+   ``message_count`` in ``metadata``, ``content`` at the top -- and this fills
+   them rather than inventing a parallel vocabulary.
+
+Fixture note, learned from ``test_offline_provider_frame_publish.py``: that
+file's client once raised before yielding any chunk, which after the
+delivery-gating fix turned every publish assertion in it into a vacuous pass.
+``_make_client`` here therefore streams a real content chunk BY DEFAULT, and
+``test_the_fixture_is_not_vacuous`` asserts the default fixture actually
+reaches both publishers.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import io
+from types import SimpleNamespace
+from typing import Any, Dict, List
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+from openai import APIConnectionError
+from PIL import Image
+
+from app.agent_server import api_runtime as agent_runtime
+from main_logic import agent_event_bus as bus
+from main_logic.omni_offline_client._client import OmniOfflineClient
+from plugin.core.bus.conversations import ConversationRecord
+from plugin.message_plane.stores import (
+    CONVERSATIONS_STORE_NAME,
+    CONVERSATIONS_TOPIC,
+    TopicStore,
+)
+from utils.llm_client import SystemMessage
+
+pytestmark = pytest.mark.unit
+
+
+_FRAME_PUBLISHER = (
+    "main_logic.omni_offline_client._media."
+    "publish_provider_frame_observed_best_effort"
+)
+_TURN_PUBLISHER = (
+    "main_logic.omni_offline_client._lifecycle."
+    "publish_conversation_turn_observed_best_effort"
+)
+# ``_lifecycle`` imports the asyncio MODULE, so this patches stdlib
+# ``asyncio.sleep`` -- keep the window down to the single ``asyncio.run``.
+_SLEEP = "main_logic.omni_offline_client._lifecycle.asyncio.sleep"
+
+_INSTRUCTION = "======[系统通知] 他刚回来了======"
+
+
+async def _no_backoff(_delay: float) -> None:
+    """The retry ladder without its wall clock (1s + 2s between attempts)."""
+
+
+def _connection_error() -> BaseException:
+    """A transient provider failure: the retry path, not the give-up path."""
+    return APIConnectionError(
+        request=httpx.Request("POST", "http://provider.invalid/v1/chat"),
+    )
+
+
+def _png_b64(width: int, height: int, colour=(18, 160, 90)) -> str:
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), colour).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _text(content: str) -> SimpleNamespace:
+    return SimpleNamespace(content=content)
+
+
+def _make_client(chunks=None, error=None):
+    """A client wired just far enough to run one ``prompt_ephemeral`` turn.
+
+    ``_astream_visible_with_tools`` captures the messages, streams ``chunks``,
+    then raises ``error`` if one was given (a normal stream end breaks out of
+    the retry loop on its own -- unlike ``stream_text``, no raise is needed).
+
+    ``chunks`` defaults to one REAL content chunk, and that default is
+    load-bearing rather than scenery: both copies are gated on the turn
+    actually happening, so a fixture that streamed nothing would make every
+    publish assertion in this file vacuously true. Pass ``chunks=[]`` with an
+    ``error`` to model a request the provider never accepted.
+    """
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._pending_plugin_images = []
+    client._proactive_image_to_inject = None
+    client._proactive_image_staged_at = 0.0
+    client._proactive_image_history_len = 0
+    client.lanlan_name = "neko"
+    client.master_name = "master"
+    client.llm = SimpleNamespace(max_completion_tokens=2000)
+    client.model = "m"
+    client.vision_model = "vm"
+    client._prefix_buffer_size = 0
+    client.on_status_message = None
+    client.on_text_delta = AsyncMock()
+    client.on_response_done = AsyncMock()
+    client._begin_reasoning_stream = MagicMock(return_value=1)
+    client._notify_reasoning_done = AsyncMock()
+    client.switch_model = AsyncMock()
+
+    captured: List[list] = []
+
+    async def _fake_astream(messages, **_overrides):
+        captured.append(list(messages))
+        for chunk in ([_text("欢迎回来喵~")] if chunks is None else list(chunks)):
+            yield chunk
+        if error is not None:
+            raise error()
+
+    client._astream_visible_with_tools = _fake_astream
+    return client, captured
+
+
+def _attached_b64(captured: List[list]) -> List[str]:
+    assert captured, "the stream was never reached -- no turn was built"
+    message = captured[0][-1]
+    assert isinstance(message.content, list), "turn did not go multi-modal"
+    return [
+        item["image_url"]["url"].split(",", 1)[1]
+        for item in message.content
+        if isinstance(item, dict) and item.get("type") == "image_url"
+    ]
+
+
+class _FrameSpy:
+    """Records every frame handed to the frame-bus publisher."""
+
+    def __init__(self) -> None:
+        self.calls: List[Dict[str, Any]] = []
+
+    async def __call__(self, lanlan_name, **kwargs):
+        self.calls.append({"lanlan_name": lanlan_name, **kwargs})
+        return True
+
+    @property
+    def images(self) -> List[str]:
+        return [call["image_base64"] for call in self.calls]
+
+    @property
+    def sources(self) -> List[str]:
+        return [call["source"] for call in self.calls]
+
+
+class _TurnSpy:
+    """Records every message handed to the conversation-bus publisher."""
+
+    def __init__(self) -> None:
+        self.calls: List[Dict[str, Any]] = []
+
+    async def __call__(self, lanlan_name, **kwargs):
+        self.calls.append({"lanlan_name": lanlan_name, **kwargs})
+        return True
+
+    @property
+    def turn_types(self) -> List[str]:
+        return [call["turn_type"] for call in self.calls]
+
+    @property
+    def contents(self) -> List[str]:
+        return [call["content"] for call in self.calls]
+
+
+def _spies():
+    return _FrameSpy(), _TurnSpy()
+
+
+def _run(client, spies, *, instruction: str = _INSTRUCTION, **kwargs):
+    frames, turns = spies
+    with patch(_FRAME_PUBLISHER, frames), patch(_TURN_PUBLISHER, turns):
+        return asyncio.run(client.prompt_ephemeral(instruction, **kwargs))
+
+
+# ---------------------------------------------------------------------------
+# 0. The fixture itself.
+# ---------------------------------------------------------------------------
+
+
+def test_the_fixture_is_not_vacuous():
+    """The default client reaches BOTH publishers, so assertions elsewhere bite.
+
+    This is the guard the frame-publish file learned to need: its fixture once
+    raised before yielding, and every "nothing was published" assertion in it
+    passed for the wrong reason. If this test ever goes red, treat every
+    ``== []`` assertion below as unproven.
+    """
+    client, captured = _make_client()
+    spies = _spies()
+    frames, turns = spies
+
+    committed = _run(client, spies, images=[_png_b64(320, 200)])
+
+    assert committed is True
+    assert captured, "the provider was never called"
+    assert frames.calls, "the frame publisher was never reached"
+    assert turns.calls, "the conversation publisher was never reached"
+
+
+# ---------------------------------------------------------------------------
+# 1. The frames.
+# ---------------------------------------------------------------------------
+
+
+def test_a_proactive_turn_copies_its_post_ladder_frames():
+    """What the bus gets is what the model got -- after the ladder, not before.
+
+    The ladder re-encodes to the model resolution profile on nearly every turn,
+    so publishing the caller's ``images`` would put a bigger, different picture
+    on the bus than the model ever saw.
+
+    Mutation: publish ``images`` instead of ``_budget_images``.
+    """
+    source = _png_b64(1600, 1200)
+    client, captured = _make_client()
+    spies = _spies()
+    frames, _turns = spies
+
+    _run(client, spies, images=[source])
+
+    sent = _attached_b64(captured)
+    assert len(sent) == 1
+    assert sent[0] != source, "the ladder's output is what the provider saw"
+    assert frames.images == sent
+    assert source not in frames.images
+    assert frames.calls[0]["lanlan_name"] == "neko"
+
+
+def test_proactive_frames_are_not_labelled_as_the_users():
+    """He never shared these and does not know this turn happened.
+
+    A plugin filtering ``source == "user"`` -- or ``"screen"``, the label the
+    user's own proactive-vision screenshot wears on the ``stream_text`` path --
+    must not be handed a frame a callback pushed into a greeting.
+
+    Mutation: label these ``_FRAME_SOURCE_USER`` (or ``_FRAME_SOURCE_SCREEN``).
+    """
+    client, _captured = _make_client()
+    spies = _spies()
+    frames, _turns = spies
+
+    _run(client, spies, images=[_png_b64(320, 200), _png_b64(300, 200)])
+
+    assert frames.sources == ["proactive", "proactive"]
+
+
+def test_a_text_only_proactive_turn_publishes_no_frames():
+    """No pictures, no frame records -- and the words still travel."""
+    client, _captured = _make_client()
+    spies = _spies()
+    frames, turns = spies
+
+    _run(client, spies)
+
+    assert frames.calls == []
+    assert turns.calls, "the conversation copy must not depend on images"
+
+
+# ---------------------------------------------------------------------------
+# 2. The delivery gate: the provider, not local state.
+# ---------------------------------------------------------------------------
+
+
+def test_a_turn_the_provider_never_accepted_copies_nothing():
+    """The frames are attached and the request still never happens.
+
+    ``astream`` is lazy: nothing is sent until the first ``__anext__``. This
+    turn dies there, so no byte reached the provider -- yet the message was
+    fully built and the ladder had already run. Publishing at attach time
+    announces a delivery that did not happen, and the next turn's ladder would
+    publish the same frames again.
+
+    Mutation (a): publish where ``_bus_frames`` is staged (attach time). Red.
+    """
+    client, captured = _make_client(
+        chunks=[], error=lambda: RuntimeError("provider refused"),
+    )
+    spies = _spies()
+    frames, turns = spies
+
+    committed = _run(client, spies, images=[_png_b64(320, 200)])
+
+    assert committed is False
+    assert _attached_b64(captured), "this turn has to be carrying frames"
+    assert frames.calls == []
+    assert turns.calls == []
+
+
+def test_the_whole_retry_ladder_failing_leaves_the_bus_empty():
+    """Three transient failures, none of which ever streams a chunk.
+
+    ``prompt_ephemeral`` gives up silently after three attempts; a copy keyed
+    on anything earlier than the first chunk asserts a delivery that the whole
+    ladder failed to make.
+
+    Mutation (a): publish at attach time. Red -- and once per attempt.
+    """
+    client, captured = _make_client(chunks=[], error=_connection_error)
+    spies = _spies()
+    frames, turns = spies
+
+    with patch(_SLEEP, _no_backoff):
+        committed = _run(client, spies, images=[_png_b64(320, 200)])
+
+    assert committed is False
+    assert len(captured) == 3, (
+        f"the fixture must exercise all three attempts, saw {len(captured)}"
+    )
+    assert frames.calls == []
+    assert turns.calls == []
+
+
+def test_a_retried_turn_is_copied_once_not_once_per_attempt():
+    """Every attempt reaches the provider; the copy still happens once.
+
+    The chunks are content-less, so nothing is emitted and the ladder keeps
+    retrying -- but the delivery gate opens on all three. What keeps the record
+    set honest is that the staged copy is consumed on the first one, cleared
+    BEFORE the await.
+
+    Mutation (b): drop the ``_pending_bus_delivery = None`` clear. Red at three
+    records for one frame, and three instruction records.
+    """
+    client, captured = _make_client(chunks=[_text("")], error=_connection_error)
+    spies = _spies()
+    frames, turns = spies
+
+    with patch(_SLEEP, _no_backoff):
+        _run(client, spies, images=[_png_b64(320, 200)])
+
+    assert len(captured) == 3, (
+        f"the fixture must exercise all three attempts, saw {len(captured)}"
+    )
+    assert len(frames.calls) == 1
+    assert frames.images == _attached_b64(captured)
+    assert turns.turn_types == ["proactive_instruction"]
+
+
+# ---------------------------------------------------------------------------
+# 3. The conversation turn.
+# ---------------------------------------------------------------------------
+
+
+def test_the_instruction_and_the_reply_both_reach_the_bus():
+    """What the model got, and what she said back. In that order.
+
+    Mutation: drop either publish call.
+    """
+    client, _captured = _make_client(chunks=[_text("欢迎回来喵~")])
+    spies = _spies()
+    _frames, turns = spies
+
+    committed = _run(client, spies)
+
+    assert committed is True
+    assert turns.turn_types == ["proactive_instruction", "proactive_reply"]
+    assert turns.contents == [_INSTRUCTION, "欢迎回来喵~"]
+    assert [call["lanlan_name"] for call in turns.calls] == ["neko", "neko"]
+    assert [call["source"] for call in turns.calls] == ["proactive", "proactive"]
+    # message_count is the conversation's size as of each record, so a plugin
+    # holding the reply knows it has the whole turn.
+    assert [call["message_count"] for call in turns.calls] == [1, 2]
+
+
+def test_a_reply_that_never_commits_is_never_copied():
+    """Streaming started, and she still said nothing.
+
+    A turn whose entire output is a ``[play_music:]`` directive emits deltas,
+    commits no visible text, fires no ``on_committed_text`` and writes nothing
+    to history. Copying a reply here would put an utterance on the bus that she
+    never made -- and the record would be empty besides.
+
+    Mutation (c): publish the reply from the first-chunk site instead of the
+    commit boundary, or drop the ``if content_committed`` guard. Red.
+    """
+    client, _captured = _make_client(chunks=[_text("[play_music:demo]")])
+    spies = _spies()
+    _frames, turns = spies
+
+    committed = _run(client, spies)
+
+    assert committed is False
+    # The instruction still travels: the provider really did receive it.
+    assert turns.turn_types == ["proactive_instruction"]
+
+
+def test_a_spoken_but_discarded_reply_is_not_copied():
+    """She said it out loud and the turn still threw it away.
+
+    An account-level failure mid-stream (arrears / rejected key) blanks
+    ``assistant_message`` and returns: the text already reached the user's
+    screen through ``on_text_delta``, but nothing is committed -- no
+    ``on_committed_text``, nothing into history, nothing into the anti-repeat
+    corpus. The bus is the same kind of consumer and must agree with the rest
+    of them.
+
+    This is the case that separates "gated on commitment" from "gated on we
+    started streaming": both gates are open by the time the error lands, and
+    only one of them closes again.
+
+    Mutation (c): publish the reply from the streaming emit branch (keyed on
+    ``emitted_any``) instead of the commit boundary. Red.
+    """
+    client, _captured = _make_client(
+        chunks=[_text("欢迎回来喵~")],
+        error=lambda: APIConnectionError(
+            request=httpx.Request("POST", "http://provider.invalid/v1/chat"),
+            message="account in bad standing",
+        ),
+    )
+    client.on_status_message = AsyncMock()
+    spies = _spies()
+    _frames, turns = spies
+
+    committed = _run(client, spies)
+
+    assert committed is False
+    client.on_text_delta.assert_awaited()  # the user did see it
+    assert turns.turn_types == ["proactive_instruction"]
+
+
+def test_the_copied_reply_is_the_sanitized_committed_text():
+    """The bus sees the same string the commit callbacks and history see.
+
+    Mutation: publish ``assistant_message`` (the raw stream) instead of
+    ``committed_text``. Red on the leftover directive.
+    """
+    client, _captured = _make_client(
+        chunks=[_text("[play_music:demo]"), _text("欢迎回来喵~")],
+    )
+    seen: List[str] = []
+    frames, turns = _spies()
+
+    with patch(_FRAME_PUBLISHER, frames), patch(_TURN_PUBLISHER, turns):
+        committed = asyncio.run(client.prompt_ephemeral(
+            _INSTRUCTION, on_committed_text=seen.append,
+        ))
+
+    assert committed is True
+    reply = [c for c in turns.calls if c["turn_type"] == "proactive_reply"]
+    assert len(reply) == 1
+    assert reply[0]["content"] == seen[0] == "欢迎回来喵~"
+
+
+def test_an_account_level_failure_copies_neither_half():
+    """A rejected API key returns before any chunk: nothing received, nothing said."""
+    client, _captured = _make_client(
+        chunks=[],
+        error=lambda: APIConnectionError(
+            request=httpx.Request("POST", "http://provider.invalid/v1/chat"),
+            message="Error code: 401 - invalid api key",
+        ),
+    )
+    client.on_status_message = AsyncMock()
+    spies = _spies()
+    frames, turns = spies
+
+    committed = _run(client, spies, images=[_png_b64(320, 200)])
+
+    assert committed is False
+    assert frames.calls == []
+    assert turns.calls == []
+
+
+def test_the_frames_and_both_messages_share_one_turn_identity():
+    """A plugin has to be able to put the pictures back with the words.
+
+    The frames' ``turn_id`` and both conversation records' ``conversation_id``
+    are the same minted value; nothing else ties them together, since a
+    proactive turn has no externally supplied turn id.
+
+    Mutation: mint a second uuid for the reply, or drop ``turn_id`` from the
+    frame publish.
+    """
+    client, _captured = _make_client()
+    spies = _spies()
+    frames, turns = spies
+
+    _run(client, spies, images=[_png_b64(320, 200)])
+
+    ids = {call["turn_id"] for call in frames.calls}
+    ids |= {call["conversation_id"] for call in turns.calls}
+    assert len(ids) == 1, ids
+    assert next(iter(ids)), "the turn identity must not be empty"
+
+
+def test_two_proactive_turns_do_not_share_a_conversation_id():
+    """Each ephemeral turn is its own conversation; merging them would glue
+    unrelated greetings into one thread on the reader's side."""
+    seen: List[str] = []
+    for _ in range(2):
+        client, _captured = _make_client()
+        spies = _spies()
+        _frames, turns = spies
+        _run(client, spies)
+        seen.append(turns.calls[0]["conversation_id"])
+
+    assert seen[0] != seen[1]
+
+
+# ---------------------------------------------------------------------------
+# 4. Both copies are a courtesy: neither may cost the turn.
+# ---------------------------------------------------------------------------
+
+
+def test_a_failing_conversation_bus_never_costs_the_turn():
+    """Mutation: drop the ``except Exception`` guard in
+    ``_publish_conversation_turn``."""
+    client, _captured = _make_client()
+
+    async def _explode(*_args, **_kwargs):
+        raise RuntimeError("plane down")
+
+    with patch(_FRAME_PUBLISHER, _FrameSpy()), patch(_TURN_PUBLISHER, _explode):
+        committed = asyncio.run(client.prompt_ephemeral(_INSTRUCTION))
+
+    assert committed is True
+    assert client.on_response_done.await_count == 1
+    client.on_text_delta.assert_awaited()
+
+
+def test_a_failing_frame_bus_never_costs_the_turn():
+    """Mutation: drop the ``except Exception`` guard in
+    ``_publish_provider_frames``."""
+    client, captured = _make_client()
+
+    async def _explode(*_args, **_kwargs):
+        raise RuntimeError("plane down")
+
+    with patch(_FRAME_PUBLISHER, _explode), patch(_TURN_PUBLISHER, _TurnSpy()):
+        committed = asyncio.run(
+            client.prompt_ephemeral(_INSTRUCTION, images=[_png_b64(320, 200)])
+        )
+
+    assert committed is True
+    assert _attached_b64(captured), "the turn still carried its frames"
+
+
+def test_bus_cancellation_is_not_swallowed():
+    """A cancelled publish is the session being torn down, not a bus hiccup."""
+    client, _captured = _make_client()
+
+    async def _cancel(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    with patch(_FRAME_PUBLISHER, _FrameSpy()), patch(_TURN_PUBLISHER, _cancel):
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(client.prompt_ephemeral(_INSTRUCTION))
+
+
+# ---------------------------------------------------------------------------
+# 5. The hop into the ``conversations`` store.
+# ---------------------------------------------------------------------------
+
+
+def _turn_event(**overrides: Any) -> Dict[str, Any]:
+    event: Dict[str, Any] = {
+        "event_type": "conversation_turn_observed",
+        "event_id": "turn-msg-1",
+        "lanlan_name": "neko",
+        "source": "proactive",
+        "conversation_id": "conv-1",
+        "turn_type": "proactive_reply",
+        "content": "欢迎回来喵~",
+        "message_count": 2,
+    }
+    event.update(overrides)
+    return event
+
+
+def _patch_publish_record(monkeypatch: pytest.MonkeyPatch) -> List[Dict[str, Any]]:
+    from plugin.server.messaging import plane_bridge
+
+    captured: List[Dict[str, Any]] = []
+
+    def _capture(*, store: str, record: Dict[str, Any], topic: str = "all") -> None:
+        captured.append({"store": store, "topic": topic, "record": record})
+
+    monkeypatch.setattr(plane_bridge, "publish_record", _capture)
+    return captured
+
+
+def _enable_user_plugins(monkeypatch: pytest.MonkeyPatch) -> None:
+    flags = dict(agent_runtime.Modules.agent_flags or {})
+    flags["user_plugin_enabled"] = True
+    monkeypatch.setattr(agent_runtime.Modules, "agent_flags", flags)
+
+
+def test_the_turn_rides_the_existing_session_pub_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No new socket: main_server cannot write to the message plane itself."""
+    sent: List[Dict[str, Any]] = []
+
+    async def _capture(event: Dict[str, Any]) -> bool:
+        sent.append(event)
+        return True
+
+    monkeypatch.setattr(bus, "publish_session_event_threadsafe", _capture)
+
+    ok = asyncio.run(bus.publish_conversation_turn_observed_best_effort(
+        "neko",
+        content="欢迎回来喵~",
+        turn_type="proactive_reply",
+        conversation_id="conv-1",
+        source="proactive",
+        message_count=2,
+    ))
+
+    assert ok is True
+    assert len(sent) == 1
+    event = sent[0]
+    assert event["event_type"] == bus.CONVERSATION_TURN_OBSERVED_EVENT
+    assert event["event_type"] == "conversation_turn_observed"
+    assert event["content"] == "欢迎回来喵~"
+    assert event["conversation_id"] == "conv-1"
+    assert event["turn_type"] == "proactive_reply"
+    assert event["message_count"] == 2
+    assert event["lanlan_name"] == "neko"
+
+
+def test_an_empty_message_is_not_published(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: List[Dict[str, Any]] = []
+
+    async def _capture(event: Dict[str, Any]) -> bool:
+        sent.append(event)
+        return True
+
+    monkeypatch.setattr(bus, "publish_session_event_threadsafe", _capture)
+
+    ok = asyncio.run(bus.publish_conversation_turn_observed_best_effort(
+        "neko", content="   ", turn_type="proactive_reply",
+        conversation_id="conv-1", source="proactive",
+    ))
+
+    assert ok is False
+    assert sent == []
+
+
+def test_the_forward_writes_into_the_conversations_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store the SDK reads, on the topic it hardcodes.
+
+    ``ConversationClient._get_impl`` asks for ``store="conversations"``,
+    ``topic="all"``; a record filed anywhere else is invisible to every plugin.
+    """
+    _enable_user_plugins(monkeypatch)
+    captured = _patch_publish_record(monkeypatch)
+
+    assert agent_runtime._forward_conversation_turn(_turn_event()) is True
+    assert len(captured) == 1
+    assert captured[0]["store"] == CONVERSATIONS_STORE_NAME == "conversations"
+    assert captured[0]["topic"] == CONVERSATIONS_TOPIC == "all"
+
+
+def test_the_forwarded_record_reads_back_through_the_sdk_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fill the fields ``ConversationRecord`` already has, not new ones.
+
+    ``from_raw`` reads ``content`` off the payload and
+    ``conversation_id`` / ``turn_type`` / ``lanlan_name`` / ``message_count``
+    out of ``metadata``. A record that put them anywhere else would arrive as a
+    ConversationRecord with every one of those fields empty.
+
+    Mutation: hoist any of the four to the top level of the record.
+    """
+    _enable_user_plugins(monkeypatch)
+    captured = _patch_publish_record(monkeypatch)
+
+    agent_runtime._forward_conversation_turn(_turn_event())
+    record = ConversationRecord.from_raw(captured[0]["record"])
+
+    assert record.kind == "conversation"
+    assert record.content == "欢迎回来喵~"
+    assert record.conversation_id == "conv-1"
+    assert record.turn_type == "proactive_reply"
+    assert record.lanlan_name == "neko"
+    assert record.message_count == 2
+    assert record.source == "proactive"
+
+
+def test_the_record_survives_the_store_round_trip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through a real TopicStore, which is what a light read gives a plugin.
+
+    ``TopicStore._extract_index`` projects ``conversation_id`` out of the
+    metadata; ``from_index`` is the constructor a stored item comes back
+    through. Putting the id anywhere but ``metadata`` loses it here.
+    """
+    _enable_user_plugins(monkeypatch)
+    captured = _patch_publish_record(monkeypatch)
+    agent_runtime._forward_conversation_turn(_turn_event())
+
+    store = TopicStore(name=CONVERSATIONS_STORE_NAME, maxlen=8)
+    event = store.publish(CONVERSATIONS_TOPIC, captured[0]["record"])
+
+    assert event["index"]["conversation_id"] == "conv-1"
+    assert event["index"]["id"] == "turn-msg-1"
+    record = ConversationRecord.from_index(event["index"], event["payload"])
+    assert record.conversation_id == "conv-1"
+    assert record.turn_type == "proactive_reply"
+    assert record.content == "欢迎回来喵~"
+    assert record.message_count == 2
+
+
+def test_the_forward_is_skipped_when_no_plugin_can_read_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With user plugins off there is no reader; do not retain what she said."""
+    flags = dict(agent_runtime.Modules.agent_flags or {})
+    flags["user_plugin_enabled"] = False
+    monkeypatch.setattr(agent_runtime.Modules, "agent_flags", flags)
+    captured = _patch_publish_record(monkeypatch)
+
+    assert agent_runtime._forward_conversation_turn(_turn_event()) is False
+    assert captured == []
+
+
+def test_the_forward_ignores_an_event_without_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_user_plugins(monkeypatch)
+    captured = _patch_publish_record(monkeypatch)
+
+    assert agent_runtime._forward_conversation_turn(_turn_event(content="")) is False
+    assert agent_runtime._forward_conversation_turn(_turn_event(content=None)) is False
+    assert agent_runtime._forward_conversation_turn(_turn_event(content="  ")) is False
+    assert captured == []
+
+
+def test_session_event_dispatch_routes_conversation_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The branch must be wired: a helper nothing routes to forwards nothing."""
+    _enable_user_plugins(monkeypatch)
+    captured = _patch_publish_record(monkeypatch)
+
+    asyncio.run(agent_runtime._on_session_event(_turn_event()))
+
+    assert len(captured) == 1
+    assert captured[0]["record"]["content"] == "欢迎回来喵~"

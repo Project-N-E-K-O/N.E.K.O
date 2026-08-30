@@ -4,7 +4,8 @@ Replaces ``multiprocessing.Queue`` with four ZMQ PUSH/PULL channels:
 
 * **Downlink** (host → child): commands, plugin-to-plugin responses
 * **Control uplink** (child → host): results, status, plugin-to-plugin requests
-* **Message uplink** (child → host): individual and batched plugin messages
+* **Message uplink** (child → host): size-bounded individual and batched
+  plugin messages
 * **Image uplink** (child → host): bounded raw image uploads
 
 Downlink messages are serialised with :mod:`pickle` for compatibility with
@@ -122,6 +123,50 @@ _IMAGE_HWM = 8
 _IMAGE_MAX_BYTES = 8 * 1024 * 1024
 _IMAGE_AUTH_KEY = "_auth"
 
+# ── Message uplink size ceiling ────────────────────────────────────
+#
+# RCVHWM bounds how MANY frames may queue on a PULL socket, never how large one
+# frame is. Without a size ceiling the host receives and MessagePack-decodes
+# whatever a plugin writes onto the message uplink, and push_message()'s local
+# size check is no defence: a plugin that writes an authenticated frame onto
+# the socket directly never runs it. The image uplink has carried MAXMSGSIZE
+# from the start; this is the same bound for the message plane.
+#
+# The number is derived, not chosen. Downstream, ingest measures each delta
+# item against MESSAGE_PLANE_PAYLOAD_MAX_BYTES and drops the whole item when it
+# is over, so a payload above that cap cannot survive ingest no matter what the
+# transport does with it. One frame here is either a single such payload
+# (CH_MSG) or one batch of them (CH_MSG_BATCH), and the batcher flushes at
+# PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE items, so the largest frame legitimate
+# traffic can produce is batch_size * payload_max. The headroom on top covers
+# the msgpack envelope wrapped around those payloads -- the token, the channel
+# tag, the "items" array header, tens of bytes in practice -- and is generous
+# because the failure mode of a ceiling set too low is silent loss of real
+# traffic (see below), while the cost of extra slack is bounded by the same
+# per-frame allocation this limit exists to bound. Both settings are host-side,
+# so plugin code cannot widen the ceiling by setting an env var.
+#
+# What this does at runtime, because it is easy to expect the wrong thing:
+# libzmq enforces MAXMSGSIZE in the receiving engine, not in the recv() call.
+# An oversized frame is discarded there and the offending peer's connection is
+# torn down (ZMTP 3.x). recv() does NOT raise, and the host never sees the
+# bytes -- so there is no error path to write here. The observable behaviour is
+# that the frame simply never arrives, and the child's PUSH socket reconnects
+# with whatever it had in flight lost.
+_MESSAGE_ENVELOPE_HEADROOM_BYTES = 64 * 1024
+
+
+def _message_uplink_max_bytes() -> int:
+    """Return the byte ceiling for one frame on the message uplink."""
+    from plugin.settings import (
+        MESSAGE_PLANE_PAYLOAD_MAX_BYTES,
+        PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE,
+    )
+
+    payload_max = max(1, int(MESSAGE_PLANE_PAYLOAD_MAX_BYTES))
+    batch_max = max(1, int(PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE))
+    return payload_max * batch_max + _MESSAGE_ENVELOPE_HEADROOM_BYTES
+
 
 def _authenticate_image_metadata(
     metadata: dict,
@@ -181,6 +226,14 @@ class HostTransport:
         self._ul_sock = self._ctx.socket(zmq.PULL)
         self._ul_sock.setsockopt(zmq.LINGER, 0)
         self._ul_sock.setsockopt(zmq.RCVHWM, 5000)
+        # Deliberately NO MAXMSGSIZE here, unlike the message and image
+        # uplinks below -- read the asymmetry as an open gap, not as a socket
+        # someone forgot. A tool result or status frame has no downstream size
+        # contract to derive a ceiling from (there is no
+        # MESSAGE_PLANE_PAYLOAD_MAX_BYTES equivalent for a tool result), so any
+        # number here would be invented, and one set too low silently drops
+        # real results: libzmq kills the frame and the peer without raising.
+        # Closing it needs a decision on what a legitimate maximum result is.
         self._ul_sock.bind("tcp://127.0.0.1:*")
         self.uplink_endpoint: str = self._ul_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
 
@@ -190,6 +243,11 @@ class HostTransport:
         self._msg_sock = self._ctx.socket(zmq.PULL)
         self._msg_sock.setsockopt(zmq.LINGER, 0)
         self._msg_sock.setsockopt(zmq.RCVHWM, 5000)
+        # RCVHWM above is a frame count; this is the frame size. See
+        # _message_uplink_max_bytes for how the bound is derived and what
+        # libzmq does with a frame that exceeds it (it drops the frame and
+        # drops the peer -- recv never raises).
+        self._msg_sock.setsockopt(zmq.MAXMSGSIZE, _message_uplink_max_bytes())
         self._msg_sock.bind("tcp://127.0.0.1:*")
         self.message_uplink_endpoint: str = self._msg_sock.getsockopt(
             zmq.LAST_ENDPOINT

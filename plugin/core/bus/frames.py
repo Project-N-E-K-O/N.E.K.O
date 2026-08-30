@@ -48,7 +48,14 @@ class FrameRecord(BusRecord):
         source = payload.get("source") or idx.get("source")
         frame_id = payload.get("id") or idx.get("id")
 
+        # Payload first, index second. A ``light=True`` read carries only the
+        # index, and the index is projected from this very payload at publish
+        # time, so the two cannot disagree. Without this fallback such a read
+        # reported ``generation=None`` for a frame that has one, which quietly
+        # defeats the dedupe the field is documented for.
         generation = payload.get("generation")
+        if generation is None:
+            generation = idx.get("generation")
         try:
             generation_int = int(generation) if generation is not None else None
         except (TypeError, ValueError):
@@ -87,6 +94,8 @@ class FrameRecord(BusRecord):
         # The payload carries the image; the index carries only scalars. A
         # ``light=True`` query therefore yields records with image_base64=None
         # rather than a broken record — the caller asked for the index only.
+        # Both dedupe keys survive that trip: ``id`` and ``generation`` are
+        # projected into the index by TopicStore._extract_index.
         return FrameRecord._shape(payload if isinstance(payload, dict) else {}, index)
 
     def dump(self) -> Dict[str, Any]:

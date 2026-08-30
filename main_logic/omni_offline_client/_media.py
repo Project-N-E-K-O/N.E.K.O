@@ -46,6 +46,11 @@ from ._shared import (
 _FRAME_SOURCE_SCREEN = "screen"    # the proactive-vision screenshot
 _FRAME_SOURCE_USER = "user"        # his pending queue + this turn's own frames
 _FRAME_SOURCE_PLUGIN = "plugin"    # plugin `read` frames + passive callback media
+# 主动搭话 / 问候 / agent 回调那一轮附上的图（prompt_ephemeral）。单独一个标签，
+# 因为它和上面三个都不是一回事：这些帧不是用户分享的，用户甚至不知道有这么一轮，
+# 一个按 "user" 过滤的插件绝不能读到它们。和 realtime 那侧对齐 —— 语音路径的同
+# 一批帧就是以 source="proactive" 进总线的。
+_FRAME_SOURCE_PROACTIVE = "proactive"
 # Attribution is positional, so it only holds while the turn keeps its shape.
 # ``_streaming.py`` falls back to this the moment the budget ladder changes the
 # image count and the mapping can no longer be trusted.
@@ -189,9 +194,14 @@ class _MediaMixin:
         would put a bigger, different picture on the bus than the model ever
         saw.
 
-        Publish only after the turn is committed. A turn that dies earlier is
-        rolled back into the pending queues and its frames were never sent;
-        copying them out would advertise a delivery that did not happen.
+        Publish only once the provider has demonstrably received the turn --
+        in ``stream_text`` that is the first streamed chunk, and it is NOT the
+        moment the message lands in ``_conversation_history``. A committed turn
+        can still die before any request is made (a raising input-transcript
+        callback, a cancellation, three failed attempts), and publishing there
+        would advertise a delivery that never happened. Under-publishing is the
+        safe direction: plugins pull frames, so silence costs them a picture,
+        while a false publish is the host asserting something untrue.
 
         Never raises into the turn. The copy is a courtesy to plugins, and a
         bus that is absent, down or slow must not cost the user a reply. The

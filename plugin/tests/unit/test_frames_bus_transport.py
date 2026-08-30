@@ -416,3 +416,54 @@ def test_the_store_keeps_only_the_last_few_frames(live_plane: Dict[str, Any]) ->
     # Exactly the last four survive: the deque is 4 deep, so the six older
     # frames are gone even though every one of them was accepted.
     assert [r.frame_id for r in records] == expected
+
+
+def test_a_light_read_keeps_the_dedupe_keys_and_drops_the_image(
+    live_plane: Dict[str, Any],
+) -> None:
+    """``light=True`` returns the index alone -- and the index has to be enough.
+
+    ``FrameClient`` itself always asks for the full record, but ``light=True``
+    is a supported read on every store and the frames contract tells a puller
+    to dedupe on ``generation`` / ``id``. Both therefore have to survive a trip
+    that drops the payload. Before ``generation`` was projected into the index,
+    a light read reported ``generation=None`` for a frame that has one, so the
+    dedupe the module documents was silently a no-op.
+    """
+    accepted = plane_bridge.publish_frame(
+        plane_bridge.build_frame_record(
+            image_base64="bGlnaHQtZnJhbWU=",
+            source="screen",
+            captured_at=99.5,
+            # 0 is a real generation and the falsy one: a fallback written with
+            # ``or`` instead of ``is None`` would lose exactly this value.
+            generation=0,
+            frame_id="frame-light",
+        )
+    )
+    assert accepted is True
+
+    # The publish path is asynchronous; the light read below has no retry of
+    # its own, so wait for arrival on the full read first.
+    _read_frames(live_plane["ctx"], until=lambda rs: len(rs) >= 1)
+
+    response = live_plane["ctx"]._mp_rpc_client.request(
+        op="bus.get_recent",
+        args={
+            "store": FRAMES_STORE_NAME,
+            "topic": FRAMES_TOPIC,
+            "limit": 10,
+            "light": True,
+        },
+        timeout=2.0,
+    )
+    items = response["result"]["items"]
+    assert len(items) == 1
+    # The whole point of light: the 200KB-class field never crosses the socket.
+    assert "payload" not in items[0]
+
+    record = FrameRecord.from_index(items[0]["index"])
+    assert record.image_base64 is None
+    assert record.frame_id == "frame-light"
+    assert record.generation == 0
+    assert record.source == "screen"

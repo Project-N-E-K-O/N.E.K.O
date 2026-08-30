@@ -698,6 +698,75 @@ async def publish_provider_frame_observed_best_effort(
     return sent
 
 
+CONVERSATION_TURN_OBSERVED_EVENT = "conversation_turn_observed"
+
+
+async def publish_conversation_turn_observed_best_effort(
+    lanlan_name: Optional[str],
+    *,
+    content: str,
+    turn_type: str,
+    conversation_id: str,
+    source: str,
+    message_count: int = 0,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Copy one message of an already-handled turn onto the plugin bus.
+
+    The dual of :func:`publish_provider_frame_observed_best_effort`, for text
+    instead of pixels, and it carries the same obligation: publish only what
+    actually happened. An instruction may be copied once the provider has
+    demonstrably received it (the first streamed chunk); a reply may be copied
+    once it is committed. Neither may be copied because it exists in local
+    state -- a turn sitting in ``_conversation_history`` can still die before a
+    request is made, and a half-streamed reply that was discarded was never
+    said.
+
+    Same transport and the same reason for it: main_server cannot write to the
+    message plane (the ingest credential is minted inside the plugin-server
+    process), so this rides the session PUB channel and agent_server forwards
+    it into the ``conversations`` store (see
+    ``api_runtime._forward_conversation_turn``).
+
+    ``conversation_id`` is what ties the instruction and the reply back into
+    one turn on the reader's side: it is the id ``ConversationRecord`` exposes
+    and the one ``bus.conversations.get_by_id()`` passes along. (The plane's
+    ``bus.query`` does not filter on it today -- grouping happens in the
+    reader's hands -- so this fills the field the schema has, it does not
+    promise a server-side lookup.) ``message_count`` is how many messages the
+    conversation carries as of this record (1 for the instruction, 2 once the
+    reply lands), so a reader holding one record knows whether it has the
+    whole turn.
+
+    Best effort in the same strong sense as the frame publisher: ``True`` means
+    "handed to the socket", never "a plugin will see it".
+    """
+    text = str(content or "")
+    if not text.strip():
+        return False
+    event: Dict[str, Any] = {
+        "event_type": CONVERSATION_TURN_OBSERVED_EVENT,
+        "event_id": uuid.uuid4().hex,
+        "lanlan_name": lanlan_name,
+        "source": str(source or "unknown"),
+        "conversation_id": str(conversation_id or ""),
+        "turn_type": str(turn_type or "unknown"),
+        "content": text,
+        "message_count": int(message_count),
+    }
+    if metadata:
+        event["metadata"] = dict(metadata)
+
+    sent = await publish_session_event_threadsafe(event)
+    if not sent:
+        logger.debug(
+            "[EventBus] conversation_turn_observed not sent: lanlan=%s turn_type=%s",
+            lanlan_name,
+            event["turn_type"],
+        )
+    return sent
+
+
 async def publish_voice_transcript_request_reliably(
     lanlan_name: str,
     transcript: str,

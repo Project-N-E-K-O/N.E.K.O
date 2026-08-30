@@ -1,6 +1,7 @@
 """Offline turn images: unconditional compression, then a copy onto the bus.
 
-Two properties are pinned here, and they are the same property seen twice.
+Three properties are pinned here, and the first two are the same property seen
+twice.
 
 1. The bytes the provider receives are always re-encoded to the model
    resolution profile, even on an ordinary one-attachment turn that was never
@@ -12,6 +13,13 @@ Two properties are pinned here, and they are the same property seen twice.
    compressed, attached ones -- and never the caller's originals. A plugin
    reading ``bus.frames`` must see the picture the model saw, not a bigger,
    different one.
+
+3. The copy happens only once the provider has demonstrably received the turn,
+   and exactly once per turn. Appending the message to ``_conversation_history``
+   is not that moment: a raising input-transcript callback, a cancellation, or
+   three failed provider attempts all leave a committed turn that no provider
+   ever saw. Plugins pull frames; a publish is the host asserting delivery, and
+   it may only assert what happened.
 """
 
 from __future__ import annotations
@@ -23,7 +31,9 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+from openai import APIConnectionError
 from PIL import Image
 
 from main_logic.omni_offline_client._client import OmniOfflineClient
@@ -42,6 +52,26 @@ _PUBLISHER = (
     "publish_provider_frame_observed_best_effort"
 )
 
+# ``_streaming`` imports the asyncio MODULE, so this patches stdlib
+# ``asyncio.sleep`` for the duration -- keep every such patch window down to
+# the single ``asyncio.run`` it wraps.
+_SLEEP = "main_logic.omni_offline_client._streaming.asyncio.sleep"
+
+
+async def _no_backoff(_delay: float) -> None:
+    """The retry ladder without its wall clock (1s + 2s between attempts)."""
+
+
+def _connection_error() -> BaseException:
+    """A transient provider failure: the retry path, not the give-up path.
+
+    Deliberately not an auth/quota flavour -- those break out of the attempt
+    loop on the first try and would not exercise all three attempts.
+    """
+    return APIConnectionError(
+        request=httpx.Request("POST", "http://provider.invalid/v1/chat"),
+    )
+
 
 def _png_b64(
     width: int,
@@ -57,12 +87,20 @@ def _decode(b64: str) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(b64)))
 
 
-def _make_client() -> tuple[OmniOfflineClient, list]:
+def _make_client(chunks=None, error=None) -> tuple[OmniOfflineClient, list]:
     """A client wired just far enough to build one turn and call the stream.
 
-    ``_astream_visible_with_tools`` captures the messages and raises, which is
-    the generic-except -> break path: no retry, no sleep, and the user message
-    has already been appended to history by then.
+    ``_astream_visible_with_tools`` captures the messages, streams ``chunks``,
+    then raises. The default raise is a plain ``RuntimeError``: the
+    generic-except -> break path, so one attempt, no backoff, and the user
+    message is already in history by then. Pass ``error=_connection_error`` for
+    the retry path instead (three attempts; patch ``_SLEEP`` too).
+
+    ``chunks`` defaults to ONE content-less chunk, and that default is
+    load-bearing rather than scenery: the bus copy is gated on a chunk actually
+    arriving from the provider, so a fixture that raised before yielding would
+    make every publish assertion in this file vacuously true. Pass
+    ``chunks=[]`` to model a request the provider never accepted.
     """
     client = OmniOfflineClient.__new__(OmniOfflineClient)
     client._conversation_history = [SystemMessage(content="sys")]
@@ -93,8 +131,14 @@ def _make_client() -> tuple[OmniOfflineClient, list]:
 
     async def _fake_astream(messages, **_overrides):
         captured.append(list(messages))
-        raise RuntimeError("stop-after-construction")
-        yield  # pragma: no cover - marks this an async generator
+        for chunk in (
+            [SimpleNamespace(content="")] if chunks is None else list(chunks)
+        ):
+            yield chunk
+        raise (
+            error() if error is not None
+            else RuntimeError("stop-after-the-first-chunk")
+        )
 
     client._astream_visible_with_tools = _fake_astream
     return client, captured
@@ -449,3 +493,113 @@ def test_bus_cancellation_is_not_swallowed():
     with patch(_PUBLISHER, _cancel):
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(client.stream_text("这是什么"))
+
+
+# ---------------------------------------------------------------------------
+# 3. The copy is gated on delivery, and fires once.
+# ---------------------------------------------------------------------------
+
+
+def test_a_request_the_provider_rejected_publishes_nothing():
+    """In history is not the same as delivered, and only delivery may publish.
+
+    The publish used to sit right after the ``_conversation_history`` append,
+    reasoning that the frames were in history so the provider would see them.
+    It would not: the request has not been made at that point, and this turn
+    dies before it ever is -- ``astream`` raises on the first ``__anext__``,
+    so not a single chunk exists. The turn is still committed to history,
+    which is exactly the state the old site keyed on.
+
+    Mutation: move the publish back beside the history append (or publish from
+    the staging assignment itself). This goes red.
+    """
+    client, captured = _make_client(chunks=[])
+    client._pending_images = [_png_b64(300, 200)]
+
+    spy = _Spy()
+    with patch(_PUBLISHER, spy):
+        asyncio.run(client.stream_text("这是什么"))
+
+    assert captured, "the provider call was never attempted"
+    assert _has_image_parts(captured), "this turn has to be carrying frames"
+    assert client._conversation_history[-1] is captured[0][-1], (
+        "the turn must still be committed to history -- otherwise this tests "
+        "the commit, not the delivery gate"
+    )
+    assert spy.calls == []
+
+
+def test_every_provider_attempt_failing_leaves_the_bus_empty():
+    """Three transient failures in a row: the retry ladder, not one bad call.
+
+    ``max_retries`` is 3, and none of the three ever streams a chunk. A publish
+    keyed on anything earlier than the first chunk announces a delivery that
+    the whole ladder failed to make.
+
+    Mutation: publish beside the history append. Goes red (one publish per
+    frame, before the first attempt was even made).
+    """
+    client, captured = _make_client(chunks=[], error=_connection_error)
+    client._pending_images = [_png_b64(300, 200)]
+
+    spy = _Spy()
+    with patch(_PUBLISHER, spy), patch(_SLEEP, _no_backoff):
+        asyncio.run(client.stream_text("这是什么"))
+
+    assert len(captured) == 3, (
+        f"the fixture must exercise all three attempts, saw {len(captured)}"
+    )
+    assert spy.calls == []
+
+
+def test_a_raising_input_transcript_callback_publishes_nothing():
+    """The callback between the commit and the provider call can throw.
+
+    ``on_input_transcript`` runs after the history append and before the
+    attempt loop, and nothing catches it -- it takes the whole turn down with
+    it, before any request is made. A publish sited above it has already told
+    every plugin that the model saw these frames.
+
+    Mutation: publish beside the history append. Goes red.
+    """
+    client, captured = _make_client()
+    client._pending_images = [_png_b64(300, 200)]
+
+    async def _transcript_sink_is_down(_text):
+        raise RuntimeError("transcript sink is down")
+
+    client.on_input_transcript = _transcript_sink_is_down
+
+    spy = _Spy()
+    with patch(_PUBLISHER, spy):
+        with pytest.raises(RuntimeError, match="transcript sink is down"):
+            asyncio.run(client.stream_text("这是什么"))
+
+    assert captured == [], "the provider must never have been called"
+    assert spy.calls == []
+
+
+def test_the_bus_sees_a_retried_turn_once_not_once_per_attempt():
+    """Retries re-send the SAME frames; the bus must not collect duplicates.
+
+    Every attempt here reaches the provider (a chunk arrives) and then dies
+    transiently, so the delivery gate opens on all three -- what keeps the
+    record set honest is that the pending frames are consumed on the first one.
+
+    Mutation: keep the publish where it is but drop the
+    ``_pending_bus_frames = None`` clear, or key the publish off
+    ``_ttft_recorded`` (which is re-armed per attempt). Either way this goes
+    red at 3 records for 1 frame.
+    """
+    client, captured = _make_client(error=_connection_error)
+    client._pending_images = [_png_b64(300, 200)]
+
+    spy = _Spy()
+    with patch(_PUBLISHER, spy), patch(_SLEEP, _no_backoff):
+        asyncio.run(client.stream_text("这是什么"))
+
+    assert len(captured) == 3, (
+        f"the fixture must exercise all three attempts, saw {len(captured)}"
+    )
+    assert len(spy.calls) == 1
+    assert spy.images == _attached_b64(captured)

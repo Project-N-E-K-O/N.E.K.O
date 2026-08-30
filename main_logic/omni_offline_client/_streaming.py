@@ -851,20 +851,20 @@ class _StreamingMixin:
         )
         if history_replacement_text and _prefix_clean:
             history_replacement_text = f"{_prefix_clean}\n\n{history_replacement_text}"
+        # 帧总线的待发布快照；None = 没有帧要抄（纯文本轮）或已经发过了。
+        _pending_bus_frames = None
         if has_images:
             self._evict_old_images()
-            # 把这一轮真正送出的帧抄一份给插件总线。位置在**提交之后**：从这里
-            # 起这批图已经在 _conversation_history 里，provider 一定会看到它们；
-            # 提交之前发布，等于把一批还可能被 _restore_consumed_queues() 退回
-            # 队列、从未送达的图当成"已送达"发布出去。
+            # 这一轮真正送出的帧只先**存**在这里，等确认送达之后再抄给插件
+            # 总线。进了 _conversation_history 不等于 provider 收到了：下面的输入
+            # transcript 回调会抛、用户会在请求发出前取消、三次 attempt 也可能全
+            # 失败——那些回合一个字节都没到过 provider，在这里发布就是替它们
+            # 宣布了一次从未发生的送达。真正的发布点在下面「第一个 chunk 到达」
+            # 处，对偶于 realtime 那侧的 ``if sent:``。
             #
-            # 发的是 _attached_images —— fit 之后的字节，不是调用方给的原图。
+            # 存的是 _attached_images —— fit 之后的字节，不是调用方给的原图。
             # 归一化几乎每轮都会重编码，总线上必须是模型真正看到的那一张。
-            await self._publish_provider_frames(
-                _attached_images,
-                _attached_sources,
-                turn_id=turn_id,
-            )
+            _pending_bus_frames = (_attached_images, _attached_sources)
 
         # Callback for user input
         transcript_callback = input_transcript_callback or self.on_input_transcript
@@ -1057,6 +1057,19 @@ class _StreamingMixin:
                                 except Exception:
                                     # 埋点 best-effort，绝不打断流式响应主路径。
                                     pass
+                            # 帧总线：provider 已经吐出东西了——这一轮的消息（连同那批
+                            # 图）确凿地被它收下了。这是本函数里最早能这么断言的地方：
+                            # astream 是惰性的，请求要到第一次 __anext__ 才真正发出去，
+                            # 在那之前任何位置发布都只是在赌。清标记在 await 之前：一轮
+                            # 只发一次，attempt 重试和 reroll 都不会把同一批图再抄一遍。
+                            if _pending_bus_frames is not None:
+                                _bus_images, _bus_sources = _pending_bus_frames
+                                _pending_bus_frames = None
+                                await self._publish_provider_frames(
+                                    _bus_images,
+                                    _bus_sources,
+                                    turn_id=turn_id,
+                                )
                             if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                                 chunk_usage = chunk.usage_metadata
                                 logger.debug(f"🔍 [Usage] {chunk_usage}")

@@ -358,6 +358,22 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
 
 
 class _GenaiMixin:
+    def _ensure_genai_client(self) -> None:
+        """Build the genai client if nothing holds one right now.
+
+        Called at every point that dereferences it, not once up front: a tool
+        that hands back a picture makes the host call
+        ``prepare_for_tool_images``, whose ``switch_model`` drops the client
+        because the vision slot may carry its own key and endpoint. Anything
+        that cached the client above the tool loop would then be holding None.
+        """
+        if self._genai_client is not None:
+            return
+        try:
+            self._genai_client = _genai.Client(api_key=self.api_key or None)
+        except Exception as e:
+            raise _GenaiToolsUnsupported(f"genai.Client init failed: {e}") from e
+
     async def _astream_genai_with_tools(self, messages, **overrides):
         """google-genai streaming with tool support. Yields
         ``LLMStreamChunk``-shaped objects so the caller can be agnostic
@@ -401,17 +417,7 @@ class _GenaiMixin:
         # 迭代被耗尽（cap=3 时我们可能在第 1 轮就跳出）。
         zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
-            # Lazy client init, re-used across turns. Inside the loop rather
-            # than above it because a tool that hands back a picture makes the
-            # host call ``prepare_for_tool_images``, and that switch_model
-            # drops the client (the vision slot may carry its own key).
-            if self._genai_client is None:
-                try:
-                    self._genai_client = _genai.Client(api_key=self.api_key or None)
-                except Exception as e:
-                    raise _GenaiToolsUnsupported(
-                        f"genai.Client init failed: {e}"
-                    ) from e
+            self._ensure_genai_client()
             system_instruction, contents = _genai_messages_to_contents(
                 _slop_reduced_for_genai(messages)
             )
@@ -783,6 +789,10 @@ class _GenaiMixin:
         if final_system_instruction:
             final_cfg_kw["system_instruction"] = final_system_instruction
         final_config = types.GenerateContentConfig(**final_cfg_kw)
+        # Same reason as inside the loop: the forced finalize is reached after
+        # the tool iterations, so a switch_model that happened in one of them
+        # has already dropped the client.
+        self._ensure_genai_client()
         final_stream = await self._genai_client.aio.models.generate_content_stream(
             model=self.model,
             contents=final_contents,
