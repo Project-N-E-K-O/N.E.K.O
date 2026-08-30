@@ -360,11 +360,13 @@ I.mod = window.appUi;
                 if (I.S._statusToastShowTimer) { clearTimeout(I.S._statusToastShowTimer); I.S._statusToastShowTimer = null; }
                 if (I.S.statusToastTimeout) { clearTimeout(I.S.statusToastTimeout); I.S.statusToastTimeout = null; }
                 if (I.S._statusToastCleanupTimer) { clearTimeout(I.S._statusToastCleanupTimer); I.S._statusToastCleanupTimer = null; }
+                const _cb2 = statusToast.querySelector('#status-toast-close');
+                if (_cb2) { _cb2.disabled = true; _cb2.tabIndex = -1; _cb2.setAttribute('aria-hidden','true'); if (document.activeElement === _cb2) _cb2.blur(); }
                 if (statusToast._toastEnter) { statusToast.removeEventListener('mouseenter', statusToast._toastEnter); statusToast._toastEnter = null; }
                 if (statusToast._toastLeave) { statusToast.removeEventListener('mouseleave', statusToast._toastLeave); statusToast._toastLeave = null; }
                 statusToast.classList.remove('show');
                 statusToast.classList.add('hide');
-                I.S._statusToastCleanupTimer = setTimeout(() => { const t = statusToast.querySelector('#status-toast-text'); if (t) t.textContent = ''; Array.from(statusToast.childNodes).forEach(n => { if (n.nodeType === 3) n.textContent = ''; }); I.S._statusToastCleanupTimer = null; }, 300);
+                I.S._statusToastCleanupTimer = setTimeout(() => { const t = statusToast.querySelector('#status-toast-text'); if (t) t.textContent = ''; Array.from(statusToast.childNodes).forEach(n => { if (n.nodeType === 3) n.textContent = ''; }); I.S._statusToastCleanupTimer = null; }, 400);
                 I.S._statusToastRemaining = null; I.S._statusToastStart = null;
             }
             I.S._statusToastPriority = 0;
@@ -399,9 +401,11 @@ I.mod = window.appUi;
             if (I.S._statusToastCleanupTimer) { clearTimeout(I.S._statusToastCleanupTimer); I.S._statusToastCleanupTimer = null; }
             statusToast.classList.remove('show');
             statusToast.classList.add('hide');
+            const _closeBtn = statusToast.querySelector('#status-toast-close');
+            if (_closeBtn) { _closeBtn.disabled = true; _closeBtn.tabIndex = -1; _closeBtn.setAttribute('aria-hidden','true'); if (document.activeElement === _closeBtn) _closeBtn.blur(); }
             if (statusToast._toastEnter) { statusToast.removeEventListener('mouseenter', statusToast._toastEnter); statusToast._toastEnter = null; }
             if (statusToast._toastLeave) { statusToast.removeEventListener('mouseleave', statusToast._toastLeave); statusToast._toastLeave = null; }
-            I.S._statusToastCleanupTimer = setTimeout(() => { const t = statusToast.querySelector('#status-toast-text'); if (t) t.textContent = ''; Array.from(statusToast.childNodes).forEach(n => { if (n.nodeType === 3) n.textContent = ''; }); I.S._statusToastPriority = 0; I.S._statusToastCleanupTimer = null; }, 300);
+            I.S._statusToastCleanupTimer = setTimeout(() => { const t = statusToast.querySelector('#status-toast-text'); if (t) t.textContent = ''; Array.from(statusToast.childNodes).forEach(n => { if (n.nodeType === 3) n.textContent = ''; }); I.S._statusToastPriority = 0; I.S._statusToastCleanupTimer = null; }, 400);
         }
         function scheduleHide(ms) {
             if (I.S.statusToastTimeout) clearTimeout(I.S.statusToastTimeout);
@@ -421,6 +425,7 @@ I.mod = window.appUi;
             closeBtn.setAttribute('aria-label', 'close');
             statusToast.appendChild(closeBtn);
         }
+        closeBtn.disabled = false; closeBtn.tabIndex = 0; closeBtn.removeAttribute('aria-hidden');
         closeBtn.onclick = (e) => { e.stopPropagation(); hideNow(); };
         I.S._statusToastPriority = priority;
         statusToast.style.display = 'block';
@@ -446,7 +451,8 @@ I.mod = window.appUi;
         };
         statusToast.addEventListener('mouseenter', statusToast._toastEnter);
         statusToast.addEventListener('mouseleave', statusToast._toastLeave);
-        scheduleHide(duration);
+        if (statusToast.matches(':hover')) { I.S._statusToastRemaining = duration; I.S._statusToastStart = Date.now(); }
+        else scheduleHide(duration);
 
         // 同时更新隐藏的 status 元素（保持兼容性）
         if (statusElement) {

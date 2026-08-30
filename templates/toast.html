@@ -71,11 +71,13 @@
             if (showTimer) { clearTimeout(showTimer); showTimer = null; }
             if (statusTimeout) { clearTimeout(statusTimeout); statusTimeout = null; }
             if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
+            var _cb = statusToast.querySelector('#status-toast-close');
+            if (_cb) { _cb.disabled = true; _cb.tabIndex = -1; _cb.setAttribute('aria-hidden','true'); if (document.activeElement === _cb) _cb.blur(); }
             if (statusToast._enter) { statusToast.removeEventListener('mouseenter', statusToast._enter); statusToast._enter = null; }
             if (statusToast._leave) { statusToast.removeEventListener('mouseleave', statusToast._leave); statusToast._leave = null; }
             statusToast.classList.remove('show');
             statusToast.classList.add('hide');
-            cleanupTimer = setTimeout(function() { var t=statusToast.querySelector('#status-toast-text'); if(t) t.textContent=''; Array.from(statusToast.childNodes).forEach(function(n){ if(n.nodeType===3) n.textContent=''; }); cleanupTimer=null; }, 300);
+            cleanupTimer = setTimeout(function() { var t=statusToast.querySelector('#status-toast-text'); if(t) t.textContent=''; Array.from(statusToast.childNodes).forEach(function(n){ if(n.nodeType===3) n.textContent=''; }); cleanupTimer=null; if (api && api.setMouseThrough && !document.getElementById('prominent-notice-overlay')) api.setMouseThrough(true); }, 400);
         }
         function scheduleHide(ms) {
             if (statusTimeout) clearTimeout(statusTimeout);
@@ -88,11 +90,12 @@
                 if (showTimer) { clearTimeout(showTimer); showTimer=null; }
                 if (statusTimeout) { clearTimeout(statusTimeout); statusTimeout = null; }
                 if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
+                var _cb2=statusToast.querySelector('#status-toast-close'); if(_cb2){ _cb2.disabled=true; _cb2.tabIndex=-1; _cb2.setAttribute('aria-hidden','true'); if(document.activeElement===_cb2) _cb2.blur(); }
                 if (statusToast._enter) { statusToast.removeEventListener('mouseenter', statusToast._enter); statusToast._enter = null; }
                 if (statusToast._leave) { statusToast.removeEventListener('mouseleave', statusToast._leave); statusToast._leave = null; }
                 statusToast.classList.remove('show');
                 statusToast.classList.add('hide');
-                cleanupTimer = setTimeout(function() { var t=statusToast.querySelector('#status-toast-text'); if(t) t.textContent=''; Array.from(statusToast.childNodes).forEach(function(n){ if(n.nodeType===3) n.textContent=''; }); cleanupTimer=null; }, 300);
+                cleanupTimer = setTimeout(function() { var t=statusToast.querySelector('#status-toast-text'); if(t) t.textContent=''; Array.from(statusToast.childNodes).forEach(function(n){ if(n.nodeType===3) n.textContent=''; }); cleanupTimer=null; if (api && api.setMouseThrough && !document.getElementById('prominent-notice-overlay')) api.setMouseThrough(true); }, 400);
                 toastRemaining=null; toastStart=null;
                 return;
             }
@@ -118,7 +121,9 @@
                 closeBtn.style.cssText = 'position:absolute;top:6px;right:8px;z-index:2;width:22px;height:22px;border:none;border-radius:50%;background:rgba(255,255,255,0.22);cursor:pointer;padding:0;opacity:0.85;font-size:0;line-height:0;';
                 statusToast.appendChild(closeBtn);
             }
+            closeBtn.disabled = false; closeBtn.tabIndex = 0; closeBtn.removeAttribute('aria-hidden');
             closeBtn.onclick = function(e){ e.stopPropagation(); hideStatusNow(); };
+            if (api && api.setMouseThrough) api.setMouseThrough(false);
             statusToast.style.display = 'block';
             statusToast.style.visibility = 'visible';
             statusToast.style.paddingRight = '36px';
@@ -139,7 +144,8 @@
             };
             statusToast.addEventListener('mouseenter', statusToast._enter);
             statusToast.addEventListener('mouseleave', statusToast._leave);
-            scheduleHide(duration);
+            if (statusToast.matches(':hover')) { toastRemaining = duration; toastStart = Date.now(); }
+            else scheduleHide(duration);
         }
 
         // ===== Voice Preparing Toast =====

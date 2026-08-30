@@ -132,7 +132,6 @@ body {
     opacity: 1;
     transform: translateY(0) scale(1);
     pointer-events: auto;
-    animation: slide-in-toast 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 }
 
 /* 状态提示气泡框滑动入动画 */
@@ -269,6 +268,7 @@ body {
         /* 移动端字体大小 */
         padding: 16px 20px;
         padding-left: 45px;
+        padding-right: 36px;
         /* 为左上角的猫爪留出空间 */
     }
 
