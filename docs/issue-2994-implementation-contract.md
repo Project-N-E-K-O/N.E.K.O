@@ -2,7 +2,6 @@
 
 ## Authority
 
-- Worktree: `D:\Users\zheng\Desktop\code\neko-core\N.E.K.O-issue-2994-authoritative`
 - Branch: `codex/issue-2994-uninstall-ownership`
 - Baseline: `upstream/main` at `6b6812b3e8735c6aadbe4b158224aff42e136b86`
 - Revalidated: `upstream/main` at `56f068d2`; intervening changes do not touch
@@ -10,9 +9,6 @@
 - Issue: <https://github.com/Project-N-E-K-O/N.E.K.O/issues/2994>
 - Latest scope review: <https://github.com/Project-N-E-K-O/N.E.K.O/issues/2994#issuecomment-5461019156>
 - Canonical design: `docs/design/plugin-lifecycle-ownership-transactions.md`
-
-All new #2994 code, tests, and durable documentation belong in this worktree.
-Older N.E.K.O worktrees are read-only evidence until their diffs are classified.
 
 ## Current candidate and ownership contract
 
