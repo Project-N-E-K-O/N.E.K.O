@@ -30,6 +30,7 @@ from fastapi import WebSocketDisconnect
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
+from utils.game_route_state import get_active_game_route_generation_identity
 from main_logic.session_state import SessionEvent
 from main_logic.agent_event_bus import dispatch_user_utterance
 from config import SESSION_ARCHIVE_TRIGGER_TOKENS, SESSION_TURN_THRESHOLD
@@ -46,6 +47,7 @@ from ._shared import (
     _proactive_published_text_chunks,
     _get_chat_locale_text,
 )
+from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
 
 # Late-binding read point for symbols that tests rebind on the facade via
 # ``monkeypatch.setattr("main_logic.core.<attr>", ...)``. Do NOT from-import
@@ -1140,6 +1142,7 @@ class TurnMixin:
         is_voice_source: bool = True,
         source: str | None = None,
         metadata: dict | None = None,
+        source_game_route_identity: Any = Ellipsis,
     ):
         """Sync transcript text into queues/cache and push it to the frontend.
 
@@ -1156,6 +1159,53 @@ class TurnMixin:
         transcript_text = transcript.strip()
         record_transcript_text = transcript_text
         voice_rms_recorded = False
+        source_identity_was_explicit = (
+            source_game_route_identity is not Ellipsis
+        )
+        if not is_voice_source:
+            source_game_route_identity = None
+        elif source_game_route_identity is Ellipsis:
+            # Compatibility for direct callers that do not have an ingress
+            # token. Realtime and independent-ASR production paths pass the
+            # identity captured when the utterance began.
+            source_game_route_identity = get_active_game_route_generation_identity(
+                self.lanlan_name
+            )
+        elif not (
+            source_game_route_identity is None
+            or (
+                isinstance(source_game_route_identity, tuple)
+                and len(source_game_route_identity) == 3
+            )
+        ):
+            source_game_route_identity = None
+
+        # A final can arrive after the utterance's route was replaced.  The
+        # production voice paths provide an ingress snapshot, so never let an
+        # A utterance enter B's takeover dispatcher or ordinary chat state.
+        if is_voice_source and source_identity_was_explicit:
+            current_route_identity = get_active_game_route_generation_identity(
+                self.lanlan_name
+            )
+            if source_game_route_identity != current_route_identity:
+                # Loud on purpose. This drop is total -- it happens above the
+                # takeover dispatcher AND above every recording path, so the
+                # utterance leaves no trace anywhere: not in the game, not in
+                # chat, not in the logs. That is exactly how a route-ownership
+                # regression hides, and this code has already been reworked
+                # several times in both directions ("dropped a sentence" vs
+                # "bound one to the wrong route") with nothing to tell them
+                # apart afterwards. Text is deliberately not logged; the length
+                # is enough to line an incident up with what the user said.
+                logger.info(
+                    "[%s] realtime STT transcript dropped: route ownership "
+                    "mismatch source=%s current=%s len=%d",
+                    self.lanlan_name,
+                    source_game_route_identity,
+                    current_route_identity,
+                    len(transcript_text),
+                )
+                return False
 
         # 更新用户活动时间戳（用于主动搭话检测）。先捕获「转写到达时刻」局部变量，
         # 下面 last_user_message_time 复用同一时刻——若 takeover dispatcher 注册，
@@ -1290,6 +1340,12 @@ class TurnMixin:
                         "type": "user_transcript",
                         "text": transcript.strip()
                     }
+                    if source_game_route_identity is not None:
+                        game_type, session_id, route_instance_id = source_game_route_identity
+                        message["game_type"] = game_type
+                        message["session_id"] = session_id
+                        if route_instance_id:
+                            message["sdk_route_instance_id"] = route_instance_id
                     await self.websocket.send_json(message)
                 except Exception as e:
                     logger.error(f"⚠️ 发送用户转录到前端失败: {e}")
@@ -1569,12 +1625,23 @@ class TurnMixin:
             and self.websocket.client_state == self.websocket.client_state.CONNECTED
         ):
             try:
-                await self.websocket.send_json({
+                message = {
                     "type": "user_transcript",
                     "text": clean,
                     "source": source,
                     "request_id": request_id,
-                })
+                }
+                if isinstance(metadata, dict):
+                    route_identity = {
+                        "game_type": metadata.get("game_type") or metadata.get("kind"),
+                        "session_id": metadata.get("session_id"),
+                        "sdk_route_instance_id": metadata.get("sdk_route_instance_id"),
+                    }
+                    for key, raw_value in route_identity.items():
+                        value = str(raw_value or "").strip()
+                        if value:
+                            message[key] = value
+                await self.websocket.send_json(message)
             except Exception as e:
                 logger.error(f"⚠️ mirror_user_input frontend dispatch failed: {e}")
 
@@ -1803,6 +1870,11 @@ class TurnMixin:
         mirror_text: bool = True,
         emit_turn_end_after: bool = True,
         interrupt_audio: bool = False,
+        playback_gain: float = 1.0,
+        reuse_synthesized_audio: bool = False,
+        wait_for_audio_completion: bool = False,
+        audio_completion_timeout: float = 45.0,
+        speech_correlation_id: str = "",
     ) -> dict:
         """Mirror an assistant line + play it through the project TTS pipeline.
 
@@ -1816,6 +1888,13 @@ class TurnMixin:
         if not clean:
             return {"ok": False, "reason": "missing_line", "audio_sent": False}
 
+        cache_key = ""
+        runtime_signature = ""
+        cached_chunks = None
+        if reuse_synthesized_audio:
+            cache_key, runtime_signature = self.game_speech_audio_cache_identity(clean)
+            cached_chunks = GAME_SPEECH_AUDIO_CACHE.get(cache_key)
+
         interrupted_speech_id = None
         if interrupt_audio:
             async with self.lock:
@@ -1826,6 +1905,7 @@ class TurnMixin:
             # liveness gate inside ``_clear_tts_pipeline`` makes this safe
             # when no worker is actually running.
             await self._clear_tts_pipeline()
+            self.release_speech_playback_gain(interrupted_speech_id)
             # Realtime native voice: also tell the provider to stop generating
             # so further audio.delta / output_audio.delta won't keep streaming
             # past the interruption point.  Local takeover guards drop these
@@ -1847,6 +1927,7 @@ class TurnMixin:
             self._tts_done_pending_until_ready = False
             turn_id = self.current_speech_id
             self.state.mark_user_input_preempt()
+        normalized_playback_gain = self.remember_speech_playback_gain(turn_id, playback_gain)
         await self.state.fire(SessionEvent.USER_INPUT, sid=turn_id)
 
         if mirror_text:
@@ -1860,31 +1941,161 @@ class TurnMixin:
                 cache_for_new_session=False,
             )
 
+        self._remember_game_speech_correlation(turn_id, speech_correlation_id)
+
+        if cached_chunks is not None:
+            # One call, one lock hold: sending frame by frame let an overlapping
+            # ordinary/project TTS stream interleave between them, and the
+            # frontend schedules decoded chunks in arrival order.
+            audio_sent, done_sent = await self.send_cached_speech_batch(
+                cached_chunks, turn_id,
+            )
+            audio_sent = audio_sent and bool(done_sent)
+            if emit_turn_end_after:
+                await self.emit_mirror_turn_end(
+                    metadata=metadata,
+                    request_id=request_id,
+                    log_context="mirror cached speech",
+                )
+            # Cached audio is handed straight to the websocket, so there is no
+            # worker completion sentinel to await and no client acknowledgement
+            # to wait on. Report that honestly instead of claiming a completion
+            # that was never observed: the caller asked to be told when the line
+            # finished playing, and on this path we only know it was delivered.
+            # (Ordering still holds -- the browser plays its queue in order.)
+            return {
+                "ok": audio_sent,
+                "method": "project_tts_cache",
+                "cache_status": "hit",
+                "speech_id": turn_id,
+                "audio_sent": audio_sent,
+                "audio_queued": False,
+                # Not observed, so not claimed. The sibling path below already
+                # answers None when completion was not awaited, and delivery is
+                # carried separately by audio_sent -- reusing it here would both
+                # duplicate that signal and read as a completion that never
+                # happened, since these chunks were only written to the socket.
+                "audio_completed": None,
+                "audio_completion_supported": False,
+                **(
+                    {"completion_note": "cache_hit_completion_not_observable"}
+                    if wait_for_audio_completion else {}
+                ),
+                "turn_end_emitted": bool(emit_turn_end_after),
+                "interrupt_audio": bool(interrupt_audio),
+                "playback_gain": normalized_playback_gain,
+                "voice_source": {
+                    "provider": "project_tts_cache",
+                    "method": "project_tts_cache",
+                    "use_existing_send_speech": True,
+                },
+            }
+
         await self.ensure_tts_pipeline_alive()
         audio_queued = False
-        if self.tts_thread and self.tts_thread.is_alive():
-            async with self.tts_cache_lock:
-                if self.tts_ready:
-                    self._enqueue_tts_text_chunk(turn_id, clean)
-                else:
-                    self.tts_pending_chunks.append((turn_id, clean))
-                status = self._request_tts_done_locked()
-                audio_queued = status in {"queued", "deferred", "already"}
-        if emit_turn_end_after:
-            await self.emit_mirror_turn_end(
-                metadata=metadata,
-                request_id=request_id,
-                log_context="mirror speech",
-            )
+        capture_started = False
+        completion_supported = bool(
+            getattr(self, "_tts_completion_supported", True)
+        )
+        audio_output_supported = bool(
+            getattr(self, "_tts_audio_output_supported", True)
+        )
+        effective_wait_for_audio_completion = (
+            wait_for_audio_completion and completion_supported
+        )
+        completion_future = (
+            self._begin_game_speech_completion_wait(turn_id)
+            if effective_wait_for_audio_completion
+            else None
+        )
+        try:
+            if reuse_synthesized_audio:
+                capture_started = GAME_SPEECH_AUDIO_CACHE.begin_capture(
+                    self,
+                    turn_id,
+                    cache_key,
+                    runtime_signature,
+                )
+            if audio_output_supported and self.tts_thread and self.tts_thread.is_alive():
+                async with self.tts_cache_lock:
+                    if self.tts_ready:
+                        self._enqueue_tts_text_chunk(turn_id, clean)
+                    else:
+                        self.tts_pending_chunks.append((turn_id, clean))
+                    status = self._request_tts_done_locked()
+                    audio_queued = status in {"queued", "deferred", "already"}
+            if capture_started and not audio_queued:
+                GAME_SPEECH_AUDIO_CACHE.fail_capture(self, turn_id)
+            if emit_turn_end_after:
+                await self.emit_mirror_turn_end(
+                    metadata=metadata,
+                    request_id=request_id,
+                    log_context="mirror speech",
+                )
+        except BaseException:
+            if completion_future is not None:
+                self._cancel_game_speech_completion_wait()
+            self._clear_game_speech_correlation(turn_id)
+            if audio_queued:
+                # A cancellation or mirror failure after queueing must not let
+                # the old worker outlive the request-level serialization lock.
+                # Preserve the original exception after the bounded teardown.
+                try:
+                    await self._clear_tts_pipeline()
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "[%s] queued game speech cleanup failed: %s",
+                        self.lanlan_name,
+                        cleanup_exc,
+                    )
+            raise
 
+        audio_completed = False
+        if completion_future is not None and audio_queued:
+            try:
+                audio_completed = await self._wait_for_game_speech_completion(
+                    turn_id,
+                    completion_future,
+                    audio_completion_timeout,
+                )
+            except asyncio.CancelledError:
+                # The HTTP caller can disconnect while the worker still owns
+                # unscoped audio.  Stop and drain it before the router lock is
+                # released, then preserve cancellation for the request task.
+                await self._clear_tts_pipeline()
+                raise
+            if not audio_completed:
+                # Do not release the game-router serialization lock while an
+                # unscoped worker could still emit bytes for this speech ID.
+                await self._clear_tts_pipeline()
+        elif completion_future is not None:
+            self._cancel_game_speech_completion_wait()
+            self._clear_game_speech_correlation(turn_id)
+
+        completion_timed_out = bool(
+            effective_wait_for_audio_completion and audio_queued and not audio_completed
+        )
         return {
-            "ok": True,
+            "ok": bool(audio_queued and not completion_timed_out),
+            **(
+                {"reason": "tts_unavailable"} if not audio_queued
+                else {"reason": "audio_completion_timeout"} if completion_timed_out
+                else {}
+            ),
             "method": "project_tts",
+            "cache_status": (
+                "miss" if capture_started
+                else "bypass_capacity" if reuse_synthesized_audio
+                else "disabled"
+            ),
             "speech_id": turn_id,
             "audio_sent": audio_queued,
             "audio_queued": audio_queued,
+            "audio_completed": audio_completed if effective_wait_for_audio_completion else None,
+            "audio_completion_supported": completion_supported,
             "turn_end_emitted": bool(emit_turn_end_after),
             "interrupt_audio": bool(interrupt_audio),
+            "playback_gain": normalized_playback_gain,
             "voice_source": {
                 "provider": "project_tts",
                 "method": "project_tts",

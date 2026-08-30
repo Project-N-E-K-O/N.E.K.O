@@ -1289,17 +1289,38 @@
                 setTimeout(syncGameWindowStateOnInit, 100);
                 return;
             }
+            // Bootstrap snapshot vs. live socket: this fetch can start while route
+            // A is active and resolve after A's `closed` event has already been
+            // handled, and the dispatch below would then re-open a dead route on
+            // this page. Every close path advances the route state revision, so
+            // compare it across the request the same way the reconnect
+            // reconciliation in app-websocket.js does.
+            var routeRevisionAtBootstrap = -1;
+            try {
+                if (window.appState) {
+                    routeRevisionAtBootstrap = Number(window.appState.gameRouteStateRevision) || 0;
+                }
+            } catch (_) {}
             fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
                 .then(function(resp) { return resp && resp.ok ? resp.json() : null; })
                 .then(function(data) {
                     if (!data || !data.active) return;
+                    try {
+                        if (routeRevisionAtBootstrap >= 0 && window.appState
+                            && (Number(window.appState.gameRouteStateRevision) || 0)
+                                !== routeRevisionAtBootstrap) {
+                            console.log('[GameWindow] 忽略晚到的启动路由快照');
+                            return;
+                        }
+                    } catch (_) {}
                     try {
                         window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
                             detail: {
                                 action: 'opened',
                                 lanlanName: data.lanlan_name || lan,
                                 gameType: data.game_type || '',
-                                sessionId: data.session_id || ''
+                                sessionId: data.session_id || '',
+                                routeInstanceId: data.sdk_route_instance_id || ''
                             }
                         }));
                     } catch (_) {}

@@ -35,8 +35,11 @@
     const CAPTURE_BRIDGE_REANNOUNCE_INTERVAL_MS = 250;
     const CAPTURE_BRIDGE_REANNOUNCE_MAX_ATTEMPTS = 40;
     const CAPTURE_BRIDGE_REGION_IMAGE_MAX_CHARS = 9 * 1024 * 1024;
+    const GAME_ROUTE_ENDED_IDENTITY_LIMIT = 8;
+    const GAME_ROUTE_ENDED_IDENTITY_TTL_MS = 2 * 60 * 1000;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
+    let _gameRouteReconciliationGeneration = 0;
     let _lanlanNameWaitAttempts = 0;
     let _lanlanNameWaitLastLogAt = 0;
     let _coreApiCapabilityRefreshPromise = null;
@@ -48,6 +51,66 @@
     let _musicPlayUrlCoordBeforeUnloadBound = false;
     let _musicPlayUrlBroadcastUnavailableWarned = false;
     const MUSIC_PLAY_URL_SENDER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+
+    function gameRouteStateRevision() {
+        var revision = Number(S.gameRouteStateRevision);
+        return Number.isFinite(revision) ? (revision >>> 0) : 0;
+    }
+
+    function advanceGameRouteStateRevision() {
+        S.gameRouteStateRevision = (gameRouteStateRevision() + 1) >>> 0;
+        return S.gameRouteStateRevision;
+    }
+
+    function pruneRecentlyEndedGameRouteIdentities() {
+        var cutoff = Date.now() - GAME_ROUTE_ENDED_IDENTITY_TTL_MS;
+        var identities = Array.isArray(S.gameRouteRecentlyEndedIdentities)
+            ? S.gameRouteRecentlyEndedIdentities
+            : [];
+        identities = identities.filter(function (identity) {
+            return identity && identity.sessionId && Number(identity.endedAt || 0) > cutoff;
+        });
+        if (identities.length > GAME_ROUTE_ENDED_IDENTITY_LIMIT) {
+            identities = identities.slice(-GAME_ROUTE_ENDED_IDENTITY_LIMIT);
+        }
+        S.gameRouteRecentlyEndedIdentities = identities;
+        return identities;
+    }
+
+    function rememberEndedGameRouteIdentity(gameType, sessionId, routeInstanceId) {
+        var normalized = {
+            gameType: String(gameType || ''),
+            sessionId: String(sessionId || ''),
+            routeInstanceId: String(routeInstanceId || ''),
+            endedAt: Date.now()
+        };
+        if (!normalized.sessionId) return;
+        var identities = pruneRecentlyEndedGameRouteIdentities().filter(function (identity) {
+            return identity.gameType !== normalized.gameType
+                || identity.sessionId !== normalized.sessionId
+                || identity.routeInstanceId !== normalized.routeInstanceId;
+        });
+        identities.push(normalized);
+        if (identities.length > GAME_ROUTE_ENDED_IDENTITY_LIMIT) {
+            identities.splice(0, identities.length - GAME_ROUTE_ENDED_IDENTITY_LIMIT);
+        }
+        S.gameRouteRecentlyEndedIdentities = identities;
+    }
+
+    function isRecentlyEndedGameRouteIdentity(gameType, sessionId, routeInstanceId) {
+        if (!sessionId) return false;
+        var incomingGameType = String(gameType || '');
+        var incomingSessionId = String(sessionId || '');
+        var incomingRouteInstanceId = String(routeInstanceId || '');
+        return pruneRecentlyEndedGameRouteIdentities().some(function (endedIdentity) {
+            if (incomingSessionId !== String(endedIdentity.sessionId || '')) return false;
+            if (incomingGameType && endedIdentity.gameType
+                    && incomingGameType !== String(endedIdentity.gameType)) return false;
+            if (!incomingRouteInstanceId) return true;
+            return !!endedIdentity.routeInstanceId
+                && incomingRouteInstanceId === String(endedIdentity.routeInstanceId);
+        });
+    }
 
     // ---- DOM element shortcuts (resolved lazily / once) ----
     function $id(id) { return document.getElementById(id); }
@@ -957,6 +1020,70 @@
     }
     window.removeExternalAsrPreview = removeExternalAsrPreview;
 
+    var GAME_VOICE_TRANSCRIPTION_MODES = [
+        'backend_pending',
+        'native_core',
+        'independent_asr',
+        'browser_fallback',
+        'unavailable'
+    ];
+
+    /**
+     * Publish the actual host-owned transcription route to mini-game bridges.
+     *
+     * This is capability-based on purpose. Games must not infer their voice
+     * behavior from a free/paid label, and they never receive microphone PCM.
+     */
+    function setGameVoiceTranscriptionState(next) {
+        next = next && typeof next === 'object' ? next : {};
+        var mode = String(next.transcription_mode || next.mode || 'unavailable');
+        if (GAME_VOICE_TRANSCRIPTION_MODES.indexOf(mode) === -1) {
+            mode = 'unavailable';
+        }
+        var provider = String(next.provider || '');
+        var ready = next.ready === true;
+        var reason = String(next.reason || '');
+        var changed = S.gameVoiceTranscriptionMode !== mode
+            || S.gameVoiceTranscriptionProvider !== provider
+            || S.gameVoiceTranscriptionReady !== ready
+            || S.gameVoiceTranscriptionReason !== reason;
+        S.gameVoiceTranscriptionMode = mode;
+        S.gameVoiceTranscriptionProvider = provider;
+        S.gameVoiceTranscriptionReady = ready;
+        S.gameVoiceTranscriptionReason = reason;
+        if (changed) {
+            window.dispatchEvent(new CustomEvent(
+                'neko-game-voice-transcription-state-change',
+                {
+                    detail: {
+                        capture_owner: 'host',
+                        transcription_mode: mode,
+                        provider: provider,
+                        ready: ready,
+                        reason: reason
+                    }
+                }
+            ));
+        }
+        return {
+            capture_owner: 'host',
+            transcription_mode: mode,
+            provider: provider,
+            ready: ready,
+            reason: reason
+        };
+    }
+    mod.setGameVoiceTranscriptionState = setGameVoiceTranscriptionState;
+
+    function setBlockedGameVoiceTranscriptionState() {
+        setGameVoiceTranscriptionState({
+            transcription_mode: 'unavailable',
+            provider: S.independentAsrProvider || S.coreApiProvider || '',
+            ready: false,
+            reason: 'route_blocked'
+        });
+    }
+
     // Fail-closed voice-route teardown, shared by the two ways a route dies:
     // a runtime failure (ASR_LIFECYCLE_STATE blocked) and a STARTUP failure
     // (terminal ASR_INDEPENDENT_* codes). Startup failures can never emit
@@ -967,12 +1094,16 @@
 
     removeExternalAsrPreview();
     S.independentAsrActive = false;
+    // Set the sticky bit before publishing. The host bridge reacts
+    // synchronously to the event and otherwise normalizes an active-but-
+    // unavailable route back to backend_pending for one misleading frame.
+    S.voiceInputRouteBlocked = true;
+    setBlockedGameVoiceTranscriptionState();
     // Sticky: the teardown below is skipped while
     // the game STT gate owns the hardware, and
     // BLOCKED is never re-sent, so the game-exit
     // resume path would otherwise reopen the mic
     // onto a route that is still fail-closed.
-    S.voiceInputRouteBlocked = true;
     // The route is now fail-closed. _handle_core_asr_failure
     // (main_logic/core/asr_runtime.py) pins the microphone
     // route to "blocked" and nothing re-arms it inside this
@@ -1420,6 +1551,7 @@
         S.assistantTurnCompletionSource = null;
         clearPendingAssistantTurnStart();
         S.currentPlayingSpeechId = null;
+        S.currentPlayingSpeechCorrelationId = '';
         S.interruptedSpeechId = null;
         S.pendingDecoderReset = false;
         S.skipNextAudioBlob = false;
@@ -2300,10 +2432,22 @@
                     }
                 } catch (_) {}
                 if (!lan) return; // greeting 流水线还没解析角色 → 跳过本次，下次 onopen 再来
+                _gameRouteReconciliationGeneration = (
+                    _gameRouteReconciliationGeneration + 1
+                ) >>> 0;
+                var reconciliationGeneration = _gameRouteReconciliationGeneration;
+                var routeRevisionAtRequest = gameRouteStateRevision();
                 fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
                     .then(function (resp) { return resp && resp.ok ? resp.json() : null; })
                     .then(function (data) {
                         if (!data) return;
+                        if (
+                            reconciliationGeneration !== _gameRouteReconciliationGeneration
+                            || gameRouteStateRevision() !== routeRevisionAtRequest
+                        ) {
+                            console.log('[GameWindow] 忽略晚到的重连路由快照');
+                            return;
+                        }
                         var action = data.active ? 'opened' : 'closed';
                         try {
                             window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
@@ -2311,9 +2455,61 @@
                                     action: action,
                                     lanlanName: data.lanlan_name || lan,
                                     gameType: data.game_type || '',
-                                    sessionId: data.session_id || ''
+                                    sessionId: data.session_id || '',
+                                    routeInstanceId: data.sdk_route_instance_id || ''
                                 }
                             }));
+                        } catch (_) {}
+                        // Repair appState from the authoritative snapshot too.
+                        // The dispatch above is only converted into appState by
+                        // app-game-voice-control.js, which ONLY index.html loads;
+                        // chat.html has no listener that writes S.gameRoute*, so
+                        // without this its route state stays wrong in both
+                        // directions after a reconnect or reload. Runs after the
+                        // dispatch so index.html keeps today's ordering and this
+                        // is an idempotent rewrite there.
+                        try {
+                            if (action === 'opened') {
+                                S.gameRouteActive = true;
+                                S.gameRouteGameType = data.game_type || '';
+                                S.gameRouteLanlanName = data.lanlan_name || lan;
+                                S.gameRouteSessionId = data.session_id || '';
+                                S.gameRouteInstanceId = data.sdk_route_instance_id || '';
+                                if (typeof window.stopProactiveChatSchedule === 'function') {
+                                    S.proactiveChatWasStoppedByGameRoute = !!S.proactiveChatEnabled;
+                                    window.stopProactiveChatSchedule();
+                                }
+                            } else {
+                                var reconciledWasActive = !!S.gameRouteActive;
+                                // This branch exists to compensate for a MISSED
+                                // `closed` event, so there is usually no tombstone
+                                // for the route being cleared and a late
+                                // GAME_VOICE_STT_GATE_ACTIVE would re-activate it.
+                                // Record the identity the SERVER says it finalized,
+                                // never the page's own: this read can disagree with
+                                // the socket, and tombstoning a live route rejects
+                                // its real gate for the rest of the round.
+                                advanceGameRouteStateRevision();
+                                var reconciledEnded = data.ended_route || null;
+                                if (reconciledEnded && reconciledEnded.session_id) {
+                                    rememberEndedGameRouteIdentity(
+                                        reconciledEnded.game_type || '',
+                                        reconciledEnded.session_id,
+                                        reconciledEnded.sdk_route_instance_id || ''
+                                    );
+                                }
+                                S.gameRouteActive = false;
+                                S.gameRouteGameType = '';
+                                S.gameRouteLanlanName = '';
+                                S.gameRouteSessionId = '';
+                                S.gameRouteInstanceId = '';
+                                if ((reconciledWasActive || S.proactiveChatWasStoppedByGameRoute)
+                                        && S.proactiveChatEnabled
+                                        && typeof window.scheduleProactiveChat === 'function') {
+                                    window.scheduleProactiveChat();
+                                }
+                                S.proactiveChatWasStoppedByGameRoute = false;
+                            }
                         } catch (_) {}
                     })
                     .catch(function () {});
@@ -2691,7 +2887,10 @@
                             detail: {
                                 requestId: resolveAssistantRequestId(response.request_id, response.meta),
                                 text: normalizedVoiceTranscript,
-                                source: 'voice'
+                                source: String(response.source || 'voice'),
+                                gameType: String(response.game_type || ''),
+                                sessionId: String(response.session_id || ''),
+                                routeInstanceId: String(response.sdk_route_instance_id || '')
                             }
                         }));
                     }
@@ -2771,6 +2970,9 @@
                     }
                     var speechId = response.speech_id;
                     var shouldSkip = false;
+                    var playbackGain = Number(response.playback_gain);
+                    if (!Number.isFinite(playbackGain)) playbackGain = 1;
+                    playbackGain = Math.max(0, Math.min(2, playbackGain));
 
                     if (speechId && S.interruptedSpeechId && speechId === S.interruptedSpeechId) {
                         if (window.DEBUG_AUDIO) {
@@ -2790,13 +2992,21 @@
                             S.pendingDecoderReset = false;
                         }
                         S.currentPlayingSpeechId = speechId;
+                        S.currentPlayingSpeechCorrelationId = String(
+                            response.sdk_speech_correlation_id || ''
+                        );
                         S.interruptedSpeechId = null;
+                    } else if (speechId && response.sdk_speech_correlation_id) {
+                        S.currentPlayingSpeechCorrelationId = String(
+                            response.sdk_speech_correlation_id
+                        );
                     }
 
                     S.pendingAudioChunkMetaQueue.push({
                         speechId: speechId || S.currentPlayingSpeechId || null,
                         turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                         shouldSkip: shouldSkip,
+                        playbackGain: playbackGain,
                         epoch: S.incomingAudioEpoch,
                         receivedAt: Date.now()
                     });
@@ -2804,6 +3014,7 @@
                         speechId: speechId || S.currentPlayingSpeechId || null,
                         turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                         shouldSkip: shouldSkip,
+                        playbackGain: playbackGain,
                         epoch: S.incomingAudioEpoch
                     });
                     if (window.appAudioPlayback &&
@@ -2832,6 +3043,29 @@
                     if (window.appAudioPlayback &&
                         typeof window.appAudioPlayback.noteAssistantAudioStreamClosed === 'function') {
                         window.appAudioPlayback.noteAssistantAudioStreamClosed(response.speech_id);
+                    }
+
+                // -------- game_route_speech_cancel --------
+                // Route teardown may happen after the backend has finished
+                // producing audio while the browser still has decoded or
+                // scheduled chunks. The correlation id is request-unique: a
+                // delayed cancel cannot clear newer ordinary/game speech.
+                } else if (response.type === 'game_route_speech_cancel') {
+                    var cancelledCorrelationId = String(
+                        response.sdk_speech_correlation_id || ''
+                    );
+                    if (
+                        cancelledCorrelationId
+                        && cancelledCorrelationId === S.currentPlayingSpeechCorrelationId
+                    ) {
+                        logAssistantLifecycle('ws:game_route_speech_cancel', {
+                            speechId: S.currentPlayingSpeechId || null,
+                            correlationId: cancelledCorrelationId
+                        });
+                        applyUserActivityCancel(
+                            S.currentPlayingSpeechId || null,
+                            'game_route_end'
+                        );
                     }
 
                 // -------- cozy_audio --------
@@ -3024,6 +3258,14 @@
                         if (statusCode === 'ASR_INDEPENDENT_READY') {
                             S.independentAsrActive = true;
                             S.voiceInputRouteBlocked = false;
+                            if (S.gameRouteActive === true) {
+                                setGameVoiceTranscriptionState({
+                                    transcription_mode: 'independent_asr',
+                                    provider: asrProvider,
+                                    ready: true,
+                                    reason: 'asr_ready'
+                                });
+                            }
                             if (typeof window.showStatusToast === 'function') {
                                 window.showStatusToast(
                                     window.t ? window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' }) : ('Independent ASR active: ' + asrProvider),
@@ -3037,6 +3279,14 @@
                             S.independentAsrActive = false;
                             // Healthy native route: nothing is fail-closed.
                             S.voiceInputRouteBlocked = false;
+                            if (S.gameRouteActive === true) {
+                                setGameVoiceTranscriptionState({
+                                    transcription_mode: 'native_core',
+                                    provider: asrProvider || S.coreApiProvider || '',
+                                    ready: true,
+                                    reason: 'native_ready'
+                                });
+                            }
                             return;
                         }
                         if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
@@ -3087,14 +3337,57 @@
                         // genuinely lack a session_id still process.
                         var endedSessionId = (statusDetails && statusDetails.session_id) || '';
                         var currentSessionId = S.gameRouteSessionId || '';
+                        var endedRouteInstanceId = (statusDetails && statusDetails.sdk_route_instance_id) || '';
+                        var currentRouteInstanceId = S.gameRouteInstanceId || '';
                         if (endedSessionId && currentSessionId && endedSessionId !== currentSessionId) {
                             console.log(`[GameVoiceSTT] 忽略过期的 GAME_ROUTE_ENDED | ended_session=${endedSessionId} current_session=${currentSessionId}`);
+                            // Ignoring the event for OUR state is right; forgetting the
+                            // identity is not. GAME_ROUTE_ENDED is only ever emitted from
+                            // route finalize, so the identity in this payload is provably
+                            // a dead route -- and without a tombstone a late STT gate for
+                            // it can strand S.gameRouteActive = true after the current
+                            // route also ends, which suppresses proactive chat and
+                            // auto-goodbye until a full open/close cycle or a reload.
+                            // The payload's OWN identity only: `|| current...` would
+                            // tombstone the live route.
+                            rememberEndedGameRouteIdentity(
+                                (statusDetails && statusDetails.game_type) || '',
+                                endedSessionId,
+                                endedRouteInstanceId
+                            );
                             return;
                         }
+                        if (
+                            (endedRouteInstanceId || currentRouteInstanceId)
+                            && endedRouteInstanceId !== currentRouteInstanceId
+                        ) {
+                            console.log(`[GameVoiceSTT] 忽略过期的 GAME_ROUTE_ENDED | ended_route=${endedRouteInstanceId} current_route=${currentRouteInstanceId}`);
+                            if (endedSessionId) {
+                                rememberEndedGameRouteIdentity(
+                                    (statusDetails && statusDetails.game_type) || '',
+                                    endedSessionId,
+                                    endedRouteInstanceId
+                                );
+                            }
+                            return;
+                        }
+                        advanceGameRouteStateRevision();
+                        rememberEndedGameRouteIdentity(
+                            (statusDetails && statusDetails.game_type) || S.gameRouteGameType || '',
+                            endedSessionId || currentSessionId,
+                            endedRouteInstanceId || currentRouteInstanceId
+                        );
                         S.gameRouteActive = false;
                         S.gameRouteGameType = '';
                         S.gameRouteLanlanName = '';
                         S.gameRouteSessionId = '';
+                        S.gameRouteInstanceId = '';
+                        setGameVoiceTranscriptionState({
+                            transcription_mode: 'unavailable',
+                            provider: '',
+                            ready: false,
+                            reason: 'route_inactive'
+                        });
                         console.log(`[GameVoiceSTT] 游戏语音路由已结束 | resume=${shouldResumeAudio} recording=${wasRecording} realtime_restore=${realtimeRestore && realtimeRestore.ok === false ? realtimeRestore.reason : 'ok'}`);
                         if (realtimeRestore && realtimeRestore.attempted && realtimeRestore.ok === false) {
                             console.warn('[GameVoiceSTT] 游戏退出后 Realtime 恢复未确认:', realtimeRestore.reason || 'unknown');
@@ -3123,14 +3416,76 @@
                     }
 
                     if (statusCode === 'GAME_VOICE_STT_GATE_ACTIVE') {
+                        var incomingSttGameType = (statusDetails && statusDetails.game_type) || '';
+                        var incomingSttSessionId = (statusDetails && statusDetails.session_id) || '';
+                        var incomingSttRouteInstanceId = (
+                            statusDetails && statusDetails.sdk_route_instance_id
+                        ) || '';
+                        var currentSttGameType = S.gameRouteGameType || '';
+                        var currentSttSessionId = S.gameRouteSessionId || '';
+                        var currentSttRouteInstanceId = S.gameRouteInstanceId || '';
+                        var staleSttGate = (
+                            S.gameRouteActive === true && (
+                                (incomingSttGameType && currentSttGameType
+                                    && incomingSttGameType !== currentSttGameType)
+                                || (incomingSttSessionId && currentSttSessionId
+                                    && incomingSttSessionId !== currentSttSessionId)
+                                || ((incomingSttRouteInstanceId || currentSttRouteInstanceId)
+                                    && incomingSttRouteInstanceId !== currentSttRouteInstanceId)
+                            )
+                        ) || (
+                            S.gameRouteActive !== true
+                            && isRecentlyEndedGameRouteIdentity(
+                                incomingSttGameType,
+                                incomingSttSessionId,
+                                incomingSttRouteInstanceId
+                            )
+                        );
+                        if (staleSttGate) {
+                            console.warn('[GameVoiceSTT] 忽略迟到的语音门禁状态:', statusDetails);
+                            return;
+                        }
                         var sttProvider = (statusDetails && statusDetails.stt_provider) || 'browser';
+                        var transcriptionMode = (statusDetails && statusDetails.transcription_mode) || (
+                            sttProvider === 'realtime' ? 'backend_pending' : 'browser_fallback'
+                        );
+                        if (GAME_VOICE_TRANSCRIPTION_MODES.indexOf(transcriptionMode) === -1) {
+                            transcriptionMode = 'unavailable';
+                        }
+                        var transcriptionProvider = (statusDetails && statusDetails.provider) || '';
+                        var transcriptionReady = !!(statusDetails && statusDetails.ready === true);
+                        advanceGameRouteStateRevision();
                         S.gameRouteActive = true;
-                        S.gameRouteGameType = (statusDetails && statusDetails.game_type) || 'soccer';
+                        S.gameRouteGameType = incomingSttGameType;
                         S.gameRouteLanlanName = (statusDetails && statusDetails.lanlan_name) || '';
-                        S.gameRouteSessionId = (statusDetails && statusDetails.session_id) || '';
-                        S.gameVoiceSttGameType = (statusDetails && statusDetails.game_type) || 'soccer';
-                        S.gameVoiceSttSessionId = (statusDetails && statusDetails.session_id) || '';
-                        console.log(`[GameVoiceSTT] 游戏语音接管已激活 | game=${S.gameVoiceSttGameType} provider=${sttProvider} recording=${!!S.isRecording} muted=${!!S.isMicMuted}`);
+                        S.gameRouteSessionId = incomingSttSessionId;
+                        S.gameRouteInstanceId = incomingSttRouteInstanceId || S.gameRouteInstanceId || '';
+                        S.gameVoiceSttGameType = incomingSttGameType;
+                        S.gameVoiceSttSessionId = incomingSttSessionId;
+                        // The route-resolution status may have arrived before
+                        // this game-takeover edge. Preserve that authoritative
+                        // verdict rather than regressing to backend_pending.
+                        if (transcriptionMode === 'backend_pending') {
+                            if (S.independentAsrActive === true) {
+                                transcriptionMode = 'independent_asr';
+                                transcriptionProvider = S.independentAsrProvider || transcriptionProvider;
+                                transcriptionReady = true;
+                            } else if (
+                                S.independentAsrProvider
+                                && S.voiceInputRouteBlocked !== true
+                            ) {
+                                transcriptionMode = 'native_core';
+                                transcriptionProvider = S.independentAsrProvider || S.coreApiProvider || transcriptionProvider;
+                                transcriptionReady = true;
+                            }
+                        }
+                        setGameVoiceTranscriptionState({
+                            transcription_mode: transcriptionMode,
+                            provider: transcriptionProvider,
+                            ready: transcriptionReady,
+                            reason: transcriptionReady ? 'route_ready' : 'route_resolving'
+                        });
+                        console.log(`[GameVoiceSTT] 游戏语音接管已激活 | game=${S.gameVoiceSttGameType} mode=${transcriptionMode} provider=${transcriptionProvider || sttProvider} ready=${transcriptionReady} recording=${!!S.isRecording} muted=${!!S.isMicMuted}`);
                         if (S._voiceSessionInitialTimer) {
                             clearTimeout(S._voiceSessionInitialTimer);
                             S._voiceSessionInitialTimer = null;
@@ -3139,13 +3494,13 @@
                             S.proactiveChatWasStoppedByGameRoute = !!S.proactiveChatEnabled;
                             window.stopProactiveChatSchedule();
                         }
-                        if (sttProvider === 'realtime') {
+                        if (['backend_pending', 'native_core', 'independent_asr'].indexOf(transcriptionMode) !== -1) {
                             if (typeof window.stopGameVoiceSttGate === 'function') {
                                 window.stopGameVoiceSttGate();
                             } else {
                                 S.gameVoiceSttGateActive = false;
                             }
-                            console.log('[GameVoiceSTT] 复用原 Realtime STT，继续发送普通麦克风音频，普通回复由后端丢弃');
+                            console.log(`[GameVoiceSTT] 使用宿主后台转写 | mode=${transcriptionMode} provider=${transcriptionProvider || 'resolving'}；继续发送普通麦克风音频，普通回复由后端丢弃`);
                             return;
                         }
                         S.gameVoiceSttGateActive = true;
@@ -4667,31 +5022,58 @@
                             action: response.action || '',
                             lanlanName: response.lanlan_name || '',
                             gameType: response.game_type || '',
-                            sessionId: response.session_id || ''
+                            sessionId: response.session_id || '',
+                            routeInstanceId: response.sdk_route_instance_id || ''
                         };
                         var currentGameSessionId = S.gameRouteSessionId || '';
                         var incomingGameSessionId = detail.sessionId || '';
+                        var currentGameRouteInstanceId = S.gameRouteInstanceId || '';
+                        var incomingGameRouteInstanceId = detail.routeInstanceId || '';
                         var isStaleGameWindowEvent = detail.action === 'closed'
-                            && incomingGameSessionId
-                            && currentGameSessionId
-                            && incomingGameSessionId !== currentGameSessionId;
+                            && (
+                                (incomingGameSessionId
+                                    && currentGameSessionId
+                                    && incomingGameSessionId !== currentGameSessionId)
+                                || ((incomingGameRouteInstanceId || currentGameRouteInstanceId)
+                                    && incomingGameRouteInstanceId !== currentGameRouteInstanceId)
+                            );
                         if (isStaleGameWindowEvent) {
                             console.log(`[GameWindow] 忽略过期窗口事件 | action=${detail.action} incoming=${incomingGameSessionId} current=${currentGameSessionId}`);
+                            // Same reasoning as the GAME_ROUTE_ENDED early returns above:
+                            // `closed` is emitted only from route finalize, so this
+                            // payload names a dead route. Its own identity only.
+                            if (incomingGameSessionId) {
+                                rememberEndedGameRouteIdentity(
+                                    detail.gameType || '',
+                                    incomingGameSessionId,
+                                    incomingGameRouteInstanceId
+                                );
+                            }
                         } else if (detail.action === 'opened') {
+                            advanceGameRouteStateRevision();
+                            pruneRecentlyEndedGameRouteIdentities();
                             S.gameRouteActive = true;
-                            S.gameRouteGameType = detail.gameType || 'soccer';
+                            S.gameRouteGameType = detail.gameType || '';
                             S.gameRouteLanlanName = detail.lanlanName || '';
                             S.gameRouteSessionId = incomingGameSessionId || '';
+                            S.gameRouteInstanceId = incomingGameRouteInstanceId || '';
                             if (typeof window.stopProactiveChatSchedule === 'function') {
                                 S.proactiveChatWasStoppedByGameRoute = !!S.proactiveChatEnabled;
                                 window.stopProactiveChatSchedule();
                             }
                         } else if (detail.action === 'closed') {
+                            advanceGameRouteStateRevision();
                             var wasGameRouteActive = !!S.gameRouteActive;
+                            rememberEndedGameRouteIdentity(
+                                detail.gameType || S.gameRouteGameType || '',
+                                incomingGameSessionId || currentGameSessionId,
+                                incomingGameRouteInstanceId || currentGameRouteInstanceId
+                            );
                             S.gameRouteActive = false;
                             S.gameRouteGameType = '';
                             S.gameRouteLanlanName = '';
                             S.gameRouteSessionId = '';
+                            S.gameRouteInstanceId = '';
                             if ((wasGameRouteActive || S.proactiveChatWasStoppedByGameRoute)
                                     && S.proactiveChatEnabled
                                     && typeof window.scheduleProactiveChat === 'function') {
@@ -4705,6 +5087,7 @@
                     } catch (gwErr) {
                         console.warn('[GameWindow] dispatch failed:', gwErr);
                     }
+
                 }
 
             } catch (parseError) {

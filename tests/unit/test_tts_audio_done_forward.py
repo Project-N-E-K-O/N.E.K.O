@@ -38,6 +38,7 @@ import pytest
 
 from main_logic.core import LLMSessionManager
 from main_logic.core import tts_runtime as tts_runtime_module
+from main_logic.core.game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
 
 MAIN_LOGIC_DIR = Path(__file__).resolve().parents[2] / "main_logic"
 
@@ -154,6 +155,60 @@ async def test_audio_done_sentinel_reaches_the_frontend():
     assert ws.calls == [("json", {"type": "audio_done", "speech_id": "sid-1"})]
 
 
+async def test_per_speech_gain_is_forwarded_and_released_when_stream_closes():
+    ws = _RecordingWebsocket()
+    mgr = _make_mgr(ws)
+    mgr.remember_speech_playback_gain("sid-boost", 2.0)
+
+    assert await mgr.send_speech(b"pcm", "sid-boost") is True
+    assert mgr.speech_playback_gain("sid-boost") == 2.0
+    assert await mgr.send_audio_done("sid-boost") is True
+
+    assert ws.calls == [
+        ("json", {"type": "audio_chunk", "speech_id": "sid-boost", "playback_gain": 2.0}),
+        ("bytes", b"pcm"),
+        ("json", {"type": "audio_done", "speech_id": "sid-boost"}),
+    ]
+    assert mgr.speech_playback_gain("sid-boost") == 1.0
+
+
+async def test_game_speech_correlation_is_forwarded_and_released_with_stream():
+    ws = _RecordingWebsocket()
+    mgr = _make_mgr(ws)
+    mgr._remember_game_speech_correlation("sid-game", "sdk-speech-correlation-1")
+
+    assert await mgr.send_speech(b"pcm", "sid-game") is True
+    assert await mgr.send_audio_done("sid-game") is True
+
+    assert ws.calls == [
+        ("json", {
+            "type": "audio_chunk",
+            "speech_id": "sid-game",
+            "sdk_speech_correlation_id": "sdk-speech-correlation-1",
+        }),
+        ("bytes", b"pcm"),
+        ("json", {
+            "type": "audio_done",
+            "speech_id": "sid-game",
+            "sdk_speech_correlation_id": "sdk-speech-correlation-1",
+        }),
+    ]
+    assert mgr._game_speech_correlation is None
+
+
+def test_per_speech_gain_registry_has_a_hard_capacity_and_clear_path():
+    mgr = _make_mgr(_RecordingWebsocket())
+    max_items = 32
+
+    for index in range(max_items + 5):
+        mgr.remember_speech_playback_gain(f"sid-{index}", 2.0)
+
+    assert len(mgr._speech_playback_gains) == max_items
+    assert mgr.speech_playback_gain("sid-0") == 1.0
+    mgr.clear_speech_playback_gains()
+    assert mgr._speech_playback_gains == {}
+
+
 async def test_audio_done_is_emitted_after_the_last_audio_chunk():
     """The ordering guard. If audio_done is not awaited in the handler's
     sequential consumption, it overtakes the audio and this flips."""
@@ -180,6 +235,70 @@ async def test_audio_done_is_emitted_after_the_last_audio_chunk():
     assert ws.calls.index(("json", {"type": "audio_done", "speech_id": "sid-1"})) > (
         max(i for i, call in enumerate(ws.calls) if call[0] == "bytes")
     )
+
+
+async def test_handler_commits_opted_in_audio_only_after_matching_stream_done():
+    GAME_SPEECH_AUDIO_CACHE.clear()
+    ws = _RecordingWebsocket()
+    mgr = _make_mgr(ws)
+    mgr.current_game_speech_audio_runtime_signature = lambda: "voice-signature"
+    assert GAME_SPEECH_AUDIO_CACHE.begin_capture(
+        mgr, "sid-1", "opaque-key", "voice-signature"
+    )
+    try:
+        task = await _run_until_audio_done(
+            mgr,
+            ("__audio__", "sid-1", b"pcm-first"),
+            ("__audio__", "sid-1", b"pcm-last"),
+            ("__audio_done__", "sid-1"),
+        )
+        await _stop(task)
+
+        assert GAME_SPEECH_AUDIO_CACHE.get("opaque-key") == (
+            b"pcm-first",
+            b"pcm-last",
+        )
+    finally:
+        GAME_SPEECH_AUDIO_CACHE.clear()
+
+
+async def test_handler_discards_capture_when_effective_voice_changes_mid_synthesis():
+    GAME_SPEECH_AUDIO_CACHE.clear()
+    ws = _RecordingWebsocket()
+    mgr = _make_mgr(ws)
+    mgr.current_game_speech_audio_runtime_signature = lambda: "fallback-voice"
+    assert GAME_SPEECH_AUDIO_CACHE.begin_capture(
+        mgr, "sid-1", "opaque-key", "configured-voice"
+    )
+    try:
+        task = await _run_until_audio_done(
+            mgr,
+            ("__audio__", "sid-1", b"fallback-pcm"),
+            ("__audio_done__", "sid-1"),
+        )
+        await _stop(task)
+
+        assert GAME_SPEECH_AUDIO_CACHE.get("opaque-key") is None
+        assert GAME_SPEECH_AUDIO_CACHE.stats()["captures"] == 0
+    finally:
+        GAME_SPEECH_AUDIO_CACHE.clear()
+
+
+async def test_handler_cancellation_releases_in_flight_game_speech_capture():
+    GAME_SPEECH_AUDIO_CACHE.clear()
+    mgr = _make_mgr(_RecordingWebsocket())
+    assert GAME_SPEECH_AUDIO_CACHE.begin_capture(
+        mgr, "sid-1", "opaque-key", "voice-signature"
+    )
+    task = await _start_handler(mgr)
+    try:
+        await asyncio.sleep(0)
+        await _stop(task)
+        assert GAME_SPEECH_AUDIO_CACHE.stats()["captures"] == 0
+    finally:
+        if not task.done():
+            await _stop(task)
+        GAME_SPEECH_AUDIO_CACHE.clear()
 
 
 async def test_handler_awaits_the_send_instead_of_scheduling_it():
@@ -247,6 +366,43 @@ async def test_disconnected_websocket_does_not_kill_the_handler(monkeypatch):
 
     assert ws.calls == []
     assert still_running, "一次发送失败不能让 tts_response_handler 退出"
+
+
+async def test_game_completion_is_false_when_audio_chunk_delivery_failed(monkeypatch):
+    monkeypatch.setattr(tts_runtime_module.logger, "warning", lambda *_a, **_k: None)
+
+    class _ChunkFailureWebsocket(_RecordingWebsocket):
+        async def send_bytes(self, payload):
+            del payload
+            raise RuntimeError("audio socket failed")
+
+    ws = _ChunkFailureWebsocket()
+    mgr = _make_mgr(ws)
+    completion = LLMSessionManager._begin_game_speech_completion_wait(mgr, "sid-1")
+    task = await _start_handler(
+        mgr,
+        ("__audio__", "sid-1", b"pcm"),
+        ("__audio_done__", "sid-1"),
+    )
+    try:
+        assert await asyncio.wait_for(completion, timeout=2.0) is False
+        assert getattr(mgr, "_game_speech_delivery_state", None) is None
+        assert not task.done()
+    finally:
+        await _stop(task)
+
+
+async def test_game_completion_is_false_when_audio_done_delivery_failed(monkeypatch):
+    monkeypatch.setattr(tts_runtime_module.logger, "warning", lambda *_a, **_k: None)
+    mgr = _make_mgr(_RecordingWebsocket(connected=False))
+    completion = LLMSessionManager._begin_game_speech_completion_wait(mgr, "sid-1")
+    task = await _start_handler(mgr, ("__audio_done__", "sid-1"))
+    try:
+        assert await asyncio.wait_for(completion, timeout=2.0) is False
+        assert getattr(mgr, "_game_speech_delivery_state", None) is None
+        assert not task.done()
+    finally:
+        await _stop(task)
 
 
 @pytest.mark.parametrize("has_socket", [False, True])

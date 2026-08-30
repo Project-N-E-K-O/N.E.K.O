@@ -1,0 +1,741 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:neko:minigame:manifest:v1",
+  "title": "N.E.K.O Mini-Game Runtime Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "version",
+    "requiredCapabilities"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "protocolVersion": {
+      "const": "1",
+      "default": "1"
+    },
+    "requiredCapabilities": {
+      "$ref": "#/$defs/capabilityList",
+      "contains": {
+        "const": "logging"
+      }
+    },
+    "optionalCapabilities": {
+      "$ref": "#/$defs/capabilityList",
+      "default": []
+    },
+    "contracts": {
+      "$ref": "#/$defs/contracts",
+      "default": {}
+    },
+    "leaderboards": {
+      "$ref": "#/$defs/leaderboards",
+      "default": {}
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "requiredCapabilities": {
+                "contains": {
+                  "enum": [
+                    "memory",
+                    "context-read"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "optionalCapabilities"
+            ],
+            "properties": {
+              "optionalCapabilities": {
+                "contains": {
+                  "enum": [
+                    "memory",
+                    "context-read"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "contracts"
+            ],
+            "properties": {
+              "contracts": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "events"
+                    ],
+                    "properties": {
+                      "events": {
+                        "minProperties": 1
+                      }
+                    }
+                  },
+                  {
+                    "required": [
+                      "states"
+                    ],
+                    "properties": {
+                      "states": {
+                        "minProperties": 1
+                      }
+                    }
+                  },
+                  {
+                    "required": [
+                      "controls"
+                    ],
+                    "properties": {
+                      "controls": {
+                        "minProperties": 1
+                      }
+                    }
+                  },
+                  {
+                    "required": [
+                      "results"
+                    ],
+                    "properties": {
+                      "results": {
+                        "minProperties": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "requiredCapabilities": {
+                "contains": {
+                  "const": "runtime"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "optionalCapabilities"
+            ],
+            "properties": {
+              "optionalCapabilities": {
+                "contains": {
+                  "const": "runtime"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "leaderboards"
+        ],
+        "properties": {
+          "leaderboards": {
+            "minProperties": 1
+          }
+        }
+      },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "requiredCapabilities": {
+                "contains": {
+                  "enum": [
+                    "leaderboard-local",
+                    "leaderboard-server"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "optionalCapabilities"
+            ],
+            "properties": {
+              "optionalCapabilities": {
+                "contains": {
+                  "enum": [
+                    "leaderboard-local",
+                    "leaderboard-server"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "requiredCapabilities": {
+                "contains": {
+                  "enum": [
+                    "leaderboard-local",
+                    "leaderboard-server"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "optionalCapabilities"
+            ],
+            "properties": {
+              "optionalCapabilities": {
+                "contains": {
+                  "enum": [
+                    "leaderboard-local",
+                    "leaderboard-server"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "leaderboards"
+        ],
+        "properties": {
+          "leaderboards": {
+            "minProperties": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "requiredCapabilities": {
+                "contains": {
+                  "const": "leaderboard-server"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "optionalCapabilities"
+            ],
+            "properties": {
+              "optionalCapabilities": {
+                "contains": {
+                  "const": "leaderboard-server"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "requiredCapabilities": {
+                "contains": {
+                  "const": "runtime"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "optionalCapabilities"
+            ],
+            "properties": {
+              "optionalCapabilities": {
+                "contains": {
+                  "const": "runtime"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "requiredCapabilities": {
+                "contains": {
+                  "const": "quick-lines"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "optionalCapabilities"
+            ],
+            "properties": {
+              "optionalCapabilities": {
+                "contains": {
+                  "const": "quick-lines"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "requiredCapabilities": {
+                "contains": {
+                  "const": "dialogue"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "optionalCapabilities"
+            ],
+            "properties": {
+              "optionalCapabilities": {
+                "contains": {
+                  "const": "dialogue"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "requiredCapabilities": {
+                "contains": {
+                  "const": "voice-input"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "optionalCapabilities"
+            ],
+            "properties": {
+              "optionalCapabilities": {
+                "contains": {
+                  "const": "voice-input"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "requiredCapabilities": {
+                "contains": {
+                  "const": "runtime"
+                }
+              }
+            }
+          },
+          {
+            "required": [
+              "optionalCapabilities"
+            ],
+            "properties": {
+              "optionalCapabilities": {
+                "contains": {
+                  "const": "runtime"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "contractPropertyName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "not": {
+        "enum": [
+          "__proto__",
+          "prototype",
+          "constructor"
+        ]
+      }
+    },
+    "capabilityList": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+      }
+    },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "$ref": "#/$defs/contractMap"
+        },
+        "states": {
+          "$ref": "#/$defs/contractMap"
+        },
+        "controls": {
+          "$ref": "#/$defs/contractMap"
+        },
+        "results": {
+          "$ref": "#/$defs/contractMap"
+        }
+      }
+    },
+    "leaderboards": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9-]{0,31}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scoreField": {
+            "type": "string",
+            "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$",
+            "not": {
+              "enum": [
+                "prototype",
+                "constructor"
+              ]
+            },
+            "default": "score"
+          },
+          "order": {
+            "enum": [
+              "ascending",
+              "descending"
+            ],
+            "default": "descending"
+          },
+          "maxEntries": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 50
+          },
+          "retention": {
+            "enum": [
+              "best",
+              "recent"
+            ],
+            "default": "recent"
+          }
+        }
+      }
+    },
+    "contractSchemaOrEnumShorthand": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/contractSchema"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      ]
+    },
+    "contractMap": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9:-]{0,63}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/contractSchemaOrEnumShorthand"
+      }
+    },
+    "contractSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "null",
+            "boolean",
+            "number",
+            "integer",
+            "string",
+            "array",
+            "object"
+          ]
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": [
+              "null",
+              "boolean",
+              "number",
+              "string"
+            ]
+          }
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "minLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "minItems": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "items": {
+          "$ref": "#/$defs/contractSchemaOrEnumShorthand"
+        },
+        "properties": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "$ref": "#/$defs/contractPropertyName"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/contractSchemaOrEnumShorthand"
+          }
+        },
+        "required": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/contractPropertyName"
+          }
+        },
+        "additionalProperties": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "array"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "items"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "null"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "enum": {
+                "items": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "boolean"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "enum": {
+                "items": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "number"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "enum": {
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "integer"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "enum": {
+                "items": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "string"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "enum": {
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "array",
+                  "object"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "enum"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

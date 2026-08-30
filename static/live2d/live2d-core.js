@@ -151,6 +151,7 @@ class Live2DManager {
         this._modelLoadState = 'idle';
         this._isModelReadyForInteraction = false;
         this._initPIXIPromise = null;
+        this._initPIXIContext = null;
         this._lastPIXIContext = { canvasId: null, containerId: null };
         this._displayInfo = null;
         this._autoNamedHitAreaIds = new Set();
@@ -235,11 +236,49 @@ class Live2DManager {
 
     // 初始化 PIXI 应用
     async initPIXI(canvasId, containerId, options = {}) {
+        const resizeMode = String(options.resizeMode || 'host-window');
+        if (!['fixed', 'host-window'].includes(resizeMode)) {
+            throw new Error(`不支持的 Live2D resizeMode: ${resizeMode}`);
+        }
+        if (resizeMode === 'fixed' && (!(Number(options.width) > 0) || !(Number(options.height) > 0))) {
+            throw new Error('Live2D fixed resizeMode 需要有效的 width 和 height');
+        }
+        const requestedInitContext = {
+            canvasId,
+            containerId,
+            resizeMode,
+            width: resizeMode === 'fixed' ? Number(options.width) : null,
+            height: resizeMode === 'fixed' ? Number(options.height) : null,
+        };
         if (this._initPIXIPromise) {
+            const activeContext = this._initPIXIContext || {};
+            const contextMatches = (
+                activeContext.canvasId === requestedInitContext.canvasId
+                && activeContext.containerId === requestedInitContext.containerId
+                && activeContext.resizeMode === requestedInitContext.resizeMode
+                && activeContext.width === requestedInitContext.width
+                && activeContext.height === requestedInitContext.height
+            );
+            if (!contextMatches) {
+                throw new Error(
+                    `Live2D 正在按 ${activeContext.resizeMode || 'unknown'} 初始化，不能并发复用为 ${resizeMode}`
+                );
+            }
             return await this._initPIXIPromise;
         }
 
         if (this.isInitialized && this.pixi_app && this.pixi_app.stage) {
+            const initializedContext = this._lastPIXIContext || {};
+            const contextMatches = (
+                initializedContext.canvasId === requestedInitContext.canvasId
+                && initializedContext.containerId === requestedInitContext.containerId
+                && (initializedContext.resizeMode || 'host-window') === requestedInitContext.resizeMode
+                && (initializedContext.width ?? null) === requestedInitContext.width
+                && (initializedContext.height ?? null) === requestedInitContext.height
+            );
+            if (!contextMatches) {
+                throw new Error(`Live2D 已按 ${initializedContext.resizeMode || 'host-window'} 初始化，不能复用不同上下文`);
+            }
             console.warn('Live2D 管理器已经初始化');
             return this.pixi_app;
         }
@@ -284,7 +323,10 @@ class Live2DManager {
             resolution: this._getRenderResolutionForQuality(getEffectiveLive2DRenderQuality(window.renderQuality)),
             autoDensity: true
         };
+        const pixiOptions = { ...options };
+        delete pixiOptions.resizeMode;
 
+        this._initPIXIContext = requestedInitContext;
         this._initPIXIPromise = (async () => {
             try {
                 // 桌宠窗口继续按物理屏幕初始化；手机网页必须按真实视口初始化。
@@ -298,7 +340,7 @@ class Live2DManager {
                     width: initW,
                     height: initH,
                     ...defaultOptions,
-                    ...options
+                    ...pixiOptions
                 });
 
                 if (!this.pixi_app) {
@@ -323,7 +365,7 @@ class Live2DManager {
                 }
 
                 this.isInitialized = true;
-                this._lastPIXIContext = { canvasId, containerId };
+                this._lastPIXIContext = { ...requestedInitContext };
                 if (typeof window.targetFrameRate === 'number' && this.pixi_app.ticker) {
                     this.pixi_app.ticker.maxFPS = window.targetFrameRate;
                 }
@@ -344,6 +386,17 @@ class Live2DManager {
                 }
                 // 启动自适应帧率守护：静止时降到地板（LIVE2D_IDLE_FPS），活动时升回配置帧率。
                 this._startIdleFpsGovernor();
+
+                // 嵌入小游戏的固定画布由 SDK 的 viewport/fit 契约管理，不能跟随宿主
+                // window resize。否则 200x300 renderer 会被放大到整个游戏窗口，并把
+                // 模型 scale 再乘一次面积比，造成窗口尺寸变化后角色巨大化。
+                if (resizeMode === 'fixed') {
+                    console.log('[Live2D Core] PIXI.Application 以固定视口初始化:', {
+                        width: this.pixi_app.renderer?.screen?.width,
+                        height: this.pixi_app.renderer?.screen?.height,
+                    });
+                    return this.pixi_app;
+                }
 
                 // Resize 渲染器并等比调整模型坐标/尺寸
                 // 触发时机：
@@ -485,14 +538,21 @@ class Live2DManager {
             return await this._initPIXIPromise;
         } finally {
             this._initPIXIPromise = null;
+            this._initPIXIContext = null;
         }
     }
 
     async ensurePIXIReady(canvasId, containerId, options = {}) {
         const lastContext = this._lastPIXIContext || {};
+        const resizeMode = String(options.resizeMode || 'host-window');
+        const requestedWidth = resizeMode === 'fixed' ? Number(options.width) : null;
+        const requestedHeight = resizeMode === 'fixed' ? Number(options.height) : null;
         const contextMatches = (
             lastContext.canvasId === canvasId &&
-            lastContext.containerId === containerId
+            lastContext.containerId === containerId &&
+            (lastContext.resizeMode || 'host-window') === resizeMode &&
+            (lastContext.width ?? null) === requestedWidth &&
+            (lastContext.height ?? null) === requestedHeight
         );
 
         if (this.isInitialized && this.pixi_app && this.pixi_app.stage && contextMatches) {
@@ -520,7 +580,13 @@ class Live2DManager {
         }
         const app = await this.initPIXI(canvasId, containerId, options);
         if (app && app.stage) {
-            this._lastPIXIContext = { canvasId, containerId };
+            this._lastPIXIContext = {
+                canvasId,
+                containerId,
+                resizeMode,
+                width: requestedWidth,
+                height: requestedHeight,
+            };
         }
         return app;
     }

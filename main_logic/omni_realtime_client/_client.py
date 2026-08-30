@@ -107,6 +107,8 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         on_new_message: Optional[Callable[[], Awaitable[None]]] = None,
         on_sid_rotate: Optional[Callable[[], Awaitable[None]]] = None,
         on_input_transcript: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_input_transcript_with_route: Optional[Callable[..., Awaitable[None]]] = None,
+        get_input_route_identity: Optional[Callable[[], "tuple[str, str, str] | None"]] = None,
         on_output_transcript: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         on_connection_error: Optional[Callable[[str], Awaitable[None]]] = None,
         on_response_done: Optional[Callable[[], Awaitable[None]]] = None,
@@ -148,6 +150,18 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.on_new_message = on_new_message
         self.on_sid_rotate = on_sid_rotate
         self.on_input_transcript = on_input_transcript
+        self.on_input_transcript_with_route = on_input_transcript_with_route
+        self.get_input_route_identity = get_input_route_identity
+        # One client-side utterance slot plus at most eight server item ids.
+        # Provider finals consume their entry; reconnect/close clears all.
+        self._input_route_identity_captured = False
+        self._input_route_identity = None
+        self._input_route_identity_by_item: dict[str, tuple[str, str, str] | None] = {}
+        # Route owning the most recent audio frame seen before an onset, used
+        # when the local onset gate never armed a snapshot. Last-write-wins, so
+        # it cannot carry a stale owner into a later utterance.
+        self._input_route_identity_stream_armed = False
+        self._input_route_identity_stream_owner = None
         self.on_output_transcript = on_output_transcript
         self.turn_detection_mode = turn_detection_mode
         self.on_connection_error = on_connection_error

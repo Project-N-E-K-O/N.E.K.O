@@ -70,6 +70,7 @@
         // --- Audio (打断/解码) ---
         interruptedSpeechId: null,
         currentPlayingSpeechId: null,
+        currentPlayingSpeechCorrelationId: '',
         pendingDecoderReset: false,
         skipNextAudioBlob: false,
         incomingAudioBlobQueue: [],
@@ -135,6 +136,13 @@
         gameRouteGameType: '',
         gameRouteLanlanName: '',
         gameRouteSessionId: '',
+        gameRouteInstanceId: '',
+        // Bounded, expiring route tombstones reject delayed STT-gate events
+        // after multiple rapid route generations have already closed.
+        // app-websocket prunes on record/check/open; page teardown releases
+        // the array with the rest of this state object.
+        gameRouteRecentlyEndedIdentities: [],
+        gameRouteStateRevision: 0,
         gameVoiceSttGateActive: false,
         gameVoiceSttGameType: '',
         gameVoiceSttSessionId: '',
@@ -143,6 +151,13 @@
         gameVoiceSttStopping: false,
         gameVoiceSttRestartTimer: null,
         gameVoiceSttUnsupportedNotified: false,
+        // Stable host-facing contract for mini-games. The game never derives
+        // provider routing from free/paid labels; app-websocket publishes the
+        // actual route selected by Core/independent ASR/browser fallback.
+        gameVoiceTranscriptionMode: 'unavailable',
+        gameVoiceTranscriptionProvider: '',
+        gameVoiceTranscriptionReady: false,
+        gameVoiceTranscriptionReason: 'route_inactive',
         proactiveChatWasStoppedByGameRoute: false,
 
         // --- 会话 / WebSocket ---

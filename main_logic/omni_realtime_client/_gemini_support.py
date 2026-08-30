@@ -284,6 +284,12 @@ class _GeminiMixin:
         if self._fatal_error_occurred:
             return
         self.note_user_turn_started()
+        # This commit is the turn boundary for both providers below. Read the
+        # owner NOW so frames streamed while the commit is in flight cannot move
+        # it, but only pin it once the boundary actually reached the provider:
+        # a commit that never went out produces no transcript, so a freeze left
+        # behind would answer for the next utterance instead.
+        pending_route_identity = self._pending_input_route_identity_commit()
         if self._is_gemini:
             if not self._gemini_session:
                 return
@@ -298,6 +304,8 @@ class _GeminiMixin:
                 logger.error(f"Error sending activity_end to Gemini: {e}")
                 if "closed" in str(e).lower():
                     self._fatal_error_occurred = True
+                return
+            self._apply_input_route_identity_commit(pending_route_identity)
             return
         # The committed buffer excludes the ~21ms tail soxr still holds in the
         # uplink resampler; drop it so it isn't prepended to the next turn.
@@ -318,6 +326,7 @@ class _GeminiMixin:
             priority=0,
         )
         await ticket.sent
+        self._apply_input_route_identity_commit(pending_route_identity)
 
     async def _gemini_send_user_turn(
         self,
@@ -934,8 +943,13 @@ class _GeminiMixin:
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.
                         self._interrupted = False
                         # 在AI开始响应前，发送累积的用户输入
-                        if self._gemini_user_transcript and self.on_input_transcript:
-                            await self.on_input_transcript(self._gemini_user_transcript)
+                        if self._gemini_user_transcript and (
+                            self.on_input_transcript
+                            or self.on_input_transcript_with_route
+                        ):
+                            await self._deliver_input_transcript(
+                                self._gemini_user_transcript
+                            )
                             if not event_owner_is_current():
                                 return
                             self._gemini_user_transcript = ""  # 清空累积
@@ -1068,8 +1082,10 @@ class _GeminiMixin:
                     # 被中断时也发送已累积的用户输入
                     if self._gemini_user_transcript:
                         self._gemini_user_transcript_after_interrupt = True
-                        if self.on_input_transcript:
-                            await self.on_input_transcript(self._gemini_user_transcript)
+                        if self.on_input_transcript or self.on_input_transcript_with_route:
+                            await self._deliver_input_transcript(
+                                self._gemini_user_transcript
+                            )
                             if not event_owner_is_current():
                                 return
                         self._gemini_user_transcript = ""

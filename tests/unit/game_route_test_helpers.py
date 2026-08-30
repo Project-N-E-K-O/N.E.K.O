@@ -34,9 +34,11 @@ def gr_patch_all(monkeypatch, name, value, raising=True):
 def reset_game_route_state():
     sessions_snapshot = dict(gr_runtime._game_sessions)
     routes_snapshot = dict(gr_runtime._game_route_states)
+    end_tombstones_snapshot = dict(gr_runtime._game_route_end_tombstones)
     badminton_score_sessions_snapshot = dict(gr_scores._badminton_recent_score_sessions)
     gr_runtime._game_sessions.clear()
     gr_runtime._game_route_states.clear()
+    gr_runtime._game_route_end_tombstones.clear()
     gr_scores._badminton_recent_score_sessions.clear()
     try:
         yield
@@ -45,6 +47,8 @@ def reset_game_route_state():
         gr_runtime._game_sessions.update(sessions_snapshot)
         gr_runtime._game_route_states.clear()
         gr_runtime._game_route_states.update(routes_snapshot)
+        gr_runtime._game_route_end_tombstones.clear()
+        gr_runtime._game_route_end_tombstones.update(end_tombstones_snapshot)
         gr_scores._badminton_recent_score_sessions.clear()
         gr_scores._badminton_recent_score_sessions.update(badminton_score_sessions_snapshot)
 

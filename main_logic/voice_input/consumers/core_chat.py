@@ -19,6 +19,7 @@ class CoreChatTurnContext:
     token: VoiceTurnToken
     external_turn_id: str
     session_ref: object
+    source_game_route_identity: tuple[str, str, str] | None = None
 
 
 @dataclass(slots=True)
@@ -26,6 +27,7 @@ class CoreChatVoiceInputConsumer:
     """Keep Core turn cleanup precise across route and session changes."""
 
     session_ref: Callable[[], object | None]
+    game_route_identity: Callable[[], tuple[str, str, str] | None]
     on_prepare: Callable[
         [VoiceTurnToken, CoreChatTurnContext],
         Awaitable[bool],
@@ -64,6 +66,7 @@ class CoreChatVoiceInputConsumer:
                 f"asr-{token.ingress.session_epoch}-{token.turn_id}"
             ),
             session_ref=session_ref,
+            source_game_route_identity=self.game_route_identity(),
         )
         self._prepared[token] = context
         accepted = bool(await self.on_prepare(token, context))

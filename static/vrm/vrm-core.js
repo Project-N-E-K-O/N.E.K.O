@@ -477,6 +477,10 @@ class VRMCore {
         this._ensureThreeReady();
         const THREE = window.THREE;
         const embed = options && options.embed === true;
+        const resizeMode = String(options?.resizeMode || 'host-window');
+        if (!['fixed', 'host-window'].includes(resizeMode)) {
+            throw new Error(`不支持的 VRM resizeMode: ${resizeMode}`);
+        }
 
         this.manager.container = document.getElementById(containerId);
         this.manager.canvas = document.getElementById(canvasId);
@@ -657,6 +661,12 @@ class VRMCore {
         bottomLight.castShadow = false;
         this.manager.scene.add(bottomLight);
         this.manager.bottomLight = bottomLight;
+
+        // Embedded mini-game renderers are resized by the official Avatar host.
+        // Keeping the engine listener-free prevents a second window policy from
+        // racing container/fixed sizing. The main application keeps the existing
+        // host-window behavior because it remains the default.
+        if (resizeMode === 'fixed') return;
 
         // 使用 Core 模块专用的 handlers 数组
         if (!this.manager._coreWindowHandlers) {

@@ -146,11 +146,21 @@ def _resolve_game_prompt_language(
 def _resolve_game_prompt_locale(
     lanlan_name: str | None = None,
     data: Any = None,
+    *,
+    absorb_request_language: bool = True,
 ) -> str:
-    """Resolve the full locale while preserving variants such as zh-TW."""
+    """Resolve the full locale while preserving variants such as zh-TW.
+
+    ``absorb_request_language=False`` makes this a pure read. Callers that can
+    still reject the request after resolving -- ``/route/start``, which retires
+    stale generations and can lose a supersede race -- must not write the
+    session language until they know they won; the return value is identical
+    either way.
+    """
     request_locale = _extract_request_language_full(data)
     if request_locale:
-        _absorb_request_language(data, lanlan_name)
+        if absorb_request_language:
+            _absorb_request_language(data, lanlan_name)
         return request_locale
 
     manager_locale = None
