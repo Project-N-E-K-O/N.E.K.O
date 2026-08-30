@@ -1948,3 +1948,83 @@ def test_a_workspace_recorded_before_the_junction_went_is_still_reclaimed(
         "a workspace recorded under the old layout was left in the character "
         "namespace with no reader for its record"
     )
+
+
+@pytest.mark.unit
+def test_the_migration_lock_is_replaced_after_a_fork():
+    """app/main_server sets the multiprocessing start method to "fork".
+
+    So this is reachable rather than theoretical. fork copies the lock in
+    whatever state it was in but not the thread holding it, and a child that
+    forked mid-migration would block in migrate_memory_files for good with
+    nothing left to release it.
+
+    Driven through the hook rather than through a real fork, because the
+    platform this runs on has none -- what is pinned is that the child ends
+    up with a lock it can take.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    original = migrations_module._MIGRATION_LOCK
+    original.acquire()
+    try:
+        assert not original.acquire(blocking=False), (
+            "the fixture did not actually hold the lock"
+        )
+        migrations_module._reset_migration_lock_after_fork()
+        inherited = migrations_module._MIGRATION_LOCK
+        assert inherited is not original, "the child kept the parent's lock"
+        assert inherited.acquire(blocking=False), (
+            "the child inherited a HELD lock, so every migration there blocks"
+        )
+        inherited.release()
+    finally:
+        original.release()
+        migrations_module._MIGRATION_LOCK = original
+
+
+@pytest.mark.unit
+def test_a_stray_file_in_the_staging_parent_is_left_alone(tmp_path):
+    """Nothing here ever mints a FILE in the parent.
+
+    Staged files go inside the run workspace, so the arm that unlinked aged
+    dot-prefixed non-directories could only ever have deleted something that
+    was not ours -- and a marker is not a thing a file can carry, so the
+    ownership rule that protects directories had nothing to say about it.
+
+    The cost is that a stray file keeps the parent alive, because rmdir
+    wants it empty. That is the right way round.
+    """
+    from utils.config_manager.migrations import (
+        _MIGRATION_STAGING_DIR,
+        _MIGRATION_STAGING_STALE_SECONDS,
+        _MIGRATION_WORKSPACE_PREFIX,
+    )
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+
+    parent = Path(config_manager.app_docs_dir) / _MIGRATION_STAGING_DIR
+    parent.mkdir(parents=True, exist_ok=True)
+    # Named like a workspace, because anything else never reaches the arm
+    # under test -- the prefix check drops it first. This is the file that
+    # WOULD have been unlinked, and the one a marker cannot speak for.
+    stray = parent / (_MIGRATION_WORKSPACE_PREFIX + "someone-elses-cache")
+    stray.write_text("not ours", encoding="utf-8")
+    stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
+    os.utime(stray, (stale, stale))
+
+    config_manager.migrate_memory_files()
+
+    assert stray.read_text(encoding="utf-8") == "not ours", (
+        "an aged file in the staging parent was deleted"
+    )
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]", "the stray file stopped the migration"

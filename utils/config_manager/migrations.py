@@ -71,6 +71,29 @@ _MIGRATION_HEARTBEAT_SECONDS = 30
 _MIGRATION_LOCK = threading.Lock()
 
 
+def _reset_migration_lock_after_fork() -> None:
+    """Give the child a fresh lock, because it inherited a held one.
+
+    ``app/main_server`` sets the multiprocessing start method to "fork",
+    so this is reachable rather than theoretical: fork copies the lock in
+    whatever state it was in, but not the thread that held it. A child
+    that forked while a migration was running would then block in
+    ``migrate_memory_files`` for good, with nothing left to release it.
+
+    Replacing it is safe precisely because the child has no other
+    threads: whatever the parent was part-way through is not running
+    here, so there is nothing for the old lock to still be protecting.
+    """
+    global _MIGRATION_LOCK
+
+    _MIGRATION_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    # POSIX only, which is also the only place fork exists.
+    os.register_at_fork(after_in_child=_reset_migration_lock_after_fork)
+
+
 def _copy_with_heartbeat(workspace):
     """A copy2 that keeps the workspace's mtime moving as it goes.
 
@@ -592,12 +615,12 @@ class MigrationsMixin:
                     # No age, no evidence it is stale. Leave it.
                     continue
                 if not entry.is_dir() or entry.is_symlink():
-                    try:
-                        entry.unlink()
-                    except OSError:
-                        # Reclamation, not the outcome. The next run tries
-                        # again.
-                        pass
+                    # Left alone. Nothing here ever mints a FILE in the
+                    # parent -- staged files go inside the run workspace --
+                    # so this arm could only ever have deleted something
+                    # that was not ours, and a marker is not a thing a
+                    # file can carry. The cost is that a stray one keeps
+                    # the parent alive, since rmdir wants it empty.
                     continue
                 if not (entry / _MIGRATION_WORKSPACE_LOCK_NAME).exists():
                     # No marker, no proof it was ever a workspace of ours.
