@@ -1894,3 +1894,57 @@ def test_a_long_copy_keeps_its_workspace_from_ageing_out(tmp_path):
         "the workspace was not kept alive during the copy itself: %r"
         % (touched,)
     )
+
+
+@pytest.mark.unit
+def test_a_workspace_recorded_before_the_junction_went_is_still_reclaimed(
+    tmp_path,
+):
+    """``memory`` is a junction until the user removes it.
+
+    A cross-device run mints its workspace inside memory_dir and writes the
+    path down. If the layout then goes back to same-device, the branch that
+    reads the ledger stopped being reached -- so those records had no reader
+    left and the workspaces sat in the character namespace for good, which
+    is exactly the accumulation the ledger exists to prevent.
+
+    The ledger holds only paths we minted, so reading it on every layout is
+    both safe and the only way it can be complete.
+    """
+    from utils.config_manager import migrations as migrations_module
+    from utils.config_manager.migrations import (
+        _MIGRATION_STAGING_STALE_SECONDS,
+        _MIGRATION_WORKSPACE_PREFIX,
+    )
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+
+    # A cross-device run, killed before cleanup.
+    with patch.object(migrations_module, "_same_device", lambda *a: False), \
+            patch.object(migrations_module.shutil, "rmtree", lambda *a, **k: None):
+        config_manager.migrate_memory_files()
+
+    leavings = [
+        entry
+        for entry in runtime_root.iterdir()
+        if entry.name.startswith(_MIGRATION_WORKSPACE_PREFIX)
+    ]
+    assert len(leavings) == 1, "the kill left %r" % (leavings,)
+    abandoned = leavings[0]
+    stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
+    os.utime(abandoned, (stale, stale))
+
+    # The junction is gone. Same-device from here on.
+    config_manager.migrate_memory_files()
+
+    assert not abandoned.exists(), (
+        "a workspace recorded under the old layout was left in the character "
+        "namespace with no reader for its record"
+    )

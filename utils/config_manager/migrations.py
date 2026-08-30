@@ -564,10 +564,16 @@ class MigrationsMixin:
                 _force_rmtree(workspace)
             parent, owned = self._migration_staging_parent()
             cutoff = time.time() - _MIGRATION_STAGING_STALE_SECONDS
+            # ALWAYS, whichever layout THIS run sees. The ledger holds
+            # only paths we minted, and the layout can change under it:
+            # a junction removed after a cross-device run leaves records
+            # that the same-device branch would never read again, so
+            # those workspaces would sit in memory_dir for good.
+            self._reclaim_recorded_workspaces(workspace, cutoff)
             if not owned:
                 # The character namespace. Nothing THERE can prove
-                # ownership, so the answer comes from beside it.
-                self._reclaim_recorded_workspaces(workspace, cutoff)
+                # ownership, so the ledger is the whole answer and
+                # there is nothing else in here to enumerate.
                 return
             # A link or a plain file at the reserved name means we never
             # used it -- the preparation step worked around it. Do not walk
