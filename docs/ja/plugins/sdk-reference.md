@@ -330,6 +330,8 @@ latest = frames.sort(by="timestamp", reverse=True).limit(1)
 
 各 record は `image_base64`（1 部のみ。読める raw bytes の複製はありません）、`mime`、`source`、`captured_at`、`turn_id`、`generation`、`frame_id` を持ちます。`source` は host がその frame に割り当てた channel です：`screen`、`camera`、`plugin`、`callback`、`proactive`、`user`、そして turn が組み換えられ host が判断できなくなった場合の `unknown` です。重複排除は `frame_id` で行ってください。`generation` は常時取得される frame の順序を表すだけで、単発の cue 画像では進まないため、2 つの record が同じ値を持ち得ます。
 
+tool が返した画像も、それを載せた後続 request に応答があった時点でこの bus に載ります。その frame は `source="plugin"`、`metadata` は `{"tool_name": "..."}` です。pixel より先に `source` を読んでください。`plugin` の frame は何らかの plugin がモデルに渡した media であり（自分のものとは限りません）、ユーザーがキャラクターに共有した画面ではありません。
+
 ### 優先度レベル
 
 | 範囲 | レベル | 用途 |

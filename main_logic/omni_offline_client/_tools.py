@@ -111,6 +111,7 @@ class _ToolingMixin:
         assistant_text: str = "",
         assistant_reasoning: str = "",
         tool_image_slots=None,
+        tool_bus_frames=None,
     ) -> int:
         """Run each tool call through ``on_tool_call`` and mutate
         ``messages`` in place: append one assistant turn announcing all
@@ -225,6 +226,7 @@ class _ToolingMixin:
                 result,
                 slots=tool_image_slots,
                 tool_result_message=tool_result_message,
+                bus_frames=tool_bus_frames,
             )
         return len(calls)
 
@@ -331,6 +333,7 @@ class _ToolingMixin:
         result,
         *,
         slots=None,
+        bus_frames=None,
         tool_result_message=None,
     ) -> None:
         """Append one multimodal user turn carrying every image in ``result``.
@@ -387,6 +390,15 @@ class _ToolingMixin:
                 "type": "image_url",
                 "image_url": {"url": f"data:{img.mime};base64,{img.data_b64}"},
             })
+            # Staged, not published: this only means the pixels are in the
+            # outgoing list. The tool loop publishes them once the provider
+            # answers the request that carries them. Staged HERE rather than
+            # over ``result.images`` so the turn budget's drops never reach
+            # the bus -- an omitted image was never sent.
+            if bus_frames is not None:
+                bus_frames.append(
+                    (img.data_b64, img.mime, str(result.name or "unknown"))
+                )
             # Keep each instruction adjacent to the image it describes.
             # Always caption: several providers reject bare image parts.
             instruction = (
@@ -548,6 +560,8 @@ class _ToolingMixin:
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         tool_image_slots = overrides.pop("_tool_image_slots", None)
+        tool_bus_frames = overrides.pop("_tool_bus_frames", None)
+        tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         if self._use_genai_sdk and not self._genai_tools_unsupported:
             # 跟踪本轮 Gemini 路径是否已经把 text chunk yield 给上游。如果
             # 已经吐过文本，再 fallback 到 OpenAI-compat 会让用户在同一轮
@@ -561,6 +575,8 @@ class _ToolingMixin:
                     _tool_leak_filter=tool_leak_filter,
                     _tool_leak_provider=tool_leak_provider,
                     _tool_image_slots=tool_image_slots,
+                    _tool_bus_frames=tool_bus_frames,
+                    _tool_frames_turn_id=tool_frames_turn_id,
                     **overrides,
                 ):
                     if getattr(chunk, "content", None):
@@ -598,12 +614,19 @@ class _ToolingMixin:
             _tool_leak_filter=tool_leak_filter,
             _tool_leak_provider=tool_leak_provider,
             _tool_image_slots=tool_image_slots,
+            _tool_bus_frames=tool_bus_frames,
+            _tool_frames_turn_id=tool_frames_turn_id,
             **overrides,
         ):
             yield chunk
 
     async def _astream_visible_with_tools(self, messages, **overrides):
         tool_image_slots = []
+        # 与 slots 同生命周期、同线：一次 stream 调用自己的暂存区，绝不挂在
+        # self 上。两个 tool loop 可能并存（stream_text 与 prompt_ephemeral），
+        # 共享一个 session 级列表会让 A 的图被 B 的请求"确认送达"。
+        tool_bus_frames = []
+        tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         tool_names = {
             tool.name for tool in getattr(self, "_tool_definitions", [])
             if getattr(tool, "name", None)
@@ -627,6 +650,8 @@ class _ToolingMixin:
                 _tool_leak_filter=leak_filter,
                 _tool_leak_provider=provider,
                 _tool_image_slots=tool_image_slots,
+                _tool_bus_frames=tool_bus_frames,
+                _tool_frames_turn_id=tool_frames_turn_id,
                 **overrides,
             ):
                 if getattr(chunk, "_tool_leak_filtered", False):
@@ -674,6 +699,8 @@ class _ToolingMixin:
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         tool_image_slots = overrides.pop("_tool_image_slots", None)
+        tool_bus_frames = overrides.pop("_tool_bus_frames", None)
+        tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         tools_payload = self._openai_tools_payload()
         if tools_payload:
             overrides.setdefault("tools", tools_payload)
@@ -700,7 +727,17 @@ class _ToolingMixin:
             # assistant tool_calls turn 一起回填，否则部分 provider 下一轮报
             # 400（reasoning_content must be passed back）。普通端点恒为空。
             streamed_reasoning_buffer = ""
+            # 上一轮注入的工具图，本轮才谈得上"送到了"。
+            tool_frames_published = False
             async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+                if not tool_frames_published:
+                    # 任何一个 chunk 都算数，不必等有内容的那个：astream 是惰性
+                    # 的，请求要到第一次 __anext__ 才真正发出，能拿到 chunk 就
+                    # 说明带着上一轮工具图的这次请求已经被 provider 收下。
+                    tool_frames_published = True
+                    await self._publish_pending_tool_frames(
+                        tool_bus_frames, turn_id=tool_frames_turn_id
+                    )
                 if getattr(chunk, "content", None):
                     if tool_leak_filter is not None:
                         chunk.content = self._filter_tool_leak_content(
@@ -803,6 +840,7 @@ class _ToolingMixin:
                     assistant_text=strip_thinking_segments(streamed_text_buffer),
                     assistant_reasoning=streamed_reasoning_buffer,
                     tool_image_slots=tool_image_slots,
+                    tool_bus_frames=tool_bus_frames,
                 )
                 executed_tool_calls += executed_this_round
                 if executed_this_round:
@@ -877,7 +915,16 @@ class _ToolingMixin:
         }
         final_finish_reason: Optional[str] = None
         final_prompt_tokens: Optional[int] = None
+        # 封顶后这一次请求同样带着还没被 release 的工具图（slots 要到外层
+        # finally 才换回占位符），所以它也是一个真投递点，同样要抄送。漏掉它
+        # 的话，"模型看到了但插件读不到"恰好发生在工具轮打满的那些回合上。
+        tool_frames_published = False
         async for chunk in self.llm.astream(messages, **final_overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+            if not tool_frames_published:
+                tool_frames_published = True
+                await self._publish_pending_tool_frames(
+                    tool_bus_frames, turn_id=tool_frames_turn_id
+                )
             if chunk.finish_reason:
                 final_finish_reason = chunk.finish_reason
             if chunk.usage_metadata:

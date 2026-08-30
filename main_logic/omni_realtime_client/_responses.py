@@ -413,6 +413,7 @@ class _ResponseMixin:
         *,
         turn_id: str,
         visual_still_owned=None,
+        source: str | None = None,
     ):
         """Submit one atomic raw-image + external-ASR user turn.
 
@@ -433,6 +434,19 @@ class _ResponseMixin:
         stable_turn_id = str(turn_id or "").strip()
         if not stable_turn_id:
             raise ValueError("external voice turn_id must not be empty")
+        # This turn's channel label, fixed before ANY await below.
+        #
+        # The caller passes ``MultimodalTurn.source`` -- the value frozen with
+        # these very frames, and the only one that truly belongs to this turn.
+        # The live fallback is read here too, for the same reason: trimming,
+        # the arbiter queue and the SDK send are all awaits, and _transport
+        # overwrites _latest_image_source on every staged frame. Reading it at
+        # the publish point reads the channel the session moved on to. The
+        # frames would be right and the label wrong -- and a plugin filtering
+        # the bus by source is exactly who gets the wrong ones.
+        frame_source = str(
+            source or getattr(self, "_latest_image_source", "") or "unknown"
+        )
         staged_images, images_bytes = self._normalize_multimodal_turn_images(
             images
         )
@@ -499,6 +513,7 @@ class _ResponseMixin:
                 images_bytes=images_bytes,
                 visual_still_owned=visual_still_owned,
                 turn_id=stable_turn_id,
+                source=frame_source,
             )
             return None
         if self.ws is None or self._fatal_error_occurred:
@@ -701,6 +716,7 @@ class _ResponseMixin:
             self._schedule_turn_frame_publish(
                 self._delivered_multimodal_frames(item_event),
                 turn_id=stable_turn_id,
+                source=frame_source,
             )
         return ticket
 
@@ -758,6 +774,7 @@ class _ResponseMixin:
         frames: list[tuple[str, str]],
         *,
         turn_id: Optional[str],
+        source: str,
     ) -> Optional[asyncio.Task]:
         """Hand one turn's already-extracted frames to the bus, off that turn.
 
@@ -769,9 +786,10 @@ class _ResponseMixin:
         Copying a frame is not a reason to slow down or fail a delivery that
         already succeeded, so the scheduling itself is guarded too.
 
-        ``frames`` must already be a snapshot taken by the caller. Handing a
-        live structure here -- the outgoing item, a staging list -- would let a
-        later turn rewrite it before the task runs.
+        ``frames`` must already be a snapshot taken by the caller, and so
+        must ``source``. Handing live state here -- the outgoing item, a
+        staging list, ``_latest_image_source`` -- would let a later turn
+        rewrite it before the task runs.
 
         Returns the task so callers that need to join it (tests, teardown) can;
         nothing on the turn path awaits it.
@@ -784,15 +802,13 @@ class _ResponseMixin:
                 self._publish_turn_frames_task(
                     frames,
                     turn_id=turn_id,
-                    # Sampled HERE, for the same reason the frames are, and the
-                    # same reason _transport samples its turn identity before
-                    # firing: _latest_image_source is live session state that
-                    # the next staged frame overwrites. Reading it inside the
-                    # task would file this turn's pictures under whatever
-                    # channel the session moved on to.
-                    source=str(
-                        getattr(self, "_latest_image_source", "") or "unknown"
-                    ),
+                    # Passed in, never read here. This runs AFTER the send
+                    # await, and _latest_image_source is live session state
+                    # that the next staged frame overwrites -- sampling at
+                    # this point files the turn's pictures under whatever
+                    # channel the session moved on to while it waited. The
+                    # caller froze it with the turn; see submit_multimodal_turn.
+                    source=source,
                 )
             )
         except Exception as exc:
@@ -1178,9 +1194,18 @@ class _ResponseMixin:
         images_bytes: tuple[bytes, ...] = (),
         visual_still_owned=None,
         turn_id: Optional[str] = None,
+        source: str | None = None,
     ) -> None:
         """Submit one external-ASR turn through the owned Gemini lifecycle."""
 
+        # Same rule as submit_multimodal_turn: fix the channel label before
+        # this function's own first await (_await_gemini_external_quarantine).
+        # The text-only entry carries neither a source nor frames, so the
+        # publish below never fires for it; the fallback only keeps that path
+        # readable.
+        frame_source = str(
+            source or getattr(self, "_latest_image_source", "") or "unknown"
+        )
         submit_task = asyncio.current_task()
         # 上一轮 external turn 可能还没等到终结事件：重叠发声时 B 的 prepare 会跑
         # 在 A 的 SDK send **之前**，那一刻还没有 token 可隔离，于是 prepare 里的
@@ -1271,6 +1296,7 @@ class _ResponseMixin:
         if accepted and images_bytes:
             self._schedule_turn_frame_publish(
                 self._gemini_delivered_frames(images_bytes),
+                source=frame_source,
                 # Empty is not an identity: the text-only Gemini route reaches
                 # _submit_external_gemini_turn without one, and a blank turn_id
                 # on the record would still read as "these frames belong

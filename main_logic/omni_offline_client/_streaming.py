@@ -1046,6 +1046,9 @@ class _StreamingMixin:
                             if thinking_on and leaks_thinking_in_content(self.model)
                             else None
                         )
+                        # 工具图上总线时带上本轮的 turn_id，和这一轮的用户帧
+                        # 归到同一个回合下；普通文本轮没有 turn_id，那里就是 None。
+                        _focus_overrides["_tool_frames_turn_id"] = turn_id
                         async for chunk in self._astream_visible_with_tools(
                             self._conversation_history, **_focus_overrides,
                         ):

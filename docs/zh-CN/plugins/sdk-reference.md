@@ -329,6 +329,8 @@ latest = frames.sort(by="timestamp", reverse=True).limit(1)
 
 每条记录带有 `image_base64`（只有一份，不存在可读的裸字节副本）、`mime`、`source`、`captured_at`、`turn_id`、`generation` 和 `frame_id`。`source` 是宿主给这一帧归的通道：`screen`、`camera`、`plugin`、`callback`、`proactive`、`user`，以及这一轮被重排后宿主已经说不准时的 `unknown`。请按 `frame_id` 去重：`generation` 只为常驻画面排序，一次性提示图不会让它前进，所以两条记录可能共用同一个值。
 
+工具返回的图片也在这条总线上——前提是携带它们的那次后继请求已经得到应答。这类帧的 `source` 为 `"plugin"`，`metadata` 为 `{"tool_name": "..."}`。读像素之前先读 `source`：标为 `plugin` 的帧是某个插件交给模型的媒体（未必是你自己的），不是用户共享给角色的画面。
+
 ### 优先级等级
 
 | 范围 | 等级 | 使用场景 |

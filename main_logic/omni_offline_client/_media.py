@@ -178,12 +178,55 @@ class _MediaMixin:
             f"(source={source}, {source} total: {len(queue)})"
         )
 
+    async def _publish_pending_tool_frames(
+        self,
+        pending: list | None,
+        *,
+        turn_id: str | None = None,
+    ) -> None:
+        """Publish the tool images a just-answered request carried. Best effort.
+
+        ``pending`` is filled by ``_append_tool_result_images`` at the moment
+        the pixels are written into the outgoing message list, and drained here
+        by whichever tool loop sees the provider answer next. That ordering is
+        the delivery gate: an injected image is only ever on the bus because a
+        later request came back with something, which is the earliest point the
+        host can honestly say the provider received it. A loop that runs out of
+        iterations, or breaks out, never reaches a drain -- those pixels stay
+        unpublished, and that is the correct direction. Under-publishing costs
+        a plugin a picture; over-publishing is the host asserting a delivery
+        that never happened.
+
+        The list is cleared BEFORE the await so a second chunk, a retry or a
+        re-entry cannot copy the same frames twice.
+
+        ``source`` is ``plugin`` for every one of these, which is what they
+        are: media a plugin handed the model, not a picture the user shared
+        with her. The tool's name rides ``metadata`` rather than being folded
+        into ``source`` -- the source vocabulary is a small closed set that
+        plugins compare by equality, and a per-tool value there would break
+        every such filter.
+        """
+        if not pending:
+            return
+        drained = list(pending)
+        pending.clear()
+        await self._publish_provider_frames(
+            [frame[0] for frame in drained],
+            [_FRAME_SOURCE_PLUGIN] * len(drained),
+            turn_id=turn_id,
+            mimes=[frame[1] for frame in drained],
+            metadatas=[{"tool_name": frame[2]} for frame in drained],
+        )
+
     async def _publish_provider_frames(
         self,
         images: Sequence[str],
         sources: Sequence[str],
         *,
         turn_id: str | None = None,
+        mimes: Sequence[str] | None = None,
+        metadatas: Sequence[dict] | None = None,
     ) -> None:
         """Copy this turn's outgoing frames onto the plugin bus. Best effort.
 
@@ -202,6 +245,12 @@ class _MediaMixin:
         would advertise a delivery that never happened. Under-publishing is the
         safe direction: plugins pull frames, so silence costs them a picture,
         while a false publish is the host asserting something untrue.
+
+        ``mimes`` and ``metadatas`` align by index with ``images``, the same
+        convention ``sources`` already uses. Both are optional because the
+        ambient path has one mime for the whole turn and nothing to annotate;
+        tool frames have neither property -- a tool may hand back a PNG, and
+        the plugin that produced it is worth naming.
 
         Never raises into the turn. The copy is a courtesy to plugins, and a
         bus that is absent, down or slow must not cost the user a reply. The
@@ -223,12 +272,18 @@ class _MediaMixin:
                 if index < len(sources)
                 else _FRAME_SOURCE_UNKNOWN
             )
+            extra: dict = {}
+            if mimes is not None and index < len(mimes) and mimes[index]:
+                extra["mime"] = str(mimes[index])
+            if metadatas is not None and index < len(metadatas) and metadatas[index]:
+                extra["metadata"] = dict(metadatas[index])
             try:
                 await publish_provider_frame_observed_best_effort(
                     lanlan_name,
                     image_base64=image,
                     source=source,
                     turn_id=turn_id,
+                    **extra,
                 )
             except asyncio.CancelledError:
                 raise

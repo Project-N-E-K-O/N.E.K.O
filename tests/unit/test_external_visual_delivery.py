@@ -2763,3 +2763,138 @@ async def test_a_stalled_frames_bus_does_not_hold_up_the_gemini_turn(
         for _ in range(20):
             await asyncio.sleep(0)
         await client.close()
+
+
+# ---------------------------------------------------------------------------
+# 回合内 await 期间的频道漂移
+# ---------------------------------------------------------------------------
+#
+# 上面那条用例在 submit **返回之后**才改写 _latest_image_source，调度点读一次
+# 就够了。真正没被盖住的是 submit **内部**：裁剪、arbiter 排队、SDK send 都是
+# await，另一条通道在这期间暂存一帧就会覆写它。帧还是这一轮送出的那几张，
+# source 却成了会话后来切到的频道——而 source 正是插件用来区分「用户共享的
+# 画面」和「插件自己提供的媒体」的那个字段，标错比不标更糟。
+
+
+@pytest.mark.asyncio
+async def test_ws_turn_keeps_its_channel_when_another_stages_during_the_send(
+    monkeypatch,
+):
+    """A frame staged mid-send must not relabel the turn already in flight."""
+
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        sent = _wire_completed_response_transport(client)
+        client._analyze_image_with_vision_model = AsyncMock()
+        client._latest_image_source = "screen"
+        published = _capture_published_frames(monkeypatch)
+
+        # 摄像头在这一轮送出的**过程中**暂存了一帧。_transport 每暂存一帧就写
+        # 这个字段，所以这就是它在真实会话里被改写的样子。
+        _inner = client.send_event
+
+        async def _send_and_stage_another_channel(event, **kwargs):
+            result = await _inner(event, **kwargs)
+            client._latest_image_source = "camera"
+            return result
+
+        client.send_event = _send_and_stage_another_channel
+        client._response_arbiter._send_event = client.send_event
+
+        await client.prepare_external_voice_turn(turn_id="turn-drift-ws")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-drift-ws",
+            source="screen",
+        )
+
+        delivered = [
+            part["image_url"].split(",", 1)[1]
+            for part in sent[0]["item"]["content"]
+            if part["type"] == "input_image"
+        ]
+        assert len(delivered) == 1, "前提没成立：这一轮本来就没送出图"
+        assert client._latest_image_source == "camera", (
+            "前提没成立：漂移没发生，本用例什么都没在测"
+        )
+
+        await _wait_for_published(published, 1)
+        assert [frame["image_base64"] for frame in published] == delivered
+        assert [frame["source"] for frame in published] == ["screen"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_gemini_turn_keeps_its_channel_when_another_stages_during_the_send(
+    monkeypatch,
+):
+    """The Gemini half of the same window — its send is an SDK await."""
+
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    try:
+        session = AsyncMock()
+
+        async def _send_and_stage_another_channel(*_args, **_kwargs):
+            client._latest_image_source = "camera"
+
+        session.send_client_content.side_effect = _send_and_stage_another_channel
+        client._gemini_session = session
+        client.ws = session
+        client.handle_interruption = AsyncMock()
+        client._analyze_image_with_vision_model = AsyncMock()
+        client._latest_image_source = "screen"
+        published = _capture_published_frames(monkeypatch)
+
+        await client.prepare_external_voice_turn(turn_id="turn-drift-gemini")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-drift-gemini",
+            source="screen",
+        )
+
+        assert len(_gemini_sdk_frames(session)) == 1, (
+            "前提没成立：这一轮本来就没送出图"
+        )
+        assert client._latest_image_source == "camera", (
+            "前提没成立：漂移没发生，本用例什么都没在测"
+        )
+
+        await _wait_for_published(published, 1)
+        assert [frame["source"] for frame in published] == ["screen"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_the_turns_own_channel_beats_live_session_state(monkeypatch):
+    """``MultimodalTurn.source`` wins even when the live field disagrees.
+
+    The caller freezes the channel with the frames; the session field is only
+    a fallback for entry points that have no turn. A test that let both say
+    the same thing would pass with the argument ignored entirely.
+    """
+
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        _wire_completed_response_transport(client)
+        client._analyze_image_with_vision_model = AsyncMock()
+        client._latest_image_source = "screen"
+        published = _capture_published_frames(monkeypatch)
+
+        await client.prepare_external_voice_turn(turn_id="turn-frozen")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-frozen",
+            source="camera",
+        )
+
+        await _wait_for_published(published, 1)
+        assert [frame["source"] for frame in published] == ["camera"]
+    finally:
+        await client.close()

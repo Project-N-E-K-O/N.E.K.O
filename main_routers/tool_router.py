@@ -66,6 +66,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import asyncio
 import ipaddress
 from urllib.parse import urlparse
 
@@ -402,7 +403,7 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
         body = {"output": resp.text}
     if not isinstance(body, dict):
         body = {"output": body}
-    return tool_result_from_envelope(call, body)
+    return await asyncio.to_thread(tool_result_from_envelope, call, body)
 
 
 def _ensure_dispatcher_bound(role_keys) -> None:

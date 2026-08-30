@@ -57,7 +57,7 @@ ToolHandler = Callable[[Dict[str, Any]], Union[Awaitable[Any], Any]]
 # both in-process handlers and remote plugin callbacks.
 _MAX_TOOL_IMAGE_B64_BYTES = 2 * 1024 * 1024
 _MAX_TOOL_IMAGES = 2
-_MAX_TOOL_IMAGE_PIXELS = 16 * 1024 * 1024
+_MAX_TOOL_IMAGE_PIXELS = 3840 * 2160
 _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS = 2000
 _TOOL_IMAGE_TURN_MAX_COUNT = 2
 _TOOL_IMAGE_TURN_MAX_B64_BYTES = 4 * 1024 * 1024
@@ -497,7 +497,11 @@ class ToolRegistry:
                     "is_error" in result_value
                     or ("output" in result_value and "images" in result_value)
                 ):
-                    return tool_result_from_envelope(call, result_value)
+                    return await asyncio.to_thread(
+                        tool_result_from_envelope,
+                        call,
+                        result_value,
+                    )
                 return ToolResult(
                     call_id=call.call_id,
                     name=call.name,

@@ -10495,8 +10495,15 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
         "look here",
         ("raw-frame",),
         turn_id=turn_id,
+        # 帧总线的频道标签，与这批帧一起冻结。会话侧读活状态会在裁剪 / arbiter
+        # 排队 / SDK send 那几段 await 里漂到后继发声的通道上。
+        source="screen",
         # Gemini 那条路在真正送出之前还有一段压缩 await，所有权判据必须跟着进去。
         visual_still_owned=ANY,
+    )
+    # 传的是这一轮 record 自己的 source，不是某个字面量碰巧相等。
+    assert runtime.session.submit_multimodal_turn.await_args.kwargs["source"] == (
+        record.source if hasattr(record, "source") else "screen"
     )
     # 穿进去的必须是活的判据，且在真正调用 provider 的那一刻仍持有所有权。
     assert owned_at_call == [True]

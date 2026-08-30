@@ -5,6 +5,13 @@ Read the contract before building on this:
 * These are COPIES of frames the host already sent. A plugin cannot ask for a
   capture, and a frame the session's throttle dropped was never sent, so it
   never appears here.
+* ``source`` says where the picture came from, and it is not decoration.
+  ``screen`` / ``camera`` / ``user`` are things the user shared with the
+  character; ``plugin`` is media a plugin handed the model -- a tool result or
+  callback attachment -- and the plugin that produced it is very likely not the
+  one reading this. Tool-result frames additionally carry
+  ``metadata["tool_name"]``. Check ``source`` before treating pixels as "what
+  the user is looking at".
 * This is NOT a log and NOT a queue. Frames are dropped by design at four
   points — the message-plane PUB socket is lossy for slow joiners and at HWM,
   the bridge publish is NOBLOCK, the bridge send queue is bounded and refuses

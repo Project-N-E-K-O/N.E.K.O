@@ -392,6 +392,8 @@ class _GenaiMixin:
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         tool_image_slots = overrides.pop("_tool_image_slots", None)
+        tool_bus_frames = overrides.pop("_tool_bus_frames", None)
+        tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         if not _ensure_genai():
             raise _GenaiToolsUnsupported("google-genai SDK not importable")
         types = _genai_types
@@ -480,7 +482,15 @@ class _GenaiMixin:
             iter_block_reason: Optional[str] = None
 
             try:
+                # 与 OpenAI 路径对偶：上一轮注入的工具图，等本轮 SDK 真的
+                # 吐出东西才算送到。
+                tool_frames_published = False
                 async for chunk in stream:
+                    if not tool_frames_published:
+                        tool_frames_published = True
+                        await self._publish_pending_tool_frames(
+                            tool_bus_frames, turn_id=tool_frames_turn_id
+                        )
                     # prompt_feedback.block_reason：Gemini 整段 input 被 safety
                     # 拦掉时填这个，candidate 可能根本没出现。
                     pf = getattr(chunk, "prompt_feedback", None)
@@ -732,6 +742,7 @@ class _GenaiMixin:
                         result,
                         slots=tool_image_slots,
                         tool_result_message=tool_result_message,
+                        bus_frames=tool_bus_frames,
                     )
                 # Sentinel：与 OpenAI 路径对偶，告诉上游 stream_text 把
                 # final-segment buffer 清掉（pre-tool 文本已被持久化进
@@ -802,7 +813,14 @@ class _GenaiMixin:
         final_block_reason: Optional[str] = None
         final_prompt_tokens: Optional[int] = None
         final_had_text = False
+        # 与 OpenAI 路径对偶：封顶后这一次同样带着尚未 release 的工具图。
+        tool_frames_published = False
         async for chunk in final_stream:
+            if not tool_frames_published:
+                tool_frames_published = True
+                await self._publish_pending_tool_frames(
+                    tool_bus_frames, turn_id=tool_frames_turn_id
+                )
             # 与常规 genai 分支对偶地采集空回复诊断：block_reason / finish_reason /
             # prompt_tokens。否则若 forced-finalize 也被 safety / recitation /
             # max-tokens 挡住而无文本，上层只能引用上一轮 tool-iteration 的过期
