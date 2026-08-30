@@ -956,3 +956,51 @@ def test_the_publish_is_flushed_on_both_branches(tmp_path):
         "expected the destination parent flushed once per publish, saw %r"
         % (flushed_dirs,)
     )
+
+
+@pytest.mark.unit
+def test_a_read_only_seed_still_migrates(tmp_path):
+    """copy2 preserves the mode, so the staged copy of a read-only seed is too.
+
+    Opening it "rb+" to flush then raises PermissionError, the per-entry handler
+    discards the stage, and the file never migrates -- which the plain copy2
+    this replaced handled fine. Packaged and checked-out seeds are read-only
+    often enough that this is the common case, not the exotic one.
+
+    Opening READ-ONLY instead does not work here, which is why the fix widens
+    the mode temporarily: measured on Windows, both open(path, "rb") and
+    os.open(O_RDONLY) followed by fsync raise OSError EBADF.
+
+    Both branches are covered -- a loose file and one inside a directory -- and
+    the published mode is asserted, because widening it permanently would be a
+    quieter bug than the one being fixed.
+    """
+    import os
+    import stat
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    (project_root / "Carol").mkdir(parents=True)
+    nested = project_root / "Carol" / "facts.json"
+    nested.write_text("[1]", encoding="utf-8")
+    loose = project_root / "loose.json"
+    loose.write_text("[2]", encoding="utf-8")
+    for path in (nested, loose):
+        os.chmod(path, stat.S_IREAD)
+
+    config_manager.migrate_memory_files()
+
+    assert (runtime_root / "loose.json").read_text(encoding="utf-8") == "[2]", (
+        "a read-only loose seed never migrated"
+    )
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]", "a read-only file inside a seed directory never migrated"
+    assert not (
+        stat.S_IMODE(os.stat(runtime_root / "loose.json").st_mode) & stat.S_IWRITE
+    ), "the published file was left writable"

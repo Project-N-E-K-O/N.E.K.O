@@ -21,6 +21,7 @@ migration of legacy Documents memory directories.
 """
 import os
 import shutil
+import stat
 import tempfile
 import sys
 import threading
@@ -77,13 +78,51 @@ def _fsync_directory(path):
         os.close(handle)
 
 
+def _fsync_file(path):
+    """Flush one staged file, even one ``copy2`` made read-only.
+
+    A packaged or checked-out seed is often read-only, and ``copy2``
+    preserves the mode -- so the staged copy is read-only too and opening
+    it "rb+" raises PermissionError. That is not cosmetic: the file branch
+    discards the stage and the file never migrates at all, which the plain
+    copy2 it replaced handled fine.
+
+    Opening READ-ONLY is the obvious remedy and does not work here:
+    measured on Windows, both open(path, "rb") and os.open(O_RDONLY)
+    followed by fsync raise OSError EBADF -- the platform wants a writable
+    handle. So the mode is widened just long enough to flush and put back,
+    which leaves the published file with exactly the mode it arrived with.
+    """
+    try:
+        original = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        return
+    widened = False
+    try:
+        try:
+            handle = open(path, "rb+")
+        except PermissionError:
+            os.chmod(path, original | stat.S_IWRITE)
+            widened = True
+            handle = open(path, "rb+")
+        try:
+            os.fsync(handle.fileno())
+        finally:
+            handle.close()
+    finally:
+        if widened:
+            try:
+                os.chmod(path, original)
+            except OSError:
+                pass
+
+
 def _fsync_tree(root):
     """Flush every file in a staged tree, then its directories."""
     for directory, _subdirs, files in os.walk(str(root)):
         for name in files:
             try:
-                with open(os.path.join(directory, name), "rb+") as handle:
-                    os.fsync(handle.fileno())
+                _fsync_file(os.path.join(directory, name))
             except OSError:
                 pass
         _fsync_directory(directory)
@@ -373,8 +412,7 @@ class MigrationsMixin:
                             # destination NAME on disk with incomplete
                             # contents, and the next start treats it as
                             # authoritative and never retries it.
-                            with open(staged_file, "rb+") as handle:
-                                os.fsync(handle.fileno())
+                            _fsync_file(str(staged_file))
                             os.replace(staged_file, dest_path)
                             # The NAME too, not just its contents.
                             _fsync_directory(dest_path.parent)
