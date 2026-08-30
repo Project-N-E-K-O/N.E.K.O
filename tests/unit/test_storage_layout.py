@@ -807,9 +807,12 @@ def test_a_memory_dir_on_another_volume_stages_on_that_volume(tmp_path):
     them to match.
 
     Driven through _same_device rather than a real mount, because a test
-    cannot make one. What is pinned is that the answer moves the workspace
-    onto the destination's volume, and that it is taken away again -- inside
-    the character namespace there is no sweep to catch it later.
+    cannot make one. What is pinned is that the workspace moves onto the
+    destination's volume, and lands under the same RESERVED parent the
+    default layout uses rather than loose in the character namespace --
+    minting unique names straight into memory_dir meant no later run could
+    ever find them, so a killed run's copy of a full character tree stayed
+    there for good.
     """
     from utils.config_manager import migrations as migrations_module
 
@@ -834,8 +837,9 @@ def test_a_memory_dir_on_another_volume_stages_on_that_volume(tmp_path):
             patch.object(migrations_module, "_same_device", lambda *a: False):
         config_manager.migrate_memory_files()
 
-    assert staged_in == [runtime_root], (
-        "the workspace was not put on the destination's volume: %r" % (staged_in,)
+    assert staged_in == [runtime_root / ".mig-staging"], (
+        "the workspace was not put under a reclaimable parent on the "
+        "destination's volume: %r" % (staged_in,)
     )
     assert (runtime_root / "Carol" / "facts.json").read_text(
         encoding="utf-8"
@@ -853,7 +857,7 @@ def test_a_memory_dir_on_another_volume_stages_on_that_volume(tmp_path):
     (project_root / "Dave" / "facts.json").write_text("[3]", encoding="utf-8")
     with patch.object(migrations_module.tempfile, "mkdtemp", _record):
         config_manager.migrate_memory_files()
-    assert staged_in and staged_in[0] != runtime_root, (
+    assert staged_in and runtime_root not in staged_in[0].parents, (
         "the default layout staged inside the character namespace: %r"
         % (staged_in,)
     )
@@ -1253,7 +1257,6 @@ def test_widening_a_staged_file_grants_read_as_well_as_write(tmp_path):
     borrowed = 0o040
 
     widened = []
-    real_chmod = migrations_module.os.chmod
     real_stat = migrations_module.os.stat
     real_open = open
     opens = []
@@ -1351,3 +1354,331 @@ def test_a_busy_publish_is_retried_rather_than_dropped(tmp_path):
     assert (runtime_root / "loose.json").read_text(encoding="utf-8") == "[2]", (
         "a file publish was dropped on a transient sharing error"
     )
+
+
+@pytest.mark.unit
+def test_a_cross_device_workspace_is_reclaimed_like_any_other(tmp_path):
+    """A killed run on the junction layout must not leave its copy for good.
+
+    The first version of this fallback minted a unique name straight into
+    memory_dir and swept nothing there, on the argument that a sweep inside
+    the character namespace was the mistake the design had removed. That left
+    no way to ever find an abandoned workspace again: every run picks a new
+    name, so repeated interrupted starts could fill the destination volume
+    with full character trees.
+
+    One reserved subdirectory gives both layouts the same reclaim, and
+    sweeping inside it is not sweeping the namespace.
+    """
+    from utils.config_manager import migrations as migrations_module
+    from utils.config_manager.migrations import (
+        _MIGRATION_STAGING_DIR,
+        _MIGRATION_STAGING_STALE_SECONDS,
+    )
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+
+    parent = runtime_root / _MIGRATION_STAGING_DIR
+    abandoned = parent / ".killed-run"
+    (abandoned / "d" / "Dave").mkdir(parents=True)
+    (abandoned / "d" / "Dave" / "facts.json").write_text("[9]", encoding="utf-8")
+    stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
+    for path in (abandoned / "d" / "Dave", abandoned / "d", abandoned):
+        os.utime(path, (stale, stale))
+
+    with patch.object(migrations_module, "_same_device", lambda *a: False):
+        config_manager.migrate_memory_files()
+
+    assert not parent.exists(), (
+        "a killed cross-device run's copy was never reclaimed: %s"
+        % (sorted(q.name for q in parent.iterdir()) if parent.is_dir() else parent)
+    )
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]"
+    assert sorted(q.name for q in runtime_root.iterdir()) == ["Carol"]
+
+
+@pytest.mark.unit
+def test_a_locked_workspace_is_never_aged_out(tmp_path):
+    """Age alone cannot tell a stale workspace from a slow one.
+
+    A run that spends longer than the threshold on a single entry -- or one
+    suspended along with the machine -- looks exactly like one that was
+    killed, and its top-level mtime does not move on its own during a deep
+    copytree. A second process, which the fail-open single-instance lock
+    makes reachable, would then delete a workspace still being written into.
+
+    So a sibling has to be BOTH aged out and unlocked. Either condition
+    saying "leave it" is enough, which is why both are kept.
+    """
+    from utils.config_manager import migrations as migrations_module
+    from utils.config_manager.migrations import (
+        _MIGRATION_STAGING_DIR,
+        _MIGRATION_STAGING_STALE_SECONDS,
+    )
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+
+    parent = Path(config_manager.app_docs_dir) / _MIGRATION_STAGING_DIR
+    parent.mkdir(parents=True, exist_ok=True)
+
+    # Two aged workspaces. One is held by a "live" run, one is not.
+    held = parent / ".still-running"
+    dropped = parent / ".killed-run"
+    for workspace in (held, dropped):
+        (workspace / "d").mkdir(parents=True)
+        (workspace / "d" / "big.json").write_text("[9]", encoding="utf-8")
+
+    handle = migrations_module._claim_workspace(held)
+    if handle is None:
+        pytest.skip("this filesystem will not hold an advisory lock")
+    # A killed run may never have claimed one at all, which is exactly what
+    # the age check is for -- so this one gets a marker it does NOT hold.
+    (dropped / ".lock").write_bytes(b"1")
+
+    stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
+    for workspace in (held, dropped):
+        os.utime(workspace, (stale, stale))
+
+    try:
+        config_manager.migrate_memory_files()
+    finally:
+        handle.close()
+
+    assert held.is_dir() and (held / "d" / "big.json").exists(), (
+        "an aged but LOCKED workspace was deleted out from under its owner"
+    )
+    assert not dropped.exists(), (
+        "an aged, unlocked workspace was not reclaimed"
+    )
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]"
+
+
+@pytest.mark.unit
+def test_one_read_only_entry_does_not_strand_the_entries_after_it(tmp_path):
+    """Windows will not unlink a read-only file, and ignore_errors hides it.
+
+    Every directory entry stages under the same name inside the run
+    workspace, so a failed entry that leaves its tree standing makes every
+    LATER character fail with FileExistsError -- one bad entry stranding all
+    the rest, which is the exact failure the per-entry handler exists to
+    prevent. Measured before the fix: the second entry died on WinError 183.
+    """
+    import stat as stat_module
+
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    # "Alpha" sorts first, holds a read-only file, and fails to publish.
+    (project_root / "Alpha" / "sub").mkdir(parents=True)
+    locked = project_root / "Alpha" / "sub" / "facts.json"
+    locked.write_text("[1]", encoding="utf-8")
+    os.chmod(locked, stat_module.S_IREAD)
+    for name in ("Beta", "Gamma"):
+        (project_root / name).mkdir(parents=True)
+        (project_root / name / "facts.json").write_text("[2]", encoding="utf-8")
+
+    real_replace = migrations_module.replace_with_busy_retry
+
+    def _alpha_cannot_publish(source, destination, *args, **kwargs):
+        if Path(destination).name == "Alpha":
+            raise OSError(28, "No space left on device")
+        return real_replace(source, destination, *args, **kwargs)
+
+    parent = Path(config_manager.app_docs_dir) / ".mig-staging"
+    try:
+        with patch.object(
+            migrations_module, "replace_with_busy_retry", _alpha_cannot_publish
+        ):
+            config_manager.migrate_memory_files()
+
+        assert not (runtime_root / "Alpha").exists(), (
+            "the entry whose publish failed was published anyway"
+        )
+        for name in ("Beta", "Gamma"):
+            assert (runtime_root / name / "facts.json").read_text(
+                encoding="utf-8"
+            ) == "[2]", (
+                "%s was stranded by the read-only leftovers of an earlier "
+                "entry" % name
+            )
+        # And the leftovers are GONE, not merely stepped around. The run
+        # continuing is the jam guard's doing; this is the removal's, and
+        # without asserting it the two are indistinguishable -- which is
+        # how the first version of this guard survived its own mutation.
+        assert not parent.exists(), (
+            "read-only leftovers kept the staging parent alive: %s"
+            % (
+                sorted(str(q.relative_to(parent)) for q in parent.rglob("*"))
+                if parent.is_dir()
+                else parent
+            )
+        )
+    finally:
+        os.chmod(locked, stat_module.S_IREAD | stat_module.S_IWRITE)
+        _force = migrations_module._force_rmtree
+        if parent.exists():
+            _force(parent)
+
+
+@pytest.mark.unit
+def test_a_destination_appearing_while_staging_is_still_authoritative(tmp_path):
+    """"Not in the runtime root" never meant "it was never migrated".
+
+    A cloud import deliberately deletes managed files, and users delete them
+    too, so an existing runtime entry is authoritative and is left alone. The
+    check for that ran before the copy, and the copy is the slow part -- so
+    an entry created during it was overwritten by the seed. Both branches
+    re-check at the last moment now.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[seed]", encoding="utf-8")
+    (project_root / "loose.json").write_text("[seed]", encoding="utf-8")
+
+    real_copytree = migrations_module.shutil.copytree
+    real_copy2 = migrations_module.shutil.copy2
+    real_replace = migrations_module.replace_with_busy_retry
+    published = []
+
+    def _someone_else_gets_there_first_tree(source, destination, *a, **k):
+        result = real_copytree(source, destination, *a, **k)
+        winner = runtime_root / "Carol"
+        winner.mkdir(parents=True, exist_ok=True)
+        (winner / "facts.json").write_text("[live]", encoding="utf-8")
+        return result
+
+    def _someone_else_gets_there_first_file(source, destination, *a, **k):
+        result = real_copy2(source, destination, *a, **k)
+        (runtime_root / "loose.json").write_text("[live]", encoding="utf-8")
+        return result
+
+    def _record_publish(source, destination, *a, **k):
+        published.append(Path(destination).name)
+        return real_replace(source, destination, *a, **k)
+
+    with patch.object(
+        migrations_module.shutil, "copytree", _someone_else_gets_there_first_tree
+    ), patch.object(
+        migrations_module.shutil, "copy2", _someone_else_gets_there_first_file
+    ), patch.object(
+        migrations_module, "replace_with_busy_retry", _record_publish
+    ):
+        config_manager.migrate_memory_files()
+
+    # The DECISION is what is pinned, not what the platform happens to do
+    # with the rename afterwards. Windows refuses a directory destination
+    # outright, so an outcome-only assertion passed with the re-check
+    # removed -- and the case the finding is really about, POSIX replacing
+    # an EMPTY directory, cannot be reproduced here at all.
+    assert published == [], (
+        "the migration tried to publish over entries that appeared while it "
+        "was staging: %r" % (published,)
+    )
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[live]", "the seed replaced a runtime entry that appeared while staging"
+    assert (runtime_root / "loose.json").read_text(
+        encoding="utf-8"
+    ) == "[live]", "the seed replaced a runtime file that appeared while staging"
+
+
+@pytest.mark.unit
+def test_a_leftover_at_the_staging_name_does_not_stop_the_run(tmp_path):
+    """Every directory entry stages under the same name inside the workspace.
+
+    Sharing one name is what keeps the staged path short -- a per-entry
+    subdirectory put the longest component of all on every descendant -- but
+    it means a leftover at that name jams every entry after it. A run killed
+    mid-copy leaves exactly that.
+
+    BOTH ways out are pinned here, because they are layered: the leftover is
+    removed, and if it will not go, the entry mints its own name rather than
+    letting one poisoned path take the whole run down. The second is tested
+    by making removal do nothing at all, which is what an unremovable tree
+    amounts to.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    def _run(disable_removal):
+        config_manager = _make_config_manager(tmp_path / str(disable_removal))
+        project_root = tmp_path / str(disable_removal) / "project-memory"
+        runtime_root = tmp_path / str(disable_removal) / "runtime-memory"
+        config_manager.project_memory_dir = project_root
+        config_manager.memory_dir = runtime_root
+        runtime_root.mkdir(parents=True, exist_ok=True)
+        for name in ("Alpha", "Beta"):
+            (project_root / name).mkdir(parents=True)
+            (project_root / name / "facts.json").write_text(
+                "[1]", encoding="utf-8"
+            )
+
+        real_prepare = type(config_manager)._prepare_migration_staging_root
+
+        def _prepare_with_a_leftover(manager):
+            workspace = real_prepare(manager)
+            # What a run killed mid-copy leaves behind.
+            (workspace / "d" / "half-copied").mkdir(parents=True)
+            return workspace
+
+        patches = [
+            patch.object(
+                type(config_manager),
+                "_prepare_migration_staging_root",
+                _prepare_with_a_leftover,
+            )
+        ]
+        if disable_removal:
+            patches.append(
+                patch.object(
+                    migrations_module, "_force_rmtree", lambda *a, **k: None
+                )
+            )
+        for entered in patches:
+            entered.start()
+        try:
+            config_manager.migrate_memory_files()
+        finally:
+            for entered in patches:
+                entered.stop()
+        return runtime_root
+
+    for disable_removal in (False, True):
+        runtime_root = _run(disable_removal)
+        for name in ("Alpha", "Beta"):
+            assert (runtime_root / name / "facts.json").read_text(
+                encoding="utf-8"
+            ) == "[1]", (
+                "%s was jammed by a leftover at the staging name "
+                "(removal disabled: %s)" % (name, disable_removal)
+            )

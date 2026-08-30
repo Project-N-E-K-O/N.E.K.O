@@ -647,6 +647,17 @@ def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
     os.replace(temp_path, target_path)
 
 
+def replace_with_busy_retry(temp_path: str | os.PathLike[str], target_path: Path) -> None:
+    """Replace ``target_path``, briefly retrying Windows' "target is busy".
+
+    The public name for :func:`_replace_with_busy_retry`. The migration
+    path publishes through it, and a private name would have made the
+    retry semantics a convention that a rename in here could break
+    silently rather than a contract.
+    """
+    _replace_with_busy_retry(str(temp_path), target_path)
+
+
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:
     """Atomically replace a text file in the same directory."""
     target_path = Path(path)

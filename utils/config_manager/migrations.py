@@ -30,7 +30,7 @@ import uuid
 from pathlib import Path
 
 from config import CONFIG_FILES, DEFAULT_CONFIG_DATA
-from utils.file_utils import _replace_with_busy_retry
+from utils.file_utils import replace_with_busy_retry
 
 
 # Staging lives OUTSIDE the character namespace, beside memory/ rather than
@@ -57,6 +57,38 @@ _MIGRATION_STAGING_DIR = ".mig-staging"
 _MIGRATION_STAGING_STALE_SECONDS = 24 * 60 * 60
 
 _MIGRATION_LOCK = threading.Lock()
+
+
+def _force_rmtree(path):
+    """Remove a tree even when Windows made part of it read-only.
+
+    ``copy2`` preserves a seed's mode, so a staged tree can hold
+    read-only files -- and Windows refuses to unlink those, which
+    ``ignore_errors`` then swallows, leaving the tree standing. That is
+    not merely untidy here: every later directory entry stages under the
+    SAME name, so one such leftover makes every subsequent character fail
+    with FileExistsError. Measured: a read-only file in a failed entry
+    strands all the entries after it.
+
+    Still best effort at the end -- what it cannot remove is reported by
+    the caller checking, not by raising out of a cleanup path.
+    """
+    def _clear_read_only(_func, target, _exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            _func(target)
+        except OSError:
+            # The caller checks whether the tree actually went; a
+            # cleanup that raises would replace the real failure.
+            pass
+
+    handler = ("onexc" if sys.version_info >= (3, 12) else "onerror")
+    try:
+        shutil.rmtree(str(path), **{handler: _clear_read_only})
+    except OSError:
+        # Same reason. Whether it is gone is a question the caller asks
+        # of the filesystem, not of this call.
+        pass
 
 
 def _fsync_directory(path):
@@ -140,6 +172,81 @@ def _fsync_file(path):
                 # over a mode bit is worse than publishing one that is
                 # writable when its seed was not.
                 pass
+
+
+_MIGRATION_WORKSPACE_LOCK_NAME = ".lock"
+
+
+def _hold_workspace_lock(handle):
+    """Take an exclusive, non-blocking lock on an open workspace marker."""
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _claim_workspace(path):
+    """Mark a workspace LIVE for as long as the returned handle is open.
+
+    Age alone cannot tell a stale workspace from a slow one. The reclaim
+    only ever had a clock, so a run that spent longer than the threshold
+    on a single entry -- or one suspended with the machine -- looked
+    exactly like one that had been killed, and a second process could
+    delete a workspace still being written into.
+
+    Returns None when the lock cannot be taken at all. That is not a
+    failure: the lock only ever VETOES a deletion, so not having one
+    leaves the age check exactly as it was.
+    """
+    marker = os.path.join(str(path), _MIGRATION_WORKSPACE_LOCK_NAME)
+    try:
+        handle = open(marker, "a+b")
+        handle.write(b"1")
+        handle.flush()
+        _hold_workspace_lock(handle)
+    except (OSError, ImportError):
+        try:
+            handle.close()
+        except (OSError, NameError, UnboundLocalError):
+            pass
+        return None
+    return handle
+
+
+def _workspace_is_live(path):
+    """Whether another run still holds this workspace.
+
+    Answers TRUE for anything it cannot rule out -- an unopenable marker
+    is what a live owner looks like on Windows, where the file is held
+    exclusively. Only actually taking the lock counts as evidence the
+    owner is gone, so this can veto a deletion but never authorise one.
+
+    A workspace with NO marker is not live: it comes from a run killed
+    before it could claim one. The age check is what covers that case,
+    which is why both conditions are kept rather than one replacing the
+    other.
+    """
+    marker = os.path.join(str(path), _MIGRATION_WORKSPACE_LOCK_NAME)
+    if not os.path.exists(marker):
+        return False
+    try:
+        handle = open(marker, "r+b")
+    except OSError:
+        return True
+    try:
+        _hold_workspace_lock(handle)
+    except (OSError, ImportError):
+        return True
+    finally:
+        # Closing releases the lock on both platforms, and on Windows it
+        # has to happen before anything tries to remove the file.
+        handle.close()
+    return False
 
 
 def _same_device(left, right):
@@ -322,17 +429,23 @@ class MigrationsMixin:
         nothing migrates -- strictly worse than the plain copy2 this
         replaced, which had no such requirement.
 
-        So when the devices differ the workspace goes inside
-        ``memory_dir``, the one place guaranteed to be on the right one.
-        Returns whether the parent is OURS as well: inside the character
-        namespace nothing may be removed, reused, or swept, and no fixed
-        name is claimed -- the workspace is minted by ``mkdtemp``, so it
-        cannot collide with a character however that character is named.
+        So when the devices differ the parent moves under ``memory_dir``,
+        the one place guaranteed to be on the right one -- but it is
+        still a reserved SUBDIRECTORY rather than the namespace itself.
+        Minting workspaces straight into ``memory_dir`` meant nothing
+        could ever find them again: every run picks a fresh name, so a
+        killed run's copy of a full character tree stayed there for good
+        and repeated interrupted starts filled the destination volume.
+
+        One reserved name gives both layouts the same reclaim. Sweeping
+        inside it is not sweeping the character namespace: even if a
+        character were somehow named ``.mig-staging``, everything a
+        character directory holds is ordinary-named, and the sweep only
+        touches dot-prefixed entries it could take the lock on.
         """
-        default = Path(self.app_docs_dir) / _MIGRATION_STAGING_DIR
         if _same_device(self.app_docs_dir, self.memory_dir):
-            return default, True
-        return Path(self.memory_dir), False
+            return Path(self.app_docs_dir) / _MIGRATION_STAGING_DIR, True
+        return Path(self.memory_dir) / _MIGRATION_STAGING_DIR, True
 
     def _reclaim_migration_staging(self, workspace):
         """Remove this run's workspace, and what a killed run left behind.
@@ -352,18 +465,26 @@ class MigrationsMixin:
         removing it whole meant whichever finished first deleted the
         other's live copy out from under it.
 
-        Nothing is swept in the cross-device fallback, where the parent is
-        ``memory_dir`` itself: an age sweep inside the character namespace
-        is exactly the mistake this design removed. A kill there leaves one
-        dot-prefixed directory, which is the narrower price for migrating
-        at all on that layout.
+        A sibling is removed only when it is BOTH aged out and unlocked.
+        Age alone could not tell a stale workspace from a slow or
+        suspended one, and the lock alone cannot speak for a run killed
+        before it claimed one -- so both are required, and either one
+        saying "leave it" is enough.
         """
         try:
+            handle = getattr(self, "_migration_workspace_lock", None)
+            if handle is not None:
+                # Before the removal, not after: on Windows an open file
+                # cannot be unlinked, and this one is inside the tree.
+                self._migration_workspace_lock = None
+                try:
+                    handle.close()
+                except OSError:
+                    # Releasing a lock we are about to drop anyway.
+                    pass
             if workspace is not None:
-                shutil.rmtree(workspace, ignore_errors=True)
-            parent, owned = self._migration_staging_parent()
-            if not owned:
-                return
+                _force_rmtree(workspace)
+            parent, _owned = self._migration_staging_parent()
             # A link or a plain file at the reserved name means we never
             # used it -- the preparation step worked around it. Do not
             # walk it and do not rmdir it: on Windows rmdir removes a
@@ -386,7 +507,10 @@ class MigrationsMixin:
                     # No age, no evidence it is stale. Leave it.
                     continue
                 if entry.is_dir() and not entry.is_symlink():
-                    shutil.rmtree(entry, ignore_errors=True)
+                    if _workspace_is_live(entry):
+                        # Old, but somebody still has it open.
+                        continue
+                    _force_rmtree(entry)
                 else:
                     try:
                         entry.unlink()
@@ -422,12 +546,7 @@ class MigrationsMixin:
         nothing about; the run that finished first used to delete the
         other's live copy along with the parent.
         """
-        parent, owned = self._migration_staging_parent()
-        if not owned:
-            # memory_dir itself, on the cross-device layout. Nothing here
-            # is ours to remove or reuse -- just mint a workspace beside
-            # the characters and take it away again.
-            return Path(tempfile.mkdtemp(dir=str(parent), prefix="."))
+        parent, _owned = self._migration_staging_parent()
         # Something else holding the reserved name is worked AROUND, not
         # deleted. A link would be followed out of the tree we are allowed
         # to write, and a plain file makes mkdir raise FileExistsError,
@@ -445,13 +564,21 @@ class MigrationsMixin:
         # the right way round -- the leak needs a squatted name AND a kill,
         # while deleting a stranger's data needs only the squatted name.
         if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
-            return Path(
-                tempfile.mkdtemp(dir=str(self.app_docs_dir), prefix=".mig-")
+            return self._claimed_workspace(
+                tempfile.mkdtemp(dir=str(parent.parent), prefix=".mig-")
             )
         parent.mkdir(parents=True, exist_ok=True)
         # Dot-prefixed and short. mkdtemp's own default prefix is longer,
         # and every staged descendant carries this component.
-        return Path(tempfile.mkdtemp(dir=str(parent), prefix="."))
+        return self._claimed_workspace(
+            tempfile.mkdtemp(dir=str(parent), prefix=".")
+        )
+
+    def _claimed_workspace(self, path):
+        """Hold this workspace's lock for the rest of the run."""
+        workspace = Path(path)
+        self._migration_workspace_lock = _claim_workspace(workspace)
+        return workspace
 
     def migrate_memory_files(self):
         """Migrate seeded memory into the runtime root, once, serialised.
@@ -515,6 +642,16 @@ class MigrationsMixin:
                 # 第一个失败的条目会把它后面所有角色和散文件一起留在项目
                 # 根里——比这次要修的那个缺口更糟。
                 try:
+                    # The workspace is still in use. Its mtime does not
+                    # move on its own during a deep copytree, so without
+                    # this the age check ages out a run that is merely
+                    # slow. Belt and braces with the lock, which covers
+                    # the same case on filesystems that can hold one.
+                    try:
+                        os.utime(staging_root, None)
+                    except OSError:
+                        # Cosmetic; the lock is the real answer.
+                        pass
                     dest_path = self.memory_dir / item.name
 
                     # 目标已存在（任何类型、包括坏掉的符号链接）就不碰。
@@ -554,6 +691,12 @@ class MigrationsMixin:
                             # contents, and the next start treats it as
                             # authoritative and never retries it.
                             _fsync_file(str(staged_file))
+                            # Re-checked HERE, not only before the copy.
+                            # A runtime entry that appears while we are
+                            # staging is authoritative too, and the
+                            # window used to be the whole copy.
+                            if dest_path.is_symlink() or dest_path.exists():
+                                continue
                             # Windows lets antivirus, indexing or a
                             # preview handler hold the staged file for a
                             # moment, and os.replace then fails with a
@@ -564,8 +707,8 @@ class MigrationsMixin:
                             # utils/file_utils already backs off over, so
                             # it uses that rather than a second copy of
                             # the error codes and delays.
-                            _replace_with_busy_retry(
-                                str(staged_file), dest_path
+                            replace_with_busy_retry(
+                                staged_file, dest_path
                             )
                             # The NAME too, not just its contents.
                             _fsync_directory(dest_path.parent)
@@ -598,22 +741,43 @@ class MigrationsMixin:
                     # descendant. Items are sequential, so one name is
                     # enough, and it is gone again by the end of the entry.
                     staging = staging_root / "d"
+                    if staging.exists() or staging.is_symlink():
+                        # A previous entry failed and something in its
+                        # tree would not go. Try harder, then give up on
+                        # the shared name entirely rather than let one
+                        # entry take every later character down with it.
+                        _force_rmtree(staging)
+                    if staging.exists() or staging.is_symlink():
+                        staging = Path(
+                            tempfile.mkdtemp(dir=str(staging_root))
+                        ) / "d"
                     try:
                         shutil.copytree(item, staging)
                         # Same two steps as the file branch, over a tree:
                         # the copied contents first, then the published
                         # NAME. copytree only closes what it writes.
                         _fsync_tree(staging)
+                        # Same last-moment re-check as the file branch.
+                        # It narrows the window to the rename itself and
+                        # does not close it: POSIX rename replaces an
+                        # EMPTY directory by design, and RENAME_NOREPLACE
+                        # is Linux-only and not exposed by CPython. What
+                        # remains reachable can only ever replace a
+                        # directory with nothing in it -- a non-empty one
+                        # raises ENOTEMPTY, and Windows refuses a
+                        # directory destination outright.
+                        if dest_path.is_symlink() or dest_path.exists():
+                            continue
                         # Same window, same backoff. os.replace moves a
                         # directory onto a name that does not exist yet on
                         # both platforms, which is the only case here.
-                        _replace_with_busy_retry(str(staging), dest_path)
+                        replace_with_busy_retry(staging, dest_path)
                         _fsync_directory(dest_path.parent)
                         print(f"Migrated memory directory: {item.name}")
                     finally:
                         # Only this entry's copy. The workspace is the
                         # whole run's and the next item needs it.
-                        shutil.rmtree(staging, ignore_errors=True)
+                        _force_rmtree(staging)
                 except Exception as exc:
                     print(
                         f"Warning: Failed to migrate memory entry {item.name}: {exc}",
