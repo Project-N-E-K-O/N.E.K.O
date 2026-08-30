@@ -1196,11 +1196,13 @@ def test_jukebox_manager_bindings_filter_hidden_songs(mock_page: Page):
 
 @pytest.mark.frontend
 def test_jukebox_manager_long_song_name_scrolls_without_pushing_actions(mock_page: Page):
-    """长歌名只在名字列里滚动，不改变条目里其它列的位置。
+    """A long song name scrolls inside its own column without moving the other columns.
 
-    条目是 `.sam-item` 上的两列 grid：`.sam-item-info`（含 `.sam-item-header`）占第一列，
-    `.sam-item-actions` 占第二列，所以操作按钮本来就在名字列右边。这里用短歌名条目做基线，
-    比对两者的列边界，来验证名字长度不会撑开第一列。
+    ``.sam-item`` is a two-column grid: ``.sam-item-info`` (which wraps
+    ``.sam-item-header``) takes column 1 and ``.sam-item-actions`` takes column 2, so
+    the action buttons always sit to the right of the name column. A short-name row is
+    rendered alongside as a baseline, and the two rows' column edges are compared to
+    show that name length does not stretch column 1.
     """
     setup_song_manager_page(
         mock_page,
