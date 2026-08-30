@@ -19,10 +19,21 @@ from main_logic.tool_calling import ToolCall, ToolImage, ToolResult
 
 class _Client(_ToolingMixin):
     """Just enough of OmniOfflineClient to exercise the tool loop's history
-    writes."""
+    writes.
+
+    The language provider is pinned rather than left off. Every model-facing
+    string this file asserts on now comes from ``config.prompts.prompts_tool``,
+    and an absent provider resolves through ``resolve_global_language()`` --
+    which another test file binds to the machine's real locale for the rest of
+    the pytest process (``test_user_directives`` installs the runtime
+    bindings). Under ``pytest-randomly`` that would make the captions below
+    depend on file order. Locale *selection* is pinned in
+    test_tool_image_prompt_locale.py, which owns the provider.
+    """
 
     def __init__(self, results: dict[str, ToolResult] | None = None):
         self._results = results or {}
+        self._user_language_provider = lambda: "en"
         self.on_tool_call = self._handle
 
     async def _handle(self, call: ToolCall) -> ToolResult:

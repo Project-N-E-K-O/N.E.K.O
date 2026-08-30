@@ -38,6 +38,16 @@ from main_logic.tool_calling import (
     _TOOL_IMAGE_TURN_MAX_B64_BYTES,
     _TOOL_IMAGE_TURN_MAX_COUNT,
 )
+from config.prompts.prompts_sys import _loc
+from config.prompts.prompts_tool import (
+    TOOL_IMAGE_CAPTION,
+    TOOL_IMAGE_DEFAULT_CAPTION,
+    TOOL_IMAGE_HISTORY_PLACEHOLDER,
+    TOOL_IMAGE_OMITTED_WARNING,
+    TOOL_IMAGE_RECALL_HANDLE,
+    TOOL_IMAGE_RECALL_HINT,
+    normalize_tool_image_locale,
+)
 
 
 class _ToolingMixin:
@@ -290,7 +300,30 @@ class _ToolingMixin:
             return False
         return True
 
-    _TOOL_IMAGE_DEFAULT_CAPTION = "（工具返回的画面）"
+    def _tool_image_locale(self) -> str:
+        """Resolve the locale for one injected tool-image turn.
+
+        The session locale is only reachable from an instance: it arrives as
+        the ``user_language_provider`` callable the manager hands to
+        ``OmniOfflineClient.__init__``, which is why the default caption is no
+        longer a class attribute. Same guarded call as
+        ``utils.slop_filter.resolve_dialog_slop_lang`` -- a provider that
+        raises must not take down a tool loop that otherwise succeeded, and
+        ``normalize_tool_image_locale`` resolves ``None`` to the app's global
+        language.
+        """
+        provider = getattr(self, "_user_language_provider", None)
+        user_language = None
+        if callable(provider):
+            try:
+                user_language = provider()
+            except Exception as e:
+                logger.debug(
+                    "Tool image: user language provider failed (%s: %s); "
+                    "falling back to the global language",
+                    type(e).__name__, e,
+                )
+        return normalize_tool_image_locale(user_language)
 
     def _append_tool_result_images(
         self,
@@ -308,6 +341,11 @@ class _ToolingMixin:
         images = getattr(result, "images", None)
         if not images:
             return
+
+        # Once per turn: every string below has to come out in one language,
+        # and the provider is a live callable that could answer differently
+        # between the caption and the placeholder built from the same result.
+        lang = self._tool_image_locale()
 
         if slots is None:
             slots = getattr(self, "_pending_tool_image_slots", None)
@@ -352,13 +390,15 @@ class _ToolingMixin:
             # Keep each instruction adjacent to the image it describes.
             # Always caption: several providers reject bare image parts.
             instruction = (
-                img.vision_prompt.strip() or self._TOOL_IMAGE_DEFAULT_CAPTION
+                img.vision_prompt.strip()
+                or _loc(TOOL_IMAGE_DEFAULT_CAPTION, lang)
             )
             tool_name = str(result.name or "unknown")
             call_id = str(result.call_id or "unknown")
-            caption = (
-                f"Tool image from {tool_name} (call_id={call_id}): "
-                f"{instruction}"
+            caption = _loc(TOOL_IMAGE_CAPTION, lang).format(
+                tool_name=tool_name,
+                call_id=call_id,
+                instruction=instruction,
             )
             content.append({"type": "text", "text": caption})
             used_count += 1
@@ -366,8 +406,9 @@ class _ToolingMixin:
 
         if omitted_count:
             result.add_image_warnings(
-                f"{omitted_count} tool image(s) omitted because the shared "
-                "turn image budget was exhausted"
+                _loc(TOOL_IMAGE_OMITTED_WARNING, lang).format(
+                    count=omitted_count
+                )
             )
             # Tool results are serialized before image turns so that all
             # role=tool messages stay adjacent. Refresh the matching message
@@ -389,15 +430,21 @@ class _ToolingMixin:
         recall_hint = output.get("recall_hint")
         recall_suffix = ""
         if isinstance(shot_id, str) and shot_id.strip():
-            recall_suffix = f"；句柄 {shot_id.strip()}"
+            recall_suffix = _loc(TOOL_IMAGE_RECALL_HANDLE, lang).format(
+                shot_id=shot_id.strip()
+            )
             if isinstance(recall_hint, str) and recall_hint.strip():
-                recall_suffix += f"；{recall_hint.strip()}"
+                recall_suffix += _loc(TOOL_IMAGE_RECALL_HINT, lang).format(
+                    recall_hint=recall_hint.strip()
+                )
         slots.append((
             messages,
             len(messages) - 1,
             message,
-            f"[工具 {result.name} 返回的画面已从上下文移除；"
-            f"图片只在产生它的那一轮可见{recall_suffix}]",
+            _loc(TOOL_IMAGE_HISTORY_PLACEHOLDER, lang).format(
+                tool_name=result.name,
+                recall_suffix=recall_suffix,
+            ),
         ))
 
     def _release_tool_image_slots(self, slots=None) -> None:
