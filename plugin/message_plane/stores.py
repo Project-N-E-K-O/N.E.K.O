@@ -281,3 +281,53 @@ class StoreRegistry:
 
     def list_store_names(self) -> list[str]:
         return sorted(self._stores.keys())
+
+
+# ── Canonical store layout ─────────────────────────────────────────────
+#
+# 这份清单以前在三个地方各抄了一份（main.py / runner.py / rpc_server.py），
+# 三份都得记得改。只改一处的后果是静默的：ingest 遇到没注册的 store 只会
+# _record_drop("store_unresolved")，不会回报给 publisher，于是 standalone 模式
+# 悄悄丢掉全部记录。收成一个构造函数就是为了让"漏注册"不再可能。
+
+# 通用 store：都用 MESSAGE_PLANE_STORE_MAXLEN。
+DEFAULT_STORE_NAMES: tuple[str, ...] = (
+    "messages",
+    "events",
+    "lifecycle",
+    "runs",
+    "export",
+    "memory",
+    # conversations 是独立的 store，用于存储对话上下文（与 messages 分离）
+    "conversations",
+)
+
+# 宿主真正推给模型的那几张画面。单列一个 store 而不是复用现成的：
+# - 不能是 "messages"：proactive_bridge 订阅了 "messages." 前缀，会在主动搭话
+#   的投递线程上对每一帧 json.loads 一次；
+# - 不能是 events 下新开一个 topic：BusRpcClientBase._build_query_args 把
+#   {"topic": "all"} 写死了，新 topic 对 ctx.bus.events.get() 根本不可见；
+# - 容量单独给（MESSAGE_PLANE_FRAMES_STORE_MAXLEN），不能吃 20000 的默认值。
+FRAMES_STORE_NAME = "frames"
+
+# frames 也走 topic "all"：pull 侧复用 BusRpcClientBase，那里的 topic 是写死的。
+FRAMES_TOPIC = "all"
+
+
+def build_default_store_registry(
+    *,
+    maxlen: int,
+    frames_maxlen: int,
+    default_store: str = "messages",
+) -> StoreRegistry:
+    """Build the registry every message-plane entry point shares.
+
+    ``frames_maxlen`` is separate on purpose: a frame is three orders of
+    magnitude larger than an ordinary record, so it cannot share the generic
+    per-topic deque length.
+    """
+    registry = StoreRegistry(default_store=default_store)
+    for name in DEFAULT_STORE_NAMES:
+        registry.register(TopicStore(name=name, maxlen=maxlen))
+    registry.register(TopicStore(name=FRAMES_STORE_NAME, maxlen=frames_maxlen))
+    return registry

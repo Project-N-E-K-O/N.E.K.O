@@ -628,6 +628,76 @@ async def publish_voice_transcript_observed_best_effort(
     return sent
 
 
+PROVIDER_FRAME_OBSERVED_EVENT = "provider_frame_observed"
+
+
+async def publish_provider_frame_observed_best_effort(
+    lanlan_name: Optional[str],
+    *,
+    image_base64: str,
+    source: str,
+    captured_at: Optional[float] = None,
+    turn_id: Optional[str] = None,
+    generation: Optional[int] = None,
+    mime: str = "image/jpeg",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Copy a frame the provider already received onto the plugin bus.
+
+    Call this only where the frame was genuinely delivered: a frame the
+    session's throttle or delivery-mode fence dropped was never sent, so it
+    must never be copied. Pass the bytes that were actually transmitted --
+    on the paths where compression rewrites the outgoing event in place, that
+    is the compressed copy read back out of the event, not the caller's
+    original ``image_b64``.
+
+    main_server cannot write to the message plane itself: the ingest
+    credential is minted inside the plugin-server process and the runner's
+    port fallback only lands in agent_server's own environment. So this rides
+    the existing session PUB channel and agent_server forwards it into the
+    ``frames`` store (see ``api_runtime._on_session_event``). No new socket.
+
+    Best effort in the strong sense. PUB/SUB drops for a slow joiner and at
+    HWM, the send is NOBLOCK, and the far side refuses frames whenever its
+    bridge queue is behind. ``True`` means "handed to the socket", never
+    "a plugin will see it".
+
+    The payload bound is asserted on the agent side against the same constant
+    ingest enforces (MESSAGE_PLANE_PAYLOAD_MAX_BYTES). It is not re-derived
+    here: main_logic sits below ``plugin`` in the layering and cannot read
+    that setting, and a second, guessed bound would be the thing that drifts.
+    """
+    b64 = str(image_base64 or "")
+    if not b64:
+        return False
+    event: Dict[str, Any] = {
+        "event_type": PROVIDER_FRAME_OBSERVED_EVENT,
+        "event_id": uuid.uuid4().hex,
+        "lanlan_name": lanlan_name,
+        "source": str(source or "unknown"),
+        "image_base64": b64,
+        "mime": str(mime or "image/jpeg"),
+    }
+    if captured_at is not None:
+        event["captured_at"] = float(captured_at)
+    if turn_id is not None:
+        event["turn_id"] = str(turn_id)
+    # 0 is a real generation, so test for None rather than truthiness.
+    if generation is not None:
+        event["generation"] = int(generation)
+    if metadata:
+        event["metadata"] = dict(metadata)
+
+    sent = await publish_session_event_threadsafe(event)
+    if not sent:
+        logger.debug(
+            "[EventBus] provider_frame_observed not sent: lanlan=%s source=%s",
+            lanlan_name,
+            event["source"],
+        )
+    return sent
+
+
 async def publish_voice_transcript_request_reliably(
     lanlan_name: str,
     transcript: str,

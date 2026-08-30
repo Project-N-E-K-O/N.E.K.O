@@ -18,6 +18,7 @@ from ._shared import (
     Any,
     Callable,
     Dict,
+    GEMINI_TURN_IMAGE_MIME,
     OMNI_WS_FRAME_LIMIT_BYTES,
     Optional,
     VisualDeliveryMode,
@@ -497,6 +498,7 @@ class _ResponseMixin:
                 clean,
                 images_bytes=images_bytes,
                 visual_still_owned=visual_still_owned,
+                turn_id=stable_turn_id,
             )
             return None
         if self.ws is None or self._fatal_error_occurred:
@@ -612,6 +614,28 @@ class _ResponseMixin:
         # 那是**提交之后**才拒，需要一次未经确认的补偿删除（见 issue #2982），
         # 比在提交前把帧摘掉贵得多。丢帧只降级成纯文本，话照送。
         arbiter = self._ensure_response_arbiter()
+        # send_event's boolean is the only place the transport ever says "these
+        # bytes left the socket", and the arbiter drops it on the floor
+        # (_send_queued_event awaits the sender and ignores what it returns).
+        # So ``ticket.sent`` resolving is not by itself proof that the item was
+        # written: a retired ws or an earlier fatal error makes send_event
+        # return False and dispatch carries on regardless. The frames bus may
+        # only carry frames the provider actually received, so keep this turn's
+        # own write result and publish on that.
+        item_delivered = False
+
+        async def _send_turn_event(event: Dict[str, Any]):
+            nonlocal item_delivered
+            written = await self.send_event(
+                event,
+                pre_send=_downgrade_if_visual_ownership_lost,
+            )
+            # The same sender carries response.create; only the item event says
+            # anything about frames.
+            if event is item_event:
+                item_delivered = bool(written)
+            return written
+
         ticket = await arbiter.enqueue(
             source="external_asr_multimodal",
             events_before_response=(item_event,),
@@ -629,11 +653,9 @@ class _ResponseMixin:
             # 第三处，也是最后一处：arbiter 交给传输之后，send_event 还要等
             # _send_semaphore；那段等待里所有权同样可能翻转，而 payload 是拿到
             # 信号量之后才序列化的。用 main(#2837) 引入的每-ticket event_sender
-            # 把同一个降级函数送进那个临界区，序列化自然会带上结果。
-            event_sender=lambda _ev: self.send_event(
-                _ev,
-                pre_send=_downgrade_if_visual_ownership_lost,
-            ),
+            # 把同一个降级函数送进那个临界区（见上面的 _send_turn_event），
+            # 序列化自然会带上结果。
+            event_sender=_send_turn_event,
         )
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:
@@ -652,7 +674,124 @@ class _ResponseMixin:
                 == active_pause_id
             ):
                 arbiter.pause_dispatch()
+        # Only here, and only on the path where ``ticket.sent`` resolved without
+        # raising. Everything that could still have removed or rewritten a frame
+        # has already run against this very dict -- both ownership downgrades
+        # strip input_image parts in place, send_event's recompression rewrites
+        # the survivors in place -- and nothing mutates it afterwards. So the
+        # parts left in ``item_event`` are exactly the pictures the provider
+        # got. Publishing any earlier would put frames on the bus that were
+        # never sent, which is the one thing this bus must never do.
+        if item_delivered:
+            await self._publish_delivered_multimodal_frames(
+                item_event,
+                turn_id=stable_turn_id,
+            )
         return ticket
+
+    async def _publish_delivered_multimodal_frames(
+        self,
+        item_event: Dict[str, Any],
+        *,
+        turn_id: str,
+    ) -> int:
+        """Copy a delivered turn's surviving frames onto the plugin frames bus.
+
+        The WebSocket half of the independent-ASR frame publish; Gemini's is
+        ``_publish_gemini_external_frames``. It matters on its own because
+        these frames never pass through ``stream_image``: an external-ASR turn
+        hands the sampled frames and the transcript to the provider as one
+        item, and that mode also arms the raw-visual fence, so ``stream_image``
+        refuses every ambient frame -- between the two of them, these turns are
+        the only frame channel a plugin can see at all.
+
+        Reads the item that was sent rather than the caller's staged images on
+        purpose. A turn that lost visual ownership had its ``input_image``
+        parts stripped out of this dict, and an oversized one had them
+        recompressed -- or the oldest ones dropped -- in place. The staged
+        copies are therefore neither the right pictures nor the right set.
+
+        Best effort, and never fatal: the turn is already delivered by the time
+        this runs, so a bus that is absent or down must not turn a good turn
+        into a failed one. Returns how many frames were handed to the socket,
+        which is never a promise that a plugin will see them.
+        """
+
+        item = item_event.get("item")
+        content = item.get("content") if isinstance(item, dict) else None
+        if not isinstance(content, list):
+            return 0
+        frames: list[tuple[str, str]] = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "input_image":
+                continue
+            url = part.get("image_url")
+            if not isinstance(url, str) or not url.startswith("data:"):
+                continue
+            header, _, payload = url.partition(",")
+            if not payload:
+                continue
+            # "data:image/jpeg;base64" -> "image/jpeg". Read the mime back out
+            # instead of assuming JPEG: recompression rewrites the payload but
+            # keeps whatever prefix the part was built with.
+            mime = header[len("data:"):].split(";", 1)[0].strip() or "image/jpeg"
+            frames.append((mime, payload))
+        if not frames:
+            return 0
+        return await self._publish_turn_frames(frames, turn_id=turn_id)
+
+    async def _publish_turn_frames(
+        self,
+        frames: list[tuple[str, str]],
+        *,
+        turn_id: Optional[str],
+    ) -> int:
+        """Hand one delivered turn's frames to the plugin bus. Never raises.
+
+        Shared by both external-ASR routes -- the WebSocket item and the Gemini
+        SDK turn -- so the two cannot drift into publishing different record
+        shapes for what is, from a plugin's side, the same event.
+        """
+
+        # Function-local import: agent_event_bus pulls in pyzmq, and the
+        # realtime client sits on the startup import chain.
+        from main_logic.agent_event_bus import (
+            publish_provider_frame_observed_best_effort,
+        )
+
+        # The capture channel staging recorded ("screen" / "camera"). The
+        # sampled frames of one utterance come off that same channel, and there
+        # is no per-frame source to read here, so this is the honest label
+        # rather than a category invented at this layer.
+        source = str(getattr(self, "_latest_image_source", "") or "unknown")
+        published = 0
+        for mime, image_b64 in frames:
+            # No captured_at and no generation: the only per-frame clock this
+            # layer can reach (_latest_image_captured_at) is time.monotonic(),
+            # while the store indexes captured_at as a wall clock -- a monotonic
+            # reading there would file every frame near the epoch. The forwarder
+            # stamps arrival time instead, and turn_id is what ties these frames
+            # to the turn they were sent with. lanlan_name is None because the
+            # realtime client is never told which character owns it.
+            try:
+                if await publish_provider_frame_observed_best_effort(
+                    None,
+                    image_base64=image_b64,
+                    source=source,
+                    turn_id=turn_id,
+                    mime=mime,
+                ):
+                    published += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # One failure means the bus itself is unreachable; retrying the
+                # remaining frames would only repeat it.
+                logger.debug(
+                    "frames bus publish failed for turn %s: %s", turn_id, exc
+                )
+                break
+        return published
 
     async def _cancel_gemini_proactive_submit(
         self,
@@ -948,6 +1087,7 @@ class _ResponseMixin:
         *,
         images_bytes: tuple[bytes, ...] = (),
         visual_still_owned=None,
+        turn_id: Optional[str] = None,
     ) -> None:
         """Submit one external-ASR turn through the owned Gemini lifecycle."""
 
@@ -1025,6 +1165,51 @@ class _ResponseMixin:
             if not accepted and not quarantined:
                 # 同步发送失败（provider 直接拒）才立刻结算：那一轮确实没被收下。
                 self._settle_gemini_external_turn(outcome_token)
+        # 第四个投递点的 Gemini 半边。放在 try/finally **之后**：CancelledError
+        # 在上面重新抛出（provider 可能已经收下，但我们无从确认），
+        # 同步发送失败则 accepted 为假 —— 两种“没送成”都到不了这里。
+        #
+        # 这条路非覆盖不可，不是对称性洁癖：独立 ASR 会武装 raw-visual
+        # fence，stream_image 于是拒掉每一张环境帧，这一轮就成了整个会话唯一的
+        # 画面通道。少了它，跑独立 ASR 的 Gemini 用户每句话都在把画面推给
+        # provider，而插件那侧的 frames 总线是空的。
+        if accepted and images_bytes:
+            await self._publish_gemini_external_frames(
+                images_bytes,
+                turn_id=turn_id,
+            )
+
+    async def _publish_gemini_external_frames(
+        self,
+        images_bytes: tuple[bytes, ...],
+        *,
+        turn_id: Optional[str],
+    ) -> int:
+        """Copy a delivered Gemini external-ASR turn's frames onto the bus.
+
+        Reads ``images_bytes`` rather than an outgoing event because this route
+        never builds one: the frames go to the SDK as raw bytes, so this tuple
+        IS what was handed over -- after the budget ladder ran, and after the
+        ownership recheck emptied it on a turn that lost its frames.
+        """
+
+        frames = [
+            # The same constant ``_gemini_send_user_turn`` sends under, not a
+            # second literal: a changed format would otherwise mislabel every
+            # record on the bus with nothing going red.
+            (GEMINI_TURN_IMAGE_MIME, base64.b64encode(image).decode("ascii"))
+            for image in images_bytes
+            if image
+        ]
+        if not frames:
+            return 0
+        return await self._publish_turn_frames(
+            frames,
+            # Empty is not an identity: the text-only Gemini route reaches
+            # _submit_external_gemini_turn without one, and a blank turn_id on
+            # the record would still read as "these frames belong together".
+            turn_id=str(turn_id or "") or None,
+        )
 
     async def submit_external_voice_turn(self, text: str, *, turn_id: str) -> None:
         """Submit external ASR text through the Provider-appropriate path."""

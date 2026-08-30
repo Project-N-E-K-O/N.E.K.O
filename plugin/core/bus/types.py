@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from plugin.core.bus.memory import MemoryList
     from plugin.core.bus.messages import MessageList
     from plugin.core.bus.conversations import ConversationList
+    from plugin.core.bus.frames import FrameList
 
 from plugin.core.bus.rev import dispatch_bus_change
 
@@ -102,6 +103,15 @@ class _ConversationClientProto(Protocol):
     ) -> "ConversationList": ...
 
 
+class _FramesClientProto(Protocol):
+    def get(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> "FrameList": ...
+
+
 class BusHubProtocol(Protocol):
     """Bus Hub 协议，提供对各种 Bus 客户端的访问
     
@@ -111,6 +121,7 @@ class BusHubProtocol(Protocol):
         lifecycle: 生命周期客户端，用于查询生命周期事件
         memory: 内存客户端，用于查询内存数据
         conversations: 对话客户端，用于查询对话上下文
+        frames: 画面客户端，用于读取宿主最近推给模型的那几帧（有损，不是日志）
     """
     @property
     def messages(self) -> _MessageClientProto: ...
@@ -126,6 +137,9 @@ class BusHubProtocol(Protocol):
 
     @property
     def conversations(self) -> _ConversationClientProto: ...
+
+    @property
+    def frames(self) -> _FramesClientProto: ...
 
 
 class BusReplayContext(Protocol):

@@ -310,9 +310,24 @@ recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-列表接口为 `filter` / `where`、`sort`、`limit`、`watch`。可调用形式 `filter(predicate)`、`where(predicate)` 和 `sort(key=...)` 仅处理本地快照；可重放的 watcher 链必须使用结构化 `filter(field=value, ...)` 与 `sort(by=...)`。只有 `messages`、`events`、`lifecycle` 支持 `watch()`；`conversations` 与 `memory` 是只读快照。watcher 仅接受 `add`、`del`、`change`。
+列表接口为 `filter` / `where`、`sort`、`limit`、`watch`。可调用形式 `filter(predicate)`、`where(predicate)` 和 `sort(key=...)` 仅处理本地快照；可重放的 watcher 链必须使用结构化 `filter(field=value, ...)` 与 `sort(by=...)`。只有 `messages`、`events`、`lifecycle` 支持 `watch()`；`conversations`、`memory` 与 `frames` 是只读快照。watcher 仅接受 `add`、`del`、`change`。
 
 `bus.memory` 保存的是有容量上限、只驻留内存的近期用户话语事件（TTL 为一小时），与角色持久化的事实、反思和人格相互独立。`ctx.query_memory(...)` 只为兼容而保留，它调用已弃用的占位端点，不执行语义召回。
+
+### Frames
+
+`bus.frames` 保存宿主已经推送给模型提供方的最近几帧画面——就是提供方实际收到的那份字节。
+
+```python
+frames = await self.bus.frames.get(max_count=4)
+latest = frames.sort(by="timestamp", reverse=True).limit(1)
+```
+
+插件无法要求截图。被会话自身的节流或投递模式栅栏丢掉的那一帧压根没有发给提供方，因此也不会出现在这里。
+
+**它不是日志，也不是队列。** 帧在四个位置被有意丢弃：message plane 的 PUB 套接字对慢订阅方和到达高水位时都会丢包；宿主侧的发布是非阻塞的；发送队列有上限，一旦落后就直接拒收新帧；store 本身只保留个位数（`NEKO_MESSAGE_PLANE_FRAMES_STORE_MAXLEN`，取值被夹在 2-8，默认 4）。轮询"每一帧"，或者认为读到过一次的帧还在，都会出错。
+
+每条记录带有 `image_base64`（只有一份，不存在可读的裸字节副本）、`mime`、`source`、`captured_at`、`turn_id`、`generation` 和 `frame_id`。`source` 是宿主给这一帧归的通道：`screen`、`camera`、`plugin`、`callback`、`proactive`、`user`，以及这一轮被重排后宿主已经说不准时的 `unknown`。请按 `frame_id` 去重：`generation` 只为常驻画面排序，一次性提示图不会让它前进，所以两条记录可能共用同一个值。
 
 ### 优先级等级
 

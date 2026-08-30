@@ -56,6 +56,13 @@ from ._shared import (
     truncate_to_tokens,
 )
 
+from ._media import (
+    _FRAME_SOURCE_PLUGIN,
+    _FRAME_SOURCE_SCREEN,
+    _FRAME_SOURCE_UNKNOWN,
+    _FRAME_SOURCE_USER,
+)
+
 from ._genai_support import (
     _should_use_genai_sdk,
 )
@@ -499,6 +506,7 @@ class _StreamingMixin:
         system_prefix: str | None = None,
         system_prefix_images: Optional[list[str]] = None,
         turn_images: Optional[Sequence[str]] = None,
+        turn_id: Optional[str] = None,
         on_turn_committed: Optional[Callable[[], None]] = None,
         thinking_on: bool = False,
         input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
@@ -552,6 +560,11 @@ class _StreamingMixin:
         invocation as ``system_prefix``.  Unlike ``_pending_images``, this list
         cannot be consumed by a concurrently scheduled text request while Core
         awaits its Focus decision.
+
+        ``turn_id`` identifies an independent-ASR utterance and travels no
+        further than the plugin frame bus, where it is what lets a plugin see
+        that several frames were sampled from one utterance. Ordinary text
+        turns have no such identity and leave it None.
         """  # noqa: DOCSTRING_CJK
         prefix_images = list(system_prefix_images or [])
         # 本轮自带的用户帧（独立 ASR 抽样出的开头/中间/结尾）。刻意不走
@@ -688,6 +701,16 @@ class _StreamingMixin:
                 + list(own_images)
                 + list(attachment_images)
             )
+            # 与上面那张列表逐位对齐的来源标签，只为帧总线服务（模型看到的还是
+            # 同一批字节，标签不进 content）。在这里算、而不是在发布点重新推断：
+            # 此刻每一张图属于哪个桶是**确定**的，fit 之后就只剩一个字符串列表了。
+            _ordered_sources = (
+                ([_FRAME_SOURCE_SCREEN] if proactive_image else [])
+                + [_FRAME_SOURCE_PLUGIN] * len(plugin_images)
+                + [_FRAME_SOURCE_PLUGIN] * len(prefix_images)
+                + [_FRAME_SOURCE_USER] * len(own_images)
+                + [_FRAME_SOURCE_USER] * len(attachment_images)
+            )
             # 各来源的**张数**配额是分开的（谁也花不了谁的额度），但它们最终落在
             # 同一条 HumanMessage 上，provider 看到的是**总和**——超过单请求上限
             # 会整条请求被拒，而不是丢几张图。从**前面**裁：离文本最近的那些才是
@@ -720,6 +743,15 @@ class _StreamingMixin:
             except BaseException:
                 _restore_consumed_queues()
                 raise
+            # 帧总线的来源标签按**下标**对应，所以只在张数没变时成立：rung 0 的
+            # 归一化和重压都是逐张映射（长度不变），抽样和丢弃则会改变张数，而
+            # 结果本身读不回它在原列表里的下标。这时退回 unknown —— 把插件推的
+            # 图标成 "screen" 比不标来源糟得多。
+            _attached_sources = (
+                _ordered_sources
+                if len(_attached_images) == len(_ordered_images)
+                else [_FRAME_SOURCE_UNKNOWN] * len(_attached_images)
+            )
             if _budget_notice:
                 # 级别跟着「有没有东西真的没了」走，与弹窗同一个判据。rung 0 是
                 # 无条件的，所以随手拖进来的一张手机照片每轮都会产生一条 notice；
@@ -821,6 +853,18 @@ class _StreamingMixin:
             history_replacement_text = f"{_prefix_clean}\n\n{history_replacement_text}"
         if has_images:
             self._evict_old_images()
+            # 把这一轮真正送出的帧抄一份给插件总线。位置在**提交之后**：从这里
+            # 起这批图已经在 _conversation_history 里，provider 一定会看到它们；
+            # 提交之前发布，等于把一批还可能被 _restore_consumed_queues() 退回
+            # 队列、从未送达的图当成"已送达"发布出去。
+            #
+            # 发的是 _attached_images —— fit 之后的字节，不是调用方给的原图。
+            # 归一化几乎每轮都会重编码，总线上必须是模型真正看到的那一张。
+            await self._publish_provider_frames(
+                _attached_images,
+                _attached_sources,
+                turn_id=turn_id,
+            )
 
         # Callback for user input
         transcript_callback = input_transcript_callback or self.on_input_transcript

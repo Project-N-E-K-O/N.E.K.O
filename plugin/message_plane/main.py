@@ -8,6 +8,7 @@ from typing import Optional
 from plugin.logging_config import logger
 
 from plugin.settings import (
+    MESSAGE_PLANE_FRAMES_STORE_MAXLEN,
     MESSAGE_PLANE_STORE_MAXLEN,
     MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT,
     MESSAGE_PLANE_ZMQ_PUB_ENDPOINT,
@@ -17,7 +18,7 @@ from plugin.settings import (
 from .ingest_server import MessagePlaneIngestServer
 from .pub_server import MessagePlanePubServer
 from .rpc_server import MessagePlaneRpcServer
-from .stores import StoreRegistry, TopicStore
+from .stores import build_default_store_registry
 
 
 def run_message_plane(
@@ -35,10 +36,10 @@ def run_message_plane(
     # write-closed plane.
     resolved_token = str(auth_token or "").strip() or secrets.token_urlsafe(32)
 
-    stores = StoreRegistry(default_store="messages")
-    # conversations 是独立的 store，用于存储对话上下文（与 messages 分离）
-    for name in ("messages", "events", "lifecycle", "runs", "export", "memory", "conversations"):
-        stores.register(TopicStore(name=name, maxlen=MESSAGE_PLANE_STORE_MAXLEN))
+    stores = build_default_store_registry(
+        maxlen=MESSAGE_PLANE_STORE_MAXLEN,
+        frames_maxlen=MESSAGE_PLANE_FRAMES_STORE_MAXLEN,
+    )
 
     pub_srv = MessagePlanePubServer(endpoint=pub_ep)
     ingest_srv = MessagePlaneIngestServer(

@@ -114,6 +114,10 @@ class BusConversationsProtocol(Protocol):
     def get_by_id(self, conversation_id: str, max_count: int = 10, timeout: float | None = None) -> object: ...
 
 
+class BusFramesProtocol(Protocol):
+    def get(self, **kwargs: object) -> object: ...
+
+
 class BusMemoryProtocol(Protocol):
     def get(self, *, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> object: ...
 
@@ -123,6 +127,7 @@ class BusProtocol(Protocol):
     events: BusEventsProtocol | None
     lifecycle: BusLifecycleProtocol | None
     conversations: BusConversationsProtocol | None
+    frames: BusFramesProtocol | None
     memory: BusMemoryProtocol | None
 
 
@@ -268,6 +273,7 @@ class RouterProtocol(Protocol):
 
 __all__ = [
     "BusConversationsProtocol",
+    "BusFramesProtocol",
     "BusEventsProtocol",
     "BusLifecycleProtocol",
     "BusMemoryProtocol",

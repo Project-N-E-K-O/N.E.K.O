@@ -233,13 +233,16 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             from plugin.message_plane.ingest_server import MessagePlaneIngestServer
             from plugin.message_plane.pub_server import MessagePlanePubServer
             from plugin.message_plane.rpc_server import MessagePlaneRpcServer
-            from plugin.message_plane.stores import StoreRegistry, TopicStore
-            from plugin.settings import MESSAGE_PLANE_STORE_MAXLEN
+            from plugin.message_plane.stores import build_default_store_registry
+            from plugin.settings import (
+                MESSAGE_PLANE_FRAMES_STORE_MAXLEN,
+                MESSAGE_PLANE_STORE_MAXLEN,
+            )
 
-            stores = StoreRegistry(default_store="messages")
-            # conversations 是独立的 store，用于存储对话上下文（与 messages 分离）
-            for name in ("messages", "events", "lifecycle", "runs", "export", "memory", "conversations"):
-                stores.register(TopicStore(name=name, maxlen=MESSAGE_PLANE_STORE_MAXLEN))
+            stores = build_default_store_registry(
+                maxlen=MESSAGE_PLANE_STORE_MAXLEN,
+                frames_maxlen=MESSAGE_PLANE_FRAMES_STORE_MAXLEN,
+            )
 
             pub_srv = MessagePlanePubServer(endpoint=str(self._endpoints.pub))
             ingest_srv = MessagePlaneIngestServer(

@@ -548,6 +548,27 @@ MESSAGE_PLANE_TOPIC_NAME_MAX_LEN = _get_int_env("NEKO_MESSAGE_PLANE_TOPIC_NAME_M
 # Env: NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES, default=512*1024
 MESSAGE_PLANE_PAYLOAD_MAX_BYTES = _get_int_env("NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 512 * 1024)
 MESSAGE_PLANE_STORE_MAXLEN = _get_int_env("NEKO_MESSAGE_PLANE_STORE_MAXLEN", 20000)
+
+# ``frames`` store 的独立容量。绝不能复用 MESSAGE_PLANE_STORE_MAXLEN：那是
+# per-topic deque 长度，20000 张 ~150 KB 的截图约 2 GB 常驻，且等于把用户约 8
+# 小时的屏幕历史留在 agent_server 进程里。frames 的契约是"provider 最近收到的
+# 那几张"，不是日志，所以这里只留个位数。
+# 下界 2：单张会让"刚拉过一次就被下一帧顶掉"变成常态，pull 方连一次重试都做不了。
+# 上界 8：再大只是延长屏幕内容的驻留时间，对 pull 方没有额外价值。
+# Env: NEKO_MESSAGE_PLANE_FRAMES_STORE_MAXLEN, default=4
+MESSAGE_PLANE_FRAMES_STORE_MAXLEN = max(
+    2, min(8, _get_int_env("NEKO_MESSAGE_PLANE_FRAMES_STORE_MAXLEN", 4))
+)
+
+# 一帧允许排进 plane bridge 发送队列的前提：队列当前深度低于这个水位。
+# bridge 的队列（maxsize=4096）是 events / lifecycle / runs 共用的，一条普通记录
+# 几百字节，一帧却是几百 KB。不设水位的话，bridge 一旦卡住，队列会先被帧填满，
+# 挤掉那些真正需要送达的小记录，内存也跟着涨到几百 MB。帧本来就是有损的：
+# bridge 落后时直接丢，比排队几分钟后送一张过期的图更符合契约。
+# Env: NEKO_MESSAGE_PLANE_FRAMES_BRIDGE_MAX_PENDING, default=64
+MESSAGE_PLANE_FRAMES_BRIDGE_MAX_PENDING = max(
+    1, _get_int_env("NEKO_MESSAGE_PLANE_FRAMES_BRIDGE_MAX_PENDING", 64)
+)
 MESSAGE_PLANE_GET_RECENT_MAX_LIMIT = _get_int_env("NEKO_MESSAGE_PLANE_GET_RECENT_MAX_LIMIT", 1000)
 
 MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT = os.getenv(

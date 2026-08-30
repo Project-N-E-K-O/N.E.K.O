@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from plugin.core.bus.memory import MemoryClient
     from plugin.core.bus.messages import MessageClient
     from plugin.core.bus.conversations import ConversationClient
+    from plugin.core.bus.frames import FrameClient
     from plugin.sdk.shared.core.types import PushMessageRejected, PushMessageResult
     # ⚠ 严禁 import loguru。logger 字段实际类型是 plugin.logging_config.PluginLoggerAdapter。
     from plugin.logging_config import PluginLoggerAdapter as LoguruLogger
@@ -212,6 +213,12 @@ class _BusHub:
         from plugin.core.bus.conversations import ConversationClient
 
         return ConversationClient(self._ctx)
+
+    @functools.cached_property
+    def frames(self) -> "FrameClient":
+        from plugin.core.bus.frames import FrameClient
+
+        return FrameClient(self._ctx)
 
 
 @dataclass

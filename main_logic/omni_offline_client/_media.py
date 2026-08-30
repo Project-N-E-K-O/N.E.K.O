@@ -16,6 +16,9 @@
 from typing import Sequence
 
 from config import MAX_MULTIMODAL_TURN_IMAGES
+from main_logic.agent_event_bus import (
+    publish_provider_frame_observed_best_effort,
+)
 from main_logic.proactive_delivery import (
     PLUGIN_PENDING_IMAGE_MAX_BYTES,
     PLUGIN_PENDING_IMAGE_MAX_COUNT,
@@ -30,6 +33,23 @@ from ._shared import (
     logger,
     time,
 )
+
+
+# Source labels for the frames the host copies onto the plugin bus.
+#
+# Coarse on purpose. Text mode receives every user-side frame through one
+# ``stream_image(image_b64)`` call and core/streaming.py drops ``input_type``
+# at that door, so from in here "the screen he is sharing", "his camera" and
+# "a photo he dragged in" are one indistinguishable queue. A vaguer label that
+# is true beats a precise one that is not: a plugin filtering on ``"screen"``
+# must never be handed someone's dropped photo.
+_FRAME_SOURCE_SCREEN = "screen"    # the proactive-vision screenshot
+_FRAME_SOURCE_USER = "user"        # his pending queue + this turn's own frames
+_FRAME_SOURCE_PLUGIN = "plugin"    # plugin `read` frames + passive callback media
+# Attribution is positional, so it only holds while the turn keeps its shape.
+# ``_streaming.py`` falls back to this the moment the budget ladder changes the
+# image count and the mapping can no longer be trusted.
+_FRAME_SOURCE_UNKNOWN = "unknown"
 
 
 class _MediaMixin:
@@ -48,6 +68,7 @@ class _MediaMixin:
         text: str,
         *,
         turn_images: tuple[str, ...] = (),
+        turn_id: str | None = None,
         on_turn_committed=None,
     ) -> None:
         """Run one externally transcribed turn under cancellable task ownership."""
@@ -56,6 +77,7 @@ class _MediaMixin:
             self.stream_text(
                 text,
                 turn_images=turn_images,
+                turn_id=turn_id,
                 on_turn_committed=on_turn_committed,
                 input_transcript_callback=(
                     self._ignore_already_recorded_external_transcript
@@ -151,6 +173,62 @@ class _MediaMixin:
             f"(source={source}, {source} total: {len(queue)})"
         )
 
+    async def _publish_provider_frames(
+        self,
+        images: Sequence[str],
+        sources: Sequence[str],
+        *,
+        turn_id: str | None = None,
+    ) -> None:
+        """Copy this turn's outgoing frames onto the plugin bus. Best effort.
+
+        Call this with the images that were ATTACHED -- after the budget
+        ladder ran -- so what a plugin reads is byte-for-byte what the provider
+        received. The ladder normalizes every frame to the model resolution
+        profile and may re-compress it, so publishing the caller's originals
+        would put a bigger, different picture on the bus than the model ever
+        saw.
+
+        Publish only after the turn is committed. A turn that dies earlier is
+        rolled back into the pending queues and its frames were never sent;
+        copying them out would advertise a delivery that did not happen.
+
+        Never raises into the turn. The copy is a courtesy to plugins, and a
+        bus that is absent, down or slow must not cost the user a reply. The
+        first failure ends the loop rather than retrying the rest: these
+        failures are the transport being unavailable, not this one frame.
+        Cancellation is deliberately NOT swallowed -- that is the session being
+        torn down, and it belongs to the caller.
+        """
+        if not images:
+            return
+        # __new__-built instances (tests, legacy callers) never ran __init__,
+        # read it the same defensive way the media queues are read.
+        lanlan_name = str(getattr(self, "lanlan_name", "") or "") or None
+        for index, image in enumerate(images):
+            if not image:
+                continue
+            source = (
+                sources[index]
+                if index < len(sources)
+                else _FRAME_SOURCE_UNKNOWN
+            )
+            try:
+                await publish_provider_frame_observed_best_effort(
+                    lanlan_name,
+                    image_base64=image,
+                    source=source,
+                    turn_id=turn_id,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as publish_error:
+                logger.debug(
+                    "provider frames not copied to the plugin bus: %s",
+                    publish_error,
+                )
+                return
+
     async def submit_multimodal_turn(
         self,
         text: str,
@@ -223,6 +301,10 @@ class _MediaMixin:
                 await self._run_external_voice_stream(
                     text,
                     turn_images=staged_images,
+                    # 独立 ASR 这一轮自带一个稳定的 turn_id，一路带到帧总线上，
+                    # 插件才能把同一次发声抽出的几张帧认成一组。普通文本轮没有
+                    # 这个身份，留空即可（记录里就不带 turn_id）。
+                    turn_id=str(turn_id or "").strip() or None,
                     on_turn_committed=_mark_committed,
                 )
             except BaseException as exc:

@@ -9,6 +9,7 @@ import ormsgpack
 from plugin.logging_config import logger
 
 from plugin.settings import (
+    MESSAGE_PLANE_FRAMES_STORE_MAXLEN,
     MESSAGE_PLANE_GET_RECENT_MAX_LIMIT,
     MESSAGE_PLANE_PAYLOAD_MAX_BYTES,
     MESSAGE_PLANE_STORE_MAXLEN,
@@ -27,7 +28,7 @@ from .protocol import (
     ok_response,
 )
 from .pub_server import MessagePlanePubServer
-from .stores import StoreRegistry, TopicStore
+from .stores import StoreRegistry, TopicStore, build_default_store_registry
 from .validation import validate_rpc_envelope
 
 
@@ -51,10 +52,10 @@ class MessagePlaneRpcServer:
         if stores is not None:
             self._stores = stores
         else:
-            self._stores = StoreRegistry(default_store="messages")
-            # conversations 是独立的 store，用于存储对话上下文（与 messages 分离）
-            for name in ("messages", "events", "lifecycle", "runs", "export", "memory", "conversations"):
-                self._stores.register(TopicStore(name=name, maxlen=store_maxlen))
+            self._stores = build_default_store_registry(
+                maxlen=store_maxlen,
+                frames_maxlen=MESSAGE_PLANE_FRAMES_STORE_MAXLEN,
+            )
         self._pub = pub_server
         self._running = False
 

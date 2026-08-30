@@ -312,9 +312,24 @@ recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-The list surface is `filter` / `where`, `sort`, `limit`, and `watch`. Callable `filter(predicate)`, `where(predicate)`, and `sort(key=...)` are local-only; replayable watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)`. Only `messages`, `events`, and `lifecycle` support `watch()`; `conversations` and `memory` are read-only snapshots. Watcher subscriptions accept only `add`, `del`, or `change`.
+The list surface is `filter` / `where`, `sort`, `limit`, and `watch`. Callable `filter(predicate)`, `where(predicate)`, and `sort(key=...)` are local-only; replayable watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)`. Only `messages`, `events`, and `lifecycle` support `watch()`; `conversations`, `memory`, and `frames` are read-only snapshots. Watcher subscriptions accept only `add`, `del`, or `change`.
 
 `bus.memory` contains a bounded, in-memory window of recent user-utterance events (one-hour TTL); it is separate from the character's persistent facts, reflections, and persona. `ctx.query_memory(...)` is retained only as a deprecated compatibility call to a placeholder endpoint and does not perform semantic recall.
+
+### Frames
+
+`bus.frames` holds the last few frames the host already pushed to the model provider — exactly the bytes the provider received.
+
+```python
+frames = await self.bus.frames.get(max_count=4)
+latest = frames.sort(by="timestamp", reverse=True).limit(1)
+```
+
+A plugin cannot ask for a capture. A frame the session's own throttle or delivery-mode fence dropped was never sent to the provider, so it never appears here.
+
+**This is not a log and not a queue.** Frames are dropped by design at four points: the message-plane PUB socket is lossy for slow joiners and at its high-water mark, the host publish is non-blocking, the send queue is bounded and refuses frames as soon as it falls behind, and the store keeps only a handful (`NEKO_MESSAGE_PLANE_FRAMES_STORE_MAXLEN`, clamped to 2-8, default 4). Polling for "every frame", or expecting a frame you read once to still be there, will be wrong.
+
+Each record carries `image_base64` (one copy — there is no raw-bytes twin to read), `mime`, `source`, `captured_at`, `turn_id`, `generation`, and `frame_id`. `source` is the channel the host attributed the frame to: `screen`, `camera`, `plugin`, `callback`, `proactive`, `user`, or `unknown` once a turn was reshaped and the host could no longer say. Dedupe on `frame_id`: `generation` orders ambient frames but does not advance for one-shot cue images, so two records can share one.
 
 ### Priority levels
 

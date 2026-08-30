@@ -232,6 +232,51 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
         )
 
 
+def _forward_provider_frame(event: Dict[str, Any]) -> bool:
+    """Copy one already-delivered provider frame into the plugin ``frames`` store.
+
+    main_server owns the session and cannot write to the message plane (the
+    ingest credential is process-local to the plugin server, which is embedded
+    here), so the frame arrives over the existing session PUB channel and this
+    is its only hop into the bus.
+
+    Gated on user plugins being enabled because ``frames`` exists for plugins
+    and nothing else: with them off there is no reader, and copying the user's
+    screen into a resident deque would be retention that buys nothing. Not
+    gated on the analyzer master switch -- that governs the analyzer, and the
+    frames bus is not part of it.
+
+    Synchronous on purpose. ``publish_frame`` only packs the record and does a
+    ``put_nowait``; a task per frame would cost more than the work it defers.
+    """
+    if not _user_plugins_enabled():
+        return False
+    image_b64 = (event or {}).get("image_base64")
+    if not isinstance(image_b64, str) or not image_b64:
+        return False
+    try:
+        from plugin.server.messaging.plane_bridge import build_frame_record, publish_frame
+
+        generation = (event or {}).get("generation")
+        record = build_frame_record(
+            image_base64=image_b64,
+            source=str((event or {}).get("source") or "unknown"),
+            captured_at=(event or {}).get("captured_at"),
+            turn_id=(event or {}).get("turn_id"),
+            generation=int(generation) if isinstance(generation, (int, float)) else None,
+            mime=str((event or {}).get("mime") or "image/jpeg"),
+            lanlan_name=(event or {}).get("lanlan_name"),
+            # The publisher's event_id is the frame's identity end to end, so a
+            # puller can correlate a bus record with the session-side log line.
+            frame_id=(event or {}).get("event_id"),
+            metadata=(event or {}).get("metadata"),
+        )
+        return bool(publish_frame(record))
+    except Exception as exc:
+        logger.debug("[FrameBus] forward failed: %s", exc)
+        return False
+
+
 def _resolve_analyze_lang(session_language: Optional[str]) -> str:
     """Language for the analyzer's prompts: session locale first, process global as fallback.
 
@@ -337,6 +382,9 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         return
     if event_type in {"voice_transcript_observed", "voice_transcript_request"}:
         _create_tracked_task(_handle_voice_transcript_request(event))
+        return
+    if event_type == "provider_frame_observed":
+        _forward_provider_frame(event)
         return
     if event_type == "analyze_request":
         messages = event.get("messages", [])

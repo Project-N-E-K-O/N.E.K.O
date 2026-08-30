@@ -311,9 +311,24 @@ recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-list surface は `filter` / `where`、`sort`、`limit`、`watch` です。callable の `filter(predicate)`、`where(predicate)`、`sort(key=...)` は local-only です。replayable な watcher chain では structured `filter(field=value, ...)` と `sort(by=...)` を使います。`watch()` を使えるのは `messages`、`events`、`lifecycle` だけで、`conversations` と `memory` は read-only snapshot です。watcher subscription は `add`、`del`、`change` のみ受け付けます。
+list surface は `filter` / `where`、`sort`、`limit`、`watch` です。callable の `filter(predicate)`、`where(predicate)`、`sort(key=...)` は local-only です。replayable な watcher chain では structured `filter(field=value, ...)` と `sort(by=...)` を使います。`watch()` を使えるのは `messages`、`events`、`lifecycle` だけで、`conversations`、`memory`、`frames` は read-only snapshot です。watcher subscription は `add`、`del`、`change` のみ受け付けます。
 
 `bus.memory` に入るのは、件数制限付きでメモリ上に保持される最近のユーザー発話イベント（TTL は 1 時間）です。キャラクターの永続的な facts、reflections、persona とは別物です。`ctx.query_memory(...)` は非推奨の placeholder endpoint に対する互換呼び出しとしてのみ残されており、semantic recall は行いません。
+
+### Frames
+
+`bus.frames` には、host が model provider にすでに送った直近数枚の frame が入ります。provider が実際に受け取ったバイト列そのものです。
+
+```python
+frames = await self.bus.frames.get(max_count=4)
+latest = frames.sort(by="timestamp", reverse=True).limit(1)
+```
+
+プラグインから撮影を要求することはできません。session 側の throttle や delivery-mode fence で落ちた frame は provider に送られていないので、ここにも現れません。
+
+**これは log でも queue でもありません。** frame は 4 箇所で意図的に捨てられます。message plane の PUB socket は slow joiner と high-water mark で落としますし、host 側の publish は non-blocking、送信 queue は上限付きで遅れ始めた時点で frame を拒否し、store 自体も数枚しか保持しません（`NEKO_MESSAGE_PLANE_FRAMES_STORE_MAXLEN`、2-8 に丸められ、既定は 4）。「すべての frame」を polling したり、一度読めた frame がまだ残っていると考えたりすると間違います。
+
+各 record は `image_base64`（1 部のみ。読める raw bytes の複製はありません）、`mime`、`source`、`captured_at`、`turn_id`、`generation`、`frame_id` を持ちます。`source` は host がその frame に割り当てた channel です：`screen`、`camera`、`plugin`、`callback`、`proactive`、`user`、そして turn が組み換えられ host が判断できなくなった場合の `unknown` です。重複排除は `frame_id` で行ってください。`generation` は常時取得される frame の順序を表すだけで、単発の cue 画像では進まないため、2 つの record が同じ値を持ち得ます。
 
 ### 優先度レベル
 
