@@ -766,12 +766,19 @@ def test_staging_workspaces_do_not_accumulate_across_kills(tmp_path):
     live.mkdir()
     (live / "d").mkdir()
 
+    # And something that is NOT the shape mkdtemp gives us, aged past the
+    # threshold. This name is reserved by the app, but "reserved" is not
+    # proof, and ordinary contents are not ours to age out.
+    stranger = parent / "not-ours"
+    stranger.mkdir()
+    os.utime(stranger, (stale, stale))
+
     config_manager.migrate_memory_files()
 
     survivors = sorted(q.name for q in parent.iterdir())
-    assert survivors == [".other-run"], (
-        "expected only the concurrent run's workspace to survive, saw %r "
-        "(kills had left %r)" % (survivors, abandoned)
+    assert survivors == [".other-run", "not-ours"], (
+        "expected only the concurrent run's workspace and the stranger to "
+        "survive, saw %r (kills had left %r)" % (survivors, abandoned)
     )
     assert (live / "d").is_dir(), "a concurrent run's staged copy was deleted"
     assert (runtime_root / "Carol" / "facts.json").read_text(
@@ -780,6 +787,7 @@ def test_staging_workspaces_do_not_accumulate_across_kills(tmp_path):
 
     # And once nothing is live, nothing of the migration persists at all.
     shutil.rmtree(live)
+    shutil.rmtree(stranger)
     config_manager.migrate_memory_files()
     assert not parent.exists(), (
         "staging survived a clean run: %s"
@@ -962,14 +970,29 @@ def test_a_symlinked_staging_parent_is_not_followed(tmp_path):
     (project_root / "Carol").mkdir(parents=True)
     (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
 
-    config_manager.migrate_memory_files()
+    from utils.config_manager import migrations as migrations_module
 
-    # The workspace is removed in the finally either way, so an empty target
-    # at the end proves nothing. What the fix guarantees is that the link is
-    # REPLACED by a real directory before anything is staged.
-    assert not parent.is_symlink(), (
-        "the staging parent is still a link, so everything staged went "
-        "through it and outside the writable tree"
+    staged_in = []
+    real_mkdtemp = migrations_module.tempfile.mkdtemp
+
+    def _record(*args, **kwargs):
+        staged_in.append(Path(kwargs["dir"]))
+        return real_mkdtemp(*args, **kwargs)
+
+    with patch.object(migrations_module.tempfile, "mkdtemp", _record):
+        config_manager.migrate_memory_files()
+
+    # An empty target at the end proves nothing on its own -- the workspace is
+    # removed in the finally either way -- so what is pinned is where it was
+    # MINTED. Not through the link; and the link is not deleted either, being
+    # data the migration cannot identify. On Windows that needs saying twice:
+    # rmdir removes a directory symlink outright, so reclamation has to refuse
+    # the same path preparation refused.
+    assert staged_in and staged_in[0] == Path(config_manager.app_docs_dir), (
+        "the workspace was not minted beside the link: %r" % (staged_in,)
+    )
+    assert parent.is_symlink(), (
+        "the migration deleted whatever was holding the reserved name"
     )
     assert outside.is_dir(), "the link target itself was destroyed"
     assert list(outside.iterdir()) == [], (
@@ -1054,12 +1077,12 @@ def test_a_plain_file_at_the_staging_name_does_not_stop_the_migration(tmp_path):
     because nothing clears the squatter. Verified: mkdir(parents=True,
     exist_ok=True) over a plain file raises rather than passing.
 
-    Removing it rather than working around it is the point. Minting a unique
-    name beside it would bring back the fallback roots this design removed, and
-    with them the accumulate-after-a-kill problem. The name lives in
-    app_docs_dir, outside the character namespace, where nothing but this
-    migration has any business -- which is what makes removal safe here and
-    would not have been inside memory/.
+    And the squatter SURVIVES. Removing it would be the migration destroying
+    data it cannot identify, and no ownership marker settles that -- a fixed
+    filename is something ordinary contents can reproduce, which is the
+    argument that removed the sentinel earlier in this branch. The workspace
+    is minted one level up instead, on the same volume, under a name that
+    claims nothing.
     """
     config_manager = _make_config_manager(tmp_path)
     project_root = tmp_path / "project-memory"
@@ -1082,8 +1105,16 @@ def test_a_plain_file_at_the_staging_name_does_not_stop_the_migration(tmp_path):
         encoding="utf-8"
     ) == "[1]", "a squatting file stopped the whole migration"
     assert (runtime_root / "loose.json").read_text(encoding="utf-8") == "[2]"
-    # The staging parent comes down with everything else.
-    assert not squatter.exists()
+    assert squatter.read_text(encoding="utf-8") == "not a directory", (
+        "the migration deleted whatever was holding the reserved name"
+    )
+    # And it worked around it rather than beside it: the fallback workspace
+    # is gone, leaving only the squatter itself.
+    assert sorted(
+        q.name
+        for q in Path(config_manager.app_docs_dir).iterdir()
+        if q.name.startswith(".mig-")
+    ) == [".mig-staging"], "the fallback workspace was left behind"
 
 
 @pytest.mark.unit
@@ -1189,3 +1220,134 @@ def test_a_read_only_seed_still_migrates(tmp_path):
     assert not (
         stat.S_IMODE(os.stat(runtime_root / "loose.json").st_mode) & stat.S_IWRITE
     ), "the published file was left writable"
+
+
+@pytest.mark.unit
+def test_widening_a_staged_file_grants_read_as_well_as_write(tmp_path):
+    """"rb+" needs BOTH bits, so adding only the write one changes nothing.
+
+    A seed installed by another user can arrive group- or other-readable with
+    the owner bit clear. copy2 reads it fine through the bit it does have and
+    hands back a staged copy WE own and cannot open -- and widening it to
+    "read-only plus write" leaves the second open failing exactly like the
+    first, so the file branch drops the entry and the directory branch aborts
+    the tree.
+
+    Driven by making the first open fail rather than by a real mode, because
+    which modes reject "rb+" is a platform question -- Windows honours only
+    the write bit, and POSIX run as root honours neither.
+    """
+    import stat as stat_module
+
+    from utils.config_manager import migrations as migrations_module
+
+    staged = tmp_path / "seed.json"
+    staged.write_text("[1]", encoding="utf-8")
+
+    # Group-read only: what copy2 hands back from a seed another user
+    # installed. The mode is REPORTED rather than applied -- Windows chmod
+    # honours nothing but the write bit, so the real file could never carry
+    # it, and a guard built on the real mode passes whatever the code does.
+    # That is not hypothetical: the first version of this test did exactly
+    # that and survived its own mutation.
+    borrowed = 0o040
+
+    widened = []
+    real_chmod = migrations_module.os.chmod
+    real_stat = migrations_module.os.stat
+    real_open = open
+    opens = []
+
+    def _record_chmod(path, mode):
+        widened.append(mode)
+
+    def _borrowed_mode(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        return os.stat_result((borrowed,) + tuple(result)[1:10])
+
+    def _refused_until_widened(path, mode="r", *args, **kwargs):
+        opens.append(mode)
+        if not widened:
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, mode, *args, **kwargs)
+
+    with patch("builtins.open", _refused_until_widened), patch.object(
+        migrations_module.os, "chmod", _record_chmod
+    ), patch.object(migrations_module.os, "stat", _borrowed_mode):
+        migrations_module._fsync_file(str(staged))
+
+    assert widened, "the mode was never widened, so nothing here is tested"
+    assert widened[0] & stat_module.S_IREAD, (
+        "widened to %o, which still cannot be opened for READING -- 'rb+' "
+        "needs both bits and this mode arrived without the owner read one"
+        % widened[0]
+    )
+    assert widened[0] & stat_module.S_IWRITE, (
+        "widened to %o, which still cannot be opened for writing" % widened[0]
+    )
+    assert widened[-1] == borrowed, (
+        "the widened mode was not put back: %o" % widened[-1]
+    )
+    assert len(opens) == 2, (
+        "expected one refused open and one retry, saw %r" % (opens,)
+    )
+
+
+@pytest.mark.unit
+def test_a_busy_publish_is_retried_rather_than_dropped(tmp_path):
+    """Windows lets a scanner hold the staged file for a moment.
+
+    os.replace then fails with a sharing violation, the per-entry handler
+    discards a stage that was already complete, and because migration is
+    marked done for the process the seed never arrives for the whole session.
+    utils/file_utils already backs off over exactly this window, so the
+    publish goes through it rather than carrying a second copy of the error
+    codes and delays.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+    (project_root / "loose.json").write_text("[2]", encoding="utf-8")
+
+    # Per DESTINATION, not one shared budget. With a shared one the first
+    # entry spends it and the second publishes cleanly, so removing the
+    # backoff from either branch still passed -- which is how the first
+    # version of this guard survived its own mutation.
+    real_replace = os.replace
+    attempts = {}
+
+    def _held_open(src, dst, *args, **kwargs):
+        key = str(dst)
+        attempts[key] = attempts.get(key, 0) + 1
+        if attempts[key] <= 2:
+            error = OSError(13, "The process cannot access the file")
+            error.winerror = 32
+            raise error
+        return real_replace(src, dst, *args, **kwargs)
+
+    with patch.object(migrations_module.os, "replace", _held_open):
+        config_manager.migrate_memory_files()
+
+    # Both branches must have come THROUGH the backoff. Path.rename does not
+    # route through os.replace, so a branch that reverts to it is missing
+    # here rather than merely failing.
+    assert sorted(attempts) == sorted(
+        [str(runtime_root / "Carol"), str(runtime_root / "loose.json")]
+    ), "a publish did not go through the shared backoff: %r" % (attempts,)
+    assert set(attempts.values()) == {3}, (
+        "expected two refusals then success on each publish, saw %r"
+        % (attempts,)
+    )
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]", "a directory publish was dropped on a transient sharing error"
+    assert (runtime_root / "loose.json").read_text(encoding="utf-8") == "[2]", (
+        "a file publish was dropped on a transient sharing error"
+    )

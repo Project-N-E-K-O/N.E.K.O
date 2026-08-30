@@ -30,6 +30,7 @@ import uuid
 from pathlib import Path
 
 from config import CONFIG_FILES, DEFAULT_CONFIG_DATA
+from utils.file_utils import _replace_with_busy_retry
 
 
 # Staging lives OUTSIDE the character namespace, beside memory/ rather than
@@ -80,6 +81,9 @@ def _fsync_directory(path):
     try:
         os.fsync(handle)
     except OSError:
+        # Best effort by design, per the docstring: a platform that will
+        # not flush a directory is not a disk that could not take the
+        # write, and durability is not worth failing a startup migration.
         pass
     finally:
         os.close(handle)
@@ -114,7 +118,13 @@ def _fsync_file(path):
         try:
             handle = open(path, "rb+")
         except PermissionError:
-            os.chmod(path, original | stat.S_IWRITE)
+            # READ as well as write. "rb+" needs both, and a seed
+            # installed by another user can arrive group- or
+            # other-readable with the owner bit clear -- copy2 reads it
+            # fine through the bit it does have, then hands us a staged
+            # copy WE own and cannot open. Adding only S_IWRITE leaves
+            # the second open failing exactly like the first.
+            os.chmod(path, original | stat.S_IWRITE | stat.S_IREAD)
             widened = True
             handle = open(path, "rb+")
         try:
@@ -126,6 +136,9 @@ def _fsync_file(path):
             try:
                 os.chmod(path, original)
             except OSError:
+                # The flush already happened. Abandoning a migrated file
+                # over a mode bit is worse than publishing one that is
+                # writable when its seed was not.
                 pass
 
 
@@ -351,12 +364,26 @@ class MigrationsMixin:
             parent, owned = self._migration_staging_parent()
             if not owned:
                 return
+            # A link or a plain file at the reserved name means we never
+            # used it -- the preparation step worked around it. Do not
+            # walk it and do not rmdir it: on Windows rmdir removes a
+            # DIRECTORY SYMLINK outright, which would delete the very
+            # thing preparation refused to touch.
+            if parent.is_symlink() or not parent.is_dir():
+                return
             cutoff = time.time() - _MIGRATION_STAGING_STALE_SECONDS
             for entry in parent.iterdir():
+                # Only what mkdtemp gives us below. If this directory
+                # turned out to belong to something else after all, its
+                # ordinary contents are not ours to age out -- and the
+                # parent stays, because rmdir below wants it empty.
+                if not entry.name.startswith("."):
+                    continue
                 try:
                     if entry.stat().st_mtime >= cutoff:
                         continue
                 except OSError:
+                    # No age, no evidence it is stale. Leave it.
                     continue
                 if entry.is_dir() and not entry.is_symlink():
                     shutil.rmtree(entry, ignore_errors=True)
@@ -364,6 +391,8 @@ class MigrationsMixin:
                     try:
                         entry.unlink()
                     except OSError:
+                        # Reclamation, not the outcome. The next run
+                        # tries again.
                         pass
             # Empty only. A live run keeps its own workspace here, and
             # that is precisely when this must not succeed.
@@ -399,20 +428,26 @@ class MigrationsMixin:
             # is ours to remove or reuse -- just mint a workspace beside
             # the characters and take it away again.
             return Path(tempfile.mkdtemp(dir=str(parent), prefix="."))
-        # Anything at this name that is not our directory is removed, not
-        # worked around. A link would be followed out of the tree we are
-        # allowed to write; a plain FILE makes mkdir raise FileExistsError,
+        # Something else holding the reserved name is worked AROUND, not
+        # deleted. A link would be followed out of the tree we are allowed
+        # to write, and a plain file makes mkdir raise FileExistsError,
         # which ends the whole loop and migrates nothing -- on every start,
-        # forever, since nothing clears it.
+        # forever, since nothing clears it. But removing it means the
+        # migration destroying data it cannot identify, and no ownership
+        # marker settles that: a fixed filename is something ordinary
+        # contents can reproduce, which is the argument that removed the
+        # sentinel earlier in this branch.
         #
-        # Minting a unique name beside it instead would bring back the
-        # fallback roots this design removed, and with them the
-        # accumulate-after-a-kill problem. The name sits in app_docs_dir,
-        # outside the character namespace, and nothing but this migration
-        # has any business there -- which is what makes removal safe here
-        # and would not have been inside memory/.
+        # So mint the workspace one level up instead. app_docs_dir is the
+        # same volume as memory/, and a minted name claims nothing. The
+        # cost is real and confined here: nothing sweeps app_docs_dir, so
+        # a run killed on this path leaves one directory behind. That is
+        # the right way round -- the leak needs a squatted name AND a kill,
+        # while deleting a stranger's data needs only the squatted name.
         if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
-            parent.unlink()
+            return Path(
+                tempfile.mkdtemp(dir=str(self.app_docs_dir), prefix=".mig-")
+            )
         parent.mkdir(parents=True, exist_ok=True)
         # Dot-prefixed and short. mkdtemp's own default prefix is longer,
         # and every staged descendant carries this component.
@@ -519,7 +554,19 @@ class MigrationsMixin:
                             # contents, and the next start treats it as
                             # authoritative and never retries it.
                             _fsync_file(str(staged_file))
-                            os.replace(staged_file, dest_path)
+                            # Windows lets antivirus, indexing or a
+                            # preview handler hold the staged file for a
+                            # moment, and os.replace then fails with a
+                            # sharing violation. Dropping the entry there
+                            # costs the whole session: the migration is
+                            # marked done for this process and the seed
+                            # never arrives. This is the same window
+                            # utils/file_utils already backs off over, so
+                            # it uses that rather than a second copy of
+                            # the error codes and delays.
+                            _replace_with_busy_retry(
+                                str(staged_file), dest_path
+                            )
                             # The NAME too, not just its contents.
                             _fsync_directory(dest_path.parent)
                         finally:
@@ -557,7 +604,10 @@ class MigrationsMixin:
                         # the copied contents first, then the published
                         # NAME. copytree only closes what it writes.
                         _fsync_tree(staging)
-                        staging.rename(dest_path)
+                        # Same window, same backoff. os.replace moves a
+                        # directory onto a name that does not exist yet on
+                        # both platforms, which is the only case here.
+                        _replace_with_busy_retry(str(staging), dest_path)
                         _fsync_directory(dest_path.parent)
                         print(f"Migrated memory directory: {item.name}")
                     finally:
