@@ -3,7 +3,8 @@
 Replaces ``multiprocessing.Queue`` with four ZMQ PUSH/PULL channels:
 
 * **Downlink** (host → child): commands, plugin-to-plugin responses
-* **Control uplink** (child → host): results, status, plugin-to-plugin requests
+* **Control uplink** (child → host): size-bounded results, status, and
+  plugin-to-plugin requests — message channels are refused on it
 * **Message uplink** (child → host): size-bounded individual and batched
   plugin messages
 * **Image uplink** (child → host): bounded raw image uploads
@@ -57,7 +58,17 @@ CH_COMM = "comm"
 CH_RESP = "resp"
 
 _LINGER_MS = 1000
-_UPLINK_CHANNELS = frozenset({CH_RES, CH_STS, CH_MSG, CH_MSG_BATCH, CH_COMM})
+# Which channels each child -> host socket is allowed to carry. The split
+# belongs to the socket, not to the decoder: _decode_uplink still accepts the
+# union by default, so a transport pair built without a dedicated message
+# endpoint (see ChildTransport, where _msg_sock falls back to _ul_sock) keeps
+# working against a host that reads both planes off one socket. What the split
+# closes is the smuggling route into *this* host: HostTransport always binds
+# both sockets, so a plugin holding the control endpoint must not be able to
+# use it to push message frames around the message plane's own ceiling.
+_CONTROL_UPLINK_CHANNELS = frozenset({CH_RES, CH_STS, CH_COMM})
+_MESSAGE_UPLINK_CHANNELS = frozenset({CH_MSG, CH_MSG_BATCH})
+_UPLINK_CHANNELS = _CONTROL_UPLINK_CHANNELS | _MESSAGE_UPLINK_CHANNELS
 _UPLINK_PACK_OPTIONS = (
     ormsgpack.OPT_NON_STR_KEYS
     | ormsgpack.OPT_PASSTHROUGH_TUPLE
@@ -97,7 +108,12 @@ def _encode_uplink(token: str, channel: str, payload: Any) -> bytes:
         raise TypeError("uplink payload must be MessagePack-serializable") from exc
 
 
-def _decode_uplink(raw: bytes, *, expected_token: str) -> Tuple[str, dict]:
+def _decode_uplink(
+    raw: bytes,
+    *,
+    expected_token: str,
+    allowed_channels: frozenset = _UPLINK_CHANNELS,
+) -> Tuple[str, dict]:
     try:
         decoded = ormsgpack.unpackb(raw)
     except Exception as exc:
@@ -116,6 +132,8 @@ def _decode_uplink(raw: bytes, *, expected_token: str) -> Tuple[str, dict]:
         raise ValueError("invalid uplink credential")
     if channel not in _UPLINK_CHANNELS or not isinstance(payload, dict):
         raise ValueError("invalid uplink payload")
+    if channel not in allowed_channels:
+        raise ValueError("invalid uplink channel")
     return channel, payload
 
 
@@ -123,14 +141,14 @@ _IMAGE_HWM = 8
 _IMAGE_MAX_BYTES = 8 * 1024 * 1024
 _IMAGE_AUTH_KEY = "_auth"
 
-# ── Message uplink size ceiling ────────────────────────────────────
+# ── Uplink frame size ceilings ─────────────────────────────────────
 #
 # RCVHWM bounds how MANY frames may queue on a PULL socket, never how large one
 # frame is. Without a size ceiling the host receives and MessagePack-decodes
-# whatever a plugin writes onto the message uplink, and push_message()'s local
-# size check is no defence: a plugin that writes an authenticated frame onto
-# the socket directly never runs it. The image uplink has carried MAXMSGSIZE
-# from the start; this is the same bound for the message plane.
+# whatever a plugin writes onto the socket, and push_message()'s local size
+# check is no defence: a plugin that writes an authenticated frame onto the
+# socket directly never runs it. The image uplink has carried MAXMSGSIZE from
+# the start; both MessagePack uplinks carry one now too.
 #
 # The number is derived, not chosen. Downstream, ingest measures each delta
 # item against MESSAGE_PLANE_PAYLOAD_MAX_BYTES and drops the whole item when it
@@ -145,6 +163,21 @@ _IMAGE_AUTH_KEY = "_auth"
 # traffic (see below), while the cost of extra slack is bounded by the same
 # per-frame allocation this limit exists to bound. Both settings are host-side,
 # so plugin code cannot widen the ceiling by setting an env var.
+#
+# The control uplink borrows that same number instead of inventing one of its
+# own. Nothing downstream caps a tool result, so there is no CH_RES equivalent
+# of MESSAGE_PLANE_PAYLOAD_MAX_BYTES to derive a tighter bound from, and a
+# guessed-low ceiling would silently delete real results. What can be measured
+# is the widest legitimate *control* frame: a CH_COMM EXPORT_PUSH carrying
+# binary_base64, which the host refuses (413 PAYLOAD_TOO_LARGE) once the
+# decoded bytes exceed EXPORT_INLINE_BINARY_MAX_BYTES -- base64 makes that
+# about 4/3 * 256 KiB, roughly 341 KiB on today's defaults. The message-plane
+# ceiling clears that by more than two orders of magnitude, so real control
+# traffic is nowhere near it, while the host's worst-case allocation for one
+# frame on this socket drops from "whatever a plugin writes" to a number it
+# already accepts on the other MessagePack socket. The ceiling, not the
+# channel check, is what bounds that allocation: libzmq has already read the
+# frame into memory by the time anything can look at its channel tag.
 #
 # What this does at runtime, because it is easy to expect the wrong thing:
 # libzmq enforces MAXMSGSIZE in the receiving engine, not in the recv() call.
@@ -166,6 +199,17 @@ def _message_uplink_max_bytes() -> int:
     payload_max = max(1, int(MESSAGE_PLANE_PAYLOAD_MAX_BYTES))
     batch_max = max(1, int(PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE))
     return payload_max * batch_max + _MESSAGE_ENVELOPE_HEADROOM_BYTES
+
+
+def _control_uplink_max_bytes() -> int:
+    """Return the byte ceiling for one frame on the control uplink.
+
+    Deliberately the message plane's ceiling. The control plane has no
+    downstream size contract of its own to derive a tighter number from, and
+    the widest control frame that can be measured -- a base64 export push --
+    is smaller than this by orders of magnitude; see the derivation above.
+    """
+    return _message_uplink_max_bytes()
 
 
 def _authenticate_image_metadata(
@@ -226,14 +270,16 @@ class HostTransport:
         self._ul_sock = self._ctx.socket(zmq.PULL)
         self._ul_sock.setsockopt(zmq.LINGER, 0)
         self._ul_sock.setsockopt(zmq.RCVHWM, 5000)
-        # Deliberately NO MAXMSGSIZE here, unlike the message and image
-        # uplinks below -- read the asymmetry as an open gap, not as a socket
-        # someone forgot. A tool result or status frame has no downstream size
-        # contract to derive a ceiling from (there is no
-        # MESSAGE_PLANE_PAYLOAD_MAX_BYTES equivalent for a tool result), so any
-        # number here would be invented, and one set too low silently drops
-        # real results: libzmq kills the frame and the peer without raising.
-        # Closing it needs a decision on what a legitimate maximum result is.
+        # RCVHWM above is a frame count; this is the frame size. recv() below
+        # refuses CH_MSG/CH_MSG_BATCH on this socket, but that refusal cannot
+        # bound memory on its own: libzmq has already allocated the frame by
+        # the time the channel tag can be read, so without a ceiling a plugin
+        # could aim an arbitrarily large batch at the control endpoint and the
+        # host would pay for it before rejecting it. See
+        # _control_uplink_max_bytes for where the number comes from, and the
+        # note above it for what libzmq does with a frame over it (drops the
+        # frame AND the peer, silently -- recv never raises).
+        self._ul_sock.setsockopt(zmq.MAXMSGSIZE, _control_uplink_max_bytes())
         self._ul_sock.bind("tcp://127.0.0.1:*")
         self.uplink_endpoint: str = self._ul_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
 
@@ -281,10 +327,19 @@ class HostTransport:
     # ── recv helper ──────────────────────────────────────────────
 
     async def recv(self, timeout_ms: int = 1000) -> Optional[Tuple[str, dict]]:
-        """Receive one ``(channel, payload)`` from the uplink, or *None* on timeout."""
+        """Receive one ``(channel, payload)`` from the control uplink.
+
+        Returns *None* on timeout. Message channels are refused here: they have
+        their own socket with its own ceiling, and accepting them on this one
+        would let a plugin route message traffic around that ceiling.
+        """
         if await self._ul_sock.poll(timeout=timeout_ms):
             raw = await self._ul_sock.recv()
-            return _decode_uplink(raw, expected_token=self._uplink_token)
+            return _decode_uplink(
+                raw,
+                expected_token=self._uplink_token,
+                allowed_channels=_CONTROL_UPLINK_CHANNELS,
+            )
         return None
 
     async def recv_message(
@@ -294,13 +349,11 @@ class HostTransport:
         """Receive one authenticated message or message batch."""
         if await self._msg_sock.poll(timeout=timeout_ms):
             raw = await self._msg_sock.recv()
-            channel, payload = _decode_uplink(
+            return _decode_uplink(
                 raw,
                 expected_token=self._uplink_token,
+                allowed_channels=_MESSAGE_UPLINK_CHANNELS,
             )
-            if channel not in {CH_MSG, CH_MSG_BATCH}:
-                raise ValueError("invalid message uplink channel")
-            return channel, payload
         return None
 
     async def recv_image(self, timeout_ms: int = 1000) -> Optional[Tuple[dict, bytes]]:
@@ -507,7 +560,7 @@ class ChildTransport:
             sock.send(data, zmq.NOBLOCK)
 
     def _uplink_socket(self, channel: str):
-        if channel in {CH_MSG, CH_MSG_BATCH}:
+        if channel in _MESSAGE_UPLINK_CHANNELS:
             return self._msg_sock, self._msg_lock
         return self._ul_sock, self._ul_lock
 

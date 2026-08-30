@@ -790,3 +790,61 @@ def test_session_event_dispatch_routes_conversation_turns(
 
     assert len(captured) == 1
     assert captured[0]["record"]["content"] == "欢迎回来喵~"
+
+
+def test_a_lookup_by_id_finds_this_turn_and_not_another_conversations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The writer's placement and the reader's predicate have to agree.
+
+    ``_forward_conversation_turn`` files ``conversation_id`` inside
+    ``metadata`` and ``TopicStore._extract_index`` projects it into the index;
+    ``TopicStore.query`` matches against that index. This joins the two halves
+    on one real store, which is what ``ctx.bus.conversations.get_by_id`` runs
+    against.
+
+    The "and not another conversation's" assertion is the load-bearing one.
+    The filter used to be dropped on the floor -- schema rejected the field,
+    and the server never forwarded it -- so a lookup came back full of
+    unrelated recent turns while every layer reported success. A test that only
+    checked "the turn is in there" passed against exactly that.
+    """
+    _enable_user_plugins(monkeypatch)
+    captured = _patch_publish_record(monkeypatch)
+
+    agent_runtime._forward_conversation_turn(_turn_event())
+    agent_runtime._forward_conversation_turn(
+        _turn_event(
+            conversation_id="conv-2",
+            event_id="turn-msg-2",
+            content="在吗喵？",
+        )
+    )
+    assert len(captured) == 2
+
+    store = TopicStore(name=CONVERSATIONS_STORE_NAME, maxlen=8)
+    for call in captured:
+        store.publish(CONVERSATIONS_TOPIC, call["record"])
+
+    items = store.query(
+        topic=CONVERSATIONS_TOPIC,
+        conversation_id="conv-1",
+        limit=50,
+    )
+
+    assert len(items) == 1
+    record = ConversationRecord.from_index(items[0]["index"], items[0]["payload"])
+    assert record.conversation_id == "conv-1"
+    assert record.content == "欢迎回来喵~"
+    # conv-2 is the NEWER turn, so an unfiltered "recent turns" read would have
+    # led with it.
+    assert "在吗喵？" not in [
+        (ev.get("payload") or {}).get("content") for ev in items
+    ]
+
+    # ...and both turns really are in the store: the exclusion above is the
+    # filter working, not an empty corpus.
+    assert len(store.query(topic=CONVERSATIONS_TOPIC, limit=50)) == 2
+
+    # An id nobody wrote is an empty result, not an error.
+    assert store.query(topic=CONVERSATIONS_TOPIC, conversation_id="conv-nope", limit=50) == []

@@ -682,28 +682,41 @@ class _ResponseMixin:
         # parts left in ``item_event`` are exactly the pictures the provider
         # got. Publishing any earlier would put frames on the bus that were
         # never sent, which is the one thing this bus must never do.
+        #
+        # Read the bytes out HERE, synchronously, and hand only that snapshot
+        # to the background publish. Two separate reasons, and both have to
+        # hold at once:
+        #
+        #   * The publish may not sit in this turn's return path.
+        #     publish_session_event_threadsafe hands a cross-thread publish to
+        #     the bridge's owner loop through an un-timed
+        #     run_coroutine_threadsafe, so a stalled bridge would hold up a
+        #     turn the provider has already taken. _transport's ambient-frame
+        #     publish settled this same question the same way.
+        #   * A task that read ``item_event`` later would read it after this
+        #     turn let go of the loop, and whatever ran in between would
+        #     silently become "what the provider got". The extraction is the
+        #     part that must stay here; only the publish moves off.
         if item_delivered:
-            await self._publish_delivered_multimodal_frames(
-                item_event,
+            self._schedule_turn_frame_publish(
+                self._delivered_multimodal_frames(item_event),
                 turn_id=stable_turn_id,
             )
         return ticket
 
-    async def _publish_delivered_multimodal_frames(
+    def _delivered_multimodal_frames(
         self,
         item_event: Dict[str, Any],
-        *,
-        turn_id: str,
-    ) -> int:
-        """Copy a delivered turn's surviving frames onto the plugin frames bus.
+    ) -> list[tuple[str, str]]:
+        """Read a delivered turn's surviving frames out of the item it sent.
 
         The WebSocket half of the independent-ASR frame publish; Gemini's is
-        ``_publish_gemini_external_frames``. It matters on its own because
-        these frames never pass through ``stream_image``: an external-ASR turn
-        hands the sampled frames and the transcript to the provider as one
-        item, and that mode also arms the raw-visual fence, so ``stream_image``
-        refuses every ambient frame -- between the two of them, these turns are
-        the only frame channel a plugin can see at all.
+        ``_gemini_delivered_frames``. It matters on its own because these
+        frames never pass through ``stream_image``: an external-ASR turn hands
+        the sampled frames and the transcript to the provider as one item, and
+        that mode also arms the raw-visual fence, so ``stream_image`` refuses
+        every ambient frame -- between the two of them, these turns are the
+        only frame channel a plugin can see at all.
 
         Reads the item that was sent rather than the caller's staged images on
         purpose. A turn that lost visual ownership had its ``input_image``
@@ -711,16 +724,18 @@ class _ResponseMixin:
         recompressed -- or the oldest ones dropped -- in place. The staged
         copies are therefore neither the right pictures nor the right set.
 
-        Best effort, and never fatal: the turn is already delivered by the time
-        this runs, so a bus that is absent or down must not turn a good turn
-        into a failed one. Returns how many frames were handed to the socket,
-        which is never a promise that a plugin will see them.
+        Synchronous, and it has to stay that way. The caller runs this in the
+        context that owns ``item_event``, where nothing else can be touching
+        it, and hands the returned snapshot -- never the dict -- to the
+        background publish. Deferring the read into that task would publish
+        whatever a later turn happened to leave in the dict, and "only what the
+        provider got" would stop being true with nothing going red.
         """
 
         item = item_event.get("item")
         content = item.get("content") if isinstance(item, dict) else None
         if not isinstance(content, list):
-            return 0
+            return []
         frames: list[tuple[str, str]] = []
         for part in content:
             if not isinstance(part, dict) or part.get("type") != "input_image":
@@ -736,21 +751,97 @@ class _ResponseMixin:
             # keeps whatever prefix the part was built with.
             mime = header[len("data:"):].split(";", 1)[0].strip() or "image/jpeg"
             frames.append((mime, payload))
+        return frames
+
+    def _schedule_turn_frame_publish(
+        self,
+        frames: list[tuple[str, str]],
+        *,
+        turn_id: Optional[str],
+    ) -> Optional[asyncio.Task]:
+        """Hand one turn's already-extracted frames to the bus, off that turn.
+
+        Fire-and-forget, the same shape ``_transport`` uses for ambient frames
+        and for the same reason: the publish can end up on another loop
+        (``publish_session_event_threadsafe`` forwards a cross-thread call
+        through an un-timed ``run_coroutine_threadsafe``), and a stalled bridge
+        must never be able to stall a turn the provider already accepted.
+        Copying a frame is not a reason to slow down or fail a delivery that
+        already succeeded, so the scheduling itself is guarded too.
+
+        ``frames`` must already be a snapshot taken by the caller. Handing a
+        live structure here -- the outgoing item, a staging list -- would let a
+        later turn rewrite it before the task runs.
+
+        Returns the task so callers that need to join it (tests, teardown) can;
+        nothing on the turn path awaits it.
+        """
+
         if not frames:
-            return 0
-        return await self._publish_turn_frames(frames, turn_id=turn_id)
+            return None
+        try:
+            return self._fire_task(
+                self._publish_turn_frames_task(
+                    frames,
+                    turn_id=turn_id,
+                    # Sampled HERE, for the same reason the frames are, and the
+                    # same reason _transport samples its turn identity before
+                    # firing: _latest_image_source is live session state that
+                    # the next staged frame overwrites. Reading it inside the
+                    # task would file this turn's pictures under whatever
+                    # channel the session moved on to.
+                    source=str(
+                        getattr(self, "_latest_image_source", "") or "unknown"
+                    ),
+                )
+            )
+        except Exception as exc:
+            logger.debug(
+                "frames bus publish not scheduled for turn %s: %s", turn_id, exc
+            )
+            return None
+
+    async def _publish_turn_frames_task(
+        self,
+        frames: list[tuple[str, str]],
+        *,
+        turn_id: Optional[str],
+        source: str,
+    ) -> None:
+        """Run one turn's frame publish in the background. Never raises.
+
+        The outer of the two layers. ``_publish_turn_frames`` already swallows
+        a publisher that fails mid-loop, but the function-local bus import and
+        everything else ahead of that loop sit outside it, and an escape here
+        would surface as an unretrieved task exception instead of as the failed
+        turn it must never become.
+        """
+
+        try:
+            await self._publish_turn_frames(frames, turn_id=turn_id, source=source)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "frames bus publish failed for turn %s: %s", turn_id, exc
+            )
 
     async def _publish_turn_frames(
         self,
         frames: list[tuple[str, str]],
         *,
         turn_id: Optional[str],
+        source: str,
     ) -> int:
         """Hand one delivered turn's frames to the plugin bus. Never raises.
 
         Shared by both external-ASR routes -- the WebSocket item and the Gemini
         SDK turn -- so the two cannot drift into publishing different record
         shapes for what is, from a plugin's side, the same event.
+
+        ``source`` is passed in rather than read off the session here: this
+        runs in a background task, and every field of the record has to be the
+        one that was true at delivery.
         """
 
         # Function-local import: agent_event_bus pulls in pyzmq, and the
@@ -763,7 +854,6 @@ class _ResponseMixin:
         # sampled frames of one utterance come off that same channel, and there
         # is no per-frame source to read here, so this is the honest label
         # rather than a category invented at this layer.
-        source = str(getattr(self, "_latest_image_source", "") or "unknown")
         published = 0
         for mime, image_b64 in frames:
             # No captured_at and no generation: the only per-frame clock this
@@ -1173,19 +1263,26 @@ class _ResponseMixin:
         # fence，stream_image 于是拒掉每一张环境帧，这一轮就成了整个会话唯一的
         # 画面通道。少了它，跑独立 ASR 的 Gemini 用户每句话都在把画面推给
         # provider，而插件那侧的 frames 总线是空的。
+        #
+        # Encoded here and published in the background, the same split the
+        # WebSocket half makes: this turn's return must not wait on a bus hop
+        # that may cross loops with no timeout, and the bytes that reach the
+        # bus must be the ones read in the context that owned them.
         if accepted and images_bytes:
-            await self._publish_gemini_external_frames(
-                images_bytes,
-                turn_id=turn_id,
+            self._schedule_turn_frame_publish(
+                self._gemini_delivered_frames(images_bytes),
+                # Empty is not an identity: the text-only Gemini route reaches
+                # _submit_external_gemini_turn without one, and a blank turn_id
+                # on the record would still read as "these frames belong
+                # together".
+                turn_id=str(turn_id or "") or None,
             )
 
-    async def _publish_gemini_external_frames(
+    def _gemini_delivered_frames(
         self,
         images_bytes: tuple[bytes, ...],
-        *,
-        turn_id: Optional[str],
-    ) -> int:
-        """Copy a delivered Gemini external-ASR turn's frames onto the bus.
+    ) -> list[tuple[str, str]]:
+        """Encode a delivered Gemini external-ASR turn's frames for the bus.
 
         Reads ``images_bytes`` rather than an outgoing event because this route
         never builds one: the frames go to the SDK as raw bytes, so this tuple
@@ -1193,7 +1290,7 @@ class _ResponseMixin:
         ownership recheck emptied it on a turn that lost its frames.
         """
 
-        frames = [
+        return [
             # The same constant ``_gemini_send_user_turn`` sends under, not a
             # second literal: a changed format would otherwise mislabel every
             # record on the bus with nothing going red.
@@ -1201,15 +1298,6 @@ class _ResponseMixin:
             for image in images_bytes
             if image
         ]
-        if not frames:
-            return 0
-        return await self._publish_turn_frames(
-            frames,
-            # Empty is not an identity: the text-only Gemini route reaches
-            # _submit_external_gemini_turn without one, and a blank turn_id on
-            # the record would still read as "these frames belong together".
-            turn_id=str(turn_id or "") or None,
-        )
 
     async def submit_external_voice_turn(self, text: str, *, turn_id: str) -> None:
         """Submit external ASR text through the Provider-appropriate path."""

@@ -1965,6 +1965,31 @@ def _capture_published_frames(monkeypatch) -> list[dict]:
     return published
 
 
+async def _wait_for_published(published: list, count: int = 1) -> None:
+    """The copy is fire-and-forget; give its task a chance to run."""
+
+    for _ in range(50):
+        if len(published) >= count:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(
+        f"expected {count} published frame(s), saw {len(published)}"
+    )
+
+
+async def _assert_nothing_published(published: list) -> None:
+    """Nothing reached the bus -- after the background task had its turns.
+
+    Asserting an empty list the instant a turn returns would pass no matter
+    what, now that the publish is scheduled rather than awaited. Drain first,
+    then assert.
+    """
+
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert published == [], f"frame published from a non-delivery: {published}"
+
+
 def _fake_arbiter(captured: list, *, sent_cancelled: bool = False):
     """An arbiter stub that dispatches the way the real worker does.
 
@@ -2028,6 +2053,7 @@ async def test_delivered_multimodal_turn_copies_its_frames_onto_the_plugin_bus(
             if part["type"] == "input_image"
         ]
         assert len(wire_images) == 2, "前提没成立：这一轮本来就没送出两张图"
+        await _wait_for_published(published, 2)
         # 上总线的是**纯 base64**，不是 data URL：记录里另有 mime 字段，带前缀
         # 等于让每个插件自己再剥一次。
         assert [frame["image_base64"] for frame in published] == [
@@ -2091,7 +2117,7 @@ async def test_a_turn_that_lost_its_frames_publishes_nothing(monkeypatch):
         # ……用户那句话照送……
         assert any(part.get("text") == "看一下这张图" for part in content)
         # ……总线上一张也不该有。
-        assert published == []
+        await _assert_nothing_published(published)
     finally:
         await client.close()
 
@@ -2132,7 +2158,7 @@ async def test_a_turn_whose_item_never_reached_the_socket_publishes_nothing(
             part["type"] == "input_image"
             for part in captured[0]["item"]["content"]
         ), "前提没成立：这一轮的图在提交前就没了"
-        assert published == []
+        await _assert_nothing_published(published)
     finally:
         await client.close()
 
@@ -2173,6 +2199,7 @@ async def test_the_bus_gets_the_bytes_the_transport_rewrote(monkeypatch):
             visual_still_owned=lambda: True,
         )
 
+        await _wait_for_published(published, 1)
         assert [frame["image_base64"] for frame in published] == [shrunk_b64]
     finally:
         await client.close()
@@ -2210,7 +2237,7 @@ async def test_a_cancelled_multimodal_turn_publishes_nothing(monkeypatch):
             )
 
         arbiter.cancel_ticket.assert_awaited_once()
-        assert published == []
+        await _assert_nothing_published(published)
     finally:
         await client.close()
 
@@ -2249,9 +2276,10 @@ async def test_only_well_formed_image_parts_are_copied_and_keep_their_mime(
                 ]
             }
         }
-        copied = await client._publish_delivered_multimodal_frames(
-            item_event,
+        copied = await client._publish_turn_frames(
+            client._delivered_multimodal_frames(item_event),
             turn_id="turn-mime",
+            source=client._latest_image_source,
         )
 
         assert copied == 1
@@ -2294,6 +2322,118 @@ async def test_a_publisher_failure_does_not_fail_the_delivered_turn(monkeypatch)
         )
 
         assert ticket is not None
+        # 失败发生在后台 task 里。把它跑完，证明异常被吞在那一层，而不是变成
+        # 一条 unretrieved task exception。
+        for _ in range(20):
+            await asyncio.sleep(0)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_frames_bus_does_not_hold_up_the_delivered_turn(
+    monkeypatch,
+):
+    """A turn the provider already took may not wait on the bus copy.
+
+    ``publish_session_event_threadsafe`` forwards a cross-thread publish to the
+    bridge's owner loop through an un-timed ``run_coroutine_threadsafe``, so a
+    blocked or slow owner loop blocks whoever awaits it. Awaiting the copy on
+    the turn's return path would make that the user's latency, for a frame the
+    provider already has.
+    """
+    from main_logic import agent_event_bus
+
+    entered = asyncio.Event()
+    released = asyncio.Event()
+
+    async def _stall(_lanlan_name, **_kwargs):
+        entered.set()
+        await released.wait()
+        return True
+
+    monkeypatch.setattr(
+        agent_event_bus,
+        "publish_provider_frame_observed_best_effort",
+        _stall,
+    )
+
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        _wire_completed_response_transport(client)
+        client._analyze_image_with_vision_model = AsyncMock()
+
+        await client.prepare_external_voice_turn(turn_id="turn-stalled-bus")
+        # 若 publish 还挂在返回路径上，这里会一路等到 wait_for 超时——
+        # 回归会红，而不是只是悄悄变慢。
+        ticket = await asyncio.wait_for(
+            client.submit_multimodal_turn(
+                "看一下这张图",
+                DUMMY_IMAGE_B64,
+                turn_id="turn-stalled-bus",
+            ),
+            timeout=5,
+        )
+
+        assert ticket is not None
+        # 前提：那条 publish 确实被排上了，而且确实卡在总线里。
+        await asyncio.wait_for(entered.wait(), timeout=5)
+    finally:
+        released.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_the_bus_record_is_read_at_delivery_not_after_the_turn(
+    monkeypatch,
+):
+    """The whole record is snapshotted on the turn; the task only publishes it.
+
+    Now that the copy runs on a later loop iteration, nothing it describes is
+    still this turn's to read: the item gets rewritten in place by the next
+    turn's downgrade and recompression, and ``_latest_image_source`` is
+    overwritten by the next staged frame. Reading either inside the task would
+    publish whatever the session had moved on to, and "only what the provider
+    got" would stop being true with every other test in this file still green.
+    """
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        sent = _wire_completed_response_transport(client)
+        client._analyze_image_with_vision_model = AsyncMock()
+        client._latest_image_source = "screen"
+        published = _capture_published_frames(monkeypatch)
+
+        await client.prepare_external_voice_turn(turn_id="turn-snapshot")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-snapshot",
+        )
+
+        content = sent[0]["item"]["content"]
+        delivered = [
+            part["image_url"].split(",", 1)[1]
+            for part in content
+            if part["type"] == "input_image"
+        ]
+        assert len(delivered) == 1, "前提没成立：这一轮本来就没送出图"
+        # 回合已经返回，publish 那个 task 还一次都没跑过——正是后继回合改写
+        # 这些结构的那个窗口。判据要立在这里，否则下面的改写根本没意义。
+        assert published == [], "publish 没被挪出回合，本用例的判据落空"
+
+        for part in content:
+            if part["type"] == "input_image":
+                part["image_url"] = "data:image/jpeg;base64,bmV4dC10dXJu"
+        # 采集通道也是活的会话状态：下一张 staged 帧就会改写它。
+        client._latest_image_source = "camera"
+
+        await _wait_for_published(published, 1)
+        assert [frame["image_base64"] for frame in published] == delivered
+        assert [frame["source"] for frame in published] == ["screen"]
     finally:
         await client.close()
 
@@ -2343,6 +2483,7 @@ async def test_a_delivered_gemini_external_turn_copies_its_frames_onto_the_bus(
         assert result is None
         wire = _gemini_sdk_frames(session)
         assert len(wire) == 2, "前提没成立：这一轮本来就没送出两张图"
+        await _wait_for_published(published, 2)
         assert [frame["image_base64"] for frame in published] == wire
         content = session.send_client_content.await_args.kwargs["turns"][0]
         sdk_mime = next(
@@ -2404,6 +2545,7 @@ async def test_the_gemini_bus_gets_the_bytes_the_budget_ladder_produced(
         )
 
         assert _gemini_sdk_frames(session) == [fitted_b64]
+        await _wait_for_published(published, 1)
         assert [frame["image_base64"] for frame in published] == [fitted_b64]
         assert DUMMY_IMAGE_B64 not in [
             frame["image_base64"] for frame in published
@@ -2460,7 +2602,7 @@ async def test_a_gemini_turn_that_lost_its_frames_publishes_nothing(monkeypatch)
         assert _gemini_sdk_frames(session) == [], (
             "前提没成立：这一轮的图根本没被摘掉"
         )
-        assert published == []
+        await _assert_nothing_published(published)
     finally:
         await client.close()
 
@@ -2487,7 +2629,7 @@ async def test_a_refused_gemini_send_publishes_nothing(monkeypatch):
                 turn_id="turn-gemini-refused",
             )
 
-        assert published == []
+        await _assert_nothing_published(published)
     finally:
         await client.close()
 
@@ -2524,7 +2666,7 @@ async def test_a_cancelled_gemini_turn_publishes_nothing(monkeypatch):
         with pytest.raises(asyncio.CancelledError):
             await submit
 
-        assert published == []
+        await _assert_nothing_published(published)
         quarantine = getattr(client, "_gemini_external_quarantine_task", None)
         if quarantine is not None:
             await asyncio.gather(quarantine, return_exceptions=True)
@@ -2563,5 +2705,61 @@ async def test_a_publisher_failure_does_not_fail_the_delivered_gemini_turn(
 
         assert result is None
         session.send_client_content.assert_awaited_once()
+        # 失败发生在后台 task 里，跟 WebSocket 那半边同一判据。
+        for _ in range(20):
+            await asyncio.sleep(0)
     finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_frames_bus_does_not_hold_up_the_gemini_turn(
+    monkeypatch,
+):
+    """Gemini's half owes the same guarantee: the copy is off the turn.
+
+    Same un-timed cross-loop hop, same conclusion. Kept as its own case because
+    this route publishes from the SDK byte tuple rather than from an outgoing
+    item, so nothing about the WebSocket test constrains it.
+    """
+    from main_logic import agent_event_bus
+
+    entered = asyncio.Event()
+    released = asyncio.Event()
+
+    async def _stall(_lanlan_name, **_kwargs):
+        entered.set()
+        await released.wait()
+        return True
+
+    monkeypatch.setattr(
+        agent_event_bus,
+        "publish_provider_frame_observed_best_effort",
+        _stall,
+    )
+
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    try:
+        session = AsyncMock()
+        client._gemini_session = session
+        client.ws = session
+        client.handle_interruption = AsyncMock()
+        client._analyze_image_with_vision_model = AsyncMock()
+
+        await client.prepare_external_voice_turn(turn_id="turn-gemini-stalled")
+        await asyncio.wait_for(
+            client.submit_multimodal_turn(
+                "看一下这张图",
+                DUMMY_IMAGE_B64,
+                turn_id="turn-gemini-stalled",
+            ),
+            timeout=5,
+        )
+
+        session.send_client_content.assert_awaited_once()
+        await asyncio.wait_for(entered.wait(), timeout=5)
+    finally:
+        released.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
         await client.close()

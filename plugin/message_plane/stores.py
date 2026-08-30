@@ -176,6 +176,7 @@ class TopicStore:
         source: Optional[str] = None,
         kind: Optional[str] = None,
         type_: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         priority_min: Optional[int] = None,
         since_ts: Optional[float] = None,
         until_ts: Optional[float] = None,
@@ -192,6 +193,10 @@ class TopicStore:
         src = str(source) if isinstance(source, str) and source else None
         kd = str(kind) if isinstance(kind, str) and kind else None
         tp = str(type_) if isinstance(type_, str) and type_ else None
+        # Matched against ``index``, not the payload: the writer files
+        # conversation_id inside ``metadata`` and _extract_index is what lifts
+        # it to a comparable place. A top-level payload lookup matches nothing.
+        cid = str(conversation_id) if isinstance(conversation_id, str) and conversation_id else None
         try:
             pmin = int(priority_min) if priority_min is not None else None
         except (ValueError, TypeError):
@@ -231,6 +236,11 @@ class TopicStore:
                     if kd is not None and idx.get("kind") != kd:
                         continue
                     if tp is not None and idx.get("type") != tp:
+                        continue
+                    # Exact match only. A record with no conversation_id has
+                    # ``None`` here and is excluded, and an unknown id simply
+                    # matches nothing -- an empty result, never an error.
+                    if cid is not None and idx.get("conversation_id") != cid:
                         continue
                     if pmin is not None:
                         try:

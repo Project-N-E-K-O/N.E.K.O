@@ -248,6 +248,7 @@ class MessagePlaneRpcServer:
                 source=args.get("source"),
                 kind=args.get("kind"),
                 type_=args.get("type"),
+                conversation_id=args.get("conversation_id"),
                 priority_min=args.get("priority_min"),
                 since_ts=args.get("since_ts"),
                 until_ts=args.get("until_ts"),

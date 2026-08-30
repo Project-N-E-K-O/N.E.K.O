@@ -462,3 +462,175 @@ async def test_oversized_authenticated_message_never_reaches_the_host(
     finally:
         child.close()
         host.close()
+
+
+@pytest.mark.plugin_unit
+def test_control_uplink_ceiling_reuses_the_message_plane_derivation() -> None:
+    """The control uplink borrows the message plane's derived ceiling.
+
+    Pinned as an equality rather than a literal so the two sockets cannot
+    drift apart silently, plus the one thing the borrowed number has to be
+    true of: it must clear the widest control frame that can actually be
+    measured, a CH_COMM export push carrying base64 of at most
+    EXPORT_INLINE_BINARY_MAX_BYTES.
+    """
+    import plugin.settings as plugin_settings
+
+    assert (
+        zmq_transport._control_uplink_max_bytes()
+        == zmq_transport._message_uplink_max_bytes()
+    )
+
+    widest_measurable_control_frame = (
+        int(plugin_settings.EXPORT_INLINE_BINARY_MAX_BYTES) * 4 // 3
+    )
+    assert zmq_transport._control_uplink_max_bytes() > widest_measurable_control_frame
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_oversized_smuggled_batch_never_reaches_the_control_uplink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An oversized frame aimed at the *control* endpoint is not delivered.
+
+    The message uplink's ceiling is worth nothing if a plugin can point the
+    same batch at the other socket: it holds both endpoints and the uplink
+    token, so it can sign a frame and write it straight onto the control
+    uplink, bypassing ``_uplink_socket``'s routing entirely. Refusing the
+    channel after ``recv()`` would not help -- libzmq has already read the
+    whole frame into memory by then -- so only a ceiling on this socket keeps
+    the allocation from happening.
+
+    As on the message plane, nothing raises: libzmq enforces MAXMSGSIZE in the
+    receiving engine, drops the frame, and tears down the peer. The observable
+    behaviour is silence.
+    """
+    import plugin.settings as plugin_settings
+
+    # Shrink the derived ceiling so the test can overshoot it with KBs rather
+    # than the ~128MB the shipped defaults imply.
+    monkeypatch.setattr(plugin_settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
+    monkeypatch.setattr(plugin_settings, "PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", 2)
+    ceiling = zmq_transport._control_uplink_max_bytes()
+
+    host = zmq_transport.HostTransport()
+    child = zmq_transport.ChildTransport(
+        host.downlink_endpoint,
+        host.uplink_endpoint,
+        host.uplink_token,
+        message_uplink_endpoint=host.message_uplink_endpoint,
+    )
+    try:
+        assert host._ul_sock.getsockopt(zmq.MAXMSGSIZE) == ceiling
+
+        # Liveness first: an in-bounds control frame does arrive on this
+        # socket, so the silence asserted below is the ceiling and not a dead
+        # connection.
+        child.channel_sender(zmq_transport.CH_STS).put_nowait({"type": "STATUS"})
+        assert await host.recv(timeout_ms=2000) == (
+            zmq_transport.CH_STS,
+            {"type": "STATUS"},
+        )
+
+        smuggled = zmq_transport._encode_uplink(
+            host.uplink_token,
+            zmq_transport.CH_MSG_BATCH,
+            {"items": [{"message_id": "smuggled", "content": "x" * (ceiling * 2)}]},
+        )
+        # Guard the guard: if a future headroom change made this frame fit
+        # under the ceiling, the assertion below would pass for the wrong
+        # reason.
+        assert len(smuggled) > ceiling
+        # Written straight at the control socket, the way a plugin holding the
+        # endpoint would -- channel_sender() would route it to the message
+        # socket instead.
+        with child._ul_lock:
+            child._ul_sock.send(smuggled)
+
+        assert await host.recv(timeout_ms=1500) is None
+    finally:
+        child.close()
+        host.close()
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "channel",
+    [
+        pytest.param(zmq_transport.CH_MSG, id="single-message"),
+        pytest.param(zmq_transport.CH_MSG_BATCH, id="batch"),
+    ],
+)
+async def test_control_uplink_refuses_message_channels(channel: str) -> None:
+    """The control uplink refuses message traffic even when it fits.
+
+    The size ceiling bounds what one smuggled frame costs; this closes the
+    route itself. Without it a plugin could keep pushing under-ceiling message
+    frames at the control endpoint and have them routed as messages by
+    ``_consume_uplink``'s compatibility branch, sidestepping the message
+    plane's own accounting.
+    """
+    host = zmq_transport.HostTransport()
+    child = zmq_transport.ChildTransport(
+        host.downlink_endpoint,
+        host.uplink_endpoint,
+        host.uplink_token,
+        message_uplink_endpoint=host.message_uplink_endpoint,
+    )
+    try:
+        payload = (
+            {"items": [{"message_id": "smuggled"}]}
+            if channel == zmq_transport.CH_MSG_BATCH
+            else {"type": "MESSAGE_PUSH", "message_id": "smuggled"}
+        )
+        smuggled = zmq_transport._encode_uplink(
+            host.uplink_token,
+            channel,
+            payload,
+        )
+        with child._ul_lock:
+            child._ul_sock.send(smuggled)
+
+        with pytest.raises(ValueError, match="invalid uplink channel"):
+            await host.recv(timeout_ms=2000)
+
+        # The same channel is still accepted on the socket that owns it, so
+        # the refusal above is scoped to the control uplink and has not
+        # disabled the message plane.
+        child.channel_sender(zmq_transport.CH_MSG).put_nowait(
+            {"type": "MESSAGE_PUSH", "message_id": "legitimate"}
+        )
+        assert await host.recv_message(timeout_ms=2000) == (
+            zmq_transport.CH_MSG,
+            {"type": "MESSAGE_PUSH", "message_id": "legitimate"},
+        )
+    finally:
+        child.close()
+        host.close()
+
+
+@pytest.mark.plugin_unit
+def test_uplink_decoder_still_accepts_both_planes_by_default() -> None:
+    """The refusal lives on the socket, not in the decoder.
+
+    ``ChildTransport`` falls back to sending message channels on the control
+    socket when it is built without a dedicated message endpoint, and
+    ``_consume_uplink`` still routes CH_MSG for host transports that expose no
+    ``recv_message`` at all. Those pair only with each other -- a real
+    ``HostTransport`` always binds both sockets and always advertises the
+    message endpoint -- so refusing message channels on *this* host's control
+    socket must not turn into a blanket refusal inside the decoder.
+    """
+    for channel in (zmq_transport.CH_MSG, zmq_transport.CH_MSG_BATCH):
+        encoded = zmq_transport._encode_uplink(
+            "host-channel-token",
+            channel,
+            {"type": "MESSAGE_PUSH"},
+        )
+
+        assert zmq_transport._decode_uplink(
+            encoded,
+            expected_token="host-channel-token",
+        ) == (channel, {"type": "MESSAGE_PUSH"})

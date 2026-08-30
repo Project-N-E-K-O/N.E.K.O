@@ -521,9 +521,13 @@ class PluginCommunicationResourceManager:
                         except asyncio.QueueFull:
                             pass
                 elif ch == CH_MSG:
-                    # Compatibility for transports created without a dedicated
-                    # message endpoint. Runtime plugin hosts use the isolated
-                    # consumer below.
+                    # Compatibility for host transports that expose no
+                    # recv_message at all, so the isolated consumer below never
+                    # starts and both planes arrive here. A real HostTransport
+                    # is not one of them: it always binds a message socket, and
+                    # its recv() refuses message channels on the control uplink
+                    # so that a plugin cannot use that socket to route message
+                    # traffic around the message plane's frame ceiling.
                     await self._route_message(payload)
                 elif ch == CH_COMM:
                     await self._route_comm(payload)
