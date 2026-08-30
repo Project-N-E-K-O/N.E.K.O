@@ -1383,15 +1383,17 @@ def test_a_cross_device_workspace_is_reclaimed_like_any_other(tmp_path):
     A killed run must not leave its copy of a character tree in the
     destination volume for good -- every run picks a fresh name, so repeated
     interrupted starts would fill it. But the parent here IS the character
-    namespace, so position proves nothing: reclaiming by name and age alone
-    would delete the hidden files of a character that happens to be called
-    ".mig-something".
+    namespace, and NOTHING on disk inside it can prove a directory was ever
+    a workspace: a legal character name may start with ".mig-", and a
+    character directory may hold a file called ".lock". Name and marker are
+    shapes anyone can reproduce, and reclaiming on the strength of them
+    means deleting a whole character.
 
-    So ownership has to be shown, and the marker is what shows it. A
-    character directory holds facts.json, persona.json, settings.json, the
-    time index and its sidecars -- never a ".lock". Both directions are
-    pinned: a workspace with the marker is reclaimed, and a dot-prefixed
-    directory without one is left exactly where it is.
+    So the only claim a character cannot make is the one used: a previous
+    run WROTE THE PATH DOWN, in the directory beside the namespace that is
+    ours. Both directions are pinned -- a recorded workspace is reclaimed,
+    and a directory carrying the prefix AND the marker but no record is left
+    exactly where it is.
     """
     from utils.config_manager import migrations as migrations_module
     from utils.config_manager.migrations import (
@@ -1409,33 +1411,36 @@ def test_a_cross_device_workspace_is_reclaimed_like_any_other(tmp_path):
     (project_root / "Carol").mkdir(parents=True)
     (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
 
-    abandoned = runtime_root / (_MIGRATION_WORKSPACE_PREFIX + "killed")
-    (abandoned / "d" / "Dave").mkdir(parents=True)
-    (abandoned / "d" / "Dave" / "facts.json").write_text("[9]", encoding="utf-8")
-    (abandoned / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
+    # A run KILLED before cleanup, driven through the real code so the record
+    # is written by the production path rather than by this test -- writing
+    # it here is what let the first version of this guard survive removing
+    # the write entirely. Only the final cleanup is disabled: a real kill
+    # does not stop the NEXT run from using rmtree.
+    with patch.object(migrations_module, "_same_device", lambda *a: False), \
+            patch.object(migrations_module.shutil, "rmtree", lambda *a, **k: None):
+        config_manager.migrate_memory_files()
 
-    # A character called ".mig-something", with hidden files of its own and
-    # no marker. validate_character_name(allow_dots=True) accepts the name.
-    bystander = runtime_root / (_MIGRATION_WORKSPACE_PREFIX + "character")
-    bystander.mkdir()
-    (bystander / "facts.json").write_text("[keep]", encoding="utf-8")
+    leavings = [
+        entry
+        for entry in runtime_root.iterdir()
+        if entry.name.startswith(_MIGRATION_WORKSPACE_PREFIX)
+    ]
+    assert len(leavings) == 1, (
+        "the kill left %r, so there is nothing to reclaim below" % (leavings,)
+    )
+    abandoned = leavings[0]
+    assert (abandoned / _MIGRATION_WORKSPACE_LOCK_NAME).exists()
 
-    # And one the other way round: an ordinary character name that happens to
-    # hold a file called ".lock". The two conditions are independent on
-    # purpose, so each has to be shown to carry weight on its own.
-    marked = runtime_root / "Dave"
-    marked.mkdir()
-    (marked / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
-    (marked / "facts.json").write_text("[keep]", encoding="utf-8")
+    # A character that looks EXACTLY like a workspace -- the prefix and the
+    # marker -- and was never recorded, because we never made it. This is
+    # the case name-and-marker could not tell apart.
+    impostor = runtime_root / (_MIGRATION_WORKSPACE_PREFIX + "character")
+    (impostor / "semantic_memory").mkdir(parents=True)
+    (impostor / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
+    (impostor / "facts.json").write_text("[keep]", encoding="utf-8")
 
     stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
-    for path in (
-        abandoned / "d" / "Dave",
-        abandoned / "d",
-        abandoned,
-        bystander,
-        marked,
-    ):
+    for path in (abandoned, impostor):
         os.utime(path, (stale, stale))
 
     with patch.object(migrations_module, "_same_device", lambda *a: False):
@@ -1444,18 +1449,21 @@ def test_a_cross_device_workspace_is_reclaimed_like_any_other(tmp_path):
     assert not abandoned.exists(), (
         "a killed cross-device run's copy was never reclaimed"
     )
-    assert (bystander / "facts.json").read_text(encoding="utf-8") == "[keep]", (
-        "a character whose name carries the workspace prefix was swept"
-    )
-    assert (marked / "facts.json").read_text(encoding="utf-8") == "[keep]", (
-        "a character holding a .lock was swept on the strength of the marker"
+    assert (impostor / "facts.json").read_text(encoding="utf-8") == "[keep]", (
+        "a character carrying the workspace prefix AND a .lock was deleted "
+        "on the strength of its shape"
     )
     assert (runtime_root / "Carol" / "facts.json").read_text(
         encoding="utf-8"
-    ) == "[1]"
+    ) == "[1]", "the seed never arrived across the two runs"
     assert sorted(q.name for q in runtime_root.iterdir()) == sorted(
-        [bystander.name, "Carol", marked.name]
+        [impostor.name, "Carol"]
     ), "staging was left behind in the character namespace"
+    # And the record is forgotten with it, rather than growing forever.
+    ledger = config_manager._migration_ledger_path()
+    assert not ledger.exists() or str(abandoned) not in ledger.read_text(
+        encoding="utf-8"
+    ), "the reclaimed workspace is still recorded"
 
 
 @pytest.mark.unit

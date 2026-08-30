@@ -630,11 +630,24 @@ def running_on_event_loop() -> bool:
     return True
 
 
-def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
-    """Replace the target, briefly retrying Windows' "target is busy" errors."""
+def _with_busy_retry(attempt) -> None:
+    """Run ``attempt`` under the shared Windows "target is busy" backoff.
+
+    One policy, two entry points. The replacing and no-replace publishes
+    had the same loop written out twice -- same error set, same event-loop
+    rule, same delays -- so changing the policy meant changing both and
+    noticing that it had to be changed in both.
+
+    Anything that is not a BUSY error propagates on the first attempt,
+    which is already the whole rule for the no-replace publish: a
+    destination that won the race raises FileExistsError, whose winerror
+    is 183 on Windows and absent on POSIX, so it is never in the busy set.
+    A "terminal exceptions" parameter was written here and taken back
+    out after checking what it did: nothing, on either platform.
+    """
     for delay in _REPLACE_RETRY_BACKOFF_S:
         try:
-            os.replace(temp_path, target_path)
+            attempt()
             return
         except OSError as exc:
             if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
@@ -644,7 +657,14 @@ def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
             if running_on_event_loop():
                 raise
         time.sleep(delay)
-    os.replace(temp_path, target_path)
+    # One last go, so the caller sees the real error rather than a
+    # silent give-up.
+    attempt()
+
+
+def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
+    """Replace the target, briefly retrying Windows' "target is busy" errors."""
+    _with_busy_retry(lambda: os.replace(temp_path, target_path))
 
 
 def _publish_once(source: str, target_path: Path) -> None:
@@ -682,24 +702,15 @@ def publish_without_replacing(
     the read-only attribute to remove the source changes the mode of the
     published one. Measured -- a 0o444 seed published as 0o666.
 
-    Same Windows busy window and same backoff as the replacing form.
+    Same Windows busy window and same backoff as the replacing form --
+    literally the same, through :func:`_with_busy_retry`, rather than a
+    second copy of the error set and the delays.
     """
     source = str(source)
-    for delay in _REPLACE_RETRY_BACKOFF_S:
-        try:
-            _publish_once(source, target_path)
-            return
-        except FileExistsError:
-            # The destination won. That is an answer, not a failure to
-            # retry around.
-            raise
-        except OSError as exc:
-            if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
-                raise
-            if running_on_event_loop():
-                raise
-        time.sleep(delay)
-    _publish_once(source, target_path)
+    # FileExistsError is the destination winning: an answer, not a
+    # failure to retry around -- and it needs no special case, because
+    # it is not a busy error and the backoff only retries those.
+    _with_busy_retry(lambda: _publish_once(source, target_path))
 
 
 def replace_with_busy_retry(temp_path: str | os.PathLike[str], target_path: Path) -> None:

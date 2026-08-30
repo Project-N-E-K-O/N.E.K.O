@@ -225,6 +225,15 @@ def _fsync_file(path):
 _MIGRATION_WORKSPACE_PREFIX = ".mig-"
 _MIGRATION_WORKSPACE_LOCK_NAME = ".lock"
 
+# Workspaces minted inside the character namespace are written down
+# here, in the directory beside it that IS ours. Nothing on disk inside
+# memory_dir can prove a directory was ever a workspace: a character may
+# legally be named ".mig-anything", and a character directory may hold a
+# file called ".lock" -- so a name and a marker are shapes anyone can
+# reproduce, and reclaiming on the strength of them means deleting a
+# whole character. A path only reaches this file because we created it.
+_MIGRATION_LEDGER_NAME = "minted"
+
 
 def _hold_workspace_lock(handle):
     """Take an exclusive, non-blocking lock on an open workspace marker."""
@@ -554,6 +563,12 @@ class MigrationsMixin:
             if workspace is not None:
                 _force_rmtree(workspace)
             parent, owned = self._migration_staging_parent()
+            cutoff = time.time() - _MIGRATION_STAGING_STALE_SECONDS
+            if not owned:
+                # The character namespace. Nothing THERE can prove
+                # ownership, so the answer comes from beside it.
+                self._reclaim_recorded_workspaces(workspace, cutoff)
+                return
             # A link or a plain file at the reserved name means we never
             # used it -- the preparation step worked around it. Do not walk
             # it and do not rmdir it: on Windows rmdir removes a DIRECTORY
@@ -561,7 +576,6 @@ class MigrationsMixin:
             # preparation refused to touch.
             if parent.is_symlink() or not parent.is_dir():
                 return
-            cutoff = time.time() - _MIGRATION_STAGING_STALE_SECONDS
             for entry in parent.iterdir():
                 if not entry.name.startswith(_MIGRATION_WORKSPACE_PREFIX):
                     continue
@@ -572,9 +586,6 @@ class MigrationsMixin:
                     # No age, no evidence it is stale. Leave it.
                     continue
                 if not entry.is_dir() or entry.is_symlink():
-                    if not owned:
-                        # Only ever our own directories, in there.
-                        continue
                     try:
                         entry.unlink()
                     except OSError:
@@ -589,14 +600,103 @@ class MigrationsMixin:
                     # Old, but somebody still has it open.
                     continue
                 _force_rmtree(entry)
-            if owned:
-                # Empty only. A live run keeps its own workspace here, and
-                # that is precisely when this must not succeed. Never in the
-                # cross-device layout: that parent is memory_dir itself.
-                parent.rmdir()
+            # Empty only. A live run keeps its own workspace here, and that
+            # is precisely when this must not succeed. Only reached on the
+            # owned parent -- the namespace returns above, since removing
+            # memory_dir is not a thing to contemplate.
+            parent.rmdir()
         except OSError:
             # Reclamation runs in a finally on the startup path. Failing to
             # tidy up is never worth replacing the real outcome.
+            pass
+
+    def _migration_ledger_path(self):
+        """Where minted-in-the-namespace workspaces are written down."""
+        return (
+            Path(self.app_docs_dir)
+            / _MIGRATION_STAGING_DIR
+            / _MIGRATION_LEDGER_NAME
+        )
+
+    def _record_minted_workspace(self, workspace):
+        """Write down a workspace minted where position proves nothing.
+
+        Best effort, and the failure direction is the safe one: an
+        unrecorded workspace is never reclaimed, which costs a directory.
+        The other way round costs a character.
+        """
+        ledger = self._migration_ledger_path()
+        try:
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            with open(ledger, "a", encoding="utf-8") as handle:
+                handle.write(str(workspace) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError:
+            # Nothing to do about it, and nothing unsafe about it.
+            pass
+
+    def _reclaim_recorded_workspaces(self, keep, cutoff):
+        """Remove workspaces we WROTE DOWN, and forget the ones already gone.
+
+        The namespace is enumerated by nothing here. A path is a candidate
+        only because a previous run recorded creating it, which is the one
+        claim a character directory cannot make -- a legal character name
+        may start with ".mig-", and a character directory may hold a file
+        called ".lock", so neither the name nor the marker is evidence.
+
+        Age and the lock still apply on top, as vetoes: a recorded
+        workspace that is fresh, or that somebody still holds, stays.
+        """
+        ledger = self._migration_ledger_path()
+        try:
+            recorded = ledger.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            # No record, nothing reclaimable. Not an error: the layout
+            # that writes one is the exotic one.
+            return
+        kept = Path(keep) if keep is not None else None
+        remaining = []
+        for line in recorded:
+            recorded_path = line.strip()
+            if not recorded_path:
+                continue
+            entry = Path(recorded_path)
+            if kept is not None and entry == kept:
+                # This run's own, already removed above -- unless the removal
+                # did not take. Dropping the record unconditionally made a
+                # leftover that rmtree could not clear unreclaimable for
+                # good, because the record is the only thing that ever brings
+                # anyone back to a path inside the namespace.
+                if entry.exists():
+                    remaining.append(recorded_path)
+                continue
+            if entry.is_symlink() or not entry.is_dir():
+                # Gone, or no longer the directory we made. Either way
+                # there is nothing of ours left at that path.
+                continue
+            try:
+                if entry.stat().st_mtime >= cutoff:
+                    remaining.append(recorded_path)
+                    continue
+            except OSError:
+                remaining.append(recorded_path)
+                continue
+            if _workspace_is_live(entry):
+                remaining.append(recorded_path)
+                continue
+            _force_rmtree(entry)
+            if entry.exists():
+                remaining.append(recorded_path)
+        try:
+            if remaining:
+                ledger.write_text(
+                    "\n".join(remaining) + "\n", encoding="utf-8"
+                )
+            else:
+                ledger.unlink()
+        except OSError:
+            # A stale record costs one revisit next run.
             pass
 
     def _prepare_migration_staging_root(self):
@@ -622,11 +722,14 @@ class MigrationsMixin:
                 # removed: a minted name cannot collide with a character
                 # however that character is named, which a fixed one can --
                 # ".mig-staging" passes validate_character_name.
-                return self._claimed_workspace(
-                    tempfile.mkdtemp(
-                        dir=str(parent), prefix=_MIGRATION_WORKSPACE_PREFIX
-                    )
+                minted = tempfile.mkdtemp(
+                    dir=str(parent), prefix=_MIGRATION_WORKSPACE_PREFIX
                 )
+                # Written down BEFORE it is used, so a run killed while
+                # copying is still reclaimable. A run killed in the two
+                # statements before this is not, which costs a directory.
+                self._record_minted_workspace(minted)
+                return self._claimed_workspace(minted)
             # Something else holding the reserved name is worked AROUND, not
             # deleted. A link would be followed out of the tree we are
             # allowed to write, and a plain file makes mkdir raise
