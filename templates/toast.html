@@ -142,15 +142,18 @@
             };
             statusToast._leave = function() {
                 if (statusTimeout || statusToast.classList.contains('hide')) return;
-                scheduleHide(toastRemaining!=null ? toastRemaining : duration);
+                if (!statusToast.matches(':hover, :focus-within')) scheduleHide(toastRemaining!=null ? toastRemaining : duration);
             };
             statusToast._focusIn = function() {
                 if (!statusTimeout) return;
                 clearTimeout(statusTimeout); statusTimeout = null;
+                var elapsed = Date.now() - toastStart;
+                var base = toastRemaining!=null ? toastRemaining : duration;
+                toastRemaining = Math.max(0, base - elapsed);
             };
             statusToast._focusOut = function() {
                 if (statusTimeout || statusToast.classList.contains('hide')) return;
-                scheduleHide(toastRemaining!=null ? toastRemaining : duration);
+                if (!statusToast.matches(':hover, :focus-within')) scheduleHide(toastRemaining!=null ? toastRemaining : duration);
             };
             statusToast.addEventListener('mouseenter', statusToast._enter);
             statusToast.addEventListener('mouseleave', statusToast._leave);

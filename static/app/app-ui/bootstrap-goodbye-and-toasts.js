@@ -353,14 +353,9 @@ I.mod = window.appUi;
     I.showStatusToast = function showStatusToast(message, duration, options = {}) {
         if (duration == null) duration = 3000;
         const priority = (options && options.important) ? 100 : ((options && options.priority) || 0);
-
         const statusToast = I.S.dom.statusToast || document.getElementById('status-toast');
         const statusElement = I.S.dom.statusElement || document.getElementById('status');
-
-        if (!statusToast) {
-            console.error(window.t('console.statusToastNotFound'));
-            return;
-        }
+        if (!statusToast) { console.error(window.t('console.statusToastNotFound')); return; }
         I.S.dom.statusToast = statusToast;
         if (statusElement) I.S.dom.statusElement = statusElement;
 
@@ -412,8 +407,6 @@ I.mod = window.appUi;
 
         let textEl = statusToast.querySelector('#status-toast-text');
         if (!textEl) { textEl = document.createElement('span'); textEl.id = 'status-toast-text'; statusToast.appendChild(textEl); }
-        Array.from(statusToast.childNodes).forEach(n => { if (n !== textEl && n !== closeBtn && n.nodeType === 3) n.textContent = ''; });
-        textEl.textContent = message;
         let closeBtn = statusToast.querySelector('#status-toast-close');
         if (!closeBtn) {
             closeBtn = document.createElement('button');
@@ -422,6 +415,8 @@ I.mod = window.appUi;
             closeBtn.setAttribute('aria-label', 'close');
             statusToast.appendChild(closeBtn);
         }
+        Array.from(statusToast.childNodes).forEach(n => { if (n !== textEl && n !== closeBtn && n.nodeType === 3) n.textContent = ''; });
+        textEl.textContent = message;
         closeBtn.disabled = false; closeBtn.tabIndex = 0; closeBtn.removeAttribute('aria-hidden');
         closeBtn.onclick = (e) => { e.stopPropagation(); hideNow(); };
         if (I.mod.api && I.mod.api.setMouseThrough) I.mod.api.setMouseThrough(false);
@@ -452,6 +447,9 @@ I.mod = window.appUi;
         statusToast._toastFocusIn = () => {
             if (!I.S.statusToastTimeout) return;
             clearTimeout(I.S.statusToastTimeout); I.S.statusToastTimeout = null;
+            const elapsed = Date.now() - (I.S._statusToastStart || Date.now());
+            const base = I.S._statusToastRemaining != null ? I.S._statusToastRemaining : duration;
+            I.S._statusToastRemaining = Math.max(0, base - elapsed);
         };
         statusToast._toastFocusOut = () => {
             if (I.S.statusToastTimeout || statusToast.classList.contains('hide')) return;
@@ -466,13 +464,10 @@ I.mod = window.appUi;
             I.S._statusToastStart = Date.now();
         } else scheduleHide(duration);
 
-        if (statusElement) {
-            statusElement.textContent = message || '';
-        }
+        if (statusElement) statusElement.textContent = message || '';
     }
 
     I.mod.showStatusToast = I.showStatusToast;
-    // 全局兼容
     window.showStatusToast = I.showStatusToast;
 
     // ================================================================
