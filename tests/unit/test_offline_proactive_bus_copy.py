@@ -54,6 +54,7 @@ reaches both publishers.
 from __future__ import annotations
 
 import asyncio
+import threading
 import base64
 import io
 from types import SimpleNamespace
@@ -576,7 +577,7 @@ def test_a_failing_frame_bus_never_costs_the_turn():
         raise RuntimeError("plane down")
 
     with patch(_FRAME_PUBLISHER, _explode), patch(_TURN_PUBLISHER, _TurnSpy()):
-        committed = asyncio.run(
+        committed = _run_turn(
             client.prompt_ephemeral(_INSTRUCTION, images=[_png_b64(320, 200)])
         )
 
@@ -584,16 +585,43 @@ def test_a_failing_frame_bus_never_costs_the_turn():
     assert _attached_b64(captured), "the turn still carried its frames"
 
 
-def test_bus_cancellation_is_not_swallowed():
-    """A cancelled publish is the session being torn down, not a bus hiccup."""
+def test_a_cancelled_bus_publish_no_longer_reaches_the_proactive_turn():
+    """The copy runs off the response path, so its cancellation stays there.
+
+    This used to propagate, because the turn awaited the publish. It must not
+    any more: a stalled or torn-down bus cannot be allowed to cost her the
+    sentence she already said.
+    """
     client, _captured = _make_client()
 
     async def _cancel(*_args, **_kwargs):
         raise asyncio.CancelledError()
 
     with patch(_FRAME_PUBLISHER, _FrameSpy()), patch(_TURN_PUBLISHER, _cancel):
+        committed = _run_turn(client.prompt_ephemeral(_INSTRUCTION))
+
+    assert committed is True
+
+
+def test_the_turn_publisher_still_re_raises_cancellation():
+    """The dual, one layer down: teardown must end the copy, not be eaten by it.
+
+    Mutation: catch ``BaseException`` (or drop the CancelledError re-raise) in
+    ``_publish_conversation_turn``.
+    """
+    client, _captured = _make_client()
+
+    async def _cancel(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    async def _call():
+        await client._publish_conversation_turn(
+            "x", turn_type="proactive_reply", conversation_id="c", message_count=1,
+        )
+
+    with patch(_TURN_PUBLISHER, _cancel):
         with pytest.raises(asyncio.CancelledError):
-            _run_turn(client.prompt_ephemeral(_INSTRUCTION))
+            asyncio.run(_call())
 
 
 # ---------------------------------------------------------------------------
@@ -615,13 +643,20 @@ async def _settled(coro):
     a single frame has reached the spy. Draining here is what keeps these
     assertions about the publish rather than about scheduling luck.
     """
-    result = await coro
-    # NOT ``asyncio.sleep``: the retry-ladder tests patch it module-wide (see
-    # ``_SLEEP``), and a patched no-op sleep never yields, so the background
-    # copies would never get a turn and every assertion here would read zero.
-    for _ in range(50):
-        await _REAL_SLEEP(0)
-    return result
+    try:
+        return await coro
+    finally:
+        # In a ``finally`` on purpose. A turn that raises still fired its bus
+        # copies, and skipping the drain there leaves a task pending at loop
+        # close -- which then surfaces inside the NEXT test, spending its patch
+        # on a frame from a turn that ended long ago.
+        #
+        # NOT ``asyncio.sleep``: the retry-ladder tests patch it module-wide
+        # (see ``_SLEEP``), and a patched no-op sleep never yields, so the
+        # copies would never get a turn and every assertion here would read
+        # zero.
+        for _ in range(50):
+            await _REAL_SLEEP(0)
 
 
 def _run_turn(coro):
@@ -876,3 +911,69 @@ def test_a_lookup_by_id_finds_this_turn_and_not_another_conversations(
 
     # An id nobody wrote is an empty result, not an error.
     assert store.query(topic=CONVERSATIONS_TOPIC, conversation_id="conv-nope", limit=50) == []
+
+
+def test_close_cancels_and_collects_the_in_flight_bus_copies():
+    """A copy must not outlive the session that fired it.
+
+    Parked inside the cross-thread handoff, a copy keeps its base64 and its
+    reference to the client alive, and would publish for a session that is
+    gone if the bridge ever recovered. Cancel then collect: a cancelled task
+    has not stopped until it has been awaited.
+
+    Mutation: drop the ``cancel()`` loop, or the ``gather``, in
+    ``_cancel_bus_copies``.
+    """
+    client, _captured = _make_client()
+
+    async def _check():
+        started = asyncio.Event()
+
+        async def _parked():
+            started.set()
+            await asyncio.Event().wait()
+
+        task = client._fire_bus_task(_parked())
+        assert task is not None
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        await client._cancel_bus_copies()
+
+        assert task.done(), "close 返回时抄送还在跑"
+        assert task.cancelled()
+        assert not client._bus_bg_tasks, "集合没被清空"
+
+    asyncio.run(_check())
+
+
+def test_a_stalled_instruction_copy_does_not_hold_up_the_proactive_turn():
+    """The ordering join must not become a new way to hang the turn.
+
+    The reply copy waits for the instruction copy so a plugin never reads a
+    reply with no instruction in front of it. That wait lives inside the fired
+    copy, not on the turn: a stalled bridge would otherwise hang the very
+    teardown the previous fix moved the publish out of.
+
+    Mutation: await the instruction task inside ``prompt_ephemeral``'s
+    ``finally`` instead of chaining. This test then hangs rather than fails, so
+    it carries its own deadline.
+    """
+    entered = threading.Event()
+
+    async def _never_returns(*_args, **_kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    client, _captured = _make_client()
+
+    async def _turn():
+        with patch(_FRAME_PUBLISHER, _FrameSpy()), patch(_TURN_PUBLISHER, _never_returns):
+            committed = await asyncio.wait_for(
+                client.prompt_ephemeral(_INSTRUCTION), timeout=5,
+            )
+            for _ in range(50):
+                await _REAL_SLEEP(0)
+            assert entered.is_set(), "前提没成立：指令抄送根本没被调用"
+            return committed
+
+    assert asyncio.run(_turn()) is True

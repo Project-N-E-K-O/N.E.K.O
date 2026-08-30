@@ -824,7 +824,7 @@ async def publish_provider_frame_observed_best_effort(
 _frame_copy_drops: Dict[str, int] = {}
 
 
-def spawn_bounded_frame_copy(coro, inflight: set, *, label: str):
+def spawn_bounded_frame_copy(coro, inflight: set, *, label: str, spawn=None):
     """Schedule a best-effort frame copy, refusing new ones once N are pending.
 
     Both clients publish frames off the turn now, because the hop can cross
@@ -845,6 +845,12 @@ def spawn_bounded_frame_copy(coro, inflight: set, *, label: str):
 
     ``inflight`` doubles as the GC root -- a task nothing references can be
     collected mid-flight -- so callers need no second set.
+
+    ``spawn`` lets a caller keep its own task-creation seam: the realtime
+    client passes ``_fire_task`` so frame copies stay registered in
+    ``_bg_tasks`` alongside everything else it has to tear down, and so the
+    one place tests reach in to observe or refuse a background task keeps
+    working. The cap wraps that seam rather than replacing it.
     """
     if len(inflight) >= AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT:
         coro.close()
@@ -859,11 +865,15 @@ def spawn_bounded_frame_copy(coro, inflight: set, *, label: str):
             )
         return None
     try:
-        task = asyncio.create_task(coro)
+        task = (spawn or asyncio.create_task)(coro)
     except RuntimeError:
-        # No running loop (``__new__``-built doubles, teardown). Close the
-        # coroutine so it does not warn; a missing copy is the safe direction.
+        # No running loop (``__new__``-built doubles, teardown), or a spawn
+        # that refused. Close the coroutine so it does not warn -- close is
+        # idempotent, so a spawn that already closed it is fine. A missing
+        # copy is the safe direction.
         coro.close()
+        return None
+    if task is None:
         return None
     inflight.add(task)
     task.add_done_callback(inflight.discard)

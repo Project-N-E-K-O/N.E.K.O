@@ -209,6 +209,33 @@ class _MediaMixin:
             self._bus_bg_tasks = tasks
         return spawn_bounded_frame_copy(coro, tasks, label="offline bus copy")
 
+    async def _cancel_bus_copies(self) -> None:
+        """End every in-flight bus copy. Called first thing in ``close()``.
+
+        Without this a copy parked in the cross-thread handoff outlives the
+        session: it keeps its base64 and its reference to ``self`` alive, and
+        if the bridge ever recovers it publishes a frame for a session that is
+        gone. Cancel then collect, so ``close()`` returns with nothing of this
+        client's still scheduled.
+
+        Collecting is what makes the cancel mean anything -- a cancelled task
+        has not stopped until it has been awaited. ``return_exceptions`` keeps
+        a copy that fails on its way out from turning into a teardown error;
+        by this point nobody is going to read it either way.
+        """
+        tasks = getattr(self, "_bus_bg_tasks", None)
+        if not tasks:
+            return
+        # Snapshot: the done-callback discards from the live set as they end.
+        draining = list(tasks)
+        for task in draining:
+            task.cancel()
+        try:
+            await asyncio.gather(*draining, return_exceptions=True)
+        except Exception as exc:  # pragma: no cover - gather already absorbs
+            logger.debug("bus copies did not drain cleanly: %s", exc)
+        tasks.clear()
+
     def _publish_pending_tool_frames(
         self,
         pending: list | None,

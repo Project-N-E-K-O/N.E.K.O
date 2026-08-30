@@ -180,13 +180,20 @@ async def _settled(coro):
     a single frame has reached the spy. Draining here is what keeps these
     assertions about the publish rather than about scheduling luck.
     """
-    result = await coro
-    # NOT ``asyncio.sleep``: the retry-ladder tests patch it module-wide (see
-    # ``_SLEEP``), and a patched no-op sleep never yields, so the background
-    # copies would never get a turn and every assertion here would read zero.
-    for _ in range(50):
-        await _REAL_SLEEP(0)
-    return result
+    try:
+        return await coro
+    finally:
+        # In a ``finally`` on purpose. A turn that raises still fired its bus
+        # copies, and skipping the drain there leaves a task pending at loop
+        # close -- which then surfaces inside the NEXT test, spending its patch
+        # on a frame from a turn that ended long ago.
+        #
+        # NOT ``asyncio.sleep``: the retry-ladder tests patch it module-wide
+        # (see ``_SLEEP``), and a patched no-op sleep never yields, so the
+        # copies would never get a turn and every assertion here would read
+        # zero.
+        for _ in range(50):
+            await _REAL_SLEEP(0)
 
 
 def _run_turn(coro):

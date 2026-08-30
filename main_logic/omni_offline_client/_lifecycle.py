@@ -778,21 +778,23 @@ class _LifecycleMixin:
             # 不能在任何用户看得见的东西（TTS 收尾、轮次结束、request-id 清理）
             # 前面新开一个取消点。
             if content_committed:
-                if _bus_instruction_task is not None:
-                    # 让指令先落地。这里已经在整个 finally 的最后、所有用户可见
-                    # 的收尾之后，等一下不会挡住任何人；而顺序反过来的话，插件
-                    # 读到的就是一句没有由来的回复。任务自己吞掉所有失败，所以
-                    # 这个 await 只会因为它结束而结束。
-                    await asyncio.gather(
-                        _bus_instruction_task, return_exceptions=True
+                # 顺序靠**串联**，不靠等待。指令和回复是同一轮，插件必须按这个
+                # 顺序读到；但在 finally 里 await 那条任务，会让一个卡住的
+                # bridge 直接挂住主动搭话的收尾——这正是上一轮把发布挪出返回
+                # 路径要避免的事，在这里又长回来了。
+                #
+                # 所以把回复的抄送挂在指令那条任务**后面**，整串一起 fire：
+                # 顺序保住了，回合一步都不用等，也不用为此发明一个超时。
+                self._fire_bus_task(
+                    self._publish_reply_after_instruction(
+                        _bus_instruction_task,
+                        committed_text,
+                        turn_type=_BUS_TURN_TYPE_REPLY,
+                        conversation_id=_bus_turn_id,
+                        # 这一轮到此为止总共两条：指令 + 这句回复。读到这条的
+                        # 插件因此知道自己手上的是完整的一轮。
+                        message_count=2,
                     )
-                await self._publish_conversation_turn(
-                    committed_text,
-                    turn_type=_BUS_TURN_TYPE_REPLY,
-                    conversation_id=_bus_turn_id,
-                    # 这一轮到此为止总共两条：指令 + 这句回复。读到这条的插件
-                    # 因此知道自己手上的是完整的一轮。
-                    message_count=2,
                 )
 
         return content_committed
@@ -839,8 +841,32 @@ class _LifecycleMixin:
         except asyncio.CancelledError:
             logger.info("Text mode message handler cancelled")
 
+    async def _publish_reply_after_instruction(
+        self,
+        instruction_task,
+        content: str,
+        **kwargs,
+    ) -> None:
+        """Publish the proactive reply, but never before its instruction.
+
+        The two are one round and a plugin reads them in order. Waiting for the
+        instruction on the turn itself would let a stalled bridge hang the
+        turn's teardown, so the wait lives here, inside the copy that is
+        already off the response path.
+
+        The instruction task swallows its own failures, so this only ever ends
+        when it does -- and if it is cancelled (``close()``), that cancellation
+        propagates and this reply is dropped with it. Correct: a reply on the
+        bus with no instruction in front of it reads as a sentence with no
+        cause.
+        """
+        if instruction_task is not None:
+            await instruction_task
+        await self._publish_conversation_turn(content, **kwargs)
+
     async def close(self) -> None:
         """Close the client and cleanup resources."""
+        await self._cancel_bus_copies()
         await self._cancel_external_voice_submit_task()
         # Supersedes the bare ``_is_responding = False``: retiring the active
         # generation also stops a mid-flight turn from resuming (its

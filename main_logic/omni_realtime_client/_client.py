@@ -598,11 +598,15 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
     def _fire_frame_copy(self, coro):
         """``_fire_task`` for frame copies only, and bounded.
 
-        Kept apart from ``_bg_tasks`` deliberately. That set holds quarantine
-        and lifecycle work whose whole job is to finish; capping it would drop
-        exactly the tasks that must not be dropped. A frame copy is the only
-        thing here that is both optional and multi-megabyte, so it is the only
-        thing that gets a ceiling.
+        The ceiling is counted in its OWN set, not in ``_bg_tasks``: that set
+        holds quarantine and lifecycle work whose whole job is to finish, and
+        capping it would drop exactly the tasks that must not be dropped. A
+        frame copy is the only thing here that is both optional and
+        multi-megabyte, so it is the only thing that gets one.
+
+        The task itself is still created through ``_fire_task``, so it stays
+        registered for teardown like every other background task, and the
+        single seam tests use to observe or refuse one keeps working.
         """
         from main_logic.agent_event_bus import spawn_bounded_frame_copy
 
@@ -610,7 +614,9 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         if tasks is None:
             tasks = set()
             self._frame_copy_tasks = tasks
-        return spawn_bounded_frame_copy(coro, tasks, label="realtime bus copy")
+        return spawn_bounded_frame_copy(
+            coro, tasks, label="realtime bus copy", spawn=self._fire_task,
+        )
 
     def _ensure_turn_admission_lock(self) -> asyncio.Lock:
         """Return the shared callback/user-turn boundary, lazily for doubles."""
