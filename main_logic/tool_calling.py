@@ -148,11 +148,9 @@ class ToolImage:
     """One picture a tool wants the model to see.
 
     ``data_b64`` is raw base64 with no ``data:`` prefix. ``vision_prompt``
-    says what the model should look for, and is deliberately used by both
-    delivery paths: it becomes the text part next to the image when the
-    picture is injected directly, and the extra instruction handed to the
-    vision model when the picture has to be transcribed instead. One
-    sentence, so the two paths cannot drift apart.
+    says what the model should look for; it becomes the text part sitting
+    next to the image in the turn, which is the only thing that tells the
+    model why it was handed a frame.
     """
 
     data_b64: str
@@ -174,9 +172,9 @@ class ToolResult:
     error_message: str = ""
     # Pictures ride beside ``output``, never inside it: they must not be
     # serialized into the string the model reads. ``LLMSessionManager.
-    # _on_tool_call`` decides whether they are injected as a multimodal
-    # message or transcribed into text, and clears the list in the latter
-    # case.
+    # _route_tool_images`` decides whether the session can show them to the
+    # model at all, and empties the list when it cannot -- so anything
+    # downstream may treat a non-empty list as "these are going out".
     images: List["ToolImage"] = field(default_factory=list)
 
     def output_as_json_string(self) -> str:
@@ -195,7 +193,7 @@ class ToolResult:
         ``output`` is whatever the tool returned — a plugin may well hand
         back a bare string. Non-dict payloads are wrapped as
         ``{"result": <original>}`` so there is one shape for every caller
-        that needs to annotate a result (image warnings, transcriptions).
+        that needs to annotate a result (today: image warnings).
 
         Normalization runs even with no fields to add, so the payload shape
         does not depend on whether the caller happened to have something to
@@ -204,6 +202,23 @@ class ToolResult:
         if not isinstance(self.output, dict):
             self.output = {"result": self.output}
         self.output.update(fields)
+
+    def add_image_warnings(self, *warnings: str) -> None:
+        """Append to the model-visible ``_image_warnings`` list.
+
+        Three stages annotate the same result -- the envelope parser, the
+        per-turn image budget, and the routing decision -- and each has to keep
+        what the previous one said, so the existing list is read back rather
+        than overwritten.
+        """
+        existing = (
+            self.output.get("_image_warnings")
+            if isinstance(self.output, dict)
+            else None
+        )
+        merged = list(existing) if isinstance(existing, list) else []
+        merged.extend(warnings)
+        self.merge_into_output(_image_warnings=merged)
 
 
 def tool_result_output_payload(body: Dict[str, Any]) -> Any:
@@ -368,7 +383,7 @@ def tool_result_from_envelope(call: "ToolCall", body: Any) -> ToolResult:
             "tool '%s' returned %d unusable image(s): %s",
             call.name, len(image_warnings), "; ".join(image_warnings),
         )
-        result.merge_into_output(_image_warnings=image_warnings)
+        result.add_image_warnings(*image_warnings)
     return result
 
 

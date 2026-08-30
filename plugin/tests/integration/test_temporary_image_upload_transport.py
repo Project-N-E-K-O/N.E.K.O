@@ -43,7 +43,6 @@ def test_public_image_upload_crosses_the_dedicated_media_transport(
             host.downlink_endpoint,
             host.uplink_endpoint,
             host.uplink_token,
-            downlink_curve=host.downlink_curve_credentials,
             image_uplink_endpoint=host.image_uplink_endpoint,
         )
         manager = PluginCommunicationResourceManager(plugin_id="demo", transport=host)
@@ -99,7 +98,6 @@ def test_media_backpressure_does_not_block_control_uplink() -> None:
             host.downlink_endpoint,
             host.uplink_endpoint,
             host.uplink_token,
-            downlink_curve=host.downlink_curve_credentials,
             image_uplink_endpoint=host.image_uplink_endpoint,
         )
         payload = b"x" * (512 * 1024)
@@ -156,7 +154,6 @@ def test_image_upload_from_a_timer_thread_resolves_on_its_own_event_loop(
             host.downlink_endpoint,
             host.uplink_endpoint,
             host.uplink_token,
-            downlink_curve=host.downlink_curve_credentials,
             image_uplink_endpoint=host.image_uplink_endpoint,
         )
         manager = PluginCommunicationResourceManager(plugin_id="demo", transport=host)
@@ -200,7 +197,6 @@ def test_image_transport_rejects_oversized_payload_before_sending() -> None:
             host.downlink_endpoint,
             host.uplink_endpoint,
             host.uplink_token,
-            downlink_curve=host.downlink_curve_credentials,
             image_uplink_endpoint=host.image_uplink_endpoint,
         )
         try:
@@ -242,7 +238,6 @@ def test_shutdown_completes_promptly_with_a_real_send_in_flight() -> None:
         host.downlink_endpoint,
         host.uplink_endpoint,
         host.uplink_token,
-        downlink_curve=host.downlink_curve_credentials,
         image_uplink_endpoint=host.image_uplink_endpoint,
     )
     # No consumer, tiny outbound queue: the send below genuinely blocks.

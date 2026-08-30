@@ -1568,12 +1568,17 @@ class LifecycleMixin:
             lanlan_name=self.lanlan_name,
             master_name=self.master_name,
             user_language_provider=lambda: self.user_language,
-            on_tool_call=self._on_tool_call,
+            on_tool_call=None,
             tool_definitions=tool_definitions,
             enable_long_response_summary=external_tts_enabled,
         )
         session.on_proactive_done = self.handle_proactive_complete
         session.on_thinking_active = self._make_thinking_active_callback(session)
+        # 和两个 realtime 构造点同一处理：句柄绑到这个 client 自己，而不是
+        # 构造时刻的 self.session。handoff candidate 在被提升前既不是
+        # self.session 也不是 pending_session，_sync_tools_to_active_session
+        # 扫不到它，它得从出生就认得自己。
+        session.on_tool_call = self._make_tool_call_handler(session)
         return session
 
     async def _create_offline_vlm_handoff_candidate(
@@ -2222,7 +2227,6 @@ class LifecycleMixin:
                     _prev_realtime_base, realtime_config.get('base_url'),
                 )
             nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
-            from config import VOICE_SILENCE_TIMEOUT_SECONDS
             new_session = OmniRealtimeClient(
                 base_url=realtime_config.get('base_url', ''),
                 api_key=realtime_config['api_key'],
@@ -2246,7 +2250,6 @@ class LifecycleMixin:
                 tool_definitions=_initial_tool_defs,
                 livestream_mode=self._is_livestream_active(),
                 noise_reduction_enabled=nr_enabled,
-                silence_timeout_seconds=VOICE_SILENCE_TIMEOUT_SECONDS,
                 turn_admission_lock=self._voice_proactive_inject_lock,
             )
             # Apply user's noise reduction preference to the AudioProcessor
@@ -2521,7 +2524,6 @@ class LifecycleMixin:
                 # 同上：不复用顶部快照
                 realtime_config = await self._config_manager.aget_model_api_config('realtime')
                 nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
-                from config import VOICE_SILENCE_TIMEOUT_SECONDS
                 self.pending_session = OmniRealtimeClient(
                     base_url=realtime_config.get('base_url', ''),
                     api_key=realtime_config['api_key'],
@@ -2545,7 +2547,6 @@ class LifecycleMixin:
                     tool_definitions=_pending_tool_defs,
                     livestream_mode=self._is_livestream_active(),
                     noise_reduction_enabled=nr_enabled,
-                    silence_timeout_seconds=VOICE_SILENCE_TIMEOUT_SECONDS,
                     turn_admission_lock=self._voice_proactive_inject_lock,
                 )
                 # Apply user's noise reduction preference to the AudioProcessor

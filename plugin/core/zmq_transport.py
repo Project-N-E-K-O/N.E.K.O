@@ -1,6 +1,6 @@
 """ZeroMQ transport for plugin host ↔ child process communication.
 
-Replaces ``multiprocessing.Queue`` with four authenticated ZMQ channels:
+Replaces ``multiprocessing.Queue`` with four ZMQ PUSH/PULL channels:
 
 * **Downlink** (host → child): commands, plugin-to-plugin responses
 * **Control uplink** (child → host): results, status, plugin-to-plugin requests
@@ -10,14 +10,13 @@ Replaces ``multiprocessing.Queue`` with four authenticated ZMQ channels:
 Downlink messages are serialised with :mod:`pickle` for compatibility with
 existing host commands. Uplink messages, which cross from untrusted plugin code
 into the host, use MessagePack so decoding cannot execute plugin-controlled
-objects. Both directions carry a *channel tag* so the receiver can demux.
+objects, and carry a per-host token the host checks before acting on them. Both
+directions carry a *channel tag* so the receiver can demux.
 
 The image uplink keeps its own framing — JSON metadata plus a separate raw
 bytes frame — because re-packing megabytes through MessagePack would buy
-nothing. It is authenticated the same way as the other uplinks: CURVE on the
-socket, plus the shared uplink token inside the metadata frame. Every
-child → host socket is authenticated; none may be left open to any local
-process that can guess the port.
+nothing. The same token rides inside its metadata frame instead, so every
+child → host channel is gated by one credential.
 
 Channel tags
 ~~~~~~~~~~~~
@@ -44,7 +43,6 @@ from typing import Any, Optional, Tuple
 import ormsgpack
 import zmq
 import zmq.asyncio
-from zmq.auth.thread import ThreadAuthenticator
 
 from plugin.logging_config import logger
 
@@ -65,15 +63,6 @@ _UPLINK_PACK_OPTIONS = (
     | ormsgpack.OPT_SERIALIZE_NUMPY
     | ormsgpack.OPT_SERIALIZE_PYDANTIC
 )
-_CURVE_DOMAIN = b"neko-plugin-host"
-
-
-class _SingleClientCurveCredentials:
-    def __init__(self, client_public_key: bytes) -> None:
-        self._expected_key = client_public_key
-
-    def callback(self, _domain: str, key: bytes) -> bool:
-        return secrets.compare_digest(key, self._expected_key)
 
 
 def _normalize_uplink_extension(value: object) -> object:
@@ -143,8 +132,9 @@ def _authenticate_image_metadata(
 
     The image uplink does not go through ``_decode_uplink`` — re-packing
     megabytes of pixels through MessagePack would buy nothing — so the same
-    credential check lives here instead. Without it this socket would be the
-    one child → host path any local process could write to.
+    credential check lives here instead. It is the only gate on this socket:
+    without it, this would be the one child → host path any local process that
+    can guess the port could write to.
     """
     supplied_token = metadata.pop(_IMAGE_AUTH_KEY, None)
     if (
@@ -179,26 +169,9 @@ class HostTransport:
     def __init__(self) -> None:
         self._ctx = zmq.asyncio.Context()
         self._uplink_token = secrets.token_urlsafe(32)
-        server_public_key, server_secret_key = zmq.curve_keypair()
-        client_public_key, client_secret_key = zmq.curve_keypair()
-        self._downlink_curve_credentials = (
-            server_public_key,
-            client_public_key,
-            client_secret_key,
-        )
-        self._authenticator = ThreadAuthenticator(self._ctx)
-        self._authenticator.start()
-        self._authenticator.configure_curve_callback(
-            domain=_CURVE_DOMAIN.decode("ascii"),
-            credentials_provider=_SingleClientCurveCredentials(client_public_key),
-        )
 
         # Downlink: host → child (PUSH/PULL)
         self._dl_sock = self._ctx.socket(zmq.PUSH)
-        self._dl_sock.curve_publickey = server_public_key
-        self._dl_sock.curve_secretkey = server_secret_key
-        self._dl_sock.curve_server = True
-        self._dl_sock.zap_domain = _CURVE_DOMAIN
         self._dl_sock.setsockopt(zmq.LINGER, _LINGER_MS)
         self._dl_sock.setsockopt(zmq.SNDHWM, 5000)
         self._dl_sock.bind("tcp://127.0.0.1:*")
@@ -206,10 +179,6 @@ class HostTransport:
 
         # Uplink: child → host (PUSH/PULL)
         self._ul_sock = self._ctx.socket(zmq.PULL)
-        self._ul_sock.curve_publickey = server_public_key
-        self._ul_sock.curve_secretkey = server_secret_key
-        self._ul_sock.curve_server = True
-        self._ul_sock.zap_domain = _CURVE_DOMAIN
         self._ul_sock.setsockopt(zmq.LINGER, 0)
         self._ul_sock.setsockopt(zmq.RCVHWM, 5000)
         self._ul_sock.bind("tcp://127.0.0.1:*")
@@ -219,10 +188,6 @@ class HostTransport:
         # tool, and status responses so slow message routing cannot create
         # head-of-line blocking on the control uplink.
         self._msg_sock = self._ctx.socket(zmq.PULL)
-        self._msg_sock.curve_publickey = server_public_key
-        self._msg_sock.curve_secretkey = server_secret_key
-        self._msg_sock.curve_server = True
-        self._msg_sock.zap_domain = _CURVE_DOMAIN
         self._msg_sock.setsockopt(zmq.LINGER, 0)
         self._msg_sock.setsockopt(zmq.RCVHWM, 5000)
         self._msg_sock.bind("tcp://127.0.0.1:*")
@@ -232,13 +197,7 @@ class HostTransport:
 
         # Bulk image uplink: isolated from status/result/control traffic so a
         # full media queue cannot head-of-line block the plugin control plane.
-        # Same CURVE identity as every other uplink — a bulk channel is still
-        # a channel into the host.
         self._img_sock = self._ctx.socket(zmq.PULL)
-        self._img_sock.curve_publickey = server_public_key
-        self._img_sock.curve_secretkey = server_secret_key
-        self._img_sock.curve_server = True
-        self._img_sock.zap_domain = _CURVE_DOMAIN
         self._img_sock.setsockopt(zmq.LINGER, 0)
         self._img_sock.setsockopt(zmq.RCVHWM, _IMAGE_HWM)
         self._img_sock.setsockopt(zmq.MAXMSGSIZE, _IMAGE_MAX_BYTES)
@@ -250,10 +209,6 @@ class HostTransport:
     @property
     def uplink_token(self) -> str:
         return self._uplink_token
-
-    @property
-    def downlink_curve_credentials(self) -> tuple[bytes, bytes, bytes]:
-        return self._downlink_curve_credentials
 
     # ── send helpers ─────────────────────────────────────────────
 
@@ -328,10 +283,6 @@ class HostTransport:
             except Exception:
                 pass
         try:
-            self._authenticator.stop()
-        except Exception:
-            pass
-        try:
             self._ctx.term()
         except Exception:
             pass
@@ -357,21 +308,13 @@ class ChildTransport:
         uplink_endpoint: str,
         uplink_token: str,
         *,
-        downlink_curve: tuple[bytes, bytes, bytes] | None = None,
         message_uplink_endpoint: str | None = None,
         image_uplink_endpoint: str | None = None,
     ) -> None:
-        if downlink_curve is None or len(downlink_curve) != 3:
-            raise ValueError("Plugin child process requires CURVE credentials")
-        server_public_key, client_public_key, client_secret_key = downlink_curve
-
         # Sync context — used for the uplink PUSH socket (thread-safe via lock)
         self._sync_ctx = zmq.Context()
 
         self._ul_sock = self._sync_ctx.socket(zmq.PUSH)
-        self._ul_sock.curve_serverkey = server_public_key
-        self._ul_sock.curve_publickey = client_public_key
-        self._ul_sock.curve_secretkey = client_secret_key
         self._ul_sock.setsockopt(zmq.LINGER, _LINGER_MS)
         self._ul_sock.setsockopt(zmq.SNDHWM, 5000)
         self._ul_sock.connect(uplink_endpoint)
@@ -381,9 +324,6 @@ class ChildTransport:
         self._msg_lock = self._ul_lock
         if message_uplink_endpoint:
             self._msg_sock = self._sync_ctx.socket(zmq.PUSH)
-            self._msg_sock.curve_serverkey = server_public_key
-            self._msg_sock.curve_publickey = client_public_key
-            self._msg_sock.curve_secretkey = client_secret_key
             self._msg_sock.setsockopt(zmq.LINGER, _LINGER_MS)
             self._msg_sock.setsockopt(zmq.SNDHWM, 5000)
             self._msg_sock.connect(message_uplink_endpoint)
@@ -394,9 +334,6 @@ class ChildTransport:
         # Async context — used for the downlink PULL socket (event-loop only)
         self._async_ctx = zmq.asyncio.Context()
         self._dl_sock = self._async_ctx.socket(zmq.PULL)
-        self._dl_sock.curve_serverkey = server_public_key
-        self._dl_sock.curve_publickey = client_public_key
-        self._dl_sock.curve_secretkey = client_secret_key
         self._dl_sock.setsockopt(zmq.LINGER, 0)
         self._dl_sock.connect(downlink_endpoint)
 
@@ -404,9 +341,6 @@ class ChildTransport:
         self._img_lock = threading.Lock()
         if image_uplink_endpoint:
             self._img_sock = self._sync_ctx.socket(zmq.PUSH)
-            self._img_sock.curve_serverkey = server_public_key
-            self._img_sock.curve_publickey = client_public_key
-            self._img_sock.curve_secretkey = client_secret_key
             self._img_sock.setsockopt(zmq.LINGER, 0)
             self._img_sock.setsockopt(zmq.SNDHWM, _IMAGE_HWM)
             self._img_sock.connect(image_uplink_endpoint)
@@ -448,9 +382,8 @@ class ChildTransport:
                 "request_id": str(request_id),
                 "mime": str(mime),
                 # Same credential the MessagePack uplinks carry, in the frame
-                # the host already parses. CURVE alone would be enough against
-                # an unrelated local process, but this keeps one answer to
-                # "who is allowed to write into the host" across all uplinks.
+                # the host already parses: one answer to "who is allowed to
+                # write into the host" across all uplinks.
                 _IMAGE_AUTH_KEY: self._uplink_token,
             },
             separators=(",", ":"),

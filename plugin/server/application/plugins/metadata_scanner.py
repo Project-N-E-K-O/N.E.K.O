@@ -1,3 +1,12 @@
+"""Read a plugin's metadata by importing its entry class in a throwaway worker.
+
+Reading metadata means executing an untrusted plugin's module-level code: it
+may raise, block forever, spawn helpers, or leak descriptors and threads. Doing
+that inside the agent process would take the host down with it, so the import
+runs in a subprocess we can time out and kill along with everything it spawned,
+and only a JSON result crosses back.
+"""
+
 from __future__ import annotations
 
 import json
@@ -20,7 +29,6 @@ from plugin.core import registry as registry_module
 from plugin.core.state import state
 
 
-_HOST_API_TOKEN_ENV = "NEKO_PLUGIN_HOST_API_TOKEN"
 _RESULT_PREFIX = "NEKO_PLUGIN_METADATA_RESULT:"
 _MAX_METADATA_RESULT_BYTES = 1024 * 1024
 _PROCESS_CLEANUP_TIMEOUT = 0.5
@@ -262,9 +270,9 @@ def _event_meta_payload(meta: object) -> dict[str, object]:
 
 
 def _scan_in_worker(request: Mapping[str, object]) -> dict[str, object]:
-    # Imports stay inside the credential-free worker. In particular, importing
-    # an untrusted plugin module must never happen in the credential-bearing
-    # agent/plugin-server process.
+    # Imports stay inside the worker: importing an untrusted plugin module runs
+    # its module-level code, which must not be able to crash, hang or leak in
+    # the agent/plugin-server process.
     from plugin.core.host import _import_plugin_module
     from plugin.core.registry import (
         _ensure_python_requirement_paths,
@@ -421,8 +429,6 @@ def scan_plugin_metadata_isolated(
         "pdata": _json_safe(pdata),
         "python_requirement_paths": [str(path) for path in python_requirement_paths],
     }
-    child_env = os.environ.copy()
-    child_env.pop(_HOST_API_TOKEN_ENV, None)
     project_root = Path(__file__).resolve().parents[4]
 
     popen_kwargs: dict[str, object] = {}
@@ -438,7 +444,6 @@ def scan_plugin_metadata_isolated(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=str(project_root),
-            env=child_env,
             **popen_kwargs,
         )
     except OSError as exc:

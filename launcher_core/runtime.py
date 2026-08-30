@@ -40,7 +40,6 @@ import atexit
 import signal
 import json
 import logging
-import secrets
 import uuid
 import importlib
 import multiprocessing
@@ -60,7 +59,7 @@ sys.path.insert(0, _PROJECT_ROOT)
 
 import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
-from utils import parent_guard, plugin_host_auth, single_instance
+from utils import parent_guard, single_instance
 from utils.port_utils import (
     probe_neko_health,
     acquire_startup_lock,
@@ -336,13 +335,6 @@ def _initialize_launcher_context() -> None:
         INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
         os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
         _sync_runtime_config_globals()
-
-    plugin_host_token = str(
-        os.environ.get(plugin_host_auth.PLUGIN_HOST_TOKEN_ENV) or ""
-    ).strip()
-    if not plugin_host_token:
-        plugin_host_token = secrets.token_urlsafe(32)
-    plugin_host_auth.configure_plugin_host_token(plugin_host_token)
 
     # 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
     # httpx 优先读小写 no_proxy，因此大小写都需要设置
@@ -1532,11 +1524,9 @@ def run_agent_server(
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
-    plugin_host_token: str | None = None,
 ):
     """Run the Agent Server (no need to wait for initialization)"""
     try:
-        plugin_host_auth.configure_plugin_host_token(plugin_host_token)
         _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
@@ -1625,11 +1615,9 @@ def run_main_server(
     import_event: Event | None = None,
     shutdown_event: Event | None = None,
     shutdown_complete_event: Event | None = None,
-    plugin_host_token: str | None = None,
 ):
     """Run the Main Server"""
     try:
-        plugin_host_auth.configure_plugin_host_token(plugin_host_token)
         _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
@@ -2123,18 +2111,14 @@ def start_server(server: Dict) -> bool:
 
         # 使用 multiprocessing 启动服务器
         # 注意：不能设置 daemon=True，因为 main_server 自己会创建子进程
-        process_args: tuple[object, ...] = (
-            server['ready_event'],
-            server['import_event'],
-            server['shutdown_event'],
-            server['shutdown_complete_event'],
-        )
-        if server['module'] in {'agent_server', 'main_server'}:
-            process_args += (plugin_host_auth.require_plugin_host_token(),)
-
         server['process'] = Process(
             target=target_func,
-            args=process_args,
+            args=(
+                server['ready_event'],
+                server['import_event'],
+                server['shutdown_event'],
+                server['shutdown_complete_event'],
+            ),
             daemon=False,
         )
         server['process'].start()

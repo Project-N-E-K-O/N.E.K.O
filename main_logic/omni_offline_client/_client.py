@@ -143,13 +143,6 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
             self.vision_api_key = vision_api_key or None
         self.provider_type = provider_type
         self.vision_provider_type = vision_provider_type or provider_type
-        self._supports_native_image = bool(
-            self.model
-            and self.vision_model
-            and self.model == self.vision_model
-            and _same_endpoint(self.base_url, self.vision_base_url)
-            and self.provider_type == self.vision_provider_type
-        )
         self._model_switch_lock = asyncio.Lock()
         self._multimodal_submit_lock = asyncio.Lock()
         self.on_text_delta = on_text_delta

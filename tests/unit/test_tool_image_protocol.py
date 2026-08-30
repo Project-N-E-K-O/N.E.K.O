@@ -8,6 +8,7 @@ of what shape the plugin returned.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 
@@ -321,12 +322,15 @@ def test_mime_is_normalized_before_matching_magic_bytes():
 
 
 # ============================================================================
-# _on_tool_call — where a picture is either kept as pixels or turned into text
+# _route_tool_images -- whether a picture can reach the model at all
 # ============================================================================
 
 import pytest  # noqa: E402
 
 from main_logic.core import tool_calling as core_tool_calling  # noqa: E402
+from main_logic.core import lifecycle as core_lifecycle  # noqa: E402
+from main_logic.omni_offline_client import _genai_support as _ofc_genai  # noqa: E402
+from main_logic.omni_offline_client import OmniOfflineClient  # noqa: E402
 from main_logic.omni_realtime_client import OmniRealtimeClient  # noqa: E402
 from main_logic.tool_calling import ToolCall  # noqa: E402
 
@@ -342,39 +346,42 @@ class _FakeRegistry:
         return []
 
 
-class _FakeOfflineSession:
-    """Anything that is not an OmniRealtimeClient takes the offline path."""
-
-    def __init__(self, model: str):
-        self.model = model
-
-
 class _Manager(core_tool_calling.ToolCallingMixin):
     def __init__(self, result: ToolResult, session):
         self.tool_registry = _FakeRegistry(result)
         self.session = session
 
 
-@pytest.fixture
-def spy_vision(monkeypatch):
-    """Replace the vision model with a recorder returning a canned string."""
-    calls: list[dict] = []
+def _offline_session(
+    *,
+    model="deepseek-chat",
+    vision_model="",
+    vision_base_url="https://vision.test/v1",
+    use_genai=False,
+    switch_error=None,
+):
+    """A real ``OmniOfflineClient`` wearing only the fields the route reads.
 
-    async def _fake(image_b64, max_completion_tokens=None, window_title="",
-                    extra_instruction="", mime="image/jpeg"):
-        calls.append({
-            "image_b64": image_b64,
-            "extra_instruction": extra_instruction,
-            "mime": mime,
-        })
-        return _fake.reply
+    Built with ``__new__`` on purpose: ``prepare_for_tool_images`` is the real
+    method under test, so a hand-rolled stand-in class would keep passing after
+    the client's own capability rule changed.
+    """
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session.model = model
+    session.vision_model = vision_model
+    session.vision_base_url = vision_base_url
+    session._use_genai_sdk = use_genai
+    session._genai_tools_unsupported = False
+    session.switched = []
 
-    _fake.reply = "a burning cruiser near the cap"
-    monkeypatch.setattr(
-        core_tool_calling, "analyze_image_with_vision_model", _fake, raising=False,
-    )
-    _fake.calls = calls
-    return _fake
+    async def _switch(new_model, use_vision_config=False):
+        session.switched.append((new_model, use_vision_config))
+        if switch_error is not None:
+            raise switch_error
+        session.model = new_model
+
+    session.switch_model = _switch
+    return session
 
 
 async def _dispatch(result: ToolResult, session) -> ToolResult:
@@ -383,289 +390,247 @@ async def _dispatch(result: ToolResult, session) -> ToolResult:
 
 
 @pytest.mark.asyncio
-async def test_result_without_images_is_untouched(spy_vision):
-    out = await _dispatch(
-        _result(output={"ok": True}), _FakeOfflineSession("gpt-4o"),
-    )
+async def test_result_without_images_is_untouched():
+    session = _offline_session()
+    out = await _dispatch(_result(output={"ok": True}), session)
     assert out.output == {"ok": True}
-    assert spy_vision.calls == []
+    assert session.switched == []
 
 
 @pytest.mark.asyncio
-async def test_vision_capable_offline_model_keeps_the_pixels(spy_vision):
-    session = _FakeOfflineSession("gpt-4o")
-    session._supports_native_image = True
-    out = await _dispatch(
-        _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
-        session,
-    )
-    assert [i.data_b64 for i in out.images] == ["IMG"]
-    assert spy_vision.calls == [], "no transcription needed when the model can see"
-    assert "_image_descriptions" not in out.output
-
-
-@pytest.mark.asyncio
-async def test_synced_tool_handler_routes_images_by_invoking_session(spy_vision):
-    active = _FakeOfflineSession("gpt-4o")
-    active._supports_native_image = True
-    result = _result(
-        output={"ok": True},
-        images=[ToolImage(data_b64="IMG")],
-    )
-    manager = _Manager(result, active)
-    realtime = OmniRealtimeClient.__new__(OmniRealtimeClient)
-    realtime.ws = None
-    manager.pending_session = realtime
-    manager._tool_sync_lock = __import__("asyncio").Lock()
-
-    await manager._sync_tools_to_active_session()
-    out = await realtime.on_tool_call(
-        ToolCall(name="demo_tool", arguments={})
-    )
-
-    assert out.images == []
-    assert out.output["_image_descriptions"] == [
-        "a burning cruiser near the cap"
-    ]
-
-
-@pytest.mark.asyncio
-async def test_model_name_does_not_override_an_explicit_text_only_capability(
-    spy_vision,
-):
-    session = _FakeOfflineSession("custom-gpt-5-text-only")
-    session._supports_native_image = False
+async def test_offline_session_switches_to_the_vision_model_and_keeps_the_pixels():
+    """The same move a dragged-in screenshot triggers in ``stream_text``."""
+    session = _offline_session(vision_model="vision-1")
 
     out = await _dispatch(
         _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
         session,
     )
 
-    assert out.images == []
-    assert out.output["_image_descriptions"] == [
-        "a burning cruiser near the cap"
-    ]
+    assert session.switched == [("vision-1", True)]
+    assert [image.data_b64 for image in out.images] == ["IMG"]
+    assert "_image_warnings" not in out.output
 
 
 @pytest.mark.asyncio
-async def test_text_only_model_gets_a_transcription_instead(spy_vision):
+async def test_offline_session_already_on_the_vision_model_does_not_switch():
+    session = _offline_session(model="vision-1", vision_model="vision-1")
+
     out = await _dispatch(
-        _result(
-            output={"ok": True},
-            images=[ToolImage(data_b64="IMG", vision_prompt="watch the minimap")],
-        ),
-        _FakeOfflineSession("deepseek-chat"),
+        _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
+        session,
     )
-    assert out.images == [], "pixels must not survive for a model that cannot read them"
-    assert out.output["_image_descriptions"] == ["a burning cruiser near the cap"]
-    assert spy_vision.calls[0]["extra_instruction"] == "watch the minimap"
+
+    assert session.switched == []
+    assert [image.data_b64 for image in out.images] == ["IMG"]
 
 
 @pytest.mark.asyncio
-async def test_multiple_tool_images_are_transcribed_concurrently_in_order():
-    result = _result(
-        output={"ok": True},
-        images=[ToolImage(data_b64="first"), ToolImage(data_b64="second")],
-    )
-    manager = _Manager(result, _FakeOfflineSession("deepseek-chat"))
-    second_started = __import__("asyncio").Event()
+async def test_offline_session_without_a_vision_model_skips_and_says_so():
+    session = _offline_session(vision_model="")
 
-    async def _describe(image: ToolImage) -> str:
-        if image.data_b64 == "first":
-            await second_started.wait()
-        else:
-            second_started.set()
-        return image.data_b64
-
-    manager._describe_tool_image = _describe
-
-    out = await __import__("asyncio").wait_for(
-        manager._on_tool_call(ToolCall(name="demo_tool", arguments={})),
-        timeout=0.5,
-    )
-
-    assert out.output["_image_descriptions"] == ["first", "second"]
-
-
-@pytest.mark.asyncio
-async def test_fallback_transcription_budget_is_shared_across_the_tool_turn(
-    spy_vision,
-):
-    manager = _Manager(
-        _result(output={"unused": True}),
-        _FakeOfflineSession("deepseek-chat"),
-    )
-    manager.current_speech_id = "turn-one"
-    results = [
-        _result(
-            output={"index": index},
-            images=[ToolImage(data_b64=f"image-{index}")],
-        )
-        for index in range(4)
-    ]
-
-    await __import__("asyncio").gather(
-        *(manager._route_tool_images(result) for result in results)
-    )
-
-    assert len(spy_vision.calls) == 2
-    assert all(result.images == [] for result in results)
-    assert sum(
-        "budget" in description
-        for result in results
-        for description in result.output["_image_descriptions"]
-    ) == 2
-
-    manager.current_speech_id = "turn-two"
-    next_result = _result(
-        output={"index": 4},
-        images=[ToolImage(data_b64="next-turn-image")],
-    )
-    await manager._route_tool_images(next_result)
-
-    assert len(spy_vision.calls) == 3
-    assert next_result.output["_image_descriptions"] == [
-        "a burning cruiser near the cap"
-    ]
-
-
-@pytest.mark.asyncio
-async def test_fallback_transcription_budget_isolated_without_a_turn_id(
-    spy_vision,
-):
-    manager = _Manager(
-        _result(output={"unused": True}),
-        _FakeOfflineSession("deepseek-chat"),
-    )
-    manager.current_speech_id = None
-    first_result = _result(
-        images=[ToolImage(data_b64="first"), ToolImage(data_b64="second")]
-    )
-    next_result = _result(images=[ToolImage(data_b64="next-call")])
-
-    await manager._route_tool_images(first_result)
-    await manager._route_tool_images(next_result)
-
-    assert len(spy_vision.calls) == 3
-    assert next_result.output["_image_descriptions"] == [
-        "a burning cruiser near the cap"
-    ]
-
-
-@pytest.mark.asyncio
-async def test_realtime_tool_chain_keeps_one_budget_across_speech_id_rotations(
-    spy_vision,
-):
-    session = OmniRealtimeClient.__new__(OmniRealtimeClient)
-    manager = _Manager(_result(), session)
-    results = [
-        _result(
-            output={"index": index},
-            images=[ToolImage(data_b64=f"image-{index}")],
-        )
-        for index in range(4)
-    ]
-
-    for index, result in enumerate(results):
-        manager.current_speech_id = f"response-{index}"
-        manager.tool_registry._result = result
-        await manager._on_tool_call(
-            ToolCall(
-                name="demo_tool",
-                arguments={},
-                provider_meta={"tool_chain_id": "logical-chain-one"},
-            ),
-            invoking_session=session,
-        )
-
-    assert len(spy_vision.calls) == 2
-    assert sum(
-        "budget" in description
-        for result in results
-        for description in result.output["_image_descriptions"]
-    ) == 2
-
-    next_result = _result(images=[ToolImage(data_b64="next-chain-image")])
-    manager.current_speech_id = "response-next"
-    manager.tool_registry._result = next_result
-    await manager._on_tool_call(
-        ToolCall(
-            name="demo_tool",
-            arguments={},
-            provider_meta={"tool_chain_id": "logical-chain-two"},
-        ),
-        invoking_session=session,
-    )
-
-    assert len(spy_vision.calls) == 3
-
-
-@pytest.mark.asyncio
-async def test_transcription_passes_png_mime_to_the_vision_helper(spy_vision):
-    """Realtime / text-only fallback must not relabel PNG bytes as JPEG."""
     out = await _dispatch(
-        _result(
-            output={"ok": True},
-            images=[ToolImage(data_b64="PNGIMG", mime="image/png")],
-        ),
-        _FakeOfflineSession("deepseek-chat"),
+        _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
+        session,
     )
-    assert out.images == []
-    assert spy_vision.calls[0]["mime"] == "image/png"
-    assert spy_vision.calls[0]["image_b64"] == "PNGIMG"
+
+    assert out.images == [], "pixels must not survive a session that cannot look"
+    assert session.switched == []
+    assert any(
+        "not shown to the model" in warning
+        for warning in out.output["_image_warnings"]
+    )
 
 
 @pytest.mark.asyncio
-async def test_realtime_session_always_transcribes(spy_vision):
-    """The realtime wire has no multimodal tool-result item, so even a
-    vision-capable model has to be handed text."""
+async def test_realtime_session_skips_and_says_so():
+    """A realtime ``function_call_output`` item carries a string, so there is
+    nowhere to put a picture even on a vision-capable model."""
     realtime = OmniRealtimeClient.__new__(OmniRealtimeClient)
+
     out = await _dispatch(
         _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
         realtime,
     )
+
     assert out.images == []
-    assert out.output["_image_descriptions"] == ["a burning cruiser near the cap"]
+    assert any(
+        "realtime" in warning for warning in out.output["_image_warnings"]
+    )
 
 
 @pytest.mark.asyncio
-async def test_unreadable_frame_is_reported_rather_than_dropped(spy_vision):
-    """``analyze_image_with_vision_model`` returns None when no vision model
-    is configured. Saying so lets the character explain herself; silence
-    would make her answer as if she had looked."""
-    spy_vision.reply = None
+async def test_an_unrecognised_session_skips_rather_than_guessing():
+    """The three session cases are enumerated, not defaulted. A stand-in
+    session (a stub in another suite, a client type added later) must fall to
+    the skip rather than have a capability probe called on it blindly."""
+    class _SomethingElse:
+        pass
+
     out = await _dispatch(
         _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
-        _FakeOfflineSession("deepseek-chat"),
+        _SomethingElse(),
     )
+
     assert out.images == []
-    assert len(out.output["_image_descriptions"]) == 1
-    assert "无法解读" in out.output["_image_descriptions"][0]
+    assert any(
+        "_SomethingElse" in warning
+        for warning in out.output["_image_warnings"]
+    )
 
 
 @pytest.mark.asyncio
-async def test_string_output_is_normalized_before_the_description_lands(spy_vision):
+async def test_a_failed_vision_switch_skips_instead_of_failing_the_tool_call():
+    """The conversation model is mid-turn waiting for this result: a vision
+    endpoint that will not come up must not turn a successful call into an
+    error one."""
+    session = _offline_session(
+        vision_model="vision-1", switch_error=RuntimeError("vision endpoint down"),
+    )
+
+    out = await _dispatch(
+        _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
+        session,
+    )
+
+    assert session.switched == [("vision-1", True)]
+    assert out.is_error is False
+    assert out.images == []
+    assert out.output["_image_warnings"]
+
+
+@pytest.mark.asyncio
+async def test_a_vision_model_on_the_other_transport_is_not_switched_into(monkeypatch):
+    """The running tool loop chose genai or OpenAI-compat once, at entry, and
+    re-invokes the model without asking again. Swapping the transport under it
+    would post genai contents to an OpenAI-compat endpoint."""
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+    session = _offline_session(
+        model="gemini-2.0-flash",
+        vision_model="gpt-4o",
+        vision_base_url="https://api.openai.test/v1",
+        use_genai=True,
+    )
+
+    out = await _dispatch(
+        _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
+        session,
+    )
+
+    assert session.switched == []
+    assert out.images == []
+    assert out.output["_image_warnings"]
+
+
+@pytest.mark.asyncio
+async def test_a_vision_model_on_the_same_transport_is_switched_into(monkeypatch):
+    """Dual of the test above: the refusal is keyed on the transport changing,
+    not on the session happening to be a genai one."""
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+    session = _offline_session(
+        model="gemini-2.0-flash",
+        vision_model="gemini-2.0-pro",
+        vision_base_url="",
+        use_genai=True,
+    )
+
+    out = await _dispatch(
+        _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
+        session,
+    )
+
+    assert session.switched == [("gemini-2.0-pro", True)]
+    assert [image.data_b64 for image in out.images] == ["IMG"]
+
+
+@pytest.mark.asyncio
+async def test_the_skip_warning_joins_the_ones_the_envelope_parser_wrote():
+    """Both stages annotate the same result; the later one must not erase what
+    the validator already told the model."""
+    result = _result(
+        output={"ok": True, "_image_warnings": ["image #1 is too large; dropped"]},
+        images=[ToolImage(data_b64="IMG")],
+    )
+
+    out = await _dispatch(result, _offline_session(vision_model=""))
+
+    warnings = out.output["_image_warnings"]
+    assert warnings[0] == "image #1 is too large; dropped"
+    assert len(warnings) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_string_output_is_normalized_before_the_warning_lands():
     out = await _dispatch(
         _result(output="plain", images=[ToolImage(data_b64="IMG")]),
-        _FakeOfflineSession("deepseek-chat"),
+        _offline_session(vision_model=""),
     )
+
     assert out.output["result"] == "plain"
-    assert out.output["_image_descriptions"] == ["a burning cruiser near the cap"]
+    assert out.output["_image_warnings"]
 
 
 @pytest.mark.asyncio
-async def test_vision_failure_does_not_break_the_tool_call(spy_vision, monkeypatch):
-    """A crashing vision call must degrade to "unreadable", not propagate —
-    the model is mid-turn waiting for a tool result."""
-    async def _boom(*args, **kwargs):
-        raise RuntimeError("vision endpoint down")
+async def test_synced_tool_handler_routes_by_the_invoking_session():
+    """``_sync_tools_to_active_session`` binds the handler per session, so a
+    call arriving on the pending realtime client is judged against THAT client
+    even while ``self.session`` is still a vision-capable offline one."""
+    active = _offline_session(model="vision-1", vision_model="vision-1")
+    result = _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")])
+    manager = _Manager(result, active)
+    realtime = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    realtime.ws = None
+    manager.pending_session = realtime
+    manager._tool_sync_lock = asyncio.Lock()
 
-    monkeypatch.setattr(
-        core_tool_calling, "analyze_image_with_vision_model", _boom, raising=False,
-    )
-    out = await _dispatch(
-        _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
-        _FakeOfflineSession("deepseek-chat"),
-    )
+    await manager._sync_tools_to_active_session()
+    out = await realtime.on_tool_call(ToolCall(name="demo_tool", arguments={}))
+
     assert out.images == []
-    assert "无法解读" in out.output["_image_descriptions"][0]
+    assert any(
+        "realtime" in warning for warning in out.output["_image_warnings"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_offline_client_is_born_knowing_which_session_it_is():
+    """``_create_offline_vlm_client`` binds the handler to the client it just
+    built, not to whatever ``self.session`` happens to be.
+
+    A handoff candidate is constructed while the realtime session is still the
+    active one, and it is neither ``self.session`` nor ``pending_session``, so
+    ``_sync_tools_to_active_session`` never reaches it to rebind. Left on the
+    unbound handler, its own tool images would be judged against the realtime
+    client and dropped as untransportable.
+    """
+    result = _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")])
+    realtime = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    realtime.ws = None
+    manager = _Manager(result, realtime)
+    manager.lanlan_name = "lanlan"
+    manager.master_name = "user"
+    manager.user_language = "zh"
+    manager._make_thinking_active_callback = lambda session: None
+    for callback in (
+        "handle_text_data", "handle_text_input_transcript",
+        "handle_output_transcript", "handle_connection_error",
+        "handle_response_complete", "handle_repetition_detected",
+        "handle_response_discarded", "send_status",
+        "handle_proactive_complete",
+    ):
+        setattr(manager, callback, lambda *a, **k: None)
+
+    endpoint = {"base_url": "https://x.test/v1", "api_key": "k", "model": "same-model"}
+    session = core_lifecycle.LifecycleMixin._create_offline_vlm_client(
+        manager,
+        conversation_config=dict(endpoint),
+        vision_config=dict(endpoint),
+        tool_definitions=[],
+        max_response_length=100,
+        external_tts_enabled=False,
+    )
+
+    out = await session.on_tool_call(ToolCall(name="demo_tool", arguments={}))
+
+    assert [image.data_b64 for image in out.images] == ["IMG"]
+    assert "_image_warnings" not in out.output

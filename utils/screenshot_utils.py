@@ -149,23 +149,10 @@ async def process_screen_data(data: str) -> Optional[str]:
         return None
 
 
-_VISION_DATA_URL_MIMES = frozenset({"image/jpeg", "image/png"})
-
-
-def _vision_image_data_url(image_b64: str, mime: str = "image/jpeg") -> str:
-    """Build a data URL whose media type matches the payload bytes."""
-    normalized = (mime or "image/jpeg").strip().lower()
-    if normalized not in _VISION_DATA_URL_MIMES:
-        normalized = "image/jpeg"
-    return f"data:{normalized};base64,{image_b64}"
-
-
 async def analyze_image_with_vision_model(
     image_b64: str,
     max_completion_tokens: int | None = None,
     window_title: str = '',
-    extra_instruction: str = '',
-    mime: str = "image/jpeg",
 ) -> Optional[str]:
     """
     Analyze an image with the vision model
@@ -175,15 +162,6 @@ async def analyze_image_with_vision_model(
         max_completion_tokens: maximum output tokens; None takes the
             config.VISION_ANALYSIS_MAX_TOKENS default
         window_title: optional window title; when given it is added to the prompt to enrich context
-        extra_instruction: optional caller-supplied guidance appended to the
-            user prompt. Used by the tool image channel so a plugin's
-            ``vision_prompt`` steers the description the same way it would
-            steer a vision-capable conversation model looking at the frame
-            directly — the two delivery paths must not describe different
-            things.
-        mime: image media type for the data URL (``image/jpeg`` or
-            ``image/png``). Must match the bytes; mislabeling a PNG as JPEG
-            can make the vision model return an empty/unreadable description.
 
     Returns: the image description text, or None on failure
     """
@@ -230,9 +208,6 @@ async def analyze_image_with_vision_model(
             system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_NO_TITLE, lang) + ' ' + ignore_hint
             user_text = _loc(VISION_USER_NO_TITLE, lang)
 
-        if extra_instruction and extra_instruction.strip():
-            user_text = f"{user_text}\n\n{extra_instruction.strip()}"
-
         set_call_type("vision")
         llm = await create_chat_llm_async(
             model=vision_model,
@@ -254,7 +229,7 @@ async def analyze_image_with_vision_model(
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": _vision_image_data_url(image_b64, mime)
+                            "url": f"data:image/jpeg;base64,{image_b64}"
                         }
                     },
                     {

@@ -965,53 +965,10 @@ async def test_connect_qwen_server_vad_preserves_payload():
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Voice silence timeout comes from config.VOICE_SILENCE_TIMEOUT_SECONDS
-# (0/negative disables). Still gated to glm/free and skipped in livestream.
+# The silence timeout is gated on the INFERRED api_type: an empty
+# api_type on a lanlan free route still resolves to 'free', and the auto
+# mic-off has to follow that inference like the rest of the class does.
 # ──────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "api_type,livestream,seconds,expect_enabled,expect_seconds",
-    [
-        ("glm", False, 90, True, 90.0),
-        ("free", False, 120, True, 120.0),
-        ("glm", False, 0, False, 0.0),
-        ("glm", False, -5, False, 0.0),
-        ("glm", False, 10**400, True, 90.0),
-        ("qwen", False, 90, False, 90.0),
-        ("glm", True, 90, False, 90.0),
-    ],
-)
-def test_silence_timeout_reads_configured_seconds(
-    api_type, livestream, seconds, expect_enabled, expect_seconds,
-):
-    client = OmniRealtimeClient(
-        base_url="wss://example.test/realtime",
-        api_key="sk-test",
-        model="test-model",
-        api_type=api_type,
-        livestream_mode=livestream,
-        silence_timeout_seconds=seconds,
-    )
-    assert client._silence_timeout_seconds == expect_seconds
-    assert client._enable_silence_timeout is expect_enabled
-
-
-@pytest.mark.unit
-def test_silence_timeout_defaults_to_session_settings_constant():
-    from config import VOICE_SILENCE_TIMEOUT_SECONDS
-
-    client = OmniRealtimeClient(
-        base_url="wss://example.test/realtime",
-        api_key="sk-test",
-        model="glm-realtime",
-        api_type="glm",
-    )
-    assert client._silence_timeout_seconds == float(
-        max(0.0, VOICE_SILENCE_TIMEOUT_SECONDS)
-    )
-    assert client._enable_silence_timeout is (VOICE_SILENCE_TIMEOUT_SECONDS > 0)
 
 
 @pytest.mark.unit
@@ -1020,7 +977,6 @@ def test_silence_timeout_uses_inferred_free_api_type():
         base_url="wss://www.lanlan.tech/tts",
         api_key="sk-test",
         model="free-realtime",
-        silence_timeout_seconds=90,
     )
 
     assert client._api_type == ""

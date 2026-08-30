@@ -21,11 +21,6 @@ monolithic module.
 
 import os
 
-if __name__ == "__main__":
-    from utils.plugin_host_auth import require_plugin_host_token
-
-    require_plugin_host_token()
-
 from config import TOOL_SERVER_PORT
 
 from app.agent_server import app

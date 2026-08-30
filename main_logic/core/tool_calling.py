@@ -21,17 +21,10 @@ Method-only mixin: every instance attribute is assigned in
 
 import asyncio
 import os
-from uuid import uuid4
 
+from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.tool_calling import (
-    ToolCall,
-    ToolDefinition,
-    ToolResult,
-    _TOOL_IMAGE_TURN_MAX_B64_BYTES,
-    _TOOL_IMAGE_TURN_MAX_COUNT,
-)
-from utils.screenshot_utils import analyze_image_with_vision_model
+from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
@@ -133,15 +126,8 @@ class ToolCallingMixin:
         """
         result = await self.tool_registry.execute(call)
         if result.images:
-            tool_chain_id = call.provider_meta.get("tool_chain_id")
             await self._route_tool_images(
-                result,
-                invoking_session=invoking_session,
-                tool_chain_id=(
-                    str(tool_chain_id)
-                    if isinstance(tool_chain_id, str) and tool_chain_id
-                    else None
-                ),
+                result, invoking_session=invoking_session,
             )
         return result
 
@@ -150,111 +136,47 @@ class ToolCallingMixin:
         result: ToolResult,
         *,
         invoking_session=None,
-        tool_chain_id: str | None = None,
     ) -> None:
-        """Decide how a tool's pictures reach the model, and degrade if needed.
+        """Get a tool's pictures in front of the model, or say they never got there.
 
-        This is the single place that judgement lives, because it is the one
-        choke point both clients share. Doing it per-plugin would mean every
-        plugin reimplementing the fallback — and a plugin cannot see which
-        model the session is running anyway.
+        One choke point for both clients, because the answer depends on the
+        session the call arrived on -- which a plugin cannot see, and which
+        changes when the user swaps voice for text mid-conversation.
 
-        Pixels survive only for an offline session on a vision-capable model;
-        ``_astream_openai_with_tools`` injects them as a one-shot multimodal
-        message. Otherwise they are transcribed here and the list is cleared,
-        so no downstream code has to re-check.
+        An offline session is asked to make itself able to look
+        (``prepare_for_tool_images``): the same permanent switch to the
+        configured vision model that a dragged-in screenshot triggers in
+        ``stream_text``, so a tool frame and a user frame reach the model by
+        one route rather than two. A realtime session has no such route at
+        all -- its ``function_call_output`` item carries a string.
 
-        Realtime always transcribes: its ``function_call_output`` item carries
-        a string, so there is nowhere to put an image.
+        When the pixels cannot go, they are dropped here so nothing
+        downstream has to re-check, and the drop is stated back to the model
+        in ``_image_warnings``. Dropping them silently would be worse than
+        either: she would answer as though she had looked.
         """
         session = invoking_session if invoking_session is not None else self.session
         if isinstance(session, OmniRealtimeClient):
-            reason = "realtime session"
+            reason = "a realtime session can only hand a tool result back as text"
+        elif not isinstance(session, OmniOfflineClient):
+            reason = f"session type {type(session).__name__} has no image channel"
+        elif await session.prepare_for_tool_images():
+            # The client owns that call: only it knows which endpoint and SDK
+            # it is currently speaking, and therefore whether it can reach a
+            # vision model without breaking the tool loop that is running.
+            return
         else:
-            model = str(getattr(session, "model", "") or "")
-            if getattr(session, "_supports_native_image", False) is True:
-                return
-            reason = f"model {model!r} has no vision"
+            reason = "this session cannot reach a vision model"
 
-        images = list(result.images)
-        budget_lock = getattr(self, "_tool_image_fallback_budget_lock", None)
-        if budget_lock is None:
-            budget_lock = asyncio.Lock()
-            self._tool_image_fallback_budget_lock = budget_lock
-
-        accepted: list[tuple[int, object]] = []
-        descriptions = [
-            "(image omitted: tool-turn vision budget exhausted)"
-            for _image in images
-        ]
-        async with budget_lock:
-            # A realtime function-call-only response rotates the host speech
-            # id before the tool-result response continues. The client stamps
-            # every leg of that logical chain with one stable identifier.
-            if isinstance(session, OmniRealtimeClient) and tool_chain_id:
-                turn_id = f"realtime:{id(session)}:{tool_chain_id}"
-            else:
-                turn_id = str(getattr(self, "current_speech_id", "") or "")
-                if not turn_id:
-                    turn_id = f"anonymous:{uuid4().hex}"
-            if getattr(self, "_tool_image_fallback_budget_turn_id", None) != turn_id:
-                self._tool_image_fallback_budget_turn_id = turn_id
-                self._tool_image_fallback_budget_count = 0
-                self._tool_image_fallback_budget_b64_bytes = 0
-            used_count = getattr(self, "_tool_image_fallback_budget_count", 0)
-            used_b64_bytes = getattr(
-                self,
-                "_tool_image_fallback_budget_b64_bytes",
-                0,
-            )
-            for index, image in enumerate(images):
-                image_b64_bytes = len(str(getattr(image, "data_b64", "") or ""))
-                if (
-                    used_count >= _TOOL_IMAGE_TURN_MAX_COUNT
-                    or used_b64_bytes + image_b64_bytes
-                    > _TOOL_IMAGE_TURN_MAX_B64_BYTES
-                ):
-                    continue
-                accepted.append((index, image))
-                used_count += 1
-                used_b64_bytes += image_b64_bytes
-            self._tool_image_fallback_budget_count = used_count
-            self._tool_image_fallback_budget_b64_bytes = used_b64_bytes
-
-        analyzed = await asyncio.gather(
-            *(self._describe_tool_image(image) for _index, image in accepted)
-        )
-        for (index, _image), description in zip(accepted, analyzed, strict=True):
-            descriptions[index] = description
-        logger.info(
-            "Tool '%s': transcribed %d/%d image(s) to text (%s)",
-            result.name, len(accepted), len(images), reason,
-        )
+        skipped = len(result.images)
         result.images = []
-        result.merge_into_output(_image_descriptions=descriptions)
-
-    async def _describe_tool_image(self, image) -> str:
-        """Run one image through the vision model, never raising.
-
-        The caller is mid tool-call with the conversation model waiting, so a
-        vision outage has to become a sentence the character can say rather
-        than an exception. Silence would be worse than either: she would
-        answer as though she had looked.
-        """
-        try:
-            description = await analyze_image_with_vision_model(
-                image.data_b64,
-                extra_instruction=image.vision_prompt,
-                mime=getattr(image, "mime", None) or "image/jpeg",
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.warning("Tool image transcription failed: %s: %s", type(e).__name__, e)
-            description = None
-        if description:
-            return description
-        return "（画面无法解读：未配置视觉模型或解析失败）"
+        logger.warning(
+            "Tool '%s': %d image(s) not shown to the model (%s)",
+            result.name, skipped, reason,
+        )
+        result.add_image_warnings(
+            f"{skipped} tool image(s) were not shown to the model: {reason}"
+        )
 
     # ------------------------------------------------------------------
     # 内置 pseudo 工具：recall_memory

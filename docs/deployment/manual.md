@@ -34,26 +34,15 @@ The launcher plans ports, starts memory/main/agent services, coordinates shutdow
 
 ## Diagnostic split mode
 
-Use separate terminals only to isolate services. First export one shared random
-value in every terminal that will run `main_server` or `agent_server`:
-
-```powershell
-$env:NEKO_PLUGIN_HOST_API_TOKEN = "replace-with-one-shared-random-value"
-```
+Use separate terminals only to isolate services:
 
 ```bash
-export NEKO_PLUGIN_HOST_API_TOKEN="replace-with-one-shared-random-value"
-```
-
-Then start one service per terminal:
-
-```text
 uv run python -m app.memory_server
 uv run python -m app.main_server
 uv run python -m app.agent_server
 ```
 
-Set `NEKO_PLUGIN_HOST_API_TOKEN` to the same non-empty value in every terminal that starts `main_server` or `agent_server`; those entrypoints fail fast when it is absent. The normal launcher generates and shares this credential automatically. The main UI can load with memory and main, but Agent, hosted-plugin, browser/computer-use, and related capabilities require agent/tool. Split mode does not reproduce launcher fallback ports or coordinated lifecycle behavior.
+The main UI can load with memory and main, but Agent, hosted-plugin, browser/computer-use, and related capabilities require agent/tool. Split mode does not reproduce launcher fallback ports or coordinated lifecycle behavior.
 
 ## Cloud-save notes
 

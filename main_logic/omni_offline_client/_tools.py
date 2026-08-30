@@ -22,6 +22,7 @@ from ._shared import (
     ToolDefinition,
     ToolLeakFilter,
     ToolResult,
+    asyncio,
     log_tool_leak_filtered,
     logger,
     parse_arguments_json,
@@ -30,6 +31,7 @@ from ._shared import (
 
 from ._genai_support import (
     _GenaiToolsUnsupported,
+    _should_use_genai_sdk,
 )
 from ._lifecycle import _suspend_dialog_slop
 from main_logic.tool_calling import (
@@ -220,10 +222,10 @@ class _ToolingMixin:
     # Tool image channel
     # ------------------------------------------------------------------
     #
-    # A tool result carries pixels in ``ToolResult.images`` when — and only
-    # when — ``LLMSessionManager._route_tool_images`` decided the current
-    # model can read them (text-only models and every realtime session get a
-    # transcription folded into the output instead, and an empty list here).
+    # A tool result carries pixels in ``ToolResult.images`` when -- and only
+    # when -- ``LLMSessionManager._route_tool_images`` got a session that can
+    # look at them; a session that cannot arrives here with an empty list and
+    # an ``_image_warnings`` entry already telling the model it did not see.
     #
     # The picture rides a synthetic user turn appended right after the tool
     # result, because the ``role: tool`` message body must stay a string.
@@ -236,6 +238,57 @@ class _ToolingMixin:
     # placeholder when counting tokens — so a frame left behind would be
     # re-uploaded on every later request while looking free to the
     # truncation logic.
+
+    async def prepare_for_tool_images(self) -> bool:
+        """Point this session at a model that can read a picture.
+
+        Returns whether the session can show the model a frame at all. Called
+        by ``LLMSessionManager._route_tool_images`` while a tool result is
+        being assembled, so it runs from inside a live tool loop.
+
+        The move is the one ``stream_text`` makes for a dragged-in screenshot:
+        a configured vision model wins the rest of the session, because the
+        frames stay in history and there is no way back.
+
+        It is refused when it would change which SDK the running loop speaks.
+        ``_astream_with_tools`` picks genai or OpenAI-compat once, at entry,
+        and then re-invokes the model for the tool results without asking
+        again -- flipping the answer underneath it would post genai contents
+        to an OpenAI-compat endpoint, or the reverse. Refusing degrades to
+        "she could not see it", which the caller already reports to the model.
+        """
+        vision_model = getattr(self, "vision_model", "") or ""
+        if not vision_model:
+            return False
+        if vision_model == self.model:
+            return True
+        on_genai = bool(
+            getattr(self, "_use_genai_sdk", False)
+            and not getattr(self, "_genai_tools_unsupported", False)
+        )
+        if _should_use_genai_sdk(vision_model, self.vision_base_url) != on_genai:
+            logger.warning(
+                "Tool image: not switching to vision model %s mid tool loop, "
+                "it sits on the other transport (current=%s)",
+                vision_model,
+                "genai" if on_genai else "openai-compat",
+            )
+            return False
+        try:
+            await self.switch_model(vision_model, use_vision_config=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # The conversation model is mid-turn waiting for this tool result.
+            # A vision endpoint that will not come up has to become something
+            # she can say, not an exception that turns a tool call that
+            # actually succeeded into an error result.
+            logger.warning(
+                "Tool image: switching to vision model %s failed: %s: %s",
+                vision_model, type(e).__name__, e,
+            )
+            return False
+        return True
 
     _TOOL_IMAGE_DEFAULT_CAPTION = "（工具返回的画面）"
 
@@ -312,18 +365,10 @@ class _ToolingMixin:
             used_b64_bytes += image_b64_bytes
 
         if omitted_count:
-            output = result.output if isinstance(result.output, dict) else {}
-            existing_warnings = output.get("_image_warnings")
-            image_warnings = (
-                list(existing_warnings)
-                if isinstance(existing_warnings, list)
-                else []
-            )
-            image_warnings.append(
+            result.add_image_warnings(
                 f"{omitted_count} tool image(s) omitted because the shared "
                 "turn image budget was exhausted"
             )
-            result.merge_into_output(_image_warnings=image_warnings)
             # Tool results are serialized before image turns so that all
             # role=tool messages stay adjacent. Refresh the matching message
             # after annotating the result to make the omission model-visible.

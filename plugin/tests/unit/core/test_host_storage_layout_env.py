@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,50 +51,23 @@ class _FakeProcess:
         self.started = True
 
 
-def _patch_spawn_context(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    event_factory,
-    process_factory,
-) -> None:
-    class _SpawnContext:
-        def Event(self):
-            return event_factory()
-
-        def Process(self, **kwargs):
-            return process_factory(**kwargs)
-
-    def _get_context(method: str) -> _SpawnContext:
-        assert method == "spawn"
-        return _SpawnContext()
-
-    monkeypatch.setattr(host_module.multiprocessing, "get_context", _get_context)
-
-
 @pytest.mark.plugin_unit
-def test_plugin_host_uses_spawn_context_for_process_primitives(
+def test_plugin_host_preinitializes_response_proxies_on_the_default_context(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    requested_methods: list[str] = []
     accessed_response_proxies: list[str] = []
-    spawn_event = object()
-    spawn_process = _FakeProcess()
+    default_event = object()
+    default_process = _FakeProcess()
 
     class _FakeTransport:
         downlink_endpoint = "ipc://down"
         uplink_endpoint = "ipc://up"
 
-    class _SpawnContext:
-        def Event(self) -> object:
-            return spawn_event
-
-        def Process(self, **_kwargs: object) -> _FakeProcess:
-            return spawn_process
-
-    def _get_context(method: str) -> _SpawnContext:
-        requested_methods.append(method)
-        return _SpawnContext()
+    def _reject_explicit_context(method: str) -> object:
+        raise AssertionError(
+            f"PluginHost must use the default start method, not {method!r}"
+        )
 
     monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
     monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: _FakeCommManager())
@@ -109,9 +81,9 @@ def test_plugin_host_uses_spawn_context_for_process_primitives(
         "plugin_response_notify_event",
         property(lambda _self: accessed_response_proxies.append("event")),
     )
-    monkeypatch.setattr(host_module.multiprocessing, "get_context", _get_context)
-    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: object())
-    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: _FakeProcess())
+    monkeypatch.setattr(host_module.multiprocessing, "get_context", _reject_explicit_context)
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: default_event)
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: default_process)
 
     plugin_host = host_module.PluginHost(
         plugin_id="demo",
@@ -119,10 +91,11 @@ def test_plugin_host_uses_spawn_context_for_process_primitives(
         config_path=tmp_path / "demo" / "plugin.toml",
     )
 
-    assert requested_methods == ["spawn"]
-    assert accessed_response_proxies == []
-    assert plugin_host._process_stop_event is spawn_event
-    assert plugin_host.process is spawn_process
+    # Both proxies must be materialised in the parent: on a fork start method
+    # a child that touches them first builds its own Manager proxies instead.
+    assert accessed_response_proxies == ["map", "event"]
+    assert plugin_host._process_stop_event is default_event
+    assert plugin_host.process is default_process
 
 
 class _FakeLogger:
@@ -159,7 +132,6 @@ def test_plugin_process_runner_rejects_missing_uplink_token(
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("[plugin]\nid='demo'\ntype='plugin'\n", encoding="utf-8")
-    monkeypatch.setenv("NEKO_PLUGIN_HOST_API_TOKEN", "host-secret")
     monkeypatch.setattr(
         host_module,
         "_setup_plugin_logger",
@@ -182,7 +154,6 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
     tmp_path: Path,
 ) -> None:
     closed: list[str] = []
-    host_tokens_seen_during_import: list[str | None] = []
     payloads: list[dict[str, object]] = []
     contexts: list[dict[str, object]] = []
     config_path = tmp_path / "demo" / "plugin.toml"
@@ -221,19 +192,12 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
             closed.append("context")
 
     monkeypatch.setenv("NEKO_PLUGIN_ZMQ_IPC_ENABLED", "0")
-    monkeypatch.setenv("NEKO_PLUGIN_HOST_API_TOKEN", "host-secret")
     monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
     monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_prepare_child_current_plugin_import_root", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
-    def _import_plugin_module(*args, **kwargs):
-        host_tokens_seen_during_import.append(
-            os.getenv("NEKO_PLUGIN_HOST_API_TOKEN")
-        )
-        return SimpleNamespace(DemoRouter=_Router)
-
-    monkeypatch.setattr(host_module, "_import_plugin_module", _import_plugin_module)
+    monkeypatch.setattr(host_module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(DemoRouter=_Router))
     monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
     monkeypatch.setattr(host_module, "PluginContext", _Context)
 
@@ -248,7 +212,6 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
 
     assert closed == ["context", "transport"]
     assert payloads[-1]["status"] == "error"
-    assert host_tokens_seen_during_import == [None]
 
 
 @pytest.mark.plugin_unit
@@ -563,11 +526,8 @@ async def test_plugin_process_start_refreshes_storage_layout_env(monkeypatch: py
 
     monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
     monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: _FakeCommManager())
-    _patch_spawn_context(
-        monkeypatch,
-        event_factory=lambda: object(),
-        process_factory=lambda **_kwargs: _FakeProcess(),
-    )
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: object())
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: _FakeProcess())
 
     monkeypatch.setattr(
         host_module,
@@ -622,11 +582,8 @@ async def test_plugin_process_start_removes_downlink_sender_when_spawn_fails(
     comm_manager = _FakeCommManager()
     monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
     monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: comm_manager)
-    _patch_spawn_context(
-        monkeypatch,
-        event_factory=lambda: SimpleNamespace(set=lambda: None),
-        process_factory=lambda **_kwargs: _FailingProcess(),
-    )
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: SimpleNamespace(set=lambda: None))
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: _FailingProcess())
     monkeypatch.setattr(host_module, "_refresh_child_storage_layout_env", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(host_module.state, "register_downlink_sender", lambda plugin_id, _sender: registered.append(plugin_id))
     monkeypatch.setattr(host_module.state, "remove_downlink_sender", lambda plugin_id: removed.append(plugin_id))
@@ -664,11 +621,8 @@ async def test_abort_startup_after_failure_removes_downlink_sender(
     comm_manager = _FakeCommManager()
     monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
     monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: comm_manager)
-    _patch_spawn_context(
-        monkeypatch,
-        event_factory=lambda: SimpleNamespace(set=lambda: None),
-        process_factory=lambda **_kwargs: _FakeProcess(),
-    )
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: SimpleNamespace(set=lambda: None))
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: _FakeProcess())
     monkeypatch.setattr(host_module.state, "remove_downlink_sender", lambda plugin_id: removed.append(plugin_id))
 
     plugin_host = host_module.PluginProcessHost(
@@ -703,11 +657,8 @@ async def test_plugin_process_start_keeps_running_on_startup_error_by_default(
     comm_manager = _StartupErrorCommManager()
     monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
     monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: comm_manager)
-    _patch_spawn_context(
-        monkeypatch,
-        event_factory=lambda: SimpleNamespace(set=lambda: None),
-        process_factory=lambda **_kwargs: _FakeProcess(),
-    )
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: SimpleNamespace(set=lambda: None))
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: _FakeProcess())
     monkeypatch.setattr(host_module, "_refresh_child_storage_layout_env", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(host_module.state, "register_downlink_sender", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(host_module.state, "remove_downlink_sender", lambda plugin_id: removed.append(plugin_id))
@@ -746,11 +697,8 @@ async def test_plugin_process_start_aborts_on_startup_error_in_fail_mode(
     comm_manager = _StartupErrorCommManager()
     monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
     monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: comm_manager)
-    _patch_spawn_context(
-        monkeypatch,
-        event_factory=lambda: SimpleNamespace(set=lambda: None),
-        process_factory=lambda **_kwargs: _FakeProcess(),
-    )
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: SimpleNamespace(set=lambda: None))
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: _FakeProcess())
     monkeypatch.setattr(host_module, "_refresh_child_storage_layout_env", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(host_module.state, "register_downlink_sender", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(host_module.state, "remove_downlink_sender", lambda plugin_id: removed.append(plugin_id))
@@ -792,19 +740,22 @@ async def test_plugin_process_start_passes_startup_failure_policy_to_child(
             self.args = kwargs["args"]
 
         def start(self) -> None:
+            # Positional index on purpose. args[-1] is message_uplink_endpoint,
+            # a str, so reading from the end would slip past the isinstance
+            # check below and leave the assertion vacuously green.
             startup_options = self.args[7]
-            if isinstance(startup_options, dict):
-                captured_startup_options.append(dict(startup_options))
+            captured_startup_options.append(
+                dict(startup_options)
+                if isinstance(startup_options, dict)
+                else startup_options
+            )
             super().start()
 
     comm_manager = _StartupErrorCommManager()
     monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
     monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: comm_manager)
-    _patch_spawn_context(
-        monkeypatch,
-        event_factory=lambda: SimpleNamespace(set=lambda: None),
-        process_factory=lambda **kwargs: _CapturingProcess(**kwargs),
-    )
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: SimpleNamespace(set=lambda: None))
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **kwargs: _CapturingProcess(**kwargs))
     monkeypatch.setattr(host_module, "_refresh_child_storage_layout_env", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(host_module.state, "register_downlink_sender", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(host_module.state, "remove_downlink_sender", lambda _plugin_id: None)

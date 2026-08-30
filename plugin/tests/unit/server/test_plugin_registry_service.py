@@ -450,54 +450,6 @@ async def test_refresh_registry_marks_syntax_error_plugin_failed_without_abortin
 
 
 @pytest.mark.asyncio
-async def test_refresh_registry_imports_plugin_without_host_api_token(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "plugins"
-    observed_path = tmp_path / "observed-host-token.txt"
-    _write_package_plugin_fixture(
-        root,
-        "credential_probe_plugin",
-        source="\n".join(
-            [
-                "import os",
-                "from pathlib import Path",
-                f"Path({str(observed_path)!r}).write_text(",
-                "    os.getenv('NEKO_PLUGIN_HOST_API_TOKEN', '<missing>'),",
-                "    encoding='utf-8',",
-                ")",
-                "",
-                "class DemoPlugin:",
-                "    pass",
-                "",
-            ]
-        ),
-    )
-
-    plugins_backup = copy.deepcopy(module.state.plugins)
-    cache_backup = copy.deepcopy(module.state._snapshot_cache)
-
-    try:
-        with module.state.acquire_plugins_write_lock():
-            module.state.plugins.clear()
-
-        monkeypatch.setenv("NEKO_PLUGIN_HOST_API_TOKEN", "host-secret")
-        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
-
-        result = await module.PluginRegistryService().refresh_registry()
-
-        assert result["success"] is True
-        assert observed_path.read_text(encoding="utf-8") == "<missing>"
-    finally:
-        with module.state.acquire_plugins_write_lock():
-            module.state.plugins.clear()
-            module.state.plugins.update(plugins_backup)
-        with module.state._snapshot_cache_lock:
-            module.state._snapshot_cache = cache_backup
-
-
-@pytest.mark.asyncio
 async def test_refresh_registry_handles_import_stdout_without_trailing_newline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

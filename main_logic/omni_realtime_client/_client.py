@@ -120,7 +120,6 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         tool_definitions: Optional[List[ToolDefinition]] = None,
         livestream_mode: bool = False,
         noise_reduction_enabled: bool = True,
-        silence_timeout_seconds: Optional[float] = None,
         turn_admission_lock: Optional[asyncio.Lock] = None,
     ):
         self.base_url = base_url
@@ -301,9 +300,6 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # self-play (~1 call / 10s via the plugin keep-going nudge) is never
         # blocked — only true bursts are.
         self._recent_tool_call_times: list[float] = []
-        self._tool_image_chain_serial = 0
-        self._active_tool_image_chain_id: str | None = None
-        self._tool_image_chain_user_activity_time = 0.0
         # Track image recognition per turn
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False
@@ -328,19 +324,18 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._turn_admission_lock = turn_admission_lock or asyncio.Lock()
 
         # Silence detection for auto-closing inactive sessions
-        # 只在 GLM 和 free API 时启用；秒数来自 config.VOICE_SILENCE_TIMEOUT_SECONDS
-        # （0/负值关闭）。Qwen / Step 放行；livestream 整路跳过。
+        # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
         self._last_speech_time = None
         self._api_type = api_type or ""
         self._livestream_mode = bool(livestream_mode)
-        self._silence_timeout_seconds = self._resolve_silence_timeout_seconds(
-            silence_timeout_seconds
-        )
+        # 判据用推断后的 api_type：api_type 为空、靠 free 模型名 + lanlan 路由
+        # 推断出来的那条也是 free，和本类其余 free 判断保持一致。
+        # livestream 模式（主播长会话）整路跳过。
         self._enable_silence_timeout = (
             _effective_api_type.lower() in ['glm', 'free']
             and not self._livestream_mode
-            and self._silence_timeout_seconds > 0
         )
+        self._silence_timeout_seconds = 90  # 90秒无语音输入则自动关闭
         self._silence_check_task = None
         self._silence_timeout_triggered = False
 
@@ -565,21 +560,6 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._gemini_external_outcome_token: Optional[object] = None
         self._gemini_external_quarantine_task: Optional[asyncio.Task] = None
         self._gemini_proactive_outcome_owner: Optional[tuple] = None
-
-    @staticmethod
-    def _resolve_silence_timeout_seconds(value: Optional[float]) -> float:
-        """Normalize configured silence timeout; ``<= 0`` disables the check."""
-        if value is None:
-            from config import VOICE_SILENCE_TIMEOUT_SECONDS
-
-            value = VOICE_SILENCE_TIMEOUT_SECONDS
-        try:
-            seconds = float(value)
-        except (TypeError, ValueError, OverflowError):
-            seconds = 90.0
-        if seconds != seconds or seconds == float("inf") or seconds == float("-inf"):
-            seconds = 90.0
-        return max(0.0, seconds)
 
     def _create_audio_processor(self) -> AudioProcessor:
         """Create session-owned audio state, including native RNNoise state."""

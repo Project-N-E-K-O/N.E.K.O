@@ -138,42 +138,6 @@ def test_cleanup_does_not_close_the_job_handle_it_is_a_member_of():
     assert "CloseHandle(JOB_HANDLE)" not in cleanup
 
 
-@pytest.mark.unit
-def test_launcher_creates_a_dedicated_plugin_host_api_token(monkeypatch):
-    from launcher_core import runtime as launcher
-    from utils import plugin_host_auth
-
-    monkeypatch.setattr(launcher, "LAUNCH_ID", "")
-    monkeypatch.setattr(launcher, "INSTANCE_ID", "test-instance")
-    monkeypatch.setattr(plugin_host_auth, "_plugin_host_token", "")
-    monkeypatch.delenv("NEKO_PLUGIN_HOST_API_TOKEN", raising=False)
-
-    launcher._initialize_launcher_context()
-
-    token = plugin_host_auth.require_plugin_host_token()
-    assert len(token) >= 32
-    assert token != launcher.INSTANCE_ID
-    assert "NEKO_PLUGIN_HOST_API_TOKEN" not in os.environ
-
-
-@pytest.mark.unit
-def test_launcher_replaces_a_whitespace_only_plugin_host_api_token(monkeypatch):
-    from launcher_core import runtime as launcher
-    from utils import plugin_host_auth
-
-    monkeypatch.setattr(launcher, "LAUNCH_ID", "")
-    monkeypatch.setattr(launcher, "INSTANCE_ID", "test-instance")
-    monkeypatch.setattr(plugin_host_auth, "_plugin_host_token", "")
-    monkeypatch.setenv("NEKO_PLUGIN_HOST_API_TOKEN", "   ")
-
-    launcher._initialize_launcher_context()
-
-    token = plugin_host_auth.require_plugin_host_token()
-    assert token.strip()
-    assert token != "   "
-    assert "NEKO_PLUGIN_HOST_API_TOKEN" not in os.environ
-
-
 # ---------------------------------------------------------------------------
 #  Relaunch stays attached
 # ---------------------------------------------------------------------------
@@ -207,38 +171,6 @@ def test_storage_relaunch_stays_in_the_owner_process_group(monkeypatch):
     assert "_NEKO_MAIN_SERVER_INITIALIZED" not in env
     # The replacement watches the real owner, not the launcher that is exiting.
     assert env[parent_guard.PARENT_PID_ENV] == str(os.getppid())
-
-
-@pytest.mark.unit
-def test_start_server_passes_host_token_out_of_band(monkeypatch):
-    from launcher_core import runtime as launcher
-    from utils import plugin_host_auth
-
-    captured: dict[str, object] = {}
-
-    class _Process:
-        pid = 1234
-
-        def __init__(self, *, target, args, daemon):
-            captured.update(target=target, args=args, daemon=daemon)
-
-        def start(self) -> None:
-            captured["started"] = True
-
-    monkeypatch.setattr(launcher, "Process", _Process)
-    monkeypatch.setattr(launcher, "check_port", lambda _port: False)
-    monkeypatch.setattr(plugin_host_auth, "_plugin_host_token", "host-secret")
-    monkeypatch.delenv(plugin_host_auth.PLUGIN_HOST_TOKEN_ENV, raising=False)
-    server = {
-        "name": "Agent Server",
-        "module": "agent_server",
-        "port": 43115,
-    }
-
-    assert launcher.start_server(server) is True
-    assert captured["started"] is True
-    assert captured["args"][-1] == "host-secret"  # type: ignore[index]
-    assert plugin_host_auth.PLUGIN_HOST_TOKEN_ENV not in os.environ
 
 
 @pytest.mark.unit

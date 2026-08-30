@@ -356,12 +356,6 @@ class _GeminiMixin:
             parts=parts,
             role="user",
         )
-        self._active_tool_image_chain_id = None
-        self._tool_image_chain_user_activity_time = getattr(
-            self,
-            "_user_recent_activity_time",
-            0.0,
-        )
         await self._gemini_session.send_client_content(
             turns=[content],
             turn_complete=True,
@@ -719,43 +713,6 @@ class _GeminiMixin:
             None,
         )
         try:
-            server_content = getattr(response, 'server_content', None)
-            has_ai_content = False
-            _is_new_turn = False
-            _can_clear_interrupted = False
-            _still_within_ai_window = False
-            if server_content:
-                has_ai_content = (
-                    server_content.model_turn
-                    or (
-                        hasattr(server_content, 'output_transcription')
-                        and server_content.output_transcription
-                    )
-                )
-                if has_ai_content and not self._is_responding:
-                    _user_spoke_after_ai = (
-                        self._user_recent_activity_time
-                        > self._ai_recent_activity_time
-                    )
-                    _still_within_ai_window = (
-                        self._ai_recent_activity_time > 0
-                        and time.time() - self._ai_recent_activity_time
-                        <= self._ai_recent_activity_window
-                    )
-                    _is_new_turn = (
-                        _user_spoke_after_ai or not _still_within_ai_window
-                    )
-                    _can_clear_interrupted = (
-                        not self._interrupted
-                        or self._gemini_user_transcript_after_interrupt
-                        or not _still_within_ai_window
-                    )
-                    if _is_new_turn:
-                        self._active_tool_image_chain_id = None
-                        self._tool_image_chain_user_activity_time = (
-                            self._user_recent_activity_time
-                        )
-
             # 处理工具调用 —— 将 function_calls 中每一个调用都派给
             # ``on_tool_call``，结果通过 ``send_tool_response`` 一次性回写
             # （Gemini Live 期望批量回应，而不是逐个）。
@@ -809,20 +766,6 @@ class _GeminiMixin:
             if hasattr(response, 'tool_call') and response.tool_call:
                 fcs = list(getattr(response.tool_call, 'function_calls', []) or [])
                 if fcs:
-                    # A user turn that landed after the last chain started a
-                    # new logical tool chain, so the per-turn image budget
-                    # must restart with it.
-                    user_activity_time = self._user_recent_activity_time
-                    if user_activity_time > getattr(
-                        self,
-                        "_tool_image_chain_user_activity_time",
-                        0.0,
-                    ):
-                        self._active_tool_image_chain_id = None
-                        self._tool_image_chain_user_activity_time = (
-                            user_activity_time
-                        )
-                    tool_chain_id = self._ensure_tool_image_chain_id()
                     calls = []
                     for fc in fcs:
                         args = dict(getattr(fc, 'args', None) or {})
@@ -831,7 +774,6 @@ class _GeminiMixin:
                             arguments=args,
                             call_id=getattr(fc, 'id', '') or '',
                             raw_arguments=json.dumps(args, ensure_ascii=False),
-                            provider_meta={"tool_chain_id": tool_chain_id},
                         ))
                     if self.on_tool_call is None:
                         logger.warning(
@@ -853,7 +795,8 @@ class _GeminiMixin:
                 self.note_user_turn_started()
 
             # 检查是否有服务器内容
-            if server_content:
+            if response.server_content:
+                server_content = response.server_content
 
                 # 处理用户输入转录 - 只累积，不立即发送（避免碎片化显示）
                 if hasattr(server_content, 'input_transcription') and server_content.input_transcription:
@@ -864,6 +807,11 @@ class _GeminiMixin:
                             self._gemini_user_transcript_after_interrupt = True
 
                 # 检查是否有 AI 内容（model_turn 或 output_transcription）
+                has_ai_content = (
+                    server_content.model_turn or 
+                    (hasattr(server_content, 'output_transcription') and server_content.output_transcription)
+                )
+
                 # ⚠️ 重要：检测 turn 开始 - 无论是 model_turn 还是 output_transcription 先到
                 if has_ai_content and not self._is_responding:
                     # 区分"真新 turn"与"上个 turn 的迟到帧"。双判据合取：
@@ -875,6 +823,20 @@ class _GeminiMixin:
                     # 早期版本只用时间窗，会把快速一问一答（AI→用户→AI in <3s）
                     # 误判 late continuation 导致气泡合并 / user_transcript flush 延迟
                     # （Codex P1 反馈）。加用户发声比较后合并两种场景均正确。
+                    _user_spoke_after_ai = (
+                        self._user_recent_activity_time > self._ai_recent_activity_time
+                    )
+                    _still_within_ai_window = (
+                        self._ai_recent_activity_time > 0
+                        and time.time() - self._ai_recent_activity_time
+                        <= self._ai_recent_activity_window
+                    )
+                    _is_new_turn = _user_spoke_after_ai or not _still_within_ai_window
+                    _can_clear_interrupted = (
+                        not self._interrupted
+                        or self._gemini_user_transcript_after_interrupt
+                        or not _still_within_ai_window
+                    )
                     # The epoch bump below has no reader on this path today: a
                     # Gemini client never enqueues through the arbiter (every
                     # entry point takes an ``_is_gemini`` branch first), so

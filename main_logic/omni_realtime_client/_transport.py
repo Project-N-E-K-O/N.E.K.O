@@ -1769,13 +1769,6 @@ class _TransportMixin:
     def _begin_response_lifecycle(self, response_id: Any) -> None:
         """Apply the host-side state shared by all accepted start evidence."""
 
-        response_source = getattr(
-            self._response_arbiter,
-            "response_owner_source",
-            None,
-        )
-        if response_source != "tool_result":
-            self._active_tool_image_chain_id = None
         self._current_response_id = response_id
         self._is_responding = True
         self._turn_epoch += 1
@@ -2594,11 +2587,6 @@ class _TransportMixin:
                                 ),
                                 call_id=call_id,
                                 raw_arguments=raw_args,
-                                provider_meta={
-                                    "tool_chain_id": (
-                                        self._ensure_tool_image_chain_id()
-                                    )
-                                },
                             ),
                             owner,
                             # Groups this call with the parallel siblings the

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import pickle
 import threading
 from pathlib import Path
 
 import pytest
-import zmq
 
 from plugin.core import zmq_transport
 
@@ -90,7 +88,6 @@ async def test_message_uplink_is_physically_isolated_from_control_results() -> N
         host.downlink_endpoint,
         host.uplink_endpoint,
         host.uplink_token,
-        downlink_curve=host.downlink_curve_credentials,
         message_uplink_endpoint=host.message_uplink_endpoint,
     )
     try:
@@ -128,7 +125,6 @@ async def test_fast_message_sender_batches_on_the_authenticated_message_uplink(
         host.downlink_endpoint,
         host.uplink_endpoint,
         host.uplink_token,
-        downlink_curve=host.downlink_curve_credentials,
         message_uplink_endpoint=host.message_uplink_endpoint,
     )
     try:
@@ -270,7 +266,6 @@ def test_fast_message_sender_rejects_after_transport_close() -> None:
         host.downlink_endpoint,
         host.uplink_endpoint,
         host.uplink_token,
-        downlink_curve=host.downlink_curve_credentials,
         message_uplink_endpoint=host.message_uplink_endpoint,
     )
     sender = child.channel_sender(zmq_transport.CH_MSG)
@@ -288,36 +283,6 @@ def test_fast_message_sender_rejects_after_transport_close() -> None:
 
     assert isinstance(caught, RuntimeError)
     assert str(caught) == "plugin transport is closed"
-
-
-@pytest.mark.plugin_unit
-@pytest.mark.asyncio
-async def test_downlink_curve_rejects_an_unauthenticated_competing_receiver() -> None:
-    host = zmq_transport.HostTransport()
-    child = zmq_transport.ChildTransport(
-        host.downlink_endpoint,
-        host.uplink_endpoint,
-        host.uplink_token,
-        downlink_curve=host.downlink_curve_credentials,
-    )
-    attacker_context = zmq.Context()
-    attacker = attacker_context.socket(zmq.PULL)
-    attacker.linger = 0
-    attacker.connect(host.downlink_endpoint)
-    try:
-        await asyncio.sleep(0.1)
-        await host.send_command({"type": "SECRET", "config": "private"})
-
-        assert await child.recv_downlink(timeout_ms=1000) == (
-            zmq_transport.CH_CMD,
-            {"type": "SECRET", "config": "private"},
-        )
-        assert attacker.poll(timeout=100) == 0
-    finally:
-        attacker.close(linger=0)
-        attacker_context.term()
-        child.close()
-        host.close()
 
 
 @pytest.mark.plugin_unit

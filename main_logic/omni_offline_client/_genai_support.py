@@ -380,13 +380,6 @@ class _GenaiMixin:
             raise _GenaiToolsUnsupported("google-genai SDK not importable")
         types = _genai_types
 
-        # Lazy client init — re-use across turns.
-        if self._genai_client is None:
-            try:
-                self._genai_client = _genai.Client(api_key=self.api_key or None)
-            except Exception as e:
-                raise _GenaiToolsUnsupported(f"genai.Client init failed: {e}") from e
-
         # Build tools once per session (registry is identity-stable
         # across iterations within one stream_text call).
         tools_payload: list = []
@@ -408,6 +401,17 @@ class _GenaiMixin:
         # 迭代被耗尽（cap=3 时我们可能在第 1 轮就跳出）。
         zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
+            # Lazy client init, re-used across turns. Inside the loop rather
+            # than above it because a tool that hands back a picture makes the
+            # host call ``prepare_for_tool_images``, and that switch_model
+            # drops the client (the vision slot may carry its own key).
+            if self._genai_client is None:
+                try:
+                    self._genai_client = _genai.Client(api_key=self.api_key or None)
+                except Exception as e:
+                    raise _GenaiToolsUnsupported(
+                        f"genai.Client init failed: {e}"
+                    ) from e
             system_instruction, contents = _genai_messages_to_contents(
                 _slop_reduced_for_genai(messages)
             )

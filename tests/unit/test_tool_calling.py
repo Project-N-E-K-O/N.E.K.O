@@ -3480,6 +3480,52 @@ async def test_genai_image_budget_omission_refreshes_tool_response(monkeypatch):
     )
 
 
+@pytest.mark.asyncio
+async def test_genai_tool_loop_rebuilds_a_client_a_tool_handler_dropped(monkeypatch):
+    """A tool that hands back a picture makes the host call
+    ``prepare_for_tool_images``, whose ``switch_model`` drops
+    ``_genai_client`` -- the vision slot may carry its own key. The loop has
+    to rebuild it before the next round rather than dereference None."""
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+
+    async def handler(call: ToolCall) -> ToolResult:
+        # Exactly what switch_model does to the client mid tool loop.
+        client._genai_client = None
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client, calls = _bare_genai_client(
+        [
+            [_GenaiPart(function_call=_GenaiFunctionCall("inspect", {}, id_="c1"))],
+            [_GenaiPart(text="done")],
+        ],
+        handler,
+        cap=2,
+    )
+    stub = client._genai_client
+    rebuilt: list = []
+
+    class _FakeGenaiModule:
+        @staticmethod
+        def Client(**kwargs):
+            rebuilt.append(kwargs)
+            return stub
+
+    monkeypatch.setattr(_ofc_genai, "_genai", _FakeGenaiModule)
+
+    chunks = [
+        chunk
+        async for chunk in client._astream_genai_with_tools(
+            [{"role": "user", "content": "look at this"}]
+        )
+    ]
+
+    assert rebuilt, "the loop never rebuilt the client the tool handler dropped"
+    assert len(calls) == 2, "the round after the tool call never ran"
+    assert any(getattr(chunk, "content", "") == "done" for chunk in chunks)
+
+
 class _ToolAwareFakeLLM:
     """OpenAI-path fake：按请求里有没有 tools 选脚本，而不是按调用序号。
 
@@ -4011,135 +4057,6 @@ def _make_rt_client(api_type: str, *, tool_name: str = "x", tool_kwargs=None):
 
     client.send_event = fake_send_event
     return client, sent
-
-
-def test_realtime_tool_image_chain_survives_tool_result_responses():
-    from types import SimpleNamespace
-
-    from main_logic.omni_realtime_client import OmniRealtimeClient
-
-    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
-    client._response_arbiter = SimpleNamespace(response_owner_source="manual")
-    client.get_host_turn_id = lambda: "speech-one"
-    client._turn_epoch = 0
-    client._idless_quarantine = False
-    client._tool_image_chain_serial = 0
-    client._active_tool_image_chain_id = None
-
-    client._begin_response_lifecycle("response-one")
-    first_chain = client._ensure_tool_image_chain_id()
-
-    client._response_arbiter.response_owner_source = "tool_result"
-    client.get_host_turn_id = lambda: "speech-rotated-after-tool"
-    client._begin_response_lifecycle("response-two")
-
-    assert client._ensure_tool_image_chain_id() == first_chain
-
-    client._response_arbiter.response_owner_source = "manual"
-    client.get_host_turn_id = lambda: "speech-next-user"
-    client._begin_response_lifecycle("response-three")
-
-    assert client._ensure_tool_image_chain_id() != first_chain
-
-
-@pytest.mark.asyncio
-async def test_gemini_tool_calls_share_a_chain_until_the_next_user_turn():
-    from types import SimpleNamespace
-
-    from main_logic.omni_realtime_client import OmniRealtimeClient
-    from main_logic.tool_calling import ToolResult
-
-    client = OmniRealtimeClient(
-        base_url="wss://example.invalid",
-        api_key="test-key",
-        model="gemini-live",
-        api_type="gemini",
-    )
-    calls = []
-
-    async def _handle_tool(call):
-        return ToolResult(call_id=call.call_id, name=call.name, output={})
-
-    def _discard_task(coro) -> None:
-        coro.close()
-
-    # Capture at the batch boundary rather than at ``on_tool_call``: the
-    # Gemini path hands its calls to ``_start_gemini_tool_batch`` and runs
-    # them fire-and-forget, so a handler-level probe never fires here.
-    # The chain identity is stamped on the ToolCall before the handoff,
-    # which is exactly what this test is about.
-    def _capture_batch(batch_calls, _owner):
-        calls.extend(batch_calls)
-
-    client._start_gemini_tool_batch = _capture_batch
-    client._capture_tool_task_owner = lambda *_args, **_kwargs: object()
-
-    def _response(call_id: str, *, starts_turn: bool):
-        return SimpleNamespace(
-            tool_call=SimpleNamespace(
-                function_calls=[
-                    SimpleNamespace(id=call_id, name="inspect", args={})
-                ]
-            ),
-            server_content=(
-                SimpleNamespace(
-                    input_transcription=None,
-                    model_turn=SimpleNamespace(parts=[]),
-                    output_transcription=None,
-                    turn_complete=False,
-                    interrupted=False,
-                )
-                if starts_turn
-                else None
-            ),
-        )
-
-    client.on_tool_call = _handle_tool
-    client._fire_task = _discard_task
-    client._tool_image_chain_serial = 0
-    client._active_tool_image_chain_id = "previous-user-turn"
-    client._is_responding = False
-    client._user_recent_activity_time = 2.0
-    client._ai_recent_activity_time = 0.0
-
-    await client._process_gemini_response(_response("call-one", starts_turn=True))
-    await client._process_gemini_response(
-        _response("call-two", starts_turn=False)
-    )
-
-    first_chain = calls[0].provider_meta.get("tool_chain_id")
-    assert first_chain
-    assert first_chain != "previous-user-turn"
-    assert calls[1].provider_meta.get("tool_chain_id") == first_chain
-
-    client._is_responding = False
-    client._user_recent_activity_time = 4.0
-    client._ai_recent_activity_time = 0.0
-    await client._process_gemini_response(
-        _response("call-three", starts_turn=False)
-    )
-
-    assert calls[2].provider_meta.get("tool_chain_id") != first_chain
-
-
-@pytest.mark.asyncio
-async def test_gemini_text_user_turn_resets_the_tool_image_chain():
-    from unittest.mock import AsyncMock
-
-    from main_logic.omni_realtime_client import OmniRealtimeClient
-
-    client = OmniRealtimeClient(
-        base_url="wss://example.invalid",
-        api_key="test-key",
-        model="gemini-live",
-        api_type="gemini",
-    )
-    client._gemini_session = AsyncMock()
-    client._active_tool_image_chain_id = "previous-user-turn"
-
-    await client._gemini_send_user_turn("next question")
-
-    assert client._active_tool_image_chain_id is None
 
 
 def test_realtime_tools_for_step_uses_nested_function_shape():

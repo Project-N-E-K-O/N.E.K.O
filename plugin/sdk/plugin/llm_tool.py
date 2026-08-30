@@ -194,21 +194,25 @@ def llm_tool(
             }],
         }
 
-    The host decides how each picture reaches the model: injected as a
-    multimodal message when the conversation model has vision, or run
-    through the vision model and folded into the tool output as text
-    when it does not (realtime voice sessions always take the latter
-    path). ``vision_prompt`` is used by both, so write it once as the
-    single description of what matters in the frame.
+    Whether a picture actually reaches the model depends on the session
+    the tool was called from, and the handler cannot see that. A text
+    session with a vision model configured switches to it and is shown
+    the frame. A realtime voice session cannot be shown one at all --
+    a tool result goes back over that wire as a string -- and neither
+    can a text session with no vision model configured; there the frame
+    is skipped and the model is told so under ``_image_warnings``. Write
+    the tool so its ``output`` still reads sensibly in that case.
+    ``vision_prompt`` becomes the caption beside the image, and is the
+    only thing telling the model why it was handed a frame.
 
     Limits enforced by ``main_server``: at most 2 images per call, 2 MB
     of base64 each, ``image/jpeg`` or ``image/png`` only, and 2,000
     characters per ``vision_prompt``. Anything rejected or truncated is
     reported to the model under ``_image_warnings`` rather than silently
-    dropped. Injected images are removed from conversation
-    history at the end of the turn, so do not rely on the model still
-    seeing a frame on a later turn — give it a handle and a way to ask
-    for the picture again.
+    dropped. Delivered images are removed from conversation history at
+    the end of the turn, so do not rely on the model still seeing a
+    frame on a later turn — give it a handle and a way to ask for the
+    picture again.
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:

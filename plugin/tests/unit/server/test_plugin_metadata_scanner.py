@@ -397,12 +397,6 @@ def test_metadata_scan_reaps_plugin_spawned_helpers(
     module_path = tmp_path / f"{module_name}.py"
     child_pid_path = tmp_path / "child.pid"
     blocking_import = "time.sleep(30)\n" if worker_times_out else ""
-    disable_worker_cleanup = (
-        "from plugin.server.application.plugins import metadata_scanner\n"
-        "metadata_scanner._cleanup_worker_descendants = lambda: None\n"
-        if not worker_times_out
-        else ""
-    )
     module_path.write_text(
         "from pathlib import Path\n"
         "import subprocess\n"
@@ -411,7 +405,6 @@ def test_metadata_scan_reaps_plugin_spawned_helpers(
         f"child = subprocess.Popen([sys.executable, '-c', "
         f"'import time; time.sleep(30)'])\n"
         f"Path({str(child_pid_path)!r}).write_text(str(child.pid), encoding='utf-8')\n"
-        f"{disable_worker_cleanup}"
         f"{blocking_import}"
         "class Plugin:\n"
         "    pass\n",

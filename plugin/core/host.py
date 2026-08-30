@@ -711,21 +711,15 @@ def _plugin_process_runner(
     uplink_token: str = "",
     stop_event: Any | None = None,
     startup_options: dict[str, object] | None = None,
-    transport_curve_credentials: tuple[bytes, bytes, bytes] | None = None,
     message_uplink_endpoint: str = "",
     image_uplink_endpoint: str | None = None,
 ) -> None:
     """独立进程中的运行函数。通过 ZMQ 与宿主进程通信。"""
-    # 保存进程级 stop event
-    # This credential authorizes host-only mutations in main_server. Plugin
-    # children inherit the agent process environment, so remove it before any
-    # plugin-controlled module is loaded.
-    os.environ.pop("NEKO_PLUGIN_HOST_API_TOKEN", None)
-
     uplink_token = str(uplink_token or "").strip()
     if not uplink_token:
         raise ValueError("Plugin child process requires an uplink token")
 
+    # 保存进程级 stop event
     process_stop_event = stop_event
     startup_failure_policy = str((startup_options or {}).get("startup_failure") or "warn").strip().lower()
     
@@ -741,8 +735,6 @@ def _plugin_process_runner(
     
     # ── ZMQ child-side transport ─────────────────────────────────
     child_transport_kwargs: dict[str, object] = {}
-    if transport_curve_credentials is not None:
-        child_transport_kwargs["downlink_curve"] = transport_curve_credentials
     if message_uplink_endpoint:
         child_transport_kwargs["message_uplink_endpoint"] = (
             message_uplink_endpoint
@@ -1888,14 +1880,31 @@ class PluginHost:
         self.config_path = config_path
         self.logger = logger.bind(plugin_id=plugin_id, host=True)
 
-        # ZMQ transport: 3 authenticated socket channels replace 5 mp.Queues
+        # ZMQ transport: 4 PUSH/PULL socket channels replace 5 mp.Queues.
+        # 只有 child → host 的三条上行带 uplink token；下行不带凭证。
         self.transport = HostTransport()
 
-        process_context = multiprocessing.get_context("spawn")
-        self._process_stop_event: Any = process_context.Event()
+        self._process_stop_event: Any = multiprocessing.Event()
         self._startup_options: dict[str, object] = {"startup_failure": "warn"}
 
-        self.process = process_context.Process(
+        # Shared response notification primitives must be initialized before
+        # forking, otherwise each child creates its own Manager proxies.
+        try:
+            _ = state.plugin_response_map
+        except Exception as e:
+            logger.warning(
+                "Failed to pre-initialize plugin_response_map for plugin {}: {}",
+                plugin_id, e
+            )
+        try:
+            _ = state.plugin_response_notify_event
+        except Exception as e:
+            logger.warning(
+                "Failed to pre-initialize plugin_response_notify_event for plugin {}: {}",
+                plugin_id, e
+            )
+
+        self.process = multiprocessing.Process(
             target=_plugin_process_runner,
             args=(
                 plugin_id,
@@ -1906,7 +1915,6 @@ class PluginHost:
                 getattr(self.transport, "uplink_token", ""),
                 self._process_stop_event,
                 self._startup_options,
-                getattr(self.transport, "downlink_curve_credentials", None),
                 getattr(self.transport, "message_uplink_endpoint", ""),
             ),
             kwargs={
