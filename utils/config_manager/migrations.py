@@ -116,22 +116,18 @@ if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_reset_migration_lock_after_fork)
 
 
-def _copy_with_heartbeat(workspace):
-    """A copy2 that keeps the workspace's mtime moving as it goes.
+def _workspace_heartbeat(workspace):
+    """A callable that keeps a workspace's mtime moving, at most so often.
 
-    The lock is the real answer to "is this workspace live", but it can
-    fail to be taken at all -- a filesystem that will not hold one, a
-    marker that cannot be created. The age check is then the only thing
-    left, and a directory's mtime does NOT move while a deep copytree
-    fills it, so a single large character could age past the threshold
-    while it is being written and be reclaimed out from under itself.
-
-    Touching it per entry is not enough for that: the run can spend the
-    whole time inside ONE entry.
+    Its own object rather than something the copy owns, because the COPY
+    is not the only slow phase: the flush after it can stall on writeback
+    independently of how long the copy took, which is the correction that
+    sent this. Both phases beat on one timer, so the interval means the
+    same thing across the whole run.
     """
     last = [time.monotonic()]
 
-    def _copy(source, destination, *, follow_symlinks=True):
+    def _beat():
         now = time.monotonic()
         if now - last[0] >= _MIGRATION_HEARTBEAT_SECONDS:
             last[0] = now
@@ -141,6 +137,26 @@ def _copy_with_heartbeat(workspace):
                 # Cosmetic on any filesystem that also holds the lock;
                 # nothing to do if neither works.
                 pass
+
+    return _beat
+
+
+def _copy_with_heartbeat(beat):
+    """A copy2 that beats between files.
+
+    The lock is the real answer to "is this workspace live", but it can
+    fail to be taken at all -- a filesystem that will not hold one, a
+    marker that cannot be created. The age check is then the only thing
+    left, and a directory's mtime does NOT move while a deep copytree
+    fills it, so a single large character could age past the threshold
+    while it is being written and be reclaimed out from under itself.
+
+    Touching the workspace once per ENTRY is not enough: the run can spend
+    the whole time inside one entry.
+    """
+
+    def _copy(source, destination, *, follow_symlinks=True):
+        beat()
         return shutil.copy2(
             source, destination, follow_symlinks=follow_symlinks
         )
@@ -376,7 +392,7 @@ def _same_device(left, right):
         return True
 
 
-def _fsync_tree(root):
+def _fsync_tree(root, beat=None):
     """Flush every file in a staged tree, then its directories.
 
     A file-level failure propagates, so the caller abandons the entry
@@ -386,6 +402,13 @@ def _fsync_tree(root):
     """
     for directory, _subdirs, files in os.walk(str(root)):
         for name in files:
+            if beat is not None:
+                # The flush is a second slow phase, and its length is
+                # NOT bounded by the copy that filled the tree -- a
+                # writeback stall is its own thing. Without this, a
+                # workspace whose lock could not be taken could age out
+                # while it was still being made durable.
+                beat()
             _fsync_file(os.path.join(directory, name))
         _fsync_directory(directory)
 
@@ -1054,15 +1077,16 @@ class MigrationsMixin:
                             tempfile.mkdtemp(dir=str(staging_root))
                         ) / "d"
                     try:
+                        beat = _workspace_heartbeat(staging_root)
                         shutil.copytree(
                             item,
                             staging,
-                            copy_function=_copy_with_heartbeat(staging_root),
+                            copy_function=_copy_with_heartbeat(beat),
                         )
                         # Same two steps as the file branch, over a tree:
                         # the copied contents first, then the published
                         # NAME. copytree only closes what it writes.
-                        _fsync_tree(staging)
+                        _fsync_tree(staging, beat)
                         # Same last-moment re-check as the file branch.
                         # It narrows the window to the rename itself and
                         # does not close it: POSIX rename replaces an

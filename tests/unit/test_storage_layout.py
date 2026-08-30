@@ -1167,9 +1167,9 @@ def test_the_publish_is_flushed_on_both_branches(tmp_path):
         flushed_dirs.append(Path(path))
         return real_dir(path)
 
-    def _record_tree(path):
+    def _record_tree(path, *args, **kwargs):
         flushed_trees.append(Path(path))
-        return real_tree(path)
+        return real_tree(path, *args, **kwargs)
 
     with patch.object(migrations_module, "_fsync_directory", _record_dir),             patch.object(migrations_module, "_fsync_tree", _record_tree):
         config_manager.migrate_memory_files()
@@ -2171,3 +2171,67 @@ def test_a_forked_child_releases_the_workspace_lock_it_inherited(tmp_path):
     finally:
         migrations_module._release_inherited_workspace_lock()
         migrations_module._MIGRATION_WORKSPACE_LOCK = previous
+
+
+@pytest.mark.unit
+def test_the_flush_phase_keeps_the_workspace_alive_too(tmp_path):
+    """The flush is a second slow phase, and the copy does not bound it.
+
+    I argued it did -- that `_fsync_tree` runs over a tree just written, so
+    its cost follows the copy that filled it. A reviewer pointed out that a
+    writeback stall is its own thing, which is right: the data can be handed
+    to the kernel quickly and take arbitrarily long to reach the device.
+
+    So on a filesystem where the lock cannot be taken, a workspace could age
+    out while it was still being made durable, and a second process would
+    delete it out from under the flush.
+
+    Pinned independently of the copy's beats: what is asserted is that the
+    workspace is touched WHILE `_fsync_tree` is running, not merely that it
+    is touched at some point during the entry.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    for index in range(4):
+        (project_root / "Carol" / ("part%d.json" % index)).write_text(
+            "[1]", encoding="utf-8"
+        )
+
+    touched = []
+    during_flush = []
+    real_utime = migrations_module.os.utime
+    real_tree = migrations_module._fsync_tree
+    clock = [0.0]
+
+    def _record(path, times=None, **kwargs):
+        touched.append(Path(path))
+        return real_utime(path, times, **kwargs)
+
+    def _every_call_is_a_minute_later():
+        clock[0] += 60.0
+        return clock[0]
+
+    def _watch_the_flush(root, *args, **kwargs):
+        before = len(touched)
+        result = real_tree(root, *args, **kwargs)
+        during_flush.append(len(touched) - before)
+        return result
+
+    with patch.object(migrations_module.os, "utime", _record), patch.object(
+        migrations_module.time, "monotonic", _every_call_is_a_minute_later
+    ), patch.object(migrations_module, "_fsync_tree", _watch_the_flush):
+        config_manager.migrate_memory_files()
+
+    assert (runtime_root / "Carol" / "part0.json").exists()
+    assert during_flush, "the directory branch never flushed a tree at all"
+    assert sum(during_flush) >= 2, (
+        "the workspace was not kept alive during the flush itself: %r beats "
+        "inside _fsync_tree" % (during_flush,)
+    )
