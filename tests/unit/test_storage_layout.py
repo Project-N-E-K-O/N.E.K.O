@@ -808,11 +808,11 @@ def test_a_memory_dir_on_another_volume_stages_on_that_volume(tmp_path):
 
     Driven through _same_device rather than a real mount, because a test
     cannot make one. What is pinned is that the workspace moves onto the
-    destination's volume, and lands under the same RESERVED parent the
-    default layout uses rather than loose in the character namespace --
-    minting unique names straight into memory_dir meant no later run could
-    ever find them, so a killed run's copy of a full character tree stayed
-    there for good.
+    destination's volume and claims no NAME while it is there: ".mig-staging"
+    passes validate_character_name(allow_dots=True), so a reserved path
+    inside memory_dir is a path that can already be somebody's character.
+    Reclaiming them is handled by proving ownership instead -- see
+    test_a_cross_device_workspace_is_reclaimed_like_any_other.
     """
     from utils.config_manager import migrations as migrations_module
 
@@ -837,9 +837,9 @@ def test_a_memory_dir_on_another_volume_stages_on_that_volume(tmp_path):
             patch.object(migrations_module, "_same_device", lambda *a: False):
         config_manager.migrate_memory_files()
 
-    assert staged_in == [runtime_root / ".mig-staging"], (
-        "the workspace was not put under a reclaimable parent on the "
-        "destination's volume: %r" % (staged_in,)
+    assert staged_in == [runtime_root], (
+        "the workspace was not put on the destination's volume: %r"
+        % (staged_in,)
     )
     assert (runtime_root / "Carol" / "facts.json").read_text(
         encoding="utf-8"
@@ -1323,24 +1323,34 @@ def test_a_busy_publish_is_retried_rather_than_dropped(tmp_path):
     # entry spends it and the second publishes cleanly, so removing the
     # backoff from either branch still passed -- which is how the first
     # version of this guard survived its own mutation.
-    real_replace = os.replace
+    #
+    # The two branches publish through different primitives: a directory
+    # replaces, a loose FILE must not, so it goes through the no-replace
+    # publish -- os.rename on Windows, os.link on POSIX. All three are
+    # wrapped, and the assertion below is on destinations rather than on
+    # which call fired, so it holds on either platform.
+    real = {name: getattr(os, name) for name in ("replace", "rename", "link")}
     attempts = {}
 
-    def _held_open(src, dst, *args, **kwargs):
-        key = str(dst)
-        attempts[key] = attempts.get(key, 0) + 1
-        if attempts[key] <= 2:
-            error = OSError(13, "The process cannot access the file")
-            error.winerror = 32
-            raise error
-        return real_replace(src, dst, *args, **kwargs)
+    def _held_open(name):
+        def _call(src, dst, *args, **kwargs):
+            key = str(dst)
+            attempts[key] = attempts.get(key, 0) + 1
+            if attempts[key] <= 2:
+                error = OSError(13, "The process cannot access the file")
+                error.winerror = 32
+                raise error
+            return real[name](src, dst, *args, **kwargs)
 
-    with patch.object(migrations_module.os, "replace", _held_open):
+        return _call
+
+    with patch.object(
+        migrations_module.os, "replace", _held_open("replace")
+    ), patch.object(
+        migrations_module.os, "rename", _held_open("rename")
+    ), patch.object(migrations_module.os, "link", _held_open("link")):
         config_manager.migrate_memory_files()
 
-    # Both branches must have come THROUGH the backoff. Path.rename does not
-    # route through os.replace, so a branch that reverts to it is missing
-    # here rather than merely failing.
     assert sorted(attempts) == sorted(
         [str(runtime_root / "Carol"), str(runtime_root / "loose.json")]
     ), "a publish did not go through the shared backoff: %r" % (attempts,)
@@ -1360,20 +1370,24 @@ def test_a_busy_publish_is_retried_rather_than_dropped(tmp_path):
 def test_a_cross_device_workspace_is_reclaimed_like_any_other(tmp_path):
     """A killed run on the junction layout must not leave its copy for good.
 
-    The first version of this fallback minted a unique name straight into
-    memory_dir and swept nothing there, on the argument that a sweep inside
-    the character namespace was the mistake the design had removed. That left
-    no way to ever find an abandoned workspace again: every run picks a new
-    name, so repeated interrupted starts could fill the destination volume
-    with full character trees.
+    A killed run must not leave its copy of a character tree in the
+    destination volume for good -- every run picks a fresh name, so repeated
+    interrupted starts would fill it. But the parent here IS the character
+    namespace, so position proves nothing: reclaiming by name and age alone
+    would delete the hidden files of a character that happens to be called
+    ".mig-something".
 
-    One reserved subdirectory gives both layouts the same reclaim, and
-    sweeping inside it is not sweeping the namespace.
+    So ownership has to be shown, and the marker is what shows it. A
+    character directory holds facts.json, persona.json, settings.json, the
+    time index and its sidecars -- never a ".lock". Both directions are
+    pinned: a workspace with the marker is reclaimed, and a dot-prefixed
+    directory without one is left exactly where it is.
     """
     from utils.config_manager import migrations as migrations_module
     from utils.config_manager.migrations import (
-        _MIGRATION_STAGING_DIR,
         _MIGRATION_STAGING_STALE_SECONDS,
+        _MIGRATION_WORKSPACE_LOCK_NAME,
+        _MIGRATION_WORKSPACE_PREFIX,
     )
 
     config_manager = _make_config_manager(tmp_path)
@@ -1385,25 +1399,42 @@ def test_a_cross_device_workspace_is_reclaimed_like_any_other(tmp_path):
     (project_root / "Carol").mkdir(parents=True)
     (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
 
-    parent = runtime_root / _MIGRATION_STAGING_DIR
-    abandoned = parent / ".killed-run"
+    abandoned = runtime_root / (_MIGRATION_WORKSPACE_PREFIX + "killed")
     (abandoned / "d" / "Dave").mkdir(parents=True)
     (abandoned / "d" / "Dave" / "facts.json").write_text("[9]", encoding="utf-8")
+    (abandoned / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
+
+    # A character called ".mig-something", with hidden files of its own and
+    # no marker. validate_character_name(allow_dots=True) accepts the name.
+    bystander = runtime_root / (_MIGRATION_WORKSPACE_PREFIX + "character")
+    bystander.mkdir()
+    (bystander / "facts.json").write_text("[keep]", encoding="utf-8")
+
     stale = time.time() - _MIGRATION_STAGING_STALE_SECONDS - 60
-    for path in (abandoned / "d" / "Dave", abandoned / "d", abandoned):
+    for path in (
+        abandoned / "d" / "Dave",
+        abandoned / "d",
+        abandoned,
+        bystander,
+    ):
         os.utime(path, (stale, stale))
 
     with patch.object(migrations_module, "_same_device", lambda *a: False):
         config_manager.migrate_memory_files()
 
-    assert not parent.exists(), (
-        "a killed cross-device run's copy was never reclaimed: %s"
-        % (sorted(q.name for q in parent.iterdir()) if parent.is_dir() else parent)
+    assert not abandoned.exists(), (
+        "a killed cross-device run's copy was never reclaimed"
+    )
+    assert (bystander / "facts.json").read_text(encoding="utf-8") == "[keep]", (
+        "a character whose name carries the workspace prefix was swept"
     )
     assert (runtime_root / "Carol" / "facts.json").read_text(
         encoding="utf-8"
     ) == "[1]"
-    assert sorted(q.name for q in runtime_root.iterdir()) == ["Carol"]
+    assert sorted(q.name for q in runtime_root.iterdir()) == [
+        bystander.name,
+        "Carol",
+    ], "staging was left behind in the character namespace"
 
 
 @pytest.mark.unit
@@ -1682,3 +1713,146 @@ def test_a_leftover_at_the_staging_name_does_not_stop_the_run(tmp_path):
                 "%s was jammed by a leftover at the staging name "
                 "(removal disabled: %s)" % (name, disable_removal)
             )
+
+
+@pytest.mark.unit
+def test_a_loose_file_that_appears_at_the_last_moment_is_not_overwritten(
+    tmp_path,
+):
+    """os.replace overwrites, and the destination can appear after the check.
+
+    Another application process, or a cloud import writing back the managed
+    file it is restoring. The rule this migration works to is that an
+    existing runtime entry is authoritative -- "not in the runtime root"
+    never meant "never migrated" -- so losing that race has to mean
+    abandoning the seed, not overwriting the winner.
+
+    The re-check narrows the window; it cannot close it, which is why the
+    publish itself refuses an existing name.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "loose.json").write_text("[seed]", encoding="utf-8")
+
+    real_publish = migrations_module.publish_without_replacing
+
+    def _the_winner_arrives_first(source, destination, *args, **kwargs):
+        # After every check this migration makes, and before the move.
+        Path(destination).write_text("[live]", encoding="utf-8")
+        return real_publish(source, destination, *args, **kwargs)
+
+    with patch.object(
+        migrations_module,
+        "publish_without_replacing",
+        _the_winner_arrives_first,
+    ):
+        # Must not raise: the caller is startup.
+        config_manager.migrate_memory_files()
+
+    assert (runtime_root / "loose.json").read_text(encoding="utf-8") == "[live]", (
+        "the seed overwrote a runtime file that appeared during publication"
+    )
+
+
+@pytest.mark.unit
+def test_preparing_the_workspace_survives_a_concurrent_cleanup(tmp_path):
+    """The parent is empty between creating it and minting inside it.
+
+    So another run's reclamation can rmdir it in that window -- its rmdir
+    only succeeds when it IS empty, which is exactly then. Without the retry
+    mkdtemp raises FileNotFoundError, every seed entry is skipped, and the
+    process is still marked migrated for the rest of its session.
+    """
+    from utils.config_manager import migrations as migrations_module
+    from utils.config_manager.migrations import _MIGRATION_STAGING_DIR
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    (project_root / "Carol" / "facts.json").write_text("[1]", encoding="utf-8")
+
+    parent = Path(config_manager.app_docs_dir) / _MIGRATION_STAGING_DIR
+    real_mkdtemp = migrations_module.tempfile.mkdtemp
+    interfered = []
+
+    def _somebody_else_reclaims_it(*args, **kwargs):
+        if not interfered and Path(kwargs.get("dir", "")) == parent:
+            interfered.append(True)
+            # Exactly what the other run's cleanup does to an empty parent.
+            parent.rmdir()
+        return real_mkdtemp(*args, **kwargs)
+
+    with patch.object(
+        migrations_module.tempfile, "mkdtemp", _somebody_else_reclaims_it
+    ):
+        config_manager.migrate_memory_files()
+
+    assert interfered, "the race this guards was never triggered"
+    assert (runtime_root / "Carol" / "facts.json").read_text(
+        encoding="utf-8"
+    ) == "[1]", "a concurrent cleanup skipped the whole migration"
+
+
+@pytest.mark.unit
+def test_a_long_copy_keeps_its_workspace_from_ageing_out(tmp_path):
+    """A directory's mtime does not move while a deep copytree fills it.
+
+    The lock is the real answer to "is this workspace live", but it can fail
+    to be taken at all -- a filesystem that will not hold one, a marker that
+    cannot be created. Age is then the only thing left, and a single large
+    character could pass the threshold while it is still being written and
+    be reclaimed out from under itself. Touching the workspace once per
+    ENTRY does not help: the run can spend the whole time inside one.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (project_root / "Carol").mkdir(parents=True)
+    for index in range(4):
+        (project_root / "Carol" / ("part%d.json" % index)).write_text(
+            "[1]", encoding="utf-8"
+        )
+
+    touched = []
+    real_utime = migrations_module.os.utime
+    real_monotonic = migrations_module.time.monotonic
+    clock = [0.0]
+
+    def _record(path, times=None, **kwargs):
+        touched.append(Path(path))
+        return real_utime(path, times, **kwargs)
+
+    def _every_call_is_a_minute_later():
+        clock[0] += 60.0
+        return clock[0]
+
+    with patch.object(migrations_module.os, "utime", _record), patch.object(
+        migrations_module.time, "monotonic", _every_call_is_a_minute_later
+    ):
+        config_manager.migrate_memory_files()
+
+    assert (runtime_root / "Carol" / "part0.json").exists()
+    # The WORKSPACE, during the copy -- not just the per-entry touch. There
+    # are four files in the one entry, so a heartbeat that only fires
+    # between entries cannot produce more than one.
+    workspaces = [path for path in touched if path.name.startswith(".mig-")]
+    assert len(workspaces) >= 3, (
+        "the workspace was not kept alive during the copy itself: %r"
+        % (touched,)
+    )

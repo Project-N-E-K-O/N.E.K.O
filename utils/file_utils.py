@@ -647,6 +647,61 @@ def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
     os.replace(temp_path, target_path)
 
 
+def _publish_once(source: str, target_path: Path) -> None:
+    """One no-replace attempt, by whichever primitive the platform has."""
+    if os.name == "nt":
+        # os.rename ALREADY refuses an existing destination on Windows,
+        # which is exactly the semantics wanted here.
+        os.rename(source, target_path)
+        return
+    # POSIX rename replaces, so claim the name with a hard link -- which
+    # raises FileExistsError instead -- and drop the staged name after.
+    os.link(source, target_path)
+    try:
+        os.unlink(source)
+    except OSError:
+        # The destination is published either way; the staged name is
+        # inside a workspace that comes down with it.
+        pass
+
+
+def publish_without_replacing(
+    source: str | os.PathLike[str], target_path: Path
+) -> None:
+    """Move a file onto a name that must NOT already exist.
+
+    :func:`replace_with_busy_retry` overwrites, and a destination can
+    appear between a caller's last check and the call -- another
+    application process, or a cloud import writing back the managed file
+    it is restoring. Where an existing entry is authoritative, losing
+    that race has to mean abandoning the source: FileExistsError is
+    raised and nothing is overwritten.
+
+    A hard link would serve on Windows too, and must not be used there:
+    the source then shares an inode with the published file, so clearing
+    the read-only attribute to remove the source changes the mode of the
+    published one. Measured -- a 0o444 seed published as 0o666.
+
+    Same Windows busy window and same backoff as the replacing form.
+    """
+    source = str(source)
+    for delay in _REPLACE_RETRY_BACKOFF_S:
+        try:
+            _publish_once(source, target_path)
+            return
+        except FileExistsError:
+            # The destination won. That is an answer, not a failure to
+            # retry around.
+            raise
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
+                raise
+            if running_on_event_loop():
+                raise
+        time.sleep(delay)
+    _publish_once(source, target_path)
+
+
 def replace_with_busy_retry(temp_path: str | os.PathLike[str], target_path: Path) -> None:
     """Replace ``target_path``, briefly retrying Windows' "target is busy".
 
