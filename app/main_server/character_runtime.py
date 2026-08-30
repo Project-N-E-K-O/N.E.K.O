@@ -45,6 +45,7 @@ from plugin.sdk.shared.core.images import (
 )
 from utils.config_manager import get_reserved
 from utils.internal_http_client import get_internal_http_client
+from utils.screenshot_utils import normalize_image_for_model
 
 from ._shared import runtime
 
@@ -261,8 +262,41 @@ def _normalize_inline_image_to_jpeg_base64(encoded: str) -> str:
     return base64.b64encode(normalize_image_to_jpeg(raw)).decode("ascii")
 
 
+def _normalize_inline_image_to_model_profile(encoded: str) -> str:
+    """Re-encode an inline payload to jpeg AND to the model's size profile.
+
+    Two steps rather than one because they answer two different questions and
+    only one of them may be skipped.
+
+    ``normalize_image_to_jpeg`` is the SDK's own guarded decode: 32 MiB source
+    ceiling, 16 megapixel ceiling, EXIF orientation, alpha flattened onto
+    white, a process-wide decode gate. It RAISES on anything it cannot read,
+    which is load-bearing here -- the caller turns that into a dropped part, so
+    bytes this host could not parse never reach a provider labelled jpeg.
+
+    ``normalize_image_for_model`` then bounds the RESOLUTION. It cannot replace
+    the step above (it returns the payload unchanged on failure, which would
+    ship an unreadable part as jpeg) and the step above cannot replace it (the
+    SDK bounds the long edge at 2048, so a 2048x1536 upload is jpeg, honest,
+    and still far past the profile every other model path sends).
+
+    Cost: an image that is already inside the profile pays nothing extra --
+    ``normalize_image_for_model`` returns the same string object for a jpeg
+    within both bounds. Only an oversized one pays a second decode+encode, and
+    it needed a resample either way.
+    """
+    return normalize_image_for_model(_normalize_inline_image_to_jpeg_base64(encoded))
+
+
 async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
     """Resolve one canonical image part to the model's base64 input.
+
+    This is the MODEL half of the fork. The chat half is
+    ``_build_plugin_chat_blocks``, and the two deliberately disagree about
+    resolution: everything leaving here is bounded to the model profile
+    (``MODEL_IMAGE_MAX_WIDTH`` x ``COMPRESS_TARGET_HEIGHT``, jpeg), while the
+    chat copy keeps the plugin's original bytes. See the comment on that
+    function for why the asymmetry is the point rather than an oversight.
 
     Bounds ONE transfer at the per-image ceiling and returns the bytes that
     would actually be retained. Budget accounting is deliberately NOT done
@@ -283,12 +317,20 @@ async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
         # Returning the NORMALIZED bytes is also what lets the caller charge
         # the budget on what is retained, since jpeg can expand a png.
         return await asyncio.to_thread(
-            _normalize_inline_image_to_jpeg_base64, encoded
+            _normalize_inline_image_to_model_profile, encoded
         )
     url = part.get("url")
     if not isinstance(url, str) or not url:
         raise ValueError("plugin image part has no usable payload")
-    return await _fetch_plugin_image_base64(url)
+    fetched = await _fetch_plugin_image_base64(url)
+    # 两条分支都必须落在同一个档位上——这是本函数的契约，不是内联分支的特权。
+    # URL 图确实已经是 jpeg（SDK 上传时归一化过），所以在下游看来「已经处理过
+    # 了」，但 SDK 只把长边压到 MAX_IMAGE_EDGE=2048：实测一张插件图到这里是
+    # 2048x1536 / ~49 KiB，远在任何字节预算之下，于是一路原样送到模型，高度
+    # 1536。字节预算看不见分辨率，所以只有这里能兜住它。
+    #
+    # 归一化器对已经合规的图返回同一个字符串对象，因此这一步对小图是零成本。
+    return await asyncio.to_thread(normalize_image_for_model, fetched)
 
 
 def _browser_media_url(url: str) -> str:
@@ -366,6 +408,26 @@ def _build_plugin_chat_blocks(
 
     Images past the per-push budget are dropped; text blocks keep flowing so
     the surviving mix stays in canonical order rather than truncating the tail.
+
+    THE CHAT COPY IS NOT DOWNSCALED, and that asymmetry against
+    ``_resolve_plugin_model_image`` is deliberate. One plugin image forks here
+    into two consumers with opposite needs:
+
+    * The MODEL gets a jpeg bounded at 1280x720. Beyond that the extra pixels buy no
+      comprehension a vision model can use, while every one of them is billed,
+      rides ``_conversation_history`` for several more turns, and eats into a
+      per-request byte ceiling that rejects the whole message when crossed.
+    * The READER gets the resolution the plugin actually uploaded. A screenshot
+      of a document, a chart, a code diff is exactly the material a person
+      zooms into, and 720p is where small text stops being legible. Shrinking
+      the picture on screen would save nothing that matters -- the URL branch
+      below is a ``/media/<id>`` reference the browser fetches on its own, so
+      those bytes never touch the model request at all, and inline blocks are
+      already bounded on their own axis by ``_PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES``.
+
+    So: bound the copy that is billed and re-sent, leave the copy that is
+    merely looked at. Anyone tempted to "unify" the two paths is removing a
+    distinction, not a duplication.
     """
     blocks: list[dict[str, str]] = []
     image_count = 0

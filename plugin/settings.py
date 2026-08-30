@@ -538,7 +538,15 @@ if MESSAGE_PLANE_VALIDATE_MODE not in ("off", "warn", "strict"):
 
 MESSAGE_PLANE_TOPIC_MAX = _get_int_env("NEKO_MESSAGE_PLANE_TOPIC_MAX", 2000)
 MESSAGE_PLANE_TOPIC_NAME_MAX_LEN = _get_int_env("NEKO_MESSAGE_PLANE_TOPIC_NAME_MAX_LEN", 128)
-MESSAGE_PLANE_PAYLOAD_MAX_BYTES = _get_int_env("NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 256 * 1024)
+# message_plane 单条 payload 上限（字节）。插件侧 push_message 和 host 侧 ingest
+# 共用这一个常量来判定 payload_too_large，因此两边不会漂移。
+# 512 KiB 而不是 256 KiB：inline 图片以 base64 走线，是原始字节的 4/3，所以这里
+# 定的是"编码后"的预算。要让文档承诺的 256 KiB inline 图片真的能过，编码后就得
+# 放得下 341 KiB，再留出 text part 和信封的余量——512 KiB 换算回原始字节约
+# 384 KiB。（同期停掉了 legacy binary_data 的裸字节副本；在那之前一张图要走
+# 约 2.34x，256 KiB 的上限实际只兜得住约 110 KiB 的图。）
+# Env: NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES, default=512*1024
+MESSAGE_PLANE_PAYLOAD_MAX_BYTES = _get_int_env("NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 512 * 1024)
 MESSAGE_PLANE_STORE_MAXLEN = _get_int_env("NEKO_MESSAGE_PLANE_STORE_MAXLEN", 20000)
 MESSAGE_PLANE_GET_RECENT_MAX_LIMIT = _get_int_env("NEKO_MESSAGE_PLANE_GET_RECENT_MAX_LIMIT", 1000)
 

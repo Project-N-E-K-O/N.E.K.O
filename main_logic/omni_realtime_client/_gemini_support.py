@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from ._shared import (
+    GEMINI_CANCELLED_TERMINAL_TTL_SECONDS,
     Any,
     List,
     Path,
@@ -356,10 +357,40 @@ class _GeminiMixin:
             parts=parts,
             role="user",
         )
+        # 身份要在**发送之前**取。这个 await 期间可能有一笔新欠账被武装，而它不是
+        # 这次发送送达的 —— 事后只读全局状态，会让一次更早发起、此刻才返回的发送
+        # 把它错认成自己送的，从而在后继内容还没上线时就起算 TTL。
+        delivering_debt_id = (
+            getattr(self, "_gemini_cancelled_terminal_id", None)
+            if getattr(self, "_gemini_cancelled_terminal_awaiting_delivery", False)
+            else None
+        )
         await self._gemini_session.send_client_content(
             turns=[content],
             turn_complete=True,
         )
+        # Gemini 没有 response.cancel：被打断那一轮是**这条内容送达**才被叫停的，
+        # provider 也是从这一刻起才欠它一条终结。期限若一直按 handle_interruption
+        # 的时刻算，ASR 交接加这次发送（多模态还要压图）一慢就会在 provider 收到
+        # 中断之前就到点，A 的终结随后被当成当前回合去结算了后继的 token —— 正是
+        # 这个改动要修的那个回归。
+        # 只重打一次：每次发送都续命的话，一笔始终没被终结抵掉的欠账会被无限延寿。
+        # 两个字段都走 getattr：这条 send 会被没走完整构造的替身客户端直接调用
+        # （tests/unit/test_proactive_sm_integration.py 就有一个），而
+        # _consume_cancelled_terminal() 对同一组字段本来也是这么读的。
+        if (
+            delivering_debt_id is not None
+            and getattr(self, "_gemini_cancelled_terminal_id", None)
+            is delivering_debt_id
+            and getattr(self, "_gemini_cancelled_terminal_pending", False)
+            and getattr(
+                self, "_gemini_cancelled_terminal_awaiting_delivery", False
+            )
+        ):
+            self._gemini_cancelled_terminal_awaiting_delivery = False
+            self._gemini_cancelled_terminal_deadline = (
+                time.monotonic() + GEMINI_CANCELLED_TERMINAL_TTL_SECONDS
+            )
 
     async def _create_response_gemini(
         self,
@@ -860,11 +891,43 @@ class _GeminiMixin:
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch
                     self._current_turn_host_id = self._read_host_turn_id()
-                    if _is_new_turn:
+                    if _is_new_turn and _can_clear_interrupted:
                         # 新回合开始就说明旧回合已经收场：欠账作废，免得旧回合
                         # 永不终结时把下一条**合法**终结也吃掉，让 token 永远结算
                         # 不掉、会话被钉成「忙」而主动搭话彻底哑掉。
+                        #
+                        # ⚠️ 判据必须与下面宣告新回合的那条**一字不差**。只看
+                        # _is_new_turn 时，被取消那一轮的迟到内容自己就满足它
+                        # （用户已经在 AI 最后一帧之后发过声），于是欠账在它真正
+                        # 的终结到达之前就被清掉，那条终结转而去结算刚铸出的
+                        # external token —— 回合还在飞就显示空闲。
+                        #
+                        # ⚠️ 已知残留、经产品判断后接受，别再改回松判据：
+                        # 「A 的迟到内容」与「后继 B 的第一条内容」在协议层长得
+                        # 一模一样（都是 model_turn / output_transcription、都不带
+                        # 回合标识、都在打断之后），_turn_epoch 对两者也都自增，
+                        # 区分不出来。于是只有两种取法，互斥：
+                        #   看到内容就作废 → A 的终结去结算了 B 的 token，B 还在
+                        #     说话会话已读作空闲（抢话时的**常见**路径）；
+                        #   不作废（现在这样）→ 欠账是虚的、或 A 两种终结都没发
+                        #     时，B 自己的终结被吃掉，B 的 token 没人结算。
+                        # 取后者：那条残留只影响主动搭话（is_active_response 的
+                        # 读取点全在 proactive 一线），而且第一道闸
+                        # proactive.py 的 trigger_agent_callbacks 在**生成台词之前**
+                        # 就 defer 掉，是纯跳过、不烧 token，用户自己的对话链路
+                        # 一个读取点都不碰、不会卡顿。
+                        #
+                        # 反向风险（旧回合永不终结）有两道界，都不依赖这里：
+                        # _interrupted 为真时两个 _ai_recent_activity_time 刷新点
+                        # 都被跳过，3s 后 _still_within_ai_window 转假、本判据自动
+                        # 放行；而「此后再无 AI 内容」那种连本分支都进不来的情形，
+                        # 由 _consume_cancelled_terminal() 的期限兜底。
                         self._gemini_cancelled_terminal_pending = False
+                        # 期限跟着欠账一起清：另外两条退路（消费、连接替换）都
+                        # 是成对清的，留一个孤儿期限只会让状态读起来有歧义。
+                        self._gemini_cancelled_terminal_deadline = None
+                        self._gemini_cancelled_terminal_awaiting_delivery = False
+                        self._gemini_cancelled_terminal_id = None
                     if _is_new_turn and _can_clear_interrupted:
                         # Gemini has no response.created event; clear stale interrupt state only
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.

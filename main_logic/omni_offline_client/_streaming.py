@@ -721,17 +721,32 @@ class _StreamingMixin:
                 _restore_consumed_queues()
                 raise
             if _budget_notice:
-                logger.warning(
-                    "Turn images over the %d-byte budget: %d -> %d image(s) "
-                    "(sampled=%s compressed=%s dropped=%d)",
+                # 级别跟着「有没有东西真的没了」走，与弹窗同一个判据。rung 0 是
+                # 无条件的，所以随手拖进来的一张手机照片每轮都会产生一条 notice；
+                # 全按 warning 打，日志里就分不出「图小了一点」和「有几张整张没
+                # 送出去」了——而后者才是排查时要一眼找到的那类。
+                _budget_log = (
+                    logger.warning
+                    if _budget_notice.get("user_visible")
+                    else logger.info
+                )
+                _budget_log(
+                    "Turn images fitted for the %d-byte budget: %d -> %d image(s) "
+                    "(normalized=%s sampled=%s compressed=%s dropped=%d)",
                     TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
                     _budget_notice["original_count"],
                     _budget_notice["final_count"],
+                    _budget_notice.get("normalized"),
                     _budget_notice["sampled"],
                     _budget_notice["compressed"],
                     _budget_notice["dropped"],
                 )
-                if self.on_status_message:
+                # 日志每种情况都打，弹窗只在**整张图没了**时弹——丢弃和抽样都算：
+                # 抽样只留开头/中间/结尾三张，中间那些是整张扔掉的，用户那侧看不出
+                # 它跟丢弃有什么分别。归一化 / 重压不弹：图还在，只是小一点，而 rung 0
+                # 几乎每个带图的回合都会跑，照旧「有 notice 就弹」的话用户会被一串
+                # 「图片已调整」刷屏，而其中绝大多数他根本没损失什么。
+                if _budget_notice.get("user_visible") and self.on_status_message:
                     try:
                         await self.on_status_message(json.dumps({
                             "code": "TURN_IMAGES_TRIMMED",

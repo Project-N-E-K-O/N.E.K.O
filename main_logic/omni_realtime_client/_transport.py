@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from ._shared import (
+    GEMINI_CANCELLED_TERMINAL_TTL_SECONDS,
     Any,
     Callable,
     Dict,
@@ -66,6 +67,7 @@ class _RealtimeEventOwnerRetired(ConnectionError):
 # guarantee: asyncio.wait_for bounds when the cancellation is DELIVERED, not
 # when the coroutine returns, and the outer budget still reaches the rotation.
 _STUCK_RELEASE_STEP_TIMEOUT = 0.5
+
 
 # How many finished response ids to remember for usage deduplication. A repeat
 # arrives right behind its original, so this only has to outlive the events
@@ -2246,8 +2248,24 @@ class _TransportMixin:
         # interrupted / turn_complete）。记一笔「欠账」：那条终结属于**这一轮**，
         # 不能让它去结算之后才铸造的 external turn token —— 逐事件捕获的实现会
         # 让它捕获到新 token 并清掉，会话随即显得空闲而外部回合还活着。
-        # 一次性的：由下一个到达的终结消费掉，或在真正的新回合开始时作废。
+        # 一次性的：由下一个到达的终结消费掉，或在真正的新回合开始时作废
+        # （_gemini_support.py 的 turn-start 块），或到期。
         self._gemini_cancelled_terminal_pending = True
+        # 期限是独立于内容的第二道界。turn-start 那处作废只在「合法终结之前先来了
+        # AI 内容」时才跑得到；裸 turn_complete 绕过它，此后再无内容的情形也绕过
+        # 它。没有期限时，陈旧欠账会一直挂着直到吃掉某一条不属于它的终结。
+        self._gemini_cancelled_terminal_deadline = (
+            time.monotonic() + GEMINI_CANCELLED_TERMINAL_TTL_SECONDS
+        )
+        # 期限的起点要等中断真正送达 provider 才算数。Gemini 没有 response.cancel，
+        # 中断是靠后继内容送出去才生效的，所以 _gemini_send_user_turn 会把它重打
+        # 一次；这里先打是为了让下面任何一条 return 路径都带着期限离开，不至于落进
+        # deadline is None 的 fail-open。只允许重打一次，免得后续每次发送都续命。
+        self._gemini_cancelled_terminal_awaiting_delivery = True
+        # 身份：让 _gemini_send_user_turn 能认出「这笔欠账是不是我这次发送送达的」。
+        # 那边是 await 之后才读全局状态的，没有身份的话，一次**更早**发起、此刻才
+        # 返回的发送会把刚武装的这笔当成自己送的，提前起算 TTL。
+        self._gemini_cancelled_terminal_id = object()
 
         # 1. Cancel the current response
         # Presence, not truthiness — the third site in this file where a
@@ -3058,6 +3076,14 @@ class _TransportMixin:
                 expected_provider_session=retired_outcome_owner[1],
                 expected_outcome_token=retired_outcome_owner[2],
             )
+        # 取消欠账同样属于退役的那条连接：替换连接上的第一条终结是**它自己**的，
+        # 被上一条连接的欠账吃掉就等于新回合的 token 没人结算。与上面退役 proactive
+        # outcome 同一判据。隔离重连那条路上 connect() 跑在 handle_interruption()
+        # 之前（_responses.py 的 prepare_external_voice_turn），不会抹掉刚武装的那笔。
+        self._gemini_cancelled_terminal_pending = False
+        self._gemini_cancelled_terminal_deadline = None
+        self._gemini_cancelled_terminal_awaiting_delivery = False
+        self._gemini_cancelled_terminal_id = None
         self._raw_speech_started_scope_pending_transcript = False
         self._raw_speech_started_scoped_item_ids = []
         # Provider response identity and interruption state belong to the
