@@ -314,6 +314,8 @@ records = await self.bus.memory.get(bucket_id="default", limit=20)
 
 The list surface is `filter` / `where`, `sort`, `limit`, and `watch`. Callable `filter(predicate)`, `where(predicate)`, and `sort(key=...)` are local-only; replayable watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)`. Only `messages`, `events`, and `lifecycle` support `watch()`; `conversations`, `memory`, and `frames` are read-only snapshots. Watcher subscriptions accept only `add`, `del`, or `change`.
 
+These stores are shared, and reading them is not gated per plugin: any enabled plugin can read `conversations` and `frames`, including turns and pictures that came from the user or from another plugin. Nothing here widens what the host already sent to the model — a frame the session never sent never appears — but it does widen who can see it, from the model provider to every plugin the user has enabled. Treat installing a plugin as granting it that visibility, and say so in your own plugin's description if you read these.
+
 `bus.memory` contains a bounded, in-memory window of recent user-utterance events (one-hour TTL); it is separate from the character's persistent facts, reflections, and persona. `ctx.query_memory(...)` is retained only as a deprecated compatibility call to a placeholder endpoint and does not perform semantic recall.
 
 ### Frames

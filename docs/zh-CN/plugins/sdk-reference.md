@@ -312,6 +312,8 @@ records = await self.bus.memory.get(bucket_id="default", limit=20)
 
 列表接口为 `filter` / `where`、`sort`、`limit`、`watch`。可调用形式 `filter(predicate)`、`where(predicate)` 和 `sort(key=...)` 仅处理本地快照；可重放的 watcher 链必须使用结构化 `filter(field=value, ...)` 与 `sort(by=...)`。只有 `messages`、`events`、`lifecycle` 支持 `watch()`；`conversations`、`memory` 与 `frames` 是只读快照。watcher 仅接受 `add`、`del`、`change`。
 
+【访问范围】这几个 store 是共享的，读取不按插件做权限隔离：任何已启用的插件都能读 `conversations` 和 `frames`，包括来自用户、以及来自别的插件的轮次与画面。这不会扩大宿主**已经发给模型**的内容——会话没发过的帧不会出现在这里——但确实扩大了**谁能看到**：从模型服务方扩大到用户启用的每一个插件。安装一个插件就等于授予它这份可见性；你的插件如果读这两条总线，请在自己的说明里写明。
+
 `bus.memory` 保存的是有容量上限、只驻留内存的近期用户话语事件（TTL 为一小时），与角色持久化的事实、反思和人格相互独立。`ctx.query_memory(...)` 只为兼容而保留，它调用已弃用的占位端点，不执行语义召回。
 
 ### Frames

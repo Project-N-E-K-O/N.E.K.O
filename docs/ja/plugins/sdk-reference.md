@@ -313,6 +313,8 @@ records = await self.bus.memory.get(bucket_id="default", limit=20)
 
 list surface は `filter` / `where`、`sort`、`limit`、`watch` です。callable の `filter(predicate)`、`where(predicate)`、`sort(key=...)` は local-only です。replayable な watcher chain では structured `filter(field=value, ...)` と `sort(by=...)` を使います。`watch()` を使えるのは `messages`、`events`、`lifecycle` だけで、`conversations`、`memory`、`frames` は read-only snapshot です。watcher subscription は `add`、`del`、`change` のみ受け付けます。
 
+【アクセス範囲】これらの store は共有で、読み取りは plugin 単位で制限されません：有効化されたどの plugin も `conversations` と `frames` を読めます。user 由来のものも、他の plugin 由来の turn や画像も含みます。host が既に model へ送った内容が広がるわけではありません（session が送らなかった frame はここにも現れません）が、**誰が見られるか**は広がります——model provider から、user が有効にしたすべての plugin へ。plugin を install することはその可視性を与えることだと考えてください。これらを読む plugin は、その旨を自分の説明に書いてください。
+
 `bus.memory` に入るのは、件数制限付きでメモリ上に保持される最近のユーザー発話イベント（TTL は 1 時間）です。キャラクターの永続的な facts、reflections、persona とは別物です。`ctx.query_memory(...)` は非推奨の placeholder endpoint に対する互換呼び出しとしてのみ残されており、semantic recall は行いません。
 
 ### Frames
