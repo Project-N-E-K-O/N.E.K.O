@@ -379,6 +379,29 @@ def _ledger_lines_are_all_ours(lines):
     return True
 
 
+def _ledger_content_is_ours(ledger):
+    """Whether an EXISTING ledger holds only lines we could have written.
+
+    The refusal went in on the read side alone, so reclamation stopped
+    adopting a "minted" that belonged to a user or a plugin -- while the
+    append went on adding workspace paths to it. Writing into somebody's file
+    is the half that actually damages it.
+
+    Absent or unreadable counts as ours: there is nothing of theirs to
+    damage, and creating the file is the ordinary case.
+    """
+    try:
+        lines = ledger.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return True
+    except UnicodeDecodeError:
+        # Truncated mid-character by a kill. Ours or not, appending to it is
+        # not going to make it more readable; the read side skips it and so
+        # does this.
+        return False
+    return _ledger_lines_are_all_ours(lines)
+
+
 def _ledger_is_usable(ledger):
     """Whether this path is a ledger we may read or append to.
 
@@ -879,6 +902,12 @@ class MigrationsMixin:
         # way round costs a character.
         if not _ledger_is_usable(ledger):
             return
+        # And the CONTENT, matching the read side. That refusal went in
+        # there alone, so reclamation stopped adopting somebody else's
+        # "minted" while this went on appending workspace paths into it --
+        # which is the half that damages their file.
+        if not _ledger_content_is_ours(ledger):
+            return
         try:
             parent.mkdir(parents=True, exist_ok=True)
             with open(ledger, "a", encoding="utf-8") as handle:
@@ -1001,9 +1030,14 @@ class MigrationsMixin:
                 ledger.write_text(
                     "\n".join(remaining) + "\n", encoding="utf-8"
                 )
-            else:
-                # Ours to remove: every line was one of ours, checked
-                # before any of them was acted on.
+            elif recorded:
+                # Ours to remove: it HELD lines, every one of them ours,
+                # checked before any was acted on, and none is left.
+                #
+                # An EMPTY ledger is not removed. Our own emptied file and a
+                # user's or plugin's empty one are the same bytes, so there
+                # is nothing to tell them apart -- and leaving ours behind
+                # costs an empty file, while removing theirs is data loss.
                 ledger.unlink()
         except OSError:
             # A stale record costs one revisit next run.

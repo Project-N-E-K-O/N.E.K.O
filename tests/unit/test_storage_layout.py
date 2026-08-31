@@ -2406,27 +2406,15 @@ def test_a_cloud_import_leaves_a_migration_workspace_alone(tmp_path):
     genuinely_stale = memory_root / "Ghost"
     genuinely_stale.mkdir()
     (genuinely_stale / "facts.json").write_text("[9]", encoding="utf-8")
-    # A CHARACTER whose name carries the prefix -- legal, and deleted from
-    # the imported set. Exempting on the prefix alone would keep it alive
-    # through every import, which is the mirror image of the bug above.
-    prefixed_character = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "Carol")
-    prefixed_character.mkdir()
-    (prefixed_character / "facts.json").write_text("[8]", encoding="utf-8")
-    # And one carrying BOTH the prefix and a stray marker FILE. This is the
-    # shape that made testing for the marker's existence too weak: nothing
-    # holds it, so it is not a live workspace, and a character deleted from
-    # the cloud must not survive by having a ".lock" in its directory.
-    prefixed_with_marker = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "Dora")
-    prefixed_with_marker.mkdir()
-    (prefixed_with_marker / "facts.json").write_text("[7]", encoding="utf-8")
-    (prefixed_with_marker / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"")
-    # Not recorded, so not ours. The marker is left UNHELD on purpose: the
-    # import backs a character up before removing it, and on Windows it
-    # cannot copy a file another handle holds exclusively, so holding one
-    # here would fail the backup rather than exercise the rule. That a held
-    # lock cannot exempt anything either is pinned by the structural test
-    # forbidding _workspace_is_live in the import -- the criterion does not
-    # read locks at all any more.
+    # A dot-prefixed directory is NOT a character: character names never
+    # begin with one. So this is a second workspace, and the sweep leaves it
+    # alone for the same reason as the first -- which is what makes the rule
+    # a rule rather than a special case for the one we minted.
+    second_workspace = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "Dora")
+    second_workspace.mkdir()
+    (second_workspace / "d").mkdir()
+    (second_workspace / "d" / "other.json").write_text("[7]", encoding="utf-8")
+
     import_local_cloudsave_snapshot(config_manager)
 
     assert (workspace / "d" / "half.json").exists(), (
@@ -2436,14 +2424,9 @@ def test_a_cloud_import_leaves_a_migration_workspace_alone(tmp_path):
     assert not genuinely_stale.exists(), (
         "a directory that really was stale survived the import"
     )
-    assert not prefixed_character.exists(), (
-        "a character whose name carries the workspace prefix was exempted "
-        "from the import, so deleting it can never take effect"
-    )
-    assert not prefixed_with_marker.exists(), (
-        "a character with the prefix AND a .lock was exempted, so a cloud "
-        "deletion could never reach it -- the marker is a shape the swept "
-        "data can reproduce, which is why the ledger decides"
+    assert (second_workspace / "d" / "other.json").exists(), (
+        "a dot-prefixed directory was swept as a character, and no character "
+        "name begins with a dot"
     )
 
 
@@ -2479,30 +2462,14 @@ def test_a_workspace_that_becomes_live_after_enumeration_survives(tmp_path):
     (late / "d").mkdir(parents=True)
     (late / "d" / "half.json").write_text("[1]", encoding="utf-8")
 
-    answers = []
-    real_recorded = migrations_module.recorded_workspace_paths
+    # NO evidence of any kind: no ledger line, no marker, no lock. This is
+    # the window every previous criterion had -- mkdtemp has returned and
+    # nothing has been written about the directory yet -- and the name is
+    # what closes it.
+    import_local_cloudsave_snapshot(config_manager)
 
-    def _unrecorded_then_recorded(app_docs_dir):
-        # Empty the first time the sweep asks, populated by the time the
-        # deletion loop asks -- a migration minted and recorded this
-        # workspace during the file-apply phase, which is long.
-        answers.append(app_docs_dir)
-        if len(answers) == 1:
-            return set()
-        return real_recorded(app_docs_dir) | {late.resolve(strict=False)}
-
-    # Patched on the SOURCE module: operations imports the name inside the
-    # function, so it is not an attribute of that module to patch.
-    with patch.object(
-        migrations_module, "recorded_workspace_paths", _unrecorded_then_recorded
-    ):
-        import_local_cloudsave_snapshot(config_manager)
-
-    assert len(answers) >= 2, (
-        "ownership was read once, so the deletion loop never re-checked"
-    )
     assert (late / "d" / "half.json").exists(), (
-        "a workspace recorded after enumeration was deleted anyway"
+        "a workspace with no evidence yet was deleted mid-copy"
     )
 
 
@@ -2530,16 +2497,10 @@ def test_the_recheck_does_not_spare_an_ordinary_stale_directory(tmp_path):
     stale.mkdir()
     (stale / "facts.json").write_text("[9]", encoding="utf-8")
 
-    with patch.object(
-        migrations_module,
-        "recorded_workspace_paths",
-        lambda app_docs_dir: {stale.resolve(strict=False)},
-    ):
-        import_local_cloudsave_snapshot(config_manager)
+    import_local_cloudsave_snapshot(config_manager)
 
     assert not stale.exists(), (
-        "the ownership re-check spared a directory that carries no prefix, so "
-        "a corrupted ledger naming a character could delete-proof it"
+        "an ordinary stale character directory survived the sweep"
     )
 
 

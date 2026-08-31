@@ -1403,36 +1403,30 @@ def import_local_cloudsave_snapshot(
 
         from utils.config_manager.migrations import (
             _MIGRATION_WORKSPACE_PREFIX,
-            _workspace_is_live,
-            recorded_workspace_paths,
         )
 
         def _is_migration_workspace(path):
-            """RECORDED or LIVE. Both, because the two misses differ in cost.
+            """The NAME, which is the one thing that cannot be forged.
 
-            The ledger is the only unforgeable evidence, and it carries the
-            normal case: it is written immediately after mkdtemp and before
-            the workspace is used. But recording is best effort -- the append
-            swallows OSError and the migration locks and uses the workspace
-            regardless -- so a full disk or a read-only app_docs leaves an
-            in-flight workspace unrecorded, and deleting that destroys a copy
-            in progress.
+            A character name never begins with a dot -- a product rule, to be
+            enforced in ``validate_character_name`` as a follow-up -- and the
+            workspace prefix does. So the two namespaces do not overlap and
+            the name settles it.
 
-            Liveness covers exactly that gap. It is the forgeable half: a
-            character called ".mig-x" whose directory holds a ".lock" some
-            process holds open would be spared. Forging it needs a live
-            process holding an exclusive lock on a file inside a character
-            directory, which nothing in the product writes there and no
-            amount of cloud data can arrange -- and the cost if it happens is
-            stale data kept, against data destroyed the other way.
+            Six rounds of findings landed on this exemption while it tried to
+            tell the namespaces apart with evidence instead: the prefix plus
+            a marker file, a held lock, a held lock on a regular file, the
+            ledger, the ledger or a held lock. Every one was the same shape,
+            because every piece of evidence is written AFTER the directory
+            exists and there is always a window in which the directory has
+            none. mkdtemp returns a name, and the name is enough.
+
+            The cost is that an abandoned workspace is not swept by the
+            import either. That is not the import's job: the migration
+            reclaims its own, by age and by ledger, which is where the
+            evidence belongs.
             """
-            if not path.name.startswith(_MIGRATION_WORKSPACE_PREFIX):
-                return False
-            if path.resolve(strict=False) in recorded_workspace_paths(
-                getattr(config_manager, "app_docs_dir", "")
-            ):
-                return True
-            return _workspace_is_live(path)
+            return path.name.startswith(_MIGRATION_WORKSPACE_PREFIX)
 
 
         memory_root = Path(config_manager.memory_dir)

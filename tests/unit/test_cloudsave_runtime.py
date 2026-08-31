@@ -3361,17 +3361,19 @@ def test_a_held_lock_still_vetoes_the_deletion(tmp_path):
     assert not _workspace_is_live(workspace)
 
 
-def test_the_import_asks_ownership_first_and_liveness_only_as_fallback():
-    """Recorded OR live, and one predicate rather than three call sites.
+def test_the_import_separates_the_namespaces_by_name_alone():
+    """The name is the criterion, because it is the only unforgeable one.
 
-    The ledger is the only unforgeable evidence and carries the normal case.
-    Liveness covers the one gap it cannot: recording is best effort, so a
-    full disk leaves an in-flight workspace unrecorded, and deleting that
-    destroys a copy in progress.
+    A character name never begins with a dot and the workspace prefix does,
+    so the namespaces do not overlap. Six rounds of findings landed on this
+    exemption while it tried to tell them apart with evidence -- a marker
+    file, a held lock, a held lock on a regular file, the ledger, the ledger
+    or a held lock -- and every one was the same shape, because evidence is
+    written after the directory exists and there is always a window in which
+    the directory has none.
 
-    The order matters and is asserted: ownership is consulted first, so the
-    forgeable half is only ever reached for a workspace the ledger does not
-    know about.
+    Pinned structurally: a regression here is a return to reading state, and
+    the states it would read are exactly the ones already reported.
     """
     import inspect
 
@@ -3385,12 +3387,11 @@ def test_the_import_asks_ownership_first_and_liveness_only_as_fallback():
     )
     body = source[source.index("def _is_migration_workspace(path):"):]
     body = body[: body.index("memory_root = ")]
-    assert body.index("recorded_workspace_paths(") < body.index(
-        "_workspace_is_live("
-    ), "liveness is consulted before ownership"
-    assert "_MIGRATION_WORKSPACE_LOCK_NAME" not in source, (
-        "the import is back to testing for the marker file directly"
-    )
+    for state in ("recorded_workspace_paths", "_workspace_is_live",
+                  "_MIGRATION_WORKSPACE_LOCK_NAME", "exists("):
+        assert state not in body, (
+            "the exemption is reading %s again instead of the name" % state
+        )
 
 
 def test_the_heartbeat_beats_within_a_file_not_only_between_files(tmp_path):
@@ -3464,7 +3465,16 @@ def test_the_ledger_refuses_a_symlinked_parent(tmp_path):
 
     outsider = tmp_path / "somebody_elses_data"
     outsider.mkdir()
-    (outsider / "minted").write_text("their own file\n", encoding="utf-8")
+    # Deliberately shaped LIKE ours. The content check would refuse an
+    # obviously foreign file on its own, which left the parent-link check
+    # doing nothing this test could see -- a mutation deleting it stayed
+    # green. Only the link check can save this one.
+    import os as _os
+
+    (outsider / "minted").write_text(
+        _os.path.abspath(_os.path.join(_os.sep, "x", ".mig-theirs")) + "\n",
+        encoding="utf-8",
+    )
 
     app_docs = tmp_path / "app_docs"
     app_docs.mkdir()
@@ -3480,9 +3490,9 @@ def test_the_ledger_refuses_a_symlinked_parent(tmp_path):
     manager.app_docs_dir = str(app_docs)
     manager._record_minted_workspace(tmp_path / ".mig-abc")
 
-    assert (outsider / "minted").read_text(encoding="utf-8") == "their own file\n", (
-        "the record was written through the link into unrelated data"
-    )
+    assert (outsider / "minted").read_text(encoding="utf-8") == _os.path.abspath(
+        _os.path.join(_os.sep, "x", ".mig-theirs")
+    ) + "\n", "the record was written through the link into unrelated data"
 
 
 def test_the_ledger_still_records_through_an_ordinary_parent(tmp_path):
@@ -3708,14 +3718,21 @@ def test_our_own_ledger_is_still_reclaimed(tmp_path):
 
 def test_the_ledger_ownership_rule_reads_every_line(tmp_path):
     """One foreign line is enough; our own lines around it prove nothing."""
+    import os
+
     from utils.config_manager.migrations import _ledger_lines_are_all_ours
 
-    ours = "C:" + chr(92) + "x" + chr(92) + ".mig-abc"
+    # NATIVE paths. A hand-built "C:\\x\\.mig-abc" asserts the opposite of
+    # what it looks like on POSIX, where os.path.basename does not split on a
+    # backslash and os.path.isabs is False -- so the line the test calls ours
+    # would be rejected there and the assertion would fail.
+    ours = os.path.abspath(os.path.join(os.sep, "x", ".mig-abc"))
+    foreign = os.path.abspath(os.path.join(os.sep, "x", "somebody-else"))
     assert _ledger_lines_are_all_ours([ours])
     assert _ledger_lines_are_all_ours([])
     assert _ledger_lines_are_all_ours(["", "  "])
-    assert not _ledger_lines_are_all_ours([ours, "/etc/passwd"])
-    assert not _ledger_lines_are_all_ours(["relative/.mig-abc"])
+    assert not _ledger_lines_are_all_ours([ours, foreign])
+    assert not _ledger_lines_are_all_ours([os.path.join("relative", ".mig-abc")])
     assert not _ledger_lines_are_all_ours(["some plugin's notes"])
 
 
@@ -3735,3 +3752,123 @@ def test_a_truncated_ledger_does_not_escape_the_new_reader(tmp_path):
     (staging / "minted").write_bytes(b"/x/.mig-abc\n" + b"\xe5\xa5")
 
     assert recorded_workspace_paths(str(tmp_path)) == set()
+
+
+def test_the_append_refuses_an_unowned_ledger_too(tmp_path):
+    """The refusal went in on the read side alone.
+
+    Reclamation stopped adopting a "minted" that belonged to a user or a
+    plugin, while the append went on adding workspace paths into it -- which
+    is the half that actually damages their file.
+    """
+    from utils.config_manager.migrations import MigrationsMixin
+
+    app_docs = tmp_path / "app_docs"
+    staging = app_docs / ".mig-staging"
+    staging.mkdir(parents=True)
+    ledger = staging / "minted"
+    theirs = "some plugin's notes, not paths at all\n"
+    ledger.write_text(theirs, encoding="utf-8")
+
+    manager = MigrationsMixin.__new__(MigrationsMixin)
+    manager.app_docs_dir = str(app_docs)
+    manager._record_minted_workspace(tmp_path / ".mig-abc")
+
+    assert ledger.read_text(encoding="utf-8") == theirs, (
+        "a workspace path was appended into somebody else's file"
+    )
+
+
+def test_the_append_still_creates_and_extends_our_own_ledger(tmp_path):
+    """The dual, so the refusal cannot pass by never recording anything."""
+    import os
+
+    from utils.config_manager.migrations import MigrationsMixin
+
+    app_docs = tmp_path / "app_docs"
+    app_docs.mkdir()
+
+    manager = MigrationsMixin.__new__(MigrationsMixin)
+    manager.app_docs_dir = str(app_docs)
+
+    first = tmp_path / ".mig-one"
+    second = tmp_path / ".mig-two"
+    manager._record_minted_workspace(first)
+    manager._record_minted_workspace(second)
+
+    ledger = app_docs / ".mig-staging" / "minted"
+    lines = [
+        line for line in ledger.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(lines) == 2, lines
+    assert all(os.path.basename(line).startswith(".mig-") for line in lines)
+
+
+def test_the_workspace_prefix_can_never_be_a_character_name():
+    """The rule the exemption rests on, asserted where it is relied upon.
+
+    A character name never begins with a dot -- a product rule, to be
+    enforced in ``validate_character_name`` as a follow-up -- and the
+    workspace prefix does. If either half ever stops being true the exemption
+    silently starts sweeping workspaces or sparing characters, so both are
+    pinned here rather than left implicit.
+    """
+    from utils.config_manager.migrations import _MIGRATION_WORKSPACE_PREFIX
+
+    assert _MIGRATION_WORKSPACE_PREFIX.startswith("."), (
+        "the workspace prefix stopped being dot-prefixed, so it no longer "
+        "separates the namespaces on its own"
+    )
+
+
+def test_no_shipped_character_name_begins_with_a_dot():
+    """The other half of the same rule, over the names the repo itself ships.
+
+    A default or sample character carrying a dot would make the assumption
+    false on a fresh install, which is the one place it could be broken
+    without anybody typing it.
+    """
+    import json
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    offenders = []
+    for candidate in (repo_root / "config").rglob("characters*.json"):
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        catgirls = data.get("猫娘") if isinstance(data, dict) else None
+        if not isinstance(catgirls, dict):
+            continue
+        offenders += [
+            "%s:%s" % (candidate.name, name)
+            for name in catgirls
+            if isinstance(name, str) and name.startswith(".")
+        ]
+    assert offenders == [], offenders
+
+
+def test_an_empty_pre_existing_ledger_is_left_alone(tmp_path):
+    """Our own emptied ledger and somebody's empty one are the same bytes.
+
+    So there is nothing to tell them apart, and the tidy-up unlinked either.
+    Leaving ours behind costs an empty file; removing theirs is data loss, so
+    only a ledger that HELD lines -- every one of them ours, and now all
+    reclaimed -- is removed.
+    """
+    from utils.config_manager.migrations import MigrationsMixin
+
+    app_docs = tmp_path / "app_docs"
+    staging = app_docs / ".mig-staging"
+    staging.mkdir(parents=True)
+    ledger = staging / "minted"
+    ledger.write_text("", encoding="utf-8")
+
+    manager = MigrationsMixin.__new__(MigrationsMixin)
+    manager.app_docs_dir = str(app_docs)
+    manager.memory_dir = str(tmp_path / "memory")
+    manager._reclaim_recorded_workspaces(None, 0.0)
+
+    assert ledger.exists(), "an empty ledger was unlinked without evidence"
