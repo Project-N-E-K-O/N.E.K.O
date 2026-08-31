@@ -521,6 +521,30 @@ MESSAGE_PLANE_ZMQ_RPC_ENDPOINT = os.getenv(
     os.getenv("NEKO_MESSAGE_PLANE_RPC", "tcp://127.0.0.1:38865"),
 )
 
+
+def resolve_message_plane_rpc_endpoint() -> str:
+    """The RPC endpoint the plane is actually on, read at call time.
+
+    The constant above is frozen when this module is imported, which happens
+    before ``build_message_plane_runner()`` runs. When the configured port is
+    occupied that runner moves the plane to a fallback and publishes the new
+    address by writing ``NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT`` back into the
+    environment -- so anything holding the constant is pointed at the occupied
+    port and every bus read fails.
+
+    Affects the host process as much as a forked plugin child: the constant was
+    already computed there too. A spawned child re-imports this module and picks
+    the new value up on its own, which is why the symptom is POSIX-shaped.
+
+    This mirrors what ``ProactiveBridge._run`` already does for the PUB
+    endpoint (``os.getenv(..., str(MESSAGE_PLANE_ZMQ_PUB_ENDPOINT))``); the RPC
+    consumers were the ones left reading the frozen value.
+    """
+    return os.getenv(
+        "NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",
+        os.getenv("NEKO_MESSAGE_PLANE_RPC", str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT)),
+    )
+
 # Message plane ZeroMQ PUB 端点（用于高频 bus 的订阅/推送，例如 watcher、export progress 等）
 # 使用 TCP 回环（127.0.0.1），在某些系统上比 IPC 更快
 # Env: NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT, default="tcp://127.0.0.1:38866"
@@ -591,7 +615,13 @@ MESSAGE_PLANE_INGEST_SNDTIMEO_MS = _get_int_env("NEKO_MESSAGE_PLANE_INGEST_SNDTI
 MESSAGE_PLANE_PUB_ENABLED = _get_bool_env("NEKO_MESSAGE_PLANE_PUB_ENABLED", True)
 MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES = _get_bool_env("NEKO_MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES", True)
 
-MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE = _get_int_env("NEKO_MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE", 100000)
+# 同样在加载处钳到 >=1。Python 的 queue.Queue(maxsize=0) 是**无界**，不是
+# "一条都不收"：配成 0 或负数时批处理器会拿到一个无界队列，而
+# enqueue 的拒收水位又被 `self._max_queue > 0` 这个条件跳过，两道闸同时
+# 失效，积压只受内存限制。
+MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE = max(
+    1, _get_int_env("NEKO_MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE", 100000)
+)
 MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO = _get_float_env("NEKO_MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO", 0.9)
 MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS = _get_float_env(
     "NEKO_MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS",

@@ -6,7 +6,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Coroutine, Dict, List, Optional, Sequence, TypeVar, Union
 
-from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
+from plugin.settings import resolve_message_plane_rpc_endpoint
 from .types import BusList, BusOp, BusRecord, GetNode
 
 from plugin.core.message_plane_transport import MessagePlaneRpcClient as _MessagePlaneRpcClient
@@ -33,7 +33,7 @@ def _ensure_rpc(ctx: "PluginContext") -> _MessagePlaneRpcClient:
     if rpc is None:
         rpc = _MessagePlaneRpcClient(
             plugin_id=getattr(ctx, "plugin_id", ""),
-            endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT),
+            endpoint=resolve_message_plane_rpc_endpoint(),
         )
         try:
             ctx._mp_rpc_client = rpc

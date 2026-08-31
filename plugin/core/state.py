@@ -17,7 +17,7 @@ from plugin.logging_config import get_logger
 from plugin.settings import (
     EVENT_QUEUE_MAX,
     LIFECYCLE_QUEUE_MAX,
-    MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,
+    resolve_message_plane_rpc_endpoint,
     MESSAGE_QUEUE_MAX,
 )
 
@@ -1054,7 +1054,10 @@ class GlobalState:
         except Exception:
             pass
         try:
-            sock.connect(str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
+            # env 优先：端口冲突时 runner 会把 plane 挪到备用端口，
+            # 而模块常量是 import 期冻结的。见
+            # settings.resolve_message_plane_rpc_endpoint。
+            sock.connect(resolve_message_plane_rpc_endpoint())
         except Exception as e:
             try:
                 sock.close(0)

@@ -1161,3 +1161,40 @@ def test_the_batch_size_setting_is_clamped_where_it_is_loaded(
     finally:
         monkeypatch.delenv("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", raising=False)
         importlib.reload(settings_mod)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(("configured", "expected"), [("0", 1), ("-1", 1), ("100000", 100000)])
+def test_the_batcher_queue_limit_is_clamped_where_it_is_loaded(
+    configured: str, expected: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``queue.Queue(maxsize=0)`` is UNBOUNDED in Python, not "refuse everything".
+
+    Configured as 0 or negative, the batcher would take an unbounded queue —
+    and ``enqueue``'s high-water rejection is skipped by its own
+    ``self._max_queue > 0`` condition, so both bounds come off at once and the
+    backlog is limited only by memory.
+
+    Mutation: drop the ``max(1, ...)`` in plugin/settings.py.
+    """
+    import importlib
+
+    import plugin.settings as settings_mod
+
+    monkeypatch.setenv("NEKO_MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE", configured)
+    reloaded = importlib.reload(settings_mod)
+    try:
+        assert reloaded.MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE == expected
+
+        batcher = zmq_transport._AuthenticatedMessageBatcher(
+            object(),  # type: ignore[arg-type]
+            batch_size=8,
+            flush_interval_ms=5,
+            max_queue=reloaded.MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE,
+            reject_ratio=0.9,
+            enqueue_timeout_s=0,
+        )
+        assert batcher._queue.maxsize > 0, "队列是无界的——两道闸同时失效"
+    finally:
+        monkeypatch.delenv("NEKO_MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE", raising=False)
+        importlib.reload(settings_mod)

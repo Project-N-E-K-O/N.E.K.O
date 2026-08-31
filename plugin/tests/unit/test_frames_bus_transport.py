@@ -467,3 +467,70 @@ def test_a_light_read_keeps_the_dedupe_keys_and_drops_the_image(
     assert record.frame_id == "frame-light"
     assert record.generation == 0
     assert record.source == "screen"
+
+
+# ── bus clients must follow the plane to its fallback RPC port ─────────
+
+
+@pytest.mark.plugin_unit
+def test_bus_clients_resolve_the_rpc_endpoint_at_call_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dual of the ingest-endpoint fix, on the read path.
+
+    ``plugin.settings`` computes ``MESSAGE_PLANE_ZMQ_RPC_ENDPOINT`` when it is
+    imported, which is before ``build_message_plane_runner()`` runs. A port
+    collision moves the plane and republishes the address through the
+    environment, so anything holding the constant talks to the occupied port
+    and every ``ctx.bus.*.get()`` fails.
+
+    Mutation: read ``MESSAGE_PLANE_ZMQ_RPC_ENDPOINT`` in ``_ensure_rpc``
+    instead of calling the resolver.
+    """
+    from types import SimpleNamespace
+
+    from plugin.core.bus import _client_base
+
+    created: dict[str, str] = {}
+
+    class _FakeRpc:
+        def __init__(self, *, plugin_id: str, endpoint: str) -> None:
+            created["endpoint"] = endpoint
+
+    monkeypatch.setattr(_client_base, "_MessagePlaneRpcClient", _FakeRpc)
+    monkeypatch.setenv("NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT", "tcp://127.0.0.1:48865")
+
+    _client_base._ensure_rpc(SimpleNamespace(plugin_id="p"))
+
+    assert created["endpoint"] == "tcp://127.0.0.1:48865", (
+        "bus client 还连着 import 期冻结的 RPC 端口——端口一冲突全部读失败"
+    )
+
+
+@pytest.mark.plugin_unit
+def test_no_rpc_consumer_still_reads_the_frozen_constant() -> None:
+    """Discovery, not a hand-written list of the two sites fixed today.
+
+    A third consumer added later that imports the constant would be stale in
+    exactly the same way, and nothing would fail to say so.
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[3]
+    offenders = []
+    for path in (root / "plugin").rglob("*.py"):
+        rel = path.relative_to(root).as_posix()
+        if "/tests/" in rel or rel.endswith("plugin/settings.py"):
+            continue
+        # message_plane/ owns the plane itself: main.py binds it and runner.py
+        # is the code that picks the fallback, so both legitimately read the
+        # configured value rather than the resolved one.
+        if rel.startswith("plugin/message_plane/"):
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if "MESSAGE_PLANE_ZMQ_RPC_ENDPOINT" in text:
+            offenders.append(rel)
+
+    assert offenders == [], (
+        f"这些地方仍在用 import 期冻结的 RPC 端点，端口冲突时会连到被占的端口：{offenders}"
+    )
