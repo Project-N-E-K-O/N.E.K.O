@@ -216,7 +216,13 @@ def _proactive_directive_hits(lanlan_name: str, draft: str) -> list[str]:
         return []
     # 延迟 import：memory 层在偏窄的 entrypoint 下未必加载，与本函数其余
     # 部分对 memory 的取用方式一致。
-    from memory.script_fold import fold_script
+    # ⚠️ import **和**调用都必须在 try 内。docstring 承诺 "Never raises"，而这个
+    # 延迟 import 的理由恰恰是"memory 层未必加载"—— 它自己举的那个场景正是会抛
+    # 的场景，放在 try 外等于契约在唯一相关的情况下不成立（上面那次
+    # get_active_terms 已经护住了，唯独这里漏了）。
+    def _no_fold(text: str) -> str:
+        return text
+
     # ⚠️ 繁简折叠两侧都做。用户换个输入法说"别再提遊戲"，落盘 term 是繁体，
     # 而角色按 locale 输出简体"游戏"——不折的话逐字不等、直接漏杀，用户明确
     # 禁掉的话题照样被推到脸上。项目里 memory.script_fold 就是为这条造的
@@ -224,7 +230,17 @@ def _proactive_directive_hits(lanlan_name: str, draft: str) -> list[str]:
     # 分词各走各的"的覆辙。
     # ⚠️ 还要 Unicode 归一：西 / 葡的重音字母可能以分解形式（e + 组合重音符）
     # 落盘，与合成形式（é）逐字节不等，重音 term 会静默永不命中（codex）。
-    folded = _normalize_for_match(fold_script(draft)).casefold()
+    try:
+        from memory.script_fold import fold_script
+        folded = _normalize_for_match(fold_script(draft)).casefold()
+    except Exception as exc:  # pragma: no cover - defensive
+        # ⚠️ 降级成**不折叠继续匹配**，不是放弃整道闸。折叠只解决跨字形
+        # （遊戲/游戏）那一档，丢了它仍能拦住同字形的绝大多数命中；而直接
+        # return [] 会把用户明确禁掉的话题原样推到脸上 —— 两者严格可比，
+        # 降级那侧在任何输入上都不比放弃更差。
+        logger.debug("[UserDirectives] script fold unavailable: %s", exc)
+        fold_script = _no_fold
+        folded = _normalize_for_match(draft).casefold()
     # ⚠️ 纯指代词（``这个`` / ``this`` / ``それ``）只走软约束，不参与硬拦截。
     # 抽取侧是会存下它们的（"别再讲这个了"），而且那个行为被既有测试成片钉着，
     # 不该由这条改动顺手动；但拿汉语最高频的词去做子串匹配，等于让主动搭话在

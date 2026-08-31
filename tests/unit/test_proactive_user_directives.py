@@ -24,6 +24,7 @@ import pytest
 
 import memory.anti_repeat as anti_repeat_module
 import memory.user_directives as user_directives_module
+from config.prompts.prompts_directives import extract_directives
 from main_logic.proactive_chat.contracts import PROACTIVE_REASON_PASS_USER_DIRECTIVE
 from main_logic.proactive_chat.generation import (
     _append_directives_section,
@@ -170,6 +171,79 @@ def test_bare_referents_never_hard_block(monkeypatch, term, draft):
     # 能看到、更别说删掉它。所以判据落在消费侧：软约束照旧注入，硬拦截跳过。
     _install_directives(monkeypatch, [term])
     assert _proactive_directive_hits("Neko", draft) == []
+
+
+@pytest.mark.parametrize("utterance,draft", [
+    ("stop talking about me", "Hey, let me know how the build went!"),
+    ("stop talking about us", "Want us to pick a movie tonight?"),
+    ("以后别提我们了", "我们要不要一起看个电影？"),
+    ("别再说你自己了", "你自己最近还好吗？"),
+    ("别再提自己了", "自己一个人别硬扛啊。"),
+])
+def test_pronoun_directives_never_silence_ordinary_drafts(
+    monkeypatch, utterance, draft,
+):
+    """Personal pronouns are the same axis as demonstratives, and hurt more.
+
+    "别再提我了" / "stop talking about me" is one of the most natural ways to
+    use this feature, and the term it yields is ``me`` — which matches three
+    out of three perfectly ordinary English drafts. Word boundaries do not
+    save it: ``me`` *is* a whole word. That is the identical P1 this table was
+    first built for (``it`` matching ``favorite``), and with the escalating
+    TTL the blast radius went from 3 days to 30.
+    """  # noqa: DOCSTRING_CJK  # 引的是用户实际会说的那句话
+    # ⚠️ 前提断言：这条测试的意义全在"抽取侧确实会产出这个 term"上。抽取行为
+    # 哪天变了（正则收紧 / 长度门变化），没有这句的话测试会静默变成空转绿。
+    hits = extract_directives(utterance)
+    assert hits, f"{utterance!r} 不再被抽成 ban_topic，本测试的前提已失效"
+    terms = [t for _, _, t in hits]
+    _install_directives(monkeypatch, terms)
+
+    assert _proactive_directive_hits("Neko", draft) == []
+
+
+def test_pronoun_skip_does_not_disarm_the_gate_for_content_terms(monkeypatch):
+    """Control: the same drafts must still be blocked by a real content term."""
+    # 没有这条对照，上面那组只要"硬闸整个失效"就会全绿 —— 变异实测过这个方向。
+    _install_directives(monkeypatch, ["加班"])
+    assert _proactive_directive_hits("Neko", "我们今天还要加班吗？") == ["加班"]
+
+
+def test_accented_pronoun_is_matched_regardless_of_unicode_form(monkeypatch):
+    """A decomposed accented pronoun must still be recognised as empty."""
+    # ⚠️ ``is_semantically_empty_term`` 走 NFC 归一，否则 IME / 粘贴来的分解形式
+    # （e + 组合重音符）与表里的合成形式逐码位不等，查表静默落空，这个西语代词
+    # 会退回去硬拦截每一条草稿 —— 正是上面那条 P1 的重演，只是换了触发条件。
+    import unicodedata
+
+    decomposed = unicodedata.normalize("NFD", "él")
+    assert decomposed != "él", "前提：两种 Unicode 形式确实不同"
+    _install_directives(monkeypatch, [decomposed])
+
+    assert _proactive_directive_hits("Neko", "él dijo algo interesante") == []
+
+
+def test_hits_degrade_but_still_block_when_script_fold_is_unavailable(
+    monkeypatch,
+):
+    """``Never raises`` must hold in the very case the lazy import cites."""
+    # ⚠️ ``from memory.script_fold import fold_script`` 的理由写的就是"memory 层
+    # 在偏窄的 entrypoint 下未必加载"，而它一度落在 try 之外 —— 契约在它自己举的
+    # 那个场景下不成立。降级方向也钉住：不折叠**继续匹配**，不是放弃整道闸，
+    # 所以同字形的 ``加班`` 仍然拦得住。
+    _install_directives(monkeypatch, ["加班"])
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _boom_on_script_fold(name, *args, **kwargs):
+        if name == "memory.script_fold":
+            raise ImportError("simulated narrow entrypoint")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _boom_on_script_fold)
+
+    assert _proactive_directive_hits("Neko", "今天又加班到很晚吧？") == ["加班"]
 
 
 def test_bare_referent_does_not_mask_a_real_term_in_the_same_list(monkeypatch):
