@@ -250,11 +250,12 @@ class ServerLifecycleService:
             )
             self._message_plane_runner = None
 
-        await self._refresh_registry_and_start_autostart_plugins()
-
-        await bus_subscription_manager.start()
-        logger.debug("bus subscription manager started")
-
+        # 两条 bridge 必须先于任何插件起来。autostart 插件可以在自己的
+        # startup 钩子里调 push_message()：bridge 没起时 enqueue_delta 直接
+        # 返回 False，记录连 store 都进不去；而 ProactiveBridge 的 SUB 也还
+        # 没连上，PUB/SUB 对缺席的订阅方是丢弃。两头都丢，而 push_message()
+        # 已经回了 submitted=True——正是宿主侧补写 plane 要消灭的那种静默
+        # 不投递。两者都依赖上面刚起好的 message plane，不依赖插件。
         try:
             start_bridge()
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
@@ -272,6 +273,11 @@ class ServerLifecycleService:
                 type(exc).__name__,
                 str(exc),
             )
+
+        await self._refresh_registry_and_start_autostart_plugins()
+
+        await bus_subscription_manager.start()
+        logger.debug("bus subscription manager started")
 
         def _get_hosts() -> dict[str, object]:
             return self._get_plugin_hosts_snapshot()
