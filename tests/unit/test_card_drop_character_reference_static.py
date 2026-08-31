@@ -54,7 +54,8 @@ def test_card_drop_snapshot_is_bound_to_current_model_identity():
     assert "return 'pngtuber:' + JSON.stringify(identity);" in source
     assert "window.vrmManager?.currentModel?.url" in source
     assert "window.vrmModel" in source
-    assert "function appendCardDropModelIdentity(body)" in source
+    assert "function appendCardDropModelIdentity(body, options = {})" in source
+    assert "Object.prototype.hasOwnProperty.call(options, 'modelKey')" in source
     assert "if (modelType)" in source
     assert "body.modelType = modelType;" in source
     assert "body.modelKey = modelKey && !modelKey.endsWith(':') ? modelKey : '';" in source
@@ -101,7 +102,9 @@ def test_pngtuber_loading_invalidates_snapshot_without_early_reference_capture()
     assert "autoCaptureTimer = null;" in loading_block
     assert "advanceCardDropModelRevision();" in loading_block
     assert "invalidateCachedPreview();" in loading_block
-    assert "syncAvatarToCardDrop('', { scheduleReference: false });" in loading_block
+    assert "modelType: 'pngtuber'" in loading_block
+    assert "modelKey: ''" in loading_block
+    assert "syncAvatarToCardDrop('', {" in loading_block
     assert "pngtuberModelLoading = false;" in source
     assert "pngtuberModelLoading && getCurrentModelType() === 'pngtuber'" in source
     render_block = source.split("async function renderAvatarPreview(options = {})", 1)[1].split(
@@ -152,6 +155,27 @@ def test_same_cache_key_reload_invalidates_inflight_capture_revision():
     assert "pendingCharacterReferenceRevision === captureRevision" in reference_capture_block
     assert "if (cardDropModelRevision !== captureRevision) return '';" in reference_capture_block
     assert "(cacheKey || '') + ':' + cardDropModelRevision" in source
+
+
+@pytest.mark.unit
+def test_manual_crop_cancel_does_not_restore_preview_from_old_model_revision():
+    source = _read(APP_CHAT_AVATAR_PATH)
+    capture_block = source.split("async function renderAvatarPreview(options = {})", 1)[1].split(
+        "function scheduleAutoCapture",
+        1,
+    )[0]
+    cancel_block = capture_block.split("                } else {", 1)[1].split(
+        "                    setPreviewNote(",
+        1,
+    )[0]
+
+    assert "if (captureRevision !== cardDropModelRevision)" in cancel_block
+    assert "cachedPreview = null;" in cancel_block
+    assert "pendingAutoCapture = true;" in cancel_block
+    assert "} else if (prevCachedPreview) {" in cancel_block
+    assert cancel_block.index("if (captureRevision !== cardDropModelRevision)") < cancel_block.index(
+        "cachedPreview = prevCachedPreview;"
+    )
 
 
 @pytest.mark.unit

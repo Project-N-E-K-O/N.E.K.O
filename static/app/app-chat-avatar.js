@@ -402,9 +402,11 @@
         return String(value || '');
     }
 
-    function appendCardDropModelIdentity(body) {
-        const modelType = getCurrentModelType();
-        const modelKey = getCurrentModelCacheKey();
+    function appendCardDropModelIdentity(body, options = {}) {
+        const modelType = options.modelType || getCurrentModelType();
+        const modelKey = Object.prototype.hasOwnProperty.call(options, 'modelKey')
+            ? String(options.modelKey || '')
+            : getCurrentModelCacheKey();
         if (modelType) {
             body.modelType = modelType;
             body.modelKey = modelKey && !modelKey.endsWith(':') ? modelKey : '';
@@ -731,7 +733,7 @@
         var body = {};
         if (dataUrl) body.dataUrl = dataUrl;
         if (_nekoName) body.name = _nekoName;
-        appendCardDropModelIdentity(body);
+        appendCardDropModelIdentity(body, options);
         fetch('/api/card-drop/active-character', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1371,7 +1373,11 @@
                         userCrop.modelRevision || captureRevision
                     );
                 } else {
-                    if (prevCachedPreview) {
+                    if (captureRevision !== cardDropModelRevision) {
+                        cachedPreview = null;
+                        pendingAutoCapture = true;
+                        setPreviewImage('');
+                    } else if (prevCachedPreview) {
                         cachedPreview = prevCachedPreview;
                         setPreviewImage(prevCachedPreview.dataUrl);
                         setPreviewStatus(
@@ -1477,7 +1483,11 @@
         }
         advanceCardDropModelRevision();
         invalidateCachedPreview();
-        syncAvatarToCardDrop('', { scheduleReference: false });
+        syncAvatarToCardDrop('', {
+            scheduleReference: false,
+            modelType: 'pngtuber',
+            modelKey: ''
+        });
     }
 
     function bindModelLoadListeners() {
