@@ -103,19 +103,24 @@ def _int_env(env_key: str, default: int, *, minimum: int) -> int:
 # 工具图的投递上限一致（见 tool_calling._TOOL_IMAGE_DELIVER_MAX_B64_BYTES，
 # 那边有一条用例钉住两者相等），并留在 plane 的 512 KiB 之下——那个界按整条
 # 打包记录算，像素旁边还有 mime / turn_id / metadata。
-PROVIDER_FRAME_MAX_B64_BYTES = 500 * 1024
+# 图片自己的预算，也就是对外文档承诺的那个 500 KiB。
+PROVIDER_FRAME_MAX_IMAGE_B64_BYTES = 500 * 1024
 
-# 上面那个数量的是**整条事件**，而事件里除了像素还有 event_id / source / mime /
-# turn_id / generation / metadata / lanlan_name。所以图片自己的预算要从中扣掉
-# 信封。实测今天的信封是 264 字节；留 1 KiB 是给更长的 turn_id 和 metadata。
-#
-# 这一条是踩出来的：两个常量都写成 500 KiB、看起来自洽，但一个量图片、另一个
-# 量图片+信封，于是阶梯刚好压到上限的图会在发布处被静默丢掉——模型收到了，
-# 插件收不到，正是这条抄送存在的理由。守卫因此改成**造一条满额事件再量**，
-# 而不是比两个常量。
+# 事件里除了像素还有 event_id / source / mime / turn_id / generation /
+# metadata / lanlan_name。实测今天是 264 字节；留 1 KiB 给更长的 turn_id 与
+# metadata。
 PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES = 1024
-PROVIDER_FRAME_MAX_IMAGE_B64_BYTES = (
-    PROVIDER_FRAME_MAX_B64_BYTES - PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES
+
+# 整条事件的上限 = 图片预算 + 信封。**方向别记反**：信封不从图片预算里扣，
+# 而是加在事件这一侧——因为「图片 500 KiB vs plane 记录 512 KiB」之间那 12 KB
+# 差额本来就是为它留的（见 tool_calling 里投递上限的说明）。从图片预算里扣等
+# 于把同一笔钱付两遍，还会让对外承诺的 500 KiB 悄悄缩水成 499 KiB。
+#
+# 这一条踩过两次：先是两个常量都写 500 KiB、一个量图片一个量整条事件，于是
+# 阶梯刚好压到上限的图在发布处被静默丢掉；改对之后又把信封记错了侧。守卫因此
+# 是**造一条满额事件再量**、并且一路量到 plane 记录，而不是比常量。
+PROVIDER_FRAME_MAX_B64_BYTES = (
+    PROVIDER_FRAME_MAX_IMAGE_B64_BYTES + PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES
 )
 
 AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT = _int_env(

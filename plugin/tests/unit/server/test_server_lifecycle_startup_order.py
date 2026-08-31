@@ -1,10 +1,19 @@
 """Startup order: the plane bridges come up before any plugin can push.
 
-An autostart plugin may call ``push_message()`` from its startup hook. If the
-bridges are not up yet, ``enqueue_delta`` refuses the record (the bridge is
-disabled) and ProactiveBridge's SUB socket is not connected either -- PUB/SUB
-drops for an absent subscriber. The push still answers ``submitted=True``, so
-the author sees success and the character says nothing.
+An autostart plugin may call ``push_message()`` from its startup hook, and
+ProactiveBridge's SUB socket takes about a second to connect in its own thread.
+PUB/SUB drops for an absent subscriber, so a push inside that window is never
+spoken while ``push_message()`` has already answered ``submitted=True``.
+
+Ordering NARROWS that window rather than closing it -- the connect delay is
+still there, it just starts earlier. Closing it needs the bridge to signal SUB
+readiness (or to backfill from the store), which is a separate change.
+
+An earlier version of this docstring also claimed the plane bridge refuses
+records before ``start_bridge()``. Measured: it does not. ``_Bridge._enabled``
+reads the MESSAGE_PLANE_BRIDGE_ENABLED config flag once at construction, not
+whether ``start()`` ran, so ``publish_record`` queues normally beforehand and
+the thread drains it on start.
 
 Pinned on the SOURCE order rather than by driving a real startup: the failure is
 an ordering one, and what has to hold is that these three calls keep this
@@ -45,8 +54,9 @@ def test_both_plane_bridges_start_before_autostart_plugins() -> None:
 
     autostart = positions["_refresh_registry_and_start_autostart_plugins()"]
     assert positions["start_bridge()"] < autostart, (
-        "plane bridge 起在 autostart 插件之后：它们在启动钩子里推的消息会被"
-        "一个尚未启用的 bridge 拒收，而 push_message() 已经回了 submitted=True"
+        "plane bridge 起在 autostart 插件之后。它不会拒收（队列在 start 之前"
+        "照常收，线程起来再排空），但让写入方先就位仍是这条链应有的顺序，"
+        "也避免排空被推迟到不确定的时刻"
     )
     assert positions["start_proactive_bridge()"] < autostart, (
         "proactive bridge 起在 autostart 插件之后：它的 SUB 还没连上，"

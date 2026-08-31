@@ -164,20 +164,20 @@ _IMAGE_AUTH_KEY = "_auth"
 # per-frame allocation this limit exists to bound. Both settings are host-side,
 # so plugin code cannot widen the ceiling by setting an env var.
 #
-# The control uplink borrows that same number instead of inventing one of its
-# own. Nothing downstream caps a tool result, so there is no CH_RES equivalent
-# of MESSAGE_PLANE_PAYLOAD_MAX_BYTES to derive a tighter bound from, and a
-# guessed-low ceiling would silently delete real results. What can be measured
-# is the widest legitimate *control* frame: a CH_COMM EXPORT_PUSH carrying
-# binary_base64, which the host refuses (413 PAYLOAD_TOO_LARGE) once the
-# decoded bytes exceed EXPORT_INLINE_BINARY_MAX_BYTES -- base64 makes that
-# about 4/3 * 256 KiB, roughly 341 KiB on today's defaults. The message-plane
-# ceiling clears that by more than two orders of magnitude, so real control
-# traffic is nowhere near it, while the host's worst-case allocation for one
-# frame on this socket drops from "whatever a plugin writes" to a number it
-# already accepts on the other MessagePack socket. The ceiling, not the
-# channel check, is what bounds that allocation: libzmq has already read the
-# frame into memory by the time anything can look at its channel tag.
+# The control uplink used to borrow that same number. It no longer does, and
+# the reason is worth keeping: payload_max * batch_max carries a batch
+# multiplier, and the control channel is never batched -- borrowing it handed
+# every control frame about 128 MiB, which with this socket's high-water mark
+# is not a bound at all. ``_control_uplink_max_bytes`` below now derives its
+# own from the widest legitimate CH_RES (tool images + an output allowance +
+# envelope); see PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES in plugin/settings.py.
+#
+# The CH_COMM EXPORT_PUSH that used to justify the borrowed number -- base64 of
+# at most EXPORT_INLINE_BINARY_MAX_BYTES, roughly 341 KiB on today's defaults --
+# is an order of magnitude below that derivation, so it still clears easily; a
+# test pins that. The ceiling, not the channel check, is what bounds the
+# per-frame allocation: libzmq has already read the frame into memory by the
+# time anything can look at its channel tag.
 #
 # What this does at runtime, because it is easy to expect the wrong thing:
 # libzmq enforces MAXMSGSIZE in the receiving engine, not in the recv() call.

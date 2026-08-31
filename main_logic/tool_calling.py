@@ -73,7 +73,10 @@ _MAX_TOOL_IMAGE_B64_BYTES = 2 * 1024 * 1024
 #
 # Not imported from there at runtime: agent_event_bus pulls in pyzmq, and this
 # module sits on the tool path.
-_TOOL_IMAGE_DELIVER_MAX_B64_BYTES = 500 * 1024 - 1024
+#
+# 值就是对外文档承诺的 500 KiB：信封加在**事件上限**那一侧，不从这里扣——
+# 「图片 500 KiB vs plane 记录 512 KiB」那 12 KB 差额本来就是留给信封的。
+_TOOL_IMAGE_DELIVER_MAX_B64_BYTES = 500 * 1024
 _MAX_TOOL_IMAGES = 2
 _MAX_TOOL_IMAGE_PIXELS = 3840 * 2160
 _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS = 2000

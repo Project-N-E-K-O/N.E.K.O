@@ -237,19 +237,14 @@ def _install_pack_counter(monkeypatch: pytest.MonkeyPatch) -> _PackCounter:
 def _host_headroom() -> int:
     """The bytes the SDK holds back for the host's own normalization.
 
-    Read out of the source rather than retyped: the reservation exists to track
-    what the host actually adds, so a test carrying its own copy of the number
-    would keep passing after the two diverge.
+    Imported, not retyped and not regexed. It used to be pulled out of the
+    source with ``\d+``, which broke the moment the value became a derivation
+    instead of a literal -- and "the guard cannot read the number any more" is a
+    silly way for a size test to fail.
     """
-    import re
-    from pathlib import Path
+    from plugin.core.context import _HOST_ENVELOPE_HEADROOM_BYTES
 
-    import plugin.core.context as _ctx
-
-    text = Path(_ctx.__file__).read_text(encoding="utf-8")
-    m = re.search(r"_HOST_ENVELOPE_HEADROOM_BYTES\s*=\s*(\d+)", text)
-    assert m, "找不到 _HOST_ENVELOPE_HEADROOM_BYTES"
-    return int(m.group(1))
+    return int(_HOST_ENVELOPE_HEADROOM_BYTES)
 
 
 

@@ -250,12 +250,20 @@ class ServerLifecycleService:
             )
             self._message_plane_runner = None
 
-        # 两条 bridge 必须先于任何插件起来。autostart 插件可以在自己的
-        # startup 钩子里调 push_message()：bridge 没起时 enqueue_delta 直接
-        # 返回 False，记录连 store 都进不去；而 ProactiveBridge 的 SUB 也还
-        # 没连上，PUB/SUB 对缺席的订阅方是丢弃。两头都丢，而 push_message()
-        # 已经回了 submitted=True——正是宿主侧补写 plane 要消灭的那种静默
-        # 不投递。两者都依赖上面刚起好的 message plane，不依赖插件。
+        # 两条 bridge 先于任何插件起来。autostart 插件可以在自己的 startup 钩
+        # 子里调 push_message()，而 ProactiveBridge 的 SUB 要在它自己的线程里
+        # 等约一秒才连上——PUB/SUB 对缺席的订阅方是丢弃，所以那扇窗口里推的
+        # 消息角色永远不会说出口，而 push_message() 已经回了 submitted=True。
+        #
+        # ⚠️ 这一步**收窄**窗口，不关闭它：SUB 的连接延迟仍在，只是现在从更早
+        # 开始计时。要真正关掉，得让 ProactiveBridge 在 SUB 连上后发信号、由
+        # 这里等它（或者让它启动时补读一次 store），那是另一个改动。
+        #
+        # 另外更正一处此前写错的机制：plane bridge **不会**因为没 start 就拒
+        # 收。`_Bridge._enabled` 读的是 MESSAGE_PLANE_BRIDGE_ENABLED 这个配置
+        # 开关（构造时读一次），不是「start() 跑没跑」——start() 之前
+        # enqueue_delta 照常入队，线程起来后排空。实测 publish_record 在
+        # start_bridge() 之前返回 True。
         try:
             start_bridge()
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
