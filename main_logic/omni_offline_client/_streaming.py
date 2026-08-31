@@ -907,6 +907,9 @@ class _StreamingMixin:
         # 里的说明：由内层 finally 释放的话，一次可重试的失败会把像素换成占位
         # 符，而重试用的是同一份历史。
         _turn_tool_image_slots: list = []
+        # 同一个理由，另一半：暂存待抄送的工具帧也必须跨 attempt 存活，否则
+        # 重试成功的那轮"模型看到了、插件读不到"。
+        _turn_tool_bus_frames: list = []
         try:
             reroll_count = 0
             set_call_type("conversation")
@@ -1056,6 +1059,7 @@ class _StreamingMixin:
                         async for chunk in self._astream_visible_with_tools(
                             self._conversation_history,
                             _tool_image_slots=_turn_tool_image_slots,
+                            _tool_bus_frames=_turn_tool_bus_frames,
                             **_focus_overrides,
                         ):
                             if not _ttft_recorded:

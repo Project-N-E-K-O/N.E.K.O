@@ -476,6 +476,8 @@ class _LifecycleMixin:
         _bus_instruction_task = None
         # 这一轮的工具图槽位，跨 attempt 存活（见 _astream_visible_with_tools）。
         _turn_tool_image_slots: list = []
+        # 同上：跨 attempt 存活的待抄送工具帧。
+        _turn_tool_bus_frames: list = []
 
         # Retry 策略与 stream_text 对偶（max_retries=3, [1, 2]s 间隔）。
         # 但主动搭话语义不同：用户没在等回复，retry 用尽时**静默吞掉**，
@@ -527,6 +529,7 @@ class _LifecycleMixin:
                         # 与 stream_text 同：跨 attempt 存活，由下面的 finally
                         # 统一释放。
                         _tool_image_slots=_turn_tool_image_slots,
+                        _tool_bus_frames=_turn_tool_bus_frames,
                         # 这一轮里工具返回的图也归这一轮：没有它，主动搭话轮
                         # 里的工具图会以 turn_id=None 上总线，插件没法把它和
                         # 同一轮的指令/回复对上——而那正是 turn_id 存在的理由。

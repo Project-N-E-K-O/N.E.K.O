@@ -529,6 +529,8 @@ class _RetryClient(_Client):
 
         self.llm = _ScriptedLLM()
         self.saw_images_in_request = False
+        self.drained: list = []
+        self.drained_lists: list = []
 
     def _openai_tools_payload(self):
         return [{"type": "function", "function": {"name": "demo_tool"}}]
@@ -540,8 +542,11 @@ class _RetryClient(_Client):
         return None
 
     def _publish_pending_tool_frames(self, pending, *, turn_id=None):
-        # 帧总线不是本用例的判据；排空即可，别让它把这条路带偏。
+        # 记下排空时看到的那份列表对象本身，用来分辨「用了调用方的」还是
+        # 「自己又建了一份」；然后按真实实现的语义排空。
+        self.drained_lists.append(pending)
         if pending:
+            self.drained.extend(pending)
             pending.clear()
         return None
 
@@ -608,3 +613,33 @@ async def test_an_unowned_slot_list_is_still_released_by_the_inner_finally():
     assert not _image_parts(messages), (
         "没有调用方接管时，图像轮必须仍由内层 finally 清掉"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_caller_owned_bus_frame_list_is_the_one_the_loop_uses():
+    """The staged bus frames need the same ownership as the slots.
+
+    Keeping the pixels in history across a retry while letting the staged copy
+    die with the failed attempt produces a new asymmetry: the retry delivers to
+    the provider and nothing is ever copied to the bus, because attempt 2's tool
+    loop does not run again.
+
+    Mutation: ignore ``_tool_bus_frames`` and always build a fresh list.
+    """
+    client = _tool_client()
+    messages: list = []
+    owned_frames: list = []
+
+    async for _ in client._astream_visible_with_tools(
+        messages,
+        _tool_image_slots=[],
+        _tool_bus_frames=owned_frames,
+    ):
+        pass
+
+    assert client.saw_images_in_request, "前提没成立：带图的那次请求没发生"
+    assert client.drained_lists, "前提没成立：排空根本没被调用"
+    assert all(d is owned_frames for d in client.drained_lists), (
+        "循环用的是自己新建的暂存列表，不是调用方传进来的那份"
+    )
+    assert client.drained, "调用方的列表里什么都没暂存过"

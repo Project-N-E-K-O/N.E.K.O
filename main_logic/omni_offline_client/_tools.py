@@ -633,10 +633,18 @@ class _ToolingMixin:
         tool_image_slots = (
             [] if owned_tool_image_slots is None else owned_tool_image_slots
         )
-        # 与 slots 同生命周期、同线：一次 stream 调用自己的暂存区，绝不挂在
-        # self 上。两个 tool loop 可能并存（stream_text 与 prompt_ephemeral），
-        # 共享一个 session 级列表会让 A 的图被 B 的请求"确认送达"。
-        tool_bus_frames = []
+        # 与 slots 同生命周期、同线，包括**所有权**：槽位跨 attempt 存活而这份
+        # 不存活的话，重试成功的那一轮会把像素送进 provider、总线却拿不到副本
+        # ——attempt 1 暂存的帧随那次调用一起丢了，而 attempt 2 的工具循环通常
+        # 不会再跑一次（历史里 tool_calls 和结果都在，模型直接作答）。
+        #
+        # 仍然绝不挂在 self 上：两个 tool loop 可能并存（stream_text 与
+        # prompt_ephemeral），共享一个 session 级列表会让 A 的图被 B 的请求
+        # "确认送达"。
+        owned_tool_bus_frames = overrides.pop("_tool_bus_frames", None)
+        tool_bus_frames = (
+            [] if owned_tool_bus_frames is None else owned_tool_bus_frames
+        )
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         tool_names = {
             tool.name for tool in getattr(self, "_tool_definitions", [])

@@ -849,3 +849,45 @@ def test_a_retried_turn_still_shows_the_tool_image_to_the_model():
         and any(p.get("type") == "image_url" for p in m["content"])
         for m in client._conversation_history
     ), "回合结束后图像轮没有被释放"
+
+
+def test_a_retried_turn_still_copies_its_tool_image_to_the_bus():
+    """The other half of keeping tool images alive across the ladder.
+
+    Making the SLOTS survive a retry without making the staged bus frames
+    survive it produces a new asymmetry: the retry that succeeds carries the
+    pixels to the provider, while attempt 1's staged copy went out with the
+    call that failed and attempt 2's tool loop never runs again (history already
+    holds the tool_calls and the result, so the model just answers). The model
+    sees it, the plugin never does.
+
+    Mutation: drop ``_tool_bus_frames=_turn_tool_bus_frames`` from
+    ``stream_text``'s call, or the ownership check in
+    ``_astream_visible_with_tools``.
+    """
+    client, _captured = _make_client()
+    seen_frames: list = []
+    attempts: list = []
+
+    async def _stub(messages, **overrides):
+        staged = overrides.get("_tool_bus_frames")
+        seen_frames.append(staged)
+        attempts.append(len(attempts) + 1)
+        assert staged is not None, "stream_text 没有接管待抄送帧"
+        if len(attempts) == 1:
+            # attempt 1：工具图被注入并暂存，然后这次请求可重试地失败。
+            staged.append(("IMGDATA", "image/jpeg", "demo_tool"))
+            raise _connection_error()
+        # attempt 2：工具循环不会再跑，暂存必须还在，否则永远没人抄送。
+        client._retry_had_staged = list(staged)
+        yield SimpleNamespace(content="看到了")
+
+    client._astream_visible_with_tools = _stub
+    with patch(_SLEEP, _no_backoff):
+        _run_turn(client.stream_text("看看这个"))
+
+    assert len(attempts) == 2, "前提没成立：没有发生重试"
+    assert seen_frames[0] is seen_frames[1], "两次 attempt 拿到的不是同一份暂存"
+    assert getattr(client, "_retry_had_staged", None) == [
+        ("IMGDATA", "image/jpeg", "demo_tool")
+    ], "重试那一轮的暂存被清空了——模型看到了图，插件永远读不到"
