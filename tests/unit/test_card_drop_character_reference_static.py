@@ -102,6 +102,7 @@ def test_pngtuber_loading_invalidates_snapshot_without_early_reference_capture()
     assert "autoCaptureTimer = null;" in loading_block
     assert "advanceCardDropModelRevision();" in loading_block
     assert "invalidateCachedPreview();" in loading_block
+    assert "setPreviewImage('');" in loading_block
     assert "modelType: 'pngtuber'" in loading_block
     assert "modelKey: ''" in loading_block
     assert "syncAvatarToCardDrop('', {" in loading_block

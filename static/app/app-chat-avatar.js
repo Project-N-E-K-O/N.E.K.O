@@ -1483,6 +1483,7 @@
         }
         advanceCardDropModelRevision();
         invalidateCachedPreview();
+        setPreviewImage('');
         syncAvatarToCardDrop('', {
             scheduleReference: false,
             modelType: 'pngtuber',
