@@ -68,7 +68,9 @@ def test_soccer_template_loads_split_css_and_javascript_assets():
     assert '/static/game/sdk/neko-minigame-sdk.js?v={{ static_asset_version }}' in template
     assert '/static/game/sdk/neko-minigame-audio-host.js?v={{ static_asset_version }}' in template
     assert '/static/game/sdk/neko-minigame-avatar-host.js?v={{ static_asset_version }}' in template
-    assert '/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}' in template
+    assert 'id="neko-minigame-host-launch" type="application/json"' in template
+    assert '/static/game/games/soccer/soccer-neko-host-registration.js?v={{ static_asset_version }}' in template
+    assert '/static/game/sdk/neko-minigame-same-origin-bootstrap.js?v={{ static_asset_version }}' in template
     assert '/static/game/games/soccer/soccer-avatar-host.js?v={{ static_asset_version }}' in template
     assert '/static/game/games/soccer/soccer-demo.js?v={{ static_asset_version }}' in template
     assert template.index("neko-minigame-sdk.js") < template.index("soccer-neko-adapter.js")
@@ -78,14 +80,16 @@ def test_soccer_template_loads_split_css_and_javascript_assets():
     assert template.index("neko-minigame-avatar-host.js") < template.index("soccer-neko-adapter.js")
     assert template.index("neko-minigame-avatar-host.js") < template.index("soccer-avatar-host.js")
     assert template.index("soccer-avatar-host.js") < template.index("soccer-neko-adapter.js")
-    assert template.index("neko-minigame-same-origin-host.js") < template.index("soccer-neko-adapter.js")
+    assert template.index("soccer-neko-host-registration.js") < template.index("neko-minigame-same-origin-bootstrap.js")
+    assert template.index("neko-minigame-same-origin-bootstrap.js") < template.index("soccer-neko-adapter.js")
     assert template.index("soccer-neko-adapter.js") < template.index("soccer-demo.js")
     assert 'id="soccer-runtime-config" type="application/json"' in template
     assert "<style" not in template
     assert "window.SoccerDemo =" not in template
     assert "window.SoccerDemo =" in script
     assert "window.createSoccerNekoAdapter" in adapter
-    assert "window.createNekoMiniGameSameOriginHost" in host
+    assert "const FACTORY_PROPERTY = 'createNekoMiniGameSameOriginHost'" in host
+    assert "Object.defineProperty(window, FACTORY_PROPERTY" in host
     assert "global.NekoMiniGame" in sdk
     assert "#soccer-start-button" in style
     template_head = template.split("</head>", 1)[0]
@@ -137,7 +141,7 @@ def test_soccer_avatar_rendering_uses_sdk_fixed_viewport_contract():
     assert "async mountAvatar(config)" in adapter
     assert "this._avatarHost?.dispose?.();" in adapter
 
-    assert "optionalCapabilities: ['dialogue', 'voice-input', 'avatar-renderer', 'storage']" in script
+    assert "optionalCapabilities: ['dialogue', 'quick-lines', 'voice-input', 'avatar-renderer', 'storage']" in script
     assert "viewport: Object.freeze({ mode: 'fixed', width: 200, height: 300 })" in script
     assert "align: 'bottom-center'" in script
     assert "resize: Object.freeze({ mode: 'fixed' })" in script
@@ -381,7 +385,7 @@ def test_soccer_script_posts_session_debug_errors():
     route_success_block = script.split("if (data.ok)", 1)[1].split("console.log('[SoccerRoute]", 1)[0]
     assert "await _enableSoccerSessionDebugLogAfterRouteStart();" in route_success_block
     assert "_runtimeCharacterName()" in route_success_block
-    assert "transport.applyRuntimeState(data.state)" in MINIGAME_SDK_PATH.read_text(encoding="utf-8")
+    assert "transport.applyRuntimeState(routeState)" in MINIGAME_SDK_PATH.read_text(encoding="utf-8")
     assert "enableSoccerSessionDebugLog('keyboard_l')" in script
     assert "session_id: context.sessionId" in adapter
     assert "game_type: this.gameType" in adapter
@@ -407,8 +411,8 @@ def test_soccer_script_posts_session_debug_errors():
     assert "addEventListener('unhandledrejection'" in adapter
     assert "removeEventListener('error'" in adapter
     assert "removeEventListener('unhandledrejection'" in adapter
-    assert "this._console.warn = logger.originalWarn" in adapter
-    assert "this._console.error = logger.originalError" in adapter
+    assert "this._console.warn = captureRegistry.originalWarn" in adapter
+    assert "this._console.error = captureRegistry.originalError" in adapter
     assert "enableTimeoutId" in adapter
     assert "_cancelLoggerEnableTimeout" in adapter
     assert "get sessionId()" in adapter
@@ -451,7 +455,7 @@ def test_soccer_requests_use_adapter_and_runtime_lifecycle_is_owned_by_sdk():
 
     assert template.index("soccer-neko-adapter.js") < template.index("soccer-demo.js")
     assert template.index("neko-minigame-sdk.js") < template.index("soccer-neko-adapter.js")
-    assert "const soccerHost = window.createSoccerNekoAdapter" in script
+    assert "const soccerHost = await window.createSoccerNekoAdapter" in script
     assert "fetch(" not in script
     assert "navigator.sendBeacon" not in script
     assert "soccerGame.runtime.configure({" in script

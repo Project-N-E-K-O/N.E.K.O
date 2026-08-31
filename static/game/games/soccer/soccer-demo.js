@@ -67,7 +67,7 @@
           window.__SoccerAvatarHost?.dispose?.();
         },
       };
-      const soccerHost = window.createSoccerNekoAdapter({
+      const soccerHost = await window.createSoccerNekoAdapter({
         gameType: 'soccer',
         source: 'soccer_demo',
         avatarHost: soccerAvatarHostProxy,
@@ -83,7 +83,7 @@
         version: '1.0.0',
         protocolVersion: '1',
         requiredCapabilities: ['runtime', 'logging', 'audio', 'speech-output'],
-        optionalCapabilities: ['dialogue', 'voice-input', 'avatar-renderer', 'storage'],
+        optionalCapabilities: ['dialogue', 'quick-lines', 'voice-input', 'avatar-renderer', 'storage'],
       }, {
         // Temporary trusted same-origin transport. Public game code only uses
         // the SDK facade; a later iframe/Electron bridge can replace this

@@ -216,7 +216,11 @@
 <script src="/static/game/sdk/neko-minigame-audio-host.js?v={{ static_asset_version }}"></script>
 <script src="/static/game/sdk/neko-minigame-avatar-host.js?v={{ static_asset_version }}"></script>
 <script src="/static/game/games/soccer/soccer-avatar-host.js?v={{ static_asset_version }}"></script>
-<script src="/static/game/sdk/neko-minigame-same-origin-host.js?v={{ static_asset_version }}"></script>
+<script id="neko-minigame-host-launch" type="application/json">
+{"registrations":{"soccer":{"mode":"registered","gameId":"soccer","publisherId":"project-n-e-k-o","version":"1.0.0","allowedCapabilities":["runtime","logging","audio","speech-output","dialogue","quick-lines","voice-input","avatar-renderer","storage"]}}}
+</script>
+<script src="/static/game/games/soccer/soccer-neko-host-registration.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js?v={{ static_asset_version }}"></script>
 <script src="/static/game/games/soccer/soccer-neko-adapter.js?v={{ static_asset_version }}"></script>
 <script src="/static/game/games/soccer/soccer-demo.js?v={{ static_asset_version }}"></script>
 

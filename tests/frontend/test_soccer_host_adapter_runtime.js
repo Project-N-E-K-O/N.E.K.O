@@ -171,56 +171,123 @@ async function main() {
   }
 
   const hostPath = path.resolve(__dirname, '../../static/game/sdk/neko-minigame-same-origin-host.js');
-  vm.runInThisContext(fs.readFileSync(hostPath, 'utf8'), { filename: hostPath });
+  const launchNode = {
+    textContent: JSON.stringify({
+      registrations: {
+        soccer: {
+          mode: 'registered',
+          gameId: 'soccer',
+          publisherId: 'project-n-e-k-o',
+          version: '1.0.0',
+          allowedCapabilities: [
+            'runtime', 'logging', 'audio', 'speech-output', 'dialogue', 'quick-lines',
+            'voice-input', 'avatar-renderer', 'storage',
+          ],
+        },
+        'example-game': {
+          mode: 'development',
+          gameId: 'example-game',
+          publisherId: 'test-host',
+          version: '1.0.0',
+          allowedCapabilities: ['runtime', 'logging', 'dialogue', 'storage'],
+        },
+      },
+    }),
+    remove() { this.removed = true; },
+  };
+  documentMock.currentScript = null;
+  documentMock.getElementById = (id) => id === 'neko-minigame-host-launch' ? launchNode : null;
+  documentMock.createElement = () => ({ remove() { this.removed = true; } });
+  documentMock.head = {
+    appendChild(script) {
+      documentMock.currentScript = script;
+      try {
+        vm.runInThisContext(fs.readFileSync(hostPath, 'utf8'), { filename: hostPath });
+      } finally {
+        documentMock.currentScript = null;
+      }
+      script.onload?.();
+    },
+  };
+  const registrationPath = path.resolve(
+    __dirname,
+    '../../static/game/games/soccer/soccer-neko-host-registration.js',
+  );
+  vm.runInThisContext(fs.readFileSync(registrationPath, 'utf8'), { filename: registrationPath });
+  const bootstrapPath = path.resolve(
+    __dirname,
+    '../../static/game/sdk/neko-minigame-same-origin-bootstrap.js',
+  );
+  vm.runInThisContext(fs.readFileSync(bootstrapPath, 'utf8'), { filename: bootstrapPath });
+  await window.nekoMiniGameSameOriginHostReady;
+  assert(launchNode.removed === true, 'soccer launch registration was not consumed');
   const adapterPath = path.resolve(__dirname, '../../static/game/games/soccer/soccer-neko-adapter.js');
   vm.runInThisContext(fs.readFileSync(adapterPath, 'utf8'), { filename: adapterPath });
-
-  const badmintonAdapter = window.createNekoMiniGameSameOriginHost({
-    gameType: 'badminton',
-    source: 'badminton_demo',
-    displayName: 'Badminton',
-    sessionId: 'badminton-test-session',
-  });
-  const badmintonHandshake = badmintonAdapter.connectGame({
+  const connectSoccerHost = (host) => host.connectGame({
     protocolVersions: ['1'],
     manifest: {
-      id: 'badminton',
+      id: 'soccer',
       version: '1.0.0',
       requiredCapabilities: ['runtime', 'logging'],
-      optionalCapabilities: ['dialogue', 'leaderboard-local'],
+      optionalCapabilities: ['dialogue', 'quick-lines', 'voice-input', 'speech-output', 'storage'],
     },
   });
-  assert(badmintonHandshake.accepted, 'generic host rejected the badminton identity');
-  assert(badmintonHandshake.registration.gameId === 'badminton',
+
+  const genericAdapter = window.createNekoMiniGameSameOriginHost({
+    gameType: 'example-game',
+    source: 'example-game-test',
+    displayName: 'Example Game',
+    sessionId: 'example-game-test-session',
+  });
+  const genericHandshake = genericAdapter.connectGame({
+    protocolVersions: ['1'],
+    manifest: {
+      id: 'example-game',
+      version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging'],
+      optionalCapabilities: ['dialogue', 'storage'],
+    },
+  });
+  assert(genericHandshake.accepted, 'generic host rejected the neutral fixture identity');
+  assert(genericHandshake.registration.gameId === 'example-game',
     'generic host did not preserve the configured game identity');
-  assert(badmintonAdapter.sessionId === 'badminton-test-session',
+  assert(genericAdapter.sessionId === 'example-game-test-session',
     'generic host did not preserve the launch session');
-  assert(badmintonHandshake.grantedCapabilities.includes('leaderboard-local'),
-    'generic host did not grant bounded local leaderboard storage');
-  badmintonAdapter.requestGameStorage('set', { key: 'leaderboards/main', value: { score: 3 } });
-  const storedLeaderboard = badmintonAdapter.requestGameStorage('get', { key: 'leaderboards/main' });
+  assert(genericHandshake.grantedCapabilities.includes('storage'),
+    'generic host did not grant bounded local game storage');
+  genericAdapter.requestGameStorage('set', { key: 'leaderboards/main', value: { score: 3 } });
+  const storedLeaderboard = genericAdapter.requestGameStorage('get', { key: 'leaderboards/main' });
   assert(storedLeaderboard.found && storedLeaderboard.value.score === 3,
     'generic host local game storage did not round-trip JSON');
   let storageQuotaError = null;
   try {
-    badmintonAdapter.requestGameStorage('set', {
+    genericAdapter.requestGameStorage('set', {
       key: 'leaderboards/oversized',
       value: { text: 'x'.repeat(70 * 1024) },
     });
   } catch (error) { storageQuotaError = error; }
   assert(storageQuotaError?.code === 'quota_exceeded',
     'generic host local game storage did not enforce its value limit');
-  badmintonAdapter.dispose();
+  genericAdapter.dispose();
 
   let avatarHostDisposed = 0;
   let avatarMountConfig = null;
-  const avatarAdapter = window.createSoccerNekoAdapter({
+  const avatarAdapter = await window.createSoccerNekoAdapter({
     avatarHost: {
       async mount(config) {
         avatarMountConfig = config;
         return { dispose() {} };
       },
       dispose() { avatarHostDisposed += 1; },
+    },
+  });
+  avatarAdapter.connectGame({
+    protocolVersions: ['1'],
+    manifest: {
+      id: 'soccer',
+      version: '1.0.0',
+      requiredCapabilities: ['logging'],
+      optionalCapabilities: ['avatar-renderer', 'voice-input', 'dialogue', 'quick-lines'],
     },
   });
   const avatarController = await avatarAdapter.mountAvatar({
@@ -234,7 +301,7 @@ async function main() {
 
   let audioHostDisposed = 0;
   let audioMountConfig = null;
-  const audioAdapter = window.createSoccerNekoAdapter({
+  const audioAdapter = await window.createSoccerNekoAdapter({
     audioHost: {
       mount(config) {
         audioMountConfig = config;
@@ -243,16 +310,29 @@ async function main() {
       dispose() { audioHostDisposed += 1; },
     },
   });
+  audioAdapter.connectGame({
+    protocolVersions: ['1'],
+    manifest: {
+      id: 'soccer',
+      version: '1.0.0',
+      requiredCapabilities: ['logging'],
+      optionalCapabilities: ['audio'],
+    },
+  });
   const audioController = audioAdapter.mountAudio({ slot: 'main', resources: { sfx: {} } });
   assert(typeof audioController.dispose === 'function', 'audio controller was not forwarded');
   assert(audioMountConfig?.slot === 'main', 'audio config was not forwarded');
   audioAdapter.dispose();
   assert(audioHostDisposed === 1, 'audio host was not released by adapter disposal');
 
-  const adapter = window.createSoccerNekoAdapter({
+  const adapter = await window.createSoccerNekoAdapter({
     logQueueLimit: 8,
     logConcurrency: 2,
     logPumpIntervalMs: 1,
+    avatarHost: {
+      async mount() { return { dispose() {} }; },
+      dispose() {},
+    },
   });
   const handshake = adapter.connectGame({
     sdkVersion: '0.1.0',
@@ -261,15 +341,17 @@ async function main() {
       id: 'soccer',
       version: '1.0.0',
       requiredCapabilities: ['runtime', 'logging', 'speech-output'],
-      optionalCapabilities: ['avatar-renderer'],
+      optionalCapabilities: ['avatar-renderer', 'voice-input', 'dialogue', 'quick-lines'],
     },
   });
   assert(handshake.accepted === true, 'registered soccer handshake was rejected');
   assert(handshake.registration?.mode === 'registered', 'soccer registration mode was not returned');
   assert(handshake.registration?.gameId === 'soccer', 'soccer registration identity was not returned');
   assert(handshake.grantedCapabilities.includes('runtime'), 'runtime was not granted by soccer host');
-  assert(!handshake.grantedCapabilities.includes('avatar-renderer'),
-    'unavailable avatar host was granted by soccer handshake');
+  assert(handshake.grantedCapabilities.includes('avatar-renderer'),
+    'available avatar host was not granted by soccer handshake');
+  assert(handshake.grantedCapabilities.includes('quick-lines'),
+    'host-owned soccer quick-lines provider was not granted');
   const unknownHandshake = adapter.connectGame({
     protocolVersions: ['1'],
     manifest: { id: 'unknown-game', version: '1.0.0' },
@@ -280,6 +362,14 @@ async function main() {
   assert(characterResponse.ok, 'character bootstrap request failed');
   assert(adapter.getRuntimeState().characterName === 'resolved-runtime-neko',
     'resolved character identity was not synchronized into the SDK runtime state');
+  const quickLinesResponse = await adapter.getQuickLines({ i18n_language: 'zh-CN' });
+  assert(quickLinesResponse.ok, 'host-owned soccer quick-lines provider failed');
+  assert(calls.some((call) => call.url === '/api/game/soccer/quick-lines'),
+    'soccer quick-lines did not use its host-owned provider');
+  const passiveGuardResponse = await adapter.evaluatePassiveGuard({ stage: 1 });
+  assert(passiveGuardResponse.ok, 'soccer compatibility PassiveGuard request failed');
+  assert(calls.some((call) => call.url.endsWith('/api/game/soccer/passive-guard')),
+    'soccer compatibility adapter did not own its PassiveGuard route');
   const originalGetMutationHeaders = security.getMutationHeaders;
   security.getMutationHeaders = async () => ({});
   const fallbackMutationHeaders = await adapter.getMutationHeaders();
@@ -493,7 +583,8 @@ async function main() {
     `expected cancelled route-end error, got ${cancelledEndError?.code}`);
   assert(pendingCancelledEnd.aborted, 'route-end AbortSignal was not forwarded to the request');
 
-  const limitedAdapter = window.createSoccerNekoAdapter({ pendingRequestLimit: 1 });
+  const limitedAdapter = await window.createSoccerNekoAdapter({ pendingRequestLimit: 1 });
+  connectSoccerHost(limitedAdapter);
   const limitedPending = limitedAdapter.requestDialogue({ runtime_test_mode: 'pending' })
     .then(() => null, (error) => error);
   await new Promise((resolve) => setImmediate(resolve));
@@ -504,12 +595,13 @@ async function main() {
   const limitedDisposedError = await limitedPending;
   assert(limitedDisposedError?.code === 'disposed', 'limited adapter did not release its pending request');
 
-  const isolatedAdapter = window.createSoccerNekoAdapter({
+  const isolatedAdapter = await window.createSoccerNekoAdapter({
     pendingRequestLimit: 1,
     logQueueLimit: 2,
     logConcurrency: 1,
     logPumpIntervalMs: 1,
   });
+  connectSoccerHost(isolatedAdapter);
   isolatedAdapter.configureLogger();
   const isolatedEnable = await isolatedAdapter.logger.enable('isolated-log-transport');
   assert(isolatedEnable.ok, 'isolated logger did not enable');
@@ -535,11 +627,12 @@ async function main() {
   assert(overflowSummary?.details?.dropped_count >= 1, 'log queue overflow was silently discarded');
   isolatedAdapter.dispose();
 
-  const logDisposeAdapter = window.createSoccerNekoAdapter({
+  const logDisposeAdapter = await window.createSoccerNekoAdapter({
     logQueueLimit: 2,
     logConcurrency: 1,
     logPumpIntervalMs: 3,
   });
+  connectSoccerHost(logDisposeAdapter);
   const pendingLogResult = logDisposeAdapter.postLog({
     session_id: logDisposeAdapter.sessionId,
     game_type: 'soccer',
@@ -565,7 +658,8 @@ async function main() {
   assert(disposedLogResult?.reason === 'disposed', 'disposed log request did not resolve as disposed');
   assert(pendingDisposedLog.aborted, 'disposed log request was not aborted');
 
-  const heartbeatAdapter = window.createSoccerNekoAdapter();
+  const heartbeatAdapter = await window.createSoccerNekoAdapter();
+  connectSoccerHost(heartbeatAdapter);
   const heartbeatFailurePromise = heartbeatAdapter.heartbeat(
     { runtime_test_mode: 'pending' },
     {
@@ -583,7 +677,8 @@ async function main() {
   assert(heartbeatFailure?.code === 'timeout', 'heartbeat timeout was misclassified');
   heartbeatAdapter.dispose();
 
-  const unloadAdapter = window.createSoccerNekoAdapter();
+  const unloadAdapter = await window.createSoccerNekoAdapter();
+  connectSoccerHost(unloadAdapter);
   const unloadEnd = unloadAdapter.end(
     { runtime_test_mode: 'pending', reason: 'pagehide' },
     { useBeacon: true },
