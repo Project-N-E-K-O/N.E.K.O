@@ -238,6 +238,24 @@ def test_hard_gate_folds_script(monkeypatch, term, draft):
     assert _proactive_directive_hits("Neko", draft) == [term]
 
 
+@pytest.mark.parametrize("term_form,draft_form", [
+    ("NFD", "NFC"),
+    ("NFC", "NFD"),
+    ("NFD", "NFD"),
+])
+def test_accented_terms_match_across_unicode_forms(monkeypatch, term_form, draft_form):
+    """Composed and decomposed accents must compare equal at the gate."""
+    # 西 / 葡的重音字母可以有两种等价编码：合成的 é，或 e + 组合重音符。两者逐
+    # 字节不等，不归一的话一个重音 term 会**静默永不命中**——用户明确 ban 掉的
+    # 话题照样被推送，而且没有任何征兆（codex）。
+    import unicodedata as ud
+    base = "fútbol"
+    term = ud.normalize(term_form, base)
+    draft = ud.normalize(draft_form, f"vamos a ver el {base} hoy")
+    _install_directives(monkeypatch, [term])
+    assert _proactive_directive_hits("Neko", draft) == [term]
+
+
 def test_matcher_empty_draft_short_circuits(monkeypatch):
     manager = _install_directives(monkeypatch, ["加班"])
     assert _proactive_directive_hits("Neko", "   ") == []

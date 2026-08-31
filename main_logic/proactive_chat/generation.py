@@ -17,6 +17,7 @@
 
 import asyncio
 import logging
+import unicodedata
 import re
 from dataclasses import dataclass
 from functools import partial
@@ -140,6 +141,16 @@ _LATIN_WORD_CHAR = r"0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ"
 _LATIN_EDGE_RE = re.compile(rf"[{_LATIN_WORD_CHAR}]")
 
 
+def _normalize_for_match(text: str) -> str:
+    """Unicode-normalize so composed and decomposed accents compare equal.
+
+    A term captured from decomposed input (``e`` + combining acute) and a draft
+    written in composed form (``é``) are different strings byte-for-byte, so an
+    accented Spanish/Portuguese ban would silently never match.
+    """
+    return unicodedata.normalize("NFC", text)
+
+
 def _directive_term_in_draft(term: str, draft_folded: str) -> bool:
     """Whether ``term`` occurs in an already-casefolded draft.
 
@@ -147,7 +158,7 @@ def _directive_term_in_draft(term: str, draft_folded: str) -> bool:
     the same family; CJK/kana/hangul are written without spaces and can only
     be matched as substrings.
     """
-    folded_term = term.casefold()
+    folded_term = _normalize_for_match(term).casefold()
     if not folded_term:
         return False
     if _BOUNDARYLESS_SCRIPT_RE.search(folded_term):
@@ -204,7 +215,9 @@ def _proactive_directive_hits(lanlan_name: str, draft: str) -> list[str]:
     # 禁掉的话题照样被推到脸上。项目里 memory.script_fold 就是为这条造的
     # （#2584 召回侧同款问题）；新代码直接用，不重蹈 anti_repeat 那边"两套
     # 分词各走各的"的覆辙。
-    folded = fold_script(draft).casefold()
+    # ⚠️ 还要 Unicode 归一：西 / 葡的重音字母可能以分解形式（e + 组合重音符）
+    # 落盘，与合成形式（é）逐字节不等，重音 term 会静默永不命中（codex）。
+    folded = _normalize_for_match(fold_script(draft)).casefold()
     # ⚠️ 纯指代词（``这个`` / ``this`` / ``それ``）只走软约束，不参与硬拦截。
     # 抽取侧是会存下它们的（"别再讲这个了"），而且那个行为被既有测试成片钉着，
     # 不该由这条改动顺手动；但拿汉语最高频的词去做子串匹配，等于让主动搭话在
