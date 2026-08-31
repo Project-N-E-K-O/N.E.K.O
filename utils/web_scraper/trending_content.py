@@ -21,6 +21,7 @@ from itertools import zip_longest
 import httpx
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
+from utils.social_base import social_base_url
 import random
 import re
 import time
@@ -59,10 +60,6 @@ NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
 
 def _neko_community_urls() -> tuple[str, str]:
     """Return community feed and discover URLs for the configured social host."""
-
-    # Keep this import lazy: client registration imports scraper-adjacent modules
-    # during startup, while the configured base may also change in tests.
-    from main_logic.client_registration import social_base_url
 
     base_url = social_base_url().rstrip("/")
     return f"{base_url}/api/feed", f"{base_url}/discover"

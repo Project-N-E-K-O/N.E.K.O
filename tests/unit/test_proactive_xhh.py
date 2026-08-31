@@ -278,7 +278,7 @@ async def test_fetch_neko_community_feed_uses_configured_social_base_url():
         "utils.web_scraper.trending_content.get_external_http_client",
         return_value=client,
     ), patch(
-        "main_logic.client_registration.social_base_url",
+        "utils.web_scraper.trending_content.social_base_url",
         return_value="https://community.example.test",
     ):
         result = await fetch_neko_community_feed(limit=1)
