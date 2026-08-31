@@ -262,10 +262,10 @@ service.interceptors.response.use(
       let wasDisconnected = false
       try {
         const connectionStore = useConnectionStore()
+        wasDisconnected = connectionStore.disconnected
         if (serverHealthy) {
           connectionStore.markConnected()
         } else if (initiatedByThisRequest) {
-          wasDisconnected = connectionStore.disconnected
           connectionStore.markDisconnected()
         }
       } catch (err) {

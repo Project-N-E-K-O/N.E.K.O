@@ -43,15 +43,14 @@ describe('plugin hosted UI API', () => {
     })
   })
 
-  it('gives reloadAllPlugins the dedicated lifecycle timeout and message', async () => {
+  it('does not let Axios truncate an aggregate reload', async () => {
     postMock.mockResolvedValue({ success: true })
     const { reloadAllPlugins } = await import('./plugins')
 
     await reloadAllPlugins()
 
     expect(postMock).toHaveBeenCalledWith('/plugins/reload', undefined, {
-      timeout: 45000,
-      timeoutErrorMessageKey: 'messages.pluginLifecycleTimeout',
+      timeout: 0,
     })
   })
 

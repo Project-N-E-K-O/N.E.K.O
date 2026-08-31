@@ -279,6 +279,24 @@ describe('hosted panel error suppression', () => {
     consoleError.mockRestore()
   })
 
+  it('does not repeat a network error when shared probe waiters are already disconnected', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const healthProbe = vi.spyOn(axios, 'get').mockRejectedValue(new Error('health unavailable'))
+    requestMocks.connectionStore.disconnected = true
+
+    const results = await Promise.allSettled([
+      rejectWith({ message: 'Network Error', request: {} }),
+      rejectWith({ message: 'Network Error', request: {} }),
+      rejectWith({ message: 'Network Error', request: {} }),
+    ])
+
+    expect(results.every((result) => result.status === 'rejected')).toBe(true)
+    expect(healthProbe).toHaveBeenCalledTimes(1)
+    expect(requestMocks.errorMessage).not.toHaveBeenCalled()
+    healthProbe.mockRestore()
+    consoleError.mockRestore()
+  })
+
   it('does not hide a network error from an automatic panel request', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const healthProbe = vi.spyOn(axios, 'get').mockRejectedValue(new Error('health unavailable'))

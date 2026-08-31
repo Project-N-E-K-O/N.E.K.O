@@ -3,7 +3,7 @@
  */
 import { del, get, post } from './index'
 import type { AxiosRequestConfig } from 'axios'
-import { PLUGIN_LIFECYCLE_TIMEOUT } from '@/utils/constants'
+import { PLUGIN_LIFECYCLE_TIMEOUT, PLUGIN_RELOAD_ALL_TIMEOUT } from '@/utils/constants'
 import type {
   PluginMeta,
   PluginStatusData,
@@ -114,8 +114,7 @@ export function reloadAllPlugins(): Promise<{
   message: string
 }> {
   return post('/plugins/reload', undefined, {
-    timeout: PLUGIN_LIFECYCLE_TIMEOUT,
-    timeoutErrorMessageKey: 'messages.pluginLifecycleTimeout',
+    timeout: PLUGIN_RELOAD_ALL_TIMEOUT,
   })
 }
 
