@@ -680,12 +680,47 @@ _SEMANTICALLY_EMPTY_TERMS = frozenset(
 )
 
 
+def term_needs_case_sensitive_match(term: str) -> bool:
+    """Whether a term must be matched case-sensitively: a name spelled like a pronoun.
+
+    English writes ``the US`` / the films ``Us`` and ``Her`` with capitals and
+    the pronouns ``us`` / ``her`` without, so case is the one local signal that
+    separates the two. Same criterion ``_trim_term`` already uses to keep
+    ``Never Please`` intact while still stripping a trailing ``please``.
+
+    ⚠️ **Only for terms that actually collide with the table.** Widening this to
+    "any capitalized term" costs far more than it buys: ``Work`` (an IME
+    capitalizing the first letter, or just a sentence-initial capture) would
+    then stop matching ``work`` / ``WORK`` in a draft, a fresh miss on the
+    ordinary path — while the collision this exists for is confined to terms
+    whose casefold is in ``_SEMANTICALLY_EMPTY_TERMS``. Pinned by
+    ``test_matcher_is_case_insensitive``.
+
+    Complementary to ``is_semantically_empty_term`` — for a term whose casefold
+    is in the table, exactly one of the two is true (lowercase → exempt from the
+    hard gate, capitalized → gated but matched case-sensitively). Terms outside
+    the table get False from both and follow the ordinary path.
+    """
+    normalized = unicodedata.normalize("NFC", term.strip())
+    if not any(ch.isupper() for ch in normalized):
+        return False
+    return normalized.casefold() in _SEMANTICALLY_EMPTY_TERMS
+
+
 def is_semantically_empty_term(term: str) -> bool:
     """Whether a term is a bare referent that means nothing outside its own turn.
 
     Consumers use this to decide whether a directive term is specific enough to
     hard-block output on. It is deliberately NOT applied at extraction time —
     see the table's comment for why the two sides differ.
+
+    ⚠️ Capitalized terms are never exempt. ``stop talking about US`` (the
+    country) and the films ``Us`` / ``Her`` all yield terms whose casefold lands
+    on a pronoun in the table; exempting them means the hard gate skips a topic
+    the user explicitly banned, which is strictly worse than before the pronoun
+    entries existed. The proactive gate pairs this with a case-sensitive match
+    for such terms, so ``US`` no longer matches the ``us`` in "Want us to…" —
+    fixing only this half would silence proactive chat wholesale instead.
 
     ⚠️ NFC first. Accented Spanish/Portuguese entries (``él`` / ``mí`` / ``você``)
     can reach the store decomposed (``e`` + combining acute) from an IME or a
@@ -695,7 +730,10 @@ def is_semantically_empty_term(term: str) -> bool:
     normalizes for the same reason (``generation._normalize_for_match``); this
     predicate has to agree with it or the two disagree on the same term.
     """
-    return unicodedata.normalize("NFC", term.strip()).casefold() in _SEMANTICALLY_EMPTY_TERMS
+    normalized = unicodedata.normalize("NFC", term.strip())
+    if any(ch.isupper() for ch in normalized):
+        return False
+    return normalized.casefold() in _SEMANTICALLY_EMPTY_TERMS
 
 # 话题里允许出现的**一个单位**。四条 zh 模板共用一份，别再各写各的。
 #

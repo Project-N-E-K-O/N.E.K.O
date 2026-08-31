@@ -24,7 +24,11 @@ import pytest
 
 import memory.anti_repeat as anti_repeat_module
 import memory.user_directives as user_directives_module
-from config.prompts.prompts_directives import extract_directives
+from config.prompts.prompts_directives import (
+    extract_directives,
+    is_semantically_empty_term,
+    term_needs_case_sensitive_match,
+)
 from main_logic.proactive_chat.contracts import PROACTIVE_REASON_PASS_USER_DIRECTIVE
 from main_logic.proactive_chat.generation import (
     _append_directives_section,
@@ -200,6 +204,74 @@ def test_pronoun_directives_never_silence_ordinary_drafts(
     _install_directives(monkeypatch, terms)
 
     assert _proactive_directive_hits("Neko", draft) == []
+
+
+@pytest.mark.parametrize("term,blocked_draft,ignored_draft", [
+    # 国名 vs 代词
+    ("US", "The US economy is wild these days.", "Want us to pick a movie?"),
+    # 电影《我们》/《她》
+    ("Us", "Want to watch Us tonight?", "Want us to pick a movie?"),
+    ("Her", "Her is still my favorite film.", "Did you ask her about it?"),
+    # #3013 R4：IT 行业 vs 代词 it
+    ("IT", "The IT department replied.", "How is it going for you?"),
+])
+def test_capitalized_terms_are_names_not_pronouns(
+    monkeypatch, term, blocked_draft, ignored_draft,
+):
+    """A capitalized term is a proper name: still gated, but matched case-sensitively.
+
+    Both halves are load-bearing and neither works alone:
+
+    - exempting it (case-folding down onto the pronoun table) silently drops
+      the hard gate for a topic the user explicitly banned — strictly worse
+      than before the pronoun entries existed;
+    - gating it while still matching case-insensitively fires on every
+      ordinary ``us`` / ``her`` / ``it`` in the draft, which is the
+      proactive-silence P1 the table was built to prevent.
+    """
+    _install_directives(monkeypatch, [term])
+    assert _proactive_directive_hits("Neko", blocked_draft) == [term]
+    assert _proactive_directive_hits("Neko", ignored_draft) == []
+
+
+@pytest.mark.parametrize("term", ["us", "her", "me", "it", "this"])
+def test_lowercase_pronouns_stay_exempt(monkeypatch, term):
+    """Control for the rule above: the lowercase spelling is still the pronoun."""
+    # 没有这条，把"含大写才豁免"写反（变成"只豁免大写"）也能让上面那组全绿。
+    _install_directives(monkeypatch, [term])
+    assert _proactive_directive_hits(
+        "Neko", "Want us to pick a movie, or should I ask her about it?",
+    ) == []
+
+
+@pytest.mark.parametrize("term,exempt,case_sensitive", [
+    # 撞表 + 全小写 → 豁免硬闸
+    ("us", True, False),
+    ("it", True, False),
+    ("me", True, False),
+    # 撞表 + 含大写 → 不豁免，且必须大小写敏感
+    ("US", False, True),
+    ("Us", False, True),
+    ("IT", False, True),
+    # 不撞表 → 两者都 False，走普通的大小写不敏感路径
+    ("work", False, False),
+    ("Work", False, False),
+    ("加班", False, False),
+])
+def test_exemption_and_case_sensitivity_are_complementary(
+    term, exempt, case_sensitive,
+):
+    """For any term, at most one of the two rules applies — never both.
+
+    The pair has to stay complementary or one of two P1s comes back: exempting
+    a capitalized name silently drops the ban, and case-folding it back down
+    fires on every ordinary pronoun in the draft. Note the third group — the
+    case-sensitive rule must NOT widen to "any capitalized term", or an
+    IME-capitalized ``Work`` stops matching ``work``.
+    """
+    assert is_semantically_empty_term(term) is exempt
+    assert term_needs_case_sensitive_match(term) is case_sensitive
+    assert not (exempt and case_sensitive)
 
 
 def test_pronoun_skip_does_not_disarm_the_gate_for_content_terms(monkeypatch):

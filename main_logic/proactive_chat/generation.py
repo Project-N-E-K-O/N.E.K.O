@@ -38,6 +38,7 @@ from config import (
 )
 from config.prompts.prompts_directives import (
     is_semantically_empty_term,
+    term_needs_case_sensitive_match,
     render_format_fix_instruction,
     render_regen_avoid_instruction,
 )
@@ -158,14 +159,24 @@ def _normalize_for_match(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
 
-def _directive_term_in_draft(term: str, draft_folded: str) -> bool:
-    """Whether ``term`` occurs in an already-casefolded draft.
+def _directive_term_in_draft(
+    term: str, draft_folded: str, *, fold_case: bool = True,
+) -> bool:
+    """Whether ``term`` occurs in a draft the caller already normalized.
 
     Latin/Cyrillic/Greek terms match only when not glued to another letter of
     the same family; CJK/kana/hangul are written without spaces and can only
     be matched as substrings.
+
+    ⚠️ ``fold_case`` must agree with how the caller prepared ``draft_folded``:
+    True expects a casefolded draft, False expects one that kept its case. A
+    capitalized term (``US``, ``Us``, ``Her``) is a proper name, and matching it
+    case-insensitively would fire on every ordinary ``us`` / ``her`` in the
+    draft — the pronoun-silencing P1 all over again. See
+    ``term_needs_case_sensitive_match``.
     """
-    folded_term = _normalize_for_match(term).casefold()
+    normalized_term = _normalize_for_match(term)
+    folded_term = normalized_term.casefold() if fold_case else normalized_term
     if not folded_term:
         return False
     if _BOUNDARYLESS_SCRIPT_RE.search(folded_term):
@@ -246,12 +257,24 @@ def _proactive_directive_hits(lanlan_name: str, draft: str) -> list[str]:
     # 不该由这条改动顺手动；但拿汉语最高频的词去做子串匹配，等于让主动搭话在
     # 这条指令的整个生命周期里（递增 TTL 后最长 30 天）全面静默，而用户今天
     # 没有界面能看到、更别说删掉它。判据与危害都在消费侧，就在消费侧收口。
-    return [
-        t for t in terms
-        if t
-        and not is_semantically_empty_term(t)
-        and _directive_term_in_draft(fold_script(t), folded)
-    ]
+    # ⚠️ 保留大小写的那一份草稿，专给专名 term 用（``US`` / ``Us`` / ``Her``）。
+    # 它们在表里的小写形态是代词，casefold 之后会命中草稿里每一个普通的
+    # ``us`` / ``her``；反过来若把它们当代词豁免，用户明确 ban 掉的话题就直接
+    # 放行了。两条路都是 P1，所以判据落在 term 自己的大小写上，两侧配套。
+    cased = _normalize_for_match(fold_script(draft))
+    hits: list[str] = []
+    for t in terms:
+        if not t or is_semantically_empty_term(t):
+            continue
+        folded_t = fold_script(t)
+        case_sensitive = term_needs_case_sensitive_match(folded_t)
+        if _directive_term_in_draft(
+            folded_t,
+            cased if case_sensitive else folded,
+            fold_case=not case_sensitive,
+        ):
+            hits.append(t)
+    return hits
 
 
 def _merge_regen_avoid_terms(*term_groups: Any) -> list[str]:
