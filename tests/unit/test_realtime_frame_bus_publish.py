@@ -512,3 +512,25 @@ async def test_the_constructor_carries_the_character_name():
         turn_detection_mode=TurnDetectionMode.SERVER_VAD,
     )
     assert unnamed.lanlan_name is None
+
+
+@pytest.mark.unit
+async def test_close_stops_new_realtime_frame_copies_from_starting():
+    """Draining is not enough on its own -- the offline client learned this first.
+
+    An image send already awaiting the provider resolves after the drain, fires
+    a fresh copy, and that one outlives the closed session with nothing left to
+    collect it.
+
+    Mutation: drop the ``_frame_copies_closed`` latch, keeping only the drain.
+    """
+    client = _make_client("qwen-omni-turbo")
+
+    async def _late():
+        return None
+
+    await asyncio.wait_for(client._cancel_frame_copies(), timeout=5)
+
+    assert client._fire_frame_copy(_late()) is None, (
+        "close 之后仍然接受了新的帧抄送"
+    )

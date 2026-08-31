@@ -949,3 +949,59 @@ def test_an_attachment_keeps_its_own_label_on_a_channelled_turn():
     assert spy.sources == ["camera", "user"], (
         f"通道标签串到附件上了: {spy.sources}"
     )
+
+
+def test_an_oversized_frame_never_enters_the_session_channel():
+    """The session PUB is shared, so frames cannot be bounded with SNDHWM.
+
+    That socket carries every session event; lowering its high-water mark to
+    suit multi-megabyte frames would drop text events sooner too. And the
+    in-flight task cap does not help -- each task ends the moment
+    ``send(NOBLOCK)`` queues the event, so the socket keeps the bytes.
+
+    Refusing before the enqueue costs nothing: a frame this size is refused by
+    the message-plane bridge at the far end anyway.
+
+    Mutation: drop the size check in
+    ``publish_provider_frame_observed_best_effort``.
+    """
+    from main_logic import agent_event_bus
+
+    sent: list = []
+
+    async def _capture(event):
+        sent.append(event)
+        return True
+
+    with patch.object(agent_event_bus, "publish_session_event_threadsafe", _capture):
+        async def _go():
+            over = "A" * (agent_event_bus.PROVIDER_FRAME_MAX_B64_BYTES + 1)
+            under = "A" * 32
+            refused = await agent_event_bus.publish_provider_frame_observed_best_effort(
+                "neko", image_base64=over, source="screen",
+            )
+            accepted = await agent_event_bus.publish_provider_frame_observed_best_effort(
+                "neko", image_base64=under, source="screen",
+            )
+            return refused, accepted
+
+        refused, accepted = asyncio.run(_go())
+
+    assert refused is False, "超限的帧仍然被送进了共用的 session 通道"
+    assert accepted is True, "前提没成立：正常大小的帧也没送出去"
+    assert len(sent) == 1 and len(sent[0]["image_base64"]) == 32
+
+
+def test_the_frame_bound_matches_the_tool_image_delivery_ceiling():
+    """One quantity, two call sites -- pinned equal so neither drifts alone.
+
+    A tool image is published onto this same channel, so its delivery ceiling
+    and the channel's own bound are the same number by construction, not by
+    coincidence.
+    """
+    from main_logic.agent_event_bus import PROVIDER_FRAME_MAX_B64_BYTES
+    from main_logic.tool_calling import _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
+    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    assert PROVIDER_FRAME_MAX_B64_BYTES == _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
+    assert PROVIDER_FRAME_MAX_B64_BYTES < MESSAGE_PLANE_PAYLOAD_MAX_BYTES

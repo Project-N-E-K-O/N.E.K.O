@@ -91,6 +91,20 @@ def _int_env(env_key: str, default: int, *, minimum: int) -> int:
 # nothing else. The value is not derived from that setting: main_logic sits
 # below ``plugin`` in the layering and cannot read it.
 # Env: NEKO_AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT, default=8
+# 单张帧允许进 session PUB 的最大 base64 体积。
+#
+# 这条 socket 是**会话事件共用**的，所以不能靠压 SNDHWM 来约束帧——那会连
+# 文本事件一起提前丢。而 PUB 的默认 SNDHWM 是 1000 条：订阅方一停，多兆的帧
+# 能在 socket 里堆成几百 MB，而在途任务上限（下面那个）拦不住，因为每个任务
+# 在 send(NOBLOCK) 入队的瞬间就结束了。
+#
+# 所以闸放在**入队之前**。这不损失任何行为：超过 message plane 记录上限的帧
+# 到了远端本来就会被 bridge 拒收，早拒只是省掉一次穿越和一段驻留。取值与
+# 工具图的投递上限一致（见 tool_calling._TOOL_IMAGE_DELIVER_MAX_B64_BYTES，
+# 那边有一条用例钉住两者相等），并留在 plane 的 512 KiB 之下——那个界按整条
+# 打包记录算，像素旁边还有 mime / turn_id / metadata。
+PROVIDER_FRAME_MAX_B64_BYTES = 500 * 1024
+
 AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT = _int_env(
     "NEKO_AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT", 8, minimum=1,
 )
@@ -792,6 +806,16 @@ async def publish_provider_frame_observed_best_effort(
     """
     b64 = str(image_base64 or "")
     if not b64:
+        return False
+    if len(b64) > PROVIDER_FRAME_MAX_B64_BYTES:
+        # 拒在入队之前，理由见 PROVIDER_FRAME_MAX_B64_BYTES 的说明：这条 PUB
+        # 是共用的，靠 SNDHWM 约束帧会牵连文本事件；而这么大的帧到了远端也是
+        # 被拒。debug 而不是 warning：调用方全是 best-effort 抄送，用户看不见。
+        logger.debug(
+            "[EventBus] provider frame too large for the session channel: "
+            "%d > %d (source=%s)",
+            len(b64), PROVIDER_FRAME_MAX_B64_BYTES, source,
+        )
         return False
     event: Dict[str, Any] = {
         "event_type": PROVIDER_FRAME_OBSERVED_EVENT,

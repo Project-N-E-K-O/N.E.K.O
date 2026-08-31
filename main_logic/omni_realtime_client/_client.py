@@ -609,6 +609,12 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         later recovers. Cancel then collect -- a cancelled task has not
         stopped until it has been awaited.
         """
+        # Latch before draining, the same way the offline client does. Draining
+        # alone races: an image send already awaiting the provider (Gemini's
+        # send_realtime_input, a queued WebSocket event) resolves after the
+        # drain, fires a fresh copy, and that copy outlives the closed session
+        # with nothing left to collect it.
+        self._frame_copies_closed = True
         tasks = getattr(self, "_frame_copy_tasks", None)
         if not tasks:
             return
@@ -634,6 +640,11 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         """
         from main_logic.agent_event_bus import spawn_bounded_frame_copy
 
+        if getattr(self, "_frame_copies_closed", False):
+            # close() has begun. A copy started now describes a session that is
+            # gone, and the drain has already run -- nothing would collect it.
+            coro.close()
+            return None
         tasks = getattr(self, "_frame_copy_tasks", None)
         if tasks is None:
             tasks = set()
