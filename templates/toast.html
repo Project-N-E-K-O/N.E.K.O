@@ -66,37 +66,106 @@
         var statusTimeout = null;
         var cleanupTimer = null;
 
-        function showStatusToast(message, duration) {
-            duration = duration || 3000;
-
-            if (!message || !message.trim()) {
-                if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
-                statusToast.classList.remove('show');
-                statusToast.classList.add('hide');
-                cleanupTimer = setTimeout(function() {
-                    statusToast.textContent = '';
-                    cleanupTimer = null;
-                }, 300);
-                return;
-            }
-
+        var toastRemaining = 3000; var toastStart = 0; var showTimer = null;
+        function hideStatusNow() {
+            if (showTimer) { clearTimeout(showTimer); showTimer = null; }
             if (statusTimeout) { clearTimeout(statusTimeout); statusTimeout = null; }
             if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
-
-            statusToast.textContent = message;
-            statusToast.style.display = 'block';
-            statusToast.style.visibility = 'visible';
-            statusToast.classList.remove('hide');
-            setTimeout(function() { statusToast.classList.add('show'); }, 10);
-
-            statusTimeout = setTimeout(function() {
+            if (statusToast._enter) { statusToast.removeEventListener('mouseenter', statusToast._enter); statusToast._enter = null; }
+            if (statusToast._leave) { statusToast.removeEventListener('mouseleave', statusToast._leave); statusToast._leave = null; }
+            if (statusToast._focusIn) { statusToast.removeEventListener('focusin', statusToast._focusIn); statusToast._focusIn = null; }
+            if (statusToast._focusOut) { statusToast.removeEventListener('focusout', statusToast._focusOut); statusToast._focusOut = null; }
+            var _cb = statusToast.querySelector('#status-toast-close');
+            if (_cb) { _cb.disabled = true; _cb.tabIndex = -1; _cb.setAttribute('aria-hidden','true'); if (document.activeElement === _cb) _cb.blur(); }
+            statusToast.classList.remove('show');
+            statusToast.classList.add('hide');
+            cleanupTimer = setTimeout(function() { var t=statusToast.querySelector('#status-toast-text'); if(t) t.textContent=''; Array.from(statusToast.childNodes).forEach(function(n){ if(n.nodeType===3) n.textContent=''; }); cleanupTimer=null; if (api && api.setMouseThrough && !document.getElementById('prominent-notice-overlay')) api.setMouseThrough(true); }, 400);
+        }
+        function scheduleHide(ms) {
+            if (statusTimeout) clearTimeout(statusTimeout);
+            toastRemaining = ms; toastStart = Date.now();
+            statusTimeout = setTimeout(hideStatusNow, ms);
+        }
+        function showStatusToast(message, duration) {
+            if (duration == null) duration = 3000;
+            if (!message || !message.trim()) {
+                if (showTimer) { clearTimeout(showTimer); showTimer=null; }
+                if (statusTimeout) { clearTimeout(statusTimeout); statusTimeout = null; }
+                if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
+                if (statusToast._enter) { statusToast.removeEventListener('mouseenter', statusToast._enter); statusToast._enter = null; }
+                if (statusToast._leave) { statusToast.removeEventListener('mouseleave', statusToast._leave); statusToast._leave = null; }
+                if (statusToast._focusIn) { statusToast.removeEventListener('focusin', statusToast._focusIn); statusToast._focusIn = null; }
+                if (statusToast._focusOut) { statusToast.removeEventListener('focusout', statusToast._focusOut); statusToast._focusOut = null; }
+                var _cb2=statusToast.querySelector('#status-toast-close'); if(_cb2){ _cb2.disabled=true; _cb2.tabIndex=-1; _cb2.setAttribute('aria-hidden','true'); if(document.activeElement===_cb2) _cb2.blur(); }
                 statusToast.classList.remove('show');
                 statusToast.classList.add('hide');
-                cleanupTimer = setTimeout(function() {
-                    statusToast.textContent = '';
-                    cleanupTimer = null;
-                }, 300);
-            }, duration);
+                cleanupTimer = setTimeout(function() { var t=statusToast.querySelector('#status-toast-text'); if(t) t.textContent=''; Array.from(statusToast.childNodes).forEach(function(n){ if(n.nodeType===3) n.textContent=''; }); cleanupTimer=null; if (api && api.setMouseThrough && !document.getElementById('prominent-notice-overlay')) api.setMouseThrough(true); }, 400);
+                toastRemaining=null; toastStart=null;
+                return;
+            }
+            if (showTimer) { clearTimeout(showTimer); showTimer=null; }
+            if (statusTimeout) { clearTimeout(statusTimeout); statusTimeout = null; }
+            if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
+            var textEl = statusToast.querySelector('#status-toast-text');
+            if (!textEl) { textEl=document.createElement('span'); textEl.id='status-toast-text'; textEl.style.cssText='position:relative;z-index:1;flex:1;min-width:0;overflow-wrap:anywhere;'; statusToast.appendChild(textEl); }
+            Array.from(statusToast.childNodes).forEach(function(n){ if(n!==textEl && n.nodeType===3) n.textContent=''; });
+            if (cleanupTimer) { clearTimeout(cleanupTimer); cleanupTimer = null; }
+            textEl.textContent = message;
+            var closeBtn = statusToast.querySelector('#status-toast-close');
+            if (!closeBtn) {
+                closeBtn = document.createElement('button');
+                closeBtn.id = 'status-toast-close';
+                closeBtn.type = 'button';
+                closeBtn.setAttribute('aria-label','close');
+                if(!document.querySelector('style[data-toast-close]')){
+                    var cs=document.createElement('style');
+                    cs.setAttribute('data-toast-close','true');
+                    cs.textContent='#status-toast-close::before,#status-toast-close::after{content:"";position:absolute;left:50%;top:50%;width:10px;height:2px;border-radius:999px;background:#fff;pointer-events:none}#status-toast-close::before{transform:translate(-50%,-50%) rotate(45deg)}#status-toast-close::after{transform:translate(-50%,-50%) rotate(-45deg)}#status-toast-close:focus-visible{outline:2px solid rgba(255,255,255,0.9);outline-offset:2px}';
+                    document.head.appendChild(cs);
+                }
+                closeBtn.style.cssText = 'position:absolute;top:6px;right:8px;z-index:2;width:22px;height:22px;border:none;border-radius:50%;background:rgba(255,255,255,0.22);cursor:pointer;padding:0;opacity:0.85;font-size:0;line-height:0;';
+                statusToast.appendChild(closeBtn);
+            }
+            closeBtn.disabled = false; closeBtn.tabIndex = 0; closeBtn.removeAttribute('aria-hidden');
+            closeBtn.onclick = function(e){ e.stopPropagation(); hideStatusNow(); };
+            if (api && api.setMouseThrough) api.setMouseThrough(false);
+            statusToast.style.display = 'block';
+            statusToast.style.visibility = 'visible';
+            statusToast.style.paddingRight = '36px';
+            statusToast.classList.remove('hide');
+            showTimer = setTimeout(function() { statusToast.classList.add('show'); showTimer=null; }, 10);
+            if (statusToast._enter) statusToast.removeEventListener('mouseenter', statusToast._enter);
+            if (statusToast._leave) statusToast.removeEventListener('mouseleave', statusToast._leave);
+            if (statusToast._focusIn) statusToast.removeEventListener('focusin', statusToast._focusIn);
+            if (statusToast._focusOut) statusToast.removeEventListener('focusout', statusToast._focusOut);
+            statusToast._enter = function() {
+                if (!statusTimeout) return;
+                clearTimeout(statusTimeout); statusTimeout = null;
+                var elapsed = Date.now() - toastStart;
+                var base = toastRemaining!=null ? toastRemaining : duration;
+                toastRemaining = Math.max(0, base - elapsed);
+            };
+            statusToast._leave = function() {
+                if (statusTimeout || statusToast.classList.contains('hide')) return;
+                if (!statusToast.matches(':hover, :focus-within')) scheduleHide(toastRemaining!=null ? toastRemaining : duration);
+            };
+            statusToast._focusIn = function() {
+                if (!statusTimeout) return;
+                clearTimeout(statusTimeout); statusTimeout = null;
+                var elapsed = Date.now() - toastStart;
+                var base = toastRemaining!=null ? toastRemaining : duration;
+                toastRemaining = Math.max(0, base - elapsed);
+            };
+            statusToast._focusOut = function() {
+                if (statusTimeout || statusToast.classList.contains('hide')) return;
+                if (!statusToast.matches(':hover, :focus-within')) scheduleHide(toastRemaining!=null ? toastRemaining : duration);
+            };
+            statusToast.addEventListener('mouseenter', statusToast._enter);
+            statusToast.addEventListener('mouseleave', statusToast._leave);
+            statusToast.addEventListener('focusin', statusToast._focusIn);
+            statusToast.addEventListener('focusout', statusToast._focusOut);
+            if (statusToast.matches(':hover, :focus-within')) { toastRemaining = duration; toastStart = Date.now(); }
+            else scheduleHide(duration);
         }
 
         // ===== Voice Preparing Toast =====
@@ -373,8 +442,8 @@
                 overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
                 setTimeout(function() {
                     overlay.remove();
-                    // 恢复鼠标穿透
-                    if (api) api.setMouseThrough(true);
+                    // 恢复鼠标穿透：仅当 #status-toast 不再展示时才恢复
+                    if (api && !document.getElementById('status-toast').classList.contains('show')) api.setMouseThrough(true);
                     onDismiss();
                 }, 200);
             }

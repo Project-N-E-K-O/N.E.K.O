@@ -215,6 +215,43 @@
         }
     }
 
+    function isElectronChatIdleTargetAvailable(bridge) {
+        if (bridge && typeof bridge.isIdleTargetAvailable === 'function') {
+            try {
+                return bridge.isIdleTargetAvailable() === true;
+            } catch (_) {
+                return false;
+            }
+        }
+        return !document.hidden;
+    }
+
+    function noteElectronChatIdleTargetAvailability(available, forceNewEpoch) {
+        var nextAvailable = available === true;
+        if (forceNewEpoch || I.electronChatIdleTargetAvailable !== nextAvailable) {
+            I.electronChatIdleTargetAvailabilityEpoch =
+                (Number(I.electronChatIdleTargetAvailabilityEpoch) || 0) + 1;
+        }
+        I.electronChatIdleTargetAvailable = nextAvailable;
+        return nextAvailable;
+    }
+
+    function getElectronChatIdleTargetAvailabilityEpoch(bridge) {
+        var bridgeEpoch = 0;
+        if (bridge && typeof bridge.getIdleTargetAvailabilityEpoch === 'function') {
+            try {
+                var reportedEpoch = Number(bridge.getIdleTargetAvailabilityEpoch());
+                if (Number.isFinite(reportedEpoch) && reportedEpoch >= 0) {
+                    bridgeEpoch = Math.floor(reportedEpoch);
+                }
+            } catch (_) {}
+        }
+        return [
+            Number(I.electronChatIdleTargetAvailabilityEpoch) || 0,
+            bridgeEpoch
+        ].join(':');
+    }
+
     function getElectronChatMinimizedStateSignature(minimizedState, rect) {
         if (!minimizedState || !rect) return '0';
         return [
@@ -224,6 +261,35 @@
             rect.width,
             rect.height
         ].join(':');
+    }
+
+    function nextIdleChatLifecycleSequence() {
+        var sequence = Number(window.__nekoIdleChatLifecycleSequence);
+        if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence >= Number.MAX_SAFE_INTEGER) {
+            sequence = 0;
+        }
+        sequence += 1;
+        window.__nekoIdleChatLifecycleSequence = sequence;
+        return sequence;
+    }
+
+    function dispatchElectronChatIdleTargetUnavailable(reason) {
+        if (I.electronChatMinimizedStateSignature === 'unavailable') return;
+        var now = Date.now();
+        I.electronChatMinimizedStateSignature = 'unavailable';
+        I.electronChatMinimizedStatePublishedAt = now;
+        window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
+            detail: {
+                action: 'idle_chat_minimized_state',
+                source: 'chat-window',
+                reason: reason || 'window-hidden',
+                available: false,
+                minimized: false,
+                screenRect: null,
+                timestamp: now,
+                lifecycleSequence: nextIdleChatLifecycleSequence()
+            }
+        }));
     }
 
     function getElectronChatMinimizedScreenRect(windowRect) {
@@ -251,6 +317,13 @@
         var bridge = window.nekoChatWindow;
         if (!bridge || typeof bridge.getBounds !== 'function') return;
 
+        // BrowserWindow.hide() 不销毁 renderer，后台 timer 仍会运行。隐藏后的旧
+        // isCollapsed()/getBounds() 只能描述 carrier 的最后位置，不能继续作为追逐目标。
+        if (!noteElectronChatIdleTargetAvailability(isElectronChatIdleTargetAvailable(bridge), false)) {
+            dispatchElectronChatIdleTargetUnavailable(reason || 'window-hidden');
+            return;
+        }
+
         var now = Date.now();
         var collapsed = isElectronChatWindowCollapsed(bridge);
 
@@ -273,9 +346,11 @@
                         action: 'idle_chat_minimized_state',
                         source: 'chat-window',
                         reason: reason || 'sync',
+                        available: true,
                         minimized: true,
                         screenRect: directRect,
-                        timestamp: now
+                        timestamp: now,
+                        lifecycleSequence: nextIdleChatLifecycleSequence()
                     }
                 }));
                 return;
@@ -294,15 +369,33 @@
                     action: 'idle_chat_minimized_state',
                     source: 'chat-window',
                     reason: reason || 'sync',
+                    available: true,
                     minimized: false,
                     screenRect: null,
-                    timestamp: now
+                    timestamp: now,
+                    lifecycleSequence: nextIdleChatLifecycleSequence()
                 }
             }));
             return;
         }
 
+        var requestAvailabilityEpoch = getElectronChatIdleTargetAvailabilityEpoch(bridge);
         bridge.getBounds().then(function (bounds) {
+            // getBounds 是异步 IPC。托盘关闭或展开可能发生在请求与回调之间；
+            // 回调必须复核实时状态，否则这条迟到消息会用更新的 timestamp 复活旧毛线球。
+            if (!noteElectronChatIdleTargetAvailability(isElectronChatIdleTargetAvailable(bridge), false)) {
+                dispatchElectronChatIdleTargetUnavailable(reason || 'bounds-window-hidden');
+                return;
+            }
+            if (requestAvailabilityEpoch !== getElectronChatIdleTargetAvailabilityEpoch(bridge)) {
+                // 即使当前已重新可用，旧请求仍属于关闭前的生命周期，不能给旧矩形换上新时间戳。
+                scheduleElectronChatMinimizedState('bounds-availability-changed');
+                return;
+            }
+            if (!isElectronChatWindowCollapsed(bridge)) {
+                dispatchElectronChatMinimizedState(reason || 'bounds-state-changed');
+                return;
+            }
             var windowRect = normalizeElectronWindowBoundsRect(bounds);
             if (!windowRect) return;
             var yarnRect = getElectronChatMinimizedScreenRect(windowRect);
@@ -321,9 +414,11 @@
                     action: 'idle_chat_minimized_state',
                     source: 'chat-window',
                     reason: reason || 'sync',
+                    available: true,
                     minimized: true,
                     screenRect: yarnRect,
-                    timestamp: now
+                    timestamp: now,
+                    lifecycleSequence: nextIdleChatLifecycleSequence()
                 }
             }));
         }).catch(function () {});
@@ -369,6 +464,20 @@
         window.addEventListener('mouseup', function () {
             scheduleElectronChatMinimizedState('pointer');
         }, { passive: true });
+        document.addEventListener('visibilitychange', function () {
+            var bridge = window.nekoChatWindow;
+            var available = noteElectronChatIdleTargetAvailability(
+                isElectronChatIdleTargetAvailable(bridge),
+                true
+            );
+            if (!available) {
+                // requestAnimationFrame 在隐藏文档中可能暂停；失效通知必须同步发出。
+                I.electronChatMinimizedStateFullRateUntil = 0;
+                dispatchElectronChatIdleTargetUnavailable('visibility-hidden');
+                return;
+            }
+            scheduleElectronChatMinimizedState('visibility-visible');
+        });
     }
 
     function clampElectronDockBounds(bounds, workArea) {

@@ -260,12 +260,16 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
         "function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt) {",
     )
     assert "sourceUpdatedAt: 0" in state_init_block
+    assert "lifecycleSequence: 0" in state_init_block
+    assert "lifecycleTerminal: false" in state_init_block
     assert "expandedRecent: false" in state_init_block
     assert "function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt)" in source
-    assert "function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, state)" in source
-    assert "function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, state)" in source
-    assert "function _makeNekoIdleDesktopChatMinimizedState(minimized, screenRect, updatedAt, sourceUpdatedAt, expandedRecent)" in source
-    assert "function _makeNekoIdleDesktopCompactSurfaceState(visible, screenRect, updatedAt, sourceUpdatedAt)" in source
+    assert "function _getNekoIdleDesktopStateLifecycleSequence(detail)" in source
+    assert "function _compareNekoIdleDesktopStateOrder(sourceUpdatedAt, lifecycleSequence, state)" in source
+    assert "function _isNekoIdleDesktopStateStaleAgainst(" in source
+    assert "function _isNekoIdleDesktopStateNewerThan(" in source
+    assert "function _makeNekoIdleDesktopChatMinimizedState(" in source
+    assert "function _makeNekoIdleDesktopCompactSurfaceState(" in source
     assert "if (state.expandedRecent === false) return false;" in source
 
     pair_move_block = _between(
@@ -282,7 +286,8 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
         "function _getNekoIdleChatCompactSurfaceRect() {",
     )
     assert "_nekoIdleDesktopChatMinimizedState.minimized" in desktop_compact_rect
-    assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopChatMinimizedState.sourceUpdatedAt, state)" in desktop_compact_rect
+    assert "_isNekoIdleDesktopStateNewerThan(" in desktop_compact_rect
+    assert "_nekoIdleDesktopChatMinimizedState.lifecycleSequence" in desktop_compact_rect
     assert "const virtualOrigin = _getNekoDesktopVirtualViewportOrigin();" in desktop_compact_rect
     assert "const screenLeft = virtualOrigin.x;" in desktop_compact_rect
 
@@ -292,7 +297,8 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
         "function _isNekoIdleDesktopChatExpandedRecent() {",
     )
     assert "_nekoIdleDesktopCompactSurfaceState.visible" in desktop_minimized_rect
-    assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt, state)" in desktop_minimized_rect
+    assert "_isNekoIdleDesktopStateNewerThan(" in desktop_minimized_rect
+    assert "_nekoIdleDesktopCompactSurfaceState.lifecycleSequence" in desktop_minimized_rect
     assert "const virtualOrigin = _getNekoDesktopVirtualViewportOrigin();" in desktop_minimized_rect
     assert "const screenLeft = virtualOrigin.x;" in desktop_minimized_rect
 
@@ -302,12 +308,16 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
         "window.addEventListener('neko:idle-chat-compact-surface-state', (event) => {",
     )
     assert "const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);" in minimized_listener
-    assert "if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) return;" in minimized_listener
+    assert "const lifecycleSequence = _getNekoIdleDesktopStateLifecycleSequence(detail);" in minimized_listener
+    assert "const lifecycleTerminal = !targetAvailable;" in minimized_listener
+    assert "_isNekoIdleDesktopStateStaleAgainst(" in minimized_listener
     assert "const compactSurfaceCurrentlyVisible = !!_getNekoIdleDesktopCompactSurfaceRect();" in minimized_listener
     assert "_nekoIdleDesktopCompactSurfaceState.visible" in minimized_listener
-    assert "_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)" in minimized_listener
+    assert "_nekoIdleDesktopCompactSurfaceState" in minimized_listener
     assert "_nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(" in minimized_listener
-    assert "!!(detail && !detail.minimized && !compactSurfaceCurrentlyVisible)" in minimized_listener
+    assert "!!(targetAvailable && detail && !detail.minimized && !compactSurfaceCurrentlyVisible)" in minimized_listener
+    assert "const targetAvailable = !(detail && detail.available === false);" in minimized_listener
+    assert "if (nextMinimized || !targetAvailable)" in minimized_listener
 
     compact_listener = _between(
         source,
@@ -315,9 +325,10 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
         "const currentTier = _readNekoAutoGoodbyeVisualTier();",
     )
     assert "const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);" in compact_listener
-    assert "if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) return;" in compact_listener
+    assert "const lifecycleSequence = _getNekoIdleDesktopStateLifecycleSequence(detail);" in compact_listener
+    assert "_isNekoIdleDesktopStateStaleAgainst(" in compact_listener
     assert "_nekoIdleDesktopChatMinimizedState.minimized" in compact_listener
-    assert "_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)" in compact_listener
+    assert "_nekoIdleDesktopChatMinimizedState" in compact_listener
     assert "const heartbeat = !!(detail && detail.heartbeat);" in compact_listener
     assert "if (!heartbeat) {" in compact_listener
     assert "_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(" in compact_listener
@@ -331,6 +342,55 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     assert minimized_reassign_line.index("false") < minimized_reassign_line.index("null")
     assert minimized_reassign_line.index("null") < minimized_reassign_line.index("receivedAt")
     assert minimized_reassign_line.index("receivedAt") < minimized_reassign_line.index("sourceUpdatedAt")
+
+
+def test_hidden_electron_chat_retires_minimized_and_compact_follow_targets():
+    react_source = _read(APP_REACT_CHAT_WINDOW_PATH)
+    interpage_source = _read(PROJECT_ROOT / "static" / "app" / "app-interpage")
+    avatar_source = _read(AVATAR_UI_BUTTONS_PATH)
+
+    availability_block = _between(
+        react_source,
+        "function isElectronChatIdleTargetAvailable(bridge) {",
+        "function getElectronChatMinimizedStateSignature",
+    )
+    assert "bridge.isIdleTargetAvailable() === true" in availability_block
+    assert "return !document.hidden;" in availability_block
+
+    dispatch_block = _between(
+        react_source,
+        "function dispatchElectronChatMinimizedState(reason) {",
+        "function scheduleElectronChatMinimizedState(reason)",
+    )
+    availability_guard = dispatch_block.index(
+        "if (!noteElectronChatIdleTargetAvailability(isElectronChatIdleTargetAvailable(bridge), false))"
+    )
+    bounds_request = dispatch_block.index("bridge.getBounds().then(function (bounds)")
+    assert availability_guard < bounds_request
+    bounds_callback = dispatch_block.split("bridge.getBounds().then(function (bounds)", 1)[1]
+    assert "if (!noteElectronChatIdleTargetAvailability(isElectronChatIdleTargetAvailable(bridge), false))" in bounds_callback
+    assert "if (!isElectronChatWindowCollapsed(bridge))" in bounds_callback
+    assert "requestAvailabilityEpoch !== getElectronChatIdleTargetAvailabilityEpoch(bridge)" in bounds_callback
+    assert "available: true" in dispatch_block
+    assert "dispatchElectronChatIdleTargetUnavailable" in dispatch_block
+
+    bridge_block = _between(
+        react_source,
+        "ensureElectronChatMinimizedStateBridge = function ensureElectronChatMinimizedStateBridge() {",
+        "function clampElectronDockBounds",
+    )
+    assert "document.addEventListener('visibilitychange'" in bridge_block
+    assert "dispatchElectronChatIdleTargetUnavailable('visibility-hidden')" in bridge_block
+
+    assert "isIdleChatSurfaceAvailable = function isIdleChatSurfaceAvailable()" in interpage_source
+    assert "postIdleChatCompactSurfaceUnavailable('heartbeat-window-hidden')" in interpage_source
+    assert "postIdleChatCompactSurfaceUnavailable('visibility-hidden')" in interpage_source
+    assert "republishCompactSurfaceLayoutChange('visibility-visible')" in interpage_source
+    assert "republishCompactSurfaceLayoutChange = function republishCompactSurfaceLayoutChange" in react_source
+    assert "available: available" in interpage_source
+
+    assert "const targetAvailable = !(detail && detail.available === false);" in avatar_source
+    assert "if (nextMinimized || !targetAvailable)" in avatar_source
 
 
 def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync():
