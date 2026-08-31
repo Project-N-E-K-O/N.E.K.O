@@ -763,3 +763,81 @@ def _inspect_source(module, needle: str) -> str:
     text = Path(module.__file__).read_text(encoding="utf-8")
     assert needle in text, f"{needle} 不在 {module.__name__} 里"
     return text
+
+
+# ── the legacy message queue must never delay a push ───────────────────
+
+
+class _NoAwaitQueue:
+    """A queue that refuses to be awaited.
+
+    ``state.message_queue`` has no consumer anywhere in the tree, so it fills
+    once and stays full. Awaiting it -- even with a 50 ms bound -- charges every
+    push for a mirror nobody reads, and this branch made ``_forward_message``
+    the only push path.
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        self.maxsize = maxsize
+        self.items: list = []
+
+    def put_nowait(self, item) -> None:
+        if len(self.items) >= self.maxsize:
+            raise asyncio.QueueFull
+        self.items.append(item)
+
+    async def put(self, item) -> None:  # pragma: no cover - the failure we guard
+        raise AssertionError(
+            "遗留队列这一跳被 await 了——消费者根本不存在，等它就是白等"
+        )
+
+
+def _push(manager, published: list):
+    manager._publish_message_to_plane = lambda msg: (published.append(msg), True)[1]
+    return manager._route_message(
+        {
+            "type": "MESSAGE_PUSH",
+            "plugin_id": "authenticated-plugin",
+            "parts": [{"type": "text", "text": "cue"}],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_queue_hop_is_never_awaited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: restore ``await asyncio.wait_for(...put(msg), timeout=0.05)``."""
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin", transport=_Transport(), logger=_Logger()
+    )
+    manager._message_target_queue = _NoAwaitQueue(maxsize=4)
+    monkeypatch.setattr(state, "append_message_record", lambda record: None)
+
+    published: list = []
+    await _push(manager, published)
+
+    assert len(manager._message_target_queue.items) == 1
+    assert len(published) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_full_legacy_queue_does_not_hold_up_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Delivery already happened in the plane write; the mirror may be dropped.
+
+    This is the state the queue is permanently in after 1000 pushes, so it is
+    the interesting one, not the edge case.
+    """
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin", transport=_Transport(), logger=_Logger()
+    )
+    manager._message_target_queue = _NoAwaitQueue(maxsize=0)
+    monkeypatch.setattr(state, "append_message_record", lambda record: None)
+
+    published: list = []
+    await _push(manager, published)
+
+    assert manager._message_target_queue.items == []
+    assert len(published) == 1, "队列满就把投递也一起丢了——投递不该依赖这个镜像"

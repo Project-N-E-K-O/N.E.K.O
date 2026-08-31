@@ -771,8 +771,20 @@ class PluginCommunicationResourceManager:
             return
 
         try:
-            await asyncio.wait_for(self._message_target_queue.put(msg), timeout=0.05)
-        except asyncio.TimeoutError:
+            # put_nowait, never a bounded await. This queue (state.message_queue)
+            # has no consumer anywhere in the tree -- lifecycle_service passes it
+            # in and everything else only writes -- so it fills once and stays
+            # full. The old `wait_for(put(...), 0.05)` then charged every single
+            # push 50 ms for a mirror nobody reads; harmless while push_message
+            # wrote the plane itself, but this branch made _forward_message the
+            # only path, so it would have capped delivery at ~20 msg/s.
+            #
+            # Kept rather than deleted because it is still a compatibility
+            # mirror: a consumer attaching later gets messages while there is
+            # room, and gets nothing instead of a stall when there is not. The
+            # actual delivery already happened above, in the plane write.
+            self._message_target_queue.put_nowait(msg)
+        except asyncio.QueueFull:
             return
 
         if PLUGIN_LOG_MESSAGE_FORWARD:

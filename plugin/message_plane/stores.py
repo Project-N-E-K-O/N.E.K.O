@@ -356,6 +356,18 @@ FRAMES_STORE_NAME = "frames"
 FRAMES_TOPIC = "all"
 
 
+# 只有宿主能往里写的 store。写入方一律是 ingest socket（带 token，且由
+# _route_message 盖过 plugin_id）；rpc_server 的 bus.publish 是无鉴权的 loopback
+# op，谁连上都能发。这三个 store 的记录会直接落到用户面前或冒充宿主：
+# messages 是主动搭话的投递路径（ProactiveBridge 订阅 "messages." 前缀），
+# frames 是"模型看到的画面"，conversations 是对话上下文。所以 bus.publish 对它们
+# 一律拒绝——树内本来也没有任何调用方走那条路（SDK 的 publish() 走的是
+# ctx.push_message，宿主自己走 ingest）。
+HOST_OWNED_STORE_NAMES: frozenset[str] = frozenset(
+    {MESSAGES_STORE_NAME, FRAMES_STORE_NAME, CONVERSATIONS_STORE_NAME}
+)
+
+
 def build_default_store_registry(
     *,
     maxlen: int,
