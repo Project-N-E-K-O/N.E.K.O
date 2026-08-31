@@ -43,6 +43,18 @@ describe('plugin hosted UI API', () => {
     })
   })
 
+  it('gives reloadAllPlugins the dedicated lifecycle timeout and message', async () => {
+    postMock.mockResolvedValue({ success: true })
+    const { reloadAllPlugins } = await import('./plugins')
+
+    await reloadAllPlugins()
+
+    expect(postMock).toHaveBeenCalledWith('/plugins/reload', undefined, {
+      timeout: 45000,
+      timeoutErrorMessageKey: 'messages.pluginLifecycleTimeout',
+    })
+  })
+
   it('preserves URLSearchParams when merging locale', async () => {
     const { getPlugins } = await import('./plugins')
     const input = new URLSearchParams([

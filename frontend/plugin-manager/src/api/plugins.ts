@@ -104,7 +104,7 @@ export function reloadPlugin(pluginId: string): Promise<{ success: boolean; plug
 }
 
 /**
- * 重载所有插件（批量 API，后端并行处理）
+ * 重载所有插件（批量 API，后端按依赖顺序启动）
  */
 export function reloadAllPlugins(): Promise<{
   success: boolean
@@ -113,7 +113,10 @@ export function reloadAllPlugins(): Promise<{
   skipped: string[]
   message: string
 }> {
-  return post('/plugins/reload')
+  return post('/plugins/reload', undefined, {
+    timeout: PLUGIN_LIFECYCLE_TIMEOUT,
+    timeoutErrorMessageKey: 'messages.pluginLifecycleTimeout',
+  })
 }
 
 /**

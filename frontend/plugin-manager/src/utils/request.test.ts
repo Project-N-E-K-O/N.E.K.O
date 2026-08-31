@@ -314,6 +314,24 @@ describe('hosted panel error suppression', () => {
     consoleError.mockRestore()
   })
 
+  it('counts a shared failed health probe only once', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const healthProbe = vi.spyOn(axios, 'get').mockRejectedValue(new Error('health unavailable'))
+
+    const results = await Promise.allSettled([
+      rejectWith({ message: 'Network Error', request: {} }),
+      rejectWith({ message: 'Network Error', request: {} }),
+      rejectWith({ message: 'Network Error', request: {} }),
+    ])
+
+    expect(results).toHaveLength(3)
+    expect(results.every((result) => result.status === 'rejected')).toBe(true)
+    expect(healthProbe).toHaveBeenCalledTimes(1)
+    expect(requestMocks.connectionStore.markDisconnected).toHaveBeenCalledTimes(1)
+    healthProbe.mockRestore()
+    consoleError.mockRestore()
+  })
+
   it.each([
     ['ECONNABORTED', {}, 'messages.requestTimeout'],
     ['ETIMEDOUT', { timeoutErrorMessageKey: 'messages.pluginLifecycleTimeout' }, 'messages.pluginLifecycleTimeout'],

@@ -131,18 +131,35 @@ export function isRequestTimeout(error: AxiosError): boolean {
 
 let pendingHealthProbe: Promise<boolean> | null = null
 
+type HealthProbeResult = {
+  serverHealthy: boolean
+  /** Only the request that created the probe may advance the failure counter. */
+  initiatedByThisRequest: boolean
+}
+
 /** Verify the server independently of the failed request, without re-entering this interceptor. */
-export function probeServerHealth(): Promise<boolean> {
-  if (pendingHealthProbe) return pendingHealthProbe
-  pendingHealthProbe = axios.get('/health', {
+export function probeServerHealth(): Promise<HealthProbeResult> {
+  if (pendingHealthProbe) {
+    return pendingHealthProbe.then((serverHealthy) => ({
+      serverHealthy,
+      initiatedByThisRequest: false,
+    }))
+  }
+  const probe = axios.get('/health', {
     baseURL: API_BASE_URL,
     timeout: 5000,
   }).then((response) => response.status >= 200 && response.status < 300)
     .catch(() => false)
-    .finally(() => {
+  pendingHealthProbe = probe
+  void probe.finally(() => {
+    if (pendingHealthProbe === probe) {
       pendingHealthProbe = null
-    })
-  return pendingHealthProbe
+    }
+  })
+  return probe.then((serverHealthy) => ({
+    serverHealthy,
+    initiatedByThisRequest: true,
+  }))
 }
 
 // 创建 axios 实例
@@ -237,7 +254,7 @@ service.interceptors.response.use(
       message = i18n.global.t(timeoutMessageKey)
     } else if (error.request) {
       // 只有独立健康检查也失败时，才将无响应请求归类为断网。
-      const serverHealthy = await probeServerHealth()
+      const { serverHealthy, initiatedByThisRequest } = await probeServerHealth()
       message = serverHealthy
         ? i18n.global.t('messages.requestFailed')
         : i18n.global.t('messages.networkError')
@@ -247,7 +264,7 @@ service.interceptors.response.use(
         const connectionStore = useConnectionStore()
         if (serverHealthy) {
           connectionStore.markConnected()
-        } else {
+        } else if (initiatedByThisRequest) {
           wasDisconnected = connectionStore.disconnected
           connectionStore.markDisconnected()
         }
