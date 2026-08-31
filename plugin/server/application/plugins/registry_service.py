@@ -29,6 +29,7 @@ from plugin.core.registry import (
 )
 from plugin.server.application.plugins.metadata_scanner import (
     _DEFAULT_SCAN_TIMEOUT_SECONDS as _DEFAULT_ITEM_SCAN_TIMEOUT,
+    clear_plugin_metadata_scan_cache,
     PluginMetadataScanError,
     scan_plugin_metadata_isolated,
 )
@@ -937,7 +938,18 @@ def _get_autostart_plugin_ids_sync() -> list[str]:
 
 
 class PluginRegistryService:
-    async def refresh_registry(self) -> dict[str, object]:
+    async def refresh_registry(self, *, force: bool = False) -> dict[str, object]:
+        """Rebuild the registry. ``force`` re-reads plugins ignoring the cache.
+
+        The scan cache is keyed on file contents under each plugin directory,
+        which cannot see a change outside it (a shared ``vendor/``, a package
+        reinstalled into site-packages). So every path where the content may
+        have moved behind our back passes ``force=True``: install, upgrade,
+        uninstall, and the refresh button the user pressed — pressing it means
+        "go look again", and answering from cache would make it a no-op.
+        """
+        if force:
+            clear_plugin_metadata_scan_cache()
         return await asyncio.to_thread(self._refresh_registry_sync)
 
     async def refresh_plugin(self, plugin_id: str) -> dict[str, object]:

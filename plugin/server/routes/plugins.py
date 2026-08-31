@@ -74,7 +74,8 @@ async def delete_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict
 @router.post("/plugins/refresh")
 async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
     try:
-        return await registry_service.refresh_registry()
+        # 用户按了刷新键，意思就是「再去看一眼」——从缓存回答等于没刷新。
+        return await registry_service.refresh_registry(force=True)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 

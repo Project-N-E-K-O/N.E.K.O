@@ -906,7 +906,8 @@ def _registry_failure_matches_target(
 async def _refresh_registry(
     target: _RegistryRefreshTarget,
 ) -> dict[str, object]:
-    result = await plugin_registry_service.refresh_registry()
+    # 磁盘内容刚被我们自己改过，缓存键看不到目录外的变化，必须绕过。
+    result = await plugin_registry_service.refresh_registry(force=True)
     failed = result.get("failed")
     if isinstance(failed, list) and any(
         _registry_failure_matches_target(failure, target=target)

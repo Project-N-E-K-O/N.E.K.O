@@ -423,7 +423,7 @@ def _worker_main(protocol_fd: int | None = None) -> None:
     immediate_exit(0)
 
 
-def scan_plugin_metadata_isolated(
+def _scan_plugin_metadata_uncached(
     *,
     plugin_id: str,
     module_path: str,
@@ -660,3 +660,134 @@ def install_isolated_plugin_metadata(
     for entry_id, method_name in metadata.entry_methods.items():
         registry_module.plugin_entry_method_map[(plugin_id, entry_id)] = method_name
     state.invalidate_snapshot_cache("handlers")
+
+
+# ── 扫描结果缓存 ────────────────────────────────────────────────────────
+#
+# 一次扫描是一个全新解释器（本机实测约 0.84s，其中约 0.76s 只是启动和导入扫描
+# 框架），而算出缓存键只要遍历插件目录 stat 一遍——实测 17 个插件合计约 17ms，
+# 差三个数量级。
+#
+# 键包含插件目录下所有 *.py / *.toml / *.json 的 (mtime_ns, size)，而不是只看
+# plugin.toml 和入口文件：插件常把代码拆到同目录别的模块里，只盯入口会在改了
+# 邻居文件之后命中脏缓存——那种 bug 很难联想到缓存。
+#
+# ⚠️ 目录外的依赖（共享的 vendor/、site-packages）变化抓不到。所以凡是"内容可能
+# 在我们背后变了"的路径——安装、升级、卸载、以及用户手点的刷新——必须传
+# force=True 绕过，不能指望键自己发现。
+_SCAN_CACHE: dict[tuple, IsolatedPluginMetadata] = {}
+_SCAN_CACHE_LOCK = threading.Lock()
+_SCAN_CACHE_MAX_ENTRIES = 256
+_SCAN_KEY_SUFFIXES = (".py", ".toml", ".json")
+
+
+def _plugin_source_fingerprint(config_path: Path) -> tuple:
+    """(相对路径, mtime_ns, size) 的排序元组，取自插件目录。"""
+    root = config_path.parent
+    entries: list[tuple[str, int, int]] = []
+    try:
+        for path in sorted(root.rglob("*")):
+            if path.suffix not in _SCAN_KEY_SUFFIXES or not path.is_file():
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            entries.append((str(path.relative_to(root)), st.st_mtime_ns, st.st_size))
+    except OSError:
+        # 目录读不了就返回一个不可缓存的指纹，让这次扫描照常进行。
+        return (("<unreadable>", 0, 0),)
+    return tuple(entries)
+
+
+def _scan_cache_key(
+    *,
+    plugin_id: str,
+    module_path: str,
+    class_name: str,
+    config_path: Path,
+    conf: Mapping[str, object],
+    pdata: Mapping[str, object],
+    python_requirement_paths: list[Path] | tuple[Path, ...],
+) -> tuple:
+    return (
+        plugin_id,
+        module_path,
+        class_name,
+        str(config_path),
+        tuple(sorted(str(p) for p in python_requirement_paths)),
+        json.dumps(_json_safe(dict(conf)), sort_keys=True, ensure_ascii=False),
+        json.dumps(_json_safe(dict(pdata)), sort_keys=True, ensure_ascii=False),
+        _plugin_source_fingerprint(config_path),
+    )
+
+
+def clear_plugin_metadata_scan_cache() -> None:
+    """Drop every cached scan. Used by install/upgrade/uninstall."""
+    with _SCAN_CACHE_LOCK:
+        _SCAN_CACHE.clear()
+
+
+def scan_plugin_metadata_isolated(
+    *,
+    plugin_id: str,
+    module_path: str,
+    class_name: str,
+    config_path: Path,
+    conf: Mapping[str, object],
+    pdata: Mapping[str, object],
+    python_requirement_paths: list[Path] | tuple[Path, ...] = (),
+    timeout: float = _DEFAULT_SCAN_TIMEOUT_SECONDS,
+    force: bool = False,
+) -> IsolatedPluginMetadata:
+    """Read one plugin's metadata in a throwaway worker, memoised on content.
+
+    ``force=True`` bypasses and refreshes the entry. Failures are deliberately
+    NOT cached: a scan that timed out or blew the budget must be retried on the
+    next refresh rather than sticking to the plugin until something on disk
+    changes.
+    """
+    if timeout <= 0:
+        # 预算已耗尽这条路不查缓存也不写缓存：它描述的是"现在没时间"，不是
+        # "这个插件是什么"。
+        return _scan_plugin_metadata_uncached(
+            plugin_id=plugin_id,
+            module_path=module_path,
+            class_name=class_name,
+            config_path=config_path,
+            conf=conf,
+            pdata=pdata,
+            python_requirement_paths=python_requirement_paths,
+            timeout=timeout,
+        )
+
+    key = _scan_cache_key(
+        plugin_id=plugin_id,
+        module_path=module_path,
+        class_name=class_name,
+        config_path=config_path,
+        conf=conf,
+        pdata=pdata,
+        python_requirement_paths=python_requirement_paths,
+    )
+    if not force:
+        with _SCAN_CACHE_LOCK:
+            hit = _SCAN_CACHE.get(key)
+        if hit is not None:
+            return hit
+
+    result = _scan_plugin_metadata_uncached(
+        plugin_id=plugin_id,
+        module_path=module_path,
+        class_name=class_name,
+        config_path=config_path,
+        conf=conf,
+        pdata=pdata,
+        python_requirement_paths=python_requirement_paths,
+        timeout=timeout,
+    )
+    with _SCAN_CACHE_LOCK:
+        if len(_SCAN_CACHE) >= _SCAN_CACHE_MAX_ENTRIES:
+            _SCAN_CACHE.clear()
+        _SCAN_CACHE[key] = result
+    return result
