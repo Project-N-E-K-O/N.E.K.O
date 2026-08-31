@@ -70,7 +70,7 @@ const window = {{
   document,
   location: {{ href: 'http://127.0.0.1:48911/', origin: 'http://127.0.0.1:48911' }},
   lanlan_config: {{ model_type: 'pngtuber' }},
-  requestAnimationFrame: (callback) => callback(),
+  requestAnimationFrame: () => {{ throw new Error('capture must not depend on animation frames'); }},
   getComputedStyle: (drawable) => ({{
     display: drawable.style.display || '',
     visibility: drawable.hidden ? 'hidden' : 'visible',

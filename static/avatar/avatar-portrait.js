@@ -1718,13 +1718,6 @@
                 return { manager, drawable, canvas: drawable };
             },
             async prepare(ctx) {
-                await new Promise((resolve) => {
-                    if (typeof global.requestAnimationFrame === 'function') {
-                        global.requestAnimationFrame(() => resolve());
-                    } else {
-                        resolve();
-                    }
-                });
                 ctx.drawable = getPNGTuberCaptureDrawable(ctx.manager, { allowHidden: true }) || ctx.drawable;
                 if (ctx.drawable) {
                     await waitForPNGTuberDrawable(ctx.drawable);
