@@ -238,13 +238,21 @@ class NotifyMixin:
         return prompt
 
     async def _inject_pending_user_directives(self) -> None:
-        """Push freshly recorded ban-topic directives into the LIVE session.
+        """Carry freshly recorded ban-topic directives into the NEXT session.
 
-        ``_build_initial_prompt`` runs once per session, so a directive recorded
-        at turn N would otherwise not reach the prompt until the next session
-        rebuild — up to ``SESSION_TURN_THRESHOLD`` user turns away. The user
-        meanwhile said "stop bringing X up" and watches the character keep doing
-        it. This closes that window to the next turn.
+        ``_build_initial_prompt`` reads the directive store once per session,
+        and for a hot swap that read happens during background warm-up
+        (``lifecycle._background_prepare_pending_session``) — a full user turn
+        before the swap actually lands, because the final swap waits for the
+        next turn-end (``turn.py`` step 4). A directive recorded inside that
+        gap misses the very session it was about to configure: the new session
+        starts with a fresh ``_conversation_history`` (the user's original
+        words are gone with the old one) and a system prompt that predates the
+        directive, so nothing carries it for up to another archive cycle.
+
+        Writing it into the next-session cache closes exactly that gap. It is
+        deliberately NOT injected into the live session — see the ``lifetime``
+        comment below.
 
         Called from both user-utterance entry points (text and voice), right
         after the plugin-bus publish that drives the recording sink.
@@ -281,39 +289,35 @@ class NotifyMixin:
         block = block.strip()
         if not block:
             return
-        # ⚠️⚠️ **只有文字会话能接收当前会话的注入**，语音（realtime）不行。
+        # ⚠️ lifetime='next_session'：**只**写 next-session 缓存，不进当前会话。
+        # 两条路径（文字 / 语音）在这里收敛到同一个值，不按会话类型分叉。
         #
-        # ``append_context`` 对没有 ``_conversation_history`` 的会话回落到
-        # ``prime_context(text, skipped=True)``，而 realtime 那条路在 Gemini 上
-        # 会 ``send_client_content(turn_complete=True)`` **另开一个 user turn**，
-        # 同时置 ``_skip_until_next_response``——本轮所有 output_transcription
-        # 与 audio delta 被整段吞掉。用户刚说完"以后别再提加班"，角色一个音都
-        # 不发。既有的 prime_context 调用点都在热切换期间（用户不在说话），
-        # 把它放进用户回合正中间是本条改动第一次，Gemini Live 下每次说禁令句
-        # 必中 —— 恰好坏在这个功能最该起作用的那一刻。
+        # 当前会话不需要它。``_conversation_history`` 在会话生命周期内是
+        # append-only（唯一会砍它的是复读恢复，见 omni_offline_client/
+        # _streaming.py 那处 reset），所以用户那句"别再提 X"的原话一直待在
+        # 上下文里，模型每一轮都看得见；而会话开头 ``_build_initial_prompt``
+        # 已经注入过**全量**活跃列表，本轮的真实增量只有刚抽到的那一条 ——
+        # 恰恰是模型从原话里已经知道的那条。跨会话才是真缺口（新会话不继承
+        # 旧 history），而那正是这份缓存管的事。
         #
-        # 所以语音侧只写 next-session 缓存：下次会话建立时随缓存进 prompt。
-        # 这不比改动前更差（改动前也是等下次重建时 ``_build_initial_prompt``
-        # 读盘），而且顺带保住了热切换竞态那一半——预热跑完才落盘的指令，
-        # 靠这份缓存仍能赶上那次 swap。
-        # 判据用的就是 ``_append_context_to_targets`` 自己的那条：有没有
-        # ``_conversation_history``（只有 OmniOfflineClient 有）。
-        session = getattr(self, "session", None)
-        is_text_session = isinstance(
-            getattr(session, "_conversation_history", None), list
-        )
-        # lifetime='session_family'：既进当前会话，也写进 next-session 缓存。
-        # 后者不是冗余保险，是**热切换竞态**的唯一解——预热
-        # （lifecycle._background_prepare_pending_session）已经跑过
-        # _build_initial_prompt 之后才落盘的指令，会整个错过那次 swap，而下一
-        # 次重建最长要再等一个完整周期。代价是新会话里这段文本会和 system
-        # prompt 里的那段重复一次（内容一致、不矛盾，且缓存被消费后即止）。
-        lifetime = "session_family" if is_text_session else "next_session"
+        # 而写进当前会话是有代价的：``append_context`` 把 role='system' 渲染成
+        # ``HumanMessage("system: ...")``，**以用户消息的形态**落进 history。
+        # 别的 source（游戏结果 / 主动搭话素材）带的是模型不知道的新信息，这条
+        # 带的却是模型刚看过的用户原话的复述 —— 模型很容易顺着回一句"好的我
+        # 不会再提了"，而用户这一轮真正想聊的往往是后半句。
+        #
+        # 语音（realtime）侧本来就收不了：``append_context`` 对没有
+        # ``_conversation_history`` 的会话回落到 ``prime_context``，而 Gemini
+        # 那条路会 ``send_client_content(turn_complete=True)`` 另开一个 user
+        # turn 并置 ``_skip_until_next_response`` —— 本轮所有
+        # output_transcription 与 audio delta 被整段吞掉，用户刚说完禁令句、
+        # 角色一个音都不发，恰好坏在这功能最该起作用的那一刻。
+        lifetime = "next_session"
         try:
             # request_id 让 append_context 的去重生效：用户**重复说**同一条指令
             # （E 那半按 hit_count 递增 TTL，整个设计就预期他会重复）同样会置待
-            # 注入标记。不给 id 的话每次都原样再追加一份：文字侧堆进 history 还会
-            # 被算进归档 token 预算、提前触发热切换，语音侧堆进 next-session 缓存。
+            # 注入标记。不给 id 的话每次都原样再追加一份到 next-session 缓存，
+            # 下个会话开头就会连着看到同一段禁令块好几遍。
             #
             # ⚠️ 去重窗口是 **120 秒**（`_CONTEXT_APPEND_DEDUP_TTL_SECONDS`，
             # append_context 的既有契约），不是永久 —— 别把这里读成"同一组 term

@@ -69,13 +69,13 @@ _CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
     # 「最坏情况渲染块 ≤ 本预算」，改大上面两个常量任一个都会红。
     "user_directives": 2000,
 }
+# ⚠️ 这张表只作用于 ``prime_context`` 那条回落路径，而那条只有
+# ``lifetime in {"current_session", "session_family"}`` 才走得到。纯
+# ``next_session`` 的 source（如 ``user_directives``）登记在这里是死配置，
+# 会让人误以为它还会经 realtime instructions 下发 —— 别加。
 _CONTEXT_APPEND_BARE_PRIME_SOURCES = frozenset({
     "game.realtime_context",
     "game.postgame",
-    # 这段文本**本身就是**一段 system prompt（"[用户最近明确表示过不想聊…]"），
-    # 再给它拼一个 ``system: `` 角色前缀是冗余的——它会被原样送进 realtime 的
-    # instructions。与上面两个同样用 role='system' 的 source 同理。
-    "user_directives",
 })
 
 

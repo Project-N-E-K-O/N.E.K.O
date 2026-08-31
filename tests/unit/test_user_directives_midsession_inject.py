@@ -1,12 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Contract for pushing fresh ban-topic directives into the LIVE session.
+"""Contract for carrying fresh ban-topic directives into the NEXT session.
 
-``_build_initial_prompt`` runs once per session, so a directive recorded at
-turn N would otherwise not reach the model's prompt until the next session
-rebuild — which in normal chatting is up to ``SESSION_TURN_THRESHOLD`` user
-turns away. In between, the user has said "stop bringing X up" and watches the
-character keep bringing X up. ``_inject_pending_user_directives`` closes that
-window to the next turn.
+``_build_initial_prompt`` reads the directive store once per session, and for a
+hot swap that read happens during background warm-up — a full user turn before
+the swap lands. A directive recorded inside that gap misses the very session it
+was about to configure: the new session starts with a fresh
+``_conversation_history`` and a system prompt that predates it, so nothing
+carries it for up to another archive cycle.
+``_inject_pending_user_directives`` closes exactly that gap by writing the
+next-session cache.
+
+⚠️ It deliberately does NOT inject into the live session, for either session
+shape. Inside a session the user's original words stay in
+``_conversation_history`` (append-only), and the session-opening prompt already
+carried the full active list — so a live injection is redundant there, while
+still costing the awkward ``HumanMessage("system: ...")`` shape. See
+``test_directive_block_only_targets_the_next_session``.
 
 Layering note: ``memory`` (L3) cannot import ``main_logic`` (L4), so the sink
 only persists and raises a flag; the injection itself lives in L4. These tests
@@ -72,36 +81,66 @@ async def test_injects_when_a_directive_was_just_recorded(monkeypatch):
     kwargs = mgr.append_context.await_args.kwargs
     assert "加班" in kwargs["text"]
     assert kwargs["audience"] == "model"
-    # session_family：既进当前会话，也写进 next-session 缓存。后者是**热切换
-    # 竞态**的唯一解——预热已经跑过 _build_initial_prompt 之后才落盘的指令，
-    # 会整个错过那次 swap。降成 current_session 的话这条会红。
-    assert kwargs["lifetime"] == "session_family"
     # when_ready：会话还没建好时排队，不丢。
     assert kwargs["timing"] == "when_ready"
     # request_id 让 append_context 的去重生效（同一组 term 只注入一次）
     assert kwargs.get("request_id")
 
 
+@pytest.mark.parametrize("text_session", [True, False], ids=["text", "voice"])
 @pytest.mark.asyncio
-async def test_voice_session_never_touches_the_live_turn(monkeypatch):
-    """⚠️⚠️ Realtime sessions must NOT receive a current-session injection."""
-    # ``append_context`` 对没有 _conversation_history 的会话回落到
-    # ``prime_context(skipped=True)``，而那条路在 Gemini 上会
-    # ``send_client_content(turn_complete=True)`` 另开一个 user turn 并置
-    # _skip_until_next_response —— 本轮所有 transcript 与 audio 被整段吞掉。
-    # 用户刚说完"以后别再提加班"，角色一个音都不发，恰好坏在这个功能最该起
-    # 作用的那一刻（对抗审查用真 Gemini 客户端 A/B 实测复现）。
-    # 语音侧只写 next-session 缓存：不比改动前差（那时也是等下次重建读盘），
-    # 且仍能赶上热切换。
+async def test_directive_block_only_targets_the_next_session(
+    monkeypatch, text_session,
+):
+    """⚠️⚠️ Neither session shape may receive a current-session injection.
+
+    Two independent reasons land on the same value, which is why this is one
+    parametrized invariant rather than a per-shape branch:
+
+    - **text**: redundant. ``_conversation_history`` is append-only within a
+      session, so the user's own "stop bringing X up" stays in context for
+      every later turn, and the session-opening ``_build_initial_prompt``
+      already injected the full active list — the only delta this turn is the
+      term the model just read in the raw utterance. What a live injection
+      *does* add is shape risk: ``append_context`` renders ``role='system'``
+      as ``HumanMessage("system: ...")``, i.e. it arrives looking like another
+      user message that merely restates what the user just said.
+    - **voice**: harmful. ``append_context`` falls back to
+      ``prime_context(skipped=True)`` for sessions with no
+      ``_conversation_history``, and on Gemini that path issues
+      ``send_client_content(turn_complete=True)``, opening a second user turn
+      and setting ``_skip_until_next_response`` — the whole turn's transcript
+      and audio get swallowed. The user finishes saying "stop mentioning
+      overtime" and the character makes no sound at all (reproduced A/B
+      against a real Gemini client during adversarial review).
+
+    Raising this to ``current_session`` / ``session_family`` re-opens the
+    voice failure outright, so the guard covers both ids.
+    """
     _install(monkeypatch, pending=True)
-    mgr = _Manager(text_session=False)
+    mgr = _Manager(text_session=text_session)
 
     await mgr._inject_pending_user_directives()
 
     kwargs = mgr.append_context.await_args.kwargs
     assert kwargs["lifetime"] == "next_session", (
-        "realtime 会话拿到 current_session/session_family 会让 Gemini 吞掉整轮回复"
+        "current_session/session_family 会让 Gemini 吞掉整轮回复，"
+        "文字侧则是重复模型刚读过的原话"
     )
+
+
+def test_directive_source_is_not_registered_for_bare_prime():
+    """``user_directives`` must stay out of the bare-prime table (dead config).
+
+    That table only affects the ``prime_context`` fallback, which is reachable
+    only for ``lifetime in {"current_session", "session_family"}``. With the
+    source pinned to ``next_session`` above, an entry here would never be read
+    — and would suggest to the next reader that the block still goes out via
+    realtime instructions.
+    """
+    from main_logic.core._shared import _CONTEXT_APPEND_BARE_PRIME_SOURCES
+
+    assert "user_directives" not in _CONTEXT_APPEND_BARE_PRIME_SOURCES
 
 
 @pytest.mark.asyncio
@@ -109,8 +148,8 @@ async def test_repeat_of_the_same_directive_reuses_one_request_id(monkeypatch):
     """Saying the same thing twice must not append two identical blocks."""
     # E 那半按 hit_count 递增 TTL，整个设计就预期用户会重复说同一条；而
     # ``record`` 的刷新分支同样会置待注入标记。不给稳定 request_id 的话，
-    # 每次都原样再追加一份：文字侧堆进 history 还会被算进归档 token 预算、
-    # 提前触发热切换，语音侧堆进 next-session 缓存。
+    # 每次都原样再追加一份到 next-session 缓存，下个会话开头会连着看到同一段
+    # 禁令块好几遍。
     _install(monkeypatch, pending=True)
     mgr = _Manager()
 
