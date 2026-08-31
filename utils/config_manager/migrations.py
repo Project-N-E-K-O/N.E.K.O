@@ -173,6 +173,21 @@ def _copy_with_heartbeat(beat):
         if not follow_symlinks and os.path.islink(str(source)):
             return shutil.copy2(source, destination, follow_symlinks=False)
         destination = str(destination)
+        # A NAMED PIPE is refused, not opened. ``copy2`` detects one and
+        # raises ``SpecialFileError``; reading it instead blocks for ever
+        # waiting for a writer, and this runs while the migration lock is
+        # held, so a FIFO anywhere in a seed tree would stop startup dead.
+        # Losing that check is what replacing copy2 cost, so it is restored
+        # here rather than assumed.
+        for candidate in (str(source), destination):
+            try:
+                mode = os.stat(candidate).st_mode
+            except OSError:
+                continue
+            if stat.S_ISFIFO(mode):
+                raise shutil.SpecialFileError(
+                    "`%s` is a named pipe" % candidate
+                )
         if os.path.isdir(destination):
             destination = os.path.join(
                 destination, os.path.basename(str(source))
@@ -397,7 +412,19 @@ def _workspace_is_live(path):
     other.
     """
     marker = os.path.join(str(path), _MIGRATION_WORKSPACE_LOCK_NAME)
-    if not os.path.exists(marker):
+    # An ORDINARY FILE, checked without following links. "unopenable means a
+    # live owner" is the right reading for a real marker held exclusively on
+    # Windows -- but a marker that is a DIRECTORY is unopenable too, and it
+    # read as live for ever, so a deleted character called ".mig-x" holding a
+    # ".lock" directory survived every import. A workspace this migration
+    # made always has a plain file there.
+    try:
+        marker_mode = os.lstat(marker).st_mode
+    except OSError:
+        # No marker at all: a run killed before it could claim one. The age
+        # check covers that case, which is why both conditions are kept.
+        return False
+    if not stat.S_ISREG(marker_mode):
         return False
     try:
         handle = open(marker, "r+b")
@@ -737,6 +764,11 @@ class MigrationsMixin:
         """
         ledger = self._migration_ledger_path()
         parent = ledger.parent
+        # The LEAF as well as the parent: an append through a symlinked
+        # "minted" writes workspace paths into whatever it points at, and
+        # reclamation then reads that file back as though it were ours.
+        if ledger.is_symlink():
+            return
         if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
             # The SAME refusal reclamation makes, one step earlier. Both
             # sides have to make it: "mkdir(exist_ok=True)" accepts a
@@ -776,6 +808,11 @@ class MigrationsMixin:
         """
         ledger = self._migration_ledger_path()
         parent = ledger.parent
+        # The LEAF as well, matching the write side: a symlinked "minted"
+        # would be read as our record and then unlinked by the tidy-up at
+        # the end of this function.
+        if ledger.is_symlink():
+            return
         if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
             # The same refusal preparation makes, for the same reason and
             # one step earlier: a link at the reserved name points at

@@ -3485,3 +3485,104 @@ def test_the_ledger_still_records_through_an_ordinary_parent(tmp_path):
     ledger = app_docs / ".mig-staging" / "minted"
     assert ledger.exists()
     assert str(workspace) in ledger.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Round two: what replacing copy2 cost, and two guards that stopped one step
+# short of the thing they were guarding.
+# ---------------------------------------------------------------------------
+
+
+def test_the_heartbeat_copy_refuses_a_named_pipe(tmp_path, monkeypatch):
+    """``copy2`` raised SpecialFileError on a FIFO; ``open`` blocks on one.
+
+    This runs while the migration lock is held, so a named pipe anywhere in a
+    seed tree would stop startup dead, for ever, waiting for a writer. Losing
+    that check is what replacing copy2 with a chunked read cost.
+
+    Faked rather than made with ``os.mkfifo``: this project's unit CI job runs
+    on Windows, where a POSIX-only test would silently never execute -- which
+    is exactly how a guard ends up untested.
+    """
+    import os
+    import shutil
+    import stat as stat_module
+
+    from utils.config_manager import migrations as migrations_module
+
+    source = tmp_path / "looks_like_a_pipe"
+    source.write_bytes(b"")
+    real_stat = os.stat
+
+    def _fifo_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if str(path) == str(source):
+            return os.stat_result(
+                (stat_module.S_IFIFO | 0o644,) + tuple(result)[1:]
+            )
+        return result
+
+    monkeypatch.setattr(migrations_module.os, "stat", _fifo_stat)
+
+    copy = migrations_module._copy_with_heartbeat(lambda: None)
+    with pytest.raises(shutil.SpecialFileError):
+        copy(source, tmp_path / "out")
+
+    assert not (tmp_path / "out").exists(), (
+        "the refusal happened after the destination was already opened"
+    )
+
+
+def test_a_marker_that_is_a_directory_is_not_a_live_workspace(tmp_path):
+    """"Unopenable means a live owner" is right for a file, wrong for a dir.
+
+    On Windows a marker held exclusively cannot be opened, which is why that
+    reading exists. A ".lock" DIRECTORY cannot be opened either, so it read as
+    live for ever -- and a character called ".mig-x" holding one survived
+    every import after being deleted from the cloud.
+    """
+    from utils.config_manager.migrations import (
+        _MIGRATION_WORKSPACE_LOCK_NAME,
+        _workspace_is_live,
+    )
+
+    workspace = tmp_path / ".mig-Dora"
+    workspace.mkdir()
+    (workspace / _MIGRATION_WORKSPACE_LOCK_NAME).mkdir()
+
+    assert not _workspace_is_live(workspace)
+
+
+def test_the_ledger_refuses_a_symlinked_leaf(tmp_path):
+    """Guarding the parent left the file itself.
+
+    An append through a symlinked "minted" writes workspace paths into
+    whatever it points at, and reclamation then reads that file back as
+    though it were ours -- and unlinks it at the end.
+    """
+    import os
+
+    from utils.config_manager.migrations import MigrationsMixin
+
+    outsider = tmp_path / "somebody_elses.txt"
+    outsider.write_text("their own file\n", encoding="utf-8")
+
+    app_docs = tmp_path / "app_docs"
+    staging = app_docs / ".mig-staging"
+    staging.mkdir(parents=True)
+    try:
+        os.symlink(str(outsider), str(staging / "minted"))
+    except (OSError, NotImplementedError, AttributeError):
+        pytest.skip("this platform will not create the symlink")
+
+    manager = MigrationsMixin.__new__(MigrationsMixin)
+    manager.app_docs_dir = str(app_docs)
+    manager._record_minted_workspace(tmp_path / ".mig-abc")
+
+    assert outsider.read_text(encoding="utf-8") == "their own file\n", (
+        "a workspace path was appended through the link"
+    )
+
+    # Reclamation refuses the same shape, and must not unlink it either.
+    manager._reclaim_recorded_workspaces(set(), 0.0)
+    assert outsider.exists(), "reclamation deleted an outsider's file"

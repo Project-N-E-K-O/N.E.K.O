@@ -1649,7 +1649,6 @@ def test_a_destination_appearing_while_staging_is_still_authoritative(tmp_path):
     (project_root / "loose.json").write_text("[seed]", encoding="utf-8")
 
     real_copytree = migrations_module.shutil.copytree
-    real_copy2 = migrations_module.shutil.copy2
     real_replace = migrations_module.replace_with_busy_retry
     published = []
 
