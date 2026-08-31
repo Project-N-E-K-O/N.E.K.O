@@ -76,3 +76,88 @@ def test_the_bridges_still_start_after_the_message_plane() -> None:
     plane = body.index("_start_message_plane()")
     assert plane < body.index("start_bridge()")
     assert plane < body.index("start_proactive_bridge()")
+
+
+# ── the subscriber must exist before anything can publish ──────────────
+
+
+def test_the_bridge_signals_only_after_it_subscribes() -> None:
+    """The event is what startup waits on, so where it is set is the contract.
+
+    Setting it at thread start (or at ``start()``) would restore the original
+    bug with a green test attached: PUB drops for an absent subscriber, and
+    ``push_message()`` still answers ``submitted=True``.
+
+    Mutation: move ``self._subscribed.set()`` above the ``connect``/
+    ``SUBSCRIBE`` pair.
+    """
+    import ast
+    import inspect
+    from pathlib import Path
+
+    from plugin.server.messaging import proactive_bridge
+
+    tree = ast.parse(Path(inspect.getfile(proactive_bridge)).read_text(encoding="utf-8"))
+    run = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_run":
+            run = node
+    assert run is not None, "前提没成立：找不到 _run"
+
+    subscribe_line = None
+    signal_line = None
+    for node in ast.walk(run):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "setsockopt_string":
+                for arg in node.args:
+                    if isinstance(arg, ast.Constant) and arg.value == "messages.":
+                        subscribe_line = node.lineno
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "set"
+                and isinstance(func.value, ast.Attribute)
+                and func.value.attr == "_subscribed"
+            ):
+                signal_line = node.lineno
+
+    assert subscribe_line is not None, "找不到 SUBSCRIBE 'messages.'"
+    assert signal_line is not None, "_run 里没有置就绪位——启动会一直等到超时"
+    assert signal_line > subscribe_line, (
+        "就绪位在订阅之前置了：等它等于没等，窗口原样还在"
+    )
+
+
+def test_a_stopped_bridge_does_not_hold_up_startup() -> None:
+    """A disabled or dead bridge must return immediately, not after a timeout.
+
+    Startup calls this on the path to launching plugins; turning a bridge that
+    will never come up into a multi-second stall is a worse failure than the
+    one being fixed.
+    """
+    from plugin.server.messaging.proactive_bridge import ProactiveBridge
+
+    bridge = ProactiveBridge()  # never started
+
+    assert bridge.wait_until_subscribed(timeout=30.0) is False
+
+
+def test_stopping_releases_a_waiter() -> None:
+    """``stop()`` has to wake anyone already blocked in the wait."""
+    from plugin.server.messaging.proactive_bridge import ProactiveBridge
+
+    class _LiveThread:
+        # Not a real thread: stop() joins it, and joining the calling thread
+        # raises. Only aliveness and joinability matter here.
+        def is_alive(self) -> bool:
+            return True
+
+        def join(self, timeout: float | None = None) -> None:
+            return None
+
+    bridge = ProactiveBridge()
+    bridge._thread = _LiveThread()
+
+    bridge.stop()
+
+    assert bridge.wait_until_subscribed(timeout=30.0) is True

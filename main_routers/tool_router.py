@@ -64,7 +64,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import asyncio
 import ipaddress

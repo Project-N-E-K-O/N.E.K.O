@@ -257,6 +257,13 @@ def _authenticate_image_metadata(
 
 _IMG_LOCK_SHUTDOWN_WAIT_S = 2.0
 
+# 放弃排空之后再等它退出的时间。只够跑完当前这一次 send，不是第二次排空预算。
+_BATCHER_ABANDON_JOIN_S = 1.0
+
+# 关 message uplink 之前等它那把发送锁的时间。锁只在一次 NOBLOCK send 期间被
+# 持有，所以这个值只是给调度留余量，不是等排空。
+_BATCHER_CLOSE_LOCK_WAIT_S = 2.0
+
 
 # 每个 host 一把 uplink token（见 HostTransport.__init__）。这些 token 全部挂在
 # state.plugin_hosts 上，而插件进程是裸 multiprocessing.Process 起的，POSIX 上
@@ -687,11 +694,17 @@ class ChildTransport:
             self._closed = True
             batcher = getattr(self, "_message_batcher", None)
             self._message_batcher = None
+        batcher_exited = True
         if batcher is not None:
             try:
-                batcher.stop(timeout=2.0)
+                batcher_exited = bool(batcher.stop(timeout=2.0))
             except Exception:
-                pass
+                batcher_exited = False
+            if not batcher_exited:
+                logger.warning(
+                    "authenticated message batcher still running at shutdown; "
+                    "closing its socket under the send lock"
+                )
         sockets = [
             sock
             for sock in (
@@ -702,7 +715,36 @@ class ChildTransport:
         ]
         msg_sock = getattr(self, "_msg_sock", None)
         if msg_sock is not None and msg_sock is not getattr(self, "_ul_sock", None):
-            sockets.append(msg_sock)
+            # 在 send_uplink_nowait 用的同一把锁下关：batcher 线程活过了 stop
+            # 就可能正在 send 里，而 libzmq 的 socket 不是线程安全的。拿到锁
+            # 就等于证明当下没有 send 在进行——而那个 send 是 NOBLOCK 的，锁
+            # 只会被持有极短一瞬。
+            #
+            # 拿不到也照样关。不关会让 context 终止永久阻塞在这个 socket 上，
+            # 那是必然的挂死；而 UB 的窗口要求线程恰好卡在一次 NOBLOCK send
+            # 里，两害相权。
+            msg_lock = getattr(self, "_msg_lock", None)
+            acquired = False
+            if msg_lock is not None:
+                try:
+                    acquired = msg_lock.acquire(timeout=_BATCHER_CLOSE_LOCK_WAIT_S)
+                except Exception:
+                    acquired = False
+            if not acquired:
+                logger.warning(
+                    "message uplink send lock not acquired within "
+                    f"{_BATCHER_CLOSE_LOCK_WAIT_S}s; closing anyway"
+                )
+            try:
+                msg_sock.close(linger=0)
+            except Exception:
+                pass
+            finally:
+                if acquired and msg_lock is not None:
+                    try:
+                        msg_lock.release()
+                    except Exception:
+                        pass
         for sock in sockets:
             try:
                 sock.close(linger=0)
@@ -812,6 +854,10 @@ class _AuthenticatedMessageBatcher:
         self._enqueue_timeout_s = max(0.0, float(enqueue_timeout_s))
         self._dropped = 0
         self._stop = threading.Event()
+        # 硬停：置位后 _run 立刻退出，不再排空。只有 stop() 在 join 超时后才
+        # 会用它——正常关停仍然把队列发完。和 _stop 一样建在 __init__ 里：
+        # _run 会被不经 start() 直接调用（测试就是这么用的）。
+        self._abandon = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -835,15 +881,39 @@ class _AuthenticatedMessageBatcher:
             raise queue.Full
         self._queue.put(item, timeout=self._enqueue_timeout_s)
 
-    def stop(self, timeout: float = 1.0) -> None:
+    def stop(self, timeout: float = 1.0) -> bool:
+        """Stop the worker. Returns whether it actually exited.
+
+        The drain below is deliberately generous — ``_run`` keeps flushing
+        while the queue is non-empty even after ``_stop`` — and the queue holds
+        up to 100,000 items, so a loaded shutdown can outlast any timeout. The
+        caller closes ``_msg_sock`` next, and libzmq sockets are not thread
+        safe: closing one while this thread is inside ``send_uplink_nowait`` is
+        undefined behaviour, not a lost batch.
+
+        So the timeout escalates instead of being advisory: give up the
+        remaining batches, then join again. The return value tells the caller
+        whether touching the socket is safe.
+        """
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=max(0.0, float(timeout)))
+        t = self._thread
+        if t is None:
+            return True
+        budget = max(0.0, float(timeout))
+        t.join(timeout=budget)
+        if not t.is_alive():
+            return True
+        # 排空排不完就别排了。丢掉的批次本来也活不过这次关停。
+        self._abandon.set()
+        t.join(timeout=_BATCHER_ABANDON_JOIN_S)
+        return not t.is_alive()
 
     def _run(self) -> None:
         batch: list[dict] = []
         deadline = time.monotonic() + self._flush_interval_s
-        while batch or not self._stop.is_set() or not self._queue.empty():
+        while not self._abandon.is_set() and (
+            batch or not self._stop.is_set() or not self._queue.empty()
+        ):
             remaining = max(0.0, deadline - time.monotonic())
             try:
                 item = self._queue.get(timeout=remaining)

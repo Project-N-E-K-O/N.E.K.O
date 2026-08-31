@@ -704,3 +704,97 @@ def test_the_control_ceiling_covers_the_widest_legitimate_control_frame():
     assert ceiling < _message_uplink_max_bytes(), (
         "控制上行又借用了消息上行的界（含不适用的批量乘数）"
     )
+
+
+# ── shutdown must not race the batcher onto its own socket ─────────────
+
+
+@pytest.mark.plugin_unit
+def test_stop_gives_up_draining_instead_of_leaving_the_worker_running() -> None:
+    """``_run`` keeps flushing while the queue is non-empty, even after stop.
+
+    The queue holds up to 100,000 items, so a loaded shutdown outlasts any
+    join timeout — and the caller closes the socket that thread is sending on
+    next. libzmq sockets are not thread safe, so that is undefined behaviour,
+    not a lost batch. ``stop`` therefore escalates rather than returning while
+    the worker is still going.
+
+    Mutation: delete the ``_abandon`` set/re-join in ``stop``.
+    """
+    sent: list = []
+
+    class _Transport:
+        def send_uplink_nowait(self, channel, payload):
+            sent.append(channel)
+
+    class _NeverEmptyQueue:
+        def get(self, timeout=None):
+            return {"message_id": "endless"}
+
+        def empty(self) -> bool:
+            return False
+
+    batcher = zmq_transport._AuthenticatedMessageBatcher(
+        _Transport(),  # type: ignore[arg-type]
+        batch_size=1,
+        flush_interval_ms=10_000,
+        max_queue=10,
+        reject_ratio=0.9,
+        enqueue_timeout_s=0,
+    )
+    batcher._queue = _NeverEmptyQueue()  # type: ignore[assignment]
+    batcher.start()
+
+    exited = batcher.stop(timeout=0.05)
+
+    assert exited is True, "排空排不完，stop 却回来了——调用方接着就去关它的 socket"
+    assert batcher._thread is None or not batcher._thread.is_alive()
+    assert sent, "前提没成立：worker 根本没发过东西"
+
+
+@pytest.mark.plugin_unit
+def test_the_message_socket_is_closed_under_the_send_lock() -> None:
+    """Holding the send lock is the proof that no send is in progress.
+
+    ``send_uplink_nowait`` does ``with lock: sock.send(...)``, so closing while
+    that lock is free cannot land inside a send. Asserting on the ORDER, not on
+    the mere fact that the lock exists.
+
+    Mutation: close ``_msg_sock`` without acquiring ``_msg_lock``.
+    """
+    events: list[str] = []
+
+    class _Lock:
+        def acquire(self, timeout=None) -> bool:
+            events.append("acquire")
+            return True
+
+        def release(self) -> None:
+            events.append("release")
+
+    class _Sock:
+        def close(self, linger=None) -> None:
+            events.append("close")
+
+    transport = zmq_transport.ChildTransport.__new__(zmq_transport.ChildTransport)
+    transport._closed = False
+    transport._close_lock = threading.Lock()
+    transport._message_batcher = None
+    transport._dl_sock = None
+    transport._ul_sock = None
+    transport._msg_sock = _Sock()
+    transport._msg_lock = _Lock()
+    transport._img_lock = threading.Lock()
+    transport._ctx = None
+
+    try:
+        transport.close()
+    except Exception:
+        # Other teardown steps need a real context; the ordering above has
+        # already been recorded by then.
+        pass
+
+    assert "close" in events, "根本没关这个 socket——context 终止会永久阻塞在它上面"
+    assert events.index("acquire") < events.index("close"), (
+        "先关后拿锁等于没拿：batcher 线程可能正卡在 send 里"
+    )

@@ -18,7 +18,11 @@ from plugin.server.application.plugins.operation_lock import serialized_plugin_o
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import ingest_auth_token, start_bridge, stop_bridge
-from plugin.server.messaging.proactive_bridge import start_proactive_bridge, stop_proactive_bridge
+from plugin.server.messaging.proactive_bridge import (
+    start_proactive_bridge,
+    stop_proactive_bridge,
+    wait_for_proactive_subscriber,
+)
 from plugin.server.messaging.plane_runner import MessagePlaneRunner, build_message_plane_runner
 from plugin.server.monitoring.metrics import metrics_collector
 from plugin.server.messaging.request_router import plugin_router
@@ -31,6 +35,11 @@ if _EMBEDDED_BY_AGENT:
     logger = get_module_logger(__name__, "Agent")
 else:
     logger = get_logger("server.lifecycle")
+
+
+# 等 ProactiveBridge 的 SUB 连上的上限。比它自己那一秒的 PUB bind 等待留出
+# 余量，又短到起不来时不会让人以为应用卡死了。
+_PROACTIVE_SUBSCRIBER_WAIT_SECONDS = 3.0
 
 
 @runtime_checkable
@@ -255,9 +264,13 @@ class ServerLifecycleService:
         # 等约一秒才连上——PUB/SUB 对缺席的订阅方是丢弃，所以那扇窗口里推的
         # 消息角色永远不会说出口，而 push_message() 已经回了 submitted=True。
         #
-        # ⚠️ 这一步**收窄**窗口，不关闭它：SUB 的连接延迟仍在，只是现在从更早
-        # 开始计时。要真正关掉，得让 ProactiveBridge 在 SUB 连上后发信号、由
-        # 这里等它（或者让它启动时补读一次 store），那是另一个改动。
+        # 顺序只是第一步：SUB 的连接延迟本身还在（bridge 线程要先等约一秒让
+        # message_plane 的 PUB bind 完），所以下面在放插件进来之前会等
+        # wait_for_proactive_subscriber。
+        #
+        # ⚠️ 即便如此也不是数学上的关闭：ZMQ 的 SUBSCRIBE 返回不代表 PUB 端
+        # 已经处理完这条订阅（slow joiner），极窄的一段仍在。要关死得让 bridge
+        # 起来后补读一次 store 并按 message_id 去重，代价是重复投递的风险。
         #
         # 另外更正一处此前写错的机制：plane bridge **不会**因为没 start 就拒
         # 收。`_Bridge._enabled` 读的是 MESSAGE_PLANE_BRIDGE_ENABLED 这个配置
@@ -280,6 +293,19 @@ class ServerLifecycleService:
                 "failed to start proactive bridge: err_type={}, err={}",
                 type(exc).__name__,
                 str(exc),
+            )
+
+        # 等订阅方真正连上再放插件进来。bridge 的线程自己要先睡约一秒等
+        # message_plane 的 PUB bind，那一秒正好是窗口本身——只把 start 挪到
+        # 前面并不能让它变窄。有界等待：bridge 被禁用或已经死了就立刻返回，
+        # 起不来也不能把整个启动挂在这儿。
+        if not await asyncio.to_thread(
+            wait_for_proactive_subscriber, _PROACTIVE_SUBSCRIBER_WAIT_SECONDS
+        ):
+            logger.warning(
+                "proactive subscriber not ready after {}s; autostart plugins "
+                "pushing from their startup hook may go unheard",
+                _PROACTIVE_SUBSCRIBER_WAIT_SECONDS,
             )
 
         await self._refresh_registry_and_start_autostart_plugins()

@@ -124,6 +124,12 @@ class ProactiveBridge:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # SUB 真正连上并订阅之后才置位。启动顺序要用它：autostart 插件可以在
+        # startup 钩子里 push_message()，而 PUB 对缺席的订阅方是直接丢弃 ——
+        # 那扇窗口里推的消息角色永远不会说，push_message() 却已经回了
+        # submitted=True。只把 bridge 挪到插件前面只是让计时更早开始，窗口
+        # 本身还在（下面那个 1 秒等待就在窗口里）。
+        self._subscribed = threading.Event()
 
     def start(self) -> None:
         if zmq is None:
@@ -137,8 +143,28 @@ class ProactiveBridge:
         t.start()
         logger.info("proactive bridge started")
 
+    def wait_until_subscribed(self, timeout: float) -> bool:
+        """Block until the SUB socket is connected and subscribed.
+
+        Returns False on timeout, and on a bridge that was never started — the
+        caller must not be blocked by a bridge that is disabled or already
+        dead, only by one that is still coming up.
+
+        ⚠️ 这不是数学上的关闭。ZMQ 的 SUBSCRIBE 返回不代表 PUB 端已经处理完
+        这条订阅（经典的 slow joiner），所以极窄的一段仍在。要真正关死得让
+        bridge 起来后补读一次 store 并按 message_id 去重 —— 那会引入重复投递
+        的风险（角色把同一句说两遍），不在这次范围内。
+        """
+        t = self._thread
+        if t is None or not t.is_alive():
+            return self._subscribed.is_set()
+        return self._subscribed.wait(timeout)
+
     def stop(self) -> None:
         self._stop.set()
+        # 醒掉任何在等订阅的人：bridge 停了就不会再有订阅了，让它们继续跑，
+        # 别把关停变成一次 timeout 长的挂起。
+        self._subscribed.set()
         t = self._thread
         self._thread = None
         if t is not None and t.is_alive():
@@ -164,6 +190,7 @@ class ProactiveBridge:
         sub_sock.setsockopt(zmq.RCVTIMEO, 1000)
         sub_sock.connect(pub_endpoint)
         sub_sock.setsockopt_string(zmq.SUBSCRIBE, "messages.")
+        self._subscribed.set()
 
         push_sock = ctx.socket(zmq.PUSH)
         push_sock.linger = 1000
@@ -398,6 +425,11 @@ _bridge = ProactiveBridge()
 
 def start_proactive_bridge() -> None:
     _bridge.start()
+
+
+def wait_for_proactive_subscriber(timeout: float) -> bool:
+    """Wait for the bridge's SUB socket before anything may publish."""
+    return _bridge.wait_until_subscribed(timeout)
 
 
 def stop_proactive_bridge() -> None:
