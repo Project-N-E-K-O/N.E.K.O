@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
@@ -394,8 +396,68 @@ def _build_ordered_plugin_ids_sync(candidate_plugin_ids: set[str] | None = None)
     return ordered
 
 
+# 元数据扫描的并发上限。
+#
+# 每个插件的元数据扫描是一次性子进程（读元数据 = 执行插件的模块级代码，放在
+# 本进程里 import 会让一个写坏的插件拖死宿主）。Windows 上没有 fork，每次都是
+# 完整的 CreateProcess + 全新解释器，实测单次约 0.84 s，其中约 0.76 s 是解释器
+# 启动和导入扫描框架本身——也就是说成本几乎与插件无关，纯粹是"起进程"的价钱。
+#
+# 串行时这笔钱按插件数线性累加：本机 16 个插件约 13.5 s，而插件管理器前端的
+# 超时是 30 s。并行实测接近线性（16 个插件：w=2 → 6.9 s，w=4 → 3.9 s，
+# w=8 → 2.6 s），子进程读写管道全程释放 GIL，所以线程池就够，不需要多进程。
+#
+# 上限取 CPU 的四分之一并夹在 [2, 8]：w=16 相比 w=8 只再省半秒，却把并发解释器
+# 数翻倍（单个约 66 MB 常驻），不划算；而 4 核小机器上也不该一次拉起 8 个。
+_DISCOVERY_SCAN_MAX_WORKERS = 8
+_DISCOVERY_SCAN_MIN_WORKERS = 2
+
+
+def _discovery_scan_workers(pending: int) -> int:
+    """How many metadata scans to run at once for ``pending`` plugins."""
+    override = os.getenv("NEKO_PLUGIN_DISCOVERY_SCAN_WORKERS")
+    if override:
+        try:
+            forced = int(override)
+        except ValueError:
+            forced = 0
+        if forced > 0:
+            return max(1, min(forced, pending))
+    cpu = os.cpu_count() or 4
+    budget = max(_DISCOVERY_SCAN_MIN_WORKERS, min(_DISCOVERY_SCAN_MAX_WORKERS, cpu // 4))
+    return max(1, min(budget, pending))
+
+
+def _build_discovery_record_safely(
+    item: tuple[Path, PluginContext],
+) -> tuple[PluginDiscoveryRecord | None, PluginDiscoveryFailure | None]:
+    """Build one record, turning any failure into a value.
+
+    Returned rather than raised so the pool keeps a slot-for-slot result list:
+    discovery order is load-bearing downstream (``_select_effective_records``
+    builds its group ordering from first appearance), so results must come back
+    in submission order, not completion order.
+    """
+    config_path, ctx = item
+    try:
+        return _build_discovery_record_from_context(ctx), None
+    except Exception as exc:  # noqa: BLE001 - one bad plugin must not stop discovery
+        logger.warning(
+            "plugin discovery payload failed for {}: err_type={}, err={}",
+            config_path,
+            type(exc).__name__,
+            str(exc),
+        )
+        return None, PluginDiscoveryFailure(
+            plugin_id=ctx.pid or config_path.parent.name or None,
+            config_path=config_path,
+            error=str(exc),
+        )
+
+
 def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscoverySnapshot:
     processed_paths: set[Path] = set()
+    pending: list[tuple[Path, PluginContext]] = []
     records: list[PluginDiscoveryRecord] = []
     failures: list[PluginDiscoveryFailure] = []
     config_paths: set[Path] = set()
@@ -452,22 +514,26 @@ def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscovery
                 )
                 continue
 
-            try:
-                records.append(_build_discovery_record_from_context(ctx))
-            except Exception as exc:
-                logger.warning(
-                    "plugin discovery payload failed for {}: err_type={}, err={}",
-                    config_path,
-                    type(exc).__name__,
-                    str(exc),
-                )
-                failures.append(
-                    PluginDiscoveryFailure(
-                        plugin_id=ctx.pid or config_path.parent.name or None,
-                        config_path=config_path,
-                        error=str(exc),
-                    )
-                )
+            # 解析很便宜（16 个插件合计约 40 ms），扫描很贵（每个约 0.84 s 的
+            # 子进程）。先把 ctx 收齐，再一次性并行扫，别在解析的循环里逐个起
+            # 进程——这是把 13.5 s 压到 2.6 s 的全部原因。
+            pending.append((config_path, ctx))
+
+    if pending:
+        workers = _discovery_scan_workers(len(pending))
+        if workers <= 1:
+            built = [_build_discovery_record_safely(item) for item in pending]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="plugin-discovery"
+            ) as pool:
+                # map，不是 as_completed：结果必须按提交顺序回来。
+                built = list(pool.map(_build_discovery_record_safely, pending))
+        for record, failure in built:
+            if record is not None:
+                records.append(record)
+            elif failure is not None:
+                failures.append(failure)
 
     effective_records, shadowed = _select_effective_records(records, roots)
     return PluginDiscoverySnapshot(
