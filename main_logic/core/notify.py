@@ -57,6 +57,7 @@ released. ``AsrRuntimeMixin._fail_closed_voice_route`` owns that order for
 the fail-closed route exits.
 """
 
+import hashlib
 import json
 from typing import Optional
 from fastapi import WebSocketDisconnect
@@ -254,32 +255,66 @@ class NotifyMixin:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[UserDirectives] mid-session render failed: %s", exc)
             return
-        if not block or not block.strip():
+        block = block.strip()
+        if not block:
             return
+        # ⚠️⚠️ **只有文字会话能接收当前会话的注入**，语音（realtime）不行。
+        #
+        # ``append_context`` 对没有 ``_conversation_history`` 的会话回落到
+        # ``prime_context(text, skipped=True)``，而 realtime 那条路在 Gemini 上
+        # 会 ``send_client_content(turn_complete=True)`` **另开一个 user turn**，
+        # 同时置 ``_skip_until_next_response``——本轮所有 output_transcription
+        # 与 audio delta 被整段吞掉。用户刚说完"以后别再提加班"，角色一个音都
+        # 不发。既有的 prime_context 调用点都在热切换期间（用户不在说话），
+        # 把它放进用户回合正中间是本条改动第一次，Gemini Live 下每次说禁令句
+        # 必中 —— 恰好坏在这个功能最该起作用的那一刻。
+        #
+        # 所以语音侧只写 next-session 缓存：下次会话建立时随缓存进 prompt。
+        # 这不比改动前更差（改动前也是等下次重建时 ``_build_initial_prompt``
+        # 读盘），而且顺带保住了热切换竞态那一半——预热跑完才落盘的指令，
+        # 靠这份缓存仍能赶上那次 swap。
+        # 判据用的就是 ``_append_context_to_targets`` 自己的那条：有没有
+        # ``_conversation_history``（只有 OmniOfflineClient 有）。
+        session = getattr(self, "session", None)
+        is_text_session = isinstance(
+            getattr(session, "_conversation_history", None), list
+        )
+        # lifetime='session_family'：既进当前会话，也写进 next-session 缓存。
+        # 后者不是冗余保险，是**热切换竞态**的唯一解——预热
+        # （lifecycle._background_prepare_pending_session）已经跑过
+        # _build_initial_prompt 之后才落盘的指令，会整个错过那次 swap，而下一
+        # 次重建最长要再等一个完整周期。代价是新会话里这段文本会和 system
+        # prompt 里的那段重复一次（内容一致、不矛盾，且缓存被消费后即止）。
+        lifetime = "session_family" if is_text_session else "next_session"
         try:
-            # lifetime='session_family'：既进当前会话，也写进 next-session
-            # 缓存。后者不是冗余保险，是**热切换竞态**的唯一解——预热
-            # （lifecycle._background_prepare_pending_session）已经跑过
-            # _build_initial_prompt 之后才落盘的指令，会整个错过那次 swap，
-            # 而下一次重建最长要再等一个完整周期。代价是新会话里这段文本
-            # 会和 system prompt 里的那段重复一次（内容一致、不矛盾，且缓存
-            # 被消费后即止），换竞态窗口内禁令不丢。
+            # request_id 让 append_context 的去重真正生效：同一组活跃 term
+            # 渲染出的块是逐字节相同的，而用户**重复说**同一条指令（E 那半
+            # 按 hit_count 递增 TTL，整个设计就预期他会重复）同样会置待注入
+            # 标记。不给 id 的话每次都原样再追加一份：文字侧堆进 history 还
+            # 会被算进归档 token 预算、提前触发热切换，语音侧堆进 instructions
+            # 且不可回收。指纹取块内容，所以"新增了一条 term"会得到不同的 id、
+            # 正常注入，而"又说了一遍同样的话"被认成重复。
+            request_id = (
+                f"user_directives:{key}:"
+                f"{hashlib.sha256(block.encode('utf-8')).hexdigest()[:16]}"
+            )
             # timing='when_ready'：会话还没建好时排队，不丢。
             result = await self.append_context(
                 source="user_directives",
                 role="system",
-                text=block.strip(),
+                text=block,
                 audience="model",
                 timing="when_ready",
-                lifetime="session_family",
+                lifetime=lifetime,
+                request_id=request_id,
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[UserDirectives] mid-session inject failed: %s", exc)
             return
         if getattr(result, "appended", False):
             logger.info(
-                "[%s] user directives injected mid-session (targets=%s)",
-                self.lanlan_name, getattr(result, "targets", ()),
+                "[%s] user directives injected (lifetime=%s targets=%s)",
+                self.lanlan_name, lifetime, getattr(result, "targets", ()),
             )
 
     def _is_agent_enabled(self):

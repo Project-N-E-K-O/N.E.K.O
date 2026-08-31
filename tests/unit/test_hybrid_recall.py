@@ -309,6 +309,25 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
         res = await self._run("博士 游戏", [], reflections)
         self.assertNotIn("disputed", [r["id"] for r in res["results"]])
 
+    async def test_ignored_reflection_is_not_treated_as_disputed(self):
+        """⚠️ Silence is not objection: a merely-ignored row must stay recallable."""
+        # ``evidence_score`` 转负不止一条路。用户对 surfaced 反思**沉默**时，
+        # post_turn 按 'ignored' 记 reinforcement += -0.2；AI 一次抛 7 条、用户
+        # 当轮没接话，这 7 条就全成了 rein=-0.2 / disp=0 的负分行。按净分一刀切
+        # 会把它们当场从召回里抹掉（对抗审查实测存量里 17.8% 的活跃 reflection
+        # 属于这一类），而两周后用户主动问"我上个月在忙什么"，那批正是该被召回
+        # 的东西。判据必须带上 disputation>0，才等于 _hard_filter 那句
+        # "user has been disputing this more than confirming it"。
+        now_iso = datetime.now().isoformat()
+        reflections = [{
+            "id": "ignored_only", "text": "博士最喜欢的游戏是 The Witness",
+            "status": "confirmed",
+            "reinforcement": -0.2, "disputation": 0.0,
+            "rein_last_signal_at": now_iso,
+        }]
+        res = await self._run("博士 游戏", [], reflections)
+        self.assertIn("ignored_only", [r["id"] for r in res["results"]])
+
     async def test_reinforced_reflection_survives_recall(self):
         """Control: same missing score key, net-positive evidence, still recalled."""
         # 少了这条，上面那条用"把所有 reflection 都过滤掉"也能通过。

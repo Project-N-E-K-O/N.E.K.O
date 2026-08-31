@@ -27,11 +27,21 @@ from main_logic.core.notify import NotifyMixin
 
 
 class _Manager(NotifyMixin):
-    """Minimal stand-in exposing just what the helper touches."""
+    """Minimal stand-in exposing just what the helper touches.
 
-    def __init__(self, lanlan_name="Neko", user_language="zh"):
+    ``text_session`` decides which session shape ``self.session`` presents.
+    ``_conversation_history`` is the same discriminator ``append_context`` uses:
+    only ``OmniOfflineClient`` (the text path) has one.
+    """
+
+    def __init__(self, lanlan_name="Neko", user_language="zh", *, text_session=True):
         self.lanlan_name = lanlan_name
         self.user_language = user_language
+        self.session = (
+            SimpleNamespace(_conversation_history=[])
+            if text_session
+            else SimpleNamespace(prime_context=AsyncMock())
+        )
         self.append_context = AsyncMock(
             return_value=SimpleNamespace(appended=True, targets=("active_history",))
         )
@@ -64,6 +74,65 @@ async def test_injects_when_a_directive_was_just_recorded(monkeypatch):
     assert kwargs["lifetime"] == "session_family"
     # when_ready：会话还没建好时排队，不丢。
     assert kwargs["timing"] == "when_ready"
+    # request_id 让 append_context 的去重生效（同一组 term 只注入一次）
+    assert kwargs.get("request_id")
+
+
+@pytest.mark.asyncio
+async def test_voice_session_never_touches_the_live_turn(monkeypatch):
+    """⚠️⚠️ Realtime sessions must NOT receive a current-session injection."""
+    # ``append_context`` 对没有 _conversation_history 的会话回落到
+    # ``prime_context(skipped=True)``，而那条路在 Gemini 上会
+    # ``send_client_content(turn_complete=True)`` 另开一个 user turn 并置
+    # _skip_until_next_response —— 本轮所有 transcript 与 audio 被整段吞掉。
+    # 用户刚说完"以后别再提加班"，角色一个音都不发，恰好坏在这个功能最该起
+    # 作用的那一刻（对抗审查用真 Gemini 客户端 A/B 实测复现）。
+    # 语音侧只写 next-session 缓存：不比改动前差（那时也是等下次重建读盘），
+    # 且仍能赶上热切换。
+    _install(monkeypatch, pending=True)
+    mgr = _Manager(text_session=False)
+
+    await mgr._inject_pending_user_directives()
+
+    kwargs = mgr.append_context.await_args.kwargs
+    assert kwargs["lifetime"] == "next_session", (
+        "realtime 会话拿到 current_session/session_family 会让 Gemini 吞掉整轮回复"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repeat_of_the_same_directive_reuses_one_request_id(monkeypatch):
+    """Saying the same thing twice must not append two identical blocks."""
+    # E 那半按 hit_count 递增 TTL，整个设计就预期用户会重复说同一条；而
+    # ``record`` 的刷新分支同样会置待注入标记。不给稳定 request_id 的话，
+    # 每次都原样再追加一份：文字侧堆进 history 还会被算进归档 token 预算、
+    # 提前触发热切换，语音侧堆进 next-session 缓存。
+    _install(monkeypatch, pending=True)
+    mgr = _Manager()
+
+    await mgr._inject_pending_user_directives()
+    first = mgr.append_context.await_args.kwargs["request_id"]
+    await mgr._inject_pending_user_directives()
+    second = mgr.append_context.await_args.kwargs["request_id"]
+
+    assert first == second, "同一组 term 必须得到同一个 request_id 才能被去重"
+
+
+@pytest.mark.asyncio
+async def test_a_new_term_gets_a_different_request_id(monkeypatch):
+    """Adding a term must produce a fresh id, or the update is silently deduped."""
+    # 对照组：没有这条，"request_id 写死成常量"也能让上面那条通过——而那会
+    # 让用户后来说的每一条新禁令都被当成重复、永远进不了当前会话。
+    stub = _install(monkeypatch, pending=True, block="\n\n[...]\n- 加班")
+    mgr = _Manager()
+    await mgr._inject_pending_user_directives()
+    first = mgr.append_context.await_args.kwargs["request_id"]
+
+    stub.render_prompt_block.return_value = "\n\n[...]\n- 加班\n- 股票"
+    await mgr._inject_pending_user_directives()
+    second = mgr.append_context.await_args.kwargs["request_id"]
+
+    assert first != second
 
 
 @pytest.mark.asyncio

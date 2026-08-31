@@ -36,6 +36,7 @@ from config import (
     leaks_thinking_in_content,
 )
 from config.prompts.prompts_directives import (
+    is_semantically_empty_term,
     render_format_fix_instruction,
     render_regen_avoid_instruction,
 )
@@ -120,15 +121,50 @@ def _append_directives_section(
     return (memory_context or "") + block
 
 
+# 有词边界的文字 vs 没有的。CJK / 假名 / 谚文连写不分词，只能子串匹配；拉丁、
+# 西里尔、希腊这些用空格分词的，子串匹配会撞进更长的词里 —— ban 掉 ``it`` 会
+# 让 ``favorite`` / ``waiting`` 全部命中，主动搭话直接全静默（对抗审查实测
+# 3/3 草稿被 drop）。判据是 term 里**有没有**连写文字，有就退回子串。
+_BOUNDARYLESS_SCRIPT_RE = re.compile(
+    r"[⺀-鿿぀-ヿ가-힯豈-﫿ｦ-ﾟ]"
+)
+
+
+def _directive_term_in_draft(term: str, draft_folded: str) -> bool:
+    """Whether ``term`` occurs in an already-casefolded draft.
+
+    Latin/Cyrillic terms must match on word boundaries; CJK/kana/hangul are
+    written without spaces and can only be matched as substrings.
+    """
+    folded_term = term.casefold()
+    if not folded_term:
+        return False
+    if _BOUNDARYLESS_SCRIPT_RE.search(folded_term):
+        return folded_term in draft_folded
+    # ⚠️ ``\b`` 在这里是对的，但只对**两端都是词字符**的 term 成立。``my ex``
+    # 两端是字母，没问题；而 term 若以标点收尾（正则抽取是宽松的），``\b`` 会
+    # 贴在标点外侧、几乎匹配不上任何东西 —— 那种情况退回子串，宁可多拦。
+    if not (folded_term[0].isalnum() and folded_term[-1].isalnum()):
+        return folded_term in draft_folded
+    return re.search(
+        rf"\b{re.escape(folded_term)}\b", draft_folded,
+    ) is not None
+
+
 def _proactive_directive_hits(lanlan_name: str, draft: str) -> list[str]:
     """Active ban-topic terms that literally appear in a proactive draft.
 
-    Case-insensitive substring match, which is the right shape for CJK (no word
-    boundaries) and stays consistent with how the terms were captured in the
-    first place — ``config.prompts.prompts_directives`` deliberately over-kills,
-    on the grounds that a false positive costs one skipped proactive message
-    while a miss costs the user being annoyed again by the exact thing they
-    just asked about.
+    Matching is case-insensitive and script-folded on both sides, on word
+    boundaries for Latin-script terms and as substrings for the boundaryless
+    scripts (see ``_directive_term_in_draft``). Extraction upstream deliberately
+    over-kills, on the grounds that a false positive costs one skipped proactive
+    message while a miss costs the user being annoyed again by the exact thing
+    they just asked about — and this stays consistent with that.
+
+    Bare referents (the demonstratives, "this", "it") are skipped: matching on
+    the most common word in the language would silence proactive chat wholesale
+    for the directive's whole lifetime. They stay in the soft prompt block,
+    where the model has the context needed to interpret them.
 
     Never raises: recall failures degrade to "no hit" so the anti-repeat gates
     downstream keep their existing behaviour.
@@ -145,8 +181,26 @@ def _proactive_directive_hits(lanlan_name: str, draft: str) -> list[str]:
         return []
     if not terms:
         return []
-    folded = draft.casefold()
-    return [t for t in terms if t and t.casefold() in folded]
+    # 延迟 import：memory 层在偏窄的 entrypoint 下未必加载，与本函数其余
+    # 部分对 memory 的取用方式一致。
+    from memory.script_fold import fold_script
+    # ⚠️ 繁简折叠两侧都做。用户换个输入法说"别再提遊戲"，落盘 term 是繁体，
+    # 而角色按 locale 输出简体"游戏"——不折的话逐字不等、直接漏杀，用户明确
+    # 禁掉的话题照样被推到脸上。项目里 memory.script_fold 就是为这条造的
+    # （#2584 召回侧同款问题）；新代码直接用，不重蹈 anti_repeat 那边"两套
+    # 分词各走各的"的覆辙。
+    folded = fold_script(draft).casefold()
+    # ⚠️ 纯指代词（``这个`` / ``this`` / ``それ``）只走软约束，不参与硬拦截。
+    # 抽取侧是会存下它们的（"别再讲这个了"），而且那个行为被既有测试成片钉着，
+    # 不该由这条改动顺手动；但拿汉语最高频的词去做子串匹配，等于让主动搭话在
+    # 这条指令的整个生命周期里（递增 TTL 后最长 30 天）全面静默，而用户今天
+    # 没有界面能看到、更别说删掉它。判据与危害都在消费侧，就在消费侧收口。
+    return [
+        t for t in terms
+        if t
+        and not is_semantically_empty_term(t)
+        and _directive_term_in_draft(fold_script(t), folded)
+    ]
 
 
 def _merge_regen_avoid_terms(*term_groups: Any) -> list[str]:
@@ -1241,14 +1295,18 @@ async def _guard_phase2_output(
     # 素材新不新鲜无关——推歌台词里提到用户说过别提的事，照样该拦。
     directive_hits = _proactive_directive_hits(lanlan_name, response_text)
     if directive_hits:
+        # ⚠️ **不打印 term 原文**。被 ban 的话题按定义就是用户明说了不想再听
+        # 的东西——前任、病名、裁员、逝者姓名。日志会落盘（logs/ 下持久化），
+        # 用户报 bug 时可能整包交出去，而这批词恰恰是全流程里最敏感的一类文本。
+        # 只记条数，够定位"这次是被禁令闸拦的"，不够复原用户说了什么。
         active_logger.info(
-            "[%s] proactive blocked by user ban-topic directive (terms=%s)",
+            "[%s] proactive blocked by user ban-topic directive (%d term(s) matched)",
             lanlan_name,
-            directive_hits,
+            len(directive_hits),
         )
         print(
             f"[{lanlan_name}] 主动搭话命中用户明确要求回避的话题，已拦截 "
-            f"(terms={directive_hits})"
+            f"({len(directive_hits)} 项)"
         )
         if _proactive_turn_still_owned(mgr, proactive_sid):
             await mgr.handle_new_message()
@@ -1257,7 +1315,9 @@ async def _guard_phase2_output(
                 body=_proactive_pass_body(
                     PROACTIVE_REASON_PASS_USER_DIRECTIVE,
                     message="主动搭话命中用户明确要求回避的话题，已拦截",
-                    directive_terms=directive_hits,
+                    # 同上：只回条数，不回原文。这个 body 会经 /api/proactive_chat
+                    # 出到前端。
+                    directive_match_count=len(directive_hits),
                 )
             )
         )
@@ -1601,9 +1661,9 @@ async def _guard_phase2_output(
         if regen_directive_hits:
             active_logger.info(
                 "[%s] proactive regen hit user ban-topic directive "
-                "(terms=%s), drop",
+                "(%d term(s) matched), drop",
                 lanlan_name,
-                regen_directive_hits,
+                len(regen_directive_hits),
             )
             if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
@@ -1612,7 +1672,7 @@ async def _guard_phase2_output(
                     body=_proactive_pass_body(
                         PROACTIVE_REASON_PASS_USER_DIRECTIVE,
                         message="改写后仍命中用户明确要求回避的话题，已 drop",
-                        directive_terms=regen_directive_hits,
+                        directive_match_count=len(regen_directive_hits),
                     )
                 )
             )

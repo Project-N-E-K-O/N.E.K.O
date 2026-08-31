@@ -256,6 +256,51 @@ def test_stored_cap_rotates_oldest_first(tmp_path):
     }
 
 
+def test_refresh_branch_also_rotates(tmp_path):
+    """An over-cap store must come back under cap even with no new terms."""
+    # 存量文件是在有 cap 之前长起来的（老用户可能几百行），而一个只会重复既有
+    # 指令的用户永远走不到新增分支。不在刷新分支也 rotate 的话，那份文件永远
+    # 收不回 cap——而每次 record 都要全量读+全量写，还跑在用户每条消息的同步链上。
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    over = USER_DIRECTIVE_MAX_STORED + 20
+    for i in range(over):
+        mgr.record(name, locale="zh", kind="ban_topic", term=f"t{i:03d}", now=float(i))
+    # 直接把超限状态灌进 cache，模拟"升级前就已超限"的存量文件
+    mgr._cache[name] = [
+        {"term": f"old{i:03d}", "kind": "ban_topic", "locale": "zh",
+         "created_at": 0.0, "last_seen_at": float(i),
+         "expire_at": 1e12, "hit_count": 1, "source": "regex"}
+        for i in range(over)
+    ]
+    # 只刷新一条**已存在**的指令（不新增）
+    mgr.record(name, locale="zh", kind="ban_topic", term="old000", now=1e6)
+    stored = _read_file(tmp_path, name)["directives"]
+    assert len(stored) == USER_DIRECTIVE_MAX_STORED
+
+
+def test_new_entry_rotated_out_immediately_is_not_reported_as_recorded(tmp_path):
+    """record() must not claim success for a row rotate just evicted."""
+    # 触发条件：已有 cap 条活条目、且它们的 last_seen 都 >= 本次 ts —— 系统时钟
+    # 回拨（NTP 校正 / 休眠恢复 / 双系统时区，这是个 Windows 桌面应用）或同一
+    # 毫秒并列都够。稳定排序下并列组保持原序，而新条目 append 在末尾，切片正好
+    # 从尾部切掉它。无条件报成功的话，调用方会据此置待注入标记、去渲染一个根本
+    # 不存在的 term。
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    mgr._cache[name] = [
+        {"term": f"full{i:03d}", "kind": "ban_topic", "locale": "zh",
+         "created_at": 0.0, "last_seen_at": 9000.0,
+         "expire_at": 1e12, "hit_count": 1, "source": "regex"}
+        for i in range(USER_DIRECTIVE_MAX_STORED)
+    ]
+    # 时钟回拨：新条目的 ts 比在库的每一条都旧
+    result = mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=1000.0)
+    stored = {e["term"] for e in _read_file(tmp_path, name)["directives"]}
+    assert "加班" not in stored, "前提：这条确实被 rotate 挤掉了"
+    assert result == {}, "被挤掉就不能报告成功，否则上游会去渲染一个不存在的 term"
+
+
 def test_rotate_drops_expired_before_live_entries(tmp_path):
     """Expired rows go first — dead data must not evict a live directive."""
     mgr = _build_manager(tmp_path)

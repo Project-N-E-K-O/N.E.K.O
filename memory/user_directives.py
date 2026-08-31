@@ -353,6 +353,12 @@ class UserDirectivesManager:
                     e["expire_at"] = ts + _effective_ttl(hits)
                     e["hit_count"] = hits
                     # locale 不覆盖：首次命中的 locale 是更具诊断价值的信号
+                    # ⚠️ 刷新分支也要 rotate。存量文件是在有 cap 之前长起来的
+                    # （老用户可能已经几百行），而一个只会重复既有指令的用户
+                    # 永远走不到新增分支——不在这里也 rotate 的话，那份文件
+                    # 永远收不回 cap，而每次 record 都要全量读+全量写，还跑在
+                    # 用户每条消息的同步链上。
+                    self._rotate_unlocked(name, now=ts)
                     self._save_unlocked(name)
                     return dict(e)
             new_entry = {
@@ -368,6 +374,20 @@ class UserDirectivesManager:
             entries.append(new_entry)
             self._rotate_unlocked(name, now=ts)
             self._save_unlocked(name)
+            # ⚠️ rotate 有可能把**刚写的这条**挤掉：稳定排序下并列 last_seen 的
+            # 那组保持原序，而 new_entry 是 append 到末尾的，切片正好从尾部切。
+            # 触发条件是"已有 cap 条活条目、且它们的 last_seen 都 >= ts"——系统
+            # 时钟回拨（NTP 校正 / 休眠恢复 / 双系统时区，这是个 Windows 桌面
+            # 应用）或同一毫秒并列都够。无条件报成功的话，调用方会据此置待注入
+            # 标记、去渲染一个根本不存在的 term。
+            if not any(e is new_entry for e in self._cache.get(name, ())):
+                logger.warning(
+                    "[UserDirectives] %s: new directive was rotated out "
+                    "immediately (store at cap with newer timestamps); "
+                    "not reporting it as recorded",
+                    name,
+                )
+                return {}
             return dict(new_entry)
 
     def _rotate_unlocked(self, name: str, *, now: float) -> int:

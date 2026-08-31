@@ -152,6 +152,92 @@ def test_matcher_never_raises_when_memory_unavailable(monkeypatch):
     assert _proactive_directive_hits("Neko", "今天又加班到很晚吧？") == []
 
 
+@pytest.mark.parametrize("term,draft", [
+    ("这个", "这个周末有什么安排吗？"),
+    ("這個", "這個週末有什麼安排嗎？"),
+    ("那个", "那个电影你看了吗？"),
+    ("这件事", "这件事我一直想问你。"),
+    ("this", "how is this going for you"),
+    ("それ", "それは面白いですね"),
+    ("esto", "esto es interesante"),
+])
+def test_bare_referents_never_hard_block(monkeypatch, term, draft):
+    """A bare referent must not hard-block output, however often it matches."""
+    # ⚠️ 抽取侧**会**存下这类 term（"别再讲这个了" → ``这个``），而且那个行为被
+    # 既有测试成片钉着（繁简一致、复合词守卫的主用例都拿 ``这件事`` 当载体），
+    # 不该由本 PR 顺手改掉。但拿汉语最高频的词做子串匹配，等于让主动搭话在这条
+    # 指令的整个生命周期里（递增 TTL 后最长 30 天）全面静默，而用户今天没有界面
+    # 能看到、更别说删掉它。所以判据落在消费侧：软约束照旧注入，硬拦截跳过。
+    _install_directives(monkeypatch, [term])
+    assert _proactive_directive_hits("Neko", draft) == []
+
+
+def test_bare_referent_does_not_mask_a_real_term_in_the_same_list(monkeypatch):
+    """Skipping a bare referent must not skip the specific terms beside it."""
+    # 对照：整条 list 里既有 ``这个`` 又有 ``加班``，前者跳过、后者照拦。
+    # 写成"list 里出现指代词就整条放行"的话这条会红。
+    _install_directives(monkeypatch, ["这个", "加班"])
+    assert _proactive_directive_hits("Neko", "这个周末还要加班吗？") == ["加班"]
+
+
+def test_bare_referent_still_reaches_the_soft_prompt_block(monkeypatch):
+    """The soft block keeps every term — only the hard gate is selective."""
+    # 软约束里保留 ``这个`` 是有意义的：模型读 prompt 时手上有本轮上下文，
+    # 能自己解析所指；而出口子串匹配没有那个上下文。两侧判据不同是设计。
+    manager = MagicMock()
+    manager.render_prompt_block.return_value = "\n\n[...]\n- 这个"
+    monkeypatch.setattr(
+        user_directives_module, "get_user_directives_manager", lambda: manager,
+    )
+    assert "这个" in _append_directives_section("ctx", "Neko", "zh")
+
+
+@pytest.mark.parametrize("term,draft", [
+    # 子串会命中、但作为独立词不该命中的经典例子
+    ("it", "my favorite part is waiting for you"),
+    ("ex", "here is an example for the next round"),
+    ("art", "let us start the party"),
+    ("work", "the network is down"),
+])
+def test_latin_terms_match_on_word_boundaries(monkeypatch, term, draft):
+    """A Latin term must not match inside a longer word."""
+    # ⚠️ 拉丁文字用空格分词，裸子串会撞进更长的词里：ban 掉 ``it`` 会让
+    # ``favorite`` / ``waiting`` 全部命中，主动搭话直接全静默（对抗审查实测
+    # 3/3 草稿被 drop）。CJK 连写没有词边界、只能子串，两边判据必须分开。
+    _install_directives(monkeypatch, [term])
+    assert _proactive_directive_hits("Neko", draft) == []
+
+
+@pytest.mark.parametrize("term,draft", [
+    ("ex", "my ex called me"),
+    ("art", "the art class was fun"),
+    ("work", "how was work today"),
+    ("my ex", "I saw my ex yesterday"),
+])
+def test_latin_terms_still_match_as_whole_words(monkeypatch, term, draft):
+    """Control: the same terms must still hit when they stand alone."""
+    # 没有这条，"拉丁 term 一律不拦"也能让上面那组通过。
+    # ⚠️ 这里不放 ``it``：它同时也在纯指代词表里，两道判据都会跳过它 —— 那是
+    # 对的（``it`` 本来就什么都不指），但拿它当"词边界生效"的对照组会把两条
+    # 判据搅在一起，删掉词边界这段代码这条也不会红。
+    _install_directives(monkeypatch, [term])
+    assert _proactive_directive_hits("Neko", draft) == [term]
+
+
+@pytest.mark.parametrize("term,draft", [
+    ("遊戲", "今天要不要一起玩游戏？"),   # 繁体 term / 简体草稿
+    ("游戏", "今天要不要一起玩遊戲？"),   # 简体 term / 繁体草稿
+    ("加班", "今天又加班到很晚吧？"),      # 同形对照
+])
+def test_hard_gate_folds_script(monkeypatch, term, draft):
+    """Traditional and Simplified must reach each other at the gate."""
+    # 用户换个输入法说"别再提遊戲"，落盘 term 是繁体，而角色按 locale 输出
+    # 简体"游戏"——不折的话逐字不等、直接漏杀，用户明确禁掉的话题照样被推到
+    # 脸上。memory.script_fold 就是为这条造的（#2584 召回侧同款问题）。
+    _install_directives(monkeypatch, [term])
+    assert _proactive_directive_hits("Neko", draft) == [term]
+
+
 def test_matcher_empty_draft_short_circuits(monkeypatch):
     manager = _install_directives(monkeypatch, ["加班"])
     assert _proactive_directive_hits("Neko", "   ") == []
@@ -264,7 +350,11 @@ async def test_banned_draft_is_dropped_without_any_llm_call(monkeypatch):
     )
 
     assert output.result.body["reason_code"] == PROACTIVE_REASON_PASS_USER_DIRECTIVE
-    assert output.result.body["directive_terms"] == ["加班"]
+    # ⚠️ body 里只回**条数**，不回 term 原文：被 ban 的话题按定义就是用户
+    # 明说不想再听的东西（前任 / 病名 / 逝者姓名），而这个 body 会经
+    # /api/proactive_chat 出到前端。日志侧同理。
+    assert output.result.body["directive_match_count"] == 1
+    assert "directive_terms" not in output.result.body
     assert make_llm_calls == 0
     # drop 时要把 TTS / 轮次收尾掉，与既有 drop 路径同构
     mgr.handle_new_message.assert_awaited_once()
@@ -396,5 +486,6 @@ async def test_regen_output_is_gated_too(monkeypatch):
 
     assert make_llm_calls == 1, "只应有 BM25 那一次既有 regen，本闸不额外加"
     assert output.result.body["reason_code"] == PROACTIVE_REASON_PASS_USER_DIRECTIVE
-    assert output.result.body["directive_terms"] == ["前任"]
+    assert output.result.body["directive_match_count"] == 1
+    assert "directive_terms" not in output.result.body
     mgr.handle_new_message.assert_awaited_once()

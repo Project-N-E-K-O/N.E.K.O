@@ -62,6 +62,10 @@ _CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
 _CONTEXT_APPEND_BARE_PRIME_SOURCES = frozenset({
     "game.realtime_context",
     "game.postgame",
+    # 这段文本**本身就是**一段 system prompt（"[用户最近明确表示过不想聊…]"），
+    # 再给它拼一个 ``system: `` 角色前缀是冗余的——它会被原样送进 realtime 的
+    # instructions。与上面两个同样用 role='system' 的 source 同理。
+    "user_directives",
 })
 
 

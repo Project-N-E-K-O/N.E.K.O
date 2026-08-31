@@ -556,6 +556,92 @@ _ZH_TRAILING_FILLERS = (
     "这话题", "這話題", "这件事", "這件事",
 )
 
+# ---------------------------------------------------------------------------
+# 语义为空的 term —— 存，但不拿去做出口硬拦截
+# ---------------------------------------------------------------------------
+# "别再讲这个了" 在语法上**有**宾语，正则照抓不误，抽出来的 term 是 ``这个``
+# —— 一个所指完全依赖上下文、脱离那一轮就没有任何意义的伪宾语。
+#
+# ⚠️ 危害是**不对称**的，这条表的存在理由全在这个不对称上：
+#   · 注入 prompt 那一侧无害。``- 这个`` 只是一行模型无法执行的噪音，而抽取
+#     侧对这类 term 的处理是被既有测试成片钉死的既定行为（繁简一致、复合词
+#     守卫的主用例都拿 ``这件事`` 当载体），不该由本条顺手改掉。
+#   · 但主动搭话的出口硬闸做的是**子串匹配**（generation._proactive_directive_hits）。
+#     ``这个`` 是汉语最高频的词之一，一旦入库，几乎每一条主动搭话都会命中被
+#     drop —— 表现为主动搭话整体静默，持续到 TTL 过期（递增后最长 30 天），
+#     而用户今天还没有任何界面能看到、更别说删掉这一条。
+#
+# 所以判据落在**消费侧**而不是抽取侧：软约束照旧全量注入（模型有上下文，多一行
+# 噪音无妨），硬拦截跳过这批词。谁放大了危害就在谁那里收口。
+#
+# ⚠️ 这一维是**闭集**，跟 ``就`` 那种开集词尾不同：纯指代词是有限的功能词，不是
+# 内容词。所以这里可以枚举，而 _ZH_TRAILING_FILLERS 那批只能靠事后比对。
+# 判据是"这个词单独拿出来指代什么" —— ``这个`` 什么都不指，``加班`` 指加班。
+# 反过来说，只有 term **整体**等于这些词才跳过；``这个项目`` 有实义中心词，照拦。
+# ⚠️ 这张表**不需要** 'zh-TW' 键，与 PROMPT_ZH_TW 门管的那类表不是一回事：
+# 它不是给 ``_loc`` 查表渲染的 prompt 模板（那种表缺 zh-TW 会让繁中用户拿到
+# 英文），而是一份判据词表，消费侧 ``is_semantically_empty_term`` 拿的是所有
+# locale 的**并集**做匹配、从不按 locale 查键。繁体字形（這個 / 那個 / 這件事）
+# 就内联在 'zh' 这一项里，繁中用户照样命中。开一个 'zh-TW' 键反而会造出
+# "同一批词分两处维护、改一边忘另一边"的漂移面——这个模块为此吃过四次亏
+# （见 _ZH_NEG 那段"派生不手抄"的注释）。
+_SEMANTICALLY_EMPTY_TERMS_BY_LOCALE: dict[str, frozenset[str]] = {  # noqa: PROMPT_ZH_TW  # 判据词表非渲染模板，繁体字形内联在 zh 项
+    "zh": frozenset({
+        "这个", "這個", "那个", "那個", "这些", "這些", "那些",
+        "这事", "這事", "那事", "这件事", "這件事", "那件事", "那件事",
+        "这话题", "這話題", "那话题", "那話題",
+        "这个话题", "這個話題", "那个话题", "那個話題",
+        "这种事", "這種事", "那种事", "那種事",
+        "这样的事", "這樣的事", "这类事", "這類事",
+        "刚才的事", "剛才的事", "刚刚的事", "剛剛的事",
+        "这一切", "這一切", "那一切",
+    }),
+    "en": frozenset({
+        "this", "that", "these", "those", "it", "them",
+        "this thing", "that thing", "this topic", "that topic",
+        "this stuff", "that stuff", "this one", "that one",
+        "the topic", "the subject", "anything", "everything", "all this",
+    }),
+    "ja": frozenset({
+        "これ", "それ", "あれ", "この話", "その話", "あの話",
+        "この件", "その件", "あの件", "こんな話", "そんな話",
+        "この話題", "その話題",
+    }),
+    "ko": frozenset({
+        "이거", "그거", "저거", "이것", "그것", "저것",
+        "이 얘기", "그 얘기", "이 이야기", "그 이야기",
+        "이 일", "그 일", "이 주제", "그 주제",
+    }),
+    "ru": frozenset({
+        "это", "то", "этом", "этому", "об этом", "эту тему", "эта тема",
+    }),
+    "es": frozenset({
+        "esto", "eso", "aquello", "este tema", "ese tema", "esta cosa",
+    }),
+    "pt": frozenset({
+        "isso", "isto", "aquilo", "esse tema", "este tema", "essa coisa",
+    }),
+}
+
+# 所有 locale 的并集。⚠️ 与抽取本身一样按**并集**判，不按命中 locale 分表：
+# 混合语言输入是这个模块明确支持的路径（"stop saying 这个"），而这批词跨语言
+# 不存在同形歧义 —— 它们在任何一种语言里都是纯指代词，没有哪个是别的语言的
+# 实义内容词。（``_TRIM_TRAIL_TOKENS_BY_LOCALE`` 必须分表是因为 ``唄`` 那类
+# 同码位歧义，这里没有那个问题。）
+_SEMANTICALLY_EMPTY_TERMS = frozenset(
+    t for terms in _SEMANTICALLY_EMPTY_TERMS_BY_LOCALE.values() for t in terms
+)
+
+
+def is_semantically_empty_term(term: str) -> bool:
+    """Whether a term is a bare referent that means nothing outside its own turn.
+
+    Consumers use this to decide whether a directive term is specific enough to
+    hard-block output on. It is deliberately NOT applied at extraction time —
+    see the table's comment for why the two sides differ.
+    """
+    return term.strip().casefold() in _SEMANTICALLY_EMPTY_TERMS
+
 # 话题里允许出现的**一个单位**。四条 zh 模板共用一份，别再各写各的。
 #
 # ⚠️ 换行必须**显式**排除：原先这些捕获组写的是 ``.``，在没有 DOTALL 时天然不匹配

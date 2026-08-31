@@ -988,10 +988,31 @@ def _tag_tier(
         # sees uniform shape.
         if tier == 'reflection':
             d.setdefault('target_type', 'reflection')
-            # ⚠️ 覆盖式赋值，不是 setdefault：行里若真带了 ``score``，那是历史
-            # 遗留 / 手工编辑的陈旧快照，衰减早已算不准。唯一权威是现算值。
+            # ⚠️⚠️ **只给真的被反驳过的行盖 score**（``disputation > 0``）。
+            #
+            # ``_hard_filter`` 那条过滤的原话是 "user has been disputing this
+            # more than confirming it"，但 ``evidence_score`` 转负不止一条路：
+            # 用户对 surfaced 反思**沉默**时，post_turn 按 'ignored' 记
+            # ``reinforcement += -0.2``（IGNORED_REINFORCEMENT_DELTA）。一次
+            # AI 抛 7 条、用户当轮没接话，这 7 条就全成了 rein=-0.2 / disp=0
+            # 的负分行 —— 按净分过滤会把它们当场从召回里抹掉（对抗审查实测存量
+            # 里 17.8% 的活跃 reflection 属于这一类）。
+            #
+            # 但"没接话"不是"反对"。产品命题里沉默只意味着这条不够格升级，
+            # 不意味着用户否认它；两周后用户主动问"我上个月在忙什么"，那批
+            # 条目正是该被召回的东西。加上 ``disputation > 0`` 这一维，过滤
+            # 的语义才真正等于那句 docstring：**有人反驳过，且反驳压过了确认**。
+            #
+            # 没有 disputation 的行不盖 score 键 → 回落到"不按分过滤"，与本次
+            # 改动之前的行为一致。
             try:
-                d['score'] = evidence_score(d, now)
+                if float(d.get('disputation', 0.0) or 0.0) > 0.0:
+                    # ⚠️ 覆盖式赋值，不是 setdefault：行里若真带了 ``score``，
+                    # 那是历史遗留 / 手工编辑的陈旧快照，衰减早已算不准。
+                    # 唯一权威是现算值。
+                    d['score'] = evidence_score(d, now)
+                else:
+                    d.pop('score', None)
             except Exception as exc:
                 # 单行字段类型坏掉（``reinforcement: "abc"``）不该让整池挂掉；
                 # 与本函数的 non-dict 跳过、``_hard_filter`` 的 per-entry
