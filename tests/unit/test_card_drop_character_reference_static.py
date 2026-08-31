@@ -48,11 +48,15 @@ def test_card_drop_snapshot_is_bound_to_current_model_identity():
     assert "if (modelType === 'pngtuber') return 'pngtuber';" in source
     assert "config.layered_metadata" in source
     assert "config.idle_image" in source
+    assert "config.talking_image" in source
+    assert "function normalizeModelIdentityPart(value)" in source
+    assert "Object.keys(nestedValue).sort()" in source
+    assert "return 'pngtuber:' + JSON.stringify(identity);" in source
     assert "window.vrmManager?.currentModel?.url" in source
     assert "window.vrmModel" in source
     assert "function appendCardDropModelIdentity(body)" in source
     assert "body.modelType = modelType;" in source
-    assert "body.modelKey = modelKey;" in source
+    assert "body.modelKey = modelKey && !modelKey.endsWith(':') ? modelKey : '';" in source
     assert "cacheKey !== getCurrentModelCacheKey()" in source
     assert "pendingAutoCapture = true;" in source
     assert "window.addEventListener('pngtuber-model-loaded'" in source

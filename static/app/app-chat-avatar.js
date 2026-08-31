@@ -347,12 +347,15 @@
         const modelType = getCurrentModelType();
         if (modelType === 'pngtuber') {
             const config = window.pngtuberManager?.config || window.lanlan_config?.pngtuber || {};
-            return 'pngtuber:' + String(
-                config.layered_metadata ||
-                config.idle_image ||
-                config.talking_image ||
-                ''
-            );
+            const identity = {
+                layeredMetadata: normalizeModelIdentityPart(config.layered_metadata),
+                idleImage: normalizeModelIdentityPart(config.idle_image),
+                talkingImage: normalizeModelIdentityPart(config.talking_image)
+            };
+            if (!identity.layeredMetadata && !identity.idleImage && !identity.talkingImage) {
+                return 'pngtuber:';
+            }
+            return 'pngtuber:' + JSON.stringify(identity);
         }
         if (modelType === 'vrm') {
             return 'vrm:' + String(
@@ -377,11 +380,29 @@
         );
     }
 
+    function normalizeModelIdentityPart(value) {
+        if (value === undefined || value === null) return '';
+        if (value && typeof value === 'object') {
+            try {
+                return JSON.stringify(value, function (_key, nestedValue) {
+                    if (!nestedValue || typeof nestedValue !== 'object' || Array.isArray(nestedValue)) {
+                        return nestedValue;
+                    }
+                    return Object.keys(nestedValue).sort().reduce(function (sorted, key) {
+                        sorted[key] = nestedValue[key];
+                        return sorted;
+                    }, {});
+                });
+            } catch (_) {}
+        }
+        return String(value || '');
+    }
+
     function appendCardDropModelIdentity(body) {
         const modelType = getCurrentModelType();
         const modelKey = getCurrentModelCacheKey();
         if (modelType) body.modelType = modelType;
-        if (modelKey && !modelKey.endsWith(':')) body.modelKey = modelKey;
+        if (modelType) body.modelKey = modelKey && !modelKey.endsWith(':') ? modelKey : '';
         return body;
     }
 
