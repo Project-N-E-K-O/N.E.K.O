@@ -2101,6 +2101,16 @@ def _link_matches_phase1_title(title: str, link: dict) -> bool:
     return False
 
 
+def _link_has_exact_phase1_title(title: str, link: dict) -> bool:
+    """Return whether a returned title exactly identifies this candidate."""
+
+    title_lower = title.lower().strip()
+    return bool(title_lower) and any(
+        str(link.get(field) or "").lower().strip() == title_lower
+        for field in ("title", "phase1_title")
+    )
+
+
 def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
     """
     Look up the link matching a Phase 1 output title in all_web_links.
@@ -2108,6 +2118,9 @@ def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
     - exact match (ignoring case and surrounding whitespace)
     - partial match (title contains or is contained, ignoring case and surrounding whitespace)
     """
+    for link in all_links:
+        if _link_has_exact_phase1_title(title, link):
+            return link
     for link in all_links:
         if _link_matches_phase1_title(title, link):
             return link
@@ -2133,6 +2146,8 @@ def _lookup_link_by_phase1_selection(
         ]
         if number <= len(source_links):
             candidate = source_links[number - 1]
-            if _link_matches_phase1_title(str(selection.get("title") or ""), candidate):
+            if _link_has_exact_phase1_title(
+                str(selection.get("title") or ""), candidate
+            ):
                 return candidate
     return _lookup_link_by_title(str(selection.get("title") or ""), all_links)

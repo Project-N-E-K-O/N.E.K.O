@@ -132,6 +132,18 @@ def test_phase1_title_fallback_wins_when_numbered_candidate_disagrees():
     assert selected is second
 
 
+def test_phase1_numbered_selection_requires_exact_title_match():
+    first = {"title": "A", "source": "喵宇宙社区"}
+    second = {"title": "A|B", "source": "喵宇宙社区"}
+
+    selected = sr_parsing._lookup_link_by_phase1_selection(
+        {"title": "A|B", "source": "喵宇宙社区", "number": "1"},
+        [first, second],
+    )
+
+    assert selected is second
+
+
 def test_phase1_lookup_maps_escaped_community_title_to_canonical_card():
     links = candidate_selection._round_robin_phase1_links(
         ["community"],

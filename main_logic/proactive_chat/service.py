@@ -1674,6 +1674,10 @@ async def handle_proactive_chat(
                         parts.append(f"--- {label} ---\n" + "\n".join(lines))
                         continue
 
+                # Community cards only enter Phase 1 through selected links:
+                # a formatted fallback would bypass cooldown and data escaping.
+                if mode == "community":
+                    continue
                 content_text = src.get("formatted_content", "")
                 if content_text and remaining_total > 0:
                     compact_lines = [

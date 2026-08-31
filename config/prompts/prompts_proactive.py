@@ -2877,7 +2877,7 @@ _UNIFIED_P1_FORMAT = {
         "web": """[WEB]
 - 有值得分享的话题：
 来源：[来源平台名称，如Twitter/Reddit/微博/B站等]
-序号：[选中条目在其分类中的编号，如 3]
+序号：[选中条目在其来源平台中的全局编号，如 3]
 话题：[选中的原始标题，必须与汇总内容中的标题完全一致]
 简述：[2-3句话，为什么有趣、聊天切入点是什么]
 - 都不值得聊：[WEB] [PASS]""",
@@ -2892,7 +2892,7 @@ _UNIFIED_P1_FORMAT = {
         "web": """[WEB]
 - 有值得分享的話題：
 來源：[來源平台名稱，例如 Twitter/Reddit/微博/B 站等]
-序號：[選中條目在它那一類裡的編號，例如 3]
+序號：[選中條目在其來源平台中的全域編號，例如 3]
 話題：[選中的原始標題，必須跟彙整內容裡的標題完全一致]
 簡述：[2-3 句話，為什麼有趣、聊天切入點是什麼]
 - 都不值得聊：[WEB] [PASS]""",
@@ -2907,7 +2907,7 @@ _UNIFIED_P1_FORMAT = {
         "web": """[WEB]
 - If there's a worthy topic:
 Source: [platform name, e.g. Twitter/Reddit/Weibo/Bilibili]
-No: [item number within its category, e.g. 3]
+No: [global item number within its source platform, e.g. 3]
 Topic: [original title exactly as shown in the content]
 Summary: [2-3 sentences on why it's interesting]
 - If nothing is worth sharing: [WEB] [PASS]""",

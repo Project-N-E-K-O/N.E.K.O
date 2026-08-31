@@ -223,6 +223,14 @@ def test_normalize_neko_community_feed_keeps_numeric_card_id_for_deduplication()
     assert posts[0]["id"] == "42"
 
 
+def test_normalize_neko_community_feed_resolves_relative_card_permalink():
+    posts = normalize_neko_community_feed(
+        {"items": [{"id": "post-1", "title": "相对链接卡牌", "path": "posts/post-1"}]}
+    )
+
+    assert posts[0]["url"] == "https://community.project-neko.cn/posts/post-1"
+
+
 class _FakeResponse:
     def raise_for_status(self) -> None:
         return None

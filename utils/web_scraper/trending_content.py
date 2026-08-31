@@ -26,7 +26,7 @@ import random
 import re
 import time
 from typing import TYPE_CHECKING, Dict, List, Any
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 
 # bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
 # system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
@@ -1770,7 +1770,7 @@ def _community_card_url(raw: dict[str, Any]) -> str:
             continue
         if candidate.startswith(("http://", "https://")):
             return candidate
-        if candidate.startswith("/"):
+        if not urlparse(candidate).scheme:
             return urljoin(discover_url, candidate)
     # The feed API does not need to expose a post permalink for a card to stay
     # useful: the discover page is a safe, stable fallback for the source card.
