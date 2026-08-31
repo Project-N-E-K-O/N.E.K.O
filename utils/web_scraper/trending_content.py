@@ -51,12 +51,21 @@ XHH_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
 )
-NEKO_COMMUNITY_FEED_API = "https://community.project-neko.cn/api/feed"
-NEKO_COMMUNITY_DISCOVER_URL = "https://community.project-neko.cn/discover"
 # The community API's discover feed is deliberately fetched as its first page
 # of 60 cards. The caller's smaller ``limit`` is applied after normalization,
 # so Phase 1 keeps its existing prompt budget while still getting a varied pool.
 NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
+
+
+def _neko_community_urls() -> tuple[str, str]:
+    """Return community feed and discover URLs for the configured social host."""
+
+    # Keep this import lazy: client registration imports scraper-adjacent modules
+    # during startup, while the configured base may also change in tests.
+    from main_logic.client_registration import social_base_url
+
+    base_url = social_base_url().rstrip("/")
+    return f"{base_url}/api/feed", f"{base_url}/discover"
 
 
 async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
@@ -1748,6 +1757,7 @@ def _community_identifier(value: Any) -> str:
 
 
 def _community_card_url(raw: dict[str, Any]) -> str:
+    _, discover_url = _neko_community_urls()
     for key in (
         "url",
         "link",
@@ -1764,10 +1774,10 @@ def _community_card_url(raw: dict[str, Any]) -> str:
         if candidate.startswith(("http://", "https://")):
             return candidate
         if candidate.startswith("/"):
-            return urljoin(NEKO_COMMUNITY_DISCOVER_URL, candidate)
+            return urljoin(discover_url, candidate)
     # The feed API does not need to expose a post permalink for a card to stay
     # useful: the discover page is a safe, stable fallback for the source card.
-    return NEKO_COMMUNITY_DISCOVER_URL
+    return discover_url
 
 
 def normalize_neko_community_feed(
@@ -1850,12 +1860,13 @@ def format_neko_community_feed(posts: list[dict[str, Any]]) -> str:
 async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
     """Fetch the public first-page discover cards from the N.E.K.O community."""
     try:
+        feed_api, discover_url = _neko_community_urls()
         response = await get_external_http_client().get(
-            NEKO_COMMUNITY_FEED_API,
+            feed_api,
             params={"offset": 0, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE},
             headers={
                 "Accept": "application/json",
-                "Referer": NEKO_COMMUNITY_DISCOVER_URL,
+                "Referer": discover_url,
                 "User-Agent": XHH_USER_AGENT,
             },
             timeout=10.0,

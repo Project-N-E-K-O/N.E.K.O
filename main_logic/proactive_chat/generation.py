@@ -2004,7 +2004,8 @@ def _lookup_link_by_phase1_selection(
         source_links = [
             link
             for link in all_links
-            if str(link.get("source") or "").strip().casefold() == source.casefold()
+            if str(link.get("title") or "").strip()
+            and str(link.get("source") or "").strip().casefold() == source.casefold()
         ]
         if number <= len(source_links):
             candidate = source_links[number - 1]

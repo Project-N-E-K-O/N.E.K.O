@@ -263,7 +263,7 @@ async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_fetch_neko_community_feed_uses_discover_endpoint():
+async def test_fetch_neko_community_feed_uses_configured_social_base_url():
     class CommunityResponse(_FakeResponse):
         def json(self):
             return SAMPLE_NEKO_COMMUNITY_PAYLOAD
@@ -277,15 +277,18 @@ async def test_fetch_neko_community_feed_uses_discover_endpoint():
     with patch(
         "utils.web_scraper.trending_content.get_external_http_client",
         return_value=client,
+    ), patch(
+        "main_logic.client_registration.social_base_url",
+        return_value="https://community.example.test",
     ):
         result = await fetch_neko_community_feed(limit=1)
 
     assert result["success"] is True
     assert result["posts"][0]["title"] == "猫娘们正在讨论的新点子"
     url, kwargs = client.call
-    assert url == "https://community.project-neko.cn/api/feed"
+    assert url == "https://community.example.test/api/feed"
     assert kwargs["params"] == {"offset": 0, "limit": 60}
-    assert kwargs["headers"]["Referer"] == "https://community.project-neko.cn/discover"
+    assert kwargs["headers"]["Referer"] == "https://community.example.test/discover"
 
 
 @pytest.mark.asyncio

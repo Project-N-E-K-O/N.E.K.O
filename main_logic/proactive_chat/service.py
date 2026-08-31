@@ -86,6 +86,7 @@ from main_logic.proactive_chat.delivery import (
 )
 from main_logic.proactive_chat.candidate_selection import (
     _format_phase1_link_candidate,
+    _number_phase1_links_by_source,
     _phase1_linkless_modes,
     _round_robin_phase1_links,
 )
@@ -1664,8 +1665,7 @@ async def handle_proactive_chat(
                             _format_phase1_link_candidate(index, item),
                             PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
                         )
-                        for index, item in enumerate(selected_links, start=1)
-                        if item.get("title", "").strip()
+                        for index, item in _number_phase1_links_by_source(selected_links)
                     ]
                     if lines:
                         parts.append(f"--- {label} ---\n" + "\n".join(lines))

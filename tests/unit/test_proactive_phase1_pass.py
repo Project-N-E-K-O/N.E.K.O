@@ -73,6 +73,30 @@ def test_phase1_selection_uses_source_local_number_for_duplicate_titles():
     assert selected is second
 
 
+def test_phase1_candidate_numbers_are_source_local_when_sources_interleave():
+    links = [
+        {"title": "微博一", "source": "微博"},
+        {"title": "社区一", "source": "喵宇宙社区"},
+        {"title": "微博二", "source": "微博"},
+        {"title": "社区二", "source": "喵宇宙社区"},
+    ]
+
+    numbered = candidate_selection._number_phase1_links_by_source(links)
+
+    assert [(number, link["title"]) for number, link in numbered] == [
+        (1, "微博一"),
+        (1, "社区一"),
+        (2, "微博二"),
+        (2, "社区二"),
+    ]
+    assert (
+        sr_parsing._lookup_link_by_phase1_selection(
+            {"title": "社区二", "source": "喵宇宙社区", "number": "2"}, links
+        )
+        is links[3]
+    )
+
+
 def test_phase1_reserves_budget_for_linkless_window_context(monkeypatch):
     monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: False)
     sources = {

@@ -47,6 +47,22 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
     return f"{index}. {title}{suffix}"
 
 
+def _number_phase1_links_by_source(
+    links: list[dict[str, Any]],
+) -> list[tuple[int, dict[str, Any]]]:
+    """Number displayable Phase 1 candidates independently for each source."""
+
+    positions: dict[str, int] = {}
+    numbered: list[tuple[int, dict[str, Any]]] = []
+    for link in links:
+        if not str(link.get("title") or "").strip():
+            continue
+        source = " ".join(str(link.get("source") or "").split()).casefold()
+        positions[source] = positions.get(source, 0) + 1
+        numbered.append((positions[source], link))
+    return numbered
+
+
 def _phase1_linkless_modes(
     modes: list[str], sources: dict[str, Any]
 ) -> list[str]:
