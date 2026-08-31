@@ -260,9 +260,12 @@ _IMG_LOCK_SHUTDOWN_WAIT_S = 2.0
 # 放弃排空之后再等它退出的时间。只够跑完当前这一次 send，不是第二次排空预算。
 _BATCHER_ABANDON_JOIN_S = 1.0
 
-# 关 message uplink 之前等它那把发送锁的时间。锁只在一次 NOBLOCK send 期间被
-# 持有，所以这个值只是给调度留余量，不是等排空。
-_BATCHER_CLOSE_LOCK_WAIT_S = 2.0
+# send_uplink_nowait 等发送锁的上限。只够让开一次在途的 send，不是排队预算。
+_UPLINK_NOWAIT_LOCK_WAIT_S = 0.05
+
+# 关 uplink socket 之前等它那把发送锁的时间。等不到就交给 ctx.term() 打断持锁
+# 者、由它自己关，所以这个值只是给调度留余量，不是等排空。
+_UPLINK_CLOSE_LOCK_WAIT_S = 2.0
 
 
 # 每个 host 一把 uplink token（见 HostTransport.__init__）。这些 token 全部挂在
@@ -613,18 +616,65 @@ class ChildTransport:
     # ── uplink (thread-safe, any thread) ─────────────────────────
 
     def send_uplink(self, channel: str, msg: Any, *, timeout: float = 10.0) -> None:
-        """Thread-safe blocking send on the uplink."""
+        """Thread-safe bounded send on the uplink.
+
+        ``timeout`` used to be accepted and ignored: the send was a plain
+        blocking ``sock.send``, so a host that stopped draining (or a socket
+        sitting at its 5,000-message HWM) wedged the calling thread for good.
+        That is the plugin event loop, and it is what a bounded shutdown waits
+        on.
+
+        It also held ``lock`` the whole time, which is what made
+        ``send_uplink_nowait`` — the "non-blocking" one — block. Bounding this
+        bounds that.
+
+        Raises ``queue.Full`` rather than something transport-shaped:
+        ``ChannelSender`` stands in for a ``multiprocessing.Queue``, and that
+        is what ``Queue.put(timeout=...)`` raises when it cannot deliver.
+        """
         data = _encode_uplink(self._uplink_token, channel, msg)
         sock, lock = self._uplink_socket(channel)
-        with lock:
-            sock.send(data)
+        budget = max(0.0, float(timeout))
+        deadline = time.monotonic() + budget
+        if budget > 0:
+            acquired = lock.acquire(timeout=budget)
+        else:
+            acquired = lock.acquire(blocking=False)
+        if not acquired:
+            raise queue.Full(f"uplink busy: {channel}")
+        try:
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            # poll before NOBLOCK rather than a plain send: the wait has to be
+            # interruptible by the deadline, and it must happen under the lock
+            # because libzmq sockets are not thread safe.
+            if not sock.poll(remaining_ms, zmq.POLLOUT):
+                raise queue.Full(f"uplink not writable within {budget}s: {channel}")
+            sock.send(data, zmq.NOBLOCK)
+        finally:
+            # 关停期间是这个线程最后碰这个 socket，所以由它来关。和
+            # _send_image_sync 的 finally 同一条规则。
+            if self._closed:
+                self._close_uplink_sock_locked(sock)
+            lock.release()
 
     def send_uplink_nowait(self, channel: str, msg: Any) -> None:
-        """Thread-safe non-blocking send on the uplink."""
+        """Thread-safe non-blocking send on the uplink.
+
+        The lock wait is capped rather than removed. Dropping on the first
+        contended microsecond would lose messages that today only ever wait for
+        one in-flight send; blocking on it without a cap is what made this
+        method's name a lie while a bounded ``send_uplink`` held the lock.
+        """
         data = _encode_uplink(self._uplink_token, channel, msg)
         sock, lock = self._uplink_socket(channel)
-        with lock:
+        if not lock.acquire(timeout=_UPLINK_NOWAIT_LOCK_WAIT_S):
+            raise queue.Full(f"uplink busy: {channel}")
+        try:
             sock.send(data, zmq.NOBLOCK)
+        finally:
+            if self._closed:
+                self._close_uplink_sock_locked(sock)
+            lock.release()
 
     def _uplink_socket(self, channel: str):
         if channel in _MESSAGE_UPLINK_CHANNELS:
@@ -673,6 +723,14 @@ class ChildTransport:
 
     # ── lifecycle ────────────────────────────────────────────────
 
+    def _close_uplink_sock_locked(self, sock: Any) -> None:
+        """Close one uplink socket. Callers decide whether they hold its lock."""
+        if sock is not None:
+            try:
+                sock.close(linger=0)
+            except Exception:
+                pass
+
     def _close_img_sock_locked(self) -> None:
         """Close the media socket. Callers decide whether they hold _img_lock."""
         if self._img_sock is not None:
@@ -705,51 +763,50 @@ class ChildTransport:
                     "authenticated message batcher still running at shutdown; "
                     "closing its socket under the send lock"
                 )
-        sockets = [
-            sock
-            for sock in (
-                getattr(self, "_dl_sock", None),
-                getattr(self, "_ul_sock", None),
-            )
-            if sock is not None
-        ]
-        msg_sock = getattr(self, "_msg_sock", None)
-        if msg_sock is not None and msg_sock is not getattr(self, "_ul_sock", None):
-            # 在 send_uplink_nowait 用的同一把锁下关：batcher 线程活过了 stop
-            # 就可能正在 send 里，而 libzmq 的 socket 不是线程安全的。拿到锁
-            # 就等于证明当下没有 send 在进行——而那个 send 是 NOBLOCK 的，锁
-            # 只会被持有极短一瞬。
-            #
-            # 拿不到也照样关。不关会让 context 终止永久阻塞在这个 socket 上，
-            # 那是必然的挂死；而 UB 的窗口要求线程恰好卡在一次 NOBLOCK send
-            # 里，两害相权。
-            msg_lock = getattr(self, "_msg_lock", None)
-            acquired = False
-            if msg_lock is not None:
-                try:
-                    acquired = msg_lock.acquire(timeout=_BATCHER_CLOSE_LOCK_WAIT_S)
-                except Exception:
-                    acquired = False
-            if not acquired:
-                logger.warning(
-                    "message uplink send lock not acquired within "
-                    f"{_BATCHER_CLOSE_LOCK_WAIT_S}s; closing anyway"
-                )
+        # 下行只有 recv 路径碰，没有并发的发送方，直接关。
+        dl_sock = getattr(self, "_dl_sock", None)
+        if dl_sock is not None:
             try:
-                msg_sock.close(linger=0)
+                dl_sock.close(linger=0)
             except Exception:
                 pass
-            finally:
-                if acquired and msg_lock is not None:
+
+        # 两条 uplink socket 都在自己的锁下关，做法和媒体 socket 一样（下面
+        # 那段注释里量过的那个）：libzmq 的 socket 不是线程安全的，另一个线程
+        # 正在 send/poll 时从这里关，是崩溃不是失礼。
+        #
+        # 拿不到锁就**不关**——这正是媒体那条路的做法，别改成"照样关"：
+        # ctx.term() 会先用 ETERM 打断持锁者的 poll/send，它的 finally 看到
+        # self._closed 就把 socket 关掉，然后 term 返回。所以漏关不会挂住终止。
+        # getattr 成对取，不走 _uplink_socket：单测用 __new__ 造这个对象、只填
+        # 自己要用的字段，close() 不能假设 __init__ 的每个字段都在（这条约定
+        # 上面那段注释里就写着）。
+        for label, sock_attr, lock_attr in (
+            (CH_STS, "_ul_sock", "_ul_lock"),
+            (CH_MSG, "_msg_sock", "_msg_lock"),
+        ):
+            sock = getattr(self, sock_attr, None)
+            lock = getattr(self, lock_attr, None)
+            if sock is None or lock is None:
+                continue
+            acquired = False
+            try:
+                acquired = lock.acquire(timeout=_UPLINK_CLOSE_LOCK_WAIT_S)
+            except Exception:
+                acquired = False
+            if acquired:
+                try:
+                    self._close_uplink_sock_locked(sock)
+                finally:
                     try:
-                        msg_lock.release()
+                        lock.release()
                     except Exception:
                         pass
-        for sock in sockets:
-            try:
-                sock.close(linger=0)
-            except Exception:
-                pass
+            else:
+                logger.warning(
+                    f"uplink send lock still held at shutdown ({label}); "
+                    "leaving the close to the sender it interrupts"
+                )
         # Bounded, and deliberately not unconditional. A handler inside
         # _send_image_sync holds this lock for its whole upload, so an
         # unconditional acquire made shutdown wait on an in-flight upload

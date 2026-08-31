@@ -138,6 +138,9 @@ class ProactiveBridge:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        # 必须清：stop() 会置位 _subscribed 来唤醒等待者，重启后不清的话
+        # wait_until_subscribed() 会拿着上一条命的事件立刻返回，窗口原样回来。
+        self._subscribed.clear()
         t = threading.Thread(target=self._run, daemon=True, name="proactive-bridge")
         self._thread = t
         t.start()

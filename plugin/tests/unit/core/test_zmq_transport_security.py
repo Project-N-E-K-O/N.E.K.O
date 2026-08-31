@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pickle
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -782,6 +783,7 @@ def test_the_message_socket_is_closed_under_the_send_lock() -> None:
     transport._message_batcher = None
     transport._dl_sock = None
     transport._ul_sock = None
+    transport._ul_lock = threading.Lock()
     transport._msg_sock = _Sock()
     transport._msg_lock = _Lock()
     transport._img_lock = threading.Lock()
@@ -798,3 +800,125 @@ def test_the_message_socket_is_closed_under_the_send_lock() -> None:
     assert events.index("acquire") < events.index("close"), (
         "先关后拿锁等于没拿：batcher 线程可能正卡在 send 里"
     )
+
+
+# ── the uplink sends must both be bounded ──────────────────────────────
+
+
+class _NeverWritableSock:
+    """A socket that is never ready to send, i.e. sitting at its HWM."""
+
+    def __init__(self) -> None:
+        self.sends = 0
+
+    def poll(self, timeout_ms, flags=None):
+        return 0
+
+    def send(self, data, flags=None):  # pragma: no cover - must not be reached
+        self.sends += 1
+        raise AssertionError("poll said not writable; send should not be attempted")
+
+
+def _transport_with(sock, lock):
+    t = zmq_transport.ChildTransport.__new__(zmq_transport.ChildTransport)
+    t._uplink_token = "tok"
+    t._ul_sock = sock
+    t._msg_sock = sock
+    t._ul_lock = lock
+    t._msg_lock = lock
+    # The senders' finally consults it: a shutdown that started while this
+    # thread held the lock makes this thread the one that closes the socket.
+    t._closed = False
+    return t
+
+
+@pytest.mark.plugin_unit
+def test_a_saturated_uplink_times_out_instead_of_wedging_the_loop() -> None:
+    """``timeout`` was accepted and never applied — the send blocked forever.
+
+    That is the plugin event loop, and a bounded shutdown waits on it.
+
+    Mutation: drop the ``poll`` guard and go back to a plain ``sock.send``.
+    """
+    sock = _NeverWritableSock()
+    transport = _transport_with(sock, threading.Lock())
+
+    started = time.monotonic()
+    with pytest.raises(zmq_transport.queue.Full):
+        transport.send_uplink(zmq_transport.CH_STS, {"x": 1}, timeout=0.2)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5.0, "没有在预算内返回"
+    assert sock.sends == 0
+
+
+@pytest.mark.plugin_unit
+def test_the_nowait_send_does_not_wait_on_a_held_lock_forever() -> None:
+    """It is called "nowait"; a bounded ``send_uplink`` still holds the lock.
+
+    Mutation: go back to an unconditional ``with lock``.
+    """
+    lock = threading.Lock()
+    transport = _transport_with(_NeverWritableSock(), lock)
+
+    lock.acquire()
+    try:
+        started = time.monotonic()
+        with pytest.raises(zmq_transport.queue.Full):
+            transport.send_uplink_nowait(zmq_transport.CH_STS, {"x": 1})
+        assert time.monotonic() - started < 5.0, "在锁上无限等——名字是假的"
+    finally:
+        lock.release()
+
+
+@pytest.mark.plugin_unit
+def test_a_held_lock_defers_the_close_to_the_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Not closing is the correct fallback, not closing anyway.
+
+    ``ctx.term()`` interrupts the lock holder's poll/send with ETERM, its
+    ``finally`` sees ``_closed`` and closes the socket, and term returns — the
+    measured behaviour the media socket already relies on. Closing it from here
+    instead would be undefined behaviour while that send is in flight.
+
+    Mutation: close the socket when the lock was not acquired.
+    """
+    closed: list[str] = []
+
+    class _Sock:
+        def close(self, linger=None) -> None:
+            closed.append("msg")
+
+    class _HeldLock:
+        def acquire(self, timeout=None) -> bool:
+            return False
+
+        def release(self) -> None:  # pragma: no cover - never taken
+            raise AssertionError("released a lock that was never acquired")
+
+    transport = zmq_transport.ChildTransport.__new__(zmq_transport.ChildTransport)
+    transport._closed = False
+    transport._message_batcher = None
+    transport._dl_sock = None
+    transport._ul_sock = None
+    transport._ul_lock = threading.Lock()
+    transport._msg_sock = _Sock()
+    transport._msg_lock = _HeldLock()
+    transport._img_lock = threading.Lock()
+
+    try:
+        transport.close()
+    except Exception:
+        pass
+
+    assert closed == [], (
+        "锁还被别人拿着就把 socket 关了——对面可能正在 send 里，这是 UB"
+    )
+
+    # ...and the sender, once interrupted, is the one that closes it.
+    transport._msg_lock = threading.Lock()
+    transport._uplink_token = "tok"
+    with pytest.raises(Exception):
+        transport.send_uplink_nowait(zmq_transport.CH_MSG, {"x": 1})
+    assert closed == ["msg"], "被打断的发送方没有在自己的 finally 里把 socket 关掉"

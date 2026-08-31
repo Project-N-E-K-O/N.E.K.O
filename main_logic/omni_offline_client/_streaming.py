@@ -136,6 +136,9 @@ class _StreamingMixin:
     async def connect(self, instructions: str, native_audio=False) -> None:
         """Initialize the client with system instructions."""
         self._instructions = instructions
+        # 与 realtime 侧同：close() 立起来的抄送闭锁在这里落下，否则同一个实例
+        # 被复用时，重新 connect 之后帧/对话都不再上总线。
+        self._bus_copies_closed = False
         # Add system message to conversation history using langchain format
         self._conversation_history = [
             SystemMessage(content=instructions)

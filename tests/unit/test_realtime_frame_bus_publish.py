@@ -583,3 +583,42 @@ def test_prompt_ephemeral_labels_every_cue_image_proactive() -> None:
             f"第 {call.lineno} 行的 stream_image 没传 source=\"proactive\"——"
             "这一帧会以默认值进总线，按 proactive 过滤的插件读不到"
         )
+
+
+def test_connect_lowers_the_frame_copy_latch() -> None:
+    """``close()`` latches frame copies off; a reused client must not stay off.
+
+    The same client instance is reused across sessions, and the failure is
+    silent — bus copies are best-effort, so nothing raises; the character just
+    stops appearing on the frames bus after its first reconnect.
+
+    Asserted from the source of ``connect`` because standing up a real
+    websocket session here would test the transport, not the latch.
+
+    Mutation: delete the reset in ``connect``.
+    """
+    import ast
+    import inspect
+    from pathlib import Path
+
+    from main_logic.omni_realtime_client import _transport
+
+    tree = ast.parse(Path(inspect.getfile(_transport)).read_text(encoding="utf-8"))
+    connect = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "connect":
+            connect = node
+    assert connect is not None, "前提没成立：找不到 connect"
+
+    resets = [
+        node
+        for node in ast.walk(connect)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Attribute) and t.attr == "_frame_copies_closed"
+            for t in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+        and node.value.value is False
+    ]
+    assert resets, "connect 没把 _frame_copies_closed 落下——重连后帧抄送永久停摆"

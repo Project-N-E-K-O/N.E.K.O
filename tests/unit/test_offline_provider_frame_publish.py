@@ -1133,3 +1133,37 @@ def test_a_max_image_survives_every_hop_to_the_plane_record():
         f"{MESSAGE_PLANE_PAYLOAD_MAX_BYTES} B——bridge 会以 payload_too_big 拒收，"
         "模型看到了而插件读不到"
     )
+
+
+def test_offline_connect_lowers_the_bus_copy_latch() -> None:
+    """The offline dual of the realtime latch reset.
+
+    ``_bus_copies_closed`` is latched by ``_cancel_bus_copies`` at close; a
+    reused ``OmniOfflineClient`` that reconnects would otherwise publish
+    nothing, silently.
+    """
+    import ast
+    import inspect
+    from pathlib import Path
+
+    from main_logic.omni_offline_client import _streaming
+
+    tree = ast.parse(Path(inspect.getfile(_streaming)).read_text(encoding="utf-8"))
+    connect = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "connect":
+            connect = node
+    assert connect is not None, "前提没成立：找不到 connect"
+
+    resets = [
+        node
+        for node in ast.walk(connect)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Attribute) and t.attr == "_bus_copies_closed"
+            for t in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+        and node.value.value is False
+    ]
+    assert resets, "connect 没把 _bus_copies_closed 落下——重连后抄送永久停摆"

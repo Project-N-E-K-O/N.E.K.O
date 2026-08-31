@@ -388,6 +388,11 @@ class _TransportMixin:
         if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
 
+        # 同一个实例会被跨会话复用，所以 close() 立起来的帧抄送闭锁必须在这里
+        # 落下——否则重连之后 frames 总线上这个角色就再也不出现了，而且是静默
+        # 的（抄送本来就是 best-effort，没人会因此报错）。
+        self._frame_copies_closed = False
+
         # [ISSUE4c] Reset the tool-call flood window on every (re)connect. The
         # same OmniRealtimeClient instance is reused across sessions, so stale
         # timestamps from a previous connection must not carry over and make the
