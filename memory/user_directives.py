@@ -360,7 +360,7 @@ class UserDirectivesManager:
                     # 用户每条消息的同步链上。
                     self._rotate_unlocked(name, now=ts)
                     self._save_unlocked(name)
-                    return dict(e)
+                    return self._report_if_kept(name, e)
             new_entry = {
                 "term": term,
                 "kind": kind,
@@ -374,21 +374,37 @@ class UserDirectivesManager:
             entries.append(new_entry)
             self._rotate_unlocked(name, now=ts)
             self._save_unlocked(name)
-            # ⚠️ rotate 有可能把**刚写的这条**挤掉：稳定排序下并列 last_seen 的
-            # 那组保持原序，而 new_entry 是 append 到末尾的，切片正好从尾部切。
-            # 触发条件是"已有 cap 条活条目、且它们的 last_seen 都 >= ts"——系统
-            # 时钟回拨（NTP 校正 / 休眠恢复 / 双系统时区，这是个 Windows 桌面
-            # 应用）或同一毫秒并列都够。无条件报成功的话，调用方会据此置待注入
-            # 标记、去渲染一个根本不存在的 term。
-            if not any(e is new_entry for e in self._cache.get(name, ())):
-                logger.warning(
-                    "[UserDirectives] %s: new directive was rotated out "
-                    "immediately (store at cap with newer timestamps); "
-                    "not reporting it as recorded",
-                    name,
-                )
-                return {}
-            return dict(new_entry)
+            return self._report_if_kept(name, new_entry)
+
+    def _report_if_kept(
+        self, name: str, entry: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Return ``entry`` only if rotate kept it; ``{}`` when it was evicted.
+
+        Caller holds the lock and has already rotated + persisted.
+        """
+        # ⚠️ rotate 有可能把**刚写的这条**挤掉，新增与刷新两条分支都会：稳定
+        # 排序下并列 last_seen 的那组保持原序，而新条目 append 在末尾、切片
+        # 正好从尾部切；刷新分支则是把 last_seen 改成了一个比在库条目都旧的
+        # 时间。触发条件是"已有 cap 条活条目、且它们的 last_seen 都 >= ts"——
+        # 系统时钟回拨（NTP 校正 / 休眠恢复 / 双系统时区，这是个 Windows 桌面
+        # 应用）或同一毫秒并列都够。
+        #
+        # 无条件报成功的话，调用方（record_from_text → mark_pending_injection）
+        # 会据此置待注入标记，去渲染一个盘上和内存里都不存在的 term ——
+        # 用户重复说的这条 ban 在当前会话和下次会话都不会生效。
+        #
+        # ⚠️ 两条分支**共用**这一个 helper，别各写一份：刷新分支原先没有这道
+        # 检查，正是因为它的 rotate 是后加的（修"存量超限收不回 cap"那条），
+        # 而写的时候没回头看它的返回值 —— greptile P1 抓到。
+        if any(item is entry for item in self._cache.get(name, ())):
+            return dict(entry)
+        logger.warning(
+            "[UserDirectives] %s: directive %r was rotated out immediately "
+            "(store at cap with newer timestamps); not reporting it as recorded",
+            name, entry.get("term"),
+        )
+        return {}
 
     def _rotate_unlocked(self, name: str, *, now: float) -> int:
         """Cap the stored list at ``USER_DIRECTIVE_MAX_STORED``, oldest first.

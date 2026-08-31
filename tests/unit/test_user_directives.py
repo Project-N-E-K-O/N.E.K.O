@@ -301,6 +301,31 @@ def test_new_entry_rotated_out_immediately_is_not_reported_as_recorded(tmp_path)
     assert result == {}, "被挤掉就不能报告成功，否则上游会去渲染一个不存在的 term"
 
 
+def test_refreshed_entry_rotated_out_is_not_reported_as_recorded(tmp_path):
+    """The refresh branch needs the same eviction guard as the insert branch."""
+    # ⚠️ 对偶漏洞：刷新分支的 rotate 是后加的（修"存量超限收不回 cap"），加的
+    # 时候没回头看它的返回值仍是无条件 `return dict(e)` —— greptile P1 抓到。
+    # 触发：时钟回拨使刷新后的 last_seen 比在库每一条都旧，rotate 把它挤掉，
+    # 而调用方据此置待注入标记，去渲染一个盘上根本不存在的 term。
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    mgr._cache[name] = [
+        {"term": "加班", "kind": "ban_topic", "locale": "zh", "created_at": 0.0,
+         "last_seen_at": 9000.0, "expire_at": 1e12, "hit_count": 1, "source": "regex"}
+    ] + [
+        {"term": f"x{i:03d}", "kind": "ban_topic", "locale": "zh", "created_at": 0.0,
+         "last_seen_at": 9000.0 + i + 1, "expire_at": 1e12, "hit_count": 1,
+         "source": "regex"}
+        for i in range(USER_DIRECTIVE_MAX_STORED)
+    ]
+    # 时钟回拨：刷新 "加班" 时 ts 比在库每一条都旧
+    result = mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=1000.0)
+
+    stored = {e["term"] for e in mgr._cache[name]}
+    assert "加班" not in stored, "前提：这条确实被 rotate 挤掉了"
+    assert result == {}, "被挤掉就不能报告成功，否则上游会去渲染一个不存在的 term"
+
+
 def test_rotate_drops_expired_before_live_entries(tmp_path):
     """Expired rows go first — dead data must not evict a live directive."""
     mgr = _build_manager(tmp_path)
