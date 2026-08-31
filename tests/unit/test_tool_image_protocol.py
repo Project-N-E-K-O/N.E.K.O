@@ -653,10 +653,10 @@ def _oversized_jpeg_b64(side: int = 1000) -> str:
 
     from PIL import Image
 
-    random.seed(20260831)
+    rng = random.Random(20260831)
     img = Image.frombytes(
         "RGB", (side, side),
-        bytes(random.getrandbits(8) for _ in range(side * side * 3)),
+        bytes(rng.getrandbits(8) for _ in range(side * side * 3)),
     )
     buf = _io.BytesIO()
     img.save(buf, format="JPEG", quality=92)
@@ -739,10 +739,10 @@ def _inside_profile_but_oversized_b64() -> str:
 
     from PIL import Image
 
-    random.seed(20260901)
+    rng = random.Random(20260901)
     img = Image.frombytes(
         "RGB", (1280, 720),
-        bytes(random.getrandbits(8) for _ in range(1280 * 720 * 3)),
+        bytes(rng.getrandbits(8) for _ in range(1280 * 720 * 3)),
     )
     buf = _io.BytesIO()
     img.save(buf, format="JPEG", quality=97)
@@ -808,10 +808,10 @@ def test_a_png_tool_image_over_the_ceiling_is_re_encoded():
         parse_tool_images,
     )
 
-    random.seed(20260902)
+    rng = random.Random(20260902)
     img = Image.frombytes(
         "RGB", (600, 600),
-        bytes(random.getrandbits(8) for _ in range(600 * 600 * 3)),
+        bytes(rng.getrandbits(8) for _ in range(600 * 600 * 3)),
     ).convert("RGBA")
     buf = _io.BytesIO()
     img.save(buf, format="PNG", compress_level=1)
@@ -849,12 +849,12 @@ def test_a_palette_png_over_the_ceiling_is_re_encoded():
         parse_tool_images,
     )
 
-    random.seed(20260903)
+    rng = random.Random(20260903)
     side = 1000
     img = Image.frombytes(
-        "P", (side, side), bytes(random.getrandbits(8) for _ in range(side * side))
+        "P", (side, side), bytes(rng.getrandbits(8) for _ in range(side * side))
     )
-    img.putpalette(bytes(random.getrandbits(8) for _ in range(768)))
+    img.putpalette(bytes(rng.getrandbits(8) for _ in range(768)))
     buf = _io.BytesIO()
     img.save(buf, format="PNG", compress_level=1)
     big = base64.b64encode(buf.getvalue()).decode("ascii")

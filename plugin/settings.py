@@ -604,6 +604,25 @@ MESSAGE_PLANE_BRIDGE_ENABLED = _get_bool_env("NEKO_MESSAGE_PLANE_BRIDGE_ENABLED"
 # Env: NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE, default=256
 PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE = _get_int_env("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", 256)
 
+# 控制上行单帧的字节上限。
+#
+# 它曾经直接借用消息上行那个数，而那个数是 payload_max * batch_max ——批量
+# 乘数对**从不批量**的控制通道在定义上就不适用，借过来等于给每一帧
+# 128 MiB，配上控制 socket 5000 条的 HWM 根本不是个界。
+#
+# 但也不能猜低：控制面下游没有自己的体积契约，砍低了会静默删掉真实的工具
+# 结果。可以量的是最宽的合法控制帧，而今天它是**带图的 CH_RES**：一次工具
+# 结果最多 _MAX_TOOL_IMAGES 张、每张 _MAX_TOOL_IMAGE_B64_BYTES，也就是
+# 2 * 2 MiB。另一个候选是 CH_COMM 的 EXPORT_PUSH（base64 后约 341 KiB），
+# 比它小一个数量级。头部余量与消息上行同源，覆盖 msgpack 信封与 token。
+#
+# 关系由测试钉住（见 test_zmq_transport_security），所以哪天工具图的上限动
+# 了、这里没跟着动，会红而不是静默丢结果。
+# Env: NEKO_PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES, default=4MiB+64KiB
+PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES = _get_int_env(
+    "NEKO_PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES", 4 * 1024 * 1024 + 64 * 1024
+)
+
 # PUSH 刷新间隔（毫秒），小批量高频发送或大批量低频发送的折中参数
 # Env: NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS, default=5
 PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS = _get_int_env("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS", 5)

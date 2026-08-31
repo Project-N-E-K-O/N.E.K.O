@@ -204,12 +204,23 @@ def _message_uplink_max_bytes() -> int:
 def _control_uplink_max_bytes() -> int:
     """Return the byte ceiling for one frame on the control uplink.
 
-    Deliberately the message plane's ceiling. The control plane has no
-    downstream size contract of its own to derive a tighter number from, and
-    the widest control frame that can be measured -- a base64 export push --
-    is smaller than this by orders of magnitude; see the derivation above.
+    NOT the message plane's ceiling any more. That number is
+    ``payload_max * batch_max``, and the batch multiplier is definitionally
+    wrong for a channel that is never batched -- borrowing it handed every
+    control frame about 128 MiB, which together with this socket's 5,000-message
+    high-water mark is not a bound at all.
+
+    Its own number instead, derived from the widest legitimate control frame.
+    Today that is a CH_RES carrying tool images: at most ``_MAX_TOOL_IMAGES``
+    of ``_MAX_TOOL_IMAGE_B64_BYTES`` each. The other candidate, a CH_COMM
+    EXPORT_PUSH, is an order of magnitude smaller (~341 KiB base64). A test
+    pins the relationship to those tool-image constants, so tightening this
+    cannot silently start deleting real tool results -- which is exactly what
+    the old comment refused to risk, and why it settled for the wrong number.
     """
-    return _message_uplink_max_bytes()
+    from plugin.settings import PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES
+
+    return max(1, int(PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES))
 
 
 def _authenticate_image_metadata(

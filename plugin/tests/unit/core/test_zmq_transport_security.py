@@ -465,21 +465,22 @@ async def test_oversized_authenticated_message_never_reaches_the_host(
 
 
 @pytest.mark.plugin_unit
-def test_control_uplink_ceiling_reuses_the_message_plane_derivation() -> None:
-    """The control uplink borrows the message plane's derived ceiling.
+def test_control_uplink_ceiling_clears_the_export_push_it_was_derived_from() -> None:
+    """The control uplink has its OWN ceiling now, not the message plane's.
 
-    Pinned as an equality rather than a literal so the two sockets cannot
-    drift apart silently, plus the one thing the borrowed number has to be
-    true of: it must clear the widest control frame that can actually be
-    measured, a CH_COMM export push carrying base64 of at most
-    EXPORT_INLINE_BINARY_MAX_BYTES.
+    It used to borrow that one, and this test used to pin the equality. The
+    borrowed number is ``payload_max * batch_max``, and the batch multiplier is
+    definitionally wrong for a channel that is never batched: it handed every
+    control frame about 128 MiB, which with this socket's 5,000-message
+    high-water mark is not a bound. So the equality is gone on purpose.
+
+    What survives is the property the old number was chosen for -- the ceiling
+    still has to clear the widest control frame that can be measured, a CH_COMM
+    export push carrying base64 of at most EXPORT_INLINE_BINARY_MAX_BYTES. The
+    other half of the derivation, a CH_RES carrying tool images, has its own
+    test beside this one.
     """
     import plugin.settings as plugin_settings
-
-    assert (
-        zmq_transport._control_uplink_max_bytes()
-        == zmq_transport._message_uplink_max_bytes()
-    )
 
     widest_measurable_control_frame = (
         int(plugin_settings.EXPORT_INLINE_BINARY_MAX_BYTES) * 4 // 3
@@ -634,3 +635,46 @@ def test_uplink_decoder_still_accepts_both_planes_by_default() -> None:
             encoded,
             expected_token="host-channel-token",
         ) == (channel, {"type": "MESSAGE_PUSH"})
+
+
+@pytest.mark.plugin_unit
+def test_the_control_ceiling_covers_the_widest_legitimate_control_frame():
+    """The control uplink gets its own number, and it has to be big enough.
+
+    It used to borrow the message plane's ``payload_max * batch_max``. The
+    batch multiplier is definitionally wrong for a channel that is never
+    batched -- it handed every control frame about 128 MiB, which with this
+    socket's 5,000-message high-water mark is not a bound.
+
+    Tightening it is only safe while it still clears the widest frame real
+    traffic produces, and today that is a CH_RES carrying tool images. Pinning
+    the RELATIONSHIP rather than the literal: raise the tool image ceiling
+    without raising this and the test goes red, instead of tool results being
+    silently torn off the socket by libzmq.
+
+    Mutation: point ``_control_uplink_max_bytes`` back at
+    ``_message_uplink_max_bytes``, or drop the ceiling below the tool-result
+    worst case.
+    """
+    from main_logic.tool_calling import (
+        _MAX_TOOL_IMAGE_B64_BYTES,
+        _MAX_TOOL_IMAGES,
+    )
+
+    from plugin.core.zmq_transport import (
+        _control_uplink_max_bytes,
+        _message_uplink_max_bytes,
+    )
+
+    ceiling = _control_uplink_max_bytes()
+    worst_case_tool_result = _MAX_TOOL_IMAGES * _MAX_TOOL_IMAGE_B64_BYTES
+
+    assert ceiling >= worst_case_tool_result, (
+        f"控制上行上限 {ceiling} 装不下一次合法的带图工具结果 "
+        f"{worst_case_tool_result}——超限的帧会被 libzmq 直接扯掉，"
+        "而调用方看到的只是「没收到」"
+    )
+    # 而且必须真的比消息上行紧：借用那个数正是这条意见指出的问题。
+    assert ceiling < _message_uplink_max_bytes(), (
+        "控制上行又借用了消息上行的界（含不适用的批量乘数）"
+    )
