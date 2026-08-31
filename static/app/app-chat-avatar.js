@@ -1642,10 +1642,9 @@
                 modelType: externalAvatarModelType || getCurrentModelType(),
                 capturedAt: Date.now()
             };
-        saveToStorage(cachedPreview);
-        syncAvatarToCardDrop(cachedPreview.dataUrl);
-        return true;
-    }
+            saveToStorage(cachedPreview);
+            syncAvatarToCardDrop(cachedPreview.dataUrl);
+        }
 
         // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。
         const card = S.dom && S.dom.chatAvatarPreviewCard;
