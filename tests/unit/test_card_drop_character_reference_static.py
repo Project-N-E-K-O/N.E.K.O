@@ -42,6 +42,21 @@ def test_card_drop_character_reference_retries_independently_of_avatar_cache():
 
 
 @pytest.mark.unit
+def test_card_drop_snapshot_is_bound_to_current_model_identity():
+    source = _read(APP_CHAT_AVATAR_PATH)
+
+    assert "if (modelType === 'pngtuber') return 'pngtuber';" in source
+    assert "config.layered_metadata" in source
+    assert "config.idle_image" in source
+    assert "window.vrmManager?.currentModel?.url" in source
+    assert "window.vrmModel" in source
+    assert "function appendCardDropModelIdentity(body)" in source
+    assert "body.modelType = modelType;" in source
+    assert "body.modelKey = modelKey;" in source
+    assert "window.addEventListener('pngtuber-model-loaded'" in source
+
+
+@pytest.mark.unit
 def test_card_drop_name_sync_does_not_wait_for_avatar_capture():
     source = _read(APP_CHAT_AVATAR_PATH)
     model_loaded_block = source.split("function handleModelLoaded(reason)", 1)[1].split(

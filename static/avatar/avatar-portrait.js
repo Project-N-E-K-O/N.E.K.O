@@ -1,6 +1,6 @@
 /**
  * Avatar Portrait
- * 从当前已加载的 Live2D / VRM / MMD 模型中提取头像裁剪图。
+ * 从当前已加载的 Live2D / VRM / MMD / PNGTuber 模型中提取头像裁剪图。
  *
  * 设计目标：
  * 1. 不重建模型，不侵入现有渲染循环
@@ -59,6 +59,7 @@
 
     function normalizeModelType(modelType) {
         const raw = String(modelType || global.lanlan_config?.model_type || '').toLowerCase();
+        if (raw === 'pngtuber') return 'pngtuber';
         if (raw === 'vrm') return 'vrm';
         if (raw === 'mmd') return 'mmd';
         if (raw === 'live2d') return 'live2d';
@@ -73,6 +74,102 @@
         if (global.vrmManager?.currentModel?.vrm?.scene) return 'vrm';
         if (global.live2dManager?.getCurrentModel?.()) return 'live2d';
         return 'live2d';
+    }
+
+    function getPNGTuberDrawableSize(drawable) {
+        if (!drawable) return { width: 0, height: 0 };
+        return {
+            width: finiteOr(drawable.width, 0) || finiteOr(drawable.naturalWidth, 0) || finiteOr(drawable.clientWidth, 0),
+            height: finiteOr(drawable.height, 0) || finiteOr(drawable.naturalHeight, 0) || finiteOr(drawable.clientHeight, 0)
+        };
+    }
+
+    function isPNGTuberImageElement(drawable) {
+        return !!drawable && (
+            String(drawable.tagName || '').toLowerCase() === 'img'
+            || (typeof global.HTMLImageElement !== 'undefined' && drawable instanceof global.HTMLImageElement)
+        );
+    }
+
+    function isVisiblePNGTuberDrawable(drawable) {
+        if (!drawable) return false;
+        const size = getPNGTuberDrawableSize(drawable);
+        if (!size.width || !size.height) return false;
+        if (drawable.hidden || drawable.classList?.contains?.('hidden')) return false;
+        if (drawable.style?.display === 'none') return false;
+        if (typeof global.getComputedStyle === 'function') {
+            const style = global.getComputedStyle(drawable);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+        }
+        return true;
+    }
+
+    function isReadyPNGTuberDrawable(drawable) {
+        if (!drawable) return false;
+        const size = getPNGTuberDrawableSize(drawable);
+        return !!(size.width && size.height);
+    }
+
+    function getPNGTuberCaptureDrawable(manager, options = {}) {
+        const allowHidden = options.allowHidden === true;
+        if (manager && typeof manager.ensureContainer === 'function') {
+            try {
+                manager.ensureContainer();
+            } catch (_) {}
+        }
+        if (isVisiblePNGTuberDrawable(manager?.image)) return manager.image;
+        const container = global.document?.getElementById?.('pngtuber-container');
+        const drawables = container?.querySelectorAll?.('canvas.pngtuber-layered-canvas, img.pngtuber-image');
+        const candidates = Array.from(drawables || []);
+        const visibleDrawable = candidates.find(isVisiblePNGTuberDrawable);
+        if (visibleDrawable) return visibleDrawable;
+        if (!allowHidden) return null;
+
+        // The model manager temporarily hides the desktop avatar while it covers the
+        // main window. Community forging still needs an off-screen snapshot of the
+        // loaded model, so visibility must not be a prerequisite for capture.
+        if (isReadyPNGTuberDrawable(manager?.image)) return manager.image;
+        return candidates.find(isReadyPNGTuberDrawable) || null;
+    }
+
+    function waitForPNGTuberDrawable(drawable) {
+        if (!isPNGTuberImageElement(drawable)) return Promise.resolve();
+        if (drawable.complete) {
+            if (drawable.naturalWidth > 0 && drawable.naturalHeight > 0) {
+                return Promise.resolve();
+            }
+            return Promise.reject(createError('PNGTuber 图片加载失败'));
+        }
+        return new Promise((resolve, reject) => {
+            const cleanup = () => {
+                drawable.removeEventListener?.('load', onLoad);
+                drawable.removeEventListener?.('error', onError);
+            };
+            const onLoad = () => {
+                cleanup();
+                resolve();
+            };
+            const onError = () => {
+                cleanup();
+                reject(createError('PNGTuber 图片加载失败'));
+            };
+            drawable.addEventListener?.('load', onLoad, { once: true });
+            drawable.addEventListener?.('error', onError, { once: true });
+        });
+    }
+
+    function assertPNGTuberDrawableIsExportable(drawable) {
+        if (!isPNGTuberImageElement(drawable)) return;
+        const src = String(drawable.currentSrc || drawable.src || '').trim();
+        if (!src || !global.location?.href) return;
+        try {
+            const resolved = new URL(src, global.location.href);
+            if (/^https?:$/.test(resolved.protocol) && resolved.origin !== global.location.origin) {
+                throw createError('远程 PNGTuber 图片未启用同源访问，无法导出头像');
+            }
+        } catch (error) {
+            if (String(error?.message || '').startsWith('[avatar-portrait]')) throw error;
+        }
     }
 
     function getCanvasMetrics(canvas) {
@@ -1608,8 +1705,66 @@
         };
     }
 
+    function getPNGTuberAdapter() {
+        return {
+            type: 'pngtuber',
+            getContext() {
+                const manager = global.pngtuberManager;
+                const drawable = getPNGTuberCaptureDrawable(manager, { allowHidden: true });
+                const canRenderLayeredSnapshot = typeof manager?.renderLayeredSnapshotCanvas === 'function';
+                if (!manager || (!drawable && !canRenderLayeredSnapshot)) {
+                    throw createError('当前没有可用的 PNGTuber 模型');
+                }
+                return { manager, drawable, canvas: drawable };
+            },
+            async prepare(ctx) {
+                await new Promise((resolve) => {
+                    if (typeof global.requestAnimationFrame === 'function') {
+                        global.requestAnimationFrame(() => resolve());
+                    } else {
+                        resolve();
+                    }
+                });
+                ctx.drawable = getPNGTuberCaptureDrawable(ctx.manager, { allowHidden: true }) || ctx.drawable;
+                if (ctx.drawable) {
+                    await waitForPNGTuberDrawable(ctx.drawable);
+                    assertPNGTuberDrawableIsExportable(ctx.drawable);
+                }
+            },
+            renderSource(ctx) {
+                const layeredSnapshot = typeof ctx.manager.renderLayeredSnapshotCanvas === 'function'
+                    ? ctx.manager.renderLayeredSnapshotCanvas()
+                    : null;
+                const drawable = layeredSnapshot || ctx.drawable;
+                const size = getPNGTuberDrawableSize(drawable);
+                if (!drawable || !size.width || !size.height) {
+                    throw createError('PNGTuber 画面尚未就绪，无法提取头像');
+                }
+                const canvas = createOutputCanvas(size.width, size.height);
+                const context = canvas.getContext('2d');
+                if (!context) throw createError('无法创建 PNGTuber 导出画布');
+                try {
+                    context.drawImage(drawable, 0, 0, size.width, size.height);
+                } catch (error) {
+                    throw createCanvasExportError(error);
+                }
+                if (!hasVisiblePixelsInCanvas(canvas)) {
+                    throw createError('PNGTuber 画面尚未就绪，无法提取头像');
+                }
+                return {
+                    canvas,
+                    cropRectCss: { x: 0, y: 0, width: size.width, height: size.height },
+                    cropRectPixels: { x: 0, y: 0, width: size.width, height: size.height },
+                    sourceCanvas: canvas,
+                    modelType: 'pngtuber'
+                };
+            }
+        };
+    }
+
     function getAdapter(modelType) {
         const normalizedType = normalizeModelType(modelType);
+        if (normalizedType === 'pngtuber') return getPNGTuberAdapter();
         if (normalizedType === 'vrm') return getVrmAdapter();
         if (normalizedType === 'mmd') return getMmdAdapter();
         return getLive2DAdapter();
@@ -1619,7 +1774,7 @@
         const finalOptions = { ...DEFAULTS, ...options };
         const adapter = getAdapter(finalOptions.modelType);
         const context = adapter.getContext();
-        adapter.prepare(context);
+        await adapter.prepare(context);
 
         if (typeof adapter.renderSource === 'function') {
             const renderedSource = adapter.renderSource(context, finalOptions);

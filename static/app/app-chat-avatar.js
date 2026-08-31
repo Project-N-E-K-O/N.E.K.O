@@ -83,7 +83,12 @@
             var raw = localStorage.getItem(key);
             if (!raw) return null;
             var parsed = JSON.parse(raw);
-            if (parsed && parsed.dataUrl) return parsed;
+            if (
+                parsed
+                && parsed.dataUrl
+                && parsed.cacheKey
+                && parsed.cacheKey === getCurrentModelCacheKey()
+            ) return parsed;
         } catch (_) { /* 损坏数据 — 忽略 */ }
         return null;
     }
@@ -116,6 +121,7 @@
 
     function normalizeModelLabel(modelType) {
         const type = String(modelType || '').toLowerCase();
+        if (type === 'pngtuber') return 'PNGTuber';
         if (type === 'vrm') return 'VRM';
         if (type === 'mmd') return 'MMD';
         return 'Live2D';
@@ -326,6 +332,7 @@
             return window.avatarPortrait.normalizeModelType();
         }
         const modelType = String(window.lanlan_config?.model_type || '').toLowerCase();
+        if (modelType === 'pngtuber') return 'pngtuber';
         if (modelType === 'live3d') {
             const subType = String(window.lanlan_config?.live3d_sub_type || '').toLowerCase();
             if (subType === 'mmd') return 'mmd';
@@ -338,9 +345,19 @@
 
     function getCurrentModelCacheKey() {
         const modelType = getCurrentModelType();
+        if (modelType === 'pngtuber') {
+            const config = window.pngtuberManager?.config || window.lanlan_config?.pngtuber || {};
+            return 'pngtuber:' + String(
+                config.layered_metadata ||
+                config.idle_image ||
+                config.talking_image ||
+                ''
+            );
+        }
         if (modelType === 'vrm') {
             return 'vrm:' + String(
                 window.vrmManager?.currentModel?.url ||
+                window.vrmModel ||
                 window.lanlan_config?.vrm ||
                 ''
             );
@@ -358,6 +375,14 @@
             window.cubism4Model ||
             ''
         );
+    }
+
+    function appendCardDropModelIdentity(body) {
+        const modelType = getCurrentModelType();
+        const modelKey = getCurrentModelCacheKey();
+        if (modelType) body.modelType = modelType;
+        if (modelKey && !modelKey.endsWith(':')) body.modelKey = modelKey;
+        return body;
     }
 
     function hasUsableCachedPreview() {
@@ -405,7 +430,9 @@
     function postCharacterReferenceToCardDrop(characterReferenceDataUrl) {
         if (!characterReferenceDataUrl) return Promise.resolve(false);
         var _nekoName = getActiveLanlanName();
-        var referenceBody = { characterReferenceDataUrl: characterReferenceDataUrl };
+        var referenceBody = appendCardDropModelIdentity({
+            characterReferenceDataUrl: characterReferenceDataUrl
+        });
         if (_nekoName) referenceBody.name = _nekoName;
         return fetch('/api/card-drop/active-character', {
             method: 'POST',
@@ -641,6 +668,7 @@
         var body = {};
         if (dataUrl) body.dataUrl = dataUrl;
         if (_nekoName) body.name = _nekoName;
+        appendCardDropModelIdentity(body);
         fetch('/api/card-drop/active-character', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -675,7 +703,7 @@
         }));
     }
 
-    /** 仅清内存，让 scheduleAutoCapture 不被跳过；localStorage 按角色隔离，无需清除 */
+    /** 仅清内存，让 scheduleAutoCapture 不被跳过；持久化缓存会按角色 + 模型 key 校验 */
     function invalidateCachedPreview() {
         cachedPreview = null;
         lastScheduledCacheKey = '';
@@ -1363,6 +1391,10 @@
         window.addEventListener('mmd-model-loaded', function () {
             handleModelLoaded('mmd-model-loaded');
         });
+
+        window.addEventListener('pngtuber-model-loaded', function () {
+            handleModelLoaded('pngtuber-model-loaded');
+        });
     }
 
     function handleOutsidePointer(event) {
@@ -1591,7 +1623,7 @@
     /**
      * 多窗口模式：由 preload / IPC 调用，设置从 Pet 窗口获取的头像
      * @param {string} dataUrl - base64 data URL
-     * @param {string} [modelType] - 'live2d' | 'vrm' | 'mmd'
+     * @param {string} [modelType] - 'live2d' | 'vrm' | 'mmd' | 'pngtuber'
      */
     mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType) {
         externalAvatarDataUrl = dataUrl || '';
