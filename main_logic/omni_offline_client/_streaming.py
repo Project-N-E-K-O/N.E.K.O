@@ -189,11 +189,24 @@ class _StreamingMixin:
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
             # （和 __init__ 一致）。
+            _derived_max_tokens = _budget_to_max_tokens(self.max_response_length)
+            # 但不能只看 max_response_length：这个函数会在**回合中途**被调用
+            # （工具返回图片要切 vision 模型），而那时 stream_text 可能已经把
+            # 当前 client 的 max_completion_tokens 抬到 summary 档、或者加了
+            # 凝神轮的 token 头寸。按 max_response_length 重算等于把那一档丢掉，
+            # 追问和最终回答会被 provider 提前截断——而回合的 finally 随后又把
+            # **旧** client 存下的值写到这个新 client 上。
+            #
+            # 只往高处继承：低于基线的旧值是上一次抬升退回后的残留，不该复活。
+            _live_max_tokens = getattr(
+                getattr(self, "llm", None), "max_completion_tokens", None
+            )
+            if isinstance(_live_max_tokens, int) and _live_max_tokens > _derived_max_tokens:
+                _derived_max_tokens = _live_max_tokens
             new_llm = await create_chat_llm_async(
                 new_model, base_url, api_key,
                 streaming=True, max_retries=0,
-                # 普通 budget；summary 的 3000 抬升只在 stream_text 内临时生效。
-                max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
+                max_completion_tokens=_derived_max_tokens,
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
                 provider_type=provider_type,
             )
