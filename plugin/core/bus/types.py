@@ -743,6 +743,14 @@ class BusList(BusListCore, Generic[TRecord]):
                     return _as_eager(ctx.bus.events.get(**params))
                 elif bus == "lifecycle":
                     return _as_eager(ctx.bus.lifecycle.get(**params))
+                elif bus == "frames":
+                    # 只读 store，但一样要能重放：BusRpcClientBase 给每次 get()
+                    # 都挂了带 bus 名的 GetNode，所以少一个分支不是"少一个功能"，
+                    # 而是文档里写着的 frames.sort(...).limit(1) 一链式就抛
+                    # NonReplayableTraceError。conversations 同理。
+                    return _as_eager(ctx.bus.frames.get(**params))
+                elif bus == "conversations":
+                    return _as_eager(ctx.bus.conversations.get(**params))
                 raise NonReplayableTraceError(f"Unknown bus for reload: {bus!r}")
 
             if isinstance(node, UnaryNode):
