@@ -55,9 +55,9 @@ def test_card_drop_snapshot_is_bound_to_current_model_identity():
     assert "window.vrmManager?.currentModel?.url" in source
     assert "window.vrmModel" in source
     assert "function appendCardDropModelIdentity(body)" in source
-    assert "if (modelType && modelKey && !modelKey.endsWith(':'))" in source
+    assert "if (modelType)" in source
     assert "body.modelType = modelType;" in source
-    assert "body.modelKey = modelKey;" in source
+    assert "body.modelKey = modelKey && !modelKey.endsWith(':') ? modelKey : '';" in source
     assert "let cardDropModelRevision = Date.now();" in source
     assert "body.modelRevision = cardDropModelRevision;" in source
     assert "function advanceCardDropModelRevision()" in source
@@ -68,6 +68,20 @@ def test_card_drop_snapshot_is_bound_to_current_model_identity():
     assert "applyPreviewResult(result, cacheKey, captureRevision);" in source
     assert "pendingAutoCapture = true;" in source
     assert "window.addEventListener('pngtuber-model-loaded'" in source
+
+
+@pytest.mark.unit
+def test_electron_chat_follower_does_not_publish_model_identity():
+    source = _read(APP_CHAT_AVATAR_PATH)
+    sync_block = source.split("function syncAvatarToCardDrop(dataUrl)", 1)[1].split(
+        "function applyPreviewResult",
+        1,
+    )[0]
+
+    assert "function isCardDropIdentityFollowerWindow()" in source
+    assert "window.__NEKO_MULTI_WINDOW__ === true" in source
+    assert "/^\\/chat(?:_full)?(?:\\/|$)/.test(pathname)" in source
+    assert "if (!isCardDropIdentityFollowerWindow()) appendCardDropModelIdentity(body);" in sync_block
 
 
 @pytest.mark.unit

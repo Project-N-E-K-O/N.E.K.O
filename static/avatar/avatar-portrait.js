@@ -656,10 +656,10 @@
         const safeWidth = Math.max(1, Math.min(width, canvas.width - x));
         const safeHeight = Math.max(1, Math.min(height, canvas.height - y));
 
-        const analysisScale = Math.min(
-            1,
-            VISIBILITY_ANALYSIS_MAX_EDGE / Math.max(safeWidth, safeHeight)
-        );
+        const requireAny = options.requireAny === true;
+        const analysisScale = requireAny
+            ? 1
+            : Math.min(1, VISIBILITY_ANALYSIS_MAX_EDGE / Math.max(safeWidth, safeHeight));
         const analysisWidth = Math.max(1, Math.round(safeWidth * analysisScale));
         const analysisHeight = Math.max(1, Math.round(safeHeight * analysisScale));
         const analysisCanvas = document.createElement('canvas');
@@ -692,7 +692,6 @@
             return true;
         }
 
-        const requireAny = options.requireAny === true;
         const stepX = requireAny ? 1 : Math.max(1, Math.floor(analysisWidth / 18));
         const stepY = requireAny ? 1 : Math.max(1, Math.floor(analysisHeight / 18));
         let visibleCount = 0;

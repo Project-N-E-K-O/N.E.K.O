@@ -403,14 +403,18 @@
     function appendCardDropModelIdentity(body) {
         const modelType = getCurrentModelType();
         const modelKey = getCurrentModelCacheKey();
-        // Electron follower windows can receive the avatar/type without the model
-        // path. Keep their avatar/name sync, but leave authoritative identity to Pet.
-        if (modelType && modelKey && !modelKey.endsWith(':')) {
+        if (modelType) {
             body.modelType = modelType;
-            body.modelKey = modelKey;
+            body.modelKey = modelKey && !modelKey.endsWith(':') ? modelKey : '';
             body.modelRevision = cardDropModelRevision;
         }
         return body;
+    }
+
+    function isCardDropIdentityFollowerWindow() {
+        const pathname = String(window.location?.pathname || '');
+        return window.__NEKO_MULTI_WINDOW__ === true
+            && /^\/chat(?:_full)?(?:\/|$)/.test(pathname);
     }
 
     function advanceCardDropModelRevision() {
@@ -720,7 +724,9 @@
         var body = {};
         if (dataUrl) body.dataUrl = dataUrl;
         if (_nekoName) body.name = _nekoName;
-        appendCardDropModelIdentity(body);
+        // Electron chat windows mirror Pet's avatar but do not own its model path.
+        // They may update avatar/name fields, while Pet remains identity authority.
+        if (!isCardDropIdentityFollowerWindow()) appendCardDropModelIdentity(body);
         fetch('/api/card-drop/active-character', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

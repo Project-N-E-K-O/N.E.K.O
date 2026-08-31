@@ -18,6 +18,8 @@ def test_avatar_portrait_captures_pngtuber_layered_snapshot():
         pytest.skip("node is not installed")
 
     source = AVATAR_PORTRAIT_PATH.read_text(encoding="utf-8")
+    assert "const analysisScale = requireAny" in source
+    assert "? 1" in source
     script = f"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
