@@ -89,6 +89,33 @@ async def test_selected_web_candidate_adapter_passes_through_other_platforms():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_selected_community_candidate_keeps_summary_and_metadata():
+    candidate = {
+        "mode": "community",
+        "title": "猫咪的屏幕视野",
+        "author": "小猫",
+        "tags": ["日常", "灵感"],
+        "description_hint": "它在分享召唤时会出现的互动效果。",
+        "published_at": "2026-08-31T00:00:00Z",
+        "url": "https://community.project-neko.cn/posts/post-1",
+    }
+
+    prepared, topic = await proactive_candidate.prepare_selected_web_candidate(
+        candidate,
+        fallback_topic="模型生成的标题摘要",
+        language="zh",
+    )
+
+    assert prepared == candidate
+    assert "标题：猫咪的屏幕视野" in topic
+    assert "作者：小猫" in topic
+    assert "标签：日常、灵感" in topic
+    assert "正文摘要：它在分享召唤时会出现的互动效果。" in topic
+    assert "模型生成的标题摘要" not in topic
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_selected_web_candidate_adapter_dispatches_bilibili(monkeypatch):
     async def fake_enrich(candidate, *, language, is_preempted):
         assert language == "zh"

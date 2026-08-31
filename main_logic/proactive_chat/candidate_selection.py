@@ -22,10 +22,19 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
         ("author", "作者"),
         ("reason", "推荐依据"),
         ("description_hint", "简介"),
+        ("tags", "标签"),
         ("url", "URL"),
     )
     for field, label in field_labels:
-        value = " ".join(str(item.get(field) or "").split())
+        raw_value = item.get(field)
+        if field == "tags" and isinstance(raw_value, list):
+            value = "、".join(
+                " ".join(str(tag).split())
+                for tag in raw_value
+                if " ".join(str(tag).split())
+            )
+        else:
+            value = " ".join(str(raw_value or "").split())
         if not value:
             continue
         if field == "description_hint":

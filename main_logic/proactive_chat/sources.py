@@ -155,9 +155,17 @@ def _extract_links_from_raw(
                 title = post.get("title", "")
                 url = post.get("url", "")
                 if title and url:
-                    links.append(
-                        {"title": title, "url": url, "source": "喵宇宙社区"}
-                    )
+                    link = {"title": title, "url": url, "source": "喵宇宙社区"}
+                    content = post.get("content", "")
+                    if content and content != title:
+                        link["description_hint"] = content
+                    if post.get("author"):
+                        link["author"] = post["author"]
+                    if post.get("tags"):
+                        link["tags"] = post["tags"]
+                    if post.get("created_at"):
+                        link["published_at"] = post["created_at"]
+                    links.append(link)
 
         elif mode == "video":
             video = raw_data.get("video", {})

@@ -19,6 +19,7 @@ from utils.web_scraper.trending_content import (
 from main_routers.system_router.proactive_content import _log_news_content
 from main_routers.system_router.proactive_parsing import _extract_links_from_raw
 from main_logic.proactive_chat.contracts import ProactiveChatCommand
+from main_logic.proactive_chat.candidate_selection import _format_phase1_link_candidate
 from main_logic.proactive_chat import sources as proactive_sources
 from utils.web_scraper.platform_helpers import (
     build_xhh_cookie_header,
@@ -171,6 +172,36 @@ def test_normalize_and_format_neko_community_feed():
     assert "话题: 灵感、闲聊" in formatted
 
 
+def test_normalize_neko_community_feed_uses_live_card_story_and_author_name():
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "id": "3916440e-04a2-4245-9aeb-8e6d4c62a7a9",
+                    "title": "咕咕嘎嘎警报",
+                    "summary": "水水被持续的咕咕嘎嘎声惹得连连出击。",
+                    "story_md": "水水的耳朵越听越竖，反复扑过去抓挠。",
+                    "author_name": "神碑之泉有点甜",
+                    "tags": ["元气日常", "咕咕嘎嘎", "猫娘反应"],
+                    "created_at": "2026-08-31T10:03:28.828010Z",
+                }
+            ]
+        }
+    )
+
+    assert posts == [
+        {
+            "id": "3916440e-04a2-4245-9aeb-8e6d4c62a7a9",
+            "title": "咕咕嘎嘎警报",
+            "content": "水水的耳朵越听越竖，反复扑过去抓挠。",
+            "author": "神碑之泉有点甜",
+            "tags": ["元气日常", "咕咕嘎嘎", "猫娘反应"],
+            "url": "https://community.project-neko.cn/discover",
+            "created_at": "2026-08-31T10:03:28.828010Z",
+        }
+    ]
+
+
 class _FakeResponse:
     def raise_for_status(self) -> None:
         return None
@@ -263,6 +294,10 @@ async def test_community_mode_fetches_only_neko_community_cards():
             "title": "猫娘们正在讨论的新点子",
             "url": "https://community.project-neko.cn/posts/post-1",
             "source": "喵宇宙社区",
+            "description_hint": "一起来分享今天的灵感和小发现。",
+            "author": "小猫",
+            "tags": ["灵感", "闲聊"],
+            "published_at": "2026-08-31T00:00:00Z",
         }
     ]
     fetch_community.assert_awaited_once_with(limit=10)
@@ -462,6 +497,28 @@ def test_community_links_use_neko_community_cards():
             "source": "喵宇宙社区",
         }
     ]
+
+
+def test_community_link_candidate_includes_summary_and_metadata():
+    candidate = _format_phase1_link_candidate(
+        1,
+        {
+            "title": "社区卡牌",
+            "source": "喵宇宙社区",
+            "author": "小猫",
+            "description_hint": "这是一段可用于主动搭话的正文摘要。",
+            "tags": ["灵感", "闲聊"],
+            "url": "https://community.project-neko.cn/posts/post-1",
+            "published_at": "2026-08-31T00:00:00Z",
+        },
+    )
+
+    assert candidate == (
+        "1. 社区卡牌 | 来源: 喵宇宙社区 | 作者: 小猫 | "
+        "简介: 这是一段可用于主动搭话的正文摘要。 | 标签: 灵感、闲聊 | "
+        "URL: https://community.project-neko.cn/posts/post-1 | "
+        "发布时间戳: 2026-08-31T00:00:00Z"
+    )
 
 
 def test_personal_links_interleave_non_empty_groups_until_exhausted():

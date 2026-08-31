@@ -1740,7 +1740,16 @@ def _community_label_values(items: Any) -> list[str]:
 
 
 def _community_card_url(raw: dict[str, Any]) -> str:
-    for key in ("url", "link", "permalink", "canonical_url", "path"):
+    for key in (
+        "url",
+        "link",
+        "href",
+        "permalink",
+        "canonical_url",
+        "post_url",
+        "detail_url",
+        "path",
+    ):
         candidate = _community_text(raw.get(key))
         if not candidate:
             continue
@@ -1766,7 +1775,9 @@ def normalize_neko_community_feed(
             raw.get("title") or raw.get("headline") or raw.get("subject")
         )
         content = _community_text(
-            raw.get("content")
+            raw.get("story_md")
+            or raw.get("summary")
+            or raw.get("content")
             or raw.get("body")
             or raw.get("text")
             or raw.get("description")
@@ -1776,7 +1787,12 @@ def normalize_neko_community_feed(
             title = content[:80]
         if not title:
             continue
-        author_data = raw.get("author") or raw.get("user") or raw.get("creator")
+        author_data = (
+            raw.get("author")
+            or raw.get("author_name")
+            or raw.get("user")
+            or raw.get("creator")
+        )
         author = _community_text(author_data)
         labels = _community_label_values(
             raw.get("tags") or raw.get("topics") or raw.get("categories")
