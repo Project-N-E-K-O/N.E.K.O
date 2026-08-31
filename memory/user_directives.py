@@ -399,10 +399,15 @@ class UserDirectivesManager:
         # 而写的时候没回头看它的返回值 —— greptile P1 抓到。
         if any(item is entry for item in self._cache.get(name, ())):
             return dict(entry)
+        # ⚠️ **不打印 term 原文**。被 ban 的话题按定义就是用户明说不想再听的东西
+        # （前任 / 病名 / 逝者姓名），而这条 logger 是落盘的持久化日志。同一条判据
+        # 在 proactive 那道闸上已经立过一次（那里把 terms=%s 改成了条数）——写这个
+        # helper 时又把 term 塞了回来，greptile P1 抓到。定位靠角色名 + 这条消息
+        # 本身就够，不需要知道是哪个 term。
         logger.warning(
-            "[UserDirectives] %s: directive %r was rotated out immediately "
+            "[UserDirectives] %s: a directive was rotated out immediately "
             "(store at cap with newer timestamps); not reporting it as recorded",
-            name, entry.get("term"),
+            name,
         )
         return {}
 
