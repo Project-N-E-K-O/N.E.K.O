@@ -3965,25 +3965,55 @@ def test_the_memory_root_is_not_inside_itself():
     assert not _is_direct_child(root, os.path.join(root, ".mig-abc", "d"))
 
 
-def test_an_ambiguous_seed_filename_decodes_to_its_real_owner():
-    """The most specific pattern wins, so one tombstone cannot suppress another.
+def test_an_ambiguous_seed_owner_is_settled_by_who_exists():
+    """Pattern shape cannot answer this; the roster can.
 
-    "facts_archive_Alice.json" matches "facts_{name}.json" as "archive_Alice"
-    and "facts_archive_{name}.json" as "Alice". Taking both meant a tombstone
-    on a character called "archive_Alice" suppressed Alice's seed, and the
-    suffix case is the same shape: "time_indexed_Carol.db" resolves through
-    "time_indexed_{name}.db" rather than "time_indexed_{name}".
+    "facts_archive_Alice.json" is Alice's archive under
+    "facts_archive_{name}.json" and archive_Alice's facts under
+    "facts_{name}.json". Which one it is depends entirely on which of those
+    two is a character. A specificity ranking -- most literal text matched
+    wins -- got the common case right and this one wrong.
     """
-    from utils.config_manager.migrations import _seed_entry_owner_candidates
+    from utils.config_manager.migrations import (
+        _seed_entry_owner_candidates,
+        _tombstone_suppresses_seed,
+    )
 
-    assert _seed_entry_owner_candidates("facts_archive_Alice.json") == {"Alice"}
-    assert _seed_entry_owner_candidates("time_indexed_Carol.db") == {"Carol"}
-    assert _seed_entry_owner_candidates("facts_Alice.json") == {"Alice"}
+    # The decoder offers both readings and does not choose.
+    assert _seed_entry_owner_candidates("facts_archive_Alice.json") == {
+        "Alice", "archive_Alice",
+    }
+    assert _seed_entry_owner_candidates("time_indexed_Carol.db") == {
+        "Carol", "Carol.db",
+    }
     assert _seed_entry_owner_candidates("recent_小八.json") == {"小八"}
     assert _seed_entry_owner_candidates("unrelated.txt") == set()
     # The EXTRA entries table too: a legacy vector store is a directory named
     # for its owner, and reading only the file table left it republished.
     assert _seed_entry_owner_candidates("semantic_memory_Carol") == {"Carol"}
+
+    deleted = frozenset({"Alice"})
+    # A LIVE candidate wins: the file is hers, and a tombstone on another
+    # reading of the same name says nothing about it.
+    assert not _tombstone_suppresses_seed(
+        "facts_archive_Alice.json", deleted, frozenset({"archive_Alice"})
+    )
+    # With no live claimant, the deleted one decides.
+    assert _tombstone_suppresses_seed(
+        "facts_archive_Alice.json", deleted, frozenset()
+    )
+    assert _tombstone_suppresses_seed(
+        "time_indexed_Carol.db", frozenset({"Carol"}), frozenset()
+    )
+    assert _tombstone_suppresses_seed(
+        "semantic_memory_Carol", frozenset({"Carol"}), frozenset()
+    )
+    # A directory seed is named for its character outright.
+    assert _tombstone_suppresses_seed("Dora", frozenset({"Dora"}), frozenset())
+    assert not _tombstone_suppresses_seed(
+        "Dora", frozenset({"Dora"}), frozenset({"Dora"})
+    )
+    assert not _tombstone_suppresses_seed("recent_Eve.json", frozenset(), frozenset())
 
 
 def test_an_existing_empty_ledger_is_not_ours_to_append_to(tmp_path):
@@ -4034,3 +4064,42 @@ def test_a_symlink_loop_is_not_a_path_we_own(tmp_path, monkeypatch):
     assert not migrations_module._is_direct_child(
         str(tmp_path), str(tmp_path / "looping")
     )
+
+
+def test_reading_the_live_roster_writes_nothing(tmp_path):
+    """Deciding whether to seed must not create the thing it decides about.
+
+    ``load_characters`` normalizes reserved fields and writes the result
+    back, so consulting it during migration materialized characters.json in
+    the runtime config directory -- and a runtime root holding only pristine
+    defaults then reported itself as having user content, which is what
+    decides whether a cloud snapshot may be imported on first launch.
+    """
+    from unittest.mock import MagicMock
+
+    from utils.config_manager.migrations import _live_character_names
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    roster = config_dir / "characters.json"
+
+    cm = MagicMock()
+    cm.get_config_path.return_value = roster
+
+    # Absent: nothing read, nothing created.
+    assert _live_character_names(cm) == frozenset()
+    assert not roster.exists(), "reading an absent roster created it"
+    cm.load_characters.assert_not_called()
+
+    roster.write_text(
+        '{"猫娘": {"Alice": {}, "小八": {}}, "当前猫娘": "Alice"}',
+        encoding="utf-8",
+    )
+    before = roster.read_bytes()
+    assert _live_character_names(cm) == frozenset({"Alice", "小八"})
+    assert roster.read_bytes() == before, "reading the roster rewrote it"
+    cm.load_characters.assert_not_called()
+
+    # Malformed reads as empty rather than raising out of a migration.
+    roster.write_text("{not json", encoding="utf-8")
+    assert _live_character_names(cm) == frozenset()

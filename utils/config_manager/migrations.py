@@ -19,6 +19,7 @@ Config/memory file migration into the runtime root, localized default
 characters source selection, default card-face backfill and the soft
 migration of legacy Documents memory directories.
 """
+import json
 import os
 import shutil
 import stat
@@ -410,6 +411,61 @@ def _ledger_lines_are_all_ours(lines, memory_root):
     return True
 
 
+def _live_character_names(config_manager):
+    """Characters that currently exist, by name.
+
+    Empty on any failure. The caller treats "live" as a reason to KEEP
+    seeding, so an unreadable roster falls back to the tombstone answer,
+    which is the behaviour before the roster was consulted at all.
+
+    Read as PLAIN JSON, not through ``load_characters``. That path normalizes
+    reserved fields and writes the result back, so asking it during migration
+    materialized characters.json in the runtime config directory -- and a
+    runtime root holding only pristine defaults then reported itself as
+    having user content, which is what decides whether a cloud snapshot may
+    be imported on first launch. Measured: it turned that case from "import
+    the snapshot" into "keep the local defaults".
+
+    Deciding whether to seed must not write anything, and names are all this
+    needs.
+    """
+    try:
+        roster_path = str(config_manager.get_config_path("characters.json"))
+        with open(roster_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        # Absent, unreadable or malformed all read the same way here, and an
+        # existence check ahead of the open would be a second spelling of the
+        # same rule: opening for READ cannot create the file. That check was
+        # load-bearing only while this went through ``load_characters``,
+        # which writes.
+        return frozenset()
+    catgirls = data.get("猫娘") if isinstance(data, dict) else None
+    if not isinstance(catgirls, dict):
+        return frozenset()
+    return frozenset(name for name in catgirls if isinstance(name, str) and name)
+
+
+def _tombstone_suppresses_seed(entry_name, tombstoned, live):
+    """Whether a seed entry belongs to a character that was deleted.
+
+    A candidate that is a LIVE character wins outright: the file is hers, and
+    a tombstone on some other decoding of the same filename says nothing
+    about it. Only when no candidate is live does a tombstoned one suppress
+    the seed.
+
+    This replaced a specificity ranking -- most literal text matched wins --
+    which cannot be right in general: whether "facts_archive_Alice.json"
+    belongs to Alice or to archive_Alice depends on which of them exists, not
+    on how the patterns are shaped. The roster was available on this class
+    the whole time.
+    """
+    candidates = _seed_entry_owner_candidates(entry_name) | {entry_name}
+    if candidates & live:
+        return False
+    return bool(candidates & tombstoned)
+
+
 def _tombstoned_character_names(config_manager):
     """Characters recorded as deliberately deleted, by name.
 
@@ -434,16 +490,18 @@ def _tombstoned_character_names(config_manager):
 
 
 def _seed_entry_owner_candidates(filename):
-    """Every character name a flat seed filename could belong to.
+    """Every character name a seed entry could belong to.
 
-    A SET, not a guess. The pattern table holds both "time_indexed_{name}"
-    and "time_indexed_{name}.db", so "time_indexed_Carol.db" decodes to
-    "Carol" under one and "Carol.db" under the other -- picking wrong is a
-    defect this repo has already shipped once. Every candidate is offered and
-    the caller asks whether ANY of them is tombstoned, so a wrong decode can
-    only fail towards the old behaviour.
+    A SET, and deliberately not a ranked guess. "facts_archive_Alice.json" is
+    Alice's archive under "facts_archive_{name}.json" and archive_Alice's
+    facts under "facts_{name}.json", and which one it is depends on which of
+    those two is a character -- pattern shape cannot tell, so this does not
+    try. ``_tombstone_suppresses_seed`` asks that question against the live
+    roster instead.
 
-    Derived from the migration table rather than a second list of patterns.
+    Derived from the two migration tables rather than a third list of
+    patterns: the file map for the flat files, the extra entries for the
+    legacy "semantic_memory_{name}" directory.
     """
     from utils.character_memory import (
         LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES,
@@ -454,7 +512,7 @@ def _seed_entry_owner_candidates(filename):
     # vector store that is a DIRECTORY -- so a seed called
     # "semantic_memory_Carol/" belongs to Carol, and reading only the file
     # table left it republished after Carol was deleted.
-    matches = []
+    candidates = set()
     for pattern in (
         list(LEGACY_CHARACTER_MEMORY_FILE_MAP)
         + list(LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES)
@@ -464,21 +522,8 @@ def _seed_entry_owner_candidates(filename):
             continue
         name = filename[len(prefix):len(filename) - len(suffix) or None]
         if name:
-            matches.append((len(prefix) + len(suffix), name))
-    if not matches:
-        return set()
-    # The MOST SPECIFIC pattern wins -- the one matching the most literal
-    # text. "facts_archive_Alice.json" matches "facts_{name}.json" as
-    # "archive_Alice" and "facts_archive_{name}.json" as "Alice", and only
-    # the second is the real owner; taking both meant a tombstone on a
-    # character called "archive_Alice" suppressed Alice's seed.
-    # "time_indexed_Carol.db" resolves the same way through the suffix:
-    # "time_indexed_{name}.db" beats "time_indexed_{name}".
-    #
-    # Still a SET, because two patterns of equal specificity would be a
-    # genuine tie and guessing between those is what this avoids.
-    best = max(score for score, _ in matches)
-    return {name for score, name in matches if score == best}
+            candidates.add(name)
+    return candidates
 
 
 def _ledger_content_is_ours(ledger, memory_root):
@@ -1280,6 +1325,7 @@ class MigrationsMixin:
         # The record already exists and is written by the delete path; this
         # migration simply never read it.
         tombstoned = _tombstoned_character_names(self)
+        live_characters = _live_character_names(self)
         
         # 如果项目memory/store目录不存在，跳过
         
@@ -1346,7 +1392,9 @@ class MigrationsMixin:
                         continue
 
                     if item.is_file():
-                        if _seed_entry_owner_candidates(item.name) & tombstoned:
+                        if _tombstone_suppresses_seed(
+                            item.name, tombstoned, live_characters
+                        ):
                             # Deleted on purpose. Republishing the seed is
                             # how deleted history came back.
                             continue
@@ -1453,8 +1501,8 @@ class MigrationsMixin:
                     if not item.is_dir():
                         continue
 
-                    if item.name in tombstoned or (
-                        _seed_entry_owner_candidates(item.name) & tombstoned
+                    if _tombstone_suppresses_seed(
+                        item.name, tombstoned, live_characters
                     ):
                         # A directory seed is either named for its character
                         # outright, or is a legacy entry naming it --
