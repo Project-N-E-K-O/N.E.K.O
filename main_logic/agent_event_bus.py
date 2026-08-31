@@ -835,6 +835,27 @@ async def publish_provider_frame_observed_best_effort(
     if metadata:
         event["metadata"] = dict(metadata)
 
+    # 上面那道闸只量了像素，而 metadata 是调用方给的、会被原样拷进同一条事件
+    # ——一张 400 KiB 的图配 1 MiB 的 metadata 就能绕过它，把超限记录塞进共用
+    # 的 PUB 路径。真正的判据是**整条事件**序列化之后的字节，也就是这条 socket
+    # 实际要装的东西。
+    #
+    # 这里多做一次 dumps。代价可接受：这条路是 best-effort 抄送、在途还封在
+    # AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT 之内；而换成「按别的口径估算整条事件」
+    # 只会再引入一个会漂的数字。
+    try:
+        event_size = len(orjson.dumps(event))
+    except Exception:
+        # 序列化不了的东西发出去也是对面报错，就地丢掉。
+        return False
+    if event_size > PROVIDER_FRAME_MAX_B64_BYTES:
+        logger.debug(
+            "[EventBus] provider frame event too large for the session channel: "
+            "%d > %d (source=%s)",
+            event_size, PROVIDER_FRAME_MAX_B64_BYTES, source,
+        )
+        return False
+
     sent = await publish_session_event_threadsafe(event)
     if not sent:
         logger.debug(

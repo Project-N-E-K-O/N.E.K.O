@@ -17,6 +17,7 @@ from plugin.logging_config import logger
 
 from plugin.utils.time_utils import now_iso
 from plugin.settings import (
+    PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE,
     PLUGIN_TRIGGER_TIMEOUT,
     PLUGIN_SHUTDOWN_TIMEOUT,
     QUEUE_GET_TIMEOUT,
@@ -562,6 +563,16 @@ class PluginCommunicationResourceManager:
                     items = payload.get("items")
                     if not isinstance(items, list):
                         raise ValueError("invalid authenticated message batch")
+                    # 条数上限用的就是 socket 那道 MAXMSGSIZE 推导时假设的批量
+                    # 大小（见 zmq_transport 的 _message_uplink_max_bytes：
+                    # payload_max * batch_max）。字节界拦不住「很多条很小的」，
+                    # 而每一条现在都会写一次 message plane，所以绕过 SDK 批量器
+                    # 的插件可以用一条合法大小的帧换来任意多次宿主侧工作。
+                    if len(items) > PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE:
+                        raise ValueError(
+                            "authenticated message batch over the item limit: "
+                            f"{len(items)} > {PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE}"
+                        )
                     for item in items:
                         if not isinstance(item, dict):
                             raise ValueError("invalid authenticated message item")

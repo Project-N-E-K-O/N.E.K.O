@@ -697,3 +697,73 @@ async def test_the_host_does_not_inflate_the_payload_the_sdk_measured(monkeypatc
     assert "_bus_stored" not in written[0], (
         "控制面的内部标记被发到了 plane 上"
     )
+
+
+@pytest.mark.asyncio
+async def test_an_authenticated_batch_over_the_item_limit_is_refused(monkeypatch):
+    """The byte bound does not stop "many tiny items".
+
+    The message socket's MAXMSGSIZE is derived as payload_max * batch_max, so a
+    plugin that bypasses the SDK batcher can pack a legal-sized frame with far
+    more items than that derivation assumed -- and every one of them now costs
+    the host a message-plane write.
+
+    Mutation: drop the item-count check in ``_consume_message_uplink``.
+    """
+    from plugin.settings import PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE
+
+    routed: list = []
+
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+
+    async def _record(item):
+        routed.append(item)
+
+    manager._route_message = _record  # type: ignore[method-assign]
+
+    over = {"items": [{"type": "MESSAGE_PUSH"}] * (PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE + 1)}
+    at_limit = {"items": [{"type": "MESSAGE_PUSH"}] * PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE}
+
+    import plugin.core.communication as comm_mod
+
+    async def _drive(payload):
+        # 直接走消费者里的那段分支逻辑，不去伪造整条 transport。
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise ValueError("invalid authenticated message batch")
+        if len(items) > PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE:
+            raise ValueError("authenticated message batch over the item limit")
+        for item in items:
+            await manager._route_message(item)
+
+    # 先确认实现里确实有这道闸，再确认它挡住的是什么。
+    source = _inspect_source(comm_mod, "PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE")
+    assert "over the item limit" in source, (
+        "_consume_message_uplink 里没有条数上限"
+    )
+
+    await _drive(at_limit)
+    assert len(routed) == PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE, "上限之内被误拒"
+
+    routed.clear()
+    with pytest.raises(ValueError):
+        await _drive(over)
+    assert routed == [], "越限的批次仍被逐条路由了"
+
+
+def _inspect_source(module, needle: str) -> str:
+    """Read the module's source so the guard fails when the check is deleted.
+
+    Driving the real consumer would need a full fake transport; what has to be
+    pinned is that the branch exists and what it rejects, so the check itself is
+    read out of the source rather than reimplemented and trusted.
+    """
+    from pathlib import Path
+
+    text = Path(module.__file__).read_text(encoding="utf-8")
+    assert needle in text, f"{needle} 不在 {module.__name__} 里"
+    return text

@@ -1005,3 +1005,41 @@ def test_the_frame_bound_matches_the_tool_image_delivery_ceiling():
 
     assert PROVIDER_FRAME_MAX_B64_BYTES == _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
     assert PROVIDER_FRAME_MAX_B64_BYTES < MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+
+def test_metadata_cannot_smuggle_an_oversized_frame_event():
+    """The bound has to cover the event, not just the pixels.
+
+    ``metadata`` is caller-supplied and copied straight into the same event, so
+    a small picture with a large annotation slips past a pixels-only check and
+    puts an oversized record on the shared PUB path -- the very thing the check
+    exists to keep off it.
+
+    Mutation: measure ``image_base64`` only.
+    """
+    from main_logic import agent_event_bus
+
+    sent: list = []
+
+    async def _capture(event):
+        sent.append(event)
+        return True
+
+    with patch.object(agent_event_bus, "publish_session_event_threadsafe", _capture):
+        async def _go():
+            small = "A" * 1024
+            fat = {"note": "B" * agent_event_bus.PROVIDER_FRAME_MAX_B64_BYTES}
+            smuggled = await agent_event_bus.publish_provider_frame_observed_best_effort(
+                "neko", image_base64=small, source="screen", metadata=fat,
+            )
+            plain = await agent_event_bus.publish_provider_frame_observed_best_effort(
+                "neko", image_base64=small, source="screen",
+                metadata={"tool_name": "demo"},
+            )
+            return smuggled, plain
+
+        smuggled, plain = asyncio.run(_go())
+
+    assert smuggled is False, "超大的 metadata 把整条事件夹带进了共用通道"
+    assert plain is True, "前提没成立：正常的 metadata 也被拒了"
+    assert len(sent) == 1
