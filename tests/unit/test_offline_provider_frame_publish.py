@@ -1090,3 +1090,46 @@ def test_metadata_cannot_smuggle_an_oversized_frame_event():
     assert smuggled is False, "超大的 metadata 把整条事件夹带进了共用通道"
     assert plain is True, "前提没成立：正常的 metadata 也被拒了"
     assert len(sent) == 1
+
+
+def test_a_max_image_survives_every_hop_to_the_plane_record():
+    """The third leg, and the last unmeasured one.
+
+    A tool frame crosses three boundaries with three different measurements:
+    the image against the ladder's budget, the orjson EVENT against the session
+    channel's ceiling, and the msgpack RECORD against the message plane's bound.
+    The first two are pinned above; this pins the last, and it is a different
+    serialization on a different shape -- the record adds ``kind``, ``type``,
+    ``id`` and ``timestamp`` that the event does not carry.
+
+    Two of the three ceilings in this chain were wrong at some point in this
+    branch because they were compared as constants instead of packed and
+    measured. This one is measured from the start.
+
+    Mutation: raise ``PROVIDER_FRAME_MAX_IMAGE_B64_BYTES`` past what the plane
+    record can hold.
+    """
+    import ormsgpack
+
+    from main_logic.agent_event_bus import PROVIDER_FRAME_MAX_IMAGE_B64_BYTES
+    from plugin.server.messaging.plane_bridge import build_frame_record
+    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    record = build_frame_record(
+        image_base64="A" * PROVIDER_FRAME_MAX_IMAGE_B64_BYTES,
+        source="plugin",
+        captured_at=1788095048.5590525,
+        turn_id="asr-0-0",
+        generation=3,
+        mime="image/jpeg",
+        lanlan_name="a-character-with-a-long-name",
+        frame_id="0123456789abcdef0123456789abcdef",
+        metadata={"tool_name": "a_plugin_tool_with_a_long_name"},
+    )
+    packed = len(ormsgpack.packb(record))
+
+    assert packed <= MESSAGE_PLANE_PAYLOAD_MAX_BYTES, (
+        f"最大的一张图打包成 plane 记录是 {packed} B，超过 "
+        f"{MESSAGE_PLANE_PAYLOAD_MAX_BYTES} B——bridge 会以 payload_too_big 拒收，"
+        "模型看到了而插件读不到"
+    )
