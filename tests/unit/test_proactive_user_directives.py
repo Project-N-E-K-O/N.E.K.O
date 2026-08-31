@@ -323,7 +323,9 @@ def test_no_module_prints_a_directive_bearing_prompt():
     import ast
     import inspect
 
-    import main_logic.proactive_chat.generation as gen_module
+    # 从已 import 的函数反查模块，不再单独 import 一次 —— 同一模块既 ``import``
+    # 又 ``import from`` 会被 code-quality 扫出来，而这里本来就不需要第二个入口。
+    gen_module = inspect.getmodule(_proactive_directive_hits)
 
     SENSITIVE = {"system_prompt", "prompt", "messages"}
     tree = ast.parse(inspect.getsource(gen_module))

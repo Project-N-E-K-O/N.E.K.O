@@ -280,8 +280,11 @@ def test_worst_case_block_fits_the_registered_token_budget():
     from config import USER_DIRECTIVE_MAX_ACTIVE
     from config.prompts.prompts_directives import render_directives_block
     from main_logic.core._shared import _CONTEXT_APPEND_SOURCE_MAX_TOKENS
-    from memory.user_directives import _TERM_MAX_LEN
     from utils.tokenize import count_tokens
+
+    # 走已 import 的模块对象取常量，别再 ``from memory.user_directives import``
+    # ——同一模块既 ``import`` 又 ``import from`` 会被 code-quality 扫出来。
+    _TERM_MAX_LEN = user_directives_module._TERM_MAX_LEN
 
     budget = _CONTEXT_APPEND_SOURCE_MAX_TOKENS.get("user_directives")
     assert budget, "user_directives 必须登记自己的预算，别落到 1000 默认值"
