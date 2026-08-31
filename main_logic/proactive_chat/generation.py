@@ -1132,9 +1132,13 @@ async def _generate_phase2_stream(
                 else:
                     _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
 
+    # ⚠️ 不打印草稿正文。这两处（还有下面那处 response_text）在**禁令闸之前**
+    # 执行：草稿命中 ban term 时，term 会先落进 stdout，然后才被闸丢掉 —— 拦住了
+    # 投递，没拦住泄漏。与本 PR 已经收口的另外两处（出口闸日志、prompt 正文）同
+    # 一条判据，这里补齐，免得留下"prompt 不打但草稿打"这种说不通的半拉子状态。
     print(
         "\n[PROACTIVE-DEBUG] Phase 2 STREAM output "
-        f"(aborted={aborted}, tag={source_tag}): {full_text[:300]}\n"
+        f"(aborted={aborted}, tag={source_tag}, chars={len(full_text)})\n"
     )
     if aborted or not full_text.strip():
         final_reason = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY
@@ -1185,7 +1189,10 @@ async def _generate_phase2_stream(
         phase2_use_vision,
         len(response_text),
     )
-    print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
+    print(
+        "\n[PROACTIVE-DEBUG] Phase 2 STREAM output "
+        f"chars={len(response_text)}\n"
+    )
     return Phase2Generation(
         result=None,
         full_text=full_text,

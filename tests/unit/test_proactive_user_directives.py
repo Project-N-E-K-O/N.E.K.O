@@ -310,7 +310,28 @@ def test_injection_failure_keeps_original_context(monkeypatch):
     assert _append_directives_section("原有记忆上下文", "Neko", "zh") == "原有记忆上下文"
 
 
-_SENSITIVE_PRINT_NAMES = frozenset({"system_prompt", "prompt", "messages"})
+# 本 PR 链路上会承载 ban term（或含 term 的整段文本）的变量名。
+# ⚠️ 第一版只有前三个 —— 于是「把草稿正文打进 stdout」那两处即使修好了，守卫也
+# **接不住**：下一个人把 chars={len(full_text)} 改回 {full_text[:300]} 照样全绿。
+# 守卫覆盖不全等于守卫失效，这是本 PR 里同一个教训的第三次。
+_SENSITIVE_PRINT_NAMES = frozenset({
+    # prompt 侧（注入了禁令块）
+    "system_prompt", "prompt", "messages",
+    "phase2_memory_context", "phase2_system_prompt",
+    # 禁令本身
+    "block", "terms", "active_terms",
+    "directive_hits", "regen_directive_hits",
+    # 模型草稿（命中 ban term 时逐字含它，且打印发生在闸之前）
+    "full_text", "response_text", "cleaned", "draft",
+})
+
+# ⚠️⚠️ 落盘的 logger **比 stdout 更该防** —— 本 PR 自己在 `_report_if_kept` 和
+# 出口闸的注释里就是这么写的（日志进 logs/ 持久化，用户报 bug 时可能整包交出去）。
+# 而守卫第一版只匹配 `print`：``logger.info(...)`` 的 AST 是
+# ``Call(func=Attribute(...))``，永远进不了那个分支，判据整个是反的。
+_SINK_ATTRS = frozenset({
+    "debug", "info", "warning", "error", "exception", "critical", "log",
+})
 
 
 def _exposed_names(node, inside_len=False):
@@ -346,15 +367,23 @@ def _exposed_names(node, inside_len=False):
         yield from _exposed_names(child, inside_len)
 
 
+def _is_output_sink(func) -> bool:
+    """Whether a call target writes outside the process (stdout or a log file)."""
+    import ast
+
+    if isinstance(func, ast.Name) and func.id == "print":
+        return True
+    # logger.info(...) / self.logger.warning(...) / active_logger.debug(...)
+    return isinstance(func, ast.Attribute) and func.attr in _SINK_ATTRS
+
+
 def _print_calls_exposing(source: str):
-    """Return ``[(lineno, name)]`` for every print that would render a body."""
+    """Return ``[(lineno, name)]`` for every sink call that would render a body."""
     import ast
 
     found = []
     for node in ast.walk(ast.parse(source)):
-        if not (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "print"):
+        if not (isinstance(node, ast.Call) and _is_output_sink(node.func)):
             continue
         for arg in list(node.args) + [kw.value for kw in node.keywords]:
             for name in _exposed_names(arg):
@@ -371,6 +400,11 @@ def _print_calls_exposing(source: str):
     'print("%s" % system_prompt)',               # 旧式格式化
     'print("{}".format(system_prompt))',         # format
     'print("x", file=None, end=prompt)',         # 关键字参数
+    # ⚠️ logger 一路比 stdout 更该防（落盘、可能随 bug 报告外流）
+    'logger.info("draft=%s", full_text)',
+    'logger.warning(f"terms={directive_hits}")',
+    'active_logger.debug("%s", response_text)',
+    'self.logger.error("block: " + block)',
 ])
 def test_print_guard_catches_every_leak_shape(snippet):
     """⚠️ The guard itself must not be shape-blind — it is the only regression net."""
@@ -384,6 +418,9 @@ def test_print_guard_catches_every_leak_shape(snippet):
     'print(f"n={len(messages)}")',
     'print("model=", model_name)',                   # 无关变量
     'print(f"{actual_model} | {use_vision}")',
+    'logger.info("blocked (%d terms)", len(directive_hits))',   # 计数
+    'logger.debug("[UserDirectives] sink failed: %s", exc)',    # 只有异常
+    'logger.info("injected (lifetime=%s)", lifetime)',
 ])
 def test_print_guard_allows_safe_shapes(snippet):
     """Control: the guard must not fire on size-only or unrelated output."""
@@ -401,16 +438,31 @@ def test_no_module_prints_a_directive_bearing_prompt():
     one arrives *indirectly* via the prompt, which is why a first sweep that
     only grepped direct variables missed it.
     """
+    import importlib
     import inspect
 
-    # 从已 import 的函数反查模块，不再单独 import 一次 —— 同一模块既 ``import``
-    # 又 ``import from`` 会被 code-quality 扫出来，而这里本来就不需要第二个入口。
-    gen_module = inspect.getmodule(_proactive_directive_hits)
-
-    offenders = _print_calls_exposing(inspect.getsource(gen_module))
+    # ⚠️ 扫**所有本 PR 往里注入过禁令、或经手禁令文本**的模块，不是只扫一个。
+    # 第一版只扫 generation.py —— 而注入点在 service.py、中途注入在 notify.py、
+    # 落盘与告警在 user_directives.py，三个模块一行没扫过。
+    #
+    # ⚠️ 刻意**不含** ``proactive_chat.break_reminders``：它的 :332 现在就有一句
+    # 打印整段 system_prompt，但那个 prompt 由 character_prompt + env_notice 纯
+    # 模板拼成、**不含禁令块**（本 PR 没往休息提醒注入），所以今天不是泄漏。
+    # 给它接禁令是 #3013 R2 的事 —— **做那件事的时候必须把它加进下面这张表**，
+    # 否则接上的当天就会静默泄漏。
+    targets = [
+        inspect.getmodule(_proactive_directive_hits),   # generation.py
+        importlib.import_module("main_logic.proactive_chat.service"),
+        importlib.import_module("main_logic.core.notify"),
+        user_directives_module,
+    ]
+    offenders = []
+    for mod in targets:
+        for lineno, name in _print_calls_exposing(inspect.getsource(mod)):
+            offenders.append((mod.__name__, lineno, name))
     assert not offenders, (
-        "这些 print 会把含禁令块的 prompt 正文刷到 stdout："
-        f"{offenders} —— 只输出模型 / 模态 / 长度，别输出正文"
+        "这些 print / logger 会把禁令原文或含它的正文写出进程："
+        f"{offenders} —— 只输出计数 / 长度 / 角色名，别输出正文"
     )
 
 
