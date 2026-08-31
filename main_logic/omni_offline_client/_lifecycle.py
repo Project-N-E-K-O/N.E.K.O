@@ -893,10 +893,17 @@ class _LifecycleMixin:
         cause.
 
         Waiting is not enough, though: the task **finishing** says nothing
-        about whether the instruction landed. The bridge can refuse the record
-        or raise, and the publisher swallows both -- so the result is read
-        here, and a reply whose instruction never made it is dropped rather
-        than sent out carrying ``message_count=2``.
+        about whether the instruction was even sent. The publisher swallows a
+        refusal and a raise alike, so the result is read here and a reply whose
+        instruction never reached the socket is dropped rather than sent out
+        carrying ``message_count=2``.
+
+        ⚠️ 这道闸只到 socket 为止，别把它读成"不会出现孤儿 reply"。
+        ``publish_conversation_turn_observed_best_effort`` 自己的注释写得很清楚：
+        它的 True 是"交给了 socket"，不是"插件会看到"。后面还有 agent 侧的
+        ``_forward_conversation_turn``、bridge、ingest 三跳，任何一跳丢掉
+        instruction，这里都已经放行了 reply。要真正消灭孤儿得让存储那一跳回
+        ack、或者两条原子发布，都不在这个改动的范围里。
 
         ``instruction_task`` is never ``None`` here -- the caller drops the
         whole reply in that case rather than publishing an orphan. The guard

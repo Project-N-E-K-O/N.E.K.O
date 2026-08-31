@@ -1114,3 +1114,39 @@ def test_the_unpack_options_are_a_subset_of_the_pack_options() -> None:
     assert unpack & ormsgpack.OPT_NON_STR_KEYS, (
         "解包丢了 OPT_NON_STR_KEYS——非字符串键的返回值会变成静默超时"
     )
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(("configured", "expected"), [("0", 1), ("-5", 1), ("256", 256)])
+def test_the_batch_size_setting_is_clamped_where_it_is_loaded(
+    configured: str, expected: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both sides of this constant must read the same number.
+
+    ``_AuthenticatedMessageBatcher`` clamps to ``max(1, ...)`` in its
+    constructor; the host's received-batch check in ``communication.py``
+    compares against the setting directly. Configured as 0 or negative those
+    disagree: the child sends a legal one-item batch and the host rejects every
+    one of them, so proactive messages stop being routed with nothing raised.
+
+    Clamping at load is what makes the two agree by construction rather than by
+    both remembering to do it.
+
+    Mutation: drop the ``max(1, ...)`` in plugin/settings.py.
+    """
+    import importlib
+
+    import plugin.settings as settings_mod
+
+    monkeypatch.setenv("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", configured)
+    reloaded = importlib.reload(settings_mod)
+    try:
+        assert reloaded.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE == expected
+
+        batcher_clamped = max(1, int(configured))
+        assert batcher_clamped <= reloaded.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE, (
+            "子进程会发出宿主必然拒收的批量大小"
+        )
+    finally:
+        monkeypatch.delenv("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", raising=False)
+        importlib.reload(settings_mod)

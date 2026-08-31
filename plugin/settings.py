@@ -602,7 +602,14 @@ MESSAGE_PLANE_BRIDGE_ENABLED = _get_bool_env("NEKO_MESSAGE_PLANE_BRIDGE_ENABLED"
 
 # PUSH 批量大小（条数）
 # Env: NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE, default=256
-PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE = _get_int_env("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", 256)
+# 在加载处就钳到 >=1，而不是让每个使用方各自 max(1, ...)：批量器构造时钳过
+# （_AuthenticatedMessageBatcher.__init__），宿主侧的收批校验却是拿原始值比。
+# 配成 0 或负数时两边就不一致——子进程发出合法的 1 条批量，宿主判
+# len(items) > 0 成立、整批拒收，主动搭话静默停摆。归一化放在这里，两侧
+# 读到的就是同一个数。
+PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE = max(
+    1, _get_int_env("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", 256)
+)
 
 # 控制上行单帧的字节上限。
 #
