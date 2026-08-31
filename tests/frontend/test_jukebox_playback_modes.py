@@ -7206,7 +7206,8 @@ def test_jukebox_close_tears_down_when_only_the_panel_was_used(mock_page: Page):
             fullCloseEvents,
             isPlaying: J.State.isPlaying,
             currentSong: J.State.currentSong && J.State.currentSong.id,
-            songCount: J.State.songs.length
+            songCount: J.State.songs.length,
+            playerDestroyed: window.__lastAPlayer.destroyed === true
           };
         }
         """
@@ -7219,3 +7220,6 @@ def test_jukebox_close_tears_down_when_only_the_panel_was_used(mock_page: Page):
     assert result["isPlaying"] is False
     assert result["currentSong"] is None
     assert result["songCount"] == 0
+    # 这条不能省：上面几项在「只 stopPlayback、不 prepareForUnload」的回归下全都
+    # 照样成立，播放器却还活着。要证明走的是彻底拆除那条分支，只能看它死没死。
+    assert result["playerDestroyed"] is True
