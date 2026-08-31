@@ -129,25 +129,40 @@ _BOUNDARYLESS_SCRIPT_RE = re.compile(
     r"[⺀-鿿぀-ヿ가-힯豈-﫿ｦ-ﾟ]"
 )
 
+# 分词文字的字符集：ASCII + 拉丁扩展（西 / 葡的重音字母）+ 希腊 + 西里尔。
+# ⚠️⚠️ **不能用 ``\b``**。Python 的 ``\w`` 把汉字也算词字符，于是 ``\b`` 在字母
+# 与汉字的交界处**不触发**：``今天work很累`` 里 ``work`` 两侧都是 ``\w``，
+# ``\bwork\b`` 整个匹配不上 —— 而中英混说（用户说 "stop talking about
+# work"、角色输出"今天work怎么样"）恰恰是 prompts_directives 反复声明
+# **明确支持**的路径，一刀切用 \b 等于在主用例上漏杀（coderabbit 抳到，
+# 实测 3/3 全漏）。判据要的是"两侧有没有**同一族**的分词字符"，不是"是不是 \w"。
+_LATIN_WORD_CHAR = r"0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ"
+_LATIN_EDGE_RE = re.compile(rf"[{_LATIN_WORD_CHAR}]")
+
 
 def _directive_term_in_draft(term: str, draft_folded: str) -> bool:
     """Whether ``term`` occurs in an already-casefolded draft.
 
-    Latin/Cyrillic terms must match on word boundaries; CJK/kana/hangul are
-    written without spaces and can only be matched as substrings.
+    Latin/Cyrillic/Greek terms match only when not glued to another letter of
+    the same family; CJK/kana/hangul are written without spaces and can only
+    be matched as substrings.
     """
     folded_term = term.casefold()
     if not folded_term:
         return False
     if _BOUNDARYLESS_SCRIPT_RE.search(folded_term):
         return folded_term in draft_folded
-    # ⚠️ ``\b`` 在这里是对的，但只对**两端都是词字符**的 term 成立。``my ex``
-    # 两端是字母，没问题；而 term 若以标点收尾（正则抽取是宽松的），``\b`` 会
-    # 贴在标点外侧、几乎匹配不上任何东西 —— 那种情况退回子串，宁可多拦。
-    if not (folded_term[0].isalnum() and folded_term[-1].isalnum()):
+    # ⚠️ 边界只对**两端本身就是分词字符**的 term 有意义。``my ex`` 两端是
+    # 字母，没问题；而 term 若以标点收尾（正则抽取是宽松的），lookaround 会贴
+    # 在标点外侧、几乎匹配不上任何东西 —— 那种情况退回子串，宁可多拦。
+    if not (_LATIN_EDGE_RE.match(folded_term[0])
+            and _LATIN_EDGE_RE.match(folded_term[-1])):
         return folded_term in draft_folded
+    # re 模块自带编译缓存，不用再包一层 lru_cache。
     return re.search(
-        rf"\b{re.escape(folded_term)}\b", draft_folded,
+        rf"(?<![{_LATIN_WORD_CHAR}]){re.escape(folded_term)}"
+        rf"(?![{_LATIN_WORD_CHAR}])",
+        draft_folded,
     ) is not None
 
 

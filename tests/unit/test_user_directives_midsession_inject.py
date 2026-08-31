@@ -47,10 +47,14 @@ class _Manager(NotifyMixin):
         )
 
 
-def _install(monkeypatch, *, pending, block="\n\n[用户最近明确表示过...]\n- 加班"):
+def _install(
+    monkeypatch, *, pending, block="\n\n[用户最近明确表示过...]\n- 加班",
+    terms=("加班",),
+):
     stub = MagicMock()
     stub.take_pending_injection.return_value = pending
     stub.render_prompt_block.return_value = block
+    stub.get_active_terms.return_value = list(terms)
     monkeypatch.setattr(
         user_directives_module, "get_user_directives_manager", lambda: stub,
     )
@@ -59,7 +63,7 @@ def _install(monkeypatch, *, pending, block="\n\n[用户最近明确表示过...
 
 @pytest.mark.asyncio
 async def test_injects_when_a_directive_was_just_recorded(monkeypatch):
-    stub = _install(monkeypatch, pending=True)
+    _install(monkeypatch, pending=True)
     mgr = _Manager()
 
     await mgr._inject_pending_user_directives()
@@ -123,16 +127,46 @@ async def test_a_new_term_gets_a_different_request_id(monkeypatch):
     """Adding a term must produce a fresh id, or the update is silently deduped."""
     # 对照组：没有这条，"request_id 写死成常量"也能让上面那条通过——而那会
     # 让用户后来说的每一条新禁令都被当成重复、永远进不了当前会话。
-    stub = _install(monkeypatch, pending=True, block="\n\n[...]\n- 加班")
+    stub = _install(
+        monkeypatch, pending=True, block="\n\n[...]\n- 加班", terms=("加班",),
+    )
     mgr = _Manager()
     await mgr._inject_pending_user_directives()
     first = mgr.append_context.await_args.kwargs["request_id"]
 
     stub.render_prompt_block.return_value = "\n\n[...]\n- 加班\n- 股票"
+    stub.get_active_terms.return_value = ["加班", "股票"]
     await mgr._inject_pending_user_directives()
     second = mgr.append_context.await_args.kwargs["request_id"]
 
     assert first != second
+
+
+@pytest.mark.asyncio
+async def test_request_id_is_independent_of_display_order(monkeypatch):
+    """⚠️ Reordering the same term set must NOT produce a new request id."""
+    # 渲染块里的 term 按 ``last_seen_at`` 降序排，于是「重复说**较旧**的那一条」
+    # 会把它顶到最前 —— 集合没变、字节变了。指纹若取渲染块，这里就会得到新 id、
+    # 又追加一份完整拷贝；而这恰恰是延长 TTL 的常规路径（E 那半的整个设计就预期
+    # 用户重复说），等于去重在最该生效的场景下被绕过（codex P2）。
+    stub = _install(
+        monkeypatch, pending=True,
+        block="\n\n[...]\n- 加班\n- 股票", terms=("加班", "股票"),
+    )
+    mgr = _Manager()
+    await mgr._inject_pending_user_directives()
+    first = mgr.append_context.await_args.kwargs["request_id"]
+
+    # 用户又说了一遍"别再提股票" → 股票 last_seen 更新 → 排到最前，集合没变
+    stub.render_prompt_block.return_value = "\n\n[...]\n- 股票\n- 加班"
+    stub.get_active_terms.return_value = ["股票", "加班"]
+    await mgr._inject_pending_user_directives()
+    second = mgr.append_context.await_args.kwargs["request_id"]
+
+    assert first == second, (
+        "同一组 term 换个显示顺序必须仍是同一个 request_id，否则重复说话就会"
+        "把整块禁令再追加一份"
+    )
 
 
 @pytest.mark.asyncio

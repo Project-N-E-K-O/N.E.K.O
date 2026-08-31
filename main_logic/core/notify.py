@@ -251,6 +251,7 @@ class NotifyMixin:
             # _build_initial_prompt 注入的是同一段文本。只注入增量的话，模型
             # 在本会话里看到的禁令集合会取决于"哪几条恰好是这一轮说的"，跟
             # 会话重建后看到的集合不一致。
+            active_terms = manager.get_active_terms(key)
             block = manager.render_prompt_block(key, _lang)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[UserDirectives] mid-session render failed: %s", exc)
@@ -287,16 +288,23 @@ class NotifyMixin:
         # prompt 里的那段重复一次（内容一致、不矛盾，且缓存被消费后即止）。
         lifetime = "session_family" if is_text_session else "next_session"
         try:
-            # request_id 让 append_context 的去重真正生效：同一组活跃 term
-            # 渲染出的块是逐字节相同的，而用户**重复说**同一条指令（E 那半
-            # 按 hit_count 递增 TTL，整个设计就预期他会重复）同样会置待注入
-            # 标记。不给 id 的话每次都原样再追加一份：文字侧堆进 history 还
-            # 会被算进归档 token 预算、提前触发热切换，语音侧堆进 instructions
-            # 且不可回收。指纹取块内容，所以"新增了一条 term"会得到不同的 id、
-            # 正常注入，而"又说了一遍同样的话"被认成重复。
+            # request_id 让 append_context 的去重真正生效：用户**重复说**同一条
+            # 指令（E 那半按 hit_count 递增 TTL，整个设计就预期他会重复）同样会
+            # 置待注入标记。不给 id 的话每次都原样再追加一份：文字侧堆进 history
+            # 还会被算进归档 token 预算、提前触发热切换，语音侧堆进 next-session
+            # 缓存。
+            #
+            # ⚠️ 指纹取的是**规范化后的 term 集合**，不是渲染出来的块。块里的
+            # term 按 ``last_seen_at`` 降序排，于是「重复说较旧的那一条」会把它
+            # 顶到最前 —— 集合没变、字节变了 → 新 id → 又追加一份完整拷贝。而
+            # 那恰恰是延长 TTL 的常规路径，等于去重在最该生效的场景下被绕过
+            # （codex P2）。排序 + casefold 之后，只有集合真的变了才拿到新 id。
+            fingerprint = " | ".join(
+                sorted(t.casefold() for t in active_terms if t)
+            )
             request_id = (
                 f"user_directives:{key}:"
-                f"{hashlib.sha256(block.encode('utf-8')).hexdigest()[:16]}"
+                f"{hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:16]}"
             )
             # timing='when_ready'：会话还没建好时排队，不丢。
             result = await self.append_context(
