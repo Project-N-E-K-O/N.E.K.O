@@ -268,6 +268,38 @@ async def test_memory_unavailable_is_swallowed(monkeypatch):
     mgr.append_context.assert_not_awaited()
 
 
+def test_worst_case_block_fits_the_registered_token_budget():
+    """⚠️ The worst renderable directive block must fit its transport budget.
+
+    Not a constant-vs-constant check: it renders a real block at the two hard
+    limits (term length, active count) and measures it, because "the numbers
+    look fine" has never been evidence that the payload fits.
+    """
+    # 越线的后果不是"少几条"：request_id 按**完整** term 集合算，截断后的重试
+    # 要么被去重、要么原样再追加同一份截断载荷，被截掉的禁令永远进不去。
+    from config import USER_DIRECTIVE_MAX_ACTIVE
+    from config.prompts.prompts_directives import render_directives_block
+    from main_logic.core._shared import _CONTEXT_APPEND_SOURCE_MAX_TOKENS
+    from memory.user_directives import _TERM_MAX_LEN
+    from utils.tokenize import count_tokens
+
+    budget = _CONTEXT_APPEND_SOURCE_MAX_TOKENS.get("user_directives")
+    assert budget, "user_directives 必须登记自己的预算，别落到 1000 默认值"
+
+    # 已知 token 密度最高的一类：日文假名。用满两个硬上限。
+    dense_term = "ぬ" * _TERM_MAX_LEN
+    worst = render_directives_block(
+        [dense_term] * USER_DIRECTIVE_MAX_ACTIVE, "ja",
+    )
+    measured = count_tokens(worst)
+    assert measured <= budget, (
+        f"最坏情况渲染块 {measured} tokens 超出登记预算 {budget} —— "
+        f"会被静默截断，且被截掉的禁令永远补不回去。"
+        f"调大 _TERM_MAX_LEN({_TERM_MAX_LEN}) 或 "
+        f"USER_DIRECTIVE_MAX_ACTIVE({USER_DIRECTIVE_MAX_ACTIVE}) 时要同步调预算"
+    )
+
+
 # ── 调用点守卫 ────────────────────────────────────────────────────────
 
 

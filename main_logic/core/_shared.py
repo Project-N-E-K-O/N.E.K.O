@@ -58,6 +58,16 @@ _CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
     "topic.hook": 1000,
     "topic.material": 1000,
     "realtime.prime": 1000,
+    # ⚠️ 用户 ban-topic 禁令块。日常语料远低于默认的 1000（实测真实中/日文
+    # 20 条满额也就 419~449 tokens），但**理论上界不是**：term 长度上限 40 字
+    # （_TERM_MAX_LEN）× 活跃条数上限 20（USER_DIRECTIVE_MAX_ACTIVE）在高 token
+    # 密度的假名上量到 1727。
+    # 越线的后果不是"少几条"那么轻：request_id 按**完整** term 集合算，于是
+    # 截断后的重试要么被去重、要么原样再追加同一份截断载荷，被截掉的那几条禁令
+    # **永远进不去**（codex）。登记一个覆盖理论上界的预算把这条 latent 路径掐掉。
+    # tests/unit/test_user_directives_midsession_inject.py 有守卫钉住
+    # 「最坏情况渲染块 ≤ 本预算」，改大上面两个常量任一个都会红。
+    "user_directives": 2000,
 }
 _CONTEXT_APPEND_BARE_PRIME_SOURCES = frozenset({
     "game.realtime_context",
