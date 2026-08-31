@@ -6082,6 +6082,18 @@ def build_proactive_action_note(
         s = _single_line(value)
         return s or placeholders[fallback_key]
 
+    def _safe_community_metadata(value, fallback_key: str) -> str:
+        """Keep public card metadata from reproducing history prompt delimiters."""
+
+        return (
+            _safe(value, fallback_key)
+            .replace("\\", "\\\\")
+            .replace("|", r"\u007c")
+            .replace("=", r"\u003d")
+            .replace("<", r"\u003c")
+            .replace(">", r"\u003e")
+        )
+
     def _is_music(link: dict) -> bool:
         return link.get("type") == "music" or link.get("source") == "音乐推荐"
 
@@ -6133,10 +6145,15 @@ def build_proactive_action_note(
         )
         if not link:
             return ""
+        safe_metadata = (
+            _safe_community_metadata
+            if channel == "community" or link.get("mode") == "community"
+            else _safe
+        )
         return _loc(PROACTIVE_ACTION_NOTE_WEB, lang_key).format(
             master=master,
-            title=_safe(link.get("title"), "title"),
-            source=_safe(link.get("source"), "source"),
+            title=safe_metadata(link.get("title"), "title"),
+            source=safe_metadata(link.get("source"), "source"),
         )
 
     if channel == "music":

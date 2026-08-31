@@ -1755,6 +1755,7 @@ def _community_identifier(value: Any) -> str:
 
 def _community_card_url(raw: dict[str, Any]) -> str:
     _, discover_url = _neko_community_urls()
+    community_origin = urlparse(discover_url)
     for key in (
         "url",
         "link",
@@ -1768,10 +1769,19 @@ def _community_card_url(raw: dict[str, Any]) -> str:
         candidate = _community_text(raw.get(key))
         if not candidate:
             continue
-        if candidate.startswith(("http://", "https://")):
-            return candidate
-        if not urlparse(candidate).scheme:
-            return urljoin(discover_url, candidate)
+        parsed_candidate = urlparse(candidate)
+        if parsed_candidate.scheme:
+            if parsed_candidate.scheme.lower() not in {"http", "https"}:
+                continue
+            resolved_url = candidate
+        else:
+            resolved_url = urljoin(discover_url, candidate)
+        parsed_url = urlparse(resolved_url)
+        if (
+            parsed_url.scheme.lower() == community_origin.scheme.lower()
+            and parsed_url.netloc.casefold() == community_origin.netloc.casefold()
+        ):
+            return resolved_url
     # The feed API does not need to expose a post permalink for a card to stay
     # useful: the discover page is a safe, stable fallback for the source card.
     return discover_url

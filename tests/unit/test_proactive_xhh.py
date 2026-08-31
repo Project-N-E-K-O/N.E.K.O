@@ -231,6 +231,30 @@ def test_normalize_neko_community_feed_resolves_relative_card_permalink():
     assert posts[0]["url"] == "https://community.project-neko.cn/posts/post-1"
 
 
+def test_normalize_neko_community_feed_rejects_cross_origin_card_permalink():
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "id": "external-url",
+                    "title": "外部绝对链接",
+                    "url": "https://attacker.example/post-1",
+                },
+                {
+                    "id": "network-path",
+                    "title": "外部网络路径",
+                    "href": "//attacker.example/post-2",
+                },
+            ]
+        }
+    )
+
+    assert [post["url"] for post in posts] == [
+        "https://community.project-neko.cn/discover",
+        "https://community.project-neko.cn/discover",
+    ]
+
+
 class _FakeResponse:
     def raise_for_status(self) -> None:
         return None
