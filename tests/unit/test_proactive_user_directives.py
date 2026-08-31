@@ -484,8 +484,25 @@ def test_ban_gate_runs_before_any_repeat_detection():
     gen_module = inspect.getmodule(_proactive_directive_hits)
     tree = ast.parse(inspect.getsource(gen_module))
 
+    # ⚠️ 只在 `_guard_phase2_output` 的**子树**里比行号，不是整个模块。
+    # 拿模块级 walk 比 lineno 只保证"文件里的先后"，两个方向都会坏：
+    #   · 假绿 —— 有人把某道闸挪到本函数之外、行号却更靠前的辅助函数里，断言照过；
+    #   · 假红 —— 模块里新增任何 record_anti_repeat_decision，只要行号小于出稿闸
+    #     就会被算成"闸之前的检测"，而它根本不在这条执行路径上。
+    # 判据要的是**执行顺序**，那只在同一个函数作用域内才由行号决定（coderabbit）。
+    guard_fn = next(
+        (node for node in ast.walk(tree)
+         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+         and node.name == "_guard_phase2_output"),
+        None,
+    )
+    assert guard_fn is not None, (
+        "找不到 _guard_phase2_output —— 函数被改名的话这条守卫会静默失去目标，"
+        "必须在这里就断言失败"
+    )
+
     gate_lines, initial_detectors, regen_detectors = [], [], []
-    for node in ast.walk(tree):
+    for node in ast.walk(guard_fn):
         if not isinstance(node, ast.Call):
             continue
         fn = node.func
