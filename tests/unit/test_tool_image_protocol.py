@@ -724,3 +724,146 @@ def test_the_delivery_ceiling_leaves_room_beside_the_pixels():
     from main_logic.tool_calling import _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
 
     assert _TOOL_IMAGE_DELIVER_MAX_B64_BYTES < MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+
+def _inside_profile_but_oversized_b64() -> str:
+    """A JPEG already at 1280x720 -- inside the model profile -- yet over the ceiling.
+
+    This is the case ``normalize_image_for_model`` cannot help with: it is a
+    fixed point, so it returns this image untouched, and a fit routine leaning
+    on it reads that as "cannot be compressed".
+    """
+    import base64
+    import io as _io
+    import random
+
+    from PIL import Image
+
+    random.seed(20260901)
+    img = Image.frombytes(
+        "RGB", (1280, 720),
+        bytes(random.getrandbits(8) for _ in range(1280 * 720 * 3)),
+    )
+    buf = _io.BytesIO()
+    img.save(buf, format="JPEG", quality=97)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_an_image_inside_the_profile_is_still_compressed_when_oversized():
+    """Being inside 1280x720 is not being inside the byte budget.
+
+    ``normalize_image_for_model`` returns such an image as the identical object
+    -- correct for its own job, wrong as a fit routine. Leaning on it dropped
+    pictures that a single q80 pass halves.
+
+    Mutation: put ``normalize_image_for_model`` back in place of the ladder.
+    """
+    from utils.screenshot_utils import (
+        COMPRESS_TARGET_HEIGHT,
+        MODEL_IMAGE_MAX_WIDTH,
+        normalize_image_for_model,
+    )
+
+    from main_logic.tool_calling import (
+        _TOOL_IMAGE_DELIVER_MAX_B64_BYTES,
+        parse_tool_images,
+    )
+
+    big = _inside_profile_but_oversized_b64()
+    assert len(big) > _TOOL_IMAGE_DELIVER_MAX_B64_BYTES, "前提没成立：没超字节上限"
+    # 前提的另一半：它确实已经在 profile 之内，所以归一化对它是个空操作。
+    assert normalize_image_for_model(big) is big, (
+        "前提没成立：这张图不在 profile 之内，测不到本用例要测的东西"
+    )
+
+    images, warnings = parse_tool_images(
+        {"images": [{"data_b64": big, "mime": "image/jpeg"}]}
+    )
+
+    assert len(images) == 1, f"在 profile 之内的超限图被丢了: {warnings}"
+    assert len(images[0].data_b64) <= _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
+    assert images[0].mime == "image/jpeg"
+
+    # 压完的图仍然在 profile 的像素范围内，不是靠把它缩成缩略图换来的。
+    import base64
+    import io as _io
+
+    from PIL import Image
+
+    shrunk = Image.open(_io.BytesIO(base64.b64decode(images[0].data_b64)))
+    assert shrunk.width <= MODEL_IMAGE_MAX_WIDTH
+    assert shrunk.height <= COMPRESS_TARGET_HEIGHT
+
+
+def test_a_png_tool_image_over_the_ceiling_is_re_encoded():
+    """The non-JPEG path: mode conversion must not turn into a drop."""
+    import base64
+    import io as _io
+    import random
+
+    from PIL import Image
+
+    from main_logic.tool_calling import (
+        _TOOL_IMAGE_DELIVER_MAX_B64_BYTES,
+        parse_tool_images,
+    )
+
+    random.seed(20260902)
+    img = Image.frombytes(
+        "RGB", (600, 600),
+        bytes(random.getrandbits(8) for _ in range(600 * 600 * 3)),
+    ).convert("RGBA")
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG", compress_level=1)
+    big = base64.b64encode(buf.getvalue()).decode("ascii")
+    assert len(big) > _TOOL_IMAGE_DELIVER_MAX_B64_BYTES, "前提没成立"
+
+    images, warnings = parse_tool_images(
+        {"images": [{"data_b64": big, "mime": "image/png"}]}
+    )
+
+    assert len(images) == 1, f"带 alpha 的 PNG 被丢了: {warnings}"
+    assert images[0].mime == "image/jpeg", "重编码后 mime 必须跟着字节走"
+    assert len(images[0].data_b64) <= _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
+
+
+def test_a_palette_png_over_the_ceiling_is_re_encoded():
+    """The mode conversion is load-bearing for modes JPEG cannot hold.
+
+    ``compress_screenshot`` converts RGBA itself, so an RGBA fixture cannot see
+    whether this step exists -- the earlier guard let a mutation removing it
+    survive. Palette mode is one JPEG genuinely cannot save, and it is what a
+    screenshot tool using an indexed PNG hands back.
+
+    Mutation: drop the ``image.convert("RGB")`` in
+    ``_fit_tool_image_for_delivery``.
+    """
+    import base64
+    import io as _io
+    import random
+
+    from PIL import Image
+
+    from main_logic.tool_calling import (
+        _TOOL_IMAGE_DELIVER_MAX_B64_BYTES,
+        parse_tool_images,
+    )
+
+    random.seed(20260903)
+    side = 1000
+    img = Image.frombytes(
+        "P", (side, side), bytes(random.getrandbits(8) for _ in range(side * side))
+    )
+    img.putpalette(bytes(random.getrandbits(8) for _ in range(768)))
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG", compress_level=1)
+    big = base64.b64encode(buf.getvalue()).decode("ascii")
+    assert len(big) > _TOOL_IMAGE_DELIVER_MAX_B64_BYTES, "前提没成立：没超上限"
+
+    images, warnings = parse_tool_images(
+        {"images": [{"data_b64": big, "mime": "image/png"}]}
+    )
+
+    assert len(images) == 1, f"调色板 PNG 被丢了: {warnings}"
+    assert images[0].mime == "image/jpeg"
+    assert len(images[0].data_b64) <= _TOOL_IMAGE_DELIVER_MAX_B64_BYTES

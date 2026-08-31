@@ -620,3 +620,80 @@ async def test_a_failing_plane_does_not_take_down_the_message_loop(monkeypatch) 
 
     # 回合继续：legacy 队列照常收到，异常没有向上冒。
     assert target_queue.qsize() == 1
+
+
+# ---------------------------------------------------------------------------
+# SDK 量的和宿主发的必须是同一个东西
+# ---------------------------------------------------------------------------
+#
+# push_message() 的体积闸存在的意义，是把「拿到 submitted=True 之后在 ingest
+# 那边被静默丢掉」变成一次同步拒绝。它成立的前提是两边量的是同一份字节。宿主
+# 成为写入方之后这个前提被打破过：宿主会在写 plane 之前给记录补字段，于是它
+# 打包出来的比 SDK 量到的大，刚好卡在上限下沿的推送就落进了那个窗口。
+
+
+@pytest.mark.asyncio
+async def test_the_host_does_not_inflate_the_payload_the_sdk_measured(monkeypatch):
+    """Measure the real drift, do not reason about it.
+
+    Mutation: publish ``msg`` instead of the ``_bus_stored``-free copy in
+    ``_publish_message_to_plane``'s caller.
+    """
+    import ormsgpack
+
+    import plugin.core.context as ctx_mod
+    import plugin.server.messaging.plane_bridge as plane_bridge
+
+    written: list = []
+
+    def _publish_record(*, store, record, topic="all"):
+        written.append(copy.deepcopy(record))
+        return True
+
+    monkeypatch.setattr(plane_bridge, "publish_record", _publish_record)
+    monkeypatch.setattr(state, "append_message_record", lambda record: None)
+
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    manager._message_target_queue = asyncio.Queue()
+
+    # SDK 侧量的就是这一份（_build_wire_payload 的形状：v2 + 兼容字段）。
+    sdk_payload = {
+        "type": "MESSAGE_PUSH",
+        "message_id": "11111111111111111111111111111111",
+        "time": "2026-08-31T00:00:00Z",
+        "source": "demo",
+        "visibility": ["chat"],
+        "ai_behavior": "respond",
+        "parts": [{"type": "text", "text": "x" * 4096}],
+    }
+    sdk_size = len(ormsgpack.packb(sdk_payload))
+
+    await manager._route_message(copy.deepcopy(sdk_payload))
+
+    assert len(written) == 1, "消息没有进入 message plane"
+    host_size = len(ormsgpack.packb(written[0]))
+    drift = host_size - sdk_size
+
+    headroom = getattr(ctx_mod, "_HOST_ENVELOPE_HEADROOM_BYTES", None)
+    if headroom is None:
+        import re
+        from pathlib import Path
+
+        text = Path(ctx_mod.__file__).read_text(encoding="utf-8")
+        m = re.search(r"_HOST_ENVELOPE_HEADROOM_BYTES\s*=\s*(\d+)", text)
+        assert m, "找不到 _HOST_ENVELOPE_HEADROOM_BYTES"
+        headroom = int(m.group(1))
+
+    # plugin_id 是宿主按认证身份盖上去的，本来就该算进漂移里——余量要罩得住它。
+    assert drift >= 0
+    assert drift <= headroom, (
+        f"宿主把 payload 撑大了 {drift} 字节，超过 SDK 预留的 {headroom}："
+        "刚好卡在上限下沿的推送会拿到 submitted=True 然后被静默丢弃"
+    )
+    assert "_bus_stored" not in written[0], (
+        "控制面的内部标记被发到了 plane 上"
+    )

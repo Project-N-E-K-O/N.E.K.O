@@ -276,40 +276,83 @@ def _decode_tool_image_b64(data_b64: str) -> Tuple[bytes, str] | None:
     return raw, detected_mime
 
 
+# 压到投递上限以内的阶梯。第一档就是送模型的常规档位（1280x720 / q80）；后面
+# 几档只在它仍然放不下时才走，逐级让分辨率和质量。这些数字不是随手挑的：
+# 720p/q80 是本仓所有送模型画面的既有档位，其余各档只是在它之下继续降。
+_TOOL_IMAGE_FIT_LADDER: Tuple[Tuple[int, int], ...] = (
+    (720, 80),
+    (720, 60),
+    (540, 55),
+    (480, 45),
+)
+
+
 def _fit_tool_image_for_delivery(data_b64: str) -> Tuple[str, str] | None:
     """Bring one tool image under the delivery ceiling. ``(b64, mime)`` or None.
 
-    Runs the same ``normalize_image_for_model`` profile every other model-bound
-    image goes through (JPEG q80, at most 1280x720), so a tool screenshot ends
-    up looking like a screen frame rather than like its own special case. That
-    function is a fixed point, so an image already inside the profile comes back
-    as the identical object and this costs nothing.
+    NOT ``normalize_image_for_model``. That function is a FIXED POINT: a JPEG
+    already inside 1280x720 comes back as the identical string without being
+    re-encoded, which is exactly right for its own job (an image rides history
+    for several turns and must not degrade one round-trip per turn) and exactly
+    wrong here. A 1280x720 q95 screenshot is inside the profile and still far
+    over the byte ceiling, so leaning on that function dropped pictures a single
+    q80 pass would have halved. Its ``except`` path returns the input unchanged
+    too, which read as "cannot fit" rather than "could not try".
 
-    Returns None when the result still does not fit, which is the honest
-    outcome: the caller drops the image with a model-visible warning rather than
-    sending pixels whose bus copy would be silently refused downstream.
+    So this walks a real ladder against the BYTE budget, which the pixel-bound
+    helpers explicitly do not provide (see ``compress_screenshot``'s docstring).
+    The first rung is the standard model profile; the rest only run when that
+    still does not fit.
+
+    Returns None when no rung fits -- then the caller drops the image with a
+    model-visible warning rather than sending pixels whose bus copy would be
+    refused downstream anyway.
 
     Synchronous and CPU-bound, like the decode above it. Both call sites reach
-    this through ``asyncio.to_thread`` -- see ``tool_result_from_envelope``'s
-    callers -- which is why re-encoding here does not stall the event loop.
+    this through ``asyncio.to_thread`` (see ``tool_result_from_envelope``'s
+    callers), which is why re-encoding here does not stall the event loop.
     """
     if len(data_b64) <= _TOOL_IMAGE_DELIVER_MAX_B64_BYTES:
         return data_b64, ""
     try:
-        from utils.screenshot_utils import normalize_image_for_model
+        import base64 as _base64
+        from io import BytesIO as _BytesIO
 
-        shrunk = normalize_image_for_model(data_b64)
+        from PIL import ImageOps
+
+        from utils.screenshot_utils import (
+            MODEL_IMAGE_MAX_WIDTH,
+            compress_screenshot,
+        )
+
+        image = Image.open(_BytesIO(_base64.b64decode(data_b64)))
+        # 摆正再缩放，和 normalize_image_for_model 同一个理由：JPEG 存盘不带
+        # EXIF，先缩放会把 orientation 标记连同信息一起丢掉，模型拿到一张躺倒
+        # 的照片且无从察觉。
+        image = ImageOps.exif_transpose(image) or image
+        if image.mode not in ("RGB", "L"):
+            image = image.convert("RGB")
     except Exception:
         return None
-    if not isinstance(shrunk, str) or not shrunk:
-        return None
-    if len(shrunk) > _TOOL_IMAGE_DELIVER_MAX_B64_BYTES:
-        return None
-    # normalize_image_for_model always emits JPEG, so the declared mime has to
-    # follow the bytes -- a PNG that was re-encoded and still announced as PNG
-    # would fail the provider's own sniffing, and would put a wrong ``mime`` on
-    # the bus record.
-    return shrunk, "image/jpeg"
+
+    for target_h, quality in _TOOL_IMAGE_FIT_LADDER:
+        try:
+            encoded = _base64.b64encode(
+                compress_screenshot(
+                    image,
+                    target_h=target_h,
+                    quality=quality,
+                    max_w=MODEL_IMAGE_MAX_WIDTH,
+                )
+            ).decode("ascii")
+        except Exception:
+            return None
+        if len(encoded) <= _TOOL_IMAGE_DELIVER_MAX_B64_BYTES:
+            # 重编码一律出 JPEG，所以声明的 mime 必须跟着字节走——一张被重编码
+            # 却仍自称 PNG 的图过不了 provider 的嗅探，也会在总线记录上留下错误
+            # 的 mime。
+            return encoded, "image/jpeg"
+    return None
 
 
 def _normalize_tool_image_mime(mime: Any) -> str | None:

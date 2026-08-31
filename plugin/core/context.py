@@ -1218,6 +1218,12 @@ class PluginContext:
                 "reply": legacy_reply,
             }
 
+        # 宿主在写 plane 之前会对记录做规范化（补 message_id、把非字符串的
+        # time 换成 ISO 串），所以它打包出来的字节比这里量到的多一点。留出这
+        # 段余量，好让"刚好卡在上限下沿"的推送在这里被同步拒掉，而不是拿到
+        # submitted=True 之后在 ingest 那边被静默丢弃。
+        _HOST_ENVELOPE_HEADROOM_BYTES = 128
+
         def _reject_if_payload_too_large(payload: Dict[str, Any]) -> Optional["PushMessageRejected"]:
             """Refuse a push the host's ingest server would discard whole.
 
@@ -1230,7 +1236,17 @@ class PluginContext:
             is a throttled line in someone else's log.  Measuring the same
             expression here turns that into a synchronous verdict the caller can
             branch on.  Both processes import the constant from plugin.settings,
-            so the two measurements cannot drift apart.
+            so the CONSTANT cannot drift apart -- but the OBJECT being measured
+            can, and does: the host normalizes the record before it writes the
+            plane (``_forward_message`` fills ``message_id`` / rewrites a
+            non-string ``time``, and ``fast_mode`` sends a float timestamp the
+            host swaps for a 28-character ISO string). Measured, that is up to
+            ~19 bytes on the fast path. ``_HOST_ENVELOPE_HEADROOM_BYTES`` is
+            held back here so a push sized into that window is refused
+            synchronously rather than accepted and then dropped at ingest.
+            A test packs both shapes and asserts the real drift stays inside
+            the headroom, so a future host-side field cannot reopen the window
+            unnoticed.
 
             The check is deliberately skipped when the host is not validating
             (MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES off): rejecting locally what
@@ -1273,7 +1289,12 @@ class PluginContext:
                 size = len(ormsgpack.packb(payload))
             except Exception:
                 return None
-            limit = int(MESSAGE_PLANE_PAYLOAD_MAX_BYTES)
+            # 减去宿主规范化会追加的那点字节，见上面的说明。夹到 >=1，免得
+            # 有人把上限配成比余量还小的值时这里变成"全拒"。
+            limit = max(
+                1,
+                int(MESSAGE_PLANE_PAYLOAD_MAX_BYTES) - _HOST_ENVELOPE_HEADROOM_BYTES,
+            )
             if size <= limit:
                 return None
             totals = _inline_carrier_totals(carriers)

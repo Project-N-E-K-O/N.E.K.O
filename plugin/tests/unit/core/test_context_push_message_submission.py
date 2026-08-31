@@ -234,6 +234,25 @@ def _install_pack_counter(monkeypatch: pytest.MonkeyPatch) -> _PackCounter:
     return counter
 
 
+def _host_headroom() -> int:
+    """The bytes the SDK holds back for the host's own normalization.
+
+    Read out of the source rather than retyped: the reservation exists to track
+    what the host actually adds, so a test carrying its own copy of the number
+    would keep passing after the two diverge.
+    """
+    import re
+    from pathlib import Path
+
+    import plugin.core.context as _ctx
+
+    text = Path(_ctx.__file__).read_text(encoding="utf-8")
+    m = re.search(r"_HOST_ENVELOPE_HEADROOM_BYTES\s*=\s*(\d+)", text)
+    assert m, "找不到 _HOST_ENVELOPE_HEADROOM_BYTES"
+    return int(m.group(1))
+
+
+
 @pytest.mark.plugin_unit
 def test_oversized_inline_push_is_rejected_before_the_transport(
     tmp_path: Path,
@@ -262,7 +281,9 @@ def test_oversized_inline_push_is_rejected_before_the_transport(
     # The author has to be able to act on the log line alone.
     reported = repr(logger.records)
     assert "payload_too_large" in reported
-    assert "4096" in reported
+    # 报给作者的是**有效**上限（配置值减去宿主规范化的余量），因为那才是他
+    # 必须待在下面的那个数。写死 4096 会让这条断言在余量存在时反而是错的。
+    assert str(4096 - _host_headroom()) in reported
     # 1.33x, not 2.34x: an inline payload travels base64 and nothing else.
     assert "1.33" in reported
     assert "image=" in reported

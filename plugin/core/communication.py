@@ -709,9 +709,16 @@ class PluginCommunicationResourceManager:
             )
             from plugin.server.messaging.plane_bridge import publish_record
 
+            # ``_bus_stored`` is a control-plane marker: it says this process
+            # already cached the record. It means nothing on the plane, and
+            # shipping it makes the host's payload BIGGER than the one the SDK
+            # size-checked -- so a push sized just under the ceiling is answered
+            # ``submitted=True`` and then dropped at ingest as payload_too_big,
+            # the exact silent non-delivery that check exists to prevent.
+            wire = {k: v for k, v in msg.items() if k != "_bus_stored"}
             queued = publish_record(
                 store=MESSAGES_STORE_NAME,
-                record=msg,
+                record=wire,
                 topic=MESSAGES_TOPIC,
             )
         except Exception:
