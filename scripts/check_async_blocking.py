@@ -762,7 +762,7 @@ def main(argv: list[str] | None = None) -> int:
     # even if there's an async variant somewhere, a bare call that
     # hits the sync one blocks, and our report should surface it.
     # Example trigger: ``brain/computer_use.py`` defines a sync
-    # ``run_instruction`` while openclaw/openfang/browser_use adapters
+    # ``run_instruction`` while openclaw/browser_use adapters
     # expose ``async def run_instruction`` — ``await adapter.run_X()``
     # is fine, a hypothetical bare ``run_instruction(...)`` is not.
     ambiguous_async_names = async_names & set(indexer.risky)

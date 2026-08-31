@@ -169,7 +169,7 @@ docker run -d \
 启动后会自动生成以下目录结构：
 ```plaintext
 当前目录/
-├── neko-home/    # 用户主目录（配置、数据、SSL、OpenFang agent）
+├── neko-home/    # 用户主目录（配置、数据、SSL）
 ├── logs/         # 应用日志
 └── docker-compose.yml
 ```
@@ -192,10 +192,10 @@ BASE="."
 # BASE="/home/neko/neko-data"
 ```
 
-**第 1 步：把只存在于容器里的东西导出来。** 必须赶在删容器之前。两类东西可能只在容器可写层里：OpenFang 的工作目录（旧版从没挂过它），以及——如果你当初跟的是旧版 README——应用数据本身，因为那份文档把 `N.E.K.O/` 挂到了 `/root/Documents/N.E.K.O`，而服务从不往那里写。
+**第 1 步：把只存在于容器里的东西导出来。** 必须赶在删容器之前。如果你当初跟的是旧版 README，应用数据本身可能只在容器可写层里，因为那份文档把 `N.E.K.O/` 挂到了 `/root/Documents/N.E.K.O`，而服务从不往那里写。
 
 ```bash
-mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl" "$BASE/neko-home/.openfang"
+mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl"
 
 # 判据用「容器实际挂了什么」，不是「宿主目录里有没有东西」——后者对旧版 README
 # 部署的人是错的：那个目录里可能有你自己放进去的文件，而真数据仍然只在容器里。
@@ -215,10 +215,6 @@ else
     docker cp neko:/home/neko/.local/share/N.E.K.O/. "$BASE/neko-home/.local/share/N.E.K.O/"
     EXPORTED_APP_DATA=1
   fi
-  # OpenFang 状态其次，且不致命：从没初始化过的话容器里就没这个目录，而 docker cp
-  # 对不存在的源路径是报错退出的 —— 不能让它挡住上面已经完成的关键导出。
-  docker cp neko:/home/neko/.openfang/. "$BASE/neko-home/.openfang/" \
-    || echo "（容器里没有 .openfang，或导出失败；不影响上面的应用数据）"
 fi
 ```
 
@@ -655,7 +651,6 @@ N.E.K.O/
 │   ├── computer_use.py          # 电脑操控
 │   ├── browser_use_adapter.py   # 浏览器自动化
 │   ├── openclaw_adapter.py      # OpenClaw 云端连接
-│   ├── openfang_adapter.py      # OpenFang 无头执行后端
 │   ├── task_executor.py         # 任务执行引擎
 │   └── 📁 cua/                  # Computer Use Agent 子系统
 ├── 📁 config/                   # ⚙️ 配置管理模块

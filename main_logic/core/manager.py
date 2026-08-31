@@ -286,7 +286,6 @@ class LLMSessionManager(
             'user_plugin_enabled': False,
             'openclaw_enabled': False,
             'openclaw_ready': False,
-            'openfang_enabled': False,
         }
         
         # 模式标志: 'audio' 或 'text'

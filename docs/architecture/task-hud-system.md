@@ -41,7 +41,7 @@ Common fields are:
 | Field | Purpose |
 |---|---|
 | `id` | Stable registry/task key |
-| `type` | Channel such as `computer_use`, `browser_use`, `user_plugin`, `openclaw`, or `openfang` |
+| `type` | Channel such as `computer_use`, `browser_use`, `user_plugin`, or `openclaw` |
 | `status` | Lifecycle state |
 | `start_time`, `end_time` | ISO timestamps when available |
 | `lanlan_name` | Character owner |

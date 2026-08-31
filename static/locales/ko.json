@@ -2977,7 +2977,6 @@
             "enabled": "{{name}} 활성화됨",
             "disabled": "{{name}} 비활성화됨",
             "enableFailed": "{{name}} 활성화 실패",
-            "openfang": "전용 데스크톱",
             "userPluginAdapting": "사용자 플러그인(개발 중)",
             "openclawConnect": "OpenClaw",
             "openclawGuide": "OpenClaw 연동 가이드",
@@ -3107,8 +3106,7 @@
             "typeUserPlugin": "사용자 플러그인",
             "typeComputerUse": "컴퓨터 제어",
             "typeBrowserUse": "브라우저 제어",
-            "typeMCP": "MCP 도구",
-            "typeOpenFang": "전용 데스크톱"
+            "typeMCP": "MCP 도구"
         }
     },
     "vrm": {

@@ -589,7 +589,6 @@ async def test_set_agent_enabled_off_preserves_sub_flags(
     srv.Modules.agent_flags["browser_use_enabled"] = True
     srv.Modules.agent_flags["user_plugin_enabled"] = True
     srv.Modules.agent_flags["openclaw_enabled"] = True
-    srv.Modules.agent_flags["openfang_enabled"] = True
 
     await srv.agent_command({
         "command": "set_agent_enabled",
@@ -603,7 +602,6 @@ async def test_set_agent_enabled_off_preserves_sub_flags(
     assert srv.Modules.agent_flags["browser_use_enabled"] is True
     assert srv.Modules.agent_flags["user_plugin_enabled"] is True
     assert srv.Modules.agent_flags["openclaw_enabled"] is True
-    assert srv.Modules.agent_flags["openfang_enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -838,7 +836,7 @@ async def test_gate_fail_preserves_user_plugin_enabled(
     agent_state_isolation, isolated_intent_store: Path
 ):
     """Agent LLM gate failure (endpoint not configured) is the gate for
-    CU/BU/OpenClaw/OpenFang — but NOT user_plugin, which runs on its own
+    CU/BU/OpenClaw — but NOT user_plugin, which runs on its own
     plugin lifecycle and doesn't touch the agent LLM."""
     srv = agent_state_isolation
 
@@ -1369,13 +1367,13 @@ async def test_explicit_disable_always_persists_false_intent(
 
     srv = agent_state_isolation
     srv.Modules.analyzer_enabled = True
-    srv.Modules.agent_flags["openfang_enabled"] = True
+    srv.Modules.agent_flags["openclaw_enabled"] = True
 
     with patch.object(srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
-        await srv.set_agent_flags({"openfang_enabled": False})
+        await srv.set_agent_flags({"openclaw_enabled": False})
 
-    assert srv.Modules.agent_flags["openfang_enabled"] is False
-    assert ari.get_intent("openfang_enabled") is False
+    assert srv.Modules.agent_flags["openclaw_enabled"] is False
+    assert ari.get_intent("openclaw_enabled") is False
 
 
 # ---------------------------------------------------------------------------

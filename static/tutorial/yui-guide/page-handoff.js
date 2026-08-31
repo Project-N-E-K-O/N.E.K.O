@@ -1189,8 +1189,7 @@
             user_plugin_enabled: 'agent-user-plugin',
             computer_use_enabled: 'agent-keyboard',
             browser_use_enabled: 'agent-browser',
-            openclaw_enabled: 'agent-openclaw',
-            openfang_enabled: 'agent-openfang'
+            openclaw_enabled: 'agent-openclaw'
         };
 
         return sendAgentCommand('set_flag', {

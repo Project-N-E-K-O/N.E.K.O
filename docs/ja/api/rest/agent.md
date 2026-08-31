@@ -8,7 +8,7 @@
 
 ### `GET /api/agent/flags`
 
-マスタースイッチと Computer Use、Browser Use、ユーザープラグイン、OpenClaw、OpenFang のサブ機能を含む Agent Server の flags スナップショットを返します。プロキシ障害は `502` と `success: false` です。
+マスタースイッチと Computer Use、Browser Use、ユーザープラグイン、OpenClaw のサブ機能を含む Agent Server の flags スナップショットを返します。プロキシ障害は `502` と `success: false` です。
 
 ### `POST /api/agent/flags`
 
@@ -25,7 +25,7 @@ revision、flags、capabilities、notification 状態、タスク要約を含む
 | コマンド | 追加フィールド | 用途 |
 |---|---|---|
 | `set_agent_enabled` | `enabled`、任意の `profile` | マスターランタイム gate を切り替え |
-| `set_flag` | `key`、`value` | `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled`、`openclaw_enabled`、`openfang_enabled` のいずれかを切り替え |
+| `set_flag` | `key`、`value` | `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled`、`openclaw_enabled` のいずれかを切り替え |
 | `refresh_state` | なし | 新しい状態を返し、ブロードキャスト |
 
 `request_id` と `lanlan_name` は任意です。不明なコマンド/flag key は Agent Server が拒否し、上流/プロキシ障害は `502` です。

@@ -13,7 +13,7 @@ N.E.K.O 的 Agent 可以把任务交给用户插件、浏览器自动化、桌�
 | QwenPaw（兼容名 OpenClaw）接入 | 已实现适配层；服务本体是外部依赖 | `brain/openclaw_adapter.py`、`app/agent_server/channels/openclaw.py` |
 | 任务登记、状态与取消 | 已实现 | `app/agent_server/registry.py`、`app/agent_server/api_runtime.py` |
 | Browser Use / Computer Use 纠正反馈 | 已实现 | `brain/task_executor.py`、`app/agent_server/api_runtime.py` |
-| 将纠正自动扩展到 QwenPaw、OpenFang 或用户插件 | 未实现 | 若要支持，需要新增产品和数据边界设计 |
+| 将纠正自动扩展到 QwenPaw 或用户插件 | 未实现 | 若要支持，需要新增产品和数据边界设计 |
 
 Agent Server 当前实现为 `app/agent_server/` 包，不是单文件模块。源码引用应使用上表中的实际包模块。
 
@@ -32,10 +32,10 @@ Agent Server 当前实现为 `app/agent_server/` 包，不是单文件模块。�
 
 ### 非插件渠道共用一次评估
 
-`TaskExecutor` 会根据实际可用性动态组装 QwenPaw、OpenFang、Browser Use 和 Computer Use 的候选描述，并用一次 LLM 调用评估这些渠道。若结果同时选择多个渠道，当前固定优先级是：
+`TaskExecutor` 会根据实际可用性动态组装 QwenPaw、Browser Use 和 Computer Use 的候选描述，并用一次 LLM 调用评估这些渠道。若结果同时选择多个渠道，当前固定优先级是：
 
 ```text
-QwenPaw > OpenFang > Browser Use > Computer Use
+QwenPaw > Browser Use > Computer Use
 ```
 
 QwenPaw 的 `/clear`、`/new`、`/stop`、`/daemon approve` 还具有独立的魔法命令识别路径。普通自然语言任务仍走可用性检查和统一渠道评估。
@@ -62,7 +62,7 @@ Agent Server 的任务注册表保存在进程内。`app/agent_server/api_runtim
 POST /tasks/{task_id}/cancel
 ```
 
-取消行为按任务类型分派：Computer Use 设置取消信号，Browser Use 调用自身取消接口，OpenFang 和 QwenPaw/OpenClaw 转发远端停止请求。任务进入终态后，注册表会按 TTL 清理；它不是永久任务历史。
+取消行为按任务类型分派：Computer Use 设置取消信号，Browser Use 调用自身取消接口，QwenPaw/OpenClaw 转发远端停止请求。任务进入终态后，注册表会按 TTL 清理；它不是永久任务历史。
 
 取消是尽力而为的协作式停止。外部服务是否已经执行某个不可逆动作，取决于取消抵达前的实际状态，不能只根据本地 `cancelled` 标签推断。
 
@@ -112,7 +112,7 @@ POST /api/agent/tasks/{task_id}/correction
 
 以下内容目前只能作为建议，不能写成现状：
 
-- 对 QwenPaw、OpenFang、用户插件或具体 plugin `entry_id` 提交同类纠正；
+- 对 QwenPaw、用户插件或具体 plugin `entry_id` 提交同类纠正；
 - 自动从自然语言“你用错工具了”推断并提交纠正；
 - 提供纠正记录的管理 UI、导出、删除或多用户隔离策略；
 - 使用 embedding、向量数据库或角色持久记忆来检索纠正；

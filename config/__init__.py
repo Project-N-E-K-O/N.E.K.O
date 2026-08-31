@@ -57,8 +57,6 @@ from .network import (  # noqa: F401
     AGENT_MQ_PORT,
     MAIN_AGENT_EVENT_PORT,
     USER_PLUGIN_BASE,
-    OPENFANG_PORT,
-    OPENFANG_BASE_URL,
     INSTANCE_ID,
     AUTOSTART_CSRF_TOKEN,
     AUTOSTART_ALLOWED_ORIGINS,
@@ -552,9 +550,6 @@ __all__ = [
     'DEFAULT_TTS_MODEL_API_KEY',
     'DEFAULT_AGENT_MODEL_URL',
     'DEFAULT_AGENT_MODEL_API_KEY',
-    # OpenFang
-    'OPENFANG_PORT',
-    'OPENFANG_BASE_URL',
     # Memory evidence mechanism (RFC: docs/design/memory-evidence-rfc.md)
     'EVIDENCE_CONFIRMED_THRESHOLD',
     'EVIDENCE_PROMOTED_THRESHOLD',

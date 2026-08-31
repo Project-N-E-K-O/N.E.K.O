@@ -100,7 +100,6 @@ class ProactiveMixin:
                 'user_plugin_enabled',
                 'openclaw_enabled',
                 'openclaw_ready',
-                'openfang_enabled',
             ]:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]

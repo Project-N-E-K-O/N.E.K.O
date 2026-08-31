@@ -1039,60 +1039,6 @@ setup_dependencies() {
 }
 
 # 7. 服务启动优化
-# ── OpenFang (Rust A2A agent daemon) ──────────────────────────
-start_openfang_daemon() {
-    if ! command -v openfang &>/dev/null; then
-        echo "⚠️ OpenFang binary not found, skipping OpenFang daemon"
-        return 0
-    fi
-    echo "🚀 Starting OpenFang A2A daemon..."
-    cd /app
-
-    # OpenFang 工作目录（~neko/.openfang）
-    local OF_HOME="/home/neko/.openfang"
-    local OF_CONFIG="$OF_HOME/config.toml"
-
-    if [ ! -f "$OF_CONFIG" ]; then
-        echo "   Initializing OpenFang workspace..."
-        runuser -u neko -- openfang init 2>&1 || {
-            echo "⚠️ OpenFang init failed (non-critical)"
-        }
-        # 首次初始化时清除预装 agent（默认用 Groq 但用户无 key → 刷 heartbeat WARN）
-        if [ -d "$OF_HOME/agents" ]; then
-            echo "   Removing pre-installed agents (no Groq API key configured)..."
-            rm -rf "$OF_HOME/agents"
-        fi
-    fi
-
-    # 确保 A2A 协议已启用（N.E.K.O 通过 A2A 接口与 OpenFang 通信）
-    if [ -f "$OF_CONFIG" ]; then
-        if ! grep -q '^\s*\[a2a\]' "$OF_CONFIG" 2>/dev/null; then
-            echo "   Enabling A2A protocol in OpenFang config..."
-            printf '\n[a2a]\nenabled = true\n' >> "$OF_CONFIG"
-        fi
-    fi
-
-    local OF_PORT="${OPENFANG_PORT:-50051}"
-    echo "   Starting openfang daemon (API listen: 127.0.0.1:${OF_PORT})..."
-    OPENFANG_LISTEN="127.0.0.1:${OF_PORT}" runuser -u neko -- openfang start &
-    local of_pid=$!
-    PIDS+=("$of_pid")
-    echo "     OpenFang daemon PID: $of_pid"
-
-    # 等待健康检查
-    local of_retries=15
-    while [ $of_retries -gt 0 ]; do
-        if curl -sf "http://127.0.0.1:${OF_PORT}/api/health" >/dev/null 2>&1; then
-            echo "✅ OpenFang daemon is healthy"
-            return 0
-        fi
-        sleep 2
-        of_retries=$((of_retries - 1))
-    done
-    echo "⚠️ OpenFang health check timed out (continuing anyway)"
-    return 0
-}
-
 start_services() {
     echo "🚀 Starting N.E.K.O. services..."
     cd /app
@@ -1305,7 +1251,7 @@ warn_legacy_layout() {
             echo "         cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl"
             echo "     · 空 —— 此前跟的是旧版 README，其挂载目标从来对不上服务的实际"
             echo "       写入位置，数据只存在于旧容器里。若那个容器已被重建或删除，"
-            echo "       这部分数据无法找回；OpenFang 状态同理。"
+            echo "       这部分数据无法找回。"
             ;;
     esac
     echo "   详见 README「从旧版本升级」一节。全新安装可忽略本提示。"
@@ -1361,7 +1307,7 @@ main() {
     # 1000 的条目都改掉。与其想办法处理，不如直接不收 —— 想把数据放到别的磁盘，
     # 该在 compose 里把 neko-home 挂到那个位置，而不是在里面做软链。
     for _state_dir in /home/neko/.local /home/neko/.local/share \
-                      /home/neko/.local/share/N.E.K.O /home/neko/.openfang; do
+                      /home/neko/.local/share/N.E.K.O; do
         if [ -L "$_state_dir" ]; then
             echo "❌ $_state_dir 是符号链接，数据目录不支持这样放"
             echo "   启动时的属主修复会顺着它改到 /home/neko 之外的宿主路径上。"
@@ -1372,9 +1318,9 @@ main() {
     done
     unset _state_dir
 
-    mkdir -p /home/neko/.local/share/N.E.K.O /home/neko/.openfang
+    mkdir -p /home/neko/.local/share/N.E.K.O
     if ! chown -h 1000:1000 /home/neko /home/neko/.local /home/neko/.local/share \
-        || ! find /home/neko/.local/share/N.E.K.O /home/neko/.openfang \
+        || ! find /home/neko/.local/share/N.E.K.O \
                \( ! -uid 1000 -o ! -gid 1000 \) -exec chown -h 1000:1000 {} + ; then
         echo "❌ 无法把数据目录的属主改为 1000:1000（容器内的 neko）"
         echo "   宿主机的挂载可能不允许改属主 —— NFS 带 root_squash、CIFS 没带"
@@ -1382,9 +1328,6 @@ main() {
         echo "   数据目录写不进去会在启动之后才零散暴露，所以这里直接停。"
         exit 1
     fi
-
-    # 启动 OpenFang A2A 守护进程（编译在镜像中的 Rust 二进制）
-    start_openfang_daemon
 
     # 放在服务启动前打印：此时前面的初始化日志已经刷完，这条不会被淹掉
     warn_legacy_layout

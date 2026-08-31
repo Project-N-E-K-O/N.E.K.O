@@ -56,7 +56,6 @@ The authoritative state is exposed through Main Server proxies under `/api/agent
 | `browser_use_enabled` | Browser automation |
 | `user_plugin_enabled` | Installed user-plugin execution |
 | `openclaw_enabled` | OpenClaw standalone-agent channel |
-| `openfang_enabled` | OpenFang multi-agent channel |
 
 Managers and the Agent Server initialize these switches off. Persisted runtime intent can be restored after the first real `greeting_check`, so “off at construction” does not mean every new page load resets the user's choice.
 
@@ -67,7 +66,7 @@ Enabling a switch is not enough on its own: API readiness and channel capability
 For non-plugin channels, the first executable result in this order wins:
 
 ```python
-_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]
+_CHANNEL_PRIORITY = ["qwenpaw", "browser_use", "computer_use"]
 ```
 
 `qwenpaw` maps to the OpenClaw adapter. User plugins are assessed separately and are not an item in `_CHANNEL_PRIORITY`.

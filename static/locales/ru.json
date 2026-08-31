@@ -2977,7 +2977,6 @@
             "enabled": "{{name}} Включен",
             "disabled": "{{name}} Отключен",
             "enableFailed": "{{name}} Ошибка включения",
-            "openfang": "Её рабочий стол",
             "userPluginAdapting": "Пользовательский плагин (В разработке)",
             "openclawConnect": "OpenClaw",
             "openclawGuide": "Руководство по OpenClaw",
@@ -3107,8 +3106,7 @@
             "typeUserPlugin": "Пользовательский плагин",
             "typeComputerUse": "Управление клавиатурой/мышью",
             "typeBrowserUse": "Управление браузером",
-            "typeMCP": "Инструмент MCP",
-            "typeOpenFang": "Её рабочий стол"
+            "typeMCP": "Инструмент MCP"
         }
     },
     "vrm": {

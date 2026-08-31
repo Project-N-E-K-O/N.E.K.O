@@ -90,7 +90,6 @@ def _install_agent_modules(monkeypatch: pytest.MonkeyPatch, executor: Any) -> No
             "browser_use_enabled": False,
             "user_plugin_enabled": True,
             "openclaw_enabled": False,
-            "openfang_enabled": False,
         },
         raising=False,
     )

@@ -23,9 +23,6 @@ The agent server also exchanges asynchronous session and task events with the ma
 | `GET` | `/browser_use/availability` | Browser Use dependency/model readiness |
 | `POST` | `/browser_use/run` | Run one browser instruction; body requires `instruction` |
 | `GET` | `/openclaw/availability` | OpenClaw/QwenPaw capability check |
-| `GET` | `/openfang/availability` | OpenFang capability check |
-| `POST` | `/openfang/run` | Start a tracked OpenFang task |
-| `POST` | `/openfang/sync_config` | Refresh the OpenFang runtime configuration |
 | `GET` | `/mcp/availability` | Compatibility response: MCP has been removed from the `brain/` layer and is always unavailable here |
 | `POST` | `/plugin/execute` | Directly schedule a user-plugin entry; requires `plugin_id`, optional `entry_id`, `args`, character, and conversation IDs |
 | `GET` | `/tasks` | List task-registry snapshots |
@@ -59,7 +56,6 @@ Events include session lifecycle/intent-restore signals, analyze requests, task 
 | Computer Use | Screenshot-guided mouse and keyboard execution |
 | Browser Use | Browser automation through the optional `browser-use` dependency |
 | OpenClaw | Delegation to the OpenClaw/QwenPaw standalone agent channel |
-| OpenFang | Delegation to the OpenFang standalone agent channel |
 | User plugins | Direct execution through the plugin runtime |
 
 MCP calls are no longer implemented in `brain/`; installable MCP integration lives under `plugin/plugins/mcp_adapter/`.

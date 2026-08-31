@@ -2686,7 +2686,6 @@ async def test_task_executor_routes_galgame_continue_phrase_through_plugin_asses
                 "browser_use_enabled": False,
                 "user_plugin_enabled": True,
                 "openclaw_enabled": False,
-                "openfang_enabled": False,
             },
         )
 
@@ -2748,7 +2747,6 @@ async def test_task_executor_routes_galgame_mode_phrases_through_plugin_assessme
                 "browser_use_enabled": False,
                 "user_plugin_enabled": True,
                 "openclaw_enabled": False,
-                "openfang_enabled": False,
             },
         )
         companion_result = await executor.analyze_and_execute(
@@ -2758,7 +2756,6 @@ async def test_task_executor_routes_galgame_mode_phrases_through_plugin_assessme
                 "browser_use_enabled": False,
                 "user_plugin_enabled": True,
                 "openclaw_enabled": False,
-                "openfang_enabled": False,
             },
         )
 
@@ -3317,7 +3314,6 @@ async def test_task_executor_routes_openclaw_as_independent_execution_method():
     executor = object.__new__(DirectTaskExecutor)
     executor.computer_use = None
     executor.browser_use = None
-    executor.openfang = None
     executor.plugin_list = []
     executor._external_plugin_provider = None
 
@@ -3338,7 +3334,6 @@ async def test_task_executor_routes_openclaw_as_independent_execution_method():
                 "browser_use_enabled": False,
                 "user_plugin_enabled": False,
                 "openclaw_enabled": True,
-                "openfang_enabled": False,
             },
         )
 
@@ -3356,7 +3351,6 @@ async def test_task_executor_routes_openclaw_with_image_attachments():
     executor = object.__new__(DirectTaskExecutor)
     executor.computer_use = None
     executor.browser_use = None
-    executor.openfang = None
     executor.plugin_list = []
     executor._external_plugin_provider = None
 
@@ -3379,7 +3373,6 @@ async def test_task_executor_routes_openclaw_with_image_attachments():
                 "browser_use_enabled": False,
                 "user_plugin_enabled": False,
                 "openclaw_enabled": True,
-                "openfang_enabled": False,
             },
         )
 
@@ -3495,7 +3488,6 @@ async def test_task_executor_magic_intent_routes_to_openclaw_before_unified_asse
     executor = object.__new__(DirectTaskExecutor)
     executor.computer_use = None
     executor.browser_use = None
-    executor.openfang = None
     executor.plugin_list = []
     executor._external_plugin_provider = None
 
@@ -3513,7 +3505,6 @@ async def test_task_executor_magic_intent_routes_to_openclaw_before_unified_asse
                 "browser_use_enabled": False,
                 "user_plugin_enabled": False,
                 "openclaw_enabled": True,
-                "openfang_enabled": False,
             },
         )
 
@@ -3729,16 +3720,6 @@ def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
     assert '_set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")' in func_src
 
 
-def test_openfang_startup_capability_transitions_emit_status_snapshots():
-    source, func = _find_agent_server_function("startup", ast.AsyncFunctionDef)
-    func_src = ast.get_source_segment(source, func) or ""
-    init_src = func_src.split("async def _init_openfang_background():", 1)[1].split(
-        "_openfang_task = asyncio.create_task", 1
-    )[0]
-
-    assert init_src.count("await _emit_agent_status_update()") == 3
-
-
 def test_agent_popup_refetches_snapshot_after_openclaw_probe_settles():
     source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
     popup_src = source.split(
@@ -3785,7 +3766,6 @@ def test_agent_popup_state_sync_includes_pngtuber_prefix():
         "keyboard",
         "browser",
         "user-plugin",
-        "openfang",
         "openclaw",
         "status",
     ]:
@@ -3796,7 +3776,6 @@ def test_agent_popup_state_sync_includes_pngtuber_prefix():
         "keyboard",
         "browser",
         "user-plugin",
-        "openfang",
         "openclaw",
         "status",
     ]:

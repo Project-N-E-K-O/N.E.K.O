@@ -182,7 +182,7 @@ docker run -d \
 
 建议将完整的用户主目录挂载到宿主机：
 
-- `/home/neko` - 配置、记忆、角色、用户插件及插件数据、插件市场 OAuth 登录状态、OpenFang 状态和 TLS 证书/私钥
+- `/home/neko` - 配置、记忆、角色、用户插件及插件数据、插件市场 OAuth 登录状态和 TLS 证书/私钥
 - `/app/logs` - 日志
 
 示例：

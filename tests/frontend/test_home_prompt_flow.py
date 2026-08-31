@@ -1137,7 +1137,6 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state(
                         browser_use_enabled: false,
                         user_plugin_enabled: false,
                         openclaw_enabled: false,
-                        openfang_enabled: false,
                     },
                 });
             }

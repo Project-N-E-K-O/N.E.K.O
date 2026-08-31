@@ -38,9 +38,7 @@ from .api_shared import (  # noqa: F401
     Modules,
     OPENCLAW_ENABLE_CHECK_ATTEMPTS,
     OPENCLAW_ENABLE_CHECK_INTERVAL,
-    OPENFANG_BASE_URL,
     OpenClawAdapter,
-    OpenFangAdapter,
     Optional,
     PLUGIN_NAME_CACHE_TTL,
     REDACTED_USER_TURN_MARKER,
@@ -80,7 +78,6 @@ from .api_shared import (  # noqa: F401
     _ensure_browser_use_adapter,
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
-    _extract_tool_intent_as_text,
     _fire_agent_llm_connectivity_check,
     _fire_user_plugin_capability_check,
     _get_internal_correction_context,
@@ -100,9 +97,6 @@ from .api_shared import (  # noqa: F401
     _openclaw_pending,
     _openclaw_reason_code,
     _openclaw_reason_text,
-    _patch_malformed_tool_calls,
-    _patch_openai_response,
-    _patch_usage,
     _plugin_name_cache_lock,
     _plugin_terminal_status,
     _public_task_info,
@@ -541,14 +535,6 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 conversation_id=conversation_id,
                 trigger_user_msg_sig=trigger_user_msg_sig,
             )
-        elif result.execution_method == 'openfang':
-            await channels.openfang.dispatch(
-                result,
-                messages=messages,
-                lanlan_name=lanlan_name,
-                conversation_id=conversation_id,
-                trigger_user_msg_sig=trigger_user_msg_sig,
-            )
         else:
             logger.info(f"[TaskExecutor] No suitable execution method: {result.reason}")
 
@@ -611,83 +597,8 @@ async def startup():
         await _start_embedded_user_plugin_server()
     except Exception as e:
         logger.warning(f"[Agent] Failed to start embedded user plugin server: {e}")
-    # ── OpenFang 后台初始化 (仅通信层，进程由 Electron 管理) ──
-    async def _init_openfang_background():
-        """Wait for OpenFang daemon connectivity + sync config + register the executor agent."""
-        try:
-            adapter = OpenFangAdapter(base_url=OPENFANG_BASE_URL)
-            Modules.openfang = adapter
-            Modules.task_executor.openfang = adapter
-
-            # 等待 OpenFang 就绪 (由 Electron 并行启动，通常 <1s)
-            # check_connectivity 是同步 httpx 调用，用 to_thread 避免阻塞 event loop
-            for _attempt in range(30):
-                ok = await asyncio.to_thread(adapter.check_connectivity)
-                if ok:
-                    break
-                await asyncio.sleep(1)
-
-            if not adapter.init_ok:
-                logger.warning("[OpenFang] not reachable after 30s")
-                _set_capability("openfang", False, "OPENFANG_DAEMON_UNREACHABLE")
-                await _emit_agent_status_update()
-                return
-
-            # 同步 API Key + 写 config.toml（允许失败 — 用户可能尚未配置 Key）
-            try:
-                await adapter.sync_config()
-            except Exception as e:
-                logger.warning("[OpenFang] sync_config failed (non-fatal): %s", e)
-
-            # 等待 OpenFang 检测并 reload config.toml
-            # OpenFang 用文件监听检测 config 变化，但 reload 可能有延迟
-            try:
-                import os as _os
-                _home = _os.environ.get("HOME") or _os.environ.get("USERPROFILE") or ""
-                _cfg = _os.path.join(_home, ".openfang", "config.toml")
-                if _os.path.exists(_cfg):
-                    _os.utime(_cfg, None)  # touch to trigger fswatch
-            except Exception:
-                logger.debug("[OpenFang] failed to touch config file for fswatch", exc_info=True)
-            await asyncio.sleep(5)
-
-            # 拉取可用工具列表
-            try:
-                await adapter.fetch_tools_list()
-            except Exception as e:
-                logger.warning("[OpenFang] fetch_tools_list failed (non-fatal): %s", e)
-
-            # 注册无人格执行 Agent（允许失败 — 连通即可用）
-            # manifest 中直接带 api_key + provider=openai，不依赖环境变量
-            try:
-                agent_id = await adapter.push_agent_manifest()
-                # agent_id 是 daemon 返回的标识符（非用户/LLM 原文），可进 logger
-                logger.debug(
-                    "[OpenFang] push_agent_manifest returned: %s (executor_agent_id=%s)",
-                    agent_id, adapter._executor_agent_id,
-                )
-            except Exception as e:
-                import traceback
-                logger.warning("[OpenFang] push_agent_manifest failed (non-fatal): %s", e)
-                logger.debug("[OpenFang] push_agent_manifest traceback:\n%s", traceback.format_exc())
-                agent_id = None
-
-            # 只要 daemon 连通就标记 ready，不强制要求 agent 注册成功
-            _set_capability("openfang", True, "")
-            logger.info("[OpenFang] Ready (init_ok=%s, agent=%s, tools=%d)",
-                        adapter.init_ok, agent_id, adapter._cached_tools_count or 0)
-            await _emit_agent_status_update()
-        except Exception as exc:
-            logger.error("[OpenFang] background init failed: %s", exc)
-            _set_capability("openfang", False, str(exc))
-            await _emit_agent_status_update()
-
     # BrowserUse stays unloaded until its toggle, availability endpoint, or
-    # direct run is requested.  OpenFang remains an independent background
-    # connectivity task because Electron owns that external daemon lifecycle.
-    _openfang_task = asyncio.create_task(_init_openfang_background())
-    Modules._persistent_tasks.add(_openfang_task)
-    _openfang_task.add_done_callback(Modules._persistent_tasks.discard)
+    # direct run is requested.
 
     # Both CUA and BrowserUse share the agent LLM — default to "not connected"
     # and probe in background.  The single check updates both capability caches.
@@ -697,7 +608,6 @@ async def startup():
     # is NOT started here — it syncs with user_plugin_enabled (default OFF).
     # The lifecycle starts on-demand when the user toggles the plugin flag ON.
     _set_capability("user_plugin", True, "")
-    # OpenFang capability 由 _init_openfang_background() 管理，不在此处覆盖
     _llm_probe_task = asyncio.create_task(_fire_agent_llm_connectivity_check())
     Modules._persistent_tasks.add(_llm_probe_task)
     _llm_probe_task.add_done_callback(Modules._persistent_tasks.discard)
@@ -1281,24 +1191,6 @@ async def cancel_task(task_id: str):
                     Modules.browser_use.cancel(), label=f"browser_use:{task_id}"
                 )
             Modules.active_browser_use_task_id = None
-    elif task_type == "openfang":
-        if Modules.openfang:
-            # unregister_local_task must run AFTER cancel_running, not before:
-            # OpenFangAdapter.cancel_running looks up the remote task_id in
-            # _active_tasks and no-ops if missing. Unregistering first would
-            # turn the remote /cancel call into a silent no-op and leave the
-            # VM task running even though we report success locally.
-            async def _openfang_cancel_then_unregister(
-                adapter=Modules.openfang, tid=task_id
-            ):
-                try:
-                    await adapter.cancel_running(tid)
-                finally:
-                    adapter.unregister_local_task(tid)
-            _spawn_background_cancel(
-                _openfang_cancel_then_unregister(),
-                label=f"openfang:{task_id}",
-            )
     elif task_type == "openclaw":
         if Modules.openclaw:
             _spawn_background_cancel(

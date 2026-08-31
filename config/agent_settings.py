@@ -26,7 +26,7 @@ TASK_DETAIL_MAX_TOKENS = 200
 """任务详情字段（detail / desc）回流给 LLM 的 token 上限。
 - 用途：agent_server._sanitize / result_parser._truncate / brain/
   task_executor 等多处 detail 字段统一档位。
-- 上游：plugin 返回值 / ComputerUse 子任务结果 / OpenFang 输出。"""
+- 上游：plugin 返回值 / ComputerUse 子任务结果。"""
 
 TASK_SUMMARY_MAX_TOKENS = 400
 """任务摘要字段（summary）回流给 LLM 的 token 上限。
@@ -140,9 +140,7 @@ TASK_TRACKER_DETAIL_MAX_CHARS = 300
   所以这条字段实际上会进 LLM 上下文。三层防御链路：
     1. 入站 char-cap = 本常量（300）
     2. record_completed 内部 _tt(detail, TASK_DETAIL_MAX_TOKENS)（200 token）
-    3. inject 渲染时再 char-cap = TASK_TRACKER_INJECT_DETAIL_MAX_CHARS（300）
-- 注意：成功路径上 OpenFang 已用 _tt(_track_detail, TASK_DETAIL_MAX_TOKENS)
-  走 token-cap，那条路径不在本常量管辖范围。"""
+    3. inject 渲染时再 char-cap = TASK_TRACKER_INJECT_DETAIL_MAX_CHARS（300）"""
 
 TASK_TRACKER_INJECT_DETAIL_MAX_CHARS = 300
 """AgentTaskTracker.inject 渲染 detail 进 LLM system 消息时的最终 char-cap。
@@ -204,7 +202,7 @@ AGENT_PLUGIN_COARSE_MAX_TOKENS = 300
 
 AGENT_UNIFIED_ASSESS_MAX_TOKENS = 600
 """Unified channel assessment 的 max_completion_tokens。
-- 用途：判断走哪条执行通道（QwenPaw / OpenFang / BrowserUse / ComputerUse）。
+- 用途：判断走哪条执行通道（QwenPaw / BrowserUse / ComputerUse）。
 - 上游：LLM 输出。"""
 
 AGENT_PLUGIN_FULL_MAX_TOKENS = 500

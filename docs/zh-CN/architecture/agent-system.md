@@ -56,7 +56,6 @@ Agent → 主服务器的结果投递没有 HTTP 降级路径。ZeroMQ 桥不可
 | `browser_use_enabled` | 浏览器自动化 |
 | `user_plugin_enabled` | 已安装用户插件执行 |
 | `openclaw_enabled` | OpenClaw 独立智能体通道 |
-| `openfang_enabled` | OpenFang 多智能体通道 |
 
 Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `greeting_check` 后可以恢复持久化的运行时意图，因此“构造时关闭”不表示每次刷新页面都会重置用户选择。
 
@@ -67,7 +66,7 @@ Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `g
 对于非插件通道，第一个可执行的判断结果按以下顺序胜出：
 
 ```python
-_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]
+_CHANNEL_PRIORITY = ["qwenpaw", "browser_use", "computer_use"]
 ```
 
 `qwenpaw` 映射到 OpenClaw 适配器。用户插件单独判断，不属于 `_CHANNEL_PRIORITY`。

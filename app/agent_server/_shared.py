@@ -43,7 +43,6 @@ try:
     from brain.computer_use import ComputerUseAdapter
     from brain.browser_use_adapter import BrowserUseAdapter
     from brain.openclaw_adapter import OpenClawAdapter
-    from brain.openfang_adapter import OpenFangAdapter
     from brain.deduper import TaskDeduper
     from brain.task_executor import DirectTaskExecutor
     from brain.agent_session import get_session_manager  # noqa: F401  (re-exported via the package facade)
@@ -63,7 +62,6 @@ class Modules:
     computer_use: ComputerUseAdapter | None = None
     browser_use: BrowserUseAdapter | None = None
     openclaw: OpenClawAdapter | None = None
-    openfang: OpenFangAdapter | None = None
     deduper: TaskDeduper | None = None
     task_executor: DirectTaskExecutor | None = None
     user_plugin_app: FastAPI | None = None
@@ -111,7 +109,6 @@ class Modules:
         "browser_use_enabled": False,
         "user_plugin_enabled": False,
         "openclaw_enabled": False,
-        "openfang_enabled": False,
     }
     # Notification queue for frontend (one-time messages)
     notification: Optional[str] = None
@@ -133,7 +130,6 @@ class Modules:
         "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "user_plugin": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "openclaw": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
-        "openfang": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
     }
     _background_tasks: ClassVar[set] = set()
     _persistent_tasks: ClassVar[set] = set()
@@ -197,8 +193,6 @@ def _set_capability(name: str, ready: bool, reason: str = "") -> None:
             return "AGENT_NO_PLUGINS_FOUND"
         if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
             return "AGENT_PLUGIN_SERVER_ERROR"
-        if "openfang" in lower or "daemon" in lower:
-            return "AGENT_OPENFANG_DAEMON_UNREACHABLE"
         if "unreachable" in lower or "连接失败" in text or "connectivity" in lower:
             return "AGENT_LLM_UNREACHABLE"
         return "AGENT_LLM_UNREACHABLE"

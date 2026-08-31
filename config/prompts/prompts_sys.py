@@ -153,7 +153,6 @@ RESULT_PARSER_PHRASES = {
     'openclaw_cancelled':  {'zh': 'OpenClaw(QwenPaw) 任务已取消', 'zh-TW': 'OpenClaw(QwenPaw) 任務已取消', 'en': 'OpenClaw (QwenPaw) task cancelled', 'ja': 'OpenClaw(QwenPaw) タスクがキャンセルされました', 'ko': 'OpenClaw(QwenPaw) 작업 취소됨', 'ru': 'Задача OpenClaw (QwenPaw) отменена', 'es': 'Tarea de OpenClaw (QwenPaw) cancelada', 'pt': 'Tarefa do OpenClaw (QwenPaw) cancelada'},
     'openclaw_dispatch_failed': {'zh': 'OpenClaw(QwenPaw) 任务分发失败', 'zh-TW': 'OpenClaw(QwenPaw) 任務派送失敗', 'en': 'OpenClaw (QwenPaw) task dispatch failed', 'ja': 'OpenClaw(QwenPaw) タスク配信失敗', 'ko': 'OpenClaw(QwenPaw) 작업 전달 실패', 'ru': 'Ошибка отправки задачи OpenClaw (QwenPaw)', 'es': 'Falló el envío de la tarea de OpenClaw (QwenPaw)', 'pt': 'Falha ao despachar a tarefa do OpenClaw (QwenPaw)'},
     'bu_cancelled':        {'zh': '你的任务"{desc}"已取消', 'zh-TW': '你的任務「{desc}」已取消', 'en': 'Your task "{desc}" cancelled', 'ja': 'タスク「{desc}」がキャンセルされました', 'ko': '작업 "{desc}" 취소됨', 'ru': 'Ваша задача «{desc}» отменена', 'es': 'Tu tarea "{desc}" fue cancelada', 'pt': 'Sua tarefa "{desc}" foi cancelada'},
-    'of_cancelled':        {'zh': '虚拟机任务 "{desc}" 已取消', 'zh-TW': '虛擬機任務「{desc}」已取消', 'en': 'VM task "{desc}" cancelled', 'ja': 'VM タスク「{desc}」がキャンセルされました', 'ko': 'VM 작업 "{desc}" 취소됨', 'ru': 'Задача ВМ «{desc}» отменена', 'es': 'Tarea de VM "{desc}" cancelada', 'pt': 'Tarefa de VM "{desc}" cancelada'},
 }
 
 # ---------- 语音会话初始 prompt ----------

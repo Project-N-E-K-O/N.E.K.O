@@ -232,37 +232,6 @@ CHANNEL_DESC_QWENPAW = {
            "(pesquisa em várias etapas, fluxos web complexos). O mais lento e caro, mas o mais poderoso."),
 }
 
-CHANNEL_DESC_OPENFANG = {
-    'zh': ("- **openfang**: 本地 WASM 沙箱多 Agent 系统。"
-           "适合需要工具编排的复合任务（数据处理、代码执行、多步思考、多维检索）。"
-           "比浏览器慢但功能强大。不适合需要屏幕/GUI 交互的任务。"),
-    'zh-TW': ("- **openfang**: 本機 WASM 沙箱多 Agent 系統。"
-              "適合需要工具編排的複合任務（資料處理、程式碼執行、多步驟思考、多維度檢索）。"
-              "比瀏覽器慢但功能強大。不適合需要螢幕/GUI 互動的任務。"),
-    'en': ("- **openfang**: Local WASM-sandboxed multi-agent system. "
-           "Good for compound tasks requiring tool orchestration (data processing, "
-           "code execution, multi-step reasoning, multi-dimensional retrieval). "
-           "Slower than browser but very capable. NOT suitable for tasks requiring screen/GUI interaction."),
-    'ja': ("- **openfang**: ローカルWASMサンドボックス型マルチエージェントシステム。"
-           "ツール連携が必要な複合タスク（データ処理、コード実行、多段階推論、多次元検索）に適。"
-           "ブラウザより遅いが非常に高機能。画面/GUI操作が必要なタスクには不向き。"),
-    'ko': ("- **openfang**: 로컬 WASM 샌드박스 멀티 에이전트 시스템. "
-           "도구 오케스트레이션이 필요한 복합 작업(데이터 처리, 코드 실행, 다단계 추론, 다차원 검색)에 적합. "
-           "브라우저보다 느리지만 매우 강력. 화면/GUI 상호작용이 필요한 작업에는 부적합."),
-    'ru': ("- **openfang**: Локальная мультиагентная WASM-песочница. "
-           "Подходит для составных задач с оркестрацией инструментов (обработка данных, "
-           "выполнение кода, многоэтапное рассуждение, многомерный поиск). "
-           "Медленнее браузера, но очень функционален. НЕ подходит для задач с экраном/GUI."),
-    'es': ("- **openfang**: Sistema multi-Agent local en sandbox WASM. "
-           "Bueno para tareas compuestas que requieren orquestación de herramientas (procesamiento de datos, "
-           "ejecución de código, razonamiento de varios pasos, recuperación multidimensional). "
-           "Más lento que el navegador pero muy capaz. NO sirve para tareas que requieren pantalla/GUI."),
-    'pt': ("- **openfang**: Sistema multi-Agent local em sandbox WASM. "
-           "Bom para tarefas compostas que exigem orquestração de ferramentas (processamento de dados, "
-           "execução de código, raciocínio em várias etapas, recuperação multidimensional). "
-           "Mais lento que o navegador, mas muito capaz. NÃO serve para tarefas que exigem tela/GUI."),
-}
-
 CHANNEL_DESC_BROWSER_USE = {
     'zh': ("- **browser_use**: 本地浏览器自动化。"
            "快速且经济，适合简单网页交互：打开 URL、填写网页表单、网页搜索、从网络下载。"

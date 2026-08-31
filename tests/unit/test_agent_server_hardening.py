@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """Regression tests for the agent_server hardening follow-up (post PR #2265).
 
-Covers the four pre-existing defects surfaced by review on the package split:
-1. ``_patch_usage`` raised TypeError on explicit JSON null token fields.
-2. ``plugin_execute_direct``'s ``_run_plugin`` left the registry entry stuck
+Covers the pre-existing defects surfaced by review on the package split:
+1. ``plugin_execute_direct``'s ``_run_plugin`` left the registry entry stuck
    at "running" when result parsing raised inside the inner try.
-3. ``_start_embedded_user_plugin_server`` left stale server/thread handles on
+2. ``_start_embedded_user_plugin_server`` left stale server/thread handles on
    startup failure, turning later start attempts into silent no-ops.
-4. The MCP channel failure branch logged raw ``result.error`` text instead of
+3. The MCP channel failure branch logged raw ``result.error`` text instead of
    metadata-only logging (privacy convention).
 """
 
@@ -25,60 +24,7 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# 1. _patch_usage: explicit nulls must not raise and must be zero-filled
-# ---------------------------------------------------------------------------
-
-
-def test_patch_usage_tolerates_explicit_null_token_fields():
-    from app.agent_server.channels.openfang import _patch_usage
-
-    data = {"usage": {"prompt_tokens": None, "completion_tokens": None}}
-    _patch_usage(data)
-    assert data["usage"] == {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-    }
-
-
-def test_patch_usage_recomputes_total_from_partial_nulls():
-    from app.agent_server.channels.openfang import _patch_usage
-
-    data = {"usage": {"prompt_tokens": 3, "completion_tokens": None, "total_tokens": None}}
-    _patch_usage(data)
-    assert data["usage"] == {
-        "prompt_tokens": 3,
-        "completion_tokens": 0,
-        "total_tokens": 3,
-    }
-
-
-def test_patch_usage_fills_missing_usage_object():
-    from app.agent_server.channels.openfang import _patch_usage
-
-    data = {"usage": None}
-    _patch_usage(data)
-    assert data["usage"] == {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-    }
-
-
-def test_patch_usage_keeps_existing_values():
-    from app.agent_server.channels.openfang import _patch_usage
-
-    data = {"usage": {"prompt_tokens": 5, "completion_tokens": 7}}
-    _patch_usage(data)
-    assert data["usage"] == {
-        "prompt_tokens": 5,
-        "completion_tokens": 7,
-        "total_tokens": 12,
-    }
-
-
-# ---------------------------------------------------------------------------
-# 2. plugin_execute_direct: parse failure must not strand status="running"
+# 1. plugin_execute_direct: parse failure must not strand status="running"
 # ---------------------------------------------------------------------------
 
 

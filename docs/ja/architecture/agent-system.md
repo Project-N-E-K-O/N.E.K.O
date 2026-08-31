@@ -56,7 +56,6 @@ Agent → Main の結果配信には HTTP フォールバックがありませ�
 | `browser_use_enabled` | ブラウザ自動操作 |
 | `user_plugin_enabled` | インストール済みユーザープラグイン実行 |
 | `openclaw_enabled` | OpenClaw スタンドアロンチャネル |
-| `openfang_enabled` | OpenFang マルチエージェントチャネル |
 
 Manager と Agent Server は構築時にすべてオフです。ただし最初の実ユーザー `greeting_check` 後に永続化された runtime intent を復元できるため、ページ更新のたびに設定がリセットされるわけではありません。
 
@@ -67,7 +66,7 @@ Manager と Agent Server は構築時にすべてオフです。ただし最初�
 非プラグインチャネルでは、実行可能な最初の結果が次の順序で選ばれます。
 
 ```python
-_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]
+_CHANNEL_PRIORITY = ["qwenpaw", "browser_use", "computer_use"]
 ```
 
 `qwenpaw` は OpenClaw アダプターに対応します。ユーザープラグインは別経路で判定され、`_CHANNEL_PRIORITY` には含まれません。

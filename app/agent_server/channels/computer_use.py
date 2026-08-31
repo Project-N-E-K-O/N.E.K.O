@@ -43,7 +43,7 @@ async def _run_computer_use_task(
     instruction: str,
 ) -> None:
     """Run a computer-use task in a thread pool; emit results directly via ZeroMQ."""
-    # Telemetry：按 agent 类型计使用量（cua/browser/plugin/openclaw/openfang），
+    # Telemetry：按 agent 类型计使用量（cua/browser/plugin/openclaw），
     # 看哪类 agent 真被用、用多少。best-effort 不阻塞 agent 执行。
     try:
         from utils.instrument import counter as _ic

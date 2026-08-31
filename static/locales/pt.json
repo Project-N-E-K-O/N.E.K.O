@@ -2977,7 +2977,6 @@
             "enabled": "{{name}} Habilitado",
             "disabled": "{{name}} Desativado",
             "enableFailed": "{{name}} Falha na ativação",
-            "openfang": "Sua área de trabalho",
             "userPluginAdapting": "Plug-in do usuário (desenvolvimento)",
             "openclawConnect": "OpenClaw",
             "openclawGuide": "Guia de configuração do OpenClaw",
@@ -3107,8 +3106,7 @@
             "typeUserPlugin": "Plug-in do usuário",
             "typeComputerUse": "Uso do computador",
             "typeBrowserUse": "Controle do navegador",
-            "typeMCP": "Ferramenta MCP",
-            "typeOpenFang": "Sua área de trabalho"
+            "typeMCP": "Ferramenta MCP"
         }
     },
     "vrm": {

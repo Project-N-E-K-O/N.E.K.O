@@ -48,7 +48,7 @@ features:
     linkText: How it works
   - icon: 🤖
     title: Agent Framework
-    details: Optional background tasks through enabled and ready Computer Use, Browser Use, user-plugin, OpenClaw, and OpenFang channels. Individual tasks and all active tasks can be cancelled.
+    details: Optional background tasks through enabled and ready Computer Use, Browser Use, user-plugin, and OpenClaw channels. Individual tasks and all active tasks can be cancelled.
     link: /architecture/agent-system
     linkText: Explore agents
   - icon: 🔌

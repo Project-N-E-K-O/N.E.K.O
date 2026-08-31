@@ -13,7 +13,7 @@ N.E.K.O can route Agent tasks to user plugins, browser automation, desktop autom
 | QwenPaw integration under the compatibility name OpenClaw | Adapter implemented; service is external | `brain/openclaw_adapter.py`, `app/agent_server/channels/openclaw.py` |
 | Task registry, state, and cancellation | Implemented | `app/agent_server/registry.py`, `app/agent_server/api_runtime.py` |
 | Browser Use / Computer Use correction feedback | Implemented | `brain/task_executor.py`, `app/agent_server/api_runtime.py` |
-| Equivalent correction for QwenPaw, OpenFang, or user plugins | Not implemented | Requires a new product and data-boundary design |
+| Equivalent correction for QwenPaw or user plugins | Not implemented | Requires a new product and data-boundary design |
 
 Agent Server is implemented as the `app/agent_server/` package, not a single-file monolith. Use the package modules listed above as source references.
 
@@ -32,10 +32,10 @@ Runtime `entry_id` comes from `@plugin_entry(id=...)` or dynamic entry registrat
 
 ### Non-plugin channels share one assessment
 
-`TaskExecutor` dynamically includes only available QwenPaw, OpenFang, Browser Use, and Computer Use channels in one LLM assessment. If more than one result says it can execute, the fixed priority is:
+`TaskExecutor` dynamically includes only available QwenPaw, Browser Use, and Computer Use channels in one LLM assessment. If more than one result says it can execute, the fixed priority is:
 
 ```text
-QwenPaw > OpenFang > Browser Use > Computer Use
+QwenPaw > Browser Use > Computer Use
 ```
 
 QwenPaw `/clear`, `/new`, `/stop`, and `/daemon approve` requests also have a dedicated magic-command classification path. Ordinary tasks still require availability checks and unified assessment.
@@ -61,7 +61,7 @@ Agent Server keeps its task registry in process. `app/agent_server/api_runtime.p
 POST /tasks/{task_id}/cancel
 ```
 
-Cancellation is dispatched by task type: Computer Use receives a cancellation signal, Browser Use calls its cancel operation, and OpenFang or QwenPaw/OpenClaw forwards a remote stop request. Terminal task records are removed after the registry TTL; this is not a permanent task history.
+Cancellation is dispatched by task type: Computer Use receives a cancellation signal, Browser Use calls its cancel operation, and QwenPaw/OpenClaw forwards a remote stop request. Terminal task records are removed after the registry TTL; this is not a permanent task history.
 
 Cancellation is cooperative and best effort. A local `cancelled` status cannot prove that an external service had not already performed an irreversible action.
 
@@ -103,7 +103,7 @@ Before unified channel assessment, the code performs lightweight keyword matchin
 
 The following are proposals, not current behavior:
 
-- correction feedback for QwenPaw, OpenFang, user plugins, or a specific plugin `entry_id`;
+- correction feedback for QwenPaw, user plugins, or a specific plugin `entry_id`;
 - automatically turning natural-language criticism into a correction submission;
 - a UI to review, export, delete, or partition corrections by user;
 - embedding/vector or character-memory retrieval for corrections;

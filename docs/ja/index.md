@@ -48,7 +48,7 @@ features:
     linkText: 仕組みを見る
   - icon: 🤖
     title: エージェントフレームワーク
-    details: 有効化され利用可能な Computer Use、Browser Use、ユーザープラグイン、OpenClaw、OpenFang チャンネルで任意のバックグラウンドタスクを実行します。個別タスクと全アクティブタスクを停止できます。
+    details: 有効化され利用可能な Computer Use、Browser Use、ユーザープラグイン、OpenClaw チャンネルで任意のバックグラウンドタスクを実行します。個別タスクと全アクティブタスクを停止できます。
     link: /ja/architecture/agent-system
     linkText: エージェントを探る
   - icon: 🔌

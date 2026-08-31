@@ -34,28 +34,7 @@ RUN npm ci && npm run build-only
 WORKDIR /src/frontend/react-neko-chat
 RUN npm ci && npm run build
 
-# --- Stage 2: Download OpenFang (pre-built Rust A2A agent daemon binary) ---
-FROM alpine:latest AS openfang-downloader
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG TARGETARCH
-
-# 可覆盖 OpenFang 版本标签（默认 v0.6.9）
-ARG OPENFANG_TAG=v0.6.9
-
-# 根据 Docker 架构映射到 Rust target triple，下载对应预编译二进制
-RUN apk add --no-cache curl ca-certificates && \
-    case "$TARGETARCH" in \
-      amd64) triple="x86_64-unknown-linux-gnu" ;; \
-      arm64) triple="aarch64-unknown-linux-gnu" ;; \
-      *) echo "Unsupported arch: $TARGETARCH"; exit 1 ;; \
-    esac && \
-    if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
-    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    curl -fsSL "https://github.com/RightNow-AI/openfang/releases/download/${OPENFANG_TAG}/openfang-${triple}.tar.gz" | tar xz -C /usr/local/bin openfang && \
-    chmod +x /usr/local/bin/openfang
-
-# --- Stage 3: Runtime ---
+# --- Stage 2: Runtime ---
 FROM debian:bookworm
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
@@ -221,10 +200,7 @@ RUN cd /app && \
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
 COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
-# 7b. Copy OpenFang binary (Rust A2A agent daemon)
-COPY --from=openfang-downloader /usr/local/bin/openfang /usr/local/bin/openfang
-
-# 7c. Extract built-in Live2D models (assets/<name>.tar.gz → static/<name>/)
+# 7b. Extract built-in Live2D models (assets/<name>.tar.gz → static/<name>/)
 RUN cd /app && for model in yui-origin yui-lolita; do \
         tar -xzmf "assets/$model.tar.gz" -C static/ || exit 1; \
         test -f "static/$model/$model.moc3" || exit 1; \

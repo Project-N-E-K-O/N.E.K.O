@@ -8,7 +8,7 @@
 
 ### `GET /api/agent/flags`
 
-返回 Agent Server 的 flags 快照，包括主开关和 Computer Use、Browser Use、用户插件、OpenClaw、OpenFang 子功能。代理失败返回 `502` 和 `success: false`。
+返回 Agent Server 的 flags 快照，包括主开关和 Computer Use、Browser Use、用户插件、OpenClaw 子功能。代理失败返回 `502` 和 `success: false`。
 
 ### `POST /api/agent/flags`
 
@@ -25,7 +25,7 @@
 | 命令 | 附加字段 | 用途 |
 |---|---|---|
 | `set_agent_enabled` | `enabled`，可选 `profile` | 切换主运行时 gate |
-| `set_flag` | `key`、`value` | 切换 `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled`、`openclaw_enabled`、`openfang_enabled` 之一 |
+| `set_flag` | `key`、`value` | 切换 `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled`、`openclaw_enabled` 之一 |
 | `refresh_state` | 无 | 返回并广播新的状态快照 |
 
 `request_id` 和 `lanlan_name` 可选。未知命令或 flag key 由 Agent Server 拒绝；上游/代理失败返回 `502`。

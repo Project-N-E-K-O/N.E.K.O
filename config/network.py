@@ -201,10 +201,6 @@ def resolve_user_plugin_base() -> str:
             return f"http://127.0.0.1:{port}"
     return USER_PLUGIN_BASE.rstrip("/")
 
-# OpenFang Agent 执行后端端口 (由 Electron 并行启动，端口写入 port_config.json)
-OPENFANG_PORT = _read_port_env("OPENFANG_PORT", 50051)
-OPENFANG_BASE_URL = f"http://127.0.0.1:{OPENFANG_PORT}"
-
 # 实例 ID：同一次启动的所有服务共享。
 # launcher 会在拉起子进程前写入 NEKO_INSTANCE_ID 环境变量。
 # 若源码直跑绕过 launcher，则每次导入使用随机回退值，确保 /health

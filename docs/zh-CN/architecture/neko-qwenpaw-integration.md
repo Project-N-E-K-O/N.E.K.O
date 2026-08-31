@@ -18,7 +18,7 @@ N.E.K.O. 不在本地实现 QwenPaw 的工具执行环境，也不管理其服�
   -> task_result / task_update / proactive_message 事件返回主界面
 ```
 
-非插件通道的选择优先级是 `qwenpaw`、`openfang`、`browser_use`、`computer_use`。只有 `openclaw_enabled` 已开启且能力探测返回 ready 时，QwenPaw 才会进入可选通道。开启开关后，Agent 服务器会进行有界重试；探测失败会撤销开关并向 UI 返回原因，而不是把不可用服务当作可执行能力。
+非插件通道的选择优先级是 `qwenpaw`、`browser_use`、`computer_use`。只有 `openclaw_enabled` 已开启且能力探测返回 ready 时，QwenPaw 才会进入可选通道。开启开关后，Agent 服务器会进行有界重试；探测失败会撤销开关并向 UI 返回原因，而不是把不可用服务当作可执行能力。
 
 普通任务在 `task_registry` 中以 `type: "openclaw"` 注册，并通过独立 `asyncio` 后台任务执行。成功、失败与取消都会写回任务状态并发送统一 Agent 事件。
 
