@@ -1505,6 +1505,7 @@
         window.addEventListener('pngtuber-model-loading', function (event) {
             const loadToken = Number(event?.detail?.loadToken) || 0;
             if (loadToken < pngtuberModelLoadToken) return;
+            if (loadToken === pngtuberModelLoadToken && pngtuberModelLoading) return;
             pngtuberModelLoadToken = loadToken;
             handleModelLoading();
         });

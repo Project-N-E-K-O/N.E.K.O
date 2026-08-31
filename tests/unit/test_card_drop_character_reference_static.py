@@ -124,6 +124,7 @@ def test_pngtuber_loading_state_ignores_stale_lifecycle_events():
     assert "let pngtuberModelLoadToken = 0;" in source
     assert "pngtuber-model-loading', function (event)" in listeners
     assert "if (loadToken < pngtuberModelLoadToken) return;" in listeners
+    assert "if (loadToken === pngtuberModelLoadToken && pngtuberModelLoading) return;" in listeners
     assert "pngtuberModelLoadToken = loadToken;" in listeners
     assert listeners.count("if (loadToken !== pngtuberModelLoadToken) return;") == 2
 

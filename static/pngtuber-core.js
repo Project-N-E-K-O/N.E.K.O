@@ -64,7 +64,7 @@
 
     function assignImageSource(image, src) {
         if (!image) return;
-        if (/^https?:\/\//i.test(String(src || ''))) {
+        if (/^(?:https?:)?\/\//i.test(String(src || ''))) {
             image.crossOrigin = 'anonymous';
         } else {
             image.removeAttribute?.('crossorigin');
@@ -237,6 +237,8 @@
             this._lastPngtuberPointerX = null;
             this._lastPngtuberPointerY = null;
             this._renderingPaused = false;
+            this._loadGeneration = 0;
+            this._latestLifecycleLoadToken = 0;
         }
 
         setMouseTrackingEnabled(enabled) {
@@ -874,7 +876,12 @@
             }
         }
 
-        async setupLayeredAdapter() {
+        async setupLayeredAdapter(options = {}) {
+            const config = options.config || this.config;
+            const isCurrentLoad = typeof options.isCurrentLoad === 'function'
+                ? options.isCurrentLoad
+                : () => true;
+            if (!isCurrentLoad()) return false;
             this.clearLayeredTimers();
             this.detachLayeredHotkeys();
             this.detachLayeredPlayEvent();
@@ -897,23 +904,29 @@
             this.layeredPointer = { x: 0, y: 0, targetX: 0, targetY: 0, active: false, at: 0, lastTime: 0 };
             this.layeredAssetVisibility = new Map();
             this.layeredAssetActionActive = false;
-            if (!this.isLayeredConfigured()) return false;
+            if (config.adapter !== 'layered_canvas_v1' || !config.layered_metadata) return false;
             try {
-                const response = await fetch(this.config.layered_metadata, { cache: 'no-cache' });
+                const response = await fetch(config.layered_metadata, { cache: 'no-cache' });
+                if (!isCurrentLoad()) return false;
                 if (!response.ok) throw new Error(`metadata ${response.status}`);
                 const metadata = await response.json();
+                if (!isCurrentLoad()) return false;
                 const layers = Array.isArray(metadata.layers) ? metadata.layers : [];
                 if (metadata.runtime !== 'layered_canvas' || layers.length === 0) {
                     throw new Error('metadata is not layered_canvas');
                 }
+                const layeredImages = new Map();
                 await Promise.all(layers.map(async (layer, index) => {
-                    const src = resolveSiblingAsset(this.config.layered_metadata, layer.image);
+                    const src = resolveSiblingAsset(config.layered_metadata, layer.image);
                     if (!src) return;
                     const img = await loadImageElement(src);
-                    this.layeredImages.set(index, img);
+                    if (!isCurrentLoad()) return;
+                    layeredImages.set(index, img);
                     layer._imageIndex = index;
                 }));
-                if (this.layeredImages.size === 0) throw new Error('no layer images loaded');
+                if (!isCurrentLoad()) return false;
+                if (layeredImages.size === 0) throw new Error('no layer images loaded');
+                this.layeredImages = layeredImages;
                 this.layeredMetadata = metadata;
                 this.layeredStateIndex = 0;
                 this.initializeLayeredToggleState(layers);
@@ -958,6 +971,7 @@
                 this.attachLayeredPointerTracking();
                 return true;
             } catch (error) {
+                if (!isCurrentLoad()) return false;
                 console.warn('[PNGTuber] layered adapter disabled, falling back to image mode:', error);
                 this.layeredMetadata = null;
                 this.layeredImages = new Map();
@@ -3611,15 +3625,24 @@
         }
 
         async load(config, options = {}) {
+            const loadToken = Number(options.loadToken) || 0;
+            if (loadToken && loadToken < this._latestLifecycleLoadToken) return false;
+            if (loadToken) this._latestLifecycleLoadToken = loadToken;
+            const loadGeneration = ++this._loadGeneration;
+            const isCurrentLoad = () => (
+                loadGeneration === this._loadGeneration
+                && (!loadToken || loadToken === this._latestLifecycleLoadToken)
+            );
             this.detachDragListeners();
             this.clearEmotion({ render: false });
             this._modelManagerUseCurrentPlacement = false;
-            this.config = normalizeConfig(config || {});
-            const loadToken = Number(options.loadToken) || 0;
+            const normalizedConfig = normalizeConfig(config || {});
+            this.config = normalizedConfig;
             window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {
                 detail: { loadToken }
             }));
-            await this.setupLayeredAdapter();
+            await this.setupLayeredAdapter({ config: normalizedConfig, isCurrentLoad });
+            if (!isCurrentLoad()) return false;
             this.ensureContainer();
             this.preloadImages();
             this.attachSpeechListeners();
@@ -4772,12 +4795,17 @@
 
     async function loadPNGTuberAvatar(config) {
         const loadToken = ++pngtuberLoadSequence;
+        window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {
+            detail: { loadToken }
+        }));
         try {
             await hideOtherAvatarRuntimesForPNGTuber();
+            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager || null;
             if (!window.pngtuberManager) {
                 window.pngtuberManager = new PNGTuberManager();
             }
-            await window.pngtuberManager.load(config || {}, { loadToken });
+            const loaded = await window.pngtuberManager.load(config || {}, { loadToken });
+            if (!loaded || loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
             if (document.body?.classList.contains('model-manager-page')
                 && window._modelManagerCurrentAvatarType
                 && window._modelManagerCurrentAvatarType !== 'pngtuber') {
@@ -4785,8 +4813,10 @@
                 return window.pngtuberManager;
             }
             await hideOtherAvatarRuntimesForPNGTuber();
+            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
             window.pngtuberManager.show();
             await hideOtherAvatarRuntimesForPNGTuber();
+            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
             window.dispatchEvent(new CustomEvent('pngtuber-model-loaded', {
                 detail: { loadToken }
             }));

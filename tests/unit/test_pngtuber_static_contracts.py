@@ -1021,7 +1021,7 @@ def test_layered_pngtuber_motion_requires_explicit_runtime_feature_flags():
 def test_layered_pngtuber_caps_render_resolution_without_changing_logical_coordinates():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     setup_block = source[
-        source.index("        async setupLayeredAdapter()"):
+        source.index("        async setupLayeredAdapter(options = {})"):
         source.index("        hasBlinkLayers()")
     ]
     pointer_block = source[
@@ -1081,9 +1081,9 @@ def test_pngtuber_load_announces_identity_change_before_async_setup():
         source.index("        stateToSrc(state)")
     ]
 
-    config_assignment = "this.config = normalizeConfig(config || {});"
+    config_assignment = "this.config = normalizedConfig;"
     loading_event = "window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {"
-    async_setup = "await this.setupLayeredAdapter();"
+    async_setup = "await this.setupLayeredAdapter({ config: normalizedConfig, isCurrentLoad });"
     assert load_block.index(config_assignment) < load_block.index(loading_event)
     assert load_block.index(loading_event) < load_block.index(async_setup)
 
@@ -1115,8 +1115,11 @@ def test_pngtuber_loader_binds_lifecycle_events_to_one_load_token():
     assert "const loadToken = ++pngtuberLoadSequence;" in loader_block
     assert "await window.pngtuberManager.load(config || {}, { loadToken });" in loader_block
     assert "const loadToken = Number(options.loadToken) || 0;" in load_block
+    assert "if (!isCurrentLoad()) return false;" in load_block
+    assert loader_block.count("if (loadToken !== pngtuberLoadSequence)") == 3
+    assert "if (!loaded || loadToken !== pngtuberLoadSequence)" in loader_block
     assert load_block.count("detail: { loadToken }") == 1
-    assert loader_block.count("detail: { loadToken }") == 2
+    assert loader_block.count("detail: { loadToken }") == 3
 
 
 def test_pngtuber_remote_images_enable_anonymous_cors_before_loading():
@@ -1126,10 +1129,75 @@ def test_pngtuber_remote_images_enable_anonymous_cors_before_loading():
         source.index("    function isPNGTuberPlusLayerVisible")
     ]
 
+    assert "/^(?:https?:)?\\/\\//i.test" in assign_block
     assert "image.crossOrigin = 'anonymous';" in assign_block
     assert assign_block.index("image.crossOrigin = 'anonymous';") < assign_block.index("image.src = src;")
     assert "assignImageSource(img, src);" in source
     assert "assignImageSource(this.image, nextSrc);" in source
+
+
+def test_pngtuber_older_overlapping_load_cannot_resume_over_latest_model():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for PNGTuber overlapping load tests")
+
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+const events = [];
+const window = {{
+  location: {{ pathname: '/' }},
+  innerWidth: 1280,
+  innerHeight: 720,
+  lanlan_config: {{ model_type: 'pngtuber' }},
+  dispatchEvent(event) {{ events.push(event); }},
+}};
+const document = {{
+  body: {{ classList: {{ contains() {{ return false; }} }} }},
+  getElementById() {{ return null; }},
+  querySelectorAll() {{ return []; }},
+}};
+class CustomEvent {{
+  constructor(type, options = {{}}) {{ this.type = type; this.detail = options.detail; }}
+}}
+const context = {{ console, CustomEvent, document, window }};
+vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'pngtuber-core.js' }});
+
+const manager = new window.PNGTuberManager();
+const pendingSetups = [];
+manager.detachDragListeners = () => {{}};
+manager.clearEmotion = () => {{}};
+manager.setupLayeredAdapter = (options) => new Promise((resolve) => {{
+  pendingSetups.push({{ options, resolve }});
+}});
+manager.ensureContainer = () => {{}};
+manager.preloadImages = () => {{}};
+manager.attachSpeechListeners = () => {{}};
+manager.attachDragListeners = () => {{}};
+manager.setState = () => {{}};
+manager.applyTransform = () => {{}};
+manager.syncGlobalConfig = () => {{}};
+manager.setupHTMLLockIcon = () => {{}};
+
+(async () => {{
+  const older = manager.load({{ idle_image: 'older.png' }}, {{ loadToken: 1 }});
+  const newer = manager.load({{ idle_image: 'newer.png' }}, {{ loadToken: 2 }});
+  assert.equal(pendingSetups.length, 2);
+
+  pendingSetups[1].resolve(false);
+  assert.equal(await newer, true);
+  assert.equal(manager.config.idle_image, 'newer.png');
+
+  pendingSetups[0].resolve(false);
+  assert.equal(await older, false);
+  assert.equal(manager.config.idle_image, 'newer.png');
+  assert.equal(events.filter((event) => event.type === 'pngtuber-model-loading').length, 2);
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+
+    run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
 
 
 def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():
@@ -1140,7 +1208,7 @@ def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():
     ]
     handler_block = source[
         source.index("        handleLayeredHotkey(event) {"):
-        source.index("        async setupLayeredAdapter()")
+        source.index("        async setupLayeredAdapter(options = {})")
     ]
     cycle_hotkey_block = source[
         source.index("        isLayeredCycleHotkey(event) {"):
@@ -1186,7 +1254,7 @@ def test_layered_pngtuber_alt_two_toggles_imported_asset_action():
     ]
     handler_block = source[
         source.index("        handleLayeredHotkey(event) {"):
-        source.index("        async setupLayeredAdapter()")
+        source.index("        async setupLayeredAdapter(options = {})")
     ]
     asset_hotkey_block = source[
         source.index("        isLayeredAssetActionHotkey(event) {"):
