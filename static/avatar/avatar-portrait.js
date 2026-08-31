@@ -138,10 +138,12 @@
         // loaded model, so visibility must not be a prerequisite for capture.
         // Preserve a still-loading image as well: prepare() owns waiting for its
         // load/error event before dimensions are required.
+        if (!isPNGTuberImageElement(manager?.image) && isReadyPNGTuberDrawable(manager?.image)) {
+            return manager.image;
+        }
         if (isPNGTuberImageElement(manager?.image)) return manager.image;
         const loadingImage = candidates.find(isPNGTuberImageElement);
         if (loadingImage) return loadingImage;
-        if (isReadyPNGTuberDrawable(manager?.image)) return manager.image;
         return candidates.find(isReadyPNGTuberDrawable) || null;
     }
 
@@ -1772,26 +1774,45 @@
                     assertPNGTuberDrawableIsExportable(ctx.drawable);
                 }
             },
-            renderSource(ctx) {
+            renderSource(ctx, options = {}) {
                 const layeredSnapshot = typeof ctx.manager.renderLayeredSnapshotCanvas === 'function'
-                    ? ctx.manager.renderLayeredSnapshotCanvas()
+                    ? ctx.manager.renderLayeredSnapshotCanvas(undefined, undefined, {
+                        maxEdge: PNGTUBER_SOURCE_MAX_EDGE
+                    })
                     : null;
                 const drawable = layeredSnapshot || ctx.drawable;
                 const size = getPNGTuberDrawableSize(drawable);
                 if (!drawable || !size.width || !size.height) {
                     throw createError('PNGTuber 画面尚未就绪，无法提取头像');
                 }
+                const containPortrait = options.cropMode === 'portrait';
+                const padding = containPortrait ? clamp(finiteOr(options.padding, 0), 0, 0.45) : 0;
+                const contentRatio = 1 - (padding * 2);
+                const desiredWidth = containPortrait
+                    ? Math.max(1, finiteOr(options.width, DEFAULTS.width))
+                    : size.width;
+                const desiredHeight = containPortrait
+                    ? Math.max(1, finiteOr(options.height, DEFAULTS.height))
+                    : size.height;
                 const sourceScale = Math.min(
                     1,
-                    PNGTUBER_SOURCE_MAX_EDGE / Math.max(size.width, size.height)
+                    PNGTUBER_SOURCE_MAX_EDGE / Math.max(desiredWidth, desiredHeight)
                 );
-                const sourceWidth = Math.max(1, Math.round(size.width * sourceScale));
-                const sourceHeight = Math.max(1, Math.round(size.height * sourceScale));
+                const sourceWidth = Math.max(1, Math.round(desiredWidth * sourceScale));
+                const sourceHeight = Math.max(1, Math.round(desiredHeight * sourceScale));
                 const canvas = createOutputCanvas(sourceWidth, sourceHeight);
                 const context = canvas.getContext('2d');
                 if (!context) throw createError('无法创建 PNGTuber 导出画布');
+                const drawableScale = Math.min(
+                    (sourceWidth * contentRatio) / size.width,
+                    (sourceHeight * contentRatio) / size.height
+                );
+                const drawWidth = size.width * drawableScale;
+                const drawHeight = size.height * drawableScale;
+                const drawX = (sourceWidth - drawWidth) * 0.5;
+                const drawY = (sourceHeight - drawHeight) * 0.5;
                 try {
-                    context.drawImage(drawable, 0, 0, sourceWidth, sourceHeight);
+                    context.drawImage(drawable, drawX, drawY, drawWidth, drawHeight);
                 } catch (error) {
                     throw createCanvasExportError(error);
                 }

@@ -78,7 +78,10 @@ const window = {{
   pngtuberManager: {{
     image: runtimeCanvas,
     ensureContainer() {{}},
-    renderLayeredSnapshotCanvas: () => layeredSnapshot,
+    renderLayeredSnapshotCanvas: (_state, _timestamp, options) => {{
+      assert.equal(options.maxEdge, 2048);
+      return layeredSnapshot;
+    }},
   }},
 }};
 const context = {{ window, document, console, URL, Promise, Array, setTimeout, clearTimeout }};
@@ -129,6 +132,39 @@ vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'avatar-portrait.
   const loadedResult = await window.avatarPortrait.capture({{ modelType: 'pngtuber' }});
   assert.equal(loadedResult.sourceCanvas.width, 900);
   assert.equal(loadedResult.sourceCanvas.height, 1200);
+
+  const squarePortrait = {{
+    tagName: 'IMG', width: 512, height: 512, clientWidth: 512, clientHeight: 512,
+    naturalWidth: 512, naturalHeight: 512, complete: true, hidden: false,
+    style: {{ display: '' }}, classList: {{ contains: () => false }},
+    currentSrc: '/user_pngtuber/square.png', hasVisiblePixels: true,
+  }};
+  window.pngtuberManager = {{ image: squarePortrait, ensureContainer() {{}} }};
+  const portraitResult = await window.avatarPortrait.capture({{
+    modelType: 'pngtuber', width: 768, height: 1024, cropMode: 'portrait', padding: 0.08,
+  }});
+  assert.equal(portraitResult.sourceCanvas.width / portraitResult.sourceCanvas.height, 0.75);
+  assert.equal(portraitResult.cropRectPixels.width, portraitResult.sourceCanvas.width);
+  assert.equal(portraitResult.cropRectPixels.height, portraitResult.sourceCanvas.height);
+  assert.ok(portraitResult.sourceCanvas.drawCalls[0][1] > 0);
+  assert.ok(portraitResult.sourceCanvas.drawCalls[0][2] > 0);
+
+  const hiddenLayeredCanvas = new FakeCanvas(800, 1200);
+  hiddenLayeredCanvas.hidden = true;
+  hiddenLayeredCanvas.style.display = 'none';
+  const emptyCompanionImage = {{
+    tagName: 'IMG', width: 0, height: 0, clientWidth: 0, clientHeight: 0,
+    naturalWidth: 0, naturalHeight: 0, complete: true, hidden: true,
+    style: {{ display: 'none' }}, classList: {{ contains: () => false }},
+  }};
+  document.getElementById = () => ({{
+    querySelectorAll: () => [emptyCompanionImage, hiddenLayeredCanvas],
+  }});
+  window.pngtuberManager = {{ image: hiddenLayeredCanvas, ensureContainer() {{}} }};
+  const hiddenLayeredResult = await window.avatarPortrait.capture({{ modelType: 'pngtuber' }});
+  assert.equal(hiddenLayeredResult.sourceCanvas.width, 800);
+  assert.equal(hiddenLayeredResult.sourceCanvas.height, 1200);
+  document.getElementById = () => null;
 
   const stalledImage = {{
     tagName: 'IMG', width: 0, height: 0, clientWidth: 0, clientHeight: 0,

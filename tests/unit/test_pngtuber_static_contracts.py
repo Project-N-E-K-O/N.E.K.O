@@ -1062,9 +1062,11 @@ def test_layered_pngtuber_can_render_full_resolution_snapshot_without_resizing_r
     assert "document.createElement('canvas')" in snapshot_block
     assert "Number(this.layeredCanvasLogicalWidth)" in snapshot_block
     assert "Number(this.layeredCanvasLogicalHeight)" in snapshot_block
+    assert "Number(options.maxEdge)" in snapshot_block
+    assert "maxEdge / Math.max(logicalWidth, logicalHeight)" in snapshot_block
     assert "this.drawLayeredState(stateName, timestamp, {" in snapshot_block
-    assert "scaleX: 1" in snapshot_block
-    assert "scaleY: 1" in snapshot_block
+    assert "scaleX: canvas.width / logicalWidth" in snapshot_block
+    assert "scaleY: canvas.height / logicalHeight" in snapshot_block
     assert "return drawn ? canvas : null;" in snapshot_block
     assert "this.canvasElement =" not in snapshot_block
     assert "renderTarget?.canvas || this.canvasElement" in draw_block

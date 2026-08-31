@@ -447,8 +447,9 @@
     }
 
     function ensureCharacterReferenceRetryCacheKey(cacheKey) {
-        if (characterReferenceRetryCacheKey === cacheKey) return;
-        characterReferenceRetryCacheKey = cacheKey || '';
+        var revisionCacheKey = (cacheKey || '') + ':' + cardDropModelRevision;
+        if (characterReferenceRetryCacheKey === revisionCacheKey) return;
+        characterReferenceRetryCacheKey = revisionCacheKey;
         characterReferenceRetryAttempts = 0;
         if (characterReferenceRetryTimer) {
             clearTimeout(characterReferenceRetryTimer);

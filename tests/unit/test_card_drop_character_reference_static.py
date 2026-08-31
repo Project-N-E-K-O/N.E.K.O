@@ -91,6 +91,7 @@ def test_same_cache_key_reload_invalidates_inflight_capture_revision():
     assert "if (captureRevision !== cardDropModelRevision)" in avatar_capture_block
     assert "pendingCharacterReferenceRevision === captureRevision" in reference_capture_block
     assert "if (cardDropModelRevision !== captureRevision) return '';" in reference_capture_block
+    assert "(cacheKey || '') + ':' + cardDropModelRevision" in source
 
 
 @pytest.mark.unit

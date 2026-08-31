@@ -2401,15 +2401,25 @@
                 || (Number(a.order || 0) - Number(b.order || 0));
         }
 
-        renderLayeredSnapshotCanvas(stateName = this.state || 'idle', timestamp = performance.now()) {
+        renderLayeredSnapshotCanvas(
+            stateName = this.state || 'idle',
+            timestamp = performance.now(),
+            options = {}
+        ) {
             if (!this.isLayeredActive()) return null;
+            const logicalWidth = Math.max(1, Math.round(Number(this.layeredCanvasLogicalWidth) || 1));
+            const logicalHeight = Math.max(1, Math.round(Number(this.layeredCanvasLogicalHeight) || 1));
+            const maxEdge = Math.max(0, Number(options.maxEdge) || 0);
+            const snapshotScale = maxEdge > 0
+                ? Math.min(1, maxEdge / Math.max(logicalWidth, logicalHeight))
+                : 1;
             const canvas = document.createElement('canvas');
-            canvas.width = Math.max(1, Math.round(Number(this.layeredCanvasLogicalWidth) || 1));
-            canvas.height = Math.max(1, Math.round(Number(this.layeredCanvasLogicalHeight) || 1));
+            canvas.width = Math.max(1, Math.round(logicalWidth * snapshotScale));
+            canvas.height = Math.max(1, Math.round(logicalHeight * snapshotScale));
             const drawn = this.drawLayeredState(stateName, timestamp, {
                 canvas,
-                scaleX: 1,
-                scaleY: 1
+                scaleX: canvas.width / logicalWidth,
+                scaleY: canvas.height / logicalHeight
             });
             return drawn ? canvas : null;
         }
