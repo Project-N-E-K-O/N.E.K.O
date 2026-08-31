@@ -288,11 +288,17 @@ class NotifyMixin:
         # prompt 里的那段重复一次（内容一致、不矛盾，且缓存被消费后即止）。
         lifetime = "session_family" if is_text_session else "next_session"
         try:
-            # request_id 让 append_context 的去重真正生效：用户**重复说**同一条
-            # 指令（E 那半按 hit_count 递增 TTL，整个设计就预期他会重复）同样会
-            # 置待注入标记。不给 id 的话每次都原样再追加一份：文字侧堆进 history
-            # 还会被算进归档 token 预算、提前触发热切换，语音侧堆进 next-session
-            # 缓存。
+            # request_id 让 append_context 的去重生效：用户**重复说**同一条指令
+            # （E 那半按 hit_count 递增 TTL，整个设计就预期他会重复）同样会置待
+            # 注入标记。不给 id 的话每次都原样再追加一份：文字侧堆进 history 还会
+            # 被算进归档 token 预算、提前触发热切换，语音侧堆进 next-session 缓存。
+            #
+            # ⚠️ 去重窗口是 **120 秒**（`_CONTEXT_APPEND_DEDUP_TTL_SECONDS`，
+            # append_context 的既有契约），不是永久 —— 别把这里读成"同一组 term
+            # 一辈子只注入一次"（codex 指出我原先的注释就是这么写的，过强了）。
+            # 而这个窗口恰好是对的：用户连着说两遍属于同一次表态，去噪；隔了半小时
+            # 再说一遍，往往说明模型期间又踩了雷，那时**重新注入一次强化**才是想要
+            # 的行为。所以这里不自己另造一层永久去重。
             #
             # ⚠️ 指纹取的是**规范化后的 term 集合**，不是渲染出来的块。块里的
             # term 按 ``last_seen_at`` 降序排，于是「重复说较旧的那一条」会把它
