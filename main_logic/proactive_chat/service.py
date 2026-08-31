@@ -1764,11 +1764,15 @@ async def handle_proactive_chat(
             else:
                 if matched:
                     selected_web_link = dict(matched)
+                    canonical_title = matched.get("title", "")
+                    selected_title = (
+                        canonical_title
+                        if matched.get("mode") == "community"
+                        else web_parsed.get("title", canonical_title)
+                    )
                     selected_web_link.update(
                         {
-                            "title": web_parsed.get(
-                                "title", matched.get("title", "")
-                            ),
+                            "title": selected_title,
                             "url": matched["url"],
                             "source": web_parsed.get(
                                 "source", matched.get("source", "")

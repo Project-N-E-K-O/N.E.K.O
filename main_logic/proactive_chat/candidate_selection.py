@@ -12,6 +12,19 @@ from .decisions import _should_skip_source
 from .state import _source_hash
 
 
+def _escape_phase1_community_text(value: Any) -> str:
+    """Serialize public community text without reproducing prompt delimiters."""
+
+    text = " ".join(str(value or "").split())
+    return (
+        text.replace("\\", "\\\\")
+        .replace("|", r"\u007c")
+        .replace("=", r"\u003d")
+        .replace("<", r"\u003c")
+        .replace(">", r"\u003e")
+    )
+
+
 def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
     """Render useful candidate evidence without leaking bulky raw metadata."""
 
@@ -23,15 +36,9 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
             return text
         # Community card fields are public, untrusted text inside a prompt
         # section whose structural delimiters use ``=`` and ``|``.
-        return (
-            text.replace("\\", "\\\\")
-            .replace("|", r"\u007c")
-            .replace("=", r"\u003d")
-            .replace("<", r"\u003c")
-            .replace(">", r"\u003e")
-        )
+        return _escape_phase1_community_text(text)
 
-    title = _field_text(item.get("title"))
+    title = str(item.get("phase1_title") or _field_text(item.get("title"))).strip()
     details: list[str] = []
     field_labels = (
         ("source", "来源"),
@@ -124,6 +131,10 @@ def _round_robin_phase1_links(
                 if key:
                     seen_keys.add(key)
                 link.setdefault("mode", mode)
+                if link["mode"] == "community":
+                    link["phase1_title"] = _escape_phase1_community_text(
+                        link.get("title")
+                    )
                 selected[mode].append(link)
                 remaining -= 1
                 made_progress = True

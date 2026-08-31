@@ -113,11 +113,46 @@ def test_phase1_candidate_numbers_continue_across_source_sections():
     assert [number for number, _ in second_section] == [2]
     assert (
         sr_parsing._lookup_link_by_phase1_selection(
-            {"title": "无关标题", "source": "B站", "number": "2"},
+            {"title": "视频推荐", "source": "B站", "number": "2"},
             personal_links + video_links,
         )
         is video_links[0]
     )
+
+
+def test_phase1_title_fallback_wins_when_numbered_candidate_disagrees():
+    first = {"title": "第一张卡", "source": "喵宇宙社区"}
+    second = {"title": "第二张卡", "source": "喵宇宙社区"}
+
+    selected = sr_parsing._lookup_link_by_phase1_selection(
+        {"title": "第二张卡", "source": "喵宇宙社区", "number": "1"},
+        [first, second],
+    )
+
+    assert selected is second
+
+
+def test_phase1_lookup_maps_escaped_community_title_to_canonical_card():
+    links = candidate_selection._round_robin_phase1_links(
+        ["community"],
+        {
+            "community": {
+                "links": [{"title": "A|B", "source": "喵宇宙社区"}]
+            }
+        },
+        total=1,
+    )["community"]
+
+    assert links[0]["phase1_title"] == r"A\u007cB"
+    assert (
+        sr_parsing._lookup_link_by_phase1_selection(
+            {"title": r"A\u007cB", "source": "喵宇宙社区", "number": "1"},
+            links,
+        )
+        is links[0]
+    )
+    assert sr_parsing._lookup_link_by_title(r"A\u007cB", links) is links[0]
+    assert links[0]["title"] == "A|B"
 
 
 def test_phase1_reserves_budget_for_linkless_window_context(monkeypatch):
