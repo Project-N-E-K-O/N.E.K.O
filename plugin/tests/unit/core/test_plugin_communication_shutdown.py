@@ -654,17 +654,19 @@ async def test_the_host_does_not_inflate_the_payload_the_sdk_measured(monkeypatc
     monkeypatch.setattr(state, "append_message_record", lambda record: None)
 
     manager = PluginCommunicationResourceManager(
-        plugin_id="authenticated-plugin",
+        # 长度也读常量：它是漂移里最大的一项，写死会和推导式脱钩。
+        plugin_id="p" * ctx_mod._HOST_PLUGIN_ID_MAX_CHARS,
         transport=_Transport(),
         logger=_Logger(),
     )
     manager._message_target_queue = asyncio.Queue()
 
-    # SDK 侧量的就是这一份（_build_wire_payload 的形状：v2 + 兼容字段）。
+    # **最坏形状**，不是顺手的那一种：message_id 与 time 都缺（宿主要各补一
+    # 个），plugin_id 取 schema 允许的最长值（宿主按认证身份盖上）。挑一种
+    # 「正常」形状来量正是上一版栽的地方——它只漂 31 字节，看着余量充足，而
+    # 128 字符 plugin_id 的最坏形状漂 222。
     sdk_payload = {
         "type": "MESSAGE_PUSH",
-        "message_id": "11111111111111111111111111111111",
-        "time": "2026-08-31T00:00:00Z",
         "source": "demo",
         "visibility": ["chat"],
         "ai_behavior": "respond",
@@ -678,15 +680,9 @@ async def test_the_host_does_not_inflate_the_payload_the_sdk_measured(monkeypatc
     host_size = len(ormsgpack.packb(written[0]))
     drift = host_size - sdk_size
 
-    headroom = getattr(ctx_mod, "_HOST_ENVELOPE_HEADROOM_BYTES", None)
-    if headroom is None:
-        import re
-        from pathlib import Path
-
-        text = Path(ctx_mod.__file__).read_text(encoding="utf-8")
-        m = re.search(r"_HOST_ENVELOPE_HEADROOM_BYTES\s*=\s*(\d+)", text)
-        assert m, "找不到 _HOST_ENVELOPE_HEADROOM_BYTES"
-        headroom = int(m.group(1))
+    # 直接读常量，不再从源码里正则抠数字：它现在是个推导式，而正则只认字面量
+    # ——那样的读法在这个数变成计算式的那一刻就失效了。
+    headroom = ctx_mod._HOST_ENVELOPE_HEADROOM_BYTES
 
     # plugin_id 是宿主按认证身份盖上去的，本来就该算进漂移里——余量要罩得住它。
     assert drift >= 0

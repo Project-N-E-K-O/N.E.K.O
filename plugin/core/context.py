@@ -221,6 +221,29 @@ class _BusHub:
         return FrameClient(self._ctx)
 
 
+# 宿主在写 message plane 之前会对记录做规范化，所以它打包出来的字节比 SDK 在
+# push_message() 里量到的多。这段余量被 _reject_if_payload_too_large 扣掉，好让
+# "刚好卡在上限下沿"的推送被同步拒掉，而不是拿到 submitted=True 之后在 ingest
+# 那边被静默丢弃。
+#
+# **推导出来，不是挑出来的**——挑过一版 128，实测被打脸：宿主盖的 plugin_id
+# 最长 128 字符，光它一项就能把漂移推到 222 字节。三项贡献：
+#
+#   plugin_id   宿主按认证身份盖上，key + 值（≤ _HOST_PLUGIN_ID_MAX_CHARS）
+#   message_id  缺失时补 uuid4 字符串（36 字符）
+#   time        缺失或是 float（fast_mode）时换成 ISO 串（28 字符）
+#
+# 每项再算上 msgpack 的 key 与长度头。放模块级而不是埋在函数里，是因为守卫要
+# 读它——守卫按**最坏形状**（两者都缺 + 最长 plugin_id）实测，所以这个数不够
+# 会红，而不是悄悄把窗口放回来。
+_HOST_PLUGIN_ID_MAX_CHARS = 128
+_HOST_ENVELOPE_HEADROOM_BYTES = (
+    (4 + len("plugin_id") + _HOST_PLUGIN_ID_MAX_CHARS)
+    + (4 + len("message_id") + 36)
+    + (4 + len("time") + 28)
+)
+
+
 @dataclass
 class PluginContext:
     """插件运行时上下文"""
@@ -1217,12 +1240,6 @@ class PluginContext:
                 "delivery": legacy_delivery,
                 "reply": legacy_reply,
             }
-
-        # 宿主在写 plane 之前会对记录做规范化（补 message_id、把非字符串的
-        # time 换成 ISO 串），所以它打包出来的字节比这里量到的多一点。留出这
-        # 段余量，好让"刚好卡在上限下沿"的推送在这里被同步拒掉，而不是拿到
-        # submitted=True 之后在 ingest 那边被静默丢弃。
-        _HOST_ENVELOPE_HEADROOM_BYTES = 128
 
         def _reject_if_payload_too_large(payload: Dict[str, Any]) -> Optional["PushMessageRejected"]:
             """Refuse a push the host's ingest server would discard whole.
