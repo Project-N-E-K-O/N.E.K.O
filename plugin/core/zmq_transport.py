@@ -78,6 +78,19 @@ _UPLINK_PACK_OPTIONS = (
     | ormsgpack.OPT_SERIALIZE_PYDANTIC
 )
 
+# 解包必须带上 OPT_NON_STR_KEYS，否则和打包侧不对称。
+#
+# 这不是可选的对齐：ormsgpack 用一个扩展类型来编码非字符串键的 map，读的时候
+# 不开这个开关就会 `ValueError: invalid type U16`。于是一个返回
+# ``{"by_year": {2024: 3}}`` 的 handler（int / bool / float 键都算）打包成功、
+# 解包抛错，_consume_uplink 的 except 把它记下来 continue，CH_RES 到不了
+# _dispatch_result，pending future 永远不 resolve——调用方在
+# PLUGIN_TRIGGER_TIMEOUT 之后拿到一个不含任何原因的超时。
+#
+# 另外三个 option 是打包侧专用的（PASSTHROUGH_TUPLE / SERIALIZE_NUMPY /
+# SERIALIZE_PYDANTIC 都只影响序列化），所以这里只需要这一个。
+_UPLINK_UNPACK_OPTIONS = ormsgpack.OPT_NON_STR_KEYS
+
 
 def _normalize_uplink_extension(value: object) -> object:
     if isinstance(value, PurePath):
@@ -117,7 +130,7 @@ def _decode_uplink(
     allowed_channels: frozenset = _UPLINK_CHANNELS,
 ) -> Tuple[str, dict]:
     try:
-        decoded = ormsgpack.unpackb(raw)
+        decoded = ormsgpack.unpackb(raw, option=_UPLINK_UNPACK_OPTIONS)
     except Exception as exc:
         raise ValueError("invalid uplink payload") from exc
     if not isinstance(decoded, list) or len(decoded) != 3:

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import pytest
+import ormsgpack
 import zmq
 
 from plugin.core import zmq_transport
@@ -1032,3 +1033,55 @@ def test_a_restarted_batcher_actually_sends_again(force_abandon: bool) -> None:
         assert sent, "重启之后一条都没发——关停位没在 start 里落下"
     finally:
         batcher.stop(timeout=1.0)
+
+
+# ── pack and unpack must agree on their options ────────────────────────
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"by_year": {2024: 3}},          # int keys — a group-by result
+        {"flags": {True: "yes"}},        # bool keys
+        {"buckets": {1.5: "a"}},         # float keys
+        {"nested": {"inner": {7: [1]}}}, # nested, one level down
+    ],
+)
+def test_non_string_keys_survive_the_uplink(value: dict) -> None:
+    """``packb`` carries OPT_NON_STR_KEYS; ``unpackb`` must carry it too.
+
+    ormsgpack encodes non-string-keyed maps with an extension type, and reading
+    one back without the flag raises ``ValueError: invalid type U16``. The
+    consequence is not a visible error: ``_decode_uplink`` re-raises,
+    ``_consume_uplink`` logs and continues, the CH_RES never reaches
+    ``_dispatch_result``, and the caller waits out PLUGIN_TRIGGER_TIMEOUT for a
+    result that was already computed. On origin/main this path was ``pickle``,
+    which had no such restriction.
+
+    Mutation: drop ``option=_UPLINK_UNPACK_OPTIONS`` from ``unpackb``.
+    """
+    payload = {"req_id": "r1", "success": True, "data": value}
+
+    raw = zmq_transport._encode_uplink("tok", zmq_transport.CH_RES, payload)
+    channel, decoded = zmq_transport._decode_uplink(raw, expected_token="tok")
+
+    assert channel == zmq_transport.CH_RES
+    assert decoded["data"] == value, "非字符串键在上行里被改写了"
+
+
+@pytest.mark.plugin_unit
+def test_the_unpack_options_are_a_subset_of_the_pack_options() -> None:
+    """Pins the relationship, so a flag added to one side cannot drift.
+
+    Only the flags that mean something at read time belong here — the other
+    three are serialization-only — but every unpack flag must exist on the pack
+    side, or the decoder would be asked to read something nobody writes.
+    """
+    pack = zmq_transport._UPLINK_PACK_OPTIONS
+    unpack = zmq_transport._UPLINK_UNPACK_OPTIONS
+
+    assert unpack & pack == unpack, "解包开了一个打包侧没有的 option"
+    assert unpack & ormsgpack.OPT_NON_STR_KEYS, (
+        "解包丢了 OPT_NON_STR_KEYS——非字符串键的返回值会变成静默超时"
+    )
