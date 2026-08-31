@@ -891,3 +891,61 @@ def test_a_retried_turn_still_copies_its_tool_image_to_the_bus():
     assert getattr(client, "_retry_had_staged", None) == [
         ("IMGDATA", "image/jpeg", "demo_tool")
     ], "重试那一轮的暂存被清空了——模型看到了图，插件永远读不到"
+
+
+def test_an_offline_handoff_keeps_the_frames_channel():
+    """The offline dual of freezing the realtime turn's source.
+
+    A HANDOFF_REQUIRED realtime provider sends an independent-ASR visual turn to
+    the offline VLM. Those frames are screen or camera pixels, but on this path
+    they arrive as ``turn_images`` and were labelled ``user`` -- the label a
+    plugin uses to tell what the user shared with the character apart from what
+    a plugin handed the model. Wrong label, wrong filter.
+
+    Mutation: drop ``turn_source`` from ``stream_text``'s source list, or stop
+    passing it from ``submit_multimodal_turn``.
+    """
+    client, _captured = _make_client()
+    spy = _Spy()
+    with patch(_PUBLISHER, spy):
+        accepted = _run_turn(client.submit_multimodal_turn(
+            "看看这个",
+            (_png_b64(320, 200),),
+            turn_id="asr-1",
+            source="camera",
+        ))
+
+    assert accepted is not False
+    assert spy.sources == ["camera"], (
+        f"独立 ASR 交接过来的帧被标错了通道: {spy.sources}"
+    )
+
+
+def test_an_attachment_keeps_its_own_label_on_a_channelled_turn():
+    """The dual guard, and it needs BOTH kinds of image in one turn.
+
+    An independent-ASR turn drains the user's pending attachments and sends
+    them alongside its own frames. The turn's frames take the capture channel;
+    the attachment is still something he handed over, whatever channel the
+    utterance came from. A fix that relabelled the whole list would be just as
+    wrong as the bug it replaced -- and a test with only one kind of image
+    cannot tell the two apart, which is what let this slip past the first
+    version of this guard.
+
+    Mutation: apply ``turn_source`` to the attachment slice too.
+    """
+    client, _captured = _make_client()
+    client._pending_images = [_png_b64(300, 200)]
+    spy = _Spy()
+    with patch(_PUBLISHER, spy):
+        _run_turn(client.submit_multimodal_turn(
+            "看看这个",
+            (_png_b64(320, 200),),
+            turn_id="asr-2",
+            source="camera",
+        ))
+
+    # 顺序即契约：本轮抽样帧在前、用户附件在后（见 _media.py 的排序说明）。
+    assert spy.sources == ["camera", "user"], (
+        f"通道标签串到附件上了: {spy.sources}"
+    )

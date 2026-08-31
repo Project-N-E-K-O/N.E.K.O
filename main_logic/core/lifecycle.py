@@ -1769,6 +1769,9 @@ class LifecycleMixin:
                         turn.transcript,
                         turn.images,
                         turn_id=turn.turn_id,
+                        # 与这批帧一起冻结的采集通道。不传的话离线侧会把屏幕
+                        # 和摄像头帧一律标成 "user"。
+                        source=turn.source,
                     )
                     return delivered is not False
                 if current is None or not operation_is_current():
@@ -2092,6 +2095,8 @@ class LifecycleMixin:
                     turn.transcript,
                     turn.images,
                     turn_id=turn.turn_id,
+                    # 同上：帧总线的通道标签跟着帧走。
+                    source=turn.source,
                 )
                 return delivered is not False
             finally:

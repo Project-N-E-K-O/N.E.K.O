@@ -506,6 +506,15 @@ class _StreamingMixin:
         system_prefix: str | None = None,
         system_prefix_images: Optional[list[str]] = None,
         turn_images: Optional[Sequence[str]] = None,
+        # 这一轮 turn_images 的采集通道（"screen" / "camera"）。独立 ASR 的帧
+        # 到这里就只是一串 base64 了，看不出它是屏幕还是摄像头；不带上的话
+        # 它们会被当成普通用户附件标成 "user"，而按 source 过滤的插件正好会
+        # 拿错。realtime 那侧走的是 MultimodalTurn.source，这是它的离线对偶。
+        turn_source: Optional[str] = None,
+        # turn_images 里**前几张**才属于这个通道。独立 ASR 提交时会把用户已经
+        # 拖进来的附件接在抽样帧后面一起送（见 _media.py 的排序说明），而附件
+        # 是他自己给的东西，不该跟着这一轮的采集通道走。
+        turn_source_count: Optional[int] = None,
         turn_id: Optional[str] = None,
         on_turn_committed: Optional[Callable[[], None]] = None,
         thinking_on: bool = False,
@@ -704,11 +713,27 @@ class _StreamingMixin:
             # 与上面那张列表逐位对齐的来源标签，只为帧总线服务（模型看到的还是
             # 同一批字节，标签不进 content）。在这里算、而不是在发布点重新推断：
             # 此刻每一张图属于哪个桶是**确定**的，fit 之后就只剩一个字符串列表了。
+            # 通道只盖住前 turn_source_count 张；没给计数就退回旧语义（要么
+            # 整段是这一轮的帧，要么整段是用户的）。
+            _channelled = (
+                0 if not turn_source
+                else (
+                    len(own_images) if turn_source_count is None
+                    else max(0, min(int(turn_source_count), len(own_images)))
+                )
+            )
+            _own_image_sources = (
+                [turn_source] * _channelled
+                + [_FRAME_SOURCE_USER] * (len(own_images) - _channelled)
+            )
             _ordered_sources = (
                 ([_FRAME_SOURCE_SCREEN] if proactive_image else [])
                 + [_FRAME_SOURCE_PLUGIN] * len(plugin_images)
                 + [_FRAME_SOURCE_PLUGIN] * len(prefix_images)
-                + [_FRAME_SOURCE_USER] * len(own_images)
+                # own_images 是这一轮自带的帧。独立 ASR 交接过来时前 k 张是
+                # 屏幕或摄像头，其余是被并进来的用户附件——所以标签在这里按
+                # 位置切开，而不是整段套同一个通道。
+                + _own_image_sources
                 + [_FRAME_SOURCE_USER] * len(attachment_images)
             )
             # 各来源的**张数**配额是分开的（谁也花不了谁的额度），但它们最终落在

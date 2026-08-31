@@ -75,6 +75,8 @@ class _MediaMixin:
         text: str,
         *,
         turn_images: tuple[str, ...] = (),
+        turn_source: str | None = None,
+        turn_source_count: int | None = None,
         turn_id: str | None = None,
         on_turn_committed=None,
     ) -> None:
@@ -84,6 +86,8 @@ class _MediaMixin:
             self.stream_text(
                 text,
                 turn_images=turn_images,
+                turn_source=turn_source,
+                turn_source_count=turn_source_count,
                 turn_id=turn_id,
                 on_turn_committed=on_turn_committed,
                 input_transcript_callback=(
@@ -369,6 +373,7 @@ class _MediaMixin:
         images: str | Sequence[str],
         *,
         turn_id: str,
+        source: str | None = None,
     ) -> bool:
         """Submit one utterance's sampled raw frames with its transcript.
 
@@ -435,6 +440,12 @@ class _MediaMixin:
                 await self._run_external_voice_stream(
                     text,
                     turn_images=staged_images,
+                    # 与 realtime 侧同源：这批帧一起冻结的采集通道，不是会话
+                    # 此刻的通道，也不是"用户附件"这个默认。只盖住抽样帧那一
+                    # 段——附件是上面刚接到 staged_images 尾巴上的，它们仍是
+                    # 用户自己给的东西。
+                    turn_source=source,
+                    turn_source_count=len(staged_images) - len(attachments),
                     # 独立 ASR 这一轮自带一个稳定的 turn_id，一路带到帧总线上，
                     # 插件才能把同一次发声抽出的几张帧认成一组。普通文本轮没有
                     # 这个身份，留空即可（记录里就不带 turn_id）。
