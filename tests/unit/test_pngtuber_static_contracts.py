@@ -1074,6 +1074,20 @@ def test_layered_pngtuber_can_render_full_resolution_snapshot_without_resizing_r
     assert "renderTarget?.scaleY ?? this.layeredCanvasScaleY" in draw_block
 
 
+def test_pngtuber_load_announces_identity_change_before_async_setup():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    load_block = source[
+        source.index("        async load(config) {"):
+        source.index("        stateToSrc(state)")
+    ]
+
+    config_assignment = "this.config = normalizeConfig(config || {});"
+    loading_event = "window.dispatchEvent(new CustomEvent('pngtuber-model-loading'));"
+    async_setup = "await this.setupLayeredAdapter();"
+    assert load_block.index(config_assignment) < load_block.index(loading_event)
+    assert load_block.index(loading_event) < load_block.index(async_setup)
+
+
 def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     attach_block = source[

@@ -23,6 +23,7 @@
     let autoCaptureTimer = null;
     let lastScheduledCacheKey = '';
     let cardDropModelRevision = Date.now();
+    let pngtuberModelLoading = false;
     // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
     let externalAvatarDataUrl = '';
     let externalAvatarModelType = '';
@@ -413,8 +414,7 @@
 
     function isCardDropIdentityFollowerWindow() {
         const pathname = String(window.location?.pathname || '');
-        return window.__NEKO_MULTI_WINDOW__ === true
-            && /^\/chat(?:_full)?(?:\/|$)/.test(pathname);
+        return /^\/chat(?:_full)?(?:\/|$)/.test(pathname);
     }
 
     function advanceCardDropModelRevision() {
@@ -652,6 +652,9 @@
     }
 
     function captureCharacterReferenceDataUrl(captureRevision) {
+        if (pngtuberModelLoading && getCurrentModelType() === 'pngtuber') {
+            return Promise.resolve('');
+        }
         var cacheKey = getCharacterReferenceCacheKey();
         captureRevision = Number.isFinite(captureRevision)
             ? captureRevision
@@ -718,29 +721,33 @@
      * 上一次同步过来的猫娘名覆盖掉。当 dataUrl 暂不可用但 name 仍有效时，
      * 仍然走一次 name-only 同步。
      */
-    function syncAvatarToCardDrop(dataUrl) {
+    function syncAvatarToCardDrop(dataUrl, options = {}) {
+        // /chat and /chat_full mirror an owner page and never host model runtimes.
+        // Keeping them read-only avoids late follower writes reverting Pet state.
+        if (isCardDropIdentityFollowerWindow()) return;
         var _nekoName = getActiveLanlanName();
         if (!dataUrl && !_nekoName) return;
         var body = {};
         if (dataUrl) body.dataUrl = dataUrl;
         if (_nekoName) body.name = _nekoName;
-        // Electron chat windows mirror Pet's avatar but do not own its model path.
-        // They may update avatar/name fields, while Pet remains identity authority.
-        if (!isCardDropIdentityFollowerWindow()) appendCardDropModelIdentity(body);
+        appendCardDropModelIdentity(body);
         fetch('/api/card-drop/active-character', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         }).catch(function () { /* 本地角色快照同步失败时静默 */ });
 
-        scheduleCharacterReferenceSync('avatar-sync');
+        if (options.scheduleReference !== false) {
+            scheduleCharacterReferenceSync('avatar-sync');
+        }
     }
 
     function applyPreviewResult(result, cacheKey, captureRevision) {
         if (
             !cacheKey ||
             cacheKey !== getCurrentModelCacheKey() ||
-            captureRevision !== cardDropModelRevision
+            captureRevision !== cardDropModelRevision ||
+            (pngtuberModelLoading && getCurrentModelType() === 'pngtuber')
         ) {
             pendingAutoCapture = true;
             return false;
@@ -1401,6 +1408,10 @@
     }
 
     function scheduleAutoCapture(reason) {
+        if (pngtuberModelLoading && getCurrentModelType() === 'pngtuber') {
+            pendingAutoCapture = true;
+            return;
+        }
         const cacheKey = getCurrentModelCacheKey();
         if (!cacheKey || cacheKey.endsWith(':')) {
             return;
@@ -1452,6 +1463,13 @@
         scheduleAutoCapture(reason);
     }
 
+    function handleModelLoading() {
+        pngtuberModelLoading = true;
+        advanceCardDropModelRevision();
+        invalidateCachedPreview();
+        syncAvatarToCardDrop('', { scheduleReference: false });
+    }
+
     function bindModelLoadListeners() {
         const previousOnModelLoaded = window.live2dManager && typeof window.live2dManager.onModelLoaded === 'function'
             ? window.live2dManager.onModelLoaded
@@ -1474,7 +1492,12 @@
             handleModelLoaded('mmd-model-loaded');
         });
 
+        window.addEventListener('pngtuber-model-loading', function () {
+            handleModelLoading();
+        });
+
         window.addEventListener('pngtuber-model-loaded', function () {
+            pngtuberModelLoading = false;
             handleModelLoaded('pngtuber-model-loaded');
         });
     }

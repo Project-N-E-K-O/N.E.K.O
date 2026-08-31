@@ -3604,6 +3604,7 @@
             this.clearEmotion({ render: false });
             this._modelManagerUseCurrentPlacement = false;
             this.config = normalizeConfig(config || {});
+            window.dispatchEvent(new CustomEvent('pngtuber-model-loading'));
             await this.setupLayeredAdapter();
             this.ensureContainer();
             this.preloadImages();

@@ -71,17 +71,37 @@ def test_card_drop_snapshot_is_bound_to_current_model_identity():
 
 
 @pytest.mark.unit
-def test_electron_chat_follower_does_not_publish_model_identity():
+def test_chat_follower_does_not_mutate_card_drop_snapshot():
     source = _read(APP_CHAT_AVATAR_PATH)
-    sync_block = source.split("function syncAvatarToCardDrop(dataUrl)", 1)[1].split(
+    sync_block = source.split("function syncAvatarToCardDrop(dataUrl, options = {})", 1)[1].split(
         "function applyPreviewResult",
         1,
     )[0]
 
     assert "function isCardDropIdentityFollowerWindow()" in source
-    assert "window.__NEKO_MULTI_WINDOW__ === true" in source
     assert "/^\\/chat(?:_full)?(?:\\/|$)/.test(pathname)" in source
-    assert "if (!isCardDropIdentityFollowerWindow()) appendCardDropModelIdentity(body);" in sync_block
+    assert "if (isCardDropIdentityFollowerWindow()) return;" in sync_block
+    assert sync_block.index("if (isCardDropIdentityFollowerWindow()) return;") < sync_block.index(
+        "fetch('/api/card-drop/active-character'"
+    )
+
+
+@pytest.mark.unit
+def test_pngtuber_loading_invalidates_snapshot_without_early_reference_capture():
+    source = _read(APP_CHAT_AVATAR_PATH)
+    loading_block = source.split("function handleModelLoading()", 1)[1].split(
+        "function bindModelLoadListeners()",
+        1,
+    )[0]
+
+    assert "window.addEventListener('pngtuber-model-loading'" in source
+    assert "let pngtuberModelLoading = false;" in source
+    assert "pngtuberModelLoading = true;" in loading_block
+    assert "advanceCardDropModelRevision();" in loading_block
+    assert "invalidateCachedPreview();" in loading_block
+    assert "syncAvatarToCardDrop('', { scheduleReference: false });" in loading_block
+    assert "pngtuberModelLoading = false;" in source
+    assert "pngtuberModelLoading && getCurrentModelType() === 'pngtuber'" in source
 
 
 @pytest.mark.unit
