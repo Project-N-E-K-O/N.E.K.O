@@ -686,11 +686,19 @@ async def _run_phase2_generation(
     actual_model = (
         model_config.vision_model if use_vision else model_config.conversation_model
     )
+    # ⚠️ **不打印 prompt 正文**。这行 print 本身是既有的调试输出，但本 PR 往
+    # Phase 2 的 system prompt 里注入了用户 ban-topic 禁令块，于是它开始把
+    # "用户明说不想再听的东西"（前任 / 病名 / 逝者姓名）原样刷到 stdout ——
+    # 与本 PR 已经修过两次的那条判据同族（proactive 出口闸、_report_if_kept
+    # 都改成只输出计数），只是这次是**经由 prompt 间接**进去的，第一次自检
+    # 只搜直接变量所以漏了（coderabbit outside-diff）。
+    # 顺带说明：prompt 里本来就还有记忆上下文与活动状态，同样不该无条件落
+    # stdout；这里保留调试所需的模型 / 模态 / 规模，去掉正文。
     print(
         f"\n{'=' * 60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: "
         f"model={actual_model} | vision={use_vision} | "
-        f"img={'yes' if use_vision else 'no'}\n{'=' * 60}\n"
-        f"{system_prompt}\n{'=' * 60}\n"
+        f"img={'yes' if use_vision else 'no'} | "
+        f"prompt_chars={len(system_prompt)}\n{'=' * 60}\n"
     )
 
     make_llm = partial(_make_proactive_llm, model_config)

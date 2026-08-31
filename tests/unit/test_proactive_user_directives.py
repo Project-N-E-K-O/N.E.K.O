@@ -310,6 +310,45 @@ def test_injection_failure_keeps_original_context(monkeypatch):
     assert _append_directives_section("原有记忆上下文", "Neko", "zh") == "原有记忆上下文"
 
 
+def test_no_module_prints_a_directive_bearing_prompt():
+    """⚠️ The Phase 2 prompt carries ban terms — it must never be printed whole.
+
+    This PR injects the directive block into the Phase 2 system prompt, so any
+    pre-existing debug print of that prompt starts leaking the one class of text
+    the user explicitly asked never to hear again (an ex, an illness, a name).
+    Same criterion the output gate and ``_report_if_kept`` already follow; this
+    one arrives *indirectly* via the prompt, which is why a first sweep that
+    only grepped direct variables missed it.
+    """
+    import ast
+    import inspect
+
+    import main_logic.proactive_chat.generation as gen_module
+
+    SENSITIVE = {"system_prompt", "prompt", "messages"}
+    tree = ast.parse(inspect.getsource(gen_module))
+    offenders = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "print"):
+            continue
+        # ⚠️ 判据是**直接插值**，不是"名字出现过"。`f"{len(system_prompt)}"`
+        # 只输出规模、是安全的，把它也算违规会逼着后来人绕开守卫写晦涩代码
+        # （守卫过严同样是失效的一种）。所以只看 FormattedValue 的 value 是不是
+        # 裸 Name —— 包在 len() / 任何调用里的都放行。
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.FormattedValue):
+                continue
+            v = sub.value
+            if isinstance(v, ast.Name) and v.id in SENSITIVE:
+                offenders.append((getattr(node, "lineno", "?"), v.id))
+    assert not offenders, (
+        "这些 print 会把含禁令块的 prompt 正文刷到 stdout："
+        f"{offenders} —— 只输出模型 / 模态 / 长度，别输出正文"
+    )
+
+
 def test_service_actually_calls_the_injection_helper():
     """Static guard: a correct helper proves nothing about it being wired up."""
     # 注入点在 ``handle_proactive_chat`` 这个巨型函数里，没有便宜的端到端驱动
