@@ -82,6 +82,9 @@ _PROACTIVE_INT_FIELDS = (
 _PROACTIVE_FIELDS = _PROACTIVE_BOOL_FIELDS + _PROACTIVE_INT_FIELDS
 # 写路径允许的字段：从全集里剔除用户专有字段。
 _PROACTIVE_WRITABLE_FIELDS = frozenset(_PROACTIVE_FIELDS) - _USER_OWNED_FIELDS
+# Settings created before these fields were introduced have no persisted value.
+# They remain compatible with their prior preset until the user changes them.
+_LEGACY_OPTIONAL_PRESET_FIELDS = frozenset({"proactiveCommunityChatEnabled"})
 
 
 # 预设模式：服务器端定义，避免每个调用方自己维护一份。
@@ -204,10 +207,15 @@ async def _readback_persisted(payload: Mapping[str, Any]) -> tuple[dict[str, Any
 def _infer_mode(settings: dict[str, Any]) -> str:
     """Infer which preset the currently persisted fields correspond to; returns ``custom`` if none match.
 
-    Only fields explicitly listed by a preset are compared; missing fields count as a mismatch.
+    Only fields explicitly listed by a preset are compared. Newly introduced
+    fields missing from a legacy snapshot are ignored for compatibility.
     """
     for mode_name, preset in PROACTIVE_PRESETS.items():
-        if all(settings.get(k) == v for k, v in preset.items()):
+        if all(
+            (k not in settings and k in _LEGACY_OPTIONAL_PRESET_FIELDS)
+            or settings.get(k) == v
+            for k, v in preset.items()
+        ):
             return mode_name
     return "custom"
 

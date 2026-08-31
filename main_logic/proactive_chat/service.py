@@ -94,7 +94,7 @@ from main_logic.proactive_chat.generation import (
     ProactiveModelConfig,
     _decide_phase1_channels,
     _fetch_phase1_followups,
-    _lookup_link_by_title,
+    _lookup_link_by_phase1_selection,
     _proactive_llm_retry_error_types,
     _run_phase2_generation,
     _run_unified_phase1,
@@ -1743,7 +1743,7 @@ async def handle_proactive_chat(
         # ============================================================
         web_parsed = unified_parsed.get("web")
         if web_parsed and web_parsed.get("title"):
-            matched = _lookup_link_by_title(web_parsed.get("title", ""), all_web_links)
+            matched = _lookup_link_by_phase1_selection(web_parsed, all_web_links)
             topic_key = _source_hash(
                 (matched.get("dedupe_key") or matched.get("url", ""))
                 if matched

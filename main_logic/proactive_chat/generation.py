@@ -1988,3 +1988,32 @@ def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
         if link_title == title_lower or link_title in title_lower or title_lower in link_title:
             return link
     return None
+
+
+def _lookup_link_by_phase1_selection(
+    selection: dict[str, Any], all_links: list[dict]
+) -> dict | None:
+    """Resolve a Phase 1 pick by its source-local number before title fallback."""
+
+    source = str(selection.get("source") or "").strip()
+    try:
+        number = int(selection.get("number"))
+    except (TypeError, ValueError):
+        number = 0
+    if source and number > 0:
+        source_links = [
+            link
+            for link in all_links
+            if str(link.get("source") or "").strip().casefold() == source.casefold()
+        ]
+        if number <= len(source_links):
+            candidate = source_links[number - 1]
+            selected_title = str(selection.get("title") or "").strip().casefold()
+            candidate_title = str(candidate.get("title") or "").strip().casefold()
+            if selected_title and (
+                selected_title == candidate_title
+                or selected_title in candidate_title
+                or candidate_title in selected_title
+            ):
+                return candidate
+    return _lookup_link_by_title(str(selection.get("title") or ""), all_links)

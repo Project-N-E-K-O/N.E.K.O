@@ -92,6 +92,15 @@ def test_proactive_presets_route_xhh_through_news():
         assert PROACTIVE_PRESETS[mode]["proactiveNewsChatEnabled"] is True
 
 
+def test_infer_mode_keeps_legacy_preset_when_community_flag_is_missing():
+    from main_routers.proactive_router import PROACTIVE_PRESETS, _infer_mode
+
+    settings = dict(PROACTIVE_PRESETS["normal"])
+    settings.pop("proactiveCommunityChatEnabled")
+
+    assert _infer_mode(settings) == "normal"
+
+
 def test_build_xhh_request_keys_matches_openxhh_vector():
     assert build_xhh_request_keys(
         "/bbs/app/feeds",
@@ -203,6 +212,14 @@ def test_normalize_neko_community_feed_uses_live_card_story_and_author_name():
             "created_at": "2026-08-31T10:03:28.828010Z",
         }
     ]
+
+
+def test_normalize_neko_community_feed_keeps_numeric_card_id_for_deduplication():
+    posts = normalize_neko_community_feed(
+        {"items": [{"id": 42, "title": "数值 ID 卡牌"}]}
+    )
+
+    assert posts[0]["id"] == "42"
 
 
 class _FakeResponse:

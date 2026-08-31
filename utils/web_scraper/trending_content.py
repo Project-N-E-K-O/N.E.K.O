@@ -1739,6 +1739,14 @@ def _community_label_values(items: Any) -> list[str]:
     return values
 
 
+def _community_identifier(value: Any) -> str:
+    """Normalize a public card identifier while retaining scalar numeric IDs."""
+
+    if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+        return str(value).strip()
+    return _community_text(value)
+
+
 def _community_card_url(raw: dict[str, Any]) -> str:
     for key in (
         "url",
@@ -1798,7 +1806,9 @@ def normalize_neko_community_feed(
             raw.get("tags") or raw.get("topics") or raw.get("categories")
         )
         url = _community_card_url(raw)
-        item_id = _community_text(raw.get("id") or raw.get("post_id") or raw.get("uuid"))
+        item_id = _community_identifier(
+            raw.get("id") or raw.get("post_id") or raw.get("uuid")
+        )
         dedupe_key = item_id or f"{url}|{title.casefold()}"
         if dedupe_key in seen:
             continue

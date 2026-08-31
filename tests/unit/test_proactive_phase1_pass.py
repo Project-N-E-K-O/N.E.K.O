@@ -53,6 +53,26 @@ def test_phase1_web_candidates_are_balanced_across_modes(monkeypatch):
     assert all(link["mode"] == "personal" for link in selected["personal"])
 
 
+def test_phase1_selection_uses_source_local_number_for_duplicate_titles():
+    first = {
+        "title": "同名社区卡",
+        "source": "喵宇宙社区",
+        "dedupe_key": "neko-community:first",
+    }
+    second = {
+        "title": "同名社区卡",
+        "source": "喵宇宙社区",
+        "dedupe_key": "neko-community:second",
+    }
+
+    selected = sr_parsing._lookup_link_by_phase1_selection(
+        {"title": "同名社区卡", "source": "喵宇宙社区", "number": "2"},
+        [first, second],
+    )
+
+    assert selected is second
+
+
 def test_phase1_reserves_budget_for_linkless_window_context(monkeypatch):
     monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: False)
     sources = {

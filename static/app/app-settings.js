@@ -1860,6 +1860,7 @@
                 if (settings.proactiveChatEnabled === true) {
                     const hasNewFlags = settings.proactiveVisionChatEnabled !== undefined ||
                     settings.proactiveNewsChatEnabled !== undefined ||
+                    settings.proactiveCommunityChatEnabled !== undefined ||
                     settings.proactiveVideoChatEnabled !== undefined ||
                     settings.proactivePersonalChatEnabled !== undefined ||
                     settings.proactiveMusicEnabled !== undefined ||
