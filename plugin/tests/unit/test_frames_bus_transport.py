@@ -534,3 +534,74 @@ def test_no_rpc_consumer_still_reads_the_frozen_constant() -> None:
     assert offenders == [], (
         f"这些地方仍在用 import 期冻结的 RPC 端点，端口冲突时会连到被占的端口：{offenders}"
     )
+
+
+@pytest.mark.plugin_unit
+def test_a_cached_rpc_client_is_rebuilt_when_the_endpoint_moves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolving at call time is only half the job while the client is cached.
+
+    The cached client keeps the endpoint it was built with and its sockets are
+    already connected there, so a plane that restarts onto a different fallback
+    port would leave a plugin talking to the old address until it times out
+    (CodeRabbit).
+
+    Mutation: drop the endpoint comparison and reuse any cached client.
+    """
+    from types import SimpleNamespace
+
+    from plugin.core.bus import _client_base
+
+    built: list[str] = []
+
+    class _FakeRpc:
+        def __init__(self, *, plugin_id: str, endpoint: str) -> None:
+            self._endpoint = endpoint
+            built.append(endpoint)
+
+    monkeypatch.setattr(_client_base, "_MessagePlaneRpcClient", _FakeRpc)
+    ctx = SimpleNamespace(plugin_id="p")  # 无预置客户端：走 _ensure_rpc 自建这一路
+
+    monkeypatch.setenv("NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT", "tcp://127.0.0.1:38865")
+    first = _client_base._ensure_rpc(ctx)
+    again = _client_base._ensure_rpc(ctx)
+    assert again is first, "端点没变却重建了客户端——每次 bus 调用都新建 socket"
+
+    monkeypatch.setenv("NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT", "tcp://127.0.0.1:48865")
+    moved = _client_base._ensure_rpc(ctx)
+
+    assert moved is not first, "plane 换了端口，缓存客户端还连着老地址"
+    assert built == ["tcp://127.0.0.1:38865", "tcp://127.0.0.1:48865"]
+
+
+@pytest.mark.plugin_unit
+def test_an_injected_rpc_client_is_never_replaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client the caller supplied is theirs, whatever the environment says.
+
+    The in-process end-to-end fixtures in this file wire ``ctx._mp_rpc_client``
+    to a client bound to a temporary port. Comparing that against the resolved
+    environment value and rebuilding on mismatch swaps it for the default
+    endpoint, where nothing is listening — every request then blocks until its
+    timeout and the suite hangs. That is not hypothetical: the first version of
+    the endpoint-refresh did exactly this.
+
+    Mutation: drop the ``_neko_endpoint_autoresolved`` check and rebuild any
+    cached client whose endpoint differs.
+    """
+    from types import SimpleNamespace
+
+    from plugin.core.bus import _client_base
+
+    def _explode(**_kw):  # pragma: no cover - the failure we guard
+        raise AssertionError("rebuilt a client the caller injected")
+
+    monkeypatch.setattr(_client_base, "_MessagePlaneRpcClient", _explode)
+    monkeypatch.setenv("NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT", "tcp://127.0.0.1:48865")
+
+    injected = SimpleNamespace(_endpoint="inproc://the-callers-own-plane")
+    ctx = SimpleNamespace(plugin_id="p", _mp_rpc_client=injected)
+
+    assert _client_base._ensure_rpc(ctx) is injected
