@@ -610,17 +610,26 @@ PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE = _get_int_env("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_
 # 乘数对**从不批量**的控制通道在定义上就不适用，借过来等于给每一帧
 # 128 MiB，配上控制 socket 5000 条的 HWM 根本不是个界。
 #
-# 但也不能猜低：控制面下游没有自己的体积契约，砍低了会静默删掉真实的工具
-# 结果。可以量的是最宽的合法控制帧，而今天它是**带图的 CH_RES**：一次工具
-# 结果最多 _MAX_TOOL_IMAGES 张、每张 _MAX_TOOL_IMAGE_B64_BYTES，也就是
-# 2 * 2 MiB。另一个候选是 CH_COMM 的 EXPORT_PUSH（base64 后约 341 KiB），
-# 比它小一个数量级。头部余量与消息上行同源，覆盖 msgpack 信封与 token。
+# 但也不能猜低：控制面下游没有自己的体积契约，砍低了会**静默**删掉真实的
+# 工具结果——libzmq 在接收引擎里丢帧并断开对端，recv() 不报错，宿主连字节
+# 都看不到。所以这个数必须罩住一次合法 CH_RES 的三个部分：
 #
-# 关系由测试钉住（见 test_zmq_transport_security），所以哪天工具图的上限动
-# 了、这里没跟着动，会红而不是静默丢结果。
-# Env: NEKO_PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES, default=4MiB+64KiB
+#   图片   _MAX_TOOL_IMAGES * _MAX_TOOL_IMAGE_B64_BYTES = 2 * 2 MiB
+#   输出   工具的 output 没有上限，用 message plane 单条 payload 的界
+#          （MESSAGE_PLANE_PAYLOAD_MAX_BYTES，默认 512 KiB）当额度——它是本
+#          仓已有的"一条结构化载荷能有多大"的尺子，不是新造的数
+#   信封   msgpack 结构 + token + vision_prompt，与消息上行同源的 64 KiB
+#
+# 只按图片推导过一版，实测发现两张满尺寸图 + 仅 60 KB 文本输出就超限：
+# output 和图片走同一帧，漏掉它等于把"每帧 128 MiB"换成"合法结果被静默扯
+# 掉"，比原来更糟。测试现在按**这个组合**量，而不是只量图片。
+#
+# 关系由测试钉住（见 test_zmq_transport_security），所以哪天工具图上限或
+# plane 载荷上限动了、这里没跟着动，会红而不是静默丢结果。
+# Env: NEKO_PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES
 PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES = _get_int_env(
-    "NEKO_PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES", 4 * 1024 * 1024 + 64 * 1024
+    "NEKO_PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES",
+    4 * 1024 * 1024 + MESSAGE_PLANE_PAYLOAD_MAX_BYTES + 64 * 1024,
 )
 
 # PUSH 刷新间隔（毫秒），小批量高频发送或大批量低频发送的折中参数

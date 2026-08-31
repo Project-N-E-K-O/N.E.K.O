@@ -666,13 +666,39 @@ def test_the_control_ceiling_covers_the_widest_legitimate_control_frame():
         _message_uplink_max_bytes,
     )
 
-    ceiling = _control_uplink_max_bytes()
-    worst_case_tool_result = _MAX_TOOL_IMAGES * _MAX_TOOL_IMAGE_B64_BYTES
+    # 量的是**打包后的整帧**，不是几个常量相加。第一版只对比了图片字节，
+    # 而 output 和图片走同一帧：实测两张满尺寸图 + 60 KB 文本就超限，于是
+    # 那一版把「每帧 128 MiB」换成了「合法结果被静默扯掉」。
+    import ormsgpack
 
-    assert ceiling >= worst_case_tool_result, (
+    from main_logic.tool_calling import _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS
+    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    ceiling = _control_uplink_max_bytes()
+    worst_case_frame = len(ormsgpack.packb([
+        "t" * 43,          # per-host token
+        "res",             # CH_RES
+        {
+            "req_id": "r" * 36,
+            "ok": True,
+            "result": {
+                "output": {"text": "z" * MESSAGE_PLANE_PAYLOAD_MAX_BYTES},
+                "images": [
+                    {
+                        "data_b64": "A" * _MAX_TOOL_IMAGE_B64_BYTES,
+                        "mime": "image/jpeg",
+                        "vision_prompt": "p" * _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS,
+                    }
+                    for _ in range(_MAX_TOOL_IMAGES)
+                ],
+            },
+        },
+    ]))
+
+    assert ceiling >= worst_case_frame, (
         f"控制上行上限 {ceiling} 装不下一次合法的带图工具结果 "
-        f"{worst_case_tool_result}——超限的帧会被 libzmq 直接扯掉，"
-        "而调用方看到的只是「没收到」"
+        f"{worst_case_frame}——超限的帧会被 libzmq 在接收引擎里丢掉并断开对端，"
+        "recv() 不报错，宿主连字节都看不到，调用方只知道「没收到」"
     )
     # 而且必须真的比消息上行紧：借用那个数正是这条意见指出的问题。
     assert ceiling < _message_uplink_max_bytes(), (
