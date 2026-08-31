@@ -2629,6 +2629,10 @@ def test_a_tombstoned_character_is_not_republished_from_the_seed(tmp_path):
     (project_root / "time_indexed_Carol.db").write_bytes(b"stale")
     (project_root / "Dora").mkdir()
     (project_root / "Dora" / "facts.json").write_text('["stale"]', encoding="utf-8")
+    # A legacy vector store belongs to its owner, not to a character called
+    # "semantic_memory_Carol" -- comparing the bare directory name missed it.
+    (project_root / "semantic_memory_Carol").mkdir()
+    (project_root / "semantic_memory_Carol" / "index.faiss").write_bytes(b"stale")
     # Not deleted, so this one must still be seeded.
     (project_root / "recent_Eve.json").write_text('["seed"]', encoding="utf-8")
 
@@ -2647,6 +2651,9 @@ def test_a_tombstoned_character_is_not_republished_from_the_seed(tmp_path):
     )
     assert not (runtime_root / "Dora").exists(), (
         "a deleted character's seed directory was republished"
+    )
+    assert not (runtime_root / "semantic_memory_Carol").exists(), (
+        "a deleted character's legacy vector store was republished"
     )
     assert (runtime_root / "recent_Eve.json").read_text(encoding="utf-8") == '["seed"]', (
         "the tombstone check stopped seeding characters that were never deleted"

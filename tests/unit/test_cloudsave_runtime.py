@@ -3981,6 +3981,9 @@ def test_an_ambiguous_seed_filename_decodes_to_its_real_owner():
     assert _seed_entry_owner_candidates("facts_Alice.json") == {"Alice"}
     assert _seed_entry_owner_candidates("recent_小八.json") == {"小八"}
     assert _seed_entry_owner_candidates("unrelated.txt") == set()
+    # The EXTRA entries table too: a legacy vector store is a directory named
+    # for its owner, and reading only the file table left it republished.
+    assert _seed_entry_owner_candidates("semantic_memory_Carol") == {"Carol"}
 
 
 def test_an_existing_empty_ledger_is_not_ours_to_append_to(tmp_path):

@@ -445,10 +445,20 @@ def _seed_entry_owner_candidates(filename):
 
     Derived from the migration table rather than a second list of patterns.
     """
-    from utils.character_memory import LEGACY_CHARACTER_MEMORY_FILE_MAP
+    from utils.character_memory import (
+        LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES,
+        LEGACY_CHARACTER_MEMORY_FILE_MAP,
+    )
 
+    # BOTH tables. The extra entries hold "semantic_memory_{name}", a legacy
+    # vector store that is a DIRECTORY -- so a seed called
+    # "semantic_memory_Carol/" belongs to Carol, and reading only the file
+    # table left it republished after Carol was deleted.
     matches = []
-    for pattern in LEGACY_CHARACTER_MEMORY_FILE_MAP:
+    for pattern in (
+        list(LEGACY_CHARACTER_MEMORY_FILE_MAP)
+        + list(LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES)
+    ):
         prefix, _, suffix = pattern.partition("{name}")
         if not filename.startswith(prefix) or not filename.endswith(suffix):
             continue
@@ -1443,9 +1453,13 @@ class MigrationsMixin:
                     if not item.is_dir():
                         continue
 
-                    if item.name in tombstoned:
-                        # Same rule as the file branch: a directory seed is
-                        # named for its character outright.
+                    if item.name in tombstoned or (
+                        _seed_entry_owner_candidates(item.name) & tombstoned
+                    ):
+                        # A directory seed is either named for its character
+                        # outright, or is a legacy entry naming it --
+                        # "semantic_memory_Carol/" is Carol's vector store,
+                        # and comparing the bare name missed it.
                         continue
 
                     # 同盘暂存 → 原子 rename。暂存目录用点前缀，且只在这
