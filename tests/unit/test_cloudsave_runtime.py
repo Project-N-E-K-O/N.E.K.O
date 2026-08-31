@@ -3502,9 +3502,13 @@ def test_the_ledger_still_records_through_an_ordinary_parent(tmp_path):
     app_docs = tmp_path / "app_docs"
     app_docs.mkdir()
 
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
     manager = MigrationsMixin.__new__(MigrationsMixin)
     manager.app_docs_dir = str(app_docs)
-    workspace = tmp_path / ".mig-abc"
+    manager.memory_dir = str(memory)
+    workspace = memory / ".mig-abc"
     manager._record_minted_workspace(workspace)
 
     ledger = app_docs / ".mig-staging" / "minted"
@@ -3726,14 +3730,23 @@ def test_the_ledger_ownership_rule_reads_every_line(tmp_path):
     # what it looks like on POSIX, where os.path.basename does not split on a
     # backslash and os.path.isabs is False -- so the line the test calls ours
     # would be rejected there and the assertion would fail.
-    ours = os.path.abspath(os.path.join(os.sep, "x", ".mig-abc"))
-    foreign = os.path.abspath(os.path.join(os.sep, "x", "somebody-else"))
-    assert _ledger_lines_are_all_ours([ours])
-    assert _ledger_lines_are_all_ours([])
-    assert _ledger_lines_are_all_ours(["", "  "])
-    assert not _ledger_lines_are_all_ours([ours, foreign])
-    assert not _ledger_lines_are_all_ours([os.path.join("relative", ".mig-abc")])
-    assert not _ledger_lines_are_all_ours(["some plugin's notes"])
+    root = os.path.abspath(os.path.join(os.sep, "x", "memory"))
+    ours = os.path.join(root, ".mig-abc")
+    foreign = os.path.join(root, "somebody-else")
+    # Prefixed and absolute, but OUTSIDE the root: the ledger exists only for
+    # workspaces minted in the character namespace, so a line pointing
+    # anywhere else was written by somebody else.
+    elsewhere = os.path.abspath(os.path.join(os.sep, "tmp", ".mig-abc"))
+
+    assert _ledger_lines_are_all_ours([ours], root)
+    assert _ledger_lines_are_all_ours([], root)
+    assert _ledger_lines_are_all_ours(["", "  "], root)
+    assert not _ledger_lines_are_all_ours([ours, foreign], root)
+    assert not _ledger_lines_are_all_ours([ours, elsewhere], root)
+    assert not _ledger_lines_are_all_ours(
+        [os.path.join("relative", ".mig-abc")], root
+    )
+    assert not _ledger_lines_are_all_ours(["some plugin's notes"], root)
 
 
 def test_a_truncated_ledger_does_not_escape_the_new_reader(tmp_path):
@@ -3770,9 +3783,13 @@ def test_the_append_refuses_an_unowned_ledger_too(tmp_path):
     theirs = "some plugin's notes, not paths at all\n"
     ledger.write_text(theirs, encoding="utf-8")
 
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
     manager = MigrationsMixin.__new__(MigrationsMixin)
     manager.app_docs_dir = str(app_docs)
-    manager._record_minted_workspace(tmp_path / ".mig-abc")
+    manager.memory_dir = str(memory)
+    manager._record_minted_workspace(memory / ".mig-abc")
 
     assert ledger.read_text(encoding="utf-8") == theirs, (
         "a workspace path was appended into somebody else's file"
@@ -3788,11 +3805,15 @@ def test_the_append_still_creates_and_extends_our_own_ledger(tmp_path):
     app_docs = tmp_path / "app_docs"
     app_docs.mkdir()
 
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
     manager = MigrationsMixin.__new__(MigrationsMixin)
     manager.app_docs_dir = str(app_docs)
+    manager.memory_dir = str(memory)
 
-    first = tmp_path / ".mig-one"
-    second = tmp_path / ".mig-two"
+    first = memory / ".mig-one"
+    second = memory / ".mig-two"
     manager._record_minted_workspace(first)
     manager._record_minted_workspace(second)
 
@@ -3873,22 +3894,26 @@ def test_an_empty_pre_existing_ledger_is_left_alone(tmp_path):
     assert ledger.exists(), "an empty ledger was unlinked without evidence"
 
 
-def test_a_character_name_may_not_begin_with_a_dot():
-    """The rule the workspace exemption rests on, now enforced.
+def test_creating_a_character_refuses_every_dot_including_a_leading_one():
+    """Where the workspace exemption's invariant is actually enforced.
 
-    The migration reserves dot-prefixed directory names inside memory_dir for
-    its workspaces, and that separation is only sound while no character can
-    claim one. Six rounds of findings on the cloud import's exemption came
-    from the two namespaces overlapping.
+    CREATION validates with ``allow_dots=False``, which refuses any dot at
+    all -- so no character carrying the workspace prefix can be made. Adding
+    a leading-dot rule to the validator itself changed nothing here and broke
+    the other direction: the same function is the REQUEST and SNAPSHOT check,
+    run with ``allow_dots=True`` over names that already exist, so an install
+    upgrading with a legacy ".Carol" would have failed every memory call.
     """
     from utils.character_name import validate_character_name
 
-    for name in (".mig-Carol", ".hidden", ".", ".."):
-        assert validate_character_name(name, allow_dots=True).code is not None, name
+    for name in (".mig-Carol", ".hidden", "Carol.db", "v1.2"):
+        assert validate_character_name(name).code is not None, name
+    assert validate_character_name("Carol").code is None
+    assert validate_character_name("小八").code is None
 
-    # And the ordinary names still pass, including a dot that is not leading.
-    assert validate_character_name("Carol", allow_dots=True).code is None
-    assert validate_character_name("小八", allow_dots=True).code is None
+    # And the tolerance path keeps accepting what is already on disk, which
+    # is the half that must not become an upgrade break.
+    assert validate_character_name(".Carol", allow_dots=True).code is None
     assert validate_character_name("v1.2", allow_dots=True).code is None
 
 
@@ -3905,9 +3930,30 @@ def test_an_unreadable_ledger_is_not_treated_as_creatable(tmp_path):
     ledger = tmp_path / "minted"
     ledger.write_text("whatever\n", encoding="utf-8")
 
+    root = str(tmp_path / "memory")
     with patch.object(
         type(ledger), "read_text", side_effect=PermissionError("no read")
     ):
-        assert _ledger_content_is_ours(ledger) is False
+        assert _ledger_content_is_ours(ledger, root) is False
 
-    assert _ledger_content_is_ours(tmp_path / "absent") is True
+    assert _ledger_content_is_ours(tmp_path / "absent", root) is True
+
+
+def test_the_memory_root_is_not_inside_itself():
+    """A ledger line naming the root itself must not read as ours.
+
+    Containment is what stops a foreign "minted" being adopted, and the root
+    is the one path that would slip a prefix-and-absolute check while naming
+    the whole character namespace -- reclamation acting on it would be
+    reaching for every character at once.
+    """
+    import os
+
+    from utils.config_manager.migrations import _is_inside
+
+    root = os.path.abspath(os.path.join(os.sep, "x", "memory"))
+    assert not _is_inside(root, root)
+    assert not _is_inside(root, os.path.dirname(root))
+    assert _is_inside(root, os.path.join(root, ".mig-abc"))
+    assert _is_inside(root, os.path.join(root, ".mig-abc", "d"))
+    assert not _is_inside(root, os.path.abspath(os.path.join(os.sep, "tmp", ".mig-abc")))

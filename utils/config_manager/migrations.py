@@ -350,7 +350,24 @@ _MIGRATION_LEDGER_NAME = "minted"
 _MIGRATION_WORKSPACE_LOCK = None
 
 
-def _ledger_lines_are_all_ours(lines):
+def _is_inside(root, candidate):
+    """Whether ``candidate`` resolves to somewhere under ``root``.
+
+    Unprobeable counts as OUTSIDE. Every caller is deciding whether a path is
+    ours, and "we could not tell" has to mean "not ours" there -- the other
+    reading hands somebody else's file to a rewrite.
+    """
+    try:
+        root_parts = Path(root).resolve(strict=False).parts
+        candidate_parts = Path(candidate).resolve(strict=False).parts
+    except OSError:
+        return False
+    if len(candidate_parts) <= len(root_parts):
+        return False
+    return candidate_parts[: len(root_parts)] == root_parts
+
+
+def _ledger_lines_are_all_ours(lines, memory_root):
     """Whether every line in a ledger looks like something we wrote.
 
     A ``minted`` file that already belonged to a user or a plugin is adopted
@@ -358,10 +375,14 @@ def _ledger_lines_are_all_ours(lines):
     DELETE it. Path validation stops the directories it names from being
     removed; it does not stop the file itself from being.
 
-    Every line we write is an absolute path whose final component carries the
-    workspace prefix, because that is the only kind of path
-    ``_record_minted_workspace`` is ever given. One line that is not means
-    the file is not ours to rewrite or remove.
+    Three things make a line ours, and all three are needed:
+
+      * an absolute path, because that is what we write;
+      * whose final component carries the workspace prefix;
+      * INSIDE the memory root. The ledger exists only for workspaces minted
+        in the character namespace -- see its own comment -- so a line
+        pointing anywhere else was written by somebody else. Without this a
+        crafted "/tmp/.mig-x" passed, and the file holding it was adopted.
 
     An empty ledger IS ours -- that is what our own file looks like once the
     last workspace has been reclaimed.
@@ -375,6 +396,8 @@ def _ledger_lines_are_all_ours(lines):
         ):
             return False
         if not os.path.isabs(entry):
+            return False
+        if not _is_inside(memory_root, entry):
             return False
     return True
 
@@ -427,7 +450,7 @@ def _seed_entry_owner_candidates(filename):
     return candidates
 
 
-def _ledger_content_is_ours(ledger):
+def _ledger_content_is_ours(ledger, memory_root):
     """Whether an EXISTING ledger holds only lines we could have written.
 
     The refusal went in on the read side alone, so reclamation stopped
@@ -454,7 +477,7 @@ def _ledger_content_is_ours(ledger):
         # not going to make it more readable; the read side skips it and so
         # does this.
         return False
-    return _ledger_lines_are_all_ours(lines)
+    return _ledger_lines_are_all_ours(lines, memory_root)
 
 
 def _ledger_is_usable(ledger):
@@ -961,7 +984,7 @@ class MigrationsMixin:
         # there alone, so reclamation stopped adopting somebody else's
         # "minted" while this went on appending workspace paths into it --
         # which is the half that damages their file.
-        if not _ledger_content_is_ours(ledger):
+        if not _ledger_content_is_ours(ledger, self.memory_dir):
             return
         try:
             parent.mkdir(parents=True, exist_ok=True)
@@ -1005,7 +1028,7 @@ class MigrationsMixin:
             # and would have failed the launch on every attempt --
             # reclamation is best effort and must never do that.
             return
-        if not _ledger_lines_are_all_ours(recorded):
+        if not _ledger_lines_are_all_ours(recorded, self.memory_dir):
             # A "minted" that already belonged to a user or a plugin. Path
             # validation stops the directories its lines name from being
             # removed, but the tidy-up below would still DELETE the file

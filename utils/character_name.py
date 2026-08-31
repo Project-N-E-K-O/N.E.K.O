@@ -165,15 +165,20 @@ def validate_character_name(
     # Windows 会静默去掉尾部点号，导致路径歧义（如 "foo." → "foo"）。
     if normalized == "." or normalized.endswith("."):
         return CharacterNameValidationResult(normalized=normalized, code="unsafe_dot")
-    # A LEADING dot is refused whatever ``allow_dots`` says. The migration
-    # reserves dot-prefixed directory names inside memory_dir for its own
-    # workspaces, and that separation is only sound while no character can
-    # claim one -- six rounds of findings on the cloud import's workspace
-    # exemption came from the two namespaces overlapping. It is also the
-    # POSIX convention for hidden entries, which a character name has no
-    # business being.
-    if normalized.startswith("."):
-        return CharacterNameValidationResult(normalized=normalized, code="leading_dot")
+    # NO leading-dot rule here, deliberately, and it was tried.
+    #
+    # The migration reserves dot-prefixed names inside memory_dir for its
+    # workspaces, so it wants no character to hold one -- and CREATION
+    # already sees to that: every path that makes a character validates with
+    # ``allow_dots=False``, which refuses any dot at all. Adding the rule
+    # here as well changed nothing there and broke the other direction: this
+    # function is also the REQUEST and SNAPSHOT check, applied with
+    # ``allow_dots=True`` to names that already exist, so an install
+    # upgrading with a legacy ".Carol" would have started failing every
+    # memory call with a 400 and reporting its own cloud snapshot invalid.
+    #
+    # Forbidding a name and breaking the data already carrying it are not the
+    # same change. The first is done; the second is not wanted.
     if not allow_dots and "." in normalized:
         return CharacterNameValidationResult(normalized=normalized, code="contains_dot")
     if is_reserved_device_name(normalized):
