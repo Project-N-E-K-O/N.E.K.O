@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import os
 import secrets
 import socket
 import threading
@@ -23,13 +24,44 @@ logger = get_logger("server.messaging.plane_bridge")
 
 _RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError)
 
-# The ingest credential is minted here and never leaves this process. The
-# bridge is the only writer to the ingest socket, and the message plane it
-# authenticates against is started by the same process (see
+# The ingest credential. The bridge is the only writer to the ingest socket, and
+# the message plane it authenticates against is started by the same process (see
 # ServerLifecycleService._start_message_plane), so a process-local secret is
-# enough — plugin children reach the host over their own per-host uplink and
-# never touch this socket.
+# enough — plugin children reach the host over their own per-host uplink and have
+# no business on this socket.
+#
+# ⚠️ "never leaves this process" is NOT free, which an earlier version of this
+# comment claimed it was. Plugin hosts are started with a bare
+# ``multiprocessing.Process`` (plugin/core/host.py), so on POSIX they are
+# FORKED — the child inherits this module already imported, with this exact
+# token, and plugin code can simply ``import`` it and write authenticated deltas
+# straight to ingest. That bypasses the per-host uplink's identity stamping,
+# which is the whole point of routing plugin messages through the host.
+#
+# So the child re-mints. Its value then matches nothing the plane accepts, which
+# is the correct outcome: the two legitimate readers (``_dumps`` here, and
+# ServerLifecycleService handing it to the ingest server) both live in the
+# process that starts the plane, and neither has a counterpart in a child.
 _INGEST_AUTH_TOKEN = secrets.token_urlsafe(32)
+
+
+def _remint_ingest_token_in_child() -> None:
+    """Give a forked child a credential the host's plane will reject."""
+    global _INGEST_AUTH_TOKEN
+    _INGEST_AUTH_TOKEN = secrets.token_urlsafe(32)
+
+
+# 注册这件事本身要可观测。本仓两个 pytest job 都跑 windows-latest，而 Windows
+# 走 spawn——子进程无论如何都会自己重铸，于是"钩子根本没注册"这个变异在
+# Windows 上完全测不出来。把注册结果记成模块状态，守卫就能在任何平台断言它，
+# 哪怕真正的 fork 行为只有 POSIX 上跑得到。
+_FORK_HOOK_REGISTERED = False
+
+if hasattr(os, "register_at_fork"):
+    # POSIX only; on spawn platforms the child re-imports and mints its own
+    # anyway, so there is nothing to undo.
+    os.register_at_fork(after_in_child=_remint_ingest_token_in_child)
+    _FORK_HOOK_REGISTERED = True
 
 
 def ingest_auth_token() -> str:
