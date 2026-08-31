@@ -35,8 +35,10 @@ from __future__ import annotations
 import asyncio
 import json
 import pickle
+import os
 import queue
 import secrets
+import sys
 import threading
 import time
 from pathlib import PurePath
@@ -254,6 +256,53 @@ def _authenticate_image_metadata(
 # ═══════════════════════════════════════════════════════════════════
 
 _IMG_LOCK_SHUTDOWN_WAIT_S = 2.0
+
+
+# 每个 host 一把 uplink token（见 HostTransport.__init__）。这些 token 全部挂在
+# state.plugin_hosts 上，而插件进程是裸 multiprocessing.Process 起的，POSIX 上
+# 就是 fork——启动插件 B 的那一刻，B 的子进程整份继承了这张表，里面有 A 的
+# HostTransport、A 的 token、A 的 downlink/uplink 端点字符串。B 于是能拿 A 的
+# 凭证造一个 ChildTransport，往 A 的 socket 上发合法的 CH_RES/CH_STS/CH_COMM，
+# A 侧会当作 A 自己发的——本分支新加的 per-host 鉴权就这么绕过去了。
+#
+# plane_bridge 的 ingest token 已经有同款钩子，但它只重铸自己那一个模块级变量；
+# 这里的 token 是每个 host 一份、挂在共享状态上的，要另外擦。
+#
+# ⚠️ 这是纵深防御，不是边界。fork 之后子进程的堆里仍然留着那些字符串的字节，
+# 一个存心的插件仍可以去翻自己的内存。真正的结构性解法是让插件进程不用 fork
+# （spawn/forkserver）——Windows 本来就是 spawn，所以插件代码其实已经在 spawn
+# 下跑得通了。那是个有性能代价的架构改动，不在本次范围内。
+def _scrub_inherited_host_credentials() -> None:
+    """Drop other hosts' credentials from a freshly forked child."""
+    # 用 sys.modules 而不是 import：这是 fork 之后的子进程，父进程可能正好有别的
+    # 线程持着 import 锁，在钩子里触发一次真正的 import 就可能直接死锁。而且逻辑
+    # 上也够——父进程没导入过 state，就没有可继承的东西。
+    mod = sys.modules.get("plugin.core.state")
+    state_obj = getattr(mod, "state", None) if mod is not None else None
+    hosts = getattr(state_obj, "plugin_hosts", None)
+    if not isinstance(hosts, dict):
+        return
+    for host in list(hosts.values()):
+        transport = getattr(host, "transport", None)
+        if transport is None:
+            continue
+        # 直接把值打掉，而不是只丢引用：子进程里可能还有别处引着这个对象。
+        if hasattr(transport, "_uplink_token"):
+            try:
+                transport._uplink_token = ""
+            except Exception:
+                pass
+    hosts.clear()
+
+
+# 和 plane_bridge 一样，把"注册成功了没有"记成模块状态：两个 pytest job 都跑
+# windows-latest，Windows 走 spawn，fork 行为本身在 CI 上一次都执行不到，
+# 只有这个标志能让守卫在任何平台上断言接线还在。
+_HOST_CREDENTIAL_FORK_HOOK_REGISTERED = False
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_scrub_inherited_host_credentials)
+    _HOST_CREDENTIAL_FORK_HOOK_REGISTERED = True
 
 
 class HostTransport:
