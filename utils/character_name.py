@@ -165,6 +165,15 @@ def validate_character_name(
     # Windows 会静默去掉尾部点号，导致路径歧义（如 "foo." → "foo"）。
     if normalized == "." or normalized.endswith("."):
         return CharacterNameValidationResult(normalized=normalized, code="unsafe_dot")
+    # A LEADING dot is refused whatever ``allow_dots`` says. The migration
+    # reserves dot-prefixed directory names inside memory_dir for its own
+    # workspaces, and that separation is only sound while no character can
+    # claim one -- six rounds of findings on the cloud import's workspace
+    # exemption came from the two namespaces overlapping. It is also the
+    # POSIX convention for hidden entries, which a character name has no
+    # business being.
+    if normalized.startswith("."):
+        return CharacterNameValidationResult(normalized=normalized, code="leading_dot")
     if not allow_dots and "." in normalized:
         return CharacterNameValidationResult(normalized=normalized, code="contains_dot")
     if is_reserved_device_name(normalized):

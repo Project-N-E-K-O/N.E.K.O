@@ -2603,3 +2603,72 @@ def test_rollback_does_not_restore_over_a_workspace_that_became_ours(tmp_path):
     assert (late / "d" / "in-flight.json").read_text(encoding="utf-8") == "[fresh]", (
         "rollback restored a stale backup over a live migration workspace"
     )
+
+
+@pytest.mark.unit
+def test_a_tombstoned_character_is_not_republished_from_the_seed(tmp_path):
+    """Deleting a character must not be undone by the next startup.
+
+    A cloud snapshot that keeps the profile but omits every managed memory
+    file has the import unlink them, and the emptied character directory is
+    removed. "Destination missing" then looks exactly like "never migrated",
+    so the whole stale project seed was published again -- restoring facts
+    and history the user deleted.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    project_root = tmp_path / "project-memory"
+    runtime_root = tmp_path / "runtime-memory"
+    config_manager.project_memory_dir = project_root
+    config_manager.memory_dir = runtime_root
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    (project_root / "recent_Carol.json").write_text('["stale"]', encoding="utf-8")
+    (project_root / "time_indexed_Carol.db").write_bytes(b"stale")
+    (project_root / "Dora").mkdir()
+    (project_root / "Dora" / "facts.json").write_text('["stale"]', encoding="utf-8")
+    # Not deleted, so this one must still be seeded.
+    (project_root / "recent_Eve.json").write_text('["seed"]', encoding="utf-8")
+
+    with patch.object(
+        migrations_module,
+        "_tombstoned_character_names",
+        lambda cm: frozenset({"Carol", "Dora"}),
+    ):
+        config_manager.migrate_memory_files()
+
+    assert not (runtime_root / "recent_Carol.json").exists(), (
+        "a deleted character's flat seed was republished"
+    )
+    assert not (runtime_root / "time_indexed_Carol.db").exists(), (
+        "the filename with an extension decoded to the wrong owner and slipped"
+    )
+    assert not (runtime_root / "Dora").exists(), (
+        "a deleted character's seed directory was republished"
+    )
+    assert (runtime_root / "recent_Eve.json").read_text(encoding="utf-8") == '["seed"]', (
+        "the tombstone check stopped seeding characters that were never deleted"
+    )
+
+
+@pytest.mark.unit
+def test_an_unreadable_tombstone_file_still_seeds(tmp_path):
+    """The safe direction: a bad read republishes, as it did before this existed.
+
+    Refusing to migrate would be a startup that silently stops seeding, which
+    is worse than the case this guards.
+    """
+    from unittest.mock import MagicMock
+
+    from utils.config_manager.migrations import _tombstoned_character_names
+
+    broken = MagicMock()
+    broken.load_character_tombstones_state.side_effect = OSError("unreadable")
+    assert _tombstoned_character_names(broken) == frozenset()
+
+    for shape in (None, [], {"tombstones": "not a list"}, {}):
+        stub = MagicMock()
+        stub.load_character_tombstones_state.return_value = shape
+        assert _tombstoned_character_names(stub) == frozenset()

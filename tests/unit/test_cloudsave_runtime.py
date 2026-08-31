@@ -3829,7 +3829,6 @@ def test_no_shipped_character_name_begins_with_a_dot():
     false on a fresh install, which is the one place it could be broken
     without anybody typing it.
     """
-    import json
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -3872,3 +3871,43 @@ def test_an_empty_pre_existing_ledger_is_left_alone(tmp_path):
     manager._reclaim_recorded_workspaces(None, 0.0)
 
     assert ledger.exists(), "an empty ledger was unlinked without evidence"
+
+
+def test_a_character_name_may_not_begin_with_a_dot():
+    """The rule the workspace exemption rests on, now enforced.
+
+    The migration reserves dot-prefixed directory names inside memory_dir for
+    its workspaces, and that separation is only sound while no character can
+    claim one. Six rounds of findings on the cloud import's exemption came
+    from the two namespaces overlapping.
+    """
+    from utils.character_name import validate_character_name
+
+    for name in (".mig-Carol", ".hidden", ".", ".."):
+        assert validate_character_name(name, allow_dots=True).code is not None, name
+
+    # And the ordinary names still pass, including a dot that is not leading.
+    assert validate_character_name("Carol", allow_dots=True).code is None
+    assert validate_character_name("小八", allow_dots=True).code is None
+    assert validate_character_name("v1.2", allow_dots=True).code is None
+
+
+def test_an_unreadable_ledger_is_not_treated_as_creatable(tmp_path):
+    """Append-but-not-read permissions would have modified an external file.
+
+    Every OSError counted as "ours to create", so a "minted" we could not
+    look at was appended to anyway. Only its absence means that.
+    """
+    from unittest.mock import patch
+
+    from utils.config_manager.migrations import _ledger_content_is_ours
+
+    ledger = tmp_path / "minted"
+    ledger.write_text("whatever\n", encoding="utf-8")
+
+    with patch.object(
+        type(ledger), "read_text", side_effect=PermissionError("no read")
+    ):
+        assert _ledger_content_is_ours(ledger) is False
+
+    assert _ledger_content_is_ours(tmp_path / "absent") is True

@@ -379,6 +379,54 @@ def _ledger_lines_are_all_ours(lines):
     return True
 
 
+def _tombstoned_character_names(config_manager):
+    """Characters recorded as deliberately deleted, by name.
+
+    Best effort and EMPTY on any failure, which is the safe direction: an
+    unreadable tombstone file republishes a seed, exactly as before this
+    existed. Refusing to migrate on a bad read would be a startup that
+    silently stops seeding.
+    """
+    try:
+        state = config_manager.load_character_tombstones_state()
+    except Exception:
+        return frozenset()
+    entries = state.get("tombstones") if isinstance(state, dict) else None
+    if not isinstance(entries, list):
+        return frozenset()
+    names = set()
+    for entry in entries:
+        name = entry.get("character_name") if isinstance(entry, dict) else entry
+        if isinstance(name, str) and name:
+            names.add(name)
+    return frozenset(names)
+
+
+def _seed_entry_owner_candidates(filename):
+    """Every character name a flat seed filename could belong to.
+
+    A SET, not a guess. The pattern table holds both "time_indexed_{name}"
+    and "time_indexed_{name}.db", so "time_indexed_Carol.db" decodes to
+    "Carol" under one and "Carol.db" under the other -- picking wrong is a
+    defect this repo has already shipped once. Every candidate is offered and
+    the caller asks whether ANY of them is tombstoned, so a wrong decode can
+    only fail towards the old behaviour.
+
+    Derived from the migration table rather than a second list of patterns.
+    """
+    from utils.character_memory import LEGACY_CHARACTER_MEMORY_FILE_MAP
+
+    candidates = set()
+    for pattern in LEGACY_CHARACTER_MEMORY_FILE_MAP:
+        prefix, _, suffix = pattern.partition("{name}")
+        if not filename.startswith(prefix) or not filename.endswith(suffix):
+            continue
+        name = filename[len(prefix):len(filename) - len(suffix) or None]
+        if name:
+            candidates.add(name)
+    return candidates
+
+
 def _ledger_content_is_ours(ledger):
     """Whether an EXISTING ledger holds only lines we could have written.
 
@@ -392,8 +440,15 @@ def _ledger_content_is_ours(ledger):
     """
     try:
         lines = ledger.read_text(encoding="utf-8").splitlines()
-    except OSError:
+    except FileNotFoundError:
+        # Nothing of theirs to damage, and creating it is the ordinary case.
         return True
+    except OSError:
+        # Present but unreadable -- a permission that allows APPEND and not
+        # read is enough for this, and the append below would then succeed
+        # and modify a file we were never able to look at. Absent is the only
+        # OSError that means "ours to create".
+        return False
     except UnicodeDecodeError:
         # Truncated mid-character by a kill. Ours or not, appending to it is
         # not going to make it more readable; the read side skips it and so
@@ -1147,6 +1202,17 @@ class MigrationsMixin:
         if not self.ensure_memory_directory():
             self._log("Warning: Cannot create memory directory, using project memory")
             return
+
+        # Characters the user deleted. "Destination missing" cannot tell
+        # "never migrated" from "migrated, then deleted": a cloud snapshot
+        # that keeps a profile but omits every managed memory file has the
+        # import unlink them and remove the emptied directory, and the next
+        # startup would republish the whole stale seed -- restoring facts and
+        # history that were deliberately removed.
+        #
+        # The record already exists and is written by the delete path; this
+        # migration simply never read it.
+        tombstoned = _tombstoned_character_names(self)
         
         # 如果项目memory/store目录不存在，跳过
         
@@ -1213,6 +1279,10 @@ class MigrationsMixin:
                         continue
 
                     if item.is_file():
+                        if _seed_entry_owner_candidates(item.name) & tombstoned:
+                            # Deleted on purpose. Republishing the seed is
+                            # how deleted history came back.
+                            continue
                         # 同样要原子化。散文件这一支原先是裸 copy2，中断会
                         # 在目标留下一个被截断的文件——而「目标已存在就跳过」
                         # 会把它永久当成迁移完成，正是目录那支要避免的东西。
@@ -1314,6 +1384,11 @@ class MigrationsMixin:
                         continue
 
                     if not item.is_dir():
+                        continue
+
+                    if item.name in tombstoned:
+                        # Same rule as the file branch: a directory seed is
+                        # named for its character outright.
                         continue
 
                     # 同盘暂存 → 原子 rename。暂存目录用点前缀，且只在这
