@@ -466,6 +466,73 @@ def test_no_module_prints_a_directive_bearing_prompt():
     )
 
 
+def test_ban_gate_runs_before_any_repeat_detection():
+    """⚠️ The ban gate must precede every repeat detector, on both draft paths.
+
+    Repeat detectors persist a ``RepeatSignature`` (which carries the draft
+    ``phrase`` verbatim) into ``anti_repeat_effects.json`` when they block. A
+    draft that trips both a ban term and a repeat check would therefore have
+    that fragment written to disk before the ban gate ever ran — the gate would
+    stop delivery but not the leak, and disk outlives the session.
+    """
+    # 顺序是纯位置性质，行为测试抓不到：把闸挪回复读检测后面，所有 drop/pass
+    # 用例照样全绿（泄漏发生在闸执行之前，闸自己的行为不变）。所以按 AST 的
+    # 出现顺序钉死。
+    import ast
+    import inspect
+
+    gen_module = inspect.getmodule(_proactive_directive_hits)
+    tree = ast.parse(inspect.getsource(gen_module))
+
+    gate_lines, initial_detectors, regen_detectors = [], [], []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+        if name == "_proactive_directive_hits":
+            gate_lines.append(node.lineno)
+        elif name in {
+            # 出稿侧：落盘 RepeatSignature 的记录点 + 产生片段的检测器
+            "record_anti_repeat_decision",
+            "_find_similar_recent_proactive_chat",
+        }:
+            initial_detectors.append(node.lineno)
+        elif name == "_score_regenerated_draft":
+            # 改写稿的复读评分入口
+            regen_detectors.append(node.lineno)
+        elif name == "record_regen_effect":
+            # ⚠️ 只算**带改写稿片段**的那些（outcome 名含 after_regen）。
+            # `abandoned_user_interaction` / `regen_failed` 是 regen 流程的
+            # 中止记录，发生时改写稿还不存在或已废弃，不涉及片段落盘；而且
+            # 它们必然排在 ban 闸之前 —— 闸要检查 `cleaned`，那要等 regen 跑完。
+            first = node.args[0] if node.args else None
+            outcome = getattr(first, "value", None)
+            if isinstance(outcome, str) and "after_regen" in outcome:
+                regen_detectors.append(node.lineno)
+
+    assert len(gate_lines) == 2, (
+        f"预期两道闸（出稿 + regen），实际 {len(gate_lines)} 处：{gate_lines}"
+    )
+    assert initial_detectors and regen_detectors, (
+        "没扫到复读检测/记录点，守卫失去意义"
+    )
+    first_gate, second_gate = sorted(gate_lines)
+
+    # ⚠️ 判据按**两侧各自**算，不能拿"regen 闸之前不许有任何检测点"一刀切：
+    # 出稿闸放行之后本来就要跑出稿侧的复读检测，那些位置在 regen 闸之前是对的。
+    before_first = [ln for ln in initial_detectors if ln < first_gate]
+    assert not before_first, (
+        f"出稿侧 ban 闸（行 {first_gate}）之前就有复读检测/记录：{before_first} —— "
+        "含 ban term 的片段会先被写进 anti_repeat_effects.json"
+    )
+    regen_before_gate = [ln for ln in regen_detectors if ln < second_gate]
+    assert not regen_before_gate, (
+        f"regen 侧 ban 闸（行 {second_gate}）之前有 regen 侧检测/记录："
+        f"{regen_before_gate} —— 同一条判据，改写稿的片段同样会落盘"
+    )
+
+
 def test_service_actually_calls_the_injection_helper():
     """Static guard: a correct helper proves nothing about it being wired up."""
     # 注入点在 ``handle_proactive_chat`` 这个巨型函数里，没有便宜的端到端驱动

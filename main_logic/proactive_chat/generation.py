@@ -1291,6 +1291,55 @@ async def _guard_phase2_output(
             material_key or "(none)",
         )
 
+    # ── 用户显式 ban-topic 硬闸 ────────────────────────────────────
+    # Phase 2 prompt 里已经有一段软约束（service.py 注入），这里是出口兜底：
+    # 草稿里仍然逐字出现被 ban 的话题就直接 drop。
+    #
+    # ⚠️ **drop 而不是 regen**：regen 是一次额外的 LLM 调用，直接进账单，而
+    # 这道闸命中的前提已经是"模型看过禁令还是提了"，再花一次钱赌它改口不划算。
+    # drop 零成本，且语义正确——用户明说不想听，这次不搭话就是对的。
+    #
+    # ⚠️ **不受 exempt_text_dedup 豁免**。那个豁免的判据是"素材新鲜就别拿
+    # 台词复读度卡它"，针对的是 BM25 误杀模板化开场白；而用户 ban 的话题跟
+    # 素材新不新鲜无关——推歌台词里提到用户说过别提的事，照样该拦。
+    #
+    # ⚠️⚠️ **必须排在所有复读检测之前**（字面查重 / BM25 / 未回应长窗）。
+    # 那几道闸 drop 时会调 ``record_anti_repeat_decision``，而它带的
+    # ``RepeatSignature`` 含 ``phrase`` / ``normalized_phrase`` —— **草稿片段
+    # 原文**，并且经 store **落盘**到 anti_repeat_effects.json。草稿同时命中
+    # 禁令与复读时，排在后面的 ban 闸只拦住了投递，那段含 ban term 的片段早已
+    # 被写进磁盘（比 stdout 严重：会话结束也不会消失）。
+    # 顺带这也是让下面那句"防复读没有做决策"成立的前提 —— 闸排在后面时那句话
+    # 是假的：复读检测已经跑过、已经记过了（coderabbit）。
+    directive_hits = _proactive_directive_hits(lanlan_name, response_text)
+    if directive_hits:
+        # ⚠️ **不打印 term 原文**。被 ban 的话题按定义就是用户明说了不想再听
+        # 的东西——前任、病名、裁员、逝者姓名。日志会落盘（logs/ 下持久化），
+        # 用户报 bug 时可能整包交出去，而这批词恰恰是全流程里最敏感的一类文本。
+        # 只记条数，够定位"这次是被禁令闸拦的"，不够复原用户说了什么。
+        active_logger.info(
+            "[%s] proactive blocked by user ban-topic directive (%d term(s) matched)",
+            lanlan_name,
+            len(directive_hits),
+        )
+        print(
+            f"[{lanlan_name}] 主动搭话命中用户明确要求回避的话题，已拦截 "
+            f"({len(directive_hits)} 项)"
+        )
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return _output(
+            result=ProactiveChatResult(
+                body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_USER_DIRECTIVE,
+                    message="主动搭话命中用户明确要求回避的话题，已拦截",
+                    # 同上：只回条数，不回原文。这个 body 会经 /api/proactive_chat
+                    # 出到前端。
+                    directive_match_count=len(directive_hits),
+                )
+            )
+        )
+
     # One scan, not two: the guard verdict and the evidence fragment used by the
     # effect record come from the same match. ``_is_similar_to_recent_proactive_chat``
     # is only the historical (bool, score) wrapper around this call, so calling it
@@ -1347,46 +1396,6 @@ async def _guard_phase2_output(
                     message="主动搭话重复度过高，已拦截",
                     similarity=similarity_score,
                     threshold=_PROACTIVE_SIMILARITY_THRESHOLD,
-                )
-            )
-        )
-
-    # ── 用户显式 ban-topic 硬闸 ────────────────────────────────────
-    # Phase 2 prompt 里已经有一段软约束（service.py 注入），这里是出口兜底：
-    # 草稿里仍然逐字出现被 ban 的话题就直接 drop。
-    #
-    # ⚠️ **drop 而不是 regen**：regen 是一次额外的 LLM 调用，直接进账单，而
-    # 这道闸命中的前提已经是"模型看过禁令还是提了"，再花一次钱赌它改口不划算。
-    # drop 零成本，且语义正确——用户明说不想听，这次不搭话就是对的。
-    #
-    # ⚠️ **不受 exempt_text_dedup 豁免**。那个豁免的判据是"素材新鲜就别拿
-    # 台词复读度卡它"，针对的是 BM25 误杀模板化开场白；而用户 ban 的话题跟
-    # 素材新不新鲜无关——推歌台词里提到用户说过别提的事，照样该拦。
-    directive_hits = _proactive_directive_hits(lanlan_name, response_text)
-    if directive_hits:
-        # ⚠️ **不打印 term 原文**。被 ban 的话题按定义就是用户明说了不想再听
-        # 的东西——前任、病名、裁员、逝者姓名。日志会落盘（logs/ 下持久化），
-        # 用户报 bug 时可能整包交出去，而这批词恰恰是全流程里最敏感的一类文本。
-        # 只记条数，够定位"这次是被禁令闸拦的"，不够复原用户说了什么。
-        active_logger.info(
-            "[%s] proactive blocked by user ban-topic directive (%d term(s) matched)",
-            lanlan_name,
-            len(directive_hits),
-        )
-        print(
-            f"[{lanlan_name}] 主动搭话命中用户明确要求回避的话题，已拦截 "
-            f"({len(directive_hits)} 项)"
-        )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
-        return _output(
-            result=ProactiveChatResult(
-                body=_proactive_pass_body(
-                    PROACTIVE_REASON_PASS_USER_DIRECTIVE,
-                    message="主动搭话命中用户明确要求回避的话题，已拦截",
-                    # 同上：只回条数，不回原文。这个 body 会经 /api/proactive_chat
-                    # 出到前端。
-                    directive_match_count=len(directive_hits),
                 )
             )
         )
@@ -1662,6 +1671,43 @@ async def _guard_phase2_output(
             )
         )
 
+        # 与出稿侧那道 ban-topic 闸对偶：走到 regen 的草稿本来是干净的，但
+        # 重写可能把被 ban 的话题引进来（avoidance prompt 只针对 BM25 词，
+        # 不认用户禁令）。同样是纯字符串匹配，零额外 LLM。
+        #
+        # ⚠️⚠️ 必须排在**所有** regen 侧复读检测之前（BM25 评分、未回应长窗、
+        # 字面查重），而不只是排在 ``record_regen_effect("regen_guard_passed")``
+        # 之前。理由与出稿侧同一条：那几道闸 drop 时记的
+        # ``record_anti_repeat_decision`` 带着**草稿片段原文**并落盘到
+        # anti_repeat_effects.json；排在它们后面的话，含 ban term 的片段已经
+        # 进了磁盘，闸只拦住投递。
+        # （"所有闸都过了才记 passed"那条也顺带成立，它是这个位置的推论。）
+        regen_directive_hits = _proactive_directive_hits(lanlan_name, cleaned)
+        if regen_directive_hits:
+            # ⚠️ 这里**刻意不记** record_regen_effect。它写的是
+            # ``record_anti_repeat_decision``（#2876 的本地重复表达洞察），而
+            # ban-topic 不是复读判定，是另一个维度的用户禁令。往那个面板记一条
+            # 非复读原因的 outcome，会把这条 regen 的归因指向错误的检测器 ——
+            # 面板上"这条被判定为复读"是假的。真实情况是防复读**没有**做决策：
+            # 草稿被另一个系统提前终止了，所以它在该面板上不出现才是对的。
+            active_logger.info(
+                "[%s] proactive regen hit user ban-topic directive "
+                "(%d term(s) matched), drop",
+                lanlan_name,
+                len(regen_directive_hits),
+            )
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return _output(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_PASS_USER_DIRECTIVE,
+                        message="改写后仍命中用户明确要求回避的话题，已 drop",
+                        directive_match_count=len(regen_directive_hits),
+                    )
+                )
+            )
+
         regen_total, regen_bm25_terms = _score_regenerated_draft(
             anti_repeat_corpus,
             lanlan_name,
@@ -1793,37 +1839,6 @@ async def _guard_phase2_output(
                         message="BM25 regen 后字面相似度仍超阈值，已 drop",
                         similarity=regen_similarity,
                         threshold=_PROACTIVE_SIMILARITY_THRESHOLD,
-                    )
-                )
-            )
-        # 与出稿侧那道 ban-topic 闸对偶：走到 regen 的草稿本来是干净的，但
-        # 重写可能把被 ban 的话题引进来（avoidance prompt 只针对 BM25 词，
-        # 不认用户禁令）。同样是纯字符串匹配，零额外 LLM。
-        #
-        # ⚠️ 必须排在 ``record_regen_effect("regen_guard_passed")`` **之前**：
-        # 那个埋点的语义是"所有闸都过了"，被禁令拦下时先记一句 passed 就是假数据。
-        regen_directive_hits = _proactive_directive_hits(lanlan_name, cleaned)
-        if regen_directive_hits:
-            # ⚠️ 这里**刻意不记** record_regen_effect。它写的是
-            # ``record_anti_repeat_decision``（#2876 的本地重复表达洞察），而
-            # ban-topic 不是复读判定，是另一个维度的用户禁令。往那个面板记一条
-            # 非复读原因的 outcome，会把这条 regen 的归因指向错误的检测器 ——
-            # 面板上"这条被判定为复读"是假的。真实情况是防复读**没有**做决策：
-            # 草稿被另一个系统提前终止了，所以它在该面板上不出现才是对的。
-            active_logger.info(
-                "[%s] proactive regen hit user ban-topic directive "
-                "(%d term(s) matched), drop",
-                lanlan_name,
-                len(regen_directive_hits),
-            )
-            if _proactive_turn_still_owned(mgr, proactive_sid):
-                await mgr.handle_new_message()
-            return _output(
-                result=ProactiveChatResult(
-                    body=_proactive_pass_body(
-                        PROACTIVE_REASON_PASS_USER_DIRECTIVE,
-                        message="改写后仍命中用户明确要求回避的话题，已 drop",
-                        directive_match_count=len(regen_directive_hits),
                     )
                 )
             )
