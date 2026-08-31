@@ -95,9 +95,13 @@ def validate_plugin_dir(
     if not entry:
         issues.append(("error", "plugin.entry is missing"))
     else:
-        expected_prefix = f"plugin.plugins.{source.plugin_id}:"
-        if not entry.startswith(expected_prefix):
-            issues.append(("warning", f"plugin.entry should usually start with '{expected_prefix}', got '{entry}'"))
+        expected_module = f"plugin.plugins.{source.plugin_id}"
+        entry_module = entry.split(":", 1)[0].strip()
+        if entry_module != expected_module and not entry_module.startswith(expected_module + "."):
+            issues.append((
+                "warning",
+                f"plugin.entry should usually target '{expected_module}', got '{entry}'",
+            ))
         _check_entry_target(plugin_dir, source.plugin_id, entry, source.package_type, issues)
 
     if not plugin_table.get("sdk"):

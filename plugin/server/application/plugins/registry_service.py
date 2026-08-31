@@ -12,12 +12,10 @@ from typing import Any
 
 from plugin.core.dependency import _topological_sort_plugins
 from plugin.core.entry_points import describe_plugin_entry_directory_mismatch
-from plugin.core.host import _import_plugin_module
 from plugin.core.registry import (
     PluginContext,
     _build_plugin_meta,
     _check_plugin_dependency,
-    _ensure_python_requirement_paths,
     _extract_entries_preview,
     _extract_plugin_ui_config,
     _find_missing_python_requirements,
@@ -25,6 +23,10 @@ from plugin.core.registry import (
     _prepare_plugin_import_roots,
     _resolve_plugin_id_conflict,
     register_plugin,
+)
+from plugin.server.application.plugins.metadata_scanner import (
+    PluginMetadataScanError,
+    scan_plugin_metadata_isolated,
 )
 from plugin.core.state import state
 from plugin.logging_config import get_logger
@@ -542,35 +544,26 @@ def _build_discovery_payload(
                         pdata=ctx.pdata,
                     )
                 else:
-                    # The startup loader installs vendor paths on sys.path before
-                    # importing each plugin's entry module; do the same here so a
-                    # plugin whose [project].dependencies live only under its own
-                    # vendor/ directory does not get falsely recorded as
-                    # ImportError/ModuleNotFoundError during a registry refresh.
-                    _ensure_python_requirement_paths(
-                        ctx.python_requirement_paths,
-                        logger,
-                        plugin_id,
-                    )
                     try:
                         module_path, class_name = ctx.entry.split(":", 1)
-                        module_obj = _import_plugin_module(module_path, ctx.toml_path, logger)
-                        cls_obj = getattr(module_obj, class_name)
-                        entries_preview = _extract_entries_preview(plugin_id, cls_obj, ctx.conf, ctx.pdata)
-                    except (ImportError, ModuleNotFoundError, SyntaxError) as exc:
-                        error_type = type(exc).__name__
-                        error_message = str(exc)
-                        error_phase = "import_module"
-                        entries_preview = _extract_entries_preview(
-                            plugin_id,
-                            cls=type("FailedPluginStub", (), {}),
+                        isolated_metadata = scan_plugin_metadata_isolated(
+                            plugin_id=plugin_id,
+                            module_path=module_path,
+                            class_name=class_name,
+                            config_path=ctx.toml_path,
                             conf=ctx.conf,
                             pdata=ctx.pdata,
+                            python_requirement_paths=ctx.python_requirement_paths,
                         )
-                    except AttributeError as exc:
-                        error_type = "AttributeError"
-                        error_message = f"Class not found for entry '{ctx.entry}': {exc}"
-                        error_phase = "import_class"
+                        entries_preview = isolated_metadata.entries_preview
+                    except PluginMetadataScanError as exc:
+                        error_type = exc.error_type
+                        error_message = str(exc)
+                        error_phase = (
+                            "import_class"
+                            if exc.error_type == "AttributeError"
+                            else "import_module"
+                        )
                         entries_preview = _extract_entries_preview(
                             plugin_id,
                             cls=type("FailedPluginStub", (), {}),

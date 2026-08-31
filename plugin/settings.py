@@ -521,6 +521,30 @@ MESSAGE_PLANE_ZMQ_RPC_ENDPOINT = os.getenv(
     os.getenv("NEKO_MESSAGE_PLANE_RPC", "tcp://127.0.0.1:38865"),
 )
 
+
+def resolve_message_plane_rpc_endpoint() -> str:
+    """The RPC endpoint the plane is actually on, read at call time.
+
+    The constant above is frozen when this module is imported, which happens
+    before ``build_message_plane_runner()`` runs. When the configured port is
+    occupied that runner moves the plane to a fallback and publishes the new
+    address by writing ``NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT`` back into the
+    environment -- so anything holding the constant is pointed at the occupied
+    port and every bus read fails.
+
+    Affects the host process as much as a forked plugin child: the constant was
+    already computed there too. A spawned child re-imports this module and picks
+    the new value up on its own, which is why the symptom is POSIX-shaped.
+
+    This mirrors what ``ProactiveBridge._run`` already does for the PUB
+    endpoint (``os.getenv(..., str(MESSAGE_PLANE_ZMQ_PUB_ENDPOINT))``); the RPC
+    consumers were the ones left reading the frozen value.
+    """
+    return os.getenv(
+        "NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",
+        os.getenv("NEKO_MESSAGE_PLANE_RPC", str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT)),
+    )
+
 # Message plane ZeroMQ PUB 端点（用于高频 bus 的订阅/推送，例如 watcher、export progress 等）
 # 使用 TCP 回环（127.0.0.1），在某些系统上比 IPC 更快
 # Env: NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT, default="tcp://127.0.0.1:38866"
@@ -548,6 +572,27 @@ MESSAGE_PLANE_TOPIC_NAME_MAX_LEN = _get_int_env("NEKO_MESSAGE_PLANE_TOPIC_NAME_M
 # Env: NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES, default=512*1024
 MESSAGE_PLANE_PAYLOAD_MAX_BYTES = _get_int_env("NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 512 * 1024)
 MESSAGE_PLANE_STORE_MAXLEN = _get_int_env("NEKO_MESSAGE_PLANE_STORE_MAXLEN", 20000)
+
+# ``frames`` store 的独立容量。绝不能复用 MESSAGE_PLANE_STORE_MAXLEN：那是
+# per-topic deque 长度，20000 张 ~150 KB 的截图约 2 GB 常驻，且等于把用户约 8
+# 小时的屏幕历史留在 agent_server 进程里。frames 的契约是"provider 最近收到的
+# 那几张"，不是日志，所以这里只留个位数。
+# 下界 2：单张会让"刚拉过一次就被下一帧顶掉"变成常态，pull 方连一次重试都做不了。
+# 上界 8：再大只是延长屏幕内容的驻留时间，对 pull 方没有额外价值。
+# Env: NEKO_MESSAGE_PLANE_FRAMES_STORE_MAXLEN, default=4
+MESSAGE_PLANE_FRAMES_STORE_MAXLEN = max(
+    2, min(8, _get_int_env("NEKO_MESSAGE_PLANE_FRAMES_STORE_MAXLEN", 4))
+)
+
+# 一帧允许排进 plane bridge 发送队列的前提：队列当前深度低于这个水位。
+# bridge 的队列（maxsize=4096）是 events / lifecycle / runs 共用的，一条普通记录
+# 几百字节，一帧却是几百 KB。不设水位的话，bridge 一旦卡住，队列会先被帧填满，
+# 挤掉那些真正需要送达的小记录，内存也跟着涨到几百 MB。帧本来就是有损的：
+# bridge 落后时直接丢，比排队几分钟后送一张过期的图更符合契约。
+# Env: NEKO_MESSAGE_PLANE_FRAMES_BRIDGE_MAX_PENDING, default=64
+MESSAGE_PLANE_FRAMES_BRIDGE_MAX_PENDING = max(
+    1, _get_int_env("NEKO_MESSAGE_PLANE_FRAMES_BRIDGE_MAX_PENDING", 64)
+)
 MESSAGE_PLANE_GET_RECENT_MAX_LIMIT = _get_int_env("NEKO_MESSAGE_PLANE_GET_RECENT_MAX_LIMIT", 1000)
 
 MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT = os.getenv(
@@ -570,7 +615,13 @@ MESSAGE_PLANE_INGEST_SNDTIMEO_MS = _get_int_env("NEKO_MESSAGE_PLANE_INGEST_SNDTI
 MESSAGE_PLANE_PUB_ENABLED = _get_bool_env("NEKO_MESSAGE_PLANE_PUB_ENABLED", True)
 MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES = _get_bool_env("NEKO_MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES", True)
 
-MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE = _get_int_env("NEKO_MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE", 100000)
+# 同样在加载处钳到 >=1。Python 的 queue.Queue(maxsize=0) 是**无界**，不是
+# "一条都不收"：配成 0 或负数时批处理器会拿到一个无界队列，而
+# enqueue 的拒收水位又被 `self._max_queue > 0` 这个条件跳过，两道闸同时
+# 失效，积压只受内存限制。
+MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE = max(
+    1, _get_int_env("NEKO_MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE", 100000)
+)
 MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO = _get_float_env("NEKO_MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO", 0.9)
 MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS = _get_float_env(
     "NEKO_MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS",
@@ -581,7 +632,42 @@ MESSAGE_PLANE_BRIDGE_ENABLED = _get_bool_env("NEKO_MESSAGE_PLANE_BRIDGE_ENABLED"
 
 # PUSH 批量大小（条数）
 # Env: NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE, default=256
-PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE = _get_int_env("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", 256)
+# 在加载处就钳到 >=1，而不是让每个使用方各自 max(1, ...)：批量器构造时钳过
+# （_AuthenticatedMessageBatcher.__init__），宿主侧的收批校验却是拿原始值比。
+# 配成 0 或负数时两边就不一致——子进程发出合法的 1 条批量，宿主判
+# len(items) > 0 成立、整批拒收，主动搭话静默停摆。归一化放在这里，两侧
+# 读到的就是同一个数。
+PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE = max(
+    1, _get_int_env("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", 256)
+)
+
+# 控制上行单帧的字节上限。
+#
+# 它曾经直接借用消息上行那个数，而那个数是 payload_max * batch_max ——批量
+# 乘数对**从不批量**的控制通道在定义上就不适用，借过来等于给每一帧
+# 128 MiB，配上控制 socket 5000 条的 HWM 根本不是个界。
+#
+# 但也不能猜低：控制面下游没有自己的体积契约，砍低了会**静默**删掉真实的
+# 工具结果——libzmq 在接收引擎里丢帧并断开对端，recv() 不报错，宿主连字节
+# 都看不到。所以这个数必须罩住一次合法 CH_RES 的三个部分：
+#
+#   图片   _MAX_TOOL_IMAGES * _MAX_TOOL_IMAGE_B64_BYTES = 2 * 2 MiB
+#   输出   工具的 output 没有上限，用 message plane 单条 payload 的界
+#          （MESSAGE_PLANE_PAYLOAD_MAX_BYTES，默认 512 KiB）当额度——它是本
+#          仓已有的"一条结构化载荷能有多大"的尺子，不是新造的数
+#   信封   msgpack 结构 + token + vision_prompt，与消息上行同源的 64 KiB
+#
+# 只按图片推导过一版，实测发现两张满尺寸图 + 仅 60 KB 文本输出就超限：
+# output 和图片走同一帧，漏掉它等于把"每帧 128 MiB"换成"合法结果被静默扯
+# 掉"，比原来更糟。测试现在按**这个组合**量，而不是只量图片。
+#
+# 关系由测试钉住（见 test_zmq_transport_security），所以哪天工具图上限或
+# plane 载荷上限动了、这里没跟着动，会红而不是静默丢结果。
+# Env: NEKO_PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES
+PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES = _get_int_env(
+    "NEKO_PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES",
+    4 * 1024 * 1024 + MESSAGE_PLANE_PAYLOAD_MAX_BYTES + 64 * 1024,
+)
 
 # PUSH 刷新间隔（毫秒），小批量高频发送或大批量低频发送的折中参数
 # Env: NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS, default=5

@@ -62,9 +62,15 @@
     let memoryRoleHoverCloseTimer = 0;
     let memoryRolePanelInitialized = false;
     let memoryRoleListRequestId = 0;
-    const MEMORY_AUXILIARY_PANEL_NAMES = ['settings', 'guide', 'import'];
+    const MEMORY_AUXILIARY_PANEL_NAMES = ['settings', 'guide', 'import', 'insights'];
     let activeMemoryAuxiliaryPanel = '';
     let memoryAuxiliaryPanelOpener = null;
+    let repetitionInsightsReport = null;
+    let repetitionInsightsBusy = false;
+    let repetitionInsightsRequestId = 0;
+    let repetitionInsightsStatus = null;
+    let repetitionInsightsLanguageTouched = false;
+    const repetitionInsightsIgnored = new Set();
     let memoryExportLogsBusy = false;
     let memoryExportLogsStatusTimer = 0;
     const MEMORY_EXPORT_LOGS_SUCCESS_MS = 2600;
@@ -919,6 +925,1001 @@
         return document.getElementById('memory-' + name + '-panel');
     }
 
+    function repetitionInsightLanguageFromLocale() {
+        const raw = String(
+            (window.i18n && window.i18n.language)
+            || document.documentElement.lang
+            || 'en'
+        ).replace('_', '-').toLowerCase();
+        if (raw === 'zh-tw' || raw === 'zh-hant') return 'zh-TW';
+        if (raw === 'zh' || raw === 'zh-cn' || raw === 'zh-hans') return 'zh-CN';
+        const base = raw.split('-')[0];
+        return ['en', 'es', 'pt', 'ru', 'ja', 'ko'].includes(base) ? base : 'en';
+    }
+
+    function repetitionInsightUsableMessageCount(summary) {
+        // The local analysis budget can narrow the selected range, so
+        // `assistant_message_count` is what the user asked for while
+        // `analyzed_message_count` is what was actually mined. Minimum-sample
+        // checks must use the latter: narrowed to one or two replies the
+        // three-message threshold is impossible to satisfy, and reporting
+        // "no candidates found" would read as an absence rather than as a
+        // sample too small to evaluate.
+        const source = summary || {};
+        const analyzed = source.analyzed_message_count;
+        if (analyzed !== undefined && analyzed !== null) return Number(analyzed) || 0;
+        return Number(source.assistant_message_count || 0) || 0;
+    }
+
+    function repetitionInsightCandidateKey(candidate) {
+        return String(candidate.language || '') + '\u0000' + String(candidate.normalized_phrase || '');
+    }
+
+    function repetitionInsightAssociations(candidate) {
+        if (!repetitionInsightsReport || !Array.isArray(repetitionInsightsReport.associations)) {
+            return [];
+        }
+        const key = repetitionInsightCandidateKey(candidate);
+        return repetitionInsightsReport.associations.filter(function (association) {
+            return repetitionInsightCandidateKey(association) === key;
+        });
+    }
+
+    function setRepetitionInsightsStatus(key, fallback, kind, options) {
+        repetitionInsightsStatus = key
+            ? { key: key, fallback: fallback, kind: kind || '', options: options || {} }
+            : null;
+        refreshRepetitionInsightsStatus();
+    }
+
+    function refreshRepetitionInsightsStatus() {
+        const status = document.getElementById('memory-insights-status');
+        if (!status) return;
+        status.textContent = repetitionInsightsStatus
+            ? translate(
+                repetitionInsightsStatus.key,
+                repetitionInsightsStatus.fallback,
+                repetitionInsightsStatus.options
+            )
+            : '';
+        status.className = 'memory-insights-status'
+            + (repetitionInsightsStatus && repetitionInsightsStatus.kind
+                ? ' is-' + repetitionInsightsStatus.kind
+                : '');
+    }
+
+    // The recent-memory buttons only cover characters that have a recent.json.
+    // A configured character, or one restored from a cloud snapshot carrying
+    // time-indexed history without the optional recent file, is analyzable but
+    // has no button, so the identity list has to supply it.
+    let repetitionInsightExtraCharacters = [];
+    // IN FLIGHT, not "has ever succeeded". Latching a successful load for
+    // the life of the page meant a character created, renamed, restored or
+    // deleted while this window stayed open never reached the selector --
+    // permanently, since nothing cleared it. That is the ordinary case in
+    // the Electron multi-window flow, where the window that edits
+    // characters is not the window showing this panel.
+    let repetitionInsightCharactersInFlight = false;
+    // When the list last loaded. Zero means never.
+    let repetitionInsightCharactersLoadedAt = 0;
+    // Retry a failed identity load, but rate-limit it: the loader runs on every
+    // panel sync, so a dead endpoint would be re-hit on each character switch
+    // and each analyze start/stop. A time window rather than an attempt count --
+    // an attempt count is spent by the three syncs that fire during bootstrap,
+    // ~126ms apart, so a momentary blip at page load would give up permanently.
+    let repetitionInsightCharacterThrottleUntil = 0;
+    const REPETITION_INSIGHT_CHARACTER_THROTTLE_MS = 5000;
+    // How long a loaded list is trusted before the next panel sync
+    // refetches it. Short enough that an identity change shows up on the
+    // next look, long enough that repeated syncs do not each hit the
+    // endpoint.
+    const REPETITION_INSIGHT_CHARACTER_TTL_MS = 30000;
+
+    // The panel analyses a CHARACTER; the editor opens a FILE. Those are the
+    // same identity for anyone with a recent.json, and the panel piggybacked on
+    // `currentCatName` on that assumption. The identity list breaks it: a
+    // configured or imported character with time-indexed history and no
+    // recent.json is analysable but has no file to open, so picking it used to
+    // leave `currentCatName` untouched and silently analyse whatever the editor
+    // still had open. The panel keeps its own target for exactly that case.
+    let repetitionInsightsCharacterOverride = '';
+    // A range change that FAILED still counts as "the user asked for a report".
+    // Dropping the stale report on error is right, but it also made the next
+    // range change take the no-report path -- which issues no request and
+    // silently wipes the red error, so the selector stopped being a retry.
+    let repetitionInsightsRangeRetryPending = false;
+    // Storage not settled (selection required, migration pending, recovery).
+    // The insights panel used to be disarmed by accident: the limited state
+    // blanks `currentCatName`, and every insights control gated on it. A
+    // panel-owned target re-arms them, so the lockdown has to be explicit --
+    // "clear anti-repeat statistics" writes to disk, and must not run while a
+    // migration is still in flight.
+    // Starts LOCKED: the flag is lowered only once the storage bootstrap has
+    // reported a settled root. Starting unlocked left the whole await window --
+    // during which the panel is already interactive -- outside the lockdown.
+    let memoryStorageLimited = true;
+
+    function repetitionInsightsTarget() {
+        return repetitionInsightsCharacterOverride || currentCatName || '';
+    }
+
+    async function loadRepetitionInsightCharacters() {
+        // Not before storage settles. `initRepetitionInsights` runs BEFORE
+        // `await initStorageLocationPanel()`, so a request issued here would
+        // answer for the PRE-settle root -- and the latch below only clears on
+        // failure, so a successful stale load would stick for the life of the
+        // page, hiding every character in the settled root that has no
+        // `recent.json` to fall back on.
+        if (memoryStorageLimited) return;
+        if (repetitionInsightCharactersInFlight) return;
+        if (Date.now() < repetitionInsightCharacterThrottleUntil) return;
+        // A bounded TTL rather than a permanent latch. Overlapping syncs
+        // still collapse into one request through the in-flight flag,
+        // and this is not a poll: the fetch only happens when something
+        // syncs the panel, which is the same action that would reveal a
+        // stale list.
+        if (repetitionInsightCharactersLoadedAt
+            && Date.now() - repetitionInsightCharactersLoadedAt
+                < REPETITION_INSIGHT_CHARACTER_TTL_MS) return;
+        repetitionInsightCharactersInFlight = true;
+        let loaded = false;
+        try {
+            const response = await fetch('/api/memory/insight_characters');
+            if (!response.ok) return;
+            const data = await response.json();
+            if (!data || !Array.isArray(data.characters)) return;
+            repetitionInsightExtraCharacters = data.characters
+                .map(function (name) { return String(name || '').trim(); })
+                .filter(Boolean);
+            loaded = true;
+            syncRepetitionInsightsCharacterSelect();
+        } catch (error) {
+            // Best effort: the button-derived list still works without it.
+            console.error('Failed to load analyzable characters:', error);
+        } finally {
+            // Latch a SUCCESSFUL load. The flag stays set across the await, so
+            // overlapping syncs still collapse into one request, but a transient
+            // failure must not silence the selector for the rest of the window's
+            // life -- the identities it carries have no file-list button to fall
+            // back on.
+            //
+            // This is a THROTTLE, not a scheduled retry, and the name says so.
+            // Nothing sets a timer here, deliberately: opening the insights
+            // panel calls syncRepetitionInsightsControls, and the selector is
+            // only visible inside that panel -- so the action that would reveal
+            // a stale list is the same action that reloads it. A timer would
+            // instead poll a dead endpoint every few seconds for the life of an
+            // idle tab, logging each failure. The throttle keeps a persistently
+            // dead endpoint down to one request every few seconds rather than
+            // one per sync.
+            repetitionInsightCharactersInFlight = false;
+            if (loaded) {
+                repetitionInsightCharactersLoadedAt = Date.now();
+            } else {
+                repetitionInsightCharacterThrottleUntil = Date.now()
+                    + REPETITION_INSIGHT_CHARACTER_THROTTLE_MS;
+            }
+        }
+    }
+
+    function repetitionInsightCharacterEntries() {
+        const entries = Array.from(document.querySelectorAll('#memory-file-list .cat-btn[data-filename]'))
+            .map(function (button) {
+                return {
+                    name: String(button.dataset.catname || '').trim(),
+                    filename: String(button.dataset.filename || '').trim()
+                };
+            })
+            .filter(function (entry) { return entry.name && entry.filename; });
+        const seen = new Set(entries.map(function (entry) { return entry.name; }));
+        repetitionInsightExtraCharacters.forEach(function (name) {
+            if (!name || seen.has(name)) return;
+            seen.add(name);
+            // No filename: the selector already handles that shape -- it is how
+            // the current character is added -- and only switching the editor
+            // needs a file.
+            entries.push({ name: name, filename: '' });
+        });
+        return entries;
+    }
+
+    function syncRepetitionInsightsCharacterSelect() {
+        const select = document.getElementById('memory-insights-character-select');
+        if (!select) return;
+        const entries = repetitionInsightCharacterEntries();
+        const target = repetitionInsightsTarget();
+        if (target && !entries.some(function (entry) { return entry.name === target; })) {
+            entries.unshift({ name: target, filename: '' });
+        }
+        const noCharacterLabel = translate(
+            'memory.repetitionInsightsNoCharacter',
+            'No character selected'
+        );
+        const signature = JSON.stringify({ entries: entries, noCharacterLabel: noCharacterLabel });
+        if (select.dataset.entries !== signature) {
+            select.textContent = '';
+            if (!target) {
+                const placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = noCharacterLabel;
+                placeholder.disabled = true;
+                select.appendChild(placeholder);
+            }
+            entries.forEach(function (entry) {
+                const option = document.createElement('option');
+                option.value = entry.name;
+                option.dataset.filename = entry.filename;
+                option.textContent = entry.name;
+                select.appendChild(option);
+            });
+            select.dataset.entries = signature;
+        }
+        select.value = target;
+        select.disabled = repetitionInsightsBusy || memoryStorageLimited
+            || !!window._memoryImportInProgress || !entries.length;
+    }
+
+    function syncRepetitionInsightsControls() {
+        const character = document.getElementById('memory-insights-character');
+        if (character) {
+            const target = repetitionInsightsTarget();
+            character.textContent = target || translate(
+                'memory.repetitionInsightsNoCharacter',
+                'No character selected'
+            );
+            character.title = target;
+        }
+        syncRepetitionInsightsCharacterSelect();
+        loadRepetitionInsightCharacters();
+        const analyze = document.getElementById('memory-insights-analyze');
+        const clear = document.getElementById('memory-insights-clear');
+        const exportButton = document.getElementById('memory-insights-export');
+        const resetEffects = document.getElementById('memory-insights-reset-effects');
+        const filterIds = [
+            'memory-insights-query',
+            'memory-insights-coverage-filter',
+            'memory-insights-effect-filter'
+        ];
+        const scopeIds = [
+            'memory-insights-language',
+            'memory-insights-limit'
+        ];
+        // Same three locks the character dropdown carries. Analyze reads from the
+        // store and "clear anti-repeat statistics" WRITES to it, so neither may
+        // run while an import is replacing the very files they touch.
+        const ready = !memoryStorageLimited && !window._memoryImportInProgress
+            && !!repetitionInsightsTarget();
+        if (analyze) analyze.disabled = repetitionInsightsBusy || !ready;
+        if (clear) clear.disabled = repetitionInsightsBusy || !repetitionInsightsReport;
+        if (exportButton) exportButton.disabled = repetitionInsightsBusy || !repetitionInsightsReport;
+        if (resetEffects) {
+            resetEffects.disabled = repetitionInsightsBusy || !ready;
+        }
+        filterIds.forEach(function (id) {
+            const control = document.getElementById(id);
+            if (control) control.disabled = repetitionInsightsBusy || !repetitionInsightsReport;
+        });
+        scopeIds.forEach(function (id) {
+            const control = document.getElementById(id);
+            // Changing the scope re-runs the analysis, so it belongs behind the
+            // same lock as the Analyze button rather than staying live while
+            // everything around it is disabled.
+            if (control) control.disabled = repetitionInsightsBusy || !ready;
+        });
+    }
+
+    function setRepetitionInsightsBusy(busy) {
+        repetitionInsightsBusy = !!busy;
+        syncRepetitionInsightsControls();
+    }
+
+    function appendRepetitionInsightsEmptyState(container, key, fallback) {
+        const empty = document.createElement('p');
+        empty.className = 'memory-insights-description';
+        empty.textContent = translate(key, fallback);
+        container.appendChild(empty);
+    }
+
+    function exportableRepetitionInsightCandidates() {
+        if (!repetitionInsightsReport || !Array.isArray(repetitionInsightsReport.candidates)) {
+            return [];
+        }
+        return repetitionInsightsReport.candidates.filter(function (candidate) {
+            return candidate
+                && candidate.status === 'pending'
+                && !repetitionInsightsIgnored.has(repetitionInsightCandidateKey(candidate));
+        });
+    }
+
+    function visibleRepetitionInsightCandidates() {
+        const queryControl = document.getElementById('memory-insights-query');
+        const coverageControl = document.getElementById('memory-insights-coverage-filter');
+        const effectControl = document.getElementById('memory-insights-effect-filter');
+        const query = String(queryControl ? queryControl.value : '').trim().toLocaleLowerCase();
+        const coverage = coverageControl ? coverageControl.value : 'all';
+        const effectStatus = effectControl ? effectControl.value : 'all';
+        return exportableRepetitionInsightCandidates().filter(function (candidate) {
+            const rules = Array.isArray(candidate.covered_by_rule_ids)
+                ? candidate.covered_by_rule_ids.filter(Boolean)
+                : [];
+            if (coverage === 'covered' && !rules.length) return false;
+            if (coverage === 'uncovered' && rules.length) return false;
+            const processed = repetitionInsightAssociations(candidate).length > 0;
+            if (effectStatus === 'processed' && !processed) return false;
+            if (effectStatus === 'residual' && processed) return false;
+            if (!query) return true;
+            return [candidate.phrase, candidate.normalized_phrase].concat(rules)
+                .some(function (value) {
+                    return String(value || '').toLocaleLowerCase().includes(query);
+                });
+        });
+    }
+
+    function appendRepetitionEffectMetric(container, value, key, fallback, options) {
+        const settings = options || {};
+        const metric = document.createElement('div');
+        metric.className = 'memory-insights-effect-metric';
+        if (settings.highlight) metric.classList.add('is-highlight');
+        if (settings.warning) metric.classList.add('is-warning');
+        const number = document.createElement('strong');
+        number.textContent = settings.displayValue === undefined
+            ? String(Number(value || 0))
+            : String(settings.displayValue);
+        const label = document.createElement('span');
+        label.textContent = translate(key, fallback, settings.translationOptions || {});
+        metric.append(number, label);
+        container.appendChild(metric);
+        return metric;
+    }
+
+    function renderRepetitionInsightsEffectiveness() {
+        const container = document.getElementById('memory-insights-effectiveness');
+        if (!container) return;
+        container.textContent = '';
+        if (!repetitionInsightsReport) return;
+        const effects = repetitionInsightsReport.effectiveness || {};
+        const parameters = repetitionInsightsReport.parameters || {};
+        // Two scopes reach this panel. Message-scoped aggregates exist only when
+        // the persisted replies carried runtime response IDs; otherwise the
+        // backend answers with the day-scoped aggregate, which must not be
+        // labelled "the latest N replies".
+        const messageScoped = effects.scope_type === 'assistant_messages';
+        const title = document.createElement('h4');
+        title.className = 'memory-insights-section-title';
+        if (messageScoped) {
+            const scopeLimit = Number(
+                effects.assistant_message_limit
+                || parameters.assistant_message_limit
+                || 0
+            );
+            title.textContent = translate(
+                'memory.repetitionInsightsEffectivenessTitle',
+                'Anti-repeat handling in the latest {{count}} replies',
+                { count: scopeLimit }
+            );
+        } else {
+            title.textContent = translate(
+                'memory.repetitionInsightsEffectivenessTitleDays',
+                'Anti-repeat handling over the last {{count}} days',
+                { count: Number(effects.period_days || 0) }
+            );
+        }
+        container.appendChild(title);
+        if (effects.query_failed === true) {
+            appendRepetitionInsightsEmptyState(
+                container,
+                'memory.repetitionInsightsEffectsUnavailable',
+                'Anti-repeat records could not be read. Try checking again.'
+            );
+            return;
+        }
+        if (effects.source_available === false) {
+            appendRepetitionInsightsEmptyState(
+                container,
+                messageScoped
+                    ? 'memory.repetitionInsightsNoEffects'
+                    : 'memory.repetitionInsightsNoEffectsDays',
+                messageScoped
+                    ? 'No linked anti-repeat records are available for these replies.'
+                    : 'No anti-repeat records have been kept for this period yet.'
+            );
+            return;
+        }
+        const totals = effects.totals || {};
+        const reportSummary = repetitionInsightsReport.summary || {};
+        const bm25 = effects.bm25 || {};
+        const comparableRewrites = Number(bm25.pair_count || 0);
+        // Classify on the RAW ratio and round only for display. Math.round of a
+        // ratio in (-0.005, 0) yields -0, and `-0 < 0` is false, so a genuine
+        // repetition increase used to be labelled a reduction.
+        const reductionRatio = comparableRewrites > 0
+            ? Number(bm25.reduction_ratio || 0)
+            : null;
+        const reductionPercent = reductionRatio === null
+            ? null
+            : Math.round(reductionRatio * 100);
+        const repetitionIncreased = reductionRatio !== null && reductionRatio < 0;
+        const summary = document.createElement('div');
+        summary.className = 'memory-insights-effect-summary';
+        appendRepetitionEffectMetric(
+            summary,
+            reportSummary.candidate_count,
+            'memory.repetitionInsightsRemaining',
+            'Repeated expressions still found in final replies'
+        );
+        appendRepetitionEffectMetric(
+            summary,
+            totals.detected,
+            'memory.repetitionInsightsDetected',
+            'Repeated drafts detected'
+        );
+        appendRepetitionEffectMetric(
+            summary,
+            totals.regen_guard_passed,
+            'memory.repetitionInsightsPassed',
+            'Rewrites that passed the checks'
+        );
+        if (reductionPercent !== null) {
+            appendRepetitionEffectMetric(
+                summary,
+                0,
+                repetitionIncreased
+                    ? 'memory.repetitionInsightsIncrease'
+                    : 'memory.repetitionInsightsReduction',
+                repetitionIncreased
+                    ? 'Average repetition increase across {{count}} comparable rewrites'
+                    : 'Average repetition reduction across {{count}} comparable rewrites',
+                {
+                    displayValue: Math.abs(reductionPercent) + '%',
+                    highlight: true,
+                    warning: repetitionIncreased,
+                    translationOptions: { count: comparableRewrites }
+                }
+            );
+        }
+        container.appendChild(summary);
+    }
+
+    function renderRepetitionInsightsResults() {
+        const results = document.getElementById('memory-insights-results');
+        const visibleCount = document.getElementById('memory-insights-visible-count');
+        if (!results) return;
+        results.textContent = '';
+        if (visibleCount) visibleCount.textContent = '';
+        renderRepetitionInsightsEffectiveness();
+        if (!repetitionInsightsReport) return;
+
+        const summary = repetitionInsightsReport.summary || {};
+        if (summary.source_available === false) {
+            appendRepetitionInsightsEmptyState(
+                results,
+                'memory.repetitionInsightsNoSource',
+                'No persisted assistant history is available for this character.'
+            );
+            return;
+        }
+        if (summary.content_truncated === true) {
+            const clipped = document.createElement('p');
+            clipped.className = 'memory-insights-scope-note';
+            clipped.textContent = translate(
+                'memory.repetitionInsightsReplyClipped',
+                'One reply was too long to analyze in full; only its beginning was checked.'
+            );
+            results.appendChild(clipped);
+        }
+        if (summary.messages_truncated === true) {
+            // The local budget narrowed the window instead of failing; say so,
+            // otherwise the counts silently describe fewer replies than asked for.
+            //
+            // Not "the LATEST n": the fair-share eviction drops the oldest
+            // message that is itself over budget, which can be an interior
+            // one, so four replies can analyze source lines [1, 3, 4]. The
+            // count is honest; the ordering claim was not.
+            const trimmed = document.createElement('p');
+            trimmed.className = 'memory-insights-scope-note';
+            trimmed.textContent = translate(
+                'memory.repetitionInsightsScopeTrimmed',
+                'These replies were long, so only {{analyzed}} of {{total}} fit the local analysis budget.',
+                {
+                    analyzed: Number(summary.analyzed_message_count || 0),
+                    total: Number(summary.assistant_message_count || 0)
+                }
+            );
+            results.appendChild(trimmed);
+        }
+
+        // After the truncation note, so a narrowed window explains itself
+        // instead of showing a bare "not enough history".
+        if (repetitionInsightUsableMessageCount(summary) < 3) {
+            appendRepetitionInsightsEmptyState(
+                results,
+                'memory.repetitionInsightsInsufficient',
+                'At least three persisted assistant messages are required.'
+            );
+            return;
+        }
+
+        const visibleCandidates = visibleRepetitionInsightCandidates();
+        const exportableCandidates = exportableRepetitionInsightCandidates();
+        if (visibleCount) {
+            visibleCount.textContent = translate(
+                'memory.repetitionInsightsVisibleCount',
+                'Showing {{visible}} of {{total}} final residual fragments',
+                {
+                    visible: visibleCandidates.length,
+                    total: exportableCandidates.length
+                }
+            );
+        }
+        if (!visibleCandidates.length) {
+            const query = document.getElementById('memory-insights-query');
+            const coverage = document.getElementById('memory-insights-coverage-filter');
+            const effect = document.getElementById('memory-insights-effect-filter');
+            const hasActiveFilter = Boolean(query && query.value.trim())
+                || Boolean(coverage && coverage.value !== 'all')
+                || Boolean(effect && effect.value !== 'all');
+            appendRepetitionInsightsEmptyState(
+                results,
+                hasActiveFilter
+                    ? 'memory.repetitionInsightsNoFilterMatches'
+                    : repetitionInsightsIgnored.size
+                    ? 'memory.repetitionInsightsAllIgnored'
+                    : 'memory.repetitionInsightsNoCandidates',
+                hasActiveFilter
+                    ? 'No final residual fragments match the current filters.'
+                    : repetitionInsightsIgnored.size
+                    ? 'All candidates in this result have been ignored.'
+                    : 'No repeated-expression candidates were found.'
+            );
+            return;
+        }
+
+        visibleCandidates.forEach(function (candidate) {
+            const card = document.createElement('article');
+            card.className = 'memory-insights-card';
+            const phrase = document.createElement('h4');
+            const phraseText = String(candidate.phrase || '');
+            phrase.textContent = phraseText;
+
+            const header = document.createElement('div');
+            header.className = 'memory-insights-card-header';
+            const badges = document.createElement('div');
+            badges.className = 'memory-insights-card-badges';
+
+            const meta = document.createElement('div');
+            meta.className = 'memory-insights-card-meta';
+            const occurrences = document.createElement('span');
+            occurrences.className = 'memory-insights-card-meta-item is-occurrences';
+            occurrences.textContent = translate(
+                'memory.repetitionInsightsOccurrences',
+                '{{count}} occurrences',
+                { count: Number(candidate.occurrence_count || 0) }
+            );
+            const messages = document.createElement('span');
+            messages.className = 'memory-insights-card-meta-item is-messages';
+            messages.textContent = translate(
+                'memory.repetitionInsightsMessages',
+                '{{count}} messages',
+                { count: Number(candidate.message_count || 0) }
+            );
+            const associations = repetitionInsightAssociations(candidate);
+            header.append(phrase, badges);
+            meta.append(occurrences, messages);
+
+            const coveredBy = Array.isArray(candidate.covered_by_rule_ids)
+                ? candidate.covered_by_rule_ids.filter(Boolean)
+                : [];
+            const rules = document.createElement('div');
+            rules.className = 'memory-insights-card-rules';
+            if (coveredBy.length) {
+                rules.textContent = translate(
+                    'memory.repetitionInsightsCoveredBy',
+                    'Covered by rules: {{rules}}',
+                    { rules: coveredBy.join(', ') }
+                );
+            }
+
+            let effectSummary = null;
+            if (associations.length) {
+                const totals = associations.reduce(function (accumulator, association) {
+                    accumulator.detected += Number(association.detected_count || 0);
+                    accumulator.regenerated += Number(association.regen_triggered_count || 0);
+                    accumulator.passed += Number(association.regen_guard_passed_count || 0);
+                    accumulator.blocked += Number(association.blocked_count || 0);
+                    return accumulator;
+                }, { detected: 0, regenerated: 0, passed: 0, blocked: 0 });
+                effectSummary = document.createElement('div');
+                effectSummary.className = 'memory-insights-card-effect';
+                const detectedMarker = '__NEKO_DETECTED__';
+                const passedMarker = '__NEKO_PASSED__';
+                const localizedEffect = translate(
+                    'memory.repetitionInsightsResidualEffect',
+                    'Past handling: detected {{detected}} · rewrites passed {{passed}}',
+                    Object.assign({}, totals, {
+                        detected: detectedMarker,
+                        passed: passedMarker
+                    })
+                );
+                localizedEffect.split(/(__NEKO_DETECTED__|__NEKO_PASSED__)/).forEach(function (part) {
+                    if (!part) return;
+                    if (part === detectedMarker || part === passedMarker) {
+                        const value = document.createElement('strong');
+                        value.className = part === detectedMarker
+                            ? 'memory-insights-card-effect-value is-detected'
+                            : 'memory-insights-card-effect-value is-passed';
+                        value.textContent = String(
+                            part === detectedMarker ? totals.detected : totals.passed
+                        );
+                        effectSummary.appendChild(value);
+                        return;
+                    }
+                    effectSummary.appendChild(document.createTextNode(part));
+                });
+            }
+
+            const ignore = document.createElement('button');
+            ignore.type = 'button';
+            ignore.className = 'memory-insights-card-ignore';
+            ignore.textContent = translate(
+                'memory.repetitionInsightsIgnore',
+                'Hide from this result'
+            );
+            ignore.addEventListener('click', function () {
+                repetitionInsightsIgnored.add(repetitionInsightCandidateKey(candidate));
+                renderRepetitionInsightsResults();
+            });
+            badges.appendChild(ignore);
+            const footer = document.createElement('div');
+            footer.className = 'memory-insights-card-footer';
+            footer.hidden = coveredBy.length === 0;
+            footer.appendChild(rules);
+
+            card.appendChild(header);
+            card.appendChild(meta);
+            if (effectSummary) card.appendChild(effectSummary);
+            card.appendChild(footer);
+            results.appendChild(card);
+        });
+    }
+
+    function resetRepetitionInsightsState() {
+        repetitionInsightsRequestId++;
+        repetitionInsightsReport = null;
+        repetitionInsightsRangeRetryPending = false;
+        repetitionInsightsIgnored.clear();
+        repetitionInsightsStatus = null;
+        const query = document.getElementById('memory-insights-query');
+        const coverage = document.getElementById('memory-insights-coverage-filter');
+        const effect = document.getElementById('memory-insights-effect-filter');
+        if (query) query.value = '';
+        if (coverage) coverage.value = 'all';
+        if (effect) effect.value = 'all';
+        setRepetitionInsightsBusy(false);
+        refreshRepetitionInsightsStatus();
+        renderRepetitionInsightsResults();
+        syncRepetitionInsightsControls();
+    }
+
+    function refreshRepetitionInsightsAfterRangeChange() {
+        if (repetitionInsightsReport || repetitionInsightsRangeRetryPending) {
+            // Keep the existing cards up WHILE the replacement loads, but a
+            // FAILED replacement must not leave them standing under a range they
+            // were never mined from: the selector already shows the new limit, so
+            // the pane and an enabled Export would describe a scope the data does
+            // not have, and only a red status line would contradict them.
+            analyzeRepetitionInsights({ dropReportOnError: true });
+            return;
+        }
+        resetRepetitionInsightsState();
+    }
+
+    async function analyzeRepetitionInsights(options) {
+        if (memoryStorageLimited) return;
+        if (!repetitionInsightsTarget() || repetitionInsightsBusy) return;
+        const languageSelect = document.getElementById('memory-insights-language');
+        const limitSelect = document.getElementById('memory-insights-limit');
+        if (!languageSelect || !limitSelect) return;
+
+        const targetCharacter = repetitionInsightsTarget();
+        // Captured, not watched. The analysis language is written by more than
+        // one listener -- i18next dispatches `localechange` synchronously from
+        // inside its FIRST `languageChanged` subscriber, so a bump added to the
+        // later listener never runs: the value is already updated by then.
+        // Comparing at the single point of consumption cannot be defeated by
+        // listener order, or by a writer added later.
+        const requestedLanguage = languageSelect.value;
+        const requestId = ++repetitionInsightsRequestId;
+        setRepetitionInsightsBusy(true);
+        setRepetitionInsightsStatus(
+            'memory.repetitionInsightsLoading',
+            'Analyzing persisted assistant messages locally...'
+        );
+        try {
+            const response = await fetch('/api/memory/repetition_insights', {
+                method: 'POST',
+                cache: 'no-store',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    character_name: targetCharacter,
+                    language: languageSelect.value,
+                    assistant_message_limit: Number(limitSelect.value)
+                })
+            });
+            const report = await response.json();
+            if (requestId !== repetitionInsightsRequestId
+                || repetitionInsightsTarget() !== targetCharacter) return;
+            if (languageSelect.value !== requestedLanguage) {
+                // The app locale re-selected the analysis language while this was
+                // in flight, so this response describes a language the panel no
+                // longer claims. Returning bare left the loading status latched
+                // forever -- the finally only clears the busy flag -- and it was
+                // re-translated into every locale the user visited afterwards.
+                //
+                // Clear the STATUS only. A full reset is too broad here: it also
+                // clears the pending range retry, which would leave the range
+                // selector inert, and wipes the query and filters the user typed.
+                // Nothing else needs clearing -- the locale sync that triggers
+                // this only fires when there is no report to begin with.
+                repetitionInsightsStatus = null;
+                refreshRepetitionInsightsStatus();
+                return;
+            }
+            if (!response.ok || !report || !Array.isArray(report.candidates)) {
+                throw new Error('local analysis unavailable');
+            }
+            repetitionInsightsReport = report;
+            repetitionInsightsIgnored.clear();
+            repetitionInsightsRangeRetryPending = false;
+            renderRepetitionInsightsResults();
+            const summary = report.summary || {};
+            if (summary.source_available === false) {
+                setRepetitionInsightsStatus(
+                    'memory.repetitionInsightsNoSource',
+                    'No persisted assistant history is available for this character.'
+                );
+            } else if (repetitionInsightUsableMessageCount(summary) < 3) {
+                setRepetitionInsightsStatus(
+                    'memory.repetitionInsightsInsufficient',
+                    'At least three persisted assistant messages are required.'
+                );
+            } else {
+                const candidatesTruncated = summary.candidates_truncated === true;
+                setRepetitionInsightsStatus(
+                    candidatesTruncated
+                        ? 'memory.repetitionInsightsFoundTruncated'
+                        : 'memory.repetitionInsightsFound',
+                    candidatesTruncated
+                        ? 'Found {{count}} repeated fragments; showing the top {{shown}}.'
+                        : 'Found {{count}} repeated fragments.',
+                    '',
+                    {
+                        count: Number(summary.candidate_count || 0),
+                        shown: Number(summary.returned_candidate_count || report.candidates.length)
+                    }
+                );
+            }
+        } catch (error) {
+            if (requestId !== repetitionInsightsRequestId) return;
+            if (languageSelect.value !== requestedLanguage) {
+                // Same stale-language discard as the success path. A network
+                // failure or a non-JSON body throws before that check runs, and
+                // reporting the error would attach it to a language the panel no
+                // longer claims -- and leave the loading status latched behind it.
+                repetitionInsightsStatus = null;
+                refreshRepetitionInsightsStatus();
+                return;
+            }
+            if (options && options.dropReportOnError) {
+                repetitionInsightsReport = null;
+                repetitionInsightsIgnored.clear();
+                repetitionInsightsRangeRetryPending = true;
+                renderRepetitionInsightsResults();
+            }
+            setRepetitionInsightsStatus(
+                'memory.repetitionInsightsError',
+                'Local analysis is unavailable. Please try again.',
+                'error'
+            );
+        } finally {
+            if (requestId === repetitionInsightsRequestId) setRepetitionInsightsBusy(false);
+        }
+    }
+
+    async function resetRepetitionEffectRecords() {
+        // Writes to disk. Never on an unsettled storage root -- a migration may
+        // still be moving the very directory this would clear.
+        if (memoryStorageLimited) return;
+        if (!repetitionInsightsTarget() || repetitionInsightsBusy) return;
+        if (!window.confirm(translate(
+            'memory.repetitionInsightsResetConfirm',
+            'Clear this character\'s local anti-repeat effect statistics? Saved chat history and repetition candidates will not be deleted.'
+        ))) return;
+        const targetCharacter = repetitionInsightsTarget();
+        const requestId = ++repetitionInsightsRequestId;
+        setRepetitionInsightsBusy(true);
+        try {
+            const response = await fetch('/api/memory/repetition_effects/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ character_name: targetCharacter })
+            });
+            const result = await response.json();
+            if (requestId !== repetitionInsightsRequestId
+                || repetitionInsightsTarget() !== targetCharacter) return;
+            if (!response.ok || !result || result.success !== true) {
+                throw new Error('effect reset unavailable');
+            }
+            if (repetitionInsightsReport) {
+                // Keep whatever scope the report already had; fabricating a
+                // message-scoped shell over a day-scoped report would relabel the
+                // panel "the latest N replies" after a reset.
+                const previousEffects = repetitionInsightsReport.effectiveness || {};
+                const clearedEffects = {
+                    source_available: false,
+                    totals: {},
+                    reason_counts: {},
+                    bm25: {},
+                    patterns: []
+                };
+                if (previousEffects.scope_type === 'assistant_messages') {
+                    clearedEffects.scope_type = 'assistant_messages';
+                    clearedEffects.assistant_message_limit = Number(
+                        previousEffects.assistant_message_limit
+                        || document.getElementById('memory-insights-limit')?.value
+                        || 100
+                    );
+                    clearedEffects.linked_message_count = 0;
+                } else {
+                    clearedEffects.period_days = Number(previousEffects.period_days || 30);
+                }
+                repetitionInsightsReport.effectiveness = clearedEffects;
+                repetitionInsightsReport.associations = [];
+            }
+            renderRepetitionInsightsResults();
+            setRepetitionInsightsStatus(
+                'memory.repetitionInsightsResetDone',
+                'Runtime anti-repeat effect statistics were cleared. Saved replies were not changed.',
+                'success'
+            );
+        } catch (error) {
+            if (requestId !== repetitionInsightsRequestId) return;
+            setRepetitionInsightsStatus(
+                'memory.repetitionInsightsResetError',
+                'Could not clear runtime anti-repeat effect statistics. Please try again.',
+                'error'
+            );
+        } finally {
+            if (requestId === repetitionInsightsRequestId) setRepetitionInsightsBusy(false);
+        }
+    }
+
+    function sortRepetitionInsightsJson(value) {
+        if (Array.isArray(value)) return value.map(sortRepetitionInsightsJson);
+        if (!value || typeof value !== 'object') return value;
+        return Object.keys(value).sort().reduce(function (sorted, key) {
+            sorted[key] = sortRepetitionInsightsJson(value[key]);
+            return sorted;
+        }, {});
+    }
+
+    function exportRepetitionInsights() {
+        const candidates = exportableRepetitionInsightCandidates();
+        if (!repetitionInsightsReport || !candidates.length) {
+            setRepetitionInsightsStatus(
+                'memory.repetitionInsightsExportEmpty',
+                'There are no candidates to export.'
+            );
+            return;
+        }
+        if (!window.confirm(translate(
+            'memory.repetitionInsightsExportWarning',
+            'This optional feedback file may contain private wording. Exporting it will not change future replies. Review it before sharing.'
+        ))) return;
+
+        const summary = Object.assign({}, repetitionInsightsReport.summary || {}, {
+            exported_candidate_count: candidates.length
+        });
+        const artifact = {
+            artifact_type: repetitionInsightsReport.artifact_type,
+            candidates: candidates,
+            character_name: repetitionInsightsReport.character_name,
+            language: repetitionInsightsReport.language,
+            parameters: repetitionInsightsReport.parameters,
+            schema_version: repetitionInsightsReport.schema_version,
+            summary: summary
+        };
+        const serialized = JSON.stringify(sortRepetitionInsightsJson(artifact), null, 2) + '\n';
+        const blob = new Blob([serialized], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const safeCharacter = String(repetitionInsightsTarget() || 'character')
+            .normalize('NFKC')
+            .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+            .replace(/\s+/g, '-')
+            .slice(0, 48) || 'character';
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'natural-expression-candidates-'
+            + safeCharacter + '-' + String(repetitionInsightsReport.language || 'unknown') + '.json';
+        link.hidden = true;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+        setRepetitionInsightsStatus(
+            'memory.repetitionInsightsExported',
+            'Candidates exported. Future replies were not changed.',
+            'success'
+        );
+    }
+
+    function initRepetitionInsights() {
+        const character = document.getElementById('memory-insights-character-select');
+        const language = document.getElementById('memory-insights-language');
+        const limit = document.getElementById('memory-insights-limit');
+        const analyze = document.getElementById('memory-insights-analyze');
+        const clear = document.getElementById('memory-insights-clear');
+        const exportButton = document.getElementById('memory-insights-export');
+        const resetEffects = document.getElementById('memory-insights-reset-effects');
+        const query = document.getElementById('memory-insights-query');
+        const coverage = document.getElementById('memory-insights-coverage-filter');
+        const effectFilter = document.getElementById('memory-insights-effect-filter');
+        if (!character || !language || !limit || !analyze || !clear
+            || !exportButton || !resetEffects || !query || !coverage || !effectFilter) return;
+        character.addEventListener('change', function () {
+            const option = character.options[character.selectedIndex];
+            const name = String(character.value || '');
+            const filename = option ? String(option.dataset.filename || '') : '';
+            const button = filename ? findMemoryRoleButton(filename) : null;
+            const listItem = button ? button.closest('li') : null;
+            if (name === repetitionInsightsTarget()) {
+                syncRepetitionInsightsControls();
+                return;
+            }
+            if (name === currentCatName) {
+                // The editor is ALREADY on this character; only the panel needs
+                // re-coupling. Routing this through requestMemoryFileSelection
+                // opened the unsaved-switch dialog for the file already in the
+                // editor, and "discard" then reloaded it from disk -- destroying
+                // the user's unsaved edits for something that was never a switch.
+                repetitionInsightsCharacterOverride = '';
+                resetRepetitionInsightsState();
+                return;
+            }
+            if (button && listItem) {
+                // A different character that has an editor file: switch to it,
+                // which resets the panel and clears any override on the way
+                // through selectMemoryFile.
+                requestMemoryFileSelection(filename, listItem, name);
+                syncRepetitionInsightsControls();
+                return;
+            }
+            // No editor file for this identity. Dropping the selection here left
+            // the previous character as the analysis target while the dropdown
+            // snapped back -- so Analyze silently reported on the wrong
+            // character. Take the selection as the panel's own target instead.
+            repetitionInsightsCharacterOverride = name;
+            resetRepetitionInsightsState();
+        });
+        language.value = repetitionInsightLanguageFromLocale();
+        language.addEventListener('change', function () {
+            repetitionInsightsLanguageTouched = true;
+            resetRepetitionInsightsState();
+        });
+        limit.addEventListener('change', refreshRepetitionInsightsAfterRangeChange);
+        // Wrapped, not passed directly: the handler now takes an options object,
+        // and a click listener would hand it the Event instead.
+        analyze.addEventListener('click', function () {
+            analyzeRepetitionInsights();
+        });
+        clear.addEventListener('click', resetRepetitionInsightsState);
+        exportButton.addEventListener('click', exportRepetitionInsights);
+        resetEffects.addEventListener('click', resetRepetitionEffectRecords);
+        query.addEventListener('input', renderRepetitionInsightsResults);
+        coverage.addEventListener('change', renderRepetitionInsightsResults);
+        effectFilter.addEventListener('change', renderRepetitionInsightsResults);
+        syncRepetitionInsightsControls();
+    }
+
     function getMemoryAuxiliaryTrigger(name) {
         return document.getElementById('memory-' + name + '-trigger');
     }
@@ -997,6 +1998,7 @@
         activeMemoryAuxiliaryPanel = name;
         memoryAuxiliaryPanelOpener = opener || trigger;
         document.body.classList.add('memory-aux-panel-open');
+        if (name === 'insights') syncRepetitionInsightsControls();
         panel.focus({ preventScroll: true });
     }
 
@@ -1855,11 +2857,14 @@
     }
 
     function renderMemoryBrowserLimitedState(state) {
+        memoryStorageLimited = true;
         currentMemoryFile = null;
         currentMemoryIdentityToken = null;
         currentCatName = '';
+        repetitionInsightsCharacterOverride = '';
         chatData = [];
         memoryFileRequestId++;
+        resetRepetitionInsightsState();
 
         const list = document.getElementById('memory-file-list');
         if (list) {
@@ -2332,7 +3337,13 @@
                             if (currentMemoryFile) {
                                 return;
                             }
-                            requestMemoryFileSelection(f, li, catName);
+                            // 编辑器照常打开当前角色的文件（否则这里会留一个空白
+                            // 编辑区），但不夺走洞察面板里用户显式选中的无文件角色：
+                            // 那不设置 currentMemoryFile，此前会被这个定时器连同
+                            // 已经跑完的分析结果一起清掉，且不需要任何用户操作。
+                            requestMemoryFileSelection(f, li, catName, {
+                                keepInsightsTarget: true,
+                            });
                         }, 100);
                     }
                 });
@@ -2344,6 +3355,8 @@
             }
         } catch (e) {
             ul.innerHTML = `<li style="color:#e74c3c; padding: 8px;">${window.t ? window.t('memory.loadFailed') : '加载失败'}</li>`;
+        } finally {
+            syncRepetitionInsightsCharacterSelect();
         }
     }
 
@@ -2532,6 +3545,11 @@
         // 都据此拦截，防用户在预览 / 确认期间切角色或换文件重新启用按钮、起第二次
         // 导入（Codex P2）。finally 统一清除。
         window._memoryImportInProgress = true;
+        // Nothing else syncs the insights panel at either edge of an import, so
+        // its controls kept whatever state the last sync left them in: the lock
+        // below never engaged during the import, and a sync that happened to run
+        // while the flag was up left them disabled after it finished.
+        syncRepetitionInsightsControls();
         // 冻结文件 / 格式选择：payload 在预览前已快照，期间若改选，commit 仍发旧
         // payload，会导入与界面所示不同的 workspace（Codex P2）。finally 复原。
         const fileInput = document.getElementById('external-memory-files');
@@ -2708,6 +3726,7 @@
                 if (fileInput) fileInput.disabled = false;
                 if (formatSelect) formatSelect.disabled = false;
                 updateExternalImportButton();
+                syncRepetitionInsightsControls();
             }
         }
     }
@@ -3198,13 +4217,17 @@
         return true;
     }
 
-    function requestMemoryFileSelection(filename, li, catName) {
+    function requestMemoryFileSelection(filename, li, catName, options) {
         if (window._memoryImportInProgress || memoryUnsavedSwitchBusy) return;
         if (memoryHasUnsavedChanges && currentMemoryFile) {
+            // The dialog path drops `options`, which is sound for the only option
+            // there is: `keepInsightsTarget` comes from the startup auto-select,
+            // and that runs only while `currentMemoryFile` is unset, so this
+            // branch cannot be reached from it.
             openMemoryUnsavedSwitchDialog(filename, li, catName);
             return;
         }
-        selectMemoryFile(filename, li, catName);
+        selectMemoryFile(filename, li, catName, options);
     }
 
     function initMemoryUnsavedSwitchDialog() {
@@ -3305,7 +4328,19 @@
         currentMemoryFile = filename;
         currentMemoryFingerprint = null;
         currentMemoryIdentityToken = null;
+        const previousTarget = repetitionInsightsTarget();
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
+        // Opening a file re-couples the panel to the editor: an override set by
+        // picking a file-less identity must not survive a deliberate switch. The
+        // startup auto-select is not deliberate, so it opts out.
+        if (!(options && options.keepInsightsTarget)) {
+            repetitionInsightsCharacterOverride = '';
+        }
+        if (previousTarget !== repetitionInsightsTarget()) {
+            resetRepetitionInsightsState();
+        } else {
+            syncRepetitionInsightsControls();
+        }
         setMemoryDirty(false);
         dismissSaveStatus(true);
         updateExternalImportButton();
@@ -3726,6 +4761,7 @@
         initMemoryLayoutMode();
         initMemoryRolePanel();
         initMemoryUnsavedSwitchDialog();
+        initRepetitionInsights();
         initMemoryAuxiliaryPanels();
         const chatEditor = document.getElementById('memory-chat-edit');
         if (chatEditor) {
@@ -3736,14 +4772,22 @@
         if (storagePanelState && storagePanelState.limited) {
             renderMemoryBrowserLimitedState(storagePanelState);
         } else {
+            memoryStorageLimited = false;
             setReviewControlsEnabled(true);
             setPowerfulMemoryControlsEnabled(true);
+            // Load the identity list now that the root is settled. Measured
+            // as redundant today -- a later control sync reaches it anyway,
+            // and removing this line keeps the guard test green -- but that
+            // is an incidental property of the current init sequence, not a
+            // contract. The gate above is the load-bearing half.
+            loadRepetitionInsightCharacters();
             await loadMemoryFileList();
             if (!currentCatName) {
                 try {
                     const response = await fetch('/api/characters/current_catgirl');
                     const current = await response.json();
                     currentCatName = current.current_catgirl || '';
+                    syncRepetitionInsightsControls();
                 } catch (error) {
                     console.warn('[MemoryBrowser] Failed to resolve external-memory target:', error);
                 }
@@ -3786,6 +4830,13 @@
                 syncTutorialResetCascader();
                 syncExternalMemoryFormatDropdown();
                 syncMemoryRoleTriggerLabel();
+                if (!repetitionInsightsLanguageTouched && !repetitionInsightsReport) {
+                    const insightsLanguage = document.getElementById('memory-insights-language');
+                    if (insightsLanguage) insightsLanguage.value = repetitionInsightLanguageFromLocale();
+                }
+                refreshRepetitionInsightsStatus();
+                renderRepetitionInsightsResults();
+                syncRepetitionInsightsControls();
             });
         }
         window.addEventListener('localechange', function () {
@@ -3794,6 +4845,13 @@
             syncExternalMemoryFormatDropdown();
             syncMemoryRoleTriggerLabel();
             syncMemoryRoleSourceCopies();
+            if (!repetitionInsightsLanguageTouched && !repetitionInsightsReport) {
+                const insightsLanguage = document.getElementById('memory-insights-language');
+                if (insightsLanguage) insightsLanguage.value = repetitionInsightLanguageFromLocale();
+            }
+            refreshRepetitionInsightsStatus();
+            renderRepetitionInsightsResults();
+            syncRepetitionInsightsControls();
         });
 
         const externalFiles = document.getElementById('external-memory-files');

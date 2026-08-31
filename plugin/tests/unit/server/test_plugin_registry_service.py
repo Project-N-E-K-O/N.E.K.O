@@ -450,6 +450,49 @@ async def test_refresh_registry_marks_syntax_error_plugin_failed_without_abortin
 
 
 @pytest.mark.asyncio
+async def test_refresh_registry_handles_import_stdout_without_trailing_newline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "plugins"
+    _write_package_plugin_fixture(
+        root,
+        "noisy_plugin",
+        source="\n".join(
+            [
+                "print('import noise', end='')",
+                "",
+                "class DemoPlugin:",
+                "    pass",
+                "",
+            ]
+        ),
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
+
+        result = await module.PluginRegistryService().refresh_registry()
+
+        assert result["success"] is True
+        with module.state.acquire_plugins_read_lock():
+            plugin_meta = dict(module.state.plugins["noisy_plugin"])
+        assert plugin_meta.get("runtime_load_state") != "failed"
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
 async def test_refresh_registry_marks_entry_directory_mismatch_failed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

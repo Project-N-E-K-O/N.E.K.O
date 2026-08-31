@@ -85,6 +85,13 @@ _NO_ROUTE_IDENTITY_COMMIT = object()
 # new user turn, which is also the safe reading -- it retires stale tool work.
 _RAW_SCOPED_UTTERANCE_MEMORY = 8
 
+# Oldest capture age still trusted when translating a frame's monotonic
+# ingress stamp into wall clock for the plugin bus. Frames reach the bus within
+# a couple of seconds of capture; anything past this is a caller whose
+# "captured_at" is not on the monotonic clock at all, and guessing a wall time
+# from it would put the record decades away.
+_FRAME_BUS_MAX_CAPTURE_AGE_SECONDS = 300.0
+
 # `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
 # 过去匹配在 `str(event['error'])` 上，也就是整个 dict 的 repr —— 里面回显着我们自己
 # 生成的客户端相关性 id（`event_user_item_<uuid4().hex>` 之类）。hex 的字符集是
@@ -380,6 +387,11 @@ class _TransportMixin:
         # silence-check task, or Gemini SDK init). Applies uniformly to all providers.
         if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
+
+        # 同一个实例会被跨会话复用，所以 close() 立起来的帧抄送闭锁必须在这里
+        # 落下——否则重连之后 frames 总线上这个角色就再也不出现了，而且是静默
+        # 的（抄送本来就是 best-effort，没人会因此报错）。
+        self._frame_copies_closed = False
 
         # [ISSUE4c] Reset the tool-call flood window on every (re)connect. The
         # same OmniRealtimeClient instance is reused across sessions, so stale
@@ -1333,6 +1345,174 @@ class _TransportMixin:
             generation=generation,
         )
 
+    @staticmethod
+    def _frame_bus_wall_clock(captured_at: Optional[float]) -> float:
+        """Translate a monotonic capture instant into a wall-clock timestamp.
+
+        Live frames are stamped with ``time.monotonic()`` on the way in
+        (``_visual_input_ingress_time``), which is process-local and means
+        nothing to a plugin reading the record in another process -- and the
+        frames store indexes and sorts that field alongside records stamped
+        with ``time.time()``. Convert here rather than forward a number from a
+        clock the reader cannot interpret.
+
+        An implausible age falls back to now, because a caller passing epoch
+        seconds would otherwise land the record decades in the future, which
+        sorts far worse than being a few milliseconds late.
+        """
+
+        now = time.time()
+        if not isinstance(captured_at, (int, float)):
+            return now
+        age = time.monotonic() - float(captured_at)
+        if not 0.0 <= age <= _FRAME_BUS_MAX_CAPTURE_AGE_SECONDS:
+            return now
+        return now - age
+
+    @staticmethod
+    def _delivered_frame_from_event(
+        event: Dict[str, Any],
+    ) -> Optional[tuple[str, str]]:
+        """Read the image bytes an outgoing append event actually carries.
+
+        Deliberately reads the event and not the caller's ``image_b64``:
+        ``send_event`` shrinks an oversized frame by rewriting the very fields
+        below IN PLACE, so after a successful send the parameter still holds
+        the larger, discarded picture while the event holds the one the
+        provider received. Field selection mirrors
+        ``_try_shrink_image_payload`` -- that is the function doing the
+        rewriting, so the two have to agree on where the bytes live.
+
+        Returns ``(base64, mime)``, or None for an event carrying no image.
+        """
+
+        if not isinstance(event, dict):
+            return None
+        etype = str(event.get("type", ""))
+        if "image" in etype and isinstance(event.get("image"), str):
+            return event["image"], "image/jpeg"
+        if "video_frame" in etype and isinstance(event.get("video_frame"), str):
+            return event["video_frame"], "image/jpeg"
+        try:
+            parts = event["item"]["content"]
+        except (KeyError, TypeError):
+            return None
+        if not isinstance(parts, list):
+            return None
+        # Last image part, not the first: a multi-image item that could not be
+        # shrunk far enough drops its OLDEST parts and keeps the newest, which
+        # is the frame this delivery is about.
+        for part in reversed(parts):
+            url = part.get("image_url") if isinstance(part, dict) else None
+            if isinstance(url, str) and url.startswith("data:image/"):
+                header, _, data = url.partition(",")
+                mime = header[len("data:"):].split(";", 1)[0] or "image/jpeg"
+                return data, mime
+        return None
+
+    def _publish_provider_frame_from_event(
+        self,
+        event: Dict[str, Any],
+        *,
+        source: str,
+        captured_at: Optional[float],
+    ) -> None:
+        """Publish the frame one outgoing append event actually carried."""
+
+        delivered = self._delivered_frame_from_event(event)
+        if delivered is None:
+            return
+        image_b64, mime = delivered
+        self._publish_provider_frame(
+            image_b64,
+            source=source,
+            captured_at=captured_at,
+            mime=mime,
+        )
+
+    def _publish_provider_frame(
+        self,
+        image_b64: str,
+        *,
+        source: str,
+        captured_at: Optional[float],
+        mime: str = "image/jpeg",
+    ) -> None:
+        """Copy a frame the provider just accepted onto the plugin bus.
+
+        Only ever called where the frame was genuinely delivered. A frame the
+        NATIVE_IMAGE_MIN_INTERVAL throttle or the delivery-mode fence dropped
+        was never sent, so it must never reach the bus -- that is what keeps
+        plugins observers of what the model saw rather than a second camera.
+
+        Fire-and-forget by construction, and the scheduling is guarded too:
+        copying a frame is never a reason to slow down or fail a send that
+        already succeeded. The publish is not guaranteed to stay on this loop
+        either (``publish_session_event_threadsafe`` hands off to the bridge's
+        owner loop when that is a different one), and a stalled bridge must
+        not be able to stall the session.
+        """
+
+        if not image_b64:
+            return
+        try:
+            # Sample the turn identity HERE, not inside the task: the copy runs
+            # on a later loop iteration, and the receive loop can rotate the
+            # speech id in that gap. Then the frame would be filed under the
+            # turn that followed the one it was actually sent in.
+            self._fire_frame_copy(
+                self._publish_provider_frame_task(
+                    image_b64,
+                    source=str(source or "unknown"),
+                    captured_at=self._frame_bus_wall_clock(captured_at),
+                    turn_id=self._read_host_turn_id(),
+                    # Ambient frames are ordered by this counter, but a
+                    # one-shot cue image (cache_latest=False) never advances
+                    # it, so two records can legitimately share a generation.
+                    # Plugin-side dedup is documented on the record id, which
+                    # is unique per publish; this only orders the ambient
+                    # stream.
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    mime=mime,
+                )
+            )
+        except Exception as exc:
+            logger.debug("frame bus publish not scheduled: %s", exc)
+
+    async def _publish_provider_frame_task(
+        self,
+        image_b64: str,
+        *,
+        source: str,
+        captured_at: float,
+        turn_id: Optional[str],
+        generation: int,
+        mime: str,
+    ) -> None:
+        """Hand one delivered frame to the session event bus. Never raises."""
+
+        try:
+            from main_logic.agent_event_bus import (
+                publish_provider_frame_observed_best_effort,
+            )
+
+            await publish_provider_frame_observed_best_effort(
+                # Read rather than hardcode None: the realtime client is
+                # constructed without a character name today (see
+                # core/lifecycle), so the record simply omits the field.
+                getattr(self, "lanlan_name", None),
+                image_base64=image_b64,
+                source=source,
+                captured_at=captured_at,
+                turn_id=turn_id,
+                generation=generation,
+                mime=mime,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("frame bus publish failed: %s", exc)
+
     async def stream_image(
         self,
         image_b64: str,
@@ -1585,6 +1765,13 @@ class _TransportMixin:
                         raise
                     if self._supports_native_image:
                         self._last_native_image_time = current_time
+                    # 送到了才复制。Gemini 不走 send_event，没有那条就地重压缩
+                    # 的路径，所以 image_b64 就是 provider 收到的那份字节。
+                    self._publish_provider_frame(
+                        image_b64,
+                        source=source,
+                        captured_at=captured_at,
+                    )
                     return ImageStageResult(
                         accepted=True,
                         mode=VisualDeliveryMode.NATIVE.value,
@@ -1622,6 +1809,17 @@ class _TransportMixin:
                     rejection_event_id = None
                 if sent and self._supports_native_image:
                     self._last_native_image_time = current_time
+                if sent:
+                    # 只判 sent，别跟着上面那半条件走：_supports_native_image 管
+                    # 的是节流时间戳该不该更新，不是"这一帧有没有送出去"——free
+                    # 路该标志为假时照样把帧发了出去，带上它就会静默漏掉真实投递。
+                    # 字节从 append_event 里读回来——send_event 对超限帧的重压缩
+                    # 是就地改写 event 的，参数里那份已不是 provider 收到的图。
+                    self._publish_provider_frame_from_event(
+                        append_event,
+                        source=source,
+                        captured_at=captured_at,
+                    )
                 return ImageStageResult(
                     accepted=sent,
                     mode=VisualDeliveryMode.NATIVE.value,
@@ -1729,6 +1927,17 @@ class _TransportMixin:
                     rejection_event_id = None
                 if sent and self._supports_native_image:
                     self._last_native_image_time = current_time
+                if sent:
+                    # 只判 sent，别跟着上面那半条件走：_supports_native_image 管
+                    # 的是节流时间戳该不该更新，不是"这一帧有没有送出去"——free
+                    # 路该标志为假时照样把帧发了出去，带上它就会静默漏掉真实投递。
+                    # 字节从 append_event 里读回来——send_event 对超限帧的重压缩
+                    # 是就地改写 event 的，参数里那份已不是 provider 收到的图。
+                    self._publish_provider_frame_from_event(
+                        append_event,
+                        source=source,
+                        captured_at=captured_at,
+                    )
                 return ImageStageResult(
                     accepted=sent,
                     mode=VisualDeliveryMode.NATIVE.value,
@@ -3621,6 +3830,14 @@ class _TransportMixin:
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
+        # Before the teardown, and deliberately not inside ``_detach_for_close``
+        # (which is synchronous by contract). These copies belong to THIS
+        # instance's own set, so a replacement session attaching mid-teardown
+        # gets a fresh one and nothing races. Left alive, a copy parked in the
+        # cross-loop handoff keeps its base64 and publishes a frame from a
+        # retired session if the bridge recovers -- the offline client is
+        # drained the same way, in ``_cancel_bus_copies``.
+        await self._cancel_frame_copies()
         await self._own_teardown("_close_task", self._detach_for_close)
 
     def _detach_for_close(self):

@@ -15,6 +15,7 @@
 
 from ._shared import (
     GEMINI_CANCELLED_TERMINAL_TTL_SECONDS,
+    GEMINI_TURN_IMAGE_MIME,
     Any,
     List,
     Path,
@@ -332,7 +333,7 @@ class _GeminiMixin:
         text: str,
         *,
         images_bytes: tuple[bytes, ...] = (),
-        image_mime_type: str = "image/jpeg",
+        image_mime_type: str = GEMINI_TURN_IMAGE_MIME,
         starts_user_turn: bool = True,
     ) -> None:
         """Inject one Gemini user turn and trigger a response via

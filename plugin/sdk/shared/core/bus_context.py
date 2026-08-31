@@ -279,6 +279,74 @@ class SdkBusConversationRecord:
 
 
 @dataclass(slots=True)
+class SdkBusFrameRecord:
+    """One frame the host already pushed to the model provider.
+
+    Lossy by contract: see ``plugin/core/bus/frames.py``. The base64 image is
+    carried once; there is no raw-bytes twin to read.
+    """
+
+    frame_id: str | None = None
+    type: str = "provider_frame"
+    timestamp: float | None = None
+    # 和 timestamp 同值，两个名字都留着：``timestamp`` 是所有 bus record 共用的
+    # 排序字段，``captured_at`` 是 frames 自己的对外字段名（core 的 FrameRecord
+    # 有它，SDK 文档也写了它）。只折成 timestamp 的话，照文档写的插件会直接
+    # AttributeError。
+    captured_at: float | None = None
+    source: str | None = None
+    image_base64: str | None = None
+    mime: str | None = None
+    turn_id: str | None = None
+    generation: int | None = None
+    lanlan_name: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_raw(cls, raw: object) -> "SdkBusFrameRecord":
+        generation = _read_first(raw, "generation")
+        captured_at = _as_float(_read_first(raw, "captured_at", "timestamp", "time"))
+        return cls(
+            frame_id=_as_str(_read_first(raw, "frame_id", "id")),
+            type=_as_str(_read_first(raw, "type")) or "provider_frame",
+            timestamp=captured_at,
+            captured_at=captured_at,
+            source=_as_str(_read_first(raw, "source")),
+            image_base64=_as_str(_read_first(raw, "image_base64")),
+            mime=_as_str(_read_first(raw, "mime")),
+            turn_id=_as_str(_read_first(raw, "turn_id")),
+            generation=_as_int(generation) if generation is not None else None,
+            lanlan_name=_as_str(_read_first(raw, "lanlan_name")),
+            metadata=_as_dict(_read_first(raw, "metadata")),
+        )
+
+    def dump(self) -> dict[str, Any]:
+        return {
+            "frame_id": self.frame_id,
+            "type": self.type,
+            "timestamp": self.timestamp,
+            "captured_at": self.captured_at,
+            "source": self.source,
+            "image_base64": self.image_base64,
+            "mime": self.mime,
+            "turn_id": self.turn_id,
+            "generation": self.generation,
+            "lanlan_name": self.lanlan_name,
+            "metadata": dict(self.metadata),
+        }
+
+    def key(self) -> str:
+        return self.frame_id or f"{self.source or ''}:{self.timestamp or 0}"
+
+    def version(self) -> int | None:
+        # The store's own generation counter beats the wall clock: two frames
+        # can share a timestamp at this resolution, generations cannot.
+        if self.generation is not None:
+            return self.generation
+        return int(self.timestamp) if self.timestamp is not None else None
+
+
+@dataclass(slots=True)
 class SdkBusMemoryRecord:
     payload: dict[str, Any]
 
@@ -780,6 +848,14 @@ class SdkConversationsBus(_SdkBusNamespace[SdkBusConversationRecord]):
         return self.get(conversation_id=conversation_id, max_count=max_count, timeout=timeout)
 
 
+class SdkFramesBus(_SdkBusNamespace[SdkBusFrameRecord]):
+    def __init__(self, raw_namespace: object, *, host_ctx: object) -> None:
+        super().__init__(raw_namespace, namespace="frames", record_factory=SdkBusFrameRecord, host_ctx=host_ctx)
+
+    def get(self, **kwargs: Any) -> object:
+        return self._call("get", **kwargs)
+
+
 class SdkMemoryBus(_SdkBusNamespace[SdkBusMemoryRecord]):
     def __init__(self, raw_namespace: object, *, host_ctx: object) -> None:
         super().__init__(raw_namespace, namespace="memory", record_factory=SdkBusMemoryRecord, host_ctx=host_ctx)
@@ -823,6 +899,7 @@ class SdkBusContext:
         self.events = SdkEventsBus(getattr(raw_bus, "events", object()), host_ctx=host_ctx)
         self.lifecycle = SdkLifecycleBus(getattr(raw_bus, "lifecycle", object()), host_ctx=host_ctx)
         self.conversations = SdkConversationsBus(getattr(raw_bus, "conversations", object()), host_ctx=host_ctx)
+        self.frames = SdkFramesBus(getattr(raw_bus, "frames", object()), host_ctx=host_ctx)
         self.memory = SdkMemoryBus(getattr(raw_bus, "memory", object()), host_ctx=host_ctx)
 
 
@@ -837,6 +914,7 @@ __all__ = [
     "SdkBusConversationRecord",
     "SdkBusDelta",
     "SdkBusEventRecord",
+    "SdkBusFrameRecord",
     "SdkBusLifecycleRecord",
     "SdkBusList",
     "SdkBusMemoryRecord",
@@ -844,6 +922,7 @@ __all__ = [
     "SdkBusWatcher",
     "SdkConversationsBus",
     "SdkEventsBus",
+    "SdkFramesBus",
     "SdkLifecycleBus",
     "SdkMemoryBus",
     "SdkMessagesBus",

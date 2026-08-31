@@ -1568,12 +1568,17 @@ class LifecycleMixin:
             lanlan_name=self.lanlan_name,
             master_name=self.master_name,
             user_language_provider=lambda: self.user_language,
-            on_tool_call=self._on_tool_call,
+            on_tool_call=None,
             tool_definitions=tool_definitions,
             enable_long_response_summary=external_tts_enabled,
         )
         session.on_proactive_done = self.handle_proactive_complete
         session.on_thinking_active = self._make_thinking_active_callback(session)
+        # 和两个 realtime 构造点同一处理：句柄绑到这个 client 自己，而不是
+        # 构造时刻的 self.session。handoff candidate 在被提升前既不是
+        # self.session 也不是 pending_session，_sync_tools_to_active_session
+        # 扫不到它，它得从出生就认得自己。
+        session.on_tool_call = self._make_tool_call_handler(session)
         return session
 
     async def _create_offline_vlm_handoff_candidate(
@@ -1764,6 +1769,9 @@ class LifecycleMixin:
                         turn.transcript,
                         turn.images,
                         turn_id=turn.turn_id,
+                        # 与这批帧一起冻结的采集通道。不传的话离线侧会把屏幕
+                        # 和摄像头帧一律标成 "user"。
+                        source=turn.source,
                     )
                     return delivered is not False
                 if current is None or not operation_is_current():
@@ -2087,6 +2095,8 @@ class LifecycleMixin:
                     turn.transcript,
                     turn.images,
                     turn_id=turn.turn_id,
+                    # 同上：帧总线的通道标签跟着帧走。
+                    source=turn.source,
                 )
                 return delivered is not False
             finally:
@@ -2227,6 +2237,8 @@ class LifecycleMixin:
                 api_key=realtime_config['api_key'],
                 model=realtime_config['model'],
                 voice=self._resolve_realtime_voice(realtime_config),
+                # 同上：帧抄送的角色归属。
+                lanlan_name=self.lanlan_name,
                 on_text_delta=self.handle_text_data,
                 on_audio_delta=self.handle_audio_data,
                 on_audio_done=self.handle_audio_done,
@@ -2245,7 +2257,7 @@ class LifecycleMixin:
                 on_status_message=self.send_status,
                 on_repetition_detected=self.handle_repetition_detected,
                 api_type=self.core_api_type,
-                on_tool_call=self._on_tool_call,
+                on_tool_call=None,
                 tool_definitions=_initial_tool_defs,
                 livestream_mode=self._is_livestream_active(),
                 noise_reduction_enabled=nr_enabled,
@@ -2254,6 +2266,8 @@ class LifecycleMixin:
             # Apply user's noise reduction preference to the AudioProcessor
             if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
                 await new_session.set_audio_noise_reduction_enabled(nr_enabled)
+
+        new_session.on_tool_call = self._make_tool_call_handler(new_session)
 
         # Bind guarded callbacks BEFORE connect — connect() can invoke
         # on_connection_error during the handshake, and without the guard
@@ -2526,6 +2540,10 @@ class LifecycleMixin:
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
                     voice=self._resolve_realtime_voice(realtime_config),
+                    # 帧抄送要能归到角色：多角色同时开实时会话时，frames/all
+                    # 是共享的，没有这个名字插件分不出哪一帧属于谁（离线侧一直
+                    # 是带名字的，realtime 这侧此前恒为 None）。
+                    lanlan_name=self.lanlan_name,
                     on_text_delta=self.handle_text_data,
                     on_audio_delta=self.handle_audio_data,
                     on_audio_done=self.handle_audio_done,
@@ -2544,7 +2562,7 @@ class LifecycleMixin:
                     on_status_message=self.send_status,
                     on_repetition_detected=self.handle_repetition_detected,
                     api_type=self.core_api_type,
-                    on_tool_call=self._on_tool_call,
+                    on_tool_call=None,
                     tool_definitions=_pending_tool_defs,
                     livestream_mode=self._is_livestream_active(),
                     noise_reduction_enabled=nr_enabled,
@@ -2555,6 +2573,10 @@ class LifecycleMixin:
                     await self.pending_session.set_audio_noise_reduction_enabled(nr_enabled)
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
+            self.pending_session.on_tool_call = self._make_tool_call_handler(
+                self.pending_session
+            )
+
             initial_prompt = await self._build_initial_prompt()
             next_session_context_messages = list(getattr(self, "next_session_context_messages", []) or [])
             self.initial_next_session_context_snapshot_len = len(next_session_context_messages)

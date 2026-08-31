@@ -17,17 +17,14 @@ from typing import Protocol, runtime_checkable
 from fastapi import HTTPException
 
 from plugin._types.exceptions import PluginError, PluginLifecycleError
-from plugin.core.host import PluginProcessHost, _import_plugin_module
+from plugin.core.host import PluginProcessHost
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
     _collect_plugin_python_requirement_paths,
     _check_plugin_dependency,
-    _ensure_python_requirement_paths,
-    _extract_entries_preview,
     _find_missing_python_requirements,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
-    scan_static_metadata,
 )
 from plugin.core.entry_points import (
     describe_plugin_entry_directory_mismatch,
@@ -40,10 +37,20 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.application.plugins.installation_transactions import (
+    UninstallOwnershipError,
     UninstallPluginError,
+    require_uninstall_ownership,
     retry_deferred_plugin_code_cleanup_sync,
     retry_deferred_profile_cleanup_sync,
     uninstall_plugin,
+)
+from plugin.server.application.plugins.metadata_scanner import (
+    install_isolated_plugin_metadata,
+    scan_plugin_metadata_isolated,
+)
+from plugin.server.application.install_source import (
+    InstallSourceError,
+    get_install_source_manager,
 )
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import (
@@ -894,36 +901,23 @@ class PluginLifecycleService:
                         error_type="ProcessDiedImmediately",
                     )
 
-            # Mirror the startup loader: ensure the plugin's vendor/ entries
-            # are on sys.path before we import its entry module here, so a
-            # plugin whose top-level imports use vendored packages doesn't
-            # fail this parent-process metadata scan even though the child
-            # process would import it just fine.
-            _ensure_python_requirement_paths(
-                python_requirement_paths,
-                logger,
-                current_plugin_id,
-            )
             module_path, class_name = entry.split(":", 1)
-            module_obj = await asyncio.to_thread(_import_plugin_module, module_path, config_path, logger)
-            cls_obj = getattr(module_obj, class_name)
-            if not isinstance(cls_obj, type):
-                raise _to_domain_error(
-                    code="INVALID_PLUGIN_CLASS",
-                    message=f"Plugin '{current_plugin_id}' entry class '{class_name}' is invalid",
-                    status_code=500,
-                    plugin_id=current_plugin_id,
-                    error_type="InvalidPluginClass",
-                )
-
-            await asyncio.to_thread(scan_static_metadata, current_plugin_id, cls_obj, conf, pdata)
-            entries_preview = await asyncio.to_thread(
-                _extract_entries_preview,
-                current_plugin_id,
-                cls_obj,
-                conf,
-                pdata,
+            isolated_metadata = await asyncio.to_thread(
+                scan_plugin_metadata_isolated,
+                plugin_id=current_plugin_id,
+                module_path=module_path,
+                class_name=class_name,
+                config_path=config_path,
+                conf=conf,
+                pdata=pdata,
+                python_requirement_paths=python_requirement_paths,
             )
+            await asyncio.to_thread(
+                install_isolated_plugin_metadata,
+                current_plugin_id,
+                isolated_metadata,
+            )
+            entries_preview = isolated_metadata.entries_preview
             await asyncio.to_thread(
                 _set_plugin_runtime_metadata_sync,
                 current_plugin_id,
@@ -1112,6 +1106,7 @@ class PluginLifecycleService:
                 error_type=type(exc).__name__,
             ) from exc
 
+    @serialized_plugin_operation
     async def reload_plugin(self, plugin_id: str) -> dict[str, object]:
         _emit_lifecycle_event(event_type="plugin_reload_requested", plugin_id=plugin_id)
 

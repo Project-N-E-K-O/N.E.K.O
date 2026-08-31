@@ -21,6 +21,8 @@ Method-only mixin: every instance attribute is assigned in
 
 import asyncio
 import os
+
+from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
 from config.prompts.prompts_sys import _loc
@@ -106,12 +108,75 @@ class ToolCallingMixin:
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return n
 
-    async def _on_tool_call(self, call: ToolCall) -> ToolResult:
+    def _make_tool_call_handler(self, session):
+        async def _handle(call: ToolCall) -> ToolResult:
+            return await self._on_tool_call(call, invoking_session=session)
+
+        return _handle
+
+    async def _on_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        invoking_session=None,
+    ) -> ToolResult:
         """Bridge invoked by both clients when the model emits a tool
-        call. Just forwards to the registry; the registry is process-
-        global and outlives any single session.
+        call. Forwards to the registry (process-global, outliving any
+        single session), then routes any images the tool returned.
         """
-        return await self.tool_registry.execute(call)
+        result = await self.tool_registry.execute(call)
+        if result.images:
+            await self._route_tool_images(
+                result, invoking_session=invoking_session,
+            )
+        return result
+
+    async def _route_tool_images(
+        self,
+        result: ToolResult,
+        *,
+        invoking_session=None,
+    ) -> None:
+        """Get a tool's pictures in front of the model, or say they never got there.
+
+        One choke point for both clients, because the answer depends on the
+        session the call arrived on -- which a plugin cannot see, and which
+        changes when the user swaps voice for text mid-conversation.
+
+        An offline session is asked to make itself able to look
+        (``prepare_for_tool_images``): the same permanent switch to the
+        configured vision model that a dragged-in screenshot triggers in
+        ``stream_text``, so a tool frame and a user frame reach the model by
+        one route rather than two. A realtime session has no such route at
+        all -- its ``function_call_output`` item carries a string.
+
+        When the pixels cannot go, they are dropped here so nothing
+        downstream has to re-check, and the drop is stated back to the model
+        in ``_image_warnings``. Dropping them silently would be worse than
+        either: she would answer as though she had looked.
+        """
+        session = invoking_session if invoking_session is not None else self.session
+        if isinstance(session, OmniRealtimeClient):
+            reason = "a realtime session can only hand a tool result back as text"
+        elif not isinstance(session, OmniOfflineClient):
+            reason = f"session type {type(session).__name__} has no image channel"
+        elif await session.prepare_for_tool_images():
+            # The client owns that call: only it knows which endpoint and SDK
+            # it is currently speaking, and therefore whether it can reach a
+            # vision model without breaking the tool loop that is running.
+            return
+        else:
+            reason = "this session cannot reach a vision model"
+
+        skipped = len(result.images)
+        result.images = []
+        logger.warning(
+            "Tool '%s': %d image(s) not shown to the model (%s)",
+            result.name, skipped, reason,
+        )
+        result.add_image_warnings(
+            f"{skipped} tool image(s) were not shown to the model: {reason}"
+        )
 
     # ------------------------------------------------------------------
     # 内置 pseudo 工具：recall_memory
@@ -364,7 +429,9 @@ class ToolCallingMixin:
                     if hasattr(sess, "set_tools"):
                         sess.set_tools(defs)
                     if hasattr(sess, "set_tool_call_handler"):
-                        sess.set_tool_call_handler(self._on_tool_call)
+                        sess.set_tool_call_handler(
+                            self._make_tool_call_handler(sess)
+                        )
                     if isinstance(sess, OmniRealtimeClient) and sess.ws is not None:
                         await sess.apply_tools_to_session()
                 except Exception as e:

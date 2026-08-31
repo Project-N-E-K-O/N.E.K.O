@@ -232,6 +232,126 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
         )
 
 
+def _forward_provider_frame(event: Dict[str, Any]) -> bool:
+    """Copy one already-delivered provider frame into the plugin ``frames`` store.
+
+    main_server owns the session and cannot write to the message plane (the
+    ingest credential is process-local to the plugin server, which is embedded
+    here), so the frame arrives over the existing session PUB channel and this
+    is its only hop into the bus.
+
+    Gated on user plugins being enabled because ``frames`` exists for plugins
+    and nothing else: with them off there is no reader, and copying the user's
+    screen into a resident deque would be retention that buys nothing. Not
+    gated on the analyzer master switch -- that governs the analyzer, and the
+    frames bus is not part of it.
+
+    Synchronous on purpose. ``publish_frame`` only packs the record and does a
+    ``put_nowait``; a task per frame would cost more than the work it defers.
+    """
+    if not _user_plugins_enabled():
+        return False
+    image_b64 = (event or {}).get("image_base64")
+    if not isinstance(image_b64, str) or not image_b64:
+        return False
+    try:
+        from plugin.server.messaging.plane_bridge import build_frame_record, publish_frame
+
+        generation = (event or {}).get("generation")
+        record = build_frame_record(
+            image_base64=image_b64,
+            source=str((event or {}).get("source") or "unknown"),
+            captured_at=(event or {}).get("captured_at"),
+            turn_id=(event or {}).get("turn_id"),
+            generation=int(generation) if isinstance(generation, (int, float)) else None,
+            mime=str((event or {}).get("mime") or "image/jpeg"),
+            lanlan_name=(event or {}).get("lanlan_name"),
+            # The publisher's event_id is the frame's identity end to end, so a
+            # puller can correlate a bus record with the session-side log line.
+            frame_id=(event or {}).get("event_id"),
+            metadata=(event or {}).get("metadata"),
+        )
+        return bool(publish_frame(record))
+    except Exception as exc:
+        logger.debug("[FrameBus] forward failed: %s", exc)
+        return False
+
+
+def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
+    """Copy one already-handled conversation message into the ``conversations`` store.
+
+    The text dual of :func:`_forward_provider_frame`, and it exists for the same
+    reason: main_server owns the session but cannot write to the message plane,
+    so the record arrives over the session PUB channel and this is its only hop
+    onto the bus.
+
+    Gated on user plugins being enabled, exactly like the frame hop: the store
+    exists for plugins, and with them off a resident deque of what she said is
+    retention that buys nothing.
+
+    The record shape is dictated by ``ConversationRecord.from_raw`` /
+    ``from_index`` on the reading side -- ``content`` at the top level,
+    ``conversation_id`` / ``turn_type`` / ``lanlan_name`` / ``message_count``
+    inside ``metadata``. ``conversation_id`` in particular has to be in
+    ``metadata``: that is the only place ``TopicStore._extract_index`` looks
+    for it, so putting it at the top level would drop it from the index a
+    ``light=True`` read hands back.
+
+    Synchronous on purpose, like the frame hop: ``publish_record`` only packs
+    the record and does a ``put_nowait``.
+    """
+    if not _user_plugins_enabled():
+        return False
+    content = (event or {}).get("content")
+    if not isinstance(content, str) or not content.strip():
+        return False
+    try:
+        from plugin.message_plane.stores import (
+            CONVERSATIONS_STORE_NAME,
+            CONVERSATIONS_TOPIC,
+        )
+        from plugin.server.messaging.plane_bridge import publish_record
+
+        metadata_in = (event or {}).get("metadata")
+        metadata: Dict[str, Any] = dict(metadata_in) if isinstance(metadata_in, dict) else {}
+        # Absent stays absent rather than becoming ``""``: the reader turns an
+        # empty string into an empty ``conversation_id``, which reads as "this
+        # record belongs to a conversation whose id is blank" instead of "no id".
+        conversation_id = str((event or {}).get("conversation_id") or "")
+        if conversation_id:
+            metadata["conversation_id"] = conversation_id
+        metadata["turn_type"] = str((event or {}).get("turn_type") or "unknown")
+        lanlan_name = (event or {}).get("lanlan_name")
+        if lanlan_name:
+            metadata["lanlan_name"] = str(lanlan_name)
+        message_count = (event or {}).get("message_count")
+        metadata["message_count"] = (
+            int(message_count) if isinstance(message_count, (int, float)) else 0
+        )
+        record: Dict[str, Any] = {
+            "kind": "conversation",
+            "type": "conversation_turn",
+            "source": str((event or {}).get("source") or "unknown"),
+            "timestamp": time.time(),
+            "content": content,
+            "metadata": metadata,
+        }
+        # The publisher's event_id is this message's identity end to end, so a
+        # puller can dedupe without unpacking, same as a frame.
+        event_id = str((event or {}).get("event_id") or "")
+        if event_id:
+            record["id"] = event_id
+        publish_record(
+            store=CONVERSATIONS_STORE_NAME,
+            record=record,
+            topic=CONVERSATIONS_TOPIC,
+        )
+        return True
+    except Exception as exc:
+        logger.debug("[ConversationBus] forward failed: %s", exc)
+        return False
+
+
 def _resolve_analyze_lang(session_language: Optional[str]) -> str:
     """Language for the analyzer's prompts: session locale first, process global as fallback.
 
@@ -337,6 +457,12 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         return
     if event_type in {"voice_transcript_observed", "voice_transcript_request"}:
         _create_tracked_task(_handle_voice_transcript_request(event))
+        return
+    if event_type == "provider_frame_observed":
+        _forward_provider_frame(event)
+        return
+    if event_type == "conversation_turn_observed":
+        _forward_conversation_turn(event)
         return
     if event_type == "analyze_request":
         messages = event.get("messages", [])

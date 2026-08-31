@@ -310,9 +310,28 @@ recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-列表接口为 `filter` / `where`、`sort`、`limit`、`watch`。可调用形式 `filter(predicate)`、`where(predicate)` 和 `sort(key=...)` 仅处理本地快照；可重放的 watcher 链必须使用结构化 `filter(field=value, ...)` 与 `sort(by=...)`。只有 `messages`、`events`、`lifecycle` 支持 `watch()`；`conversations` 与 `memory` 是只读快照。watcher 仅接受 `add`、`del`、`change`。
+列表接口为 `filter` / `where`、`sort`、`limit`、`watch`。可调用形式 `filter(predicate)`、`where(predicate)` 和 `sort(key=...)` 仅处理本地快照；可重放的 watcher 链必须使用结构化 `filter(field=value, ...)` 与 `sort(by=...)`。只有 `messages`、`events`、`lifecycle` 支持 `watch()`；`conversations`、`memory` 与 `frames` 是只读快照。watcher 仅接受 `add`、`del`、`change`。
+
+【访问范围】这几个 store 是共享的，读取不按插件做权限隔离：任何已启用的插件都能读 `conversations` 和 `frames`，包括来自用户、以及来自别的插件的轮次与画面。这不会扩大宿主**已经发给模型**的内容——会话没发过的帧不会出现在这里——但确实扩大了**谁能看到**：从模型服务方扩大到用户启用的每一个插件。安装一个插件就等于授予它这份可见性；你的插件如果读这两条总线，请在自己的说明里写明。
 
 `bus.memory` 保存的是有容量上限、只驻留内存的近期用户话语事件（TTL 为一小时），与角色持久化的事实、反思和人格相互独立。`ctx.query_memory(...)` 只为兼容而保留，它调用已弃用的占位端点，不执行语义召回。
+
+### Frames
+
+`bus.frames` 保存宿主已经推送给模型提供方的最近几帧画面——就是提供方实际收到的那份字节。
+
+```python
+frames = await self.bus.frames.get(max_count=4)
+latest = frames.sort(by="timestamp", reverse=True).limit(1)
+```
+
+插件无法要求截图。被会话自身的节流或投递模式栅栏丢掉的那一帧压根没有发给提供方，因此也不会出现在这里。
+
+**它不是日志，也不是队列。** 帧在四个位置被有意丢弃：message plane 的 PUB 套接字对慢订阅方和到达高水位时都会丢包；宿主侧的发布是非阻塞的；发送队列有上限，一旦落后就直接拒收新帧；store 本身只保留个位数（`NEKO_MESSAGE_PLANE_FRAMES_STORE_MAXLEN`，取值被夹在 2-8，默认 4）。轮询"每一帧"，或者认为读到过一次的帧还在，都会出错。
+
+每条记录带有 `image_base64`（只有一份，不存在可读的裸字节副本）、`mime`、`source`、`captured_at`、`turn_id`、`generation`、`frame_id` 和 `metadata`。`source` 是宿主给这一帧归的通道：`screen`、`camera`、`plugin`、`callback`、`proactive`、`user`，以及这一轮被重排后宿主已经说不准时的 `unknown`。`screen` 和 `camera` 只在语音路径上区分这两条实时通道；文字模式下用户分享的每一帧——共享的屏幕、相机截图、拖进来的照片——都走同一条不区分来源的队列，因此一律报作 `user`。想在两种模式下都拿到「用户给角色看的东西」，请按 `user` 过滤。请按 `frame_id` 去重：`generation` 只为常驻画面排序，一次性提示图不会让它前进，所以两条记录可能共用同一个值。
+
+工具返回的图片也在这条总线上——前提是携带它们的那次后继请求已经得到应答。这类帧的 `source` 为 `"plugin"`，`metadata` 为 `{"tool_name": "..."}`。工具最多可以返回 2 MiB base64；超过投递预算（500 KiB）的部分由宿主按模型画面的同一套 profile 重新编码（JPEG，最大 1280×720），使其落在 message plane 的记录上限之内，从而同时到达模型和这条总线。此时记录里的 `mime` 会是 `image/jpeg`（即便工具交回的是 PNG），工具结果里也会带一条模型可见的说明，告诉它这张图被重新编码过。压缩之后仍然放不下的图会被丢弃，并附带自己的告警。读像素之前先读 `source`：标为 `plugin` 的帧是某个插件交给模型的媒体（未必是你自己的），不是用户共享给角色的画面。
 
 ### 优先级等级
 

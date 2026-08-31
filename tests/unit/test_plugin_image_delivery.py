@@ -3237,7 +3237,7 @@ def _offline_client_for_ephemeral():
 
     sent: list = []
 
-    async def _fake_stream(messages):
+    async def _fake_stream(messages, **_overrides):
         sent.append(messages)
         yield SimpleNamespace(content="看到了喵~")
 
@@ -3611,7 +3611,7 @@ async def test_trim_notice_waits_for_the_proactive_turn_to_actually_speak(
 
     client, _sent = _offline_client_for_ephemeral()
 
-    async def _silent_stream(messages):
+    async def _silent_stream(messages, **_overrides):
         # 流正常结束却一个可见字符都没有：emitted_any 保持 False。
         return
         yield  # pragma: no cover - makes this an async generator
@@ -3657,7 +3657,7 @@ async def test_trim_notice_fires_once_across_a_multi_chunk_stream(monkeypatch) -
 
     client, _sent = _offline_client_for_ephemeral()
 
-    async def _chatty_stream(messages):
+    async def _chatty_stream(messages, **_overrides):
         for index in range(10):
             yield SimpleNamespace(content=f"第{index}段喵~")
 
@@ -3704,7 +3704,7 @@ async def test_text_only_proactive_turn_completes_without_touching_image_state()
 
     client, sent = _offline_client_for_ephemeral()
 
-    async def _talky(messages):
+    async def _talky(messages, **_overrides):
         # 替掉夹具的 stream 就丢了它对 sent 的追加，这里补上，
         # 否则「LLM 被调用了」这条断言测的是夹具自己。
         sent.append(messages)
@@ -3752,7 +3752,7 @@ async def test_trim_notice_survives_a_reply_shorter_than_the_prefix_buffer(
     # Big enough that the whole reply below stays buffered to the very end.
     client._prefix_buffer_size = 64
 
-    async def _short_reply(messages):
+    async def _short_reply(messages, **_overrides):
         yield SimpleNamespace(content="喵~")
 
     client._astream_visible_with_tools = _short_reply

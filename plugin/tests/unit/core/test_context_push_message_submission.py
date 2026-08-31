@@ -81,220 +81,18 @@ def _context(tmp_path: Path, *, message_queue: object = None) -> tuple[PluginCon
     )
 
 
-def _install_slow_message_plane(
-    monkeypatch: pytest.MonkeyPatch,
-    socket: _Socket,
-) -> None:
-    class _ZmqContext:
-        @staticmethod
-        def instance() -> object:
-            return SimpleNamespace(socket=lambda _kind: socket)
-
-    monkeypatch.setattr(
-        context_module,
-        "zmq",
-        SimpleNamespace(
-            Again=_Again,
-            Context=_ZmqContext,
-            PUSH=1,
-            LINGER=2,
-            SNDTIMEO=3,
-        ),
-    )
-    monkeypatch.setattr(
-        context_module,
-        "ormsgpack",
-        SimpleNamespace(packb=lambda _payload: b"packed-message"),
-    )
-    monkeypatch.setattr(
-        settings,
-        "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",
-        "inproc://submission-test",
-    )
 
 
-@pytest.mark.plugin_unit
-def test_slow_message_plane_success_reports_local_submission(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    socket = _Socket()
-    _install_slow_message_plane(monkeypatch, socket)
-    ctx, _logger = _context(tmp_path)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": "synthetic payload"}],
-    )
-
-    assert result == {"submitted": True}
-    assert socket.sent == [b"packed-message"]
 
 
-@pytest.mark.plugin_unit
-def test_slow_message_plane_failure_uses_fallback_and_is_redacted(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_marker = "private-payload-must-not-enter-logs"
-    _install_slow_message_plane(
-        monkeypatch,
-        _Socket(send_error=RuntimeError(private_marker)),
-    )
-    fallback_queue = _Queue()
-    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": private_marker}],
-    )
-
-    assert result == {"submitted": True}
-    assert len(fallback_queue.items) == 1
-    assert private_marker not in repr(logger.records)
-    assert "RuntimeError" in repr(logger.records)
 
 
-@pytest.mark.plugin_unit
-def test_slow_message_plane_backpressure_fallback_reports_submission(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_marker = "private-backpressure-detail"
-    _install_slow_message_plane(
-        monkeypatch,
-        _Socket(send_error=_Again(private_marker)),
-    )
-    fallback_queue = _Queue()
-    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": private_marker}],
-    )
-
-    assert result == {"submitted": True}
-    assert len(fallback_queue.items) == 1
-    assert private_marker not in repr(logger.records)
-    assert "_Again" in repr(logger.records)
 
 
-@pytest.mark.plugin_unit
-def test_slow_message_plane_backpressure_is_reported_when_fallback_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_send_marker = "private-backpressure-detail"
-    private_queue_marker = "private-queue-detail"
-    _install_slow_message_plane(
-        monkeypatch,
-        _Socket(send_error=_Again(private_send_marker)),
-    )
-    fallback_queue = _Queue(error=RuntimeError(private_queue_marker))
-    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": "synthetic payload"}],
-    )
-
-    assert result == {
-        "ok": False,
-        "submitted": False,
-        "reason": "backpressure",
-    }
-    assert fallback_queue.items == []
-    assert private_send_marker not in repr(logger.records)
-    assert private_queue_marker not in repr(logger.records)
-    assert "_Again" in repr(logger.records)
-    assert "RuntimeError" in repr(logger.records)
 
 
-@pytest.mark.plugin_unit
-def test_slow_message_plane_and_fallback_failures_are_distinguishable_and_redacted(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_send_marker = "private-send-error"
-    private_queue_marker = "private-queue-error"
-    _install_slow_message_plane(
-        monkeypatch,
-        _Socket(send_error=RuntimeError(private_send_marker)),
-    )
-    fallback_queue = _Queue(error=RuntimeError(private_queue_marker))
-    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": "synthetic payload"}],
-    )
-
-    assert result == {
-        "ok": False,
-        "submitted": False,
-        "reason": "transport_error",
-    }
-    assert fallback_queue.items == []
-    assert private_send_marker not in repr(logger.records)
-    assert private_queue_marker not in repr(logger.records)
-    assert "RuntimeError" in repr(logger.records)
 
 
-@pytest.mark.plugin_unit
-@pytest.mark.parametrize(
-    ("enqueue_error", "expected"),
-    [
-        (None, {"submitted": True}),
-        (
-            RuntimeError("queue full"),
-            {
-                "ok": False,
-                "submitted": False,
-                "reason": "backpressure",
-            },
-        ),
-    ],
-)
-def test_fast_batcher_reports_enqueue_outcome(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    enqueue_error: Exception | None,
-    expected: dict[str, object],
-) -> None:
-    class _Batcher:
-        def __init__(self, **_kwargs: object) -> None:
-            return None
-
-        def start(self) -> None:
-            return None
-
-        def stop(self, *, timeout: float) -> None:
-            assert timeout == 2.0
-
-        def enqueue(self, _item: dict[str, object]) -> None:
-            if enqueue_error is not None:
-                raise enqueue_error
-
-    from plugin.utils import zeromq_ipc
-
-    monkeypatch.setattr(context_module, "zmq", object())
-    monkeypatch.setattr(
-        settings,
-        "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",
-        "inproc://submission-test",
-    )
-    monkeypatch.setattr(zeromq_ipc, "MessagePlaneIngestBatcher", _Batcher)
-    ctx, _logger = _context(tmp_path)
-
-    with pytest.warns(DeprecationWarning, match="fast_mode.*v0.9"):
-        result = ctx.push_message(parts=[], fast_mode=True)
-
-    assert result == expected
 
 
 @pytest.mark.plugin_unit
@@ -377,29 +175,6 @@ def test_missing_transports_report_unavailable(
     }
 
 
-@pytest.mark.plugin_unit
-def test_primary_setup_failure_can_use_fallback_before_submission_attempt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_marker = "private-connect-detail"
-    _install_slow_message_plane(
-        monkeypatch,
-        _Socket(connect_error=RuntimeError(private_marker)),
-    )
-    fallback_queue = _Queue()
-    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": private_marker}],
-    )
-
-    assert result == {"submitted": True}
-    assert len(fallback_queue.items) == 1
-    assert private_marker not in repr(logger.records)
-    assert "RuntimeError" in repr(logger.records)
 
 
 # ---------------------------------------------------------------------------
@@ -435,29 +210,21 @@ class _PackCounter:
         return encoded
 
 
-class _RecordingBatcher:
-    """Fast-path batcher stand-in that keeps whatever reached the queue."""
-
-    items: list[dict[str, object]] = []
-
-    def __init__(self, **_kwargs: object) -> None:
-        return None
-
-    def start(self) -> None:
-        return None
-
-    def stop(self, *, timeout: float) -> None:
-        assert timeout == 2.0
-
-    def enqueue(self, item: dict[str, object]) -> None:
-        type(self).items.append(item)
+def _inline_image_part(raw_bytes: int) -> dict[str, object]:
+    return {
+        "type": "image",
+        "data": b"\x00" * raw_bytes,
+        "mime": "image/png",
+    }
 
 
-def _install_counting_slow_plane(
-    monkeypatch: pytest.MonkeyPatch,
-    socket: _Socket,
-) -> _PackCounter:
-    _install_slow_message_plane(monkeypatch, socket)
+def _install_pack_counter(monkeypatch: pytest.MonkeyPatch) -> _PackCounter:
+    """Count real ormsgpack packs on the one send path that still exists.
+
+    The direct message-plane socket and its batcher are gone, so the size
+    probe now runs on the authenticated uplink and nowhere else. Sizes stay
+    real because the limit comparison is the whole point.
+    """
     counter = _PackCounter()
     monkeypatch.setattr(
         context_module,
@@ -467,34 +234,18 @@ def _install_counting_slow_plane(
     return counter
 
 
-def _install_counting_fast_plane(
-    monkeypatch: pytest.MonkeyPatch,
-) -> tuple[_PackCounter, type[_RecordingBatcher]]:
-    from plugin.utils import zeromq_ipc
+def _host_headroom() -> int:
+    """The bytes the SDK holds back for the host's own normalization.
 
-    counter = _PackCounter()
-    batcher = type("_Batcher", (_RecordingBatcher,), {"items": []})
-    monkeypatch.setattr(context_module, "zmq", object())
-    monkeypatch.setattr(
-        context_module,
-        "ormsgpack",
-        SimpleNamespace(packb=counter.packb),
-    )
-    monkeypatch.setattr(
-        settings,
-        "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",
-        "inproc://submission-test",
-    )
-    monkeypatch.setattr(zeromq_ipc, "MessagePlaneIngestBatcher", batcher)
-    return counter, batcher
+    Imported, not retyped and not regexed. It used to be pulled out of the
+    source with ``\d+``, which broke the moment the value became a derivation
+    instead of a literal -- and "the guard cannot read the number any more" is a
+    silly way for a size test to fail.
+    """
+    from plugin.core.context import _HOST_ENVELOPE_HEADROOM_BYTES
 
+    return int(_HOST_ENVELOPE_HEADROOM_BYTES)
 
-def _inline_image_part(raw_bytes: int) -> dict[str, object]:
-    return {
-        "type": "image",
-        "data": b"\x00" * raw_bytes,
-        "mime": "image/png",
-    }
 
 
 @pytest.mark.plugin_unit
@@ -502,8 +253,7 @@ def test_oversized_inline_push_is_rejected_before_the_transport(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    socket = _Socket()
-    _install_counting_slow_plane(monkeypatch, socket)
+    _install_pack_counter(monkeypatch)
     monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
     fallback_queue = _Queue()
     ctx, logger = _context(tmp_path, message_queue=fallback_queue)
@@ -519,7 +269,6 @@ def test_oversized_inline_push_is_rejected_before_the_transport(
         "submitted": False,
         "reason": "payload_too_large",
     }
-    assert socket.sent == []
     # The legacy control-plane queue must not become a silent second chance:
     # it would carry the same oversized payload to a different consumer, which
     # is the invisible non-delivery this rejection exists to end.
@@ -527,97 +276,19 @@ def test_oversized_inline_push_is_rejected_before_the_transport(
     # The author has to be able to act on the log line alone.
     reported = repr(logger.records)
     assert "payload_too_large" in reported
-    assert "4096" in reported
+    # 报给作者的是**有效**上限（配置值减去宿主规范化的余量），因为那才是他
+    # 必须待在下面的那个数。写死 4096 会让这条断言在余量存在时反而是错的。
+    assert str(4096 - _host_headroom()) in reported
     # 1.33x, not 2.34x: an inline payload travels base64 and nothing else.
     assert "1.33" in reported
     assert "image=" in reported
     assert "ctx.images.upload" in reported
 
 
-@pytest.mark.plugin_unit
-def test_oversized_inline_fast_push_is_not_enqueued(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _counter, batcher = _install_counting_fast_plane(monkeypatch)
-    monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
-    ctx, _logger = _context(tmp_path)
-
-    with pytest.warns(DeprecationWarning, match="fast_mode.*v0.9"):
-        result = ctx.push_message(
-            visibility=["chat"],
-            ai_behavior="read",
-            parts=[_inline_image_part(8192)],
-            fast_mode=True,
-        )
-
-    assert result == {
-        "ok": False,
-        "submitted": False,
-        "reason": "payload_too_large",
-    }
-    assert batcher.items == []
 
 
-@pytest.mark.plugin_unit
-def test_text_only_fast_push_pays_exactly_one_size_probe(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    counter, batcher = _install_counting_fast_plane(monkeypatch)
-    ctx, _logger = _context(tmp_path)
-
-    with pytest.warns(DeprecationWarning, match="fast_mode.*v0.9"):
-        result = ctx.push_message(
-            visibility=["chat"],
-            ai_behavior="read",
-            parts=[{"type": "text", "text": "a high-frequency cue"}],
-            fast_mode=True,
-        )
-
-    assert result == {"submitted": True}
-    assert len(batcher.items) == 1
-    # Exactly one pack: the size probe.
-    #
-    # This asserted ZERO until the probe stopped skipping payloads with no
-    # inline carrier. That skip existed to keep this high-frequency path cheap,
-    # and it was the wrong trade: the host measures the WHOLE envelope, so an
-    # oversized text cue was dropped there as payload_too_big while
-    # push_message() had already answered submitted=True. Measured before
-    # removing it -- 0.19 us to pack a 248 B cue -- which is what the silence
-    # was buying.
-    #
-    # What still needs pinning is that the probe costs ONE pack, not one per
-    # part: this number going up with the part count is the regression to
-    # catch. The batcher does its own packing later, on its own thread.
-    assert counter.calls == 1
 
 
-@pytest.mark.plugin_unit
-def test_text_only_slow_push_packs_probe_then_envelope(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    socket = _Socket()
-    counter = _install_counting_slow_plane(monkeypatch, socket)
-    ctx, _logger = _context(tmp_path)
-
-    result = ctx.push_message(
-        visibility=["chat"],
-        ai_behavior="read",
-        parts=[{"type": "text", "text": "a high-frequency cue"}],
-    )
-
-    assert result == {"submitted": True}
-    assert len(socket.sent) == 1
-    # Two packs: the size probe, then the ZMQ envelope.
-    #
-    # This asserted ONE while the probe skipped carrier-free payloads. That
-    # skip is gone: the host measures the whole envelope regardless, so a big
-    # text cue was being dropped there after the author was told it went out.
-    # A THIRD pack would mean something started packing per part rather than
-    # once per push, which is the cost regression worth catching here.
-    assert counter.calls == 2
 
 
 @pytest.mark.plugin_unit
@@ -625,9 +296,8 @@ def test_small_inline_push_still_submits(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    socket = _Socket()
-    counter = _install_counting_slow_plane(monkeypatch, socket)
-    ctx, _logger = _context(tmp_path)
+    counter = _install_pack_counter(monkeypatch)
+    ctx, _logger = _context(tmp_path, message_queue=_Queue())
 
     result = ctx.push_message(
         visibility=["chat"],
@@ -636,9 +306,11 @@ def test_small_inline_push_still_submits(
     )
 
     assert result == {"submitted": True}
-    assert len(socket.sent) == 1
-    # Probe + envelope, and the probe measured well under the real default cap.
-    assert counter.calls == 2
+    # One pack, not two: the envelope pack belonged to the direct
+    # message-plane socket, and the authenticated uplink serialises in the
+    # transport instead. The probe is now the only ormsgpack call here, and
+    # it measured well under the real default cap.
+    assert counter.calls == 1
     assert counter.sizes[0] < int(settings.MESSAGE_PLANE_PAYLOAD_MAX_BYTES)
 
 
@@ -671,10 +343,9 @@ def test_oversized_inline_audio_is_not_sent_after_the_image_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An inline audio part gets advice that exists: shrink it, or send a URL."""
-    socket = _Socket()
-    _install_counting_slow_plane(monkeypatch, socket)
+    _install_pack_counter(monkeypatch)
     monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
-    ctx, logger = _context(tmp_path)
+    ctx, logger = _context(tmp_path, message_queue=_Queue())
 
     result = ctx.push_message(
         visibility=["chat"],
@@ -687,7 +358,6 @@ def test_oversized_inline_audio_is_not_sent_after_the_image_helper(
         "submitted": False,
         "reason": "payload_too_large",
     }
-    assert socket.sent == []
     reported = repr(logger.records)
     # The whole point: no pointer at an upload helper that does not exist for
     # this part type.
@@ -704,10 +374,9 @@ def test_oversized_inline_image_is_still_pointed_at_the_upload_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The image-specific advice survives: images DO have an upload helper."""
-    socket = _Socket()
-    _install_counting_slow_plane(monkeypatch, socket)
+    _install_pack_counter(monkeypatch)
     monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
-    ctx, logger = _context(tmp_path)
+    ctx, logger = _context(tmp_path, message_queue=_Queue())
 
     result = ctx.push_message(
         visibility=["chat"],
@@ -738,10 +407,9 @@ def test_remediation_follows_the_biggest_carrier_not_the_first_one(
     spent by the clip, so that is what the advice has to be about -- while
     still telling the author the thumbnail can be offloaded too.
     """
-    socket = _Socket()
-    _install_counting_slow_plane(monkeypatch, socket)
+    _install_pack_counter(monkeypatch)
     monkeypatch.setattr(settings, "MESSAGE_PLANE_PAYLOAD_MAX_BYTES", 4096)
-    ctx, logger = _context(tmp_path)
+    ctx, logger = _context(tmp_path, message_queue=_Queue())
 
     result = ctx.push_message(
         visibility=["chat"],
@@ -788,9 +456,8 @@ def test_a_256_kib_inline_image_fits_the_real_default_ceiling(
     the real envelope against the real MESSAGE_PLANE_PAYLOAD_MAX_BYTES, which
     is the same expression the host applies before it drops an item whole.
     """
-    socket = _Socket()
-    counter = _install_counting_slow_plane(monkeypatch, socket)
-    ctx, logger = _context(tmp_path)
+    counter = _install_pack_counter(monkeypatch)
+    ctx, logger = _context(tmp_path, message_queue=_Queue())
     raw = b"\x00" * (256 * 1024)
 
     result = ctx.push_message(
@@ -803,7 +470,6 @@ def test_a_256_kib_inline_image_fits_the_real_default_ceiling(
     )
 
     assert result == {"submitted": True}
-    assert len(socket.sent) == 1
     assert "payload_too_large" not in repr(logger.records)
     assert int(settings.MESSAGE_PLANE_PAYLOAD_MAX_BYTES) == 512 * 1024
     # counter.sizes[0] is the probe: len(ormsgpack.packb(payload)).

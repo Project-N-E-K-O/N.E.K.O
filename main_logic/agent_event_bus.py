@@ -23,6 +23,7 @@ from the asyncio thread (local TCP latency is very low).
 """
 
 import asyncio
+import concurrent.futures
 import os
 import threading
 import time
@@ -56,6 +57,84 @@ def _zmq_addr(env_key: str, default_port: int) -> str:
 SESSION_PUB_ADDR  = _zmq_addr("NEKO_ZMQ_SESSION_PUB_PORT", 48961)   # main -> agent（PUB/SUB）
 AGENT_PUSH_ADDR   = _zmq_addr("NEKO_ZMQ_AGENT_PUSH_PORT", 48962)    # agent -> main（PUSH/PULL）
 ANALYZE_PUSH_ADDR = _zmq_addr("NEKO_ZMQ_ANALYZE_PUSH_PORT", 48963)  # main -> agent（PUSH/PULL，可靠分析队列）
+
+# Declared here rather than beside its publisher below because the agent-side
+# receive thread needs it to tell a frame apart from every other session event.
+PROVIDER_FRAME_OBSERVED_EVENT = "provider_frame_observed"
+
+
+def _int_env(env_key: str, default: int, *, minimum: int) -> int:
+    try:
+        val = int(os.getenv(env_key, "").strip() or default)
+    except (ValueError, TypeError):
+        return default
+    return max(minimum, val)
+
+
+# How many provider-frame handoffs may sit in flight -- submitted to the agent
+# loop from the receive thread, not yet finished -- before new frames are
+# refused at the handoff itself.
+#
+# This bounds a gap neither neighbouring limit covers. The PUB high-water mark
+# bounds the SENDING side, and plane_bridge refuses a frame once its own send
+# queue is deep -- but that check runs INSIDE the coroutine, i.e. after this
+# handoff already happened. Between the two sits ``run_coroutine_threadsafe``:
+# every call queues a callback into the loop that retains the whole event,
+# base64 image and all. While the loop is busy the receive thread keeps draining
+# the socket at full speed, so a delayed loop accumulates an unbounded number of
+# multi-megabyte payloads in its callback queue.
+#
+# 8 is deliberately small: the ``frames`` store on the far side retains only a
+# handful (MESSAGE_PLANE_FRAMES_STORE_MAXLEN, 4 by default and 8 at most), so a
+# deeper handoff queue could not deliver anything that store would still be
+# holding by the time the loop drained it -- it would buy resident bytes and
+# nothing else. The value is not derived from that setting: main_logic sits
+# below ``plugin`` in the layering and cannot read it.
+# Env: NEKO_AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT, default=8
+# 单张帧允许进 session PUB 的最大 base64 体积。
+#
+# 这条 socket 是**会话事件共用**的，所以不能靠压 SNDHWM 来约束帧——那会连
+# 文本事件一起提前丢。而 PUB 的默认 SNDHWM 是 1000 条：订阅方一停，多兆的帧
+# 能在 socket 里堆成几百 MB，而在途任务上限（下面那个）拦不住，因为每个任务
+# 在 send(NOBLOCK) 入队的瞬间就结束了。
+#
+# 所以闸放在**入队之前**。这不损失任何行为：超过 message plane 记录上限的帧
+# 到了远端本来就会被 bridge 拒收，早拒只是省掉一次穿越和一段驻留。取值与
+# 工具图的投递上限一致（见 tool_calling._TOOL_IMAGE_DELIVER_MAX_B64_BYTES，
+# 那边有一条用例钉住两者相等），并留在 plane 的 512 KiB 之下——那个界按整条
+# 打包记录算，像素旁边还有 mime / turn_id / metadata。
+# 图片自己的预算，也就是对外文档承诺的那个 500 KiB。
+PROVIDER_FRAME_MAX_IMAGE_B64_BYTES = 500 * 1024
+
+# 事件里除了像素还有 event_id / source / mime / turn_id / generation /
+# metadata / lanlan_name。实测今天是 264 字节；留 1 KiB 给更长的 turn_id 与
+# metadata。
+PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES = 1024
+
+# 整条事件的上限 = 图片预算 + 信封。**方向别记反**：信封不从图片预算里扣，
+# 而是加在事件这一侧——因为「图片 500 KiB vs plane 记录 512 KiB」之间那 12 KB
+# 差额本来就是为它留的（见 tool_calling 里投递上限的说明）。从图片预算里扣等
+# 于把同一笔钱付两遍，还会让对外承诺的 500 KiB 悄悄缩水成 499 KiB。
+#
+# 这一条踩过两次：先是两个常量都写 500 KiB、一个量图片一个量整条事件，于是
+# 阶梯刚好压到上限的图在发布处被静默丢掉；改对之后又把信封记错了侧。守卫因此
+# 是**造一条满额事件再量**、并且一路量到 plane 记录，而不是比常量。
+PROVIDER_FRAME_MAX_B64_BYTES = (
+    PROVIDER_FRAME_MAX_IMAGE_B64_BYTES + PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES
+)
+
+AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT = _int_env(
+    "NEKO_AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT", 8, minimum=1,
+)
+
+# Drops are always counted (``AgentServerEventBridge.frame_handoff_drops``) and
+# logged on a doubling ladder: the 1st, 2nd, 4th, 8th ... drop. A burst has to
+# stay legible without becoming the flood itself -- shedding 200 frames must not
+# write 200 lines -- but a time window would be worse than no line at all here:
+# a stall shorter than the window would log exactly once, saying "1", and the
+# real scale would never appear anywhere an operator looks. On the ladder the
+# same burst writes 8 lines and the last one says 128, while an hour-long stall
+# dropping millions still writes about twenty.
 
 _main_bridge_ref: Optional["MainServerAgentBridge"] = None
 _ack_waiters: dict[str, asyncio.Future] = {}
@@ -201,6 +280,16 @@ class AgentServerEventBridge:
         self._stop = threading.Event()
         self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
         self.ready = False
+        # In-flight provider-frame handoffs. A future leaves this set the moment
+        # its coroutine finishes, which is also when the loop stops retaining
+        # that frame's payload -- so the set's size is the live count of frames
+        # this hop is holding, and capping it caps the bytes. Only frames are
+        # tracked: they are lossy by contract, while everything else arriving on
+        # these sockets (acks, lifecycle signals, analyze requests, conversation
+        # turns) is small and must not be dropped.
+        self._inflight_frames: set["concurrent.futures.Future[Any]"] = set()
+        self._inflight_lock = threading.Lock()
+        self.frame_handoff_drops = 0
 
     async def start(self) -> None:
         if zmq is None:
@@ -277,7 +366,80 @@ class AgentServerEventBridge:
                 logger.debug("[EventBus] Agent bridge ctx.term error: %s", exc)
 
         self._owner_loop = None
+        with self._inflight_lock:
+            self._inflight_frames.clear()
         logger.debug("[EventBus] Agent bridge stopped")
+
+    # -- 跨线程投递（接收线程 -> agent 事件循环） ---------------------------
+
+    def _discard_inflight_frame(
+        self, fut: "concurrent.futures.Future[Any]",
+    ) -> None:
+        with self._inflight_lock:
+            self._inflight_frames.discard(fut)
+
+    def _submit_to_loop(self, msg: Dict[str, Any]) -> bool:
+        """Hand one received event to the agent loop. ``False`` means dropped.
+
+        Frames are capped and everything else is not, and that asymmetry is the
+        contract talking: ``frames`` promises "the last few the provider
+        received", never a reliable log, so shedding one under pressure is
+        correct -- while shedding an analyze ack or a lifecycle signal would
+        strand the sender waiting on a reply that is never coming.
+
+        The cap drops the NEWEST frame rather than evicting an older queued one.
+        That is not a preference for stale pixels: cancelling an already
+        submitted future does not remove the callback ``run_coroutine_threadsafe``
+        left in the loop's ready queue, so that frame's bytes stay resident until
+        the loop drains regardless. Refusing to submit is the only choice here
+        that actually bounds memory. Recency is preserved where it still can be
+        -- the far side's ``frames`` deque evicts oldest-first -- and the backlog
+        is a handful of frames, so it clears the moment the loop recovers.
+        """
+        loop = self._owner_loop
+        if loop is None:
+            return False
+
+        if msg.get("event_type") != PROVIDER_FRAME_OBSERVED_EVENT:
+            asyncio.run_coroutine_threadsafe(self.on_session_event(msg), loop)
+            return True
+
+        should_log = False
+        drops = 0
+        with self._inflight_lock:
+            if len(self._inflight_frames) >= AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT:
+                self.frame_handoff_drops += 1
+                drops = self.frame_handoff_drops
+                # Powers of two only. ``drops`` is >= 1 here, so this is the
+                # 1st, 2nd, 4th, 8th ... drop since the bridge was built.
+                should_log = (drops & (drops - 1)) == 0
+                fut = None
+            else:
+                # Built only after the cap has let it through: a coroutine
+                # created and then dropped is an un-awaited coroutine warning.
+                coro = self.on_session_event(msg)
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(coro, loop)
+                except Exception as exc:
+                    coro.close()
+                    logger.debug("[EventBus] frame handoff submit failed: %s", exc)
+                    return False
+                self._inflight_frames.add(fut)
+
+        if fut is not None:
+            # Outside the lock on purpose: a future that is already finished runs
+            # the callback inline, and it takes this same non-reentrant lock.
+            fut.add_done_callback(self._discard_inflight_frame)
+            return True
+
+        if should_log:
+            logger.warning(
+                "[EventBus] agent loop behind: provider frame dropped at handoff "
+                "(cap=%d dropped_total=%d)",
+                AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT,
+                drops,
+            )
+        return False
 
     # -- 后台接收线程 -------------------------------------------------------
 
@@ -285,10 +447,8 @@ class AgentServerEventBridge:
         while not self._stop.is_set():
             try:
                 msg = orjson.loads(self.sub.recv())
-                if isinstance(msg, dict) and self._owner_loop is not None:
-                    asyncio.run_coroutine_threadsafe(
-                        self.on_session_event(msg), self._owner_loop,
-                    )
+                if isinstance(msg, dict):
+                    self._submit_to_loop(msg)
             except zmq.Again:
                 continue
             except Exception as e:
@@ -308,10 +468,7 @@ class AgentServerEventBridge:
                             msg.get("lanlan_name"),
                             msg.get("trigger"),
                         )
-                    if self._owner_loop is not None:
-                        asyncio.run_coroutine_threadsafe(
-                            self.on_session_event(msg), self._owner_loop,
-                        )
+                    self._submit_to_loop(msg)
             except zmq.Again:
                 continue
             except Exception as e:
@@ -624,6 +781,233 @@ async def publish_voice_transcript_observed_best_effort(
         logger.debug(
             "[EventBus] voice_transcript_observed not sent: no main bridge lanlan=%s",
             lanlan_name,
+        )
+    return sent
+
+
+async def publish_provider_frame_observed_best_effort(
+    lanlan_name: Optional[str],
+    *,
+    image_base64: str,
+    source: str,
+    captured_at: Optional[float] = None,
+    turn_id: Optional[str] = None,
+    generation: Optional[int] = None,
+    mime: str = "image/jpeg",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Copy a frame the provider already received onto the plugin bus.
+
+    Call this only where the frame was genuinely delivered: a frame the
+    session's throttle or delivery-mode fence dropped was never sent, so it
+    must never be copied. Pass the bytes that were actually transmitted --
+    on the paths where compression rewrites the outgoing event in place, that
+    is the compressed copy read back out of the event, not the caller's
+    original ``image_b64``.
+
+    main_server cannot write to the message plane itself: the ingest
+    credential is minted inside the plugin-server process and the runner's
+    port fallback only lands in agent_server's own environment. So this rides
+    the existing session PUB channel and agent_server forwards it into the
+    ``frames`` store (see ``api_runtime._on_session_event``). No new socket.
+
+    Best effort in the strong sense. PUB/SUB drops for a slow joiner and at
+    HWM, the send is NOBLOCK, the far side's receive thread refuses a frame once
+    AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT of them are already waiting on its event
+    loop, and its bridge refuses it again whenever the plane send queue is
+    behind. ``True`` means "handed to the socket", never "a plugin will see it".
+
+    The payload bound is asserted on the agent side against the same constant
+    ingest enforces (MESSAGE_PLANE_PAYLOAD_MAX_BYTES). It is not re-derived
+    here: main_logic sits below ``plugin`` in the layering and cannot read
+    that setting, and a second, guessed bound would be the thing that drifts.
+    """
+    b64 = str(image_base64 or "")
+    if not b64:
+        return False
+    if len(b64) > PROVIDER_FRAME_MAX_B64_BYTES:
+        # 拒在入队之前，理由见 PROVIDER_FRAME_MAX_B64_BYTES 的说明：这条 PUB
+        # 是共用的，靠 SNDHWM 约束帧会牵连文本事件；而这么大的帧到了远端也是
+        # 被拒。debug 而不是 warning：调用方全是 best-effort 抄送，用户看不见。
+        logger.debug(
+            "[EventBus] provider frame too large for the session channel: "
+            "%d > %d (source=%s)",
+            len(b64), PROVIDER_FRAME_MAX_B64_BYTES, source,
+        )
+        return False
+    event: Dict[str, Any] = {
+        "event_type": PROVIDER_FRAME_OBSERVED_EVENT,
+        "event_id": uuid.uuid4().hex,
+        "lanlan_name": lanlan_name,
+        "source": str(source or "unknown"),
+        "image_base64": b64,
+        "mime": str(mime or "image/jpeg"),
+    }
+    if captured_at is not None:
+        event["captured_at"] = float(captured_at)
+    if turn_id is not None:
+        event["turn_id"] = str(turn_id)
+    # 0 is a real generation, so test for None rather than truthiness.
+    if generation is not None:
+        event["generation"] = int(generation)
+    if metadata:
+        event["metadata"] = dict(metadata)
+
+    # 上面那道闸只量了像素，而 metadata 是调用方给的、会被原样拷进同一条事件
+    # ——一张 400 KiB 的图配 1 MiB 的 metadata 就能绕过它，把超限记录塞进共用
+    # 的 PUB 路径。真正的判据是**整条事件**序列化之后的字节，也就是这条 socket
+    # 实际要装的东西。
+    #
+    # 这里多做一次 dumps。代价可接受：这条路是 best-effort 抄送、在途还封在
+    # AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT 之内；而换成「按别的口径估算整条事件」
+    # 只会再引入一个会漂的数字。
+    try:
+        event_size = len(orjson.dumps(event))
+    except Exception:
+        # 序列化不了的东西发出去也是对面报错，就地丢掉。
+        return False
+    if event_size > PROVIDER_FRAME_MAX_B64_BYTES:
+        logger.debug(
+            "[EventBus] provider frame event too large for the session channel: "
+            "%d > %d (source=%s)",
+            event_size, PROVIDER_FRAME_MAX_B64_BYTES, source,
+        )
+        return False
+
+    sent = await publish_session_event_threadsafe(event)
+    if not sent:
+        logger.debug(
+            "[EventBus] provider_frame_observed not sent: lanlan=%s source=%s",
+            lanlan_name,
+            event["source"],
+        )
+    return sent
+
+
+_frame_copy_drops: Dict[str, int] = {}
+
+
+def spawn_bounded_frame_copy(coro, inflight: set, *, label: str, spawn=None):
+    """Schedule a best-effort frame copy, refusing new ones once N are pending.
+
+    Both clients publish frames off the turn now, because the hop can cross
+    loops through an un-timed ``run_coroutine_threadsafe`` and must never hold
+    up a reply. That fix has a cost this bounds: while the far loop is stalled,
+    every scheduled copy parks inside the handoff still holding its base64, and
+    the sender keeps scheduling more. ``AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT`` on
+    the agent side cannot help -- it sits on the far side of the stuck hop.
+
+    Reuses that cap rather than deriving a second one. It is the same quantity
+    (multi-megabyte frames retained while a loop cannot drain them), and a
+    second, independently guessed bound is the thing that drifts.
+
+    Refuses the NEW copy rather than evicting an old one, the same direction
+    the rest of this path takes: cancelling an already-scheduled task does not
+    remove its callback from the loop's ready queue, so the bytes stay resident
+    and the eviction buys nothing.
+
+    ``inflight`` doubles as the GC root -- a task nothing references can be
+    collected mid-flight -- so callers need no second set.
+
+    ``spawn`` lets a caller keep its own task-creation seam: the realtime
+    client passes ``_fire_task`` so frame copies stay registered in
+    ``_bg_tasks`` alongside everything else it has to tear down, and so the
+    one place tests reach in to observe or refuse a background task keeps
+    working. The cap wraps that seam rather than replacing it.
+    """
+    if len(inflight) >= AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT:
+        coro.close()
+        drops = _frame_copy_drops.get(label, 0) + 1
+        _frame_copy_drops[label] = drops
+        # Powers of two only, as the agent-side handoff does: a stalled bridge
+        # would otherwise turn one incident into a log flood.
+        if (drops & (drops - 1)) == 0:
+            logger.warning(
+                "[EventBus] %s behind: frame copy dropped (cap=%d dropped_total=%d)",
+                label, AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT, drops,
+            )
+        return None
+    try:
+        task = (spawn or asyncio.create_task)(coro)
+    except RuntimeError:
+        # No running loop (``__new__``-built doubles, teardown), or a spawn
+        # that refused. Close the coroutine so it does not warn -- close is
+        # idempotent, so a spawn that already closed it is fine. A missing
+        # copy is the safe direction.
+        coro.close()
+        return None
+    if task is None:
+        return None
+    inflight.add(task)
+    task.add_done_callback(inflight.discard)
+    return task
+
+
+CONVERSATION_TURN_OBSERVED_EVENT = "conversation_turn_observed"
+
+
+async def publish_conversation_turn_observed_best_effort(
+    lanlan_name: Optional[str],
+    *,
+    content: str,
+    turn_type: str,
+    conversation_id: str,
+    source: str,
+    message_count: int = 0,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Copy one message of an already-handled turn onto the plugin bus.
+
+    The dual of :func:`publish_provider_frame_observed_best_effort`, for text
+    instead of pixels, and it carries the same obligation: publish only what
+    actually happened. An instruction may be copied once the provider has
+    demonstrably received it (the first streamed chunk); a reply may be copied
+    once it is committed. Neither may be copied because it exists in local
+    state -- a turn sitting in ``_conversation_history`` can still die before a
+    request is made, and a half-streamed reply that was discarded was never
+    said.
+
+    Same transport and the same reason for it: main_server cannot write to the
+    message plane (the ingest credential is minted inside the plugin-server
+    process), so this rides the session PUB channel and agent_server forwards
+    it into the ``conversations`` store (see
+    ``api_runtime._forward_conversation_turn``).
+
+    ``conversation_id`` is what ties the instruction and the reply back into
+    one turn on the reader's side: it is the id ``ConversationRecord`` exposes
+    and the one ``bus.conversations.get_by_id()`` passes along. (The plane's
+    ``bus.query`` does not filter on it today -- grouping happens in the
+    reader's hands -- so this fills the field the schema has, it does not
+    promise a server-side lookup.) ``message_count`` is how many messages the
+    conversation carries as of this record (1 for the instruction, 2 once the
+    reply lands), so a reader holding one record knows whether it has the
+    whole turn.
+
+    Best effort in the same strong sense as the frame publisher: ``True`` means
+    "handed to the socket", never "a plugin will see it".
+    """
+    text = str(content or "")
+    if not text.strip():
+        return False
+    event: Dict[str, Any] = {
+        "event_type": CONVERSATION_TURN_OBSERVED_EVENT,
+        "event_id": uuid.uuid4().hex,
+        "lanlan_name": lanlan_name,
+        "source": str(source or "unknown"),
+        "conversation_id": str(conversation_id or ""),
+        "turn_type": str(turn_type or "unknown"),
+        "content": text,
+        "message_count": int(message_count),
+    }
+    if metadata:
+        event["metadata"] = dict(metadata)
+
+    sent = await publish_session_event_threadsafe(event)
+    if not sent:
+        logger.debug(
+            "[EventBus] conversation_turn_observed not sent: lanlan=%s turn_type=%s",
+            lanlan_name,
+            event["turn_type"],
         )
     return sent
 

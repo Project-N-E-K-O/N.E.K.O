@@ -708,11 +708,17 @@ def _plugin_process_runner(
     config_path: Path,
     downlink_endpoint: str,
     uplink_endpoint: str,
+    uplink_token: str = "",
     stop_event: Any | None = None,
     startup_options: dict[str, object] | None = None,
+    message_uplink_endpoint: str = "",
     image_uplink_endpoint: str | None = None,
 ) -> None:
     """独立进程中的运行函数。通过 ZMQ 与宿主进程通信。"""
+    uplink_token = str(uplink_token or "").strip()
+    if not uplink_token:
+        raise ValueError("Plugin child process requires an uplink token")
+
     # 保存进程级 stop event
     process_stop_event = stop_event
     startup_failure_policy = str((startup_options or {}).get("startup_failure") or "warn").strip().lower()
@@ -728,14 +734,19 @@ def _plugin_process_runner(
         logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
     
     # ── ZMQ child-side transport ─────────────────────────────────
-    if image_uplink_endpoint:
-        child_transport = ChildTransport(
-            downlink_endpoint,
-            uplink_endpoint,
-            image_uplink_endpoint,
+    child_transport_kwargs: dict[str, object] = {}
+    if message_uplink_endpoint:
+        child_transport_kwargs["message_uplink_endpoint"] = (
+            message_uplink_endpoint
         )
-    else:
-        child_transport = ChildTransport(downlink_endpoint, uplink_endpoint)
+    if image_uplink_endpoint:
+        child_transport_kwargs["image_uplink_endpoint"] = image_uplink_endpoint
+    child_transport = ChildTransport(
+        downlink_endpoint,
+        uplink_endpoint,
+        uplink_token,
+        **child_transport_kwargs,
+    )
     res_sender = child_transport.channel_sender(CH_RES)
     status_sender = child_transport.channel_sender(CH_STS)
     message_sender = child_transport.channel_sender(CH_MSG)
@@ -1869,7 +1880,8 @@ class PluginHost:
         self.config_path = config_path
         self.logger = logger.bind(plugin_id=plugin_id, host=True)
 
-        # ZMQ transport: 2 socket pairs replace 5 mp.Queues
+        # ZMQ transport: 4 PUSH/PULL socket channels replace 5 mp.Queues.
+        # 只有 child → host 的三条上行带 uplink token；下行不带凭证。
         self.transport = HostTransport()
 
         self._process_stop_event: Any = multiprocessing.Event()
@@ -1900,8 +1912,10 @@ class PluginHost:
                 config_path,
                 self.transport.downlink_endpoint,
                 self.transport.uplink_endpoint,
+                getattr(self.transport, "uplink_token", ""),
                 self._process_stop_event,
                 self._startup_options,
+                getattr(self.transport, "message_uplink_endpoint", ""),
             ),
             kwargs={
                 "image_uplink_endpoint": getattr(

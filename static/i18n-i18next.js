@@ -33,7 +33,7 @@
     // errors.* 文案；递增版本让 Electron、Docker 等长期缓存重新拉取包含完整新 key
     // 的语言包 —— 不递增的话，缓存住旧语言包的客户端会继续把 errors.TURN_IMAGES_TRIMMED
     // 这类 key 当字面量渲染出来，正好是本次改动想修掉的那个症状。
-    const LOCALE_VERSION = '2026-08-29-turn-image-budget-notices';
+    const LOCALE_VERSION = '2026-08-29-repetition-insights';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -159,6 +159,12 @@ _REALTIME_DIALECT_ALIASES = {
 # is_active_response() 恒真、主动搭话彻底哑。所以宁可短。
 GEMINI_CANCELLED_TERMINAL_TTL_SECONDS = 3.0
 
+# The mime a Gemini user turn's frames are sent under. One definition, because
+# it is read twice: once by the sender and once by the frame-bus publisher that
+# labels the very same bytes. Two literals would let a changed format mislabel
+# every record on the bus without anything going red.
+GEMINI_TURN_IMAGE_MIME = "image/jpeg"
+
 
 def canonical_realtime_dialect(api_type: object) -> str:
     """Map a provider key to the wire dialect its session speaks."""

@@ -17,6 +17,7 @@ Flow: plugin ─(ZMQ ingest)→ message_plane ─(PUB)→ **this bridge** ─(PU
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -50,6 +51,18 @@ def _resolve_delivery_mode(visibility: list[str], ai_behavior: str) -> str:
     if ai_behavior == "read":
         return "passive"
     return "silent"
+
+
+def _positive_finite_float(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        normalized = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(normalized) or normalized <= 0.0:
+        return None
+    return normalized
 
 
 def _aggregate_text_parts(parts: list[dict[str, Any]]) -> str:
@@ -111,6 +124,12 @@ class ProactiveBridge:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # SUB 真正连上并订阅之后才置位。启动顺序要用它：autostart 插件可以在
+        # startup 钩子里 push_message()，而 PUB 对缺席的订阅方是直接丢弃 ——
+        # 那扇窗口里推的消息角色永远不会说，push_message() 却已经回了
+        # submitted=True。只把 bridge 挪到插件前面只是让计时更早开始，窗口
+        # 本身还在（下面那个 1 秒等待就在窗口里）。
+        self._subscribed = threading.Event()
 
     def start(self) -> None:
         if zmq is None:
@@ -119,13 +138,36 @@ class ProactiveBridge:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        # 必须清：stop() 会置位 _subscribed 来唤醒等待者，重启后不清的话
+        # wait_until_subscribed() 会拿着上一条命的事件立刻返回，窗口原样回来。
+        self._subscribed.clear()
         t = threading.Thread(target=self._run, daemon=True, name="proactive-bridge")
         self._thread = t
         t.start()
         logger.info("proactive bridge started")
 
+    def wait_until_subscribed(self, timeout: float) -> bool:
+        """Block until the SUB socket is connected and subscribed.
+
+        Returns False on timeout, and on a bridge that was never started — the
+        caller must not be blocked by a bridge that is disabled or already
+        dead, only by one that is still coming up.
+
+        ⚠️ 这不是数学上的关闭。ZMQ 的 SUBSCRIBE 返回不代表 PUB 端已经处理完
+        这条订阅（经典的 slow joiner），所以极窄的一段仍在。要真正关死得让
+        bridge 起来后补读一次 store 并按 message_id 去重 —— 那会引入重复投递
+        的风险（角色把同一句说两遍），不在这次范围内。
+        """
+        t = self._thread
+        if t is None or not t.is_alive():
+            return self._subscribed.is_set()
+        return self._subscribed.wait(timeout)
+
     def stop(self) -> None:
         self._stop.set()
+        # 醒掉任何在等订阅的人：bridge 停了就不会再有订阅了，让它们继续跑，
+        # 别把关停变成一次 timeout 长的挂起。
+        self._subscribed.set()
         t = self._thread
         self._thread = None
         if t is not None and t.is_alive():
@@ -151,6 +193,7 @@ class ProactiveBridge:
         sub_sock.setsockopt(zmq.RCVTIMEO, 1000)
         sub_sock.connect(pub_endpoint)
         sub_sock.setsockopt_string(zmq.SUBSCRIBE, "messages.")
+        self._subscribed.set()
 
         push_sock = ctx.socket(zmq.PUSH)
         push_sock.linger = 1000
@@ -217,7 +260,13 @@ class ProactiveBridge:
         """
         plugin_id = payload.get("plugin_id", "")
         timestamp = payload.get("time", "")
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        raw_metadata = payload.get("metadata")
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+        expires_in_s = _positive_finite_float(metadata.get("expires_in_s"))
+        if expires_in_s is None:
+            metadata.pop("expires_in_s", None)
+        else:
+            metadata["expires_in_s"] = expires_in_s
 
         # v2 fields are guaranteed by the SDK adapter's translate step,
         # but accept legacy shapes too for safety.
@@ -250,7 +299,7 @@ class ProactiveBridge:
 
         events_out: list[dict[str, Any]] = []
 
-        # ---- ui_action parts → legacy music_* events ----
+        # ---- ui_action parts → frontend control events ----
         for ui in _ui_action_parts(parts):
             action = ui.get("action")
             if action == "media_play_url":
@@ -291,6 +340,26 @@ class ProactiveBridge:
                         "lanlan_name": target_lanlan,
                         "domains": list(domains),
                         "http_urls": list(http_urls),
+                        "source": plugin_id,
+                        "timestamp": timestamp,
+                    }
+                )
+            elif action == "jukebox_control":
+                jukebox_action = ui.get("jukebox_action")
+                if not isinstance(jukebox_action, str) or not jukebox_action.strip():
+                    logger.debug(
+                        "ui_action=jukebox_control missing action; plugin={}",
+                        plugin_id,
+                    )
+                    continue
+                events_out.append(
+                    {
+                        "event_type": "jukebox_control",
+                        "lanlan_name": target_lanlan,
+                        "action": jukebox_action,
+                        "query": ui.get("query"),
+                        "value": ui.get("value"),
+                        "mode": ui.get("mode"),
                         "source": plugin_id,
                         "timestamp": timestamp,
                     }
@@ -346,6 +415,8 @@ class ProactiveBridge:
                 "priority": priority,
                 "coalesce_key": coalesce_key,
             }
+            if expires_in_s is not None:
+                proactive_event["expires_in_s"] = expires_in_s
             # delivery_mode="silent" (ai_behavior=blind) tells the
             # proactive_message handler to skip the LLM injection. Whether a
             # HUD agent_notification still fires is decided separately, by
@@ -377,6 +448,11 @@ _bridge = ProactiveBridge()
 
 def start_proactive_bridge() -> None:
     _bridge.start()
+
+
+def wait_for_proactive_subscriber(timeout: float) -> bool:
+    """Wait for the bridge's SUB socket before anything may publish."""
+    return _bridge.wait_until_subscribed(timeout)
 
 
 def stop_proactive_bridge() -> None:

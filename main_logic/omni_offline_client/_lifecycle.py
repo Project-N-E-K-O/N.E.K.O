@@ -13,9 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import contextlib
 import functools
+import uuid
 
+from main_logic.agent_event_bus import (
+    publish_conversation_turn_observed_best_effort,
+)
 from main_logic.proactive_delivery import (
     TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
     fit_images_to_turn_budget,
@@ -27,6 +32,7 @@ from utils.llm_client import (
 )
 from utils.slop_filter import resolve_dialog_slop_lang
 
+from ._media import _FRAME_SOURCE_PROACTIVE
 from ._shared import (
     AIMessage,
     Callable,
@@ -83,7 +89,111 @@ def _slop_reduced_for_genai(messages):
         return messages
 
 
+# ``turn_type`` on the conversation bus. Two records per ephemeral turn, and
+# the pair is what makes the store readable: the instruction is what the model
+# was actually handed, the reply is what she actually said in answer to it.
+_BUS_TURN_TYPE_INSTRUCTION = "proactive_instruction"
+_BUS_TURN_TYPE_REPLY = "proactive_reply"
+
+# ``source`` on those records. ``prompt_ephemeral`` marks every one of its calls
+# as a proactive call type (``set_call_type("proactive")`` below) regardless of
+# ``completion_mode``, so this is the label that is already true at this layer.
+_BUS_CONVERSATION_SOURCE = "proactive"
+
+
 class _LifecycleMixin:
+    async def _publish_conversation_turn(
+        self,
+        content: str,
+        *,
+        turn_type: str,
+        conversation_id: str,
+        message_count: int,
+    ) -> bool:
+        """Copy one message of this turn onto the plugin conversation bus.
+
+        Best effort, and never raises into the turn -- the dual of
+        ``_publish_provider_frames``. A bus that is absent, down or slow must
+        not cost the user a greeting. Cancellation is deliberately NOT
+        swallowed: that is the session being torn down and it belongs to the
+        caller.
+
+        The caller owns the delivery judgement, not this helper. It publishes
+        whatever it is handed, so every call site has to have already
+        established that the thing being copied really happened: the provider
+        streamed a chunk (the instruction), or the reply committed.
+
+        Returns whether the record actually reached the socket. Swallowing the
+        failure is right -- it must not reach the turn -- but swallowing it
+        *silently* is not: the proactive reply is only allowed onto the bus
+        behind its instruction, and "the instruction task finished" says
+        nothing about whether the instruction landed. ``False`` covers the
+        publisher refusing, the publisher raising, and an empty text that was
+        never sent at all.
+        """
+        text = str(content or "")
+        if not text.strip():
+            return False
+        # __new__-built instances (tests, legacy callers) never ran __init__,
+        # read the name the same defensive way the media helpers read it.
+        lanlan_name = str(getattr(self, "lanlan_name", "") or "") or None
+        try:
+            return bool(await publish_conversation_turn_observed_best_effort(
+                lanlan_name,
+                content=text,
+                turn_type=turn_type,
+                conversation_id=conversation_id,
+                source=_BUS_CONVERSATION_SOURCE,
+                message_count=message_count,
+            ))
+        except asyncio.CancelledError:
+            raise
+        except Exception as publish_error:
+            logger.debug(
+                "conversation turn not copied to the plugin bus: %s",
+                publish_error,
+            )
+            return False
+
+    def _begin_response_generation(self) -> int:
+        generation = int(getattr(self, "_response_generation", 0)) + 1
+        self._response_generation = generation
+        self._active_response_generation = generation
+        self._is_responding = True
+        return generation
+
+    def _response_generation_is_active(self, generation: int) -> bool:
+        return (
+            getattr(self, "_active_response_generation", None) == generation
+            and bool(getattr(self, "_is_responding", False))
+        )
+
+    def _pause_response_generation(self, generation: int) -> bool:
+        if getattr(self, "_active_response_generation", None) != generation:
+            return False
+        self._is_responding = False
+        return True
+
+    def _resume_response_generation(self, generation: int) -> bool:
+        if getattr(self, "_active_response_generation", None) != generation:
+            return False
+        self._is_responding = True
+        return True
+
+    def _finish_response_generation(self, generation: int) -> bool:
+        if getattr(self, "_active_response_generation", None) != generation:
+            return False
+        self._active_response_generation = None
+        self._is_responding = False
+        return True
+
+    def _cancel_response_generation(self) -> bool:
+        if getattr(self, "_active_response_generation", None) is None:
+            return False
+        self._active_response_generation = None
+        self._is_responding = False
+        return True
+
     async def prime_context(self, text: str, skipped: bool = False) -> None:
         """Append context to the system prompt at session start.
 
@@ -217,6 +327,13 @@ class _LifecycleMixin:
         # 用户了、函数却因 UnboundLocalError 走到失败分支返回 False，主动
         # 调度状态跟着被污染（CodeRabbit）。
         _pending_budget_notice = None
+        # 这一轮的身份。帧记录的 turn_id 和两条对话记录的 conversation_id 用**同
+        # 一个值**，插件才能把「模型看到的那几张图」和「她因此说了什么」拼回同一
+        # 轮。主动轮没有外部 turn id（那是独立 ASR 那条路才有的），只能现铸一个。
+        _bus_turn_id = uuid.uuid4().hex
+        # 阶梯之后真正附上的那批帧。在 `if images:` 之外初始化 —— 纯文本的主动轮
+        # 根本不进那个分支，而下面的发布点无条件要读它。
+        _bus_frames: list = []
 
         async def _emit_pending_budget_notice() -> None:
             """Send the staged trim notice, at most once, once the turn speaks.
@@ -335,6 +452,13 @@ class _LifecycleMixin:
                     f"prompt_ephemeral: attaching {len(_budget_images)} proactive image(s)"
                 )
                 _ephemeral_msg = HumanMessage(content=_ephemeral_content)
+                # 只**存**，不发。存的是阶梯之后的字节（不是调用方给的原图）：
+                # 归一化几乎每轮都会重编码，总线上必须是模型真正看到的那一张。
+                # 发布点在下面「第一个 chunk 到达」处 —— 与 stream_text 同一条
+                # 判据。这里发布就是在赌：本函数往下还有 retry 阶梯、取消检查、
+                # 三次 attempt 全失败的静默放弃，每一条都能让这一轮一个字节都没
+                # 到过 provider。
+                _bus_frames = list(_budget_images)
             else:
                 # 阶梯永远至少保住最后一张，所以走到这里只可能是调用方传了一串空
                 # 字符串。退回纯文本消息，别发一条只有 text block 的多模态壳子。
@@ -342,6 +466,18 @@ class _LifecycleMixin:
         else:
             _ephemeral_msg = HumanMessage(content=instruction)
         messages_to_send = self._conversation_history + [_ephemeral_msg]
+        # 送达之后要抄给插件总线的东西：这一轮的指令，以及（若有）真正附上的那批
+        # 图。一个槽装两样，是为了让「一轮只发一次」只有一处清标记 —— 两个槽两处
+        # 清，就是下一次有人只清了其中一个的地方。None = 已经发过了。
+        _pending_bus_delivery = (instruction, _bus_frames)
+        # 指令那条抄送的任务句柄。回复在 finally 末尾发布，两条属于同一轮，
+        # 插件读到的顺序必须是「指令、回复」——发布一旦离开回合的返回路径，
+        # 这个顺序就只剩调度保证，而调度不保证任何事。
+        _bus_instruction_task = None
+        # 这一轮的工具图槽位，跨 attempt 存活（见 _astream_visible_with_tools）。
+        _turn_tool_image_slots: list = []
+        # 同上：跨 attempt 存活的待抄送工具帧。
+        _turn_tool_bus_frames: list = []
 
         # Retry 策略与 stream_text 对偶（max_retries=3, [1, 2]s 间隔）。
         # 但主动搭话语义不同：用户没在等回复，retry 用尽时**静默吞掉**，
@@ -360,9 +496,9 @@ class _LifecycleMixin:
         # own pulse, never for a newer user stream_text that interleaved and
         # re-pulsed under a fresher seq (Codex P2).
         _reasoning_owner_seq = self._begin_reasoning_stream()
+        response_generation = self._begin_response_generation()
 
         try:
-            self._is_responding = True
             set_call_type("proactive")
             for attempt in range(max_retries):
                 # 每次 attempt 重置流式状态（assistant_message / prefix /
@@ -379,20 +515,63 @@ class _LifecycleMixin:
                 # 调 .astream 触发 AttributeError，且就算重试 client 也已不在。
                 # 用 hasattr 守卫：单元测试用 __new__ 绕过 __init__ 不会设这个
                 # 属性，但真实代码 __init__ 必设。
-                if (hasattr(self, "llm") and self.llm is None) or not self._is_responding:
+                if (
+                    (hasattr(self, "llm") and self.llm is None)
+                    or not self._response_generation_is_active(response_generation)
+                ):
                     break
 
                 try:
                     # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
                     # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
-                    async for chunk in self._astream_visible_with_tools(messages_to_send):
+                    async for chunk in self._astream_visible_with_tools(
+                        messages_to_send,
+                        # 与 stream_text 同：跨 attempt 存活，由下面的 finally
+                        # 统一释放。
+                        _tool_image_slots=_turn_tool_image_slots,
+                        _tool_bus_frames=_turn_tool_bus_frames,
+                        # 这一轮里工具返回的图也归这一轮：没有它，主动搭话轮
+                        # 里的工具图会以 turn_id=None 上总线，插件没法把它和
+                        # 同一轮的指令/回复对上——而那正是 turn_id 存在的理由。
+                        _tool_frames_turn_id=_bus_turn_id,
+                    ):
+                        # 插件总线：provider 已经吐出东西了 —— 这一轮的指令连同那
+                        # 批图确凿地被它收下了。这是本函数里最早能这么断言的地方，
+                        # astream 是惰性的，请求要到第一次 __anext__ 才真正发出去。
+                        # 清标记在 await 之前：一轮只发一次，三次 attempt 的重试不
+                        # 会把同一批图、同一条指令再抄一遍。
+                        #
+                        # 刻意在下面那句 `_response_generation_is_active` 之前：那
+                        # 是**本地**取消，与 provider 收没收到无关。它已经收到了。
+                        if _pending_bus_delivery is not None:
+                            _bus_instruction, _bus_frames_to_send = _pending_bus_delivery
+                            _pending_bus_delivery = None
+                            # 与 stream_text 同一判据：抄送不占用回复的返回
+                            # 路径。两者都在上面冻结过了，任务里不读活状态。
+                            if _bus_frames_to_send:
+                                self._fire_bus_task(
+                                    self._publish_provider_frames(
+                                        _bus_frames_to_send,
+                                        [_FRAME_SOURCE_PROACTIVE]
+                                        * len(_bus_frames_to_send),
+                                        turn_id=_bus_turn_id,
+                                    )
+                                )
+                            _bus_instruction_task = self._fire_bus_task(
+                                self._publish_conversation_turn(
+                                    _bus_instruction,
+                                    turn_type=_BUS_TURN_TYPE_INSTRUCTION,
+                                    conversation_id=_bus_turn_id,
+                                    message_count=1,
+                                )
+                            )
                         if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                             logger.debug(f"🔍 [Usage-Proactive] {chunk.usage_metadata}")
                         if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
                             if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
                                 logger.debug(f"🔍 [Meta-Proactive] {chunk.response_metadata}")
 
-                        if not self._is_responding:
+                        if not self._response_generation_is_active(response_generation):
                             break
                         content = chunk.content if hasattr(chunk, "content") else str(chunk)
                         if content and content.strip():
@@ -521,7 +700,10 @@ class _LifecycleMixin:
             assistant_message = ""
             return False
         finally:
-            self._is_responding = False
+            # 先于其它收尾：把 base64 从历史里摘掉。跨 attempt 存活的代价
+            # 就是必须由这里统一释放，否则它会跟着这一轮之后的每次请求走。
+            self._release_tool_image_slots(_turn_tool_image_slots)
+            self._finish_response_generation(response_generation)
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
@@ -610,12 +792,48 @@ class _LifecycleMixin:
                     await proactive_done_cb(content_committed)
                 elif self.on_response_done:
                     await self.on_response_done()
+            # 对话总线的第二条：她真正说出口的那句。判据和上面那条指令不同 ——
+            # 指令问的是「provider 收到了吗」（第一个 chunk），这条问的是「她说了
+            # 吗」（提交）。开始 streaming 不算数：只吐了非语言指令、或者半截被
+            # 丢弃的那种回合，committed_text 是空的，插件此时该读到的是「没有回
+            # 复」，而不是一条空记录或一句从未被承认的话。发的是 committed_text
+            # ——剥掉 [play_music:] 之后的那份，与 on_committed_text / 防复读
+            # corpus 拿到的是同一个字符串。
+            #
+            # 位置在整个 finally 的**最后**，收尾回调之后：这是一次礼节性抄送，
+            # 不能在任何用户看得见的东西（TTS 收尾、轮次结束、request-id 清理）
+            # 前面新开一个取消点。
+            if content_committed and _bus_instruction_task is not None:
+                # 顺序靠**串联**，不靠等待。指令和回复是同一轮，插件必须按这个
+                # 顺序读到；但在 finally 里 await 那条任务，会让一个卡住的
+                # bridge 直接挂住主动搭话的收尾——这正是上一轮把发布挪出返回
+                # 路径要避免的事，在这里又长回来了。
+                #
+                # 所以把回复的抄送挂在指令那条任务**后面**，整串一起 fire：
+                # 顺序保住了，回合一步都不用等，也不用为此发明一个超时。
+                #
+                # 任务为 None 时**整条回复都不发**（上面的判据）。None 有两种来
+                # 源，而两种的结论一样：要么这一轮压根没走到指令发布点，要么在
+                # 途抄送已经到顶、指令被拒——两种情况下总线上都没有那条指令，
+                # 而带着 message_count=2 的回复会告诉插件「你手上是完整的一轮」。
+                # 那是一句撒谎的记录，比少一条记录糟得多。
+                self._fire_bus_task(
+                    self._publish_reply_after_instruction(
+                        _bus_instruction_task,
+                        committed_text,
+                        turn_type=_BUS_TURN_TYPE_REPLY,
+                        conversation_id=_bus_turn_id,
+                        # 这一轮到此为止总共两条：指令 + 这句回复。读到这条的
+                        # 插件因此知道自己手上的是完整的一轮。
+                        message_count=2,
+                    )
+                )
 
         return content_committed
 
     async def cancel_response(self) -> None:
         """Cancel the current response if possible"""
-        self._is_responding = False
+        self._cancel_response_generation()
 
     async def _cancel_external_voice_submit_task(self) -> bool:
         """Cancel the narrow external-ASR child task, if another task owns it."""
@@ -655,10 +873,68 @@ class _LifecycleMixin:
         except asyncio.CancelledError:
             logger.info("Text mode message handler cancelled")
 
+    async def _publish_reply_after_instruction(
+        self,
+        instruction_task,
+        content: str,
+        **kwargs,
+    ) -> None:
+        """Publish the proactive reply, but never before its instruction.
+
+        The two are one round and a plugin reads them in order. Waiting for the
+        instruction on the turn itself would let a stalled bridge hang the
+        turn's teardown, so the wait lives here, inside the copy that is
+        already off the response path.
+
+        The instruction task swallows its own failures, so this only ever ends
+        when it does -- and if it is cancelled (``close()``), that cancellation
+        propagates and this reply is dropped with it. Correct: a reply on the
+        bus with no instruction in front of it reads as a sentence with no
+        cause.
+
+        Waiting is not enough, though: the task **finishing** says nothing
+        about whether the instruction was even sent. The publisher swallows a
+        refusal and a raise alike, so the result is read here and a reply whose
+        instruction never reached the socket is dropped rather than sent out
+        carrying ``message_count=2``.
+
+        This gate reaches only as far as the socket, and must not be read as
+        "no orphan reply is possible". ``publish_conversation_turn_observed
+        _best_effort`` says so itself: its ``True`` means "handed to the
+        socket", never "a plugin will see it". Three hops follow -- the
+        agent-side ``_forward_conversation_turn``, the bridge, and ingest -- and
+        the reply has already been released by the time any of them can drop
+        the instruction. Closing that window for good needs an acknowledgement
+        from the store hop, or publishing the pair atomically; neither belongs
+        in this change.
+
+        ``instruction_task`` is never ``None`` here -- the caller drops the
+        whole reply in that case rather than publishing an orphan. The guard
+        stays as a belt for a direct caller, and it is the reason the caller's
+        check cannot be relaxed into "wait if we have one".
+        """
+        if instruction_task is not None:
+            if not await instruction_task:
+                logger.debug(
+                    "proactive reply not copied: its instruction never reached "
+                    "the bus",
+                )
+                return
+        await self._publish_conversation_turn(content, **kwargs)
+
     async def close(self) -> None:
         """Close the client and cleanup resources."""
+        # ``_cancel_bus_copies`` latches before it drains, which is what makes
+        # this safe: draining alone races -- a stream parked on its first chunk
+        # wakes up after the drain, fires a fresh copy, and that one outlives
+        # the closed session, the exact thing the drain exists to prevent.
+        await self._cancel_bus_copies()
         await self._cancel_external_voice_submit_task()
-        self._is_responding = False
+        # Supersedes the bare ``_is_responding = False``: retiring the active
+        # generation also stops a mid-flight turn from resuming (its
+        # ``_resume_response_generation`` no longer matches) against a closed
+        # client.
+        self._cancel_response_generation()
         self._conversation_history = []
         self._pending_images.clear()
         self._proactive_image_to_inject = None

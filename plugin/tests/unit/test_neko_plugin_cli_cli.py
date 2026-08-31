@@ -772,6 +772,34 @@ def test_validate_plugin_dir_rejects_too_large_runtime_timeout(tmp_path: Path) -
     )
 
 
+def test_validate_accepts_nested_module_under_canonical_plugin_package(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    nested_package = plugin_dir / "runtime"
+    nested_package.mkdir()
+    (plugin_dir / "__init__.py").replace(nested_package / "__init__.py")
+    plugin_toml = plugin_dir / "plugin.toml"
+    plugin_toml.write_text(
+        plugin_toml.read_text(encoding="utf-8").replace(
+            "plugin.plugins.cli_demo:DemoPlugin",
+            "plugin.plugins.cli_demo.runtime:DemoPlugin",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir, strict=True)
+
+    assert not any(
+        "plugin.entry should usually target" in message
+        for _level, message in issues
+    )
+    assert not any(
+        level == "error" and "plugin.entry" in message
+        for level, message in issues
+    )
+
+
 @pytest.mark.parametrize("timeout_literal", ["nan", "inf", "-inf"])
 def test_validate_plugin_dir_rejects_non_finite_runtime_timeout(
     tmp_path: Path,

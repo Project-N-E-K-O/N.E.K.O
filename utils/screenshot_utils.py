@@ -351,7 +351,7 @@ async def analyze_image_with_vision_model(
             logger.warning("VISION_MODEL not configured, skipping image analysis")
             return None
         
-        if not vision_api_key:
+        if not vision_api_key and not api_config.get('is_custom'):
             logger.warning("Vision API key not configured, skipping image analysis")
             return None
         

@@ -4361,6 +4361,48 @@ async def test_focus_pulse_is_cleared_when_its_own_send_is_cancelled(monkeypatch
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement_stage", ["processing", "sending"])
+async def test_screen_frame_from_replaced_session_is_discarded(
+    monkeypatch,
+    replacement_stage,
+):
+    mgr = _make_manager()
+    original_session = object.__new__(core_module.OmniOfflineClient)
+    replacement_session = object.__new__(core_module.OmniOfflineClient)
+    original_session.stream_image = AsyncMock()
+    replacement_session.stream_image = AsyncMock()
+    mgr.session = original_session
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+
+    async def _process_screen_data(_data):
+        if replacement_stage == "processing":
+            mgr.session = replacement_session
+        return "img-b64"
+
+    async def _stream_image(_image_b64):
+        if replacement_stage == "sending":
+            mgr.session = replacement_session
+
+    original_session.stream_image.side_effect = _stream_image
+    monkeypatch.setattr(core_module, "process_screen_data", _process_screen_data)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "screen", "data": "raw-image"},
+    )
+
+    if replacement_stage == "processing":
+        original_session.stream_image.assert_not_awaited()
+    else:
+        original_session.stream_image.assert_awaited_once_with("img-b64")
+    replacement_session.stream_image.assert_not_awaited()
+    assert mgr.sync_message_queue.messages == []
+
+
 def test_game_speech_preload_glues_spaces_only_for_chinese_text():
     """The preload path must normalize spaces the way the speak path does.
 

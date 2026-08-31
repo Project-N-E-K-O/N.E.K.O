@@ -17,8 +17,17 @@ from plugin.server.application.plugins.layout_migration import migrate_legacy_pl
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
-from plugin.server.messaging.plane_bridge import start_bridge, stop_bridge
-from plugin.server.messaging.proactive_bridge import start_proactive_bridge, stop_proactive_bridge
+from plugin.server.messaging.plane_bridge import (
+    ingest_auth_token,
+    refresh_ingest_endpoint,
+    start_bridge,
+    stop_bridge,
+)
+from plugin.server.messaging.proactive_bridge import (
+    start_proactive_bridge,
+    stop_proactive_bridge,
+    wait_for_proactive_subscriber,
+)
 from plugin.server.messaging.plane_runner import MessagePlaneRunner, build_message_plane_runner
 from plugin.server.monitoring.metrics import metrics_collector
 from plugin.server.messaging.request_router import plugin_router
@@ -31,6 +40,11 @@ if _EMBEDDED_BY_AGENT:
     logger = get_module_logger(__name__, "Agent")
 else:
     logger = get_logger("server.lifecycle")
+
+
+# 等 ProactiveBridge 的 SUB 连上的上限。比它自己那一秒的 PUB bind 等待留出
+# 余量，又短到起不来时不会让人以为应用卡死了。
+_PROACTIVE_SUBSCRIBER_WAIT_SECONDS = 3.0
 
 
 @runtime_checkable
@@ -109,7 +123,11 @@ class ServerLifecycleService:
             state.event_handlers.clear()
 
     async def _start_message_plane(self) -> None:
-        self._message_plane_runner = build_message_plane_runner()
+        # Same process mints the credential and starts the plane that must
+        # accept it; start_bridge() below is the only writer.
+        self._message_plane_runner = build_message_plane_runner(
+            auth_token=ingest_auth_token(),
+        )
         self._message_plane_runner.start()
         try:
             health_check_async = getattr(self._message_plane_runner, "health_check_async", None)
@@ -246,10 +264,37 @@ class ServerLifecycleService:
             )
             self._message_plane_runner = None
 
-        await self._refresh_registry_and_start_autostart_plugins()
-
-        await bus_subscription_manager.start()
-        logger.debug("bus subscription manager started")
+        # 两条 bridge 先于任何插件起来。autostart 插件可以在自己的 startup 钩
+        # 子里调 push_message()，而 ProactiveBridge 的 SUB 要在它自己的线程里
+        # 等约一秒才连上——PUB/SUB 对缺席的订阅方是丢弃，所以那扇窗口里推的
+        # 消息角色永远不会说出口，而 push_message() 已经回了 submitted=True。
+        #
+        # 顺序只是第一步：SUB 的连接延迟本身还在（bridge 线程要先等约一秒让
+        # message_plane 的 PUB bind 完），所以下面在放插件进来之前会等
+        # wait_for_proactive_subscriber。
+        #
+        # ⚠️ 即便如此也不是数学上的关闭：ZMQ 的 SUBSCRIBE 返回不代表 PUB 端
+        # 已经处理完这条订阅（slow joiner），极窄的一段仍在。要关死得让 bridge
+        # 起来后补读一次 store 并按 message_id 去重，代价是重复投递的风险。
+        #
+        # 另外更正一处此前写错的机制：plane bridge **不会**因为没 start 就拒
+        # 收。`_Bridge._enabled` 读的是 MESSAGE_PLANE_BRIDGE_ENABLED 这个配置
+        # 开关（构造时读一次），不是「start() 跑没跑」——start() 之前
+        # enqueue_delta 照常入队，线程起来后排空。实测 publish_record 在
+        # start_bridge() 之前返回 True。
+        # 必须在 runner 起完之后、bridge 起之前：配置端口被占时 runner 会挑
+        # 一个备用端口并写回环境变量，而 _bridge 是 import 期就建好的、那时
+        # 冻结的还是原来那个地址。不刷新的话，端口一冲突，push_message /
+        # frames / conversations 全都发向那个被占的端点，而调用方已经拿到
+        # submitted=True——正是这条路要消灭的那种静默不投递。
+        try:
+            refresh_ingest_endpoint()
+        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
+            logger.warning(
+                "failed to refresh ingest endpoint: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
 
         try:
             start_bridge()
@@ -268,6 +313,24 @@ class ServerLifecycleService:
                 type(exc).__name__,
                 str(exc),
             )
+
+        # 等订阅方真正连上再放插件进来。bridge 的线程自己要先睡约一秒等
+        # message_plane 的 PUB bind，那一秒正好是窗口本身——只把 start 挪到
+        # 前面并不能让它变窄。有界等待：bridge 被禁用或已经死了就立刻返回，
+        # 起不来也不能把整个启动挂在这儿。
+        if not await asyncio.to_thread(
+            wait_for_proactive_subscriber, _PROACTIVE_SUBSCRIBER_WAIT_SECONDS
+        ):
+            logger.warning(
+                "proactive subscriber not ready after {}s; autostart plugins "
+                "pushing from their startup hook may go unheard",
+                _PROACTIVE_SUBSCRIBER_WAIT_SECONDS,
+            )
+
+        await self._refresh_registry_and_start_autostart_plugins()
+
+        await bus_subscription_manager.start()
+        logger.debug("bus subscription manager started")
 
         def _get_hosts() -> dict[str, object]:
             return self._get_plugin_hosts_snapshot()

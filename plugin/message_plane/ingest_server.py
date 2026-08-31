@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import time
 from typing import Any, Dict, Optional
 
@@ -25,8 +26,21 @@ from .pub_server import MessagePlanePubServer
 from .stores import StoreRegistry, TopicStore
 
 
-def _loads(data: bytes) -> Any:
-    return ormsgpack.unpackb(data)
+def _loads(data: bytes, *, expected_token: str) -> Any:
+    decoded = ormsgpack.unpackb(data)
+    if not isinstance(decoded, dict):
+        raise ValueError("invalid message-plane ingest payload")
+    supplied_token = decoded.pop("_auth", None)
+    if (
+        not isinstance(supplied_token, str)
+        or not expected_token
+        or not secrets.compare_digest(
+            supplied_token.encode("utf-8"),
+            expected_token.encode("utf-8"),
+        )
+    ):
+        raise ValueError("invalid message-plane ingest credential")
+    return decoded
 
 
 # Drop reasons that are terminal for the *author* of the push: the item is gone
@@ -67,10 +81,14 @@ class MessagePlaneIngestServer:
         endpoint: str,
         stores: StoreRegistry,
         pub_server: Optional[MessagePlanePubServer],
+        auth_token: str,
     ) -> None:
         self.endpoint = str(endpoint)
         self._stores = stores
         self._pub = pub_server
+        self._auth_token = str(auth_token or "").strip()
+        if not self._auth_token:
+            raise ValueError("message-plane ingest requires an auth token")
 
         self._ctx = zmq.Context.instance()
         self._sock = self._ctx.socket(zmq.PULL)
@@ -454,7 +472,7 @@ class MessagePlaneIngestServer:
                     continue
                 self._stats_recv += 1
                 try:
-                    obj = _loads(raw)
+                    obj = _loads(raw, expected_token=self._auth_token)
                 except Exception:
                     self._stats_dropped += 1
                     continue

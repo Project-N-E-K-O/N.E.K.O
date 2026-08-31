@@ -4039,6 +4039,12 @@ class AsrRuntimeMixin:
                                     multimodal_turn.transcript,
                                     multimodal_turn.images,
                                     turn_id=multimodal_turn.turn_id,
+                                    # The channel frozen with these frames,
+                                    # not the one the session is on now: a
+                                    # session-side read drifts to the next
+                                    # utterance's channel across the trim /
+                                    # queue / send awaits.
+                                    source=multimodal_turn.source,
                                     # Gemini 那条路在真正送出之前还有一段
                                     # 压缩 await，后继发声可以在其中拿走帧。
                                     # 与 Offline 交接同源的判据。

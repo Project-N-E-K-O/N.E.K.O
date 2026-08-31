@@ -43,3 +43,41 @@ def test_music_allowlist_bridge_preserves_exact_http_urls() -> None:
             "timestamp": "",
         }
     ]
+
+
+def test_proactive_bridge_forwards_plugin_event_ttl() -> None:
+    socket = _PushSocket()
+
+    ProactiveBridge()._dispatch(
+        {
+            "plugin_id": "demo_plugin",
+            "schema": "push_message.v2",
+            "visibility": [],
+            "ai_behavior": "respond",
+            "parts": [{"type": "text", "text": "urgent cue"}],
+            "metadata": {"expires_in_s": 12.5},
+        },
+        socket,
+    )
+
+    assert socket.events[0]["expires_in_s"] == 12.5
+
+
+def test_proactive_bridge_ignores_an_oversized_expiry() -> None:
+    socket = _PushSocket()
+
+    ProactiveBridge()._dispatch(
+        {
+            "plugin_id": "demo_plugin",
+            "schema": "push_message.v2",
+            "visibility": [],
+            "ai_behavior": "respond",
+            "parts": [{"type": "text", "text": "urgent cue"}],
+            "metadata": {"expires_in_s": 10 ** 400},
+        },
+        socket,
+    )
+
+    assert len(socket.events) == 1
+    assert "expires_in_s" not in socket.events[0]
+    assert "expires_in_s" not in socket.events[0]["metadata"]

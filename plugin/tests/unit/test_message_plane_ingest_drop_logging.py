@@ -83,6 +83,10 @@ def ingest(monkeypatch: pytest.MonkeyPatch) -> Iterator[MessagePlaneIngestServer
         endpoint=f"inproc://neko-test-ingest-{uuid.uuid4().hex}",
         stores=stores,
         pub_server=None,
+        # Required since the plane started demanding a process-local ingest
+        # credential; the value is irrelevant here because these tests call
+        # the ingest handlers directly rather than through _loads.
+        auth_token="test-token",
     )
     try:
         yield server
