@@ -952,6 +952,11 @@ class _AuthenticatedMessageBatcher:
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
+        # 这是重启入口（上面那个 is_alive 判断就是为它写的），所以两个关停位都
+        # 得在这里落下：不清的话新线程一进 _run 就撞上 _abandon / _stop 直接
+        # 退出，队列一条不发，而且完全静默——batcher 本来就是 fire-and-forget。
+        self._stop.clear()
+        self._abandon.clear()
         self._thread = threading.Thread(
             target=self._run,
             name="plugin-authenticated-message-batcher",

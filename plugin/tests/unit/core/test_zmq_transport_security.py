@@ -962,3 +962,73 @@ def test_the_message_channel_keeps_its_silent_drop() -> None:
 
     zmq_transport._refuse_oversized_uplink_frame(zmq_transport.CH_MSG, big)
     zmq_transport._refuse_oversized_uplink_frame(zmq_transport.CH_MSG_BATCH, big)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("force_abandon", [False, True])
+def test_a_restarted_batcher_actually_sends_again(force_abandon: bool) -> None:
+    """``start()`` is a restart entry — its own ``is_alive`` guard says so.
+
+    Both shutdown flags have to be lowered there, and both are exercised:
+    an ordinary stop sets only ``_stop``, while a stop whose join times out
+    also sets ``_abandon``. Covering just the first leaves "forgot to clear
+    ``_abandon``" alive — which is what the first version of this test did.
+
+    A new thread that walks into either flag leaves ``_run`` immediately and
+    sends nothing, silently: this worker is fire-and-forget, so nothing raises
+    and nothing looks missing until someone notices messages stopped arriving.
+
+    Mutation: delete either ``clear()`` in ``start``.
+    """
+    sent: list = []
+
+    class _Transport:
+        def send_uplink_nowait(self, channel, payload):
+            sent.append(payload)
+
+    class _NeverEmptyQueue:
+        def get(self, timeout=None):
+            return {"message_id": "endless"}
+
+        def empty(self) -> bool:
+            return False
+
+    batcher = zmq_transport._AuthenticatedMessageBatcher(
+        _Transport(),  # type: ignore[arg-type]
+        batch_size=1,
+        flush_interval_ms=5,
+        max_queue=8,
+        reject_ratio=0.9,
+        enqueue_timeout_s=0.5,
+    )
+    real_queue = batcher._queue
+    if force_abandon:
+        # A queue that never drains makes the join time out, so ``stop`` has to
+        # escalate and set ``_abandon``.
+        batcher._queue = _NeverEmptyQueue()  # type: ignore[assignment]
+
+    batcher.start()
+    if not force_abandon:
+        batcher.enqueue({"message_id": "first"})
+    for _ in range(200):
+        if sent:
+            break
+        time.sleep(0.01)
+    assert sent, "前提没成立：第一条就没发出去"
+
+    batcher.stop(timeout=0.05 if force_abandon else 1.0)
+    if force_abandon:
+        assert batcher._abandon.is_set(), "前提没成立：这一路没走到升级"
+        batcher._queue = real_queue  # type: ignore[assignment]
+
+    sent.clear()
+    batcher.start()
+    try:
+        batcher.enqueue({"message_id": "second"})
+        for _ in range(200):
+            if sent:
+                break
+            time.sleep(0.01)
+        assert sent, "重启之后一条都没发——关停位没在 start 里落下"
+    finally:
+        batcher.stop(timeout=1.0)
