@@ -96,6 +96,40 @@ vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'avatar-portrait.
   assert.equal(result.sourceCanvas.height, 1800);
   assert.equal(result.dataUrl, 'data:image/png;base64,AAAA');
 
+  const highResolutionImage = {{
+    tagName: 'IMG', width: 320, height: 480, clientWidth: 320, clientHeight: 480,
+    naturalWidth: 1600, naturalHeight: 2400, complete: true, hidden: false,
+    style: {{ display: '' }}, classList: {{ contains: () => false }},
+    currentSrc: '/user_pngtuber/high-resolution.png',
+  }};
+  window.pngtuberManager = {{ image: highResolutionImage, ensureContainer() {{}} }};
+  const intrinsicResult = await window.avatarPortrait.capture({{
+    modelType: 'pngtuber', width: 768, height: 1024,
+  }});
+  assert.equal(intrinsicResult.sourceCanvas.width, 1600);
+  assert.equal(intrinsicResult.sourceCanvas.height, 2400);
+
+  const loadingImage = {{
+    tagName: 'IMG', width: 0, height: 0, clientWidth: 0, clientHeight: 0,
+    naturalWidth: 0, naturalHeight: 0, complete: false, hidden: false,
+    style: {{ display: '' }}, classList: {{ contains: () => false }},
+    currentSrc: '/user_pngtuber/loading.png',
+    addEventListener(type, callback) {{
+      if (type !== 'load') return;
+      setTimeout(() => {{
+        this.complete = true;
+        this.naturalWidth = 900;
+        this.naturalHeight = 1200;
+        callback();
+      }}, 0);
+    }},
+    removeEventListener() {{}},
+  }};
+  window.pngtuberManager = {{ image: loadingImage, ensureContainer() {{}} }};
+  const loadedResult = await window.avatarPortrait.capture({{ modelType: 'pngtuber' }});
+  assert.equal(loadedResult.sourceCanvas.width, 900);
+  assert.equal(loadedResult.sourceCanvas.height, 1200);
+
   window.pngtuberManager = {{
     image: runtimeCanvas,
     ensureContainer() {{}},

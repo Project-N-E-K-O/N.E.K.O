@@ -78,9 +78,14 @@
 
     function getPNGTuberDrawableSize(drawable) {
         if (!drawable) return { width: 0, height: 0 };
+        const isImage = isPNGTuberImageElement(drawable);
         return {
-            width: finiteOr(drawable.width, 0) || finiteOr(drawable.naturalWidth, 0) || finiteOr(drawable.clientWidth, 0),
-            height: finiteOr(drawable.height, 0) || finiteOr(drawable.naturalHeight, 0) || finiteOr(drawable.clientHeight, 0)
+            width: isImage
+                ? finiteOr(drawable.naturalWidth, 0) || finiteOr(drawable.width, 0) || finiteOr(drawable.clientWidth, 0)
+                : finiteOr(drawable.width, 0) || finiteOr(drawable.clientWidth, 0),
+            height: isImage
+                ? finiteOr(drawable.naturalHeight, 0) || finiteOr(drawable.height, 0) || finiteOr(drawable.clientHeight, 0)
+                : finiteOr(drawable.height, 0) || finiteOr(drawable.clientHeight, 0)
         };
     }
 
@@ -128,6 +133,11 @@
         // The model manager temporarily hides the desktop avatar while it covers the
         // main window. Community forging still needs an off-screen snapshot of the
         // loaded model, so visibility must not be a prerequisite for capture.
+        // Preserve a still-loading image as well: prepare() owns waiting for its
+        // load/error event before dimensions are required.
+        if (isPNGTuberImageElement(manager?.image)) return manager.image;
+        const loadingImage = candidates.find(isPNGTuberImageElement);
+        if (loadingImage) return loadingImage;
         if (isReadyPNGTuberDrawable(manager?.image)) return manager.image;
         return candidates.find(isReadyPNGTuberDrawable) || null;
     }
