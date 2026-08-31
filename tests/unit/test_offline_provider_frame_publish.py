@@ -791,3 +791,61 @@ def test_a_finished_bus_copy_frees_its_slot():
         assert inflight == set(), "跑完的抄送仍占着名额"
 
     asyncio.run(_check())
+
+
+def test_a_retried_turn_still_shows_the_tool_image_to_the_model():
+    """The end of the ownership chain: stream_text keeps the pixels across attempts.
+
+    A follow-up request that raises a retryable error used to leave history with
+    the assistant tool_calls, the tool result, and a TEXT PLACEHOLDER where the
+    picture had been -- and the outer ladder retried against exactly that. The
+    model then answered as though it had already looked at an image no provider
+    ever received. Silently wrong answers, not a performance problem.
+
+    Mutation: drop ``_tool_image_slots=_turn_tool_image_slots`` from
+    ``stream_text``'s call, or its release from the finally.
+    """
+    client, _captured = _make_client()
+    seen_slots: list = []
+    attempts: list = []
+
+    async def _stub(messages, **overrides):
+        slots = overrides.get("_tool_image_slots")
+        seen_slots.append(slots)
+        attempts.append(len(attempts) + 1)
+        if len(attempts) == 1:
+            # 第一次 attempt：注入一张图（真实实现会这么做），然后可重试地失败。
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "image_url",
+                     "image_url": {"url": "data:image/jpeg;base64,IMGDATA"}},
+                    {"type": "text", "text": "tool image"},
+                ],
+            })
+            assert slots is not None, "stream_text 没有接管槽位"
+            slots.append((messages, len(messages) - 1, messages[-1], "[占位符]"))
+            raise _connection_error()
+        # 第二次 attempt：模型看到的历史里，那张图还在吗？
+        client._retry_saw_image = any(
+            isinstance(m, dict) and isinstance(m.get("content"), list)
+            and any(p.get("type") == "image_url" for p in m["content"])
+            for m in messages
+        )
+        yield SimpleNamespace(content="看到了")
+
+    client._astream_visible_with_tools = _stub
+    with patch(_SLEEP, _no_backoff):
+        _run_turn(client.stream_text("看看这个"))
+
+    assert len(attempts) == 2, "前提没成立：没有发生重试"
+    assert seen_slots[0] is seen_slots[1], "两次 attempt 拿到的不是同一份槽位"
+    assert getattr(client, "_retry_saw_image", False), (
+        "重试那一轮看不到像素——模型会当作自己已经看过那张图"
+    )
+    # 回合结束后必须清干净：base64 留在历史里会跟着之后每一次请求走。
+    assert not any(
+        isinstance(m, dict) and isinstance(m.get("content"), list)
+        and any(p.get("type") == "image_url" for p in m["content"])
+        for m in client._conversation_history
+    ), "回合结束后图像轮没有被释放"

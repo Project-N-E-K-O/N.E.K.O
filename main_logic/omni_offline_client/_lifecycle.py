@@ -474,6 +474,8 @@ class _LifecycleMixin:
         # 插件读到的顺序必须是「指令、回复」——发布一旦离开回合的返回路径，
         # 这个顺序就只剩调度保证，而调度不保证任何事。
         _bus_instruction_task = None
+        # 这一轮的工具图槽位，跨 attempt 存活（见 _astream_visible_with_tools）。
+        _turn_tool_image_slots: list = []
 
         # Retry 策略与 stream_text 对偶（max_retries=3, [1, 2]s 间隔）。
         # 但主动搭话语义不同：用户没在等回复，retry 用尽时**静默吞掉**，
@@ -522,6 +524,9 @@ class _LifecycleMixin:
                     # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
                     async for chunk in self._astream_visible_with_tools(
                         messages_to_send,
+                        # 与 stream_text 同：跨 attempt 存活，由下面的 finally
+                        # 统一释放。
+                        _tool_image_slots=_turn_tool_image_slots,
                         # 这一轮里工具返回的图也归这一轮：没有它，主动搭话轮
                         # 里的工具图会以 turn_id=None 上总线，插件没法把它和
                         # 同一轮的指令/回复对上——而那正是 turn_id 存在的理由。
@@ -692,6 +697,9 @@ class _LifecycleMixin:
             assistant_message = ""
             return False
         finally:
+            # 先于其它收尾：把 base64 从历史里摘掉。跨 attempt 存活的代价
+            # 就是必须由这里统一释放，否则它会跟着这一轮之后的每次请求走。
+            self._release_tool_image_slots(_turn_tool_image_slots)
             self._finish_response_generation(response_generation)
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。

@@ -903,6 +903,10 @@ class _StreamingMixin:
             )
 
         response_generation = self._begin_response_generation()
+        # 这一轮的工具图槽位，跨 attempt 存活。见 _astream_visible_with_tools
+        # 里的说明：由内层 finally 释放的话，一次可重试的失败会把像素换成占位
+        # 符，而重试用的是同一份历史。
+        _turn_tool_image_slots: list = []
         try:
             reroll_count = 0
             set_call_type("conversation")
@@ -1050,7 +1054,9 @@ class _StreamingMixin:
                         # 归到同一个回合下；普通文本轮没有 turn_id，那里就是 None。
                         _focus_overrides["_tool_frames_turn_id"] = turn_id
                         async for chunk in self._astream_visible_with_tools(
-                            self._conversation_history, **_focus_overrides,
+                            self._conversation_history,
+                            _tool_image_slots=_turn_tool_image_slots,
+                            **_focus_overrides,
                         ):
                             if not _ttft_recorded:
                                 _ttft_recorded = True
@@ -1910,6 +1916,9 @@ class _StreamingMixin:
                         status_reported = True
                     break
         finally:
+            # 先于其它收尾：把 base64 从历史里摘掉，别让它跟着后续每一次请求
+            # 走（token 计数器把图像部分算成短占位符，截断器看不见它）。
+            self._release_tool_image_slots(_turn_tool_image_slots)
             self._finish_response_generation(response_generation)
 
             if (

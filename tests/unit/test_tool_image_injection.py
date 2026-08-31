@@ -15,6 +15,7 @@ import pytest
 from main_logic.omni_offline_client import _tools as tools_module
 from main_logic.omni_offline_client._tools import _ToolingMixin
 from main_logic.tool_calling import ToolCall, ToolImage, ToolResult
+from utils.llm_client import LLMStreamChunk
 
 
 class _Client(_ToolingMixin):
@@ -471,3 +472,139 @@ def test_releasing_one_stream_scope_leaves_a_sibling_image_available():
     assert _image_messages(first_messages) == []
     assert len(_image_messages(second_messages)) == 1
     assert "SECOND" in str(second_messages)
+
+
+# ---------------------------------------------------------------------------
+# 图像轮必须活过外层重试阶梯
+# ---------------------------------------------------------------------------
+#
+# 释放原本在 ``_astream_visible_with_tools`` 自己的 finally 里。一次可重试的
+# 失败之后，历史里 assistant 的 tool_calls 和 tool 结果都还在、唯独像素被换成
+# 了文字占位符——而外层重试用的正是同一份历史。重试成功的那一轮，模型会当作
+# 自己已经看过那张图并据此回答。这是一类静默的错误回答，不是性能问题。
+
+
+class _RetryClient(_Client):
+    """Drives the REAL tool loop: the model asks for a tool, the tool returns a
+    picture, and the follow-up request answers. Injection and release therefore
+    share whichever slot list the loop was given, which is the thing under test.
+    """
+
+    _use_genai_sdk = False
+    _genai_tools_unsupported = False
+    base_url = "https://test.invalid/v1"
+
+    def __init__(self, results=None):
+        super().__init__(results)
+        self._tool_definitions = []
+        self.max_tool_iterations = 4
+        self.model = "test-model"
+        self._last_prompt_tokens = None
+        self.on_tool_round_start = None
+
+        outer = self
+
+        class _ScriptedLLM:
+            def __init__(self) -> None:
+                self.rounds = 0
+
+            async def astream(self, _messages, **_overrides):
+                self.rounds += 1
+                if self.rounds == 1:
+                    yield LLMStreamChunk(
+                        content="",
+                        tool_call_deltas=[{
+                            "index": 0,
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "demo_tool", "arguments": "{}"},
+                        }],
+                        finish_reason="tool_calls",
+                    )
+                    return
+                # 第二轮：带着图的那次请求。把当时历史里的图像部分记下来，
+                # 断言用得上——「循环跑到过带图的请求」是前提，不是结论。
+                outer.saw_images_in_request = bool(_image_parts(_messages))
+                yield LLMStreamChunk(content="看到了")
+
+        self.llm = _ScriptedLLM()
+        self.saw_images_in_request = False
+
+    def _openai_tools_payload(self):
+        return [{"type": "function", "function": {"name": "demo_tool"}}]
+
+    async def _notify_tool_round_start(self):
+        return None
+
+    async def _notify_reasoning_active(self):
+        return None
+
+    def _publish_pending_tool_frames(self, pending, *, turn_id=None):
+        # 帧总线不是本用例的判据；排空即可，别让它把这条路带偏。
+        if pending:
+            pending.clear()
+        return None
+
+
+def _image_parts(messages):
+    return [
+        part
+        for m in messages
+        if isinstance(m, dict) and isinstance(m.get("content"), list)
+        for part in m["content"]
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    ]
+
+
+def _tool_client():
+    return _RetryClient(
+        {"demo_tool": _image_result(images=[ToolImage(data_b64="IMGDATA")])}
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_caller_owned_slot_list_survives_the_inner_finally():
+    """The whole fix in one property.
+
+    The outer retry ladder re-runs against this same history. If the inner
+    finally releases, the retry sees the tool_calls and the tool result but a
+    text placeholder where the pixels were, and answers as though it had looked.
+
+    Mutation: drop the ``owned_tool_image_slots is None`` guard so the inner
+    finally releases regardless.
+    """
+    client = _tool_client()
+    messages: list = []
+    owned: list = []
+
+    async for _ in client._astream_visible_with_tools(
+        messages, _tool_image_slots=owned,
+    ):
+        pass
+
+    assert client.saw_images_in_request, "前提没成立：带图的那次请求没发生"
+    assert _image_parts(messages), (
+        "调用方拥有的槽位被内层 finally 释放了——重试将看不到像素"
+    )
+    assert owned, "槽位列表被清空了"
+
+
+@pytest.mark.asyncio
+async def test_an_unowned_slot_list_is_still_released_by_the_inner_finally():
+    """The dual: a caller that does not take ownership keeps the old behaviour.
+
+    Base64 left in history rides every later request while the token counter
+    renders it as a short placeholder, so the release must not simply move.
+
+    Mutation: skip the release unconditionally.
+    """
+    client = _tool_client()
+    messages: list = []
+
+    async for _ in client._astream_visible_with_tools(messages):
+        pass
+
+    assert client.saw_images_in_request, "前提没成立：带图的那次请求没发生"
+    assert not _image_parts(messages), (
+        "没有调用方接管时，图像轮必须仍由内层 finally 清掉"
+    )

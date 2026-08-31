@@ -621,7 +621,18 @@ class _ToolingMixin:
             yield chunk
 
     async def _astream_visible_with_tools(self, messages, **overrides):
-        tool_image_slots = []
+        # 槽位可以由调用方拥有。这不是可选的整洁：外层重试阶梯（stream_text /
+        # prompt_ephemeral）用同一份 _conversation_history 重跑 attempt，而下面
+        # 的 finally 会把图像轮换回文字占位符。一次可重试的失败之后，历史里
+        # assistant 的 tool_calls 和 tool 结果都还在、唯独像素没了——重试成功
+        # 的那一轮，模型会当作自己已经看过那张图。
+        #
+        # 传了 slots 的调用方负责在**自己**的 finally 里 release；没传的沿用
+        # 原行为（本函数自己建、自己清）。
+        owned_tool_image_slots = overrides.pop("_tool_image_slots", None)
+        tool_image_slots = (
+            [] if owned_tool_image_slots is None else owned_tool_image_slots
+        )
         # 与 slots 同生命周期、同线：一次 stream 调用自己的暂存区，绝不挂在
         # self 上。两个 tool loop 可能并存（stream_text 与 prompt_ephemeral），
         # 共享一个 session 级列表会让 A 的图被 B 的请求"确认送达"。
@@ -673,7 +684,13 @@ class _ToolingMixin:
             # of both callers (``stream_text`` and ``prompt_ephemeral``). In a
             # ``finally`` so an abandoned generator (GeneratorExit) still drops
             # the base64 out of history.
-            self._release_tool_image_slots(tool_image_slots)
+            #
+            # Skipped when the caller owns the list: for them "every model call
+            # that needed the pixels" is not true yet -- their next attempt is
+            # one, and it will read this same history. They release in their own
+            # finally, which is equally GeneratorExit-proof and one scope wider.
+            if owned_tool_image_slots is None:
+                self._release_tool_image_slots(tool_image_slots)
 
         chunk = _finalize_filter_chunk()
         if chunk is not None:
