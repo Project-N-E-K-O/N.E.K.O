@@ -52,6 +52,12 @@ def _client(monkeypatch: pytest.MonkeyPatch, live_budget, derived: int):
         (512, 512, 512),  # nothing raised -> baseline
         (128, 512, 512),  # stale lower value -> do not resurrect it
         (None, 512, 512),  # no live client yet
+        # unlimited sentinel: _budget_to_max_tokens returns None so the request
+        # omits the field. That is already the highest budget there is, so a
+        # finite live value must not overwrite it — and comparing int > None
+        # would raise, blocking the very switch this carry-over protects.
+        (3000, None, None),
+        (None, None, None),
     ],
 )
 def test_the_replacement_client_keeps_the_higher_budget(

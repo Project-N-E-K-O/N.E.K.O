@@ -201,7 +201,15 @@ class _StreamingMixin:
             _live_max_tokens = getattr(
                 getattr(self, "llm", None), "max_completion_tokens", None
             )
-            if isinstance(_live_max_tokens, int) and _live_max_tokens > _derived_max_tokens:
+            # None 是 unlimited sentinel（_budget_to_max_tokens 对无上限预算返回
+            # None，让请求整个省掉这个字段），它已经是最高的一档，没有什么可继承
+            # 的——拿一个有限的实时值盖上去反而是降级。而且不先判空的话，下面这个
+            # 比较就是 int > None，直接 TypeError，卡死在本修复要保护的那条路上。
+            if (
+                _derived_max_tokens is not None
+                and isinstance(_live_max_tokens, int)
+                and _live_max_tokens > _derived_max_tokens
+            ):
                 _derived_max_tokens = _live_max_tokens
             new_llm = await create_chat_llm_async(
                 new_model, base_url, api_key,
