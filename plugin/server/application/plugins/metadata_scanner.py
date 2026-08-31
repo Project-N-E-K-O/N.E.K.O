@@ -45,6 +45,20 @@ _WORKER_BOOTSTRAP = (
 )
 
 
+# 单个插件扫描的上限。
+#
+# 从 30s 降下来：实测本机 17 个真实插件里最慢的 1.41s、中位 0.97s，所以 10s 仍有
+# 约 7 倍余量，冷盘或杀软首次逐个扫解释器时也够。30s 的问题是它乘以插件数——
+# 一个卡住的插件能把整轮 discovery 拖到分钟级，而前端只等 30s。
+#
+# 注意单项上限本身不足以封顶：17 个插件按 5 并发是 4 波，4×10s 仍然超前端预算。
+# 真正封顶的是 registry_service 那边的总预算，这里只负责让单个坏插件早点放手。
+# Env: NEKO_PLUGIN_METADATA_SCAN_TIMEOUT
+_DEFAULT_SCAN_TIMEOUT_SECONDS = max(
+    1.0, float(os.getenv("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", "10") or 10)
+)
+
+
 def _metadata_worker_command() -> list[str]:
     if getattr(sys, "frozen", False) or "__compiled__" in globals():
         return [sys.executable, "--neko-plugin-metadata-worker"]
@@ -418,8 +432,15 @@ def scan_plugin_metadata_isolated(
     conf: Mapping[str, object],
     pdata: Mapping[str, object],
     python_requirement_paths: list[Path] | tuple[Path, ...] = (),
-    timeout: float = 30.0,
+    timeout: float = _DEFAULT_SCAN_TIMEOUT_SECONDS,
 ) -> IsolatedPluginMetadata:
+    if timeout <= 0:
+        # 总预算已经用完：连进程都不要起。调用方拿到的是和"扫描超时"同一种
+        # 错误，于是插件照样出现在列表里（标成扫描失败），而不是整批中断。
+        raise PluginMetadataScanError(
+            "ScanBudgetExhausted",
+            "Plugin metadata scan skipped: discovery time budget exhausted",
+        )
     request = {
         "plugin_id": plugin_id,
         "module_path": module_path,

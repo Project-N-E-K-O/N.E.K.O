@@ -55,7 +55,7 @@ def test_results_keep_submission_order_under_concurrency(
     names = [f"p{i:02d}" for i in range(8)]
     root = _make_root(tmp_path, names)
 
-    def _build(ctx):
+    def _build(ctx, *, scan_timeout=None):
         # p00 finishes last; anything ordering by completion puts it at the end.
         delay = 0.25 if ctx.pid == "p00" else 0.01
         time.sleep(delay)
@@ -83,7 +83,7 @@ def test_concurrency_is_actually_used(
     names = [f"p{i:02d}" for i in range(8)]
     root = _make_root(tmp_path, names)
 
-    def _build(ctx):
+    def _build(ctx, *, scan_timeout=None):
         time.sleep(0.2)
         return SimpleNamespace(plugin_id=ctx.pid, config_path=ctx.toml_path)
 
@@ -104,7 +104,7 @@ def test_one_bad_plugin_does_not_stop_the_others(
     names = ["good_a", "explodes", "good_b"]
     root = _make_root(tmp_path, names)
 
-    def _build(ctx):
+    def _build(ctx, *, scan_timeout=None):
         if ctx.pid == "explodes":
             raise RuntimeError("module-level boom")
         return SimpleNamespace(plugin_id=ctx.pid, config_path=ctx.toml_path)
@@ -144,3 +144,71 @@ def test_the_env_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NEKO_PLUGIN_DISCOVERY_SCAN_WORKERS", "1")
 
     assert module._discovery_scan_workers(20) == 1
+
+
+def test_the_time_budget_stops_spawning_more_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A per-item timeout does not bound the total; the budget does.
+
+    17 plugins at 5-way concurrency is four waves, so a 10 s per-item cap still
+    allows 40 s — past the front end's 30 s. Once the budget is gone the
+    remaining plugins must be handed a non-positive timeout, which the scanner
+    turns into a failure *without* starting a process.
+
+    Mutation: drop the deadline and always pass the per-item timeout.
+    """
+    names = [f"p{i:02d}" for i in range(6)]
+    root = _make_root(tmp_path, names)
+    seen: list[float] = []
+
+    def _build(ctx, *, scan_timeout=None):
+        seen.append(scan_timeout)
+        time.sleep(0.12)
+        return SimpleNamespace(plugin_id=ctx.pid, config_path=ctx.toml_path)
+
+    _install_stubs(monkeypatch, root, _build)
+    monkeypatch.setenv("NEKO_PLUGIN_DISCOVERY_SCAN_WORKERS", "1")
+    monkeypatch.setattr(module, "_DISCOVERY_SCAN_BUDGET_SECONDS", 0.25)
+
+    module._discover_registry_snapshot_sync((root,))
+
+    assert seen, "前提没成立：一个都没扫"
+    assert seen[0] > 0, "第一个就没预算了，预算设得太小"
+    assert any(t == 0.0 for t in seen), (
+        "预算用完后仍在给正的 timeout——剩下的插件还会继续起子进程"
+    )
+
+
+def test_a_non_positive_timeout_never_starts_a_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The budget only bites if the scanner honours it before spawning.
+
+    Mutation: remove the ``timeout <= 0`` guard at the top of
+    ``scan_plugin_metadata_isolated``.
+    """
+    from plugin.server.application.plugins import metadata_scanner
+
+    spawned: list[object] = []
+    monkeypatch.setattr(
+        metadata_scanner.subprocess,
+        "Popen",
+        lambda *a, **k: spawned.append(a) or (_ for _ in ()).throw(
+            AssertionError("spawned a worker with no budget left")
+        ),
+    )
+
+    with pytest.raises(metadata_scanner.PluginMetadataScanError) as excinfo:
+        metadata_scanner.scan_plugin_metadata_isolated(
+            plugin_id="x",
+            module_path="m",
+            class_name="C",
+            config_path=Path("plugin.toml"),
+            conf={},
+            pdata={},
+            timeout=0.0,
+        )
+
+    assert excinfo.value.error_type == "ScanBudgetExhausted"
+    assert spawned == []

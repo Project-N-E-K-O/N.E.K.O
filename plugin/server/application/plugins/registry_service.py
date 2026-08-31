@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 try:
     import tomllib
@@ -27,6 +28,7 @@ from plugin.core.registry import (
     register_plugin,
 )
 from plugin.server.application.plugins.metadata_scanner import (
+    _DEFAULT_SCAN_TIMEOUT_SECONDS as _DEFAULT_ITEM_SCAN_TIMEOUT,
     PluginMetadataScanError,
     scan_plugin_metadata_isolated,
 )
@@ -409,6 +411,19 @@ def _build_ordered_plugin_ids_sync(candidate_plugin_ids: set[str] | None = None)
 #
 # 上限取 CPU 的四分之一并夹在 [2, 8]：w=16 相比 w=8 只再省半秒，却把并发解释器
 # 数翻倍（单个约 66 MB 常驻），不划算；而 4 核小机器上也不该一次拉起 8 个。
+# 一整轮 discovery 允许花在元数据扫描上的墙钟总时间。
+#
+# 单项上限封不住总量：17 个插件按 5 并发是 4 波，4 × 10s 仍然超前端的 30s。总预算
+# 才是真正的天花板——用完之后剩下的插件不再起进程，直接按"扫描失败"记录，插件
+# 照样出现在列表里，只是没有元数据。下次 refresh 会重试，不是持久禁用。
+#
+# 20s 的取法：给前端 30s 留出 10s 做其余的事。健康路径根本碰不到——实测全量并行
+# 扫描 3.3s，是预算的六分之一。
+# Env: NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET
+_DISCOVERY_SCAN_BUDGET_SECONDS = max(
+    1.0, float(os.getenv("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET", "20") or 20)
+)
+
 _DISCOVERY_SCAN_MAX_WORKERS = 8
 _DISCOVERY_SCAN_MIN_WORKERS = 2
 
@@ -429,7 +444,7 @@ def _discovery_scan_workers(pending: int) -> int:
 
 
 def _build_discovery_record_safely(
-    item: tuple[Path, PluginContext],
+    item: tuple[Path, PluginContext, float],
 ) -> tuple[PluginDiscoveryRecord | None, PluginDiscoveryFailure | None]:
     """Build one record, turning any failure into a value.
 
@@ -438,9 +453,16 @@ def _build_discovery_record_safely(
     builds its group ordering from first appearance), so results must come back
     in submission order, not completion order.
     """
-    config_path, ctx = item
+    config_path, ctx, deadline = item
+    # 剩余预算决定这一项还能扫多久。已经透支时传 0 —— 扫描器看到非正的 timeout
+    # 会直接抛 ScanBudgetExhausted，连子进程都不起。
+    remaining = deadline - time.monotonic()
+    scan_timeout = min(_DEFAULT_ITEM_SCAN_TIMEOUT, remaining) if remaining > 0 else 0.0
     try:
-        return _build_discovery_record_from_context(ctx), None
+        return (
+            _build_discovery_record_from_context(ctx, scan_timeout=scan_timeout),
+            None,
+        )
     except Exception as exc:  # noqa: BLE001 - one bad plugin must not stop discovery
         logger.warning(
             "plugin discovery payload failed for {}: err_type={}, err={}",
@@ -520,6 +542,8 @@ def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscovery
             pending.append((config_path, ctx))
 
     if pending:
+        deadline = time.monotonic() + _DISCOVERY_SCAN_BUDGET_SECONDS
+        pending = [(path, ctx, deadline) for path, ctx in pending]
         workers = _discovery_scan_workers(len(pending))
         if workers <= 1:
             built = [_build_discovery_record_safely(item) for item in pending]
@@ -548,6 +572,7 @@ def _build_discovery_payload(
     ctx: PluginContext,
     *,
     plugin_id: str,
+    scan_timeout: float | None = None,
 ) -> dict[str, object]:
     plugin_type = str(ctx.pdata.get("type", "plugin") or "plugin")
     error_type: str | None = None
@@ -620,6 +645,11 @@ def _build_discovery_payload(
                             conf=ctx.conf,
                             pdata=ctx.pdata,
                             python_requirement_paths=ctx.python_requirement_paths,
+                            **(
+                                {}
+                                if scan_timeout is None
+                                else {"timeout": scan_timeout}
+                            ),
                         )
                         entries_preview = isolated_metadata.entries_preview
                     except PluginMetadataScanError as exc:
@@ -674,8 +704,14 @@ def _build_discovery_payload(
     return payload
 
 
-def _build_discovery_record_from_context(ctx: PluginContext) -> PluginDiscoveryRecord:
-    payload = _build_discovery_payload(ctx, plugin_id=ctx.pid)
+def _build_discovery_record_from_context(
+    ctx: PluginContext,
+    *,
+    scan_timeout: float | None = None,
+) -> PluginDiscoveryRecord:
+    payload = _build_discovery_payload(
+        ctx, plugin_id=ctx.pid, scan_timeout=scan_timeout
+    )
     return PluginDiscoveryRecord(
         plugin_id=ctx.pid,
         original_plugin_id=ctx.pid,
