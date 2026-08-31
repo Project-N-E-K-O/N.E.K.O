@@ -350,19 +350,27 @@ _MIGRATION_LEDGER_NAME = "minted"
 _MIGRATION_WORKSPACE_LOCK = None
 
 
-def _is_inside(root, candidate):
-    """Whether ``candidate`` resolves to somewhere under ``root``.
+def _is_direct_child(root, candidate):
+    """Whether ``candidate`` resolves to an immediate child of ``root``.
 
-    Unprobeable counts as OUTSIDE. Every caller is deciding whether a path is
-    ours, and "we could not tell" has to mean "not ours" there -- the other
-    reading hands somebody else's file to a rewrite.
+    DIRECT, not merely underneath. ``_record_minted_workspace`` is only ever
+    given a child of memory_dir, and reclamation discards anything deeper --
+    so "somewhere under the root" was a wider claim than either the writer
+    makes or the reader honours. A nested "/memory/Carol/.mig-x" passed the
+    ownership check, was then dropped by reclamation's own shape check, and a
+    ledger holding only such lines came out empty and got unlinked.
+
+    Unprobeable counts as NOT ours. Every caller is deciding whether a path
+    is ours to rewrite, and "we could not tell" has to mean no there --
+    a symlink loop raises from ``resolve`` (OSError on most platforms,
+    RuntimeError on some), and either way it is not an answer.
     """
     try:
         root_parts = Path(root).resolve(strict=False).parts
         candidate_parts = Path(candidate).resolve(strict=False).parts
-    except OSError:
+    except (OSError, RuntimeError, ValueError):
         return False
-    if len(candidate_parts) <= len(root_parts):
+    if len(candidate_parts) != len(root_parts) + 1:
         return False
     return candidate_parts[: len(root_parts)] == root_parts
 
@@ -397,7 +405,7 @@ def _ledger_lines_are_all_ours(lines, memory_root):
             return False
         if not os.path.isabs(entry):
             return False
-        if not _is_inside(memory_root, entry):
+        if not _is_direct_child(memory_root, entry):
             return False
     return True
 
@@ -439,15 +447,28 @@ def _seed_entry_owner_candidates(filename):
     """
     from utils.character_memory import LEGACY_CHARACTER_MEMORY_FILE_MAP
 
-    candidates = set()
+    matches = []
     for pattern in LEGACY_CHARACTER_MEMORY_FILE_MAP:
         prefix, _, suffix = pattern.partition("{name}")
         if not filename.startswith(prefix) or not filename.endswith(suffix):
             continue
         name = filename[len(prefix):len(filename) - len(suffix) or None]
         if name:
-            candidates.add(name)
-    return candidates
+            matches.append((len(prefix) + len(suffix), name))
+    if not matches:
+        return set()
+    # The MOST SPECIFIC pattern wins -- the one matching the most literal
+    # text. "facts_archive_Alice.json" matches "facts_{name}.json" as
+    # "archive_Alice" and "facts_archive_{name}.json" as "Alice", and only
+    # the second is the real owner; taking both meant a tombstone on a
+    # character called "archive_Alice" suppressed Alice's seed.
+    # "time_indexed_Carol.db" resolves the same way through the suffix:
+    # "time_indexed_{name}.db" beats "time_indexed_{name}".
+    #
+    # Still a SET, because two patterns of equal specificity would be a
+    # genuine tie and guessing between those is what this avoids.
+    best = max(score for score, _ in matches)
+    return {name for score, name in matches if score == best}
 
 
 def _ledger_content_is_ours(ledger, memory_root):
@@ -476,6 +497,19 @@ def _ledger_content_is_ours(ledger, memory_root):
         # Truncated mid-character by a kill. Ours or not, appending to it is
         # not going to make it more readable; the read side skips it and so
         # does this.
+        return False
+    if not any(line.strip() for line in lines):
+        # An EXISTING but empty ledger is not ours to write into, and that
+        # has to match the tidy-up, which already refuses to delete one: our
+        # own file is unlinked the moment it empties, so an empty one left on
+        # disk is somebody else's or a truncated remnant. Treating it as ours
+        # to append to while refusing to delete it was the two halves
+        # disagreeing about the same file.
+        #
+        # The cost is that a remnant of ours stops being written to until it
+        # is removed, so workspaces go unrecorded and unreclaimed -- a
+        # directory left behind, which is the cheaper mistake this path keeps
+        # choosing.
         return False
     return _ledger_lines_are_all_ours(lines, memory_root)
 

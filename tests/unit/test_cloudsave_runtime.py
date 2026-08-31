@@ -3949,11 +3949,85 @@ def test_the_memory_root_is_not_inside_itself():
     """
     import os
 
-    from utils.config_manager.migrations import _is_inside
+    from utils.config_manager.migrations import _is_direct_child
 
     root = os.path.abspath(os.path.join(os.sep, "x", "memory"))
-    assert not _is_inside(root, root)
-    assert not _is_inside(root, os.path.dirname(root))
-    assert _is_inside(root, os.path.join(root, ".mig-abc"))
-    assert _is_inside(root, os.path.join(root, ".mig-abc", "d"))
-    assert not _is_inside(root, os.path.abspath(os.path.join(os.sep, "tmp", ".mig-abc")))
+    assert not _is_direct_child(root, root)
+    assert not _is_direct_child(root, os.path.dirname(root))
+    assert _is_direct_child(root, os.path.join(root, ".mig-abc"))
+    assert not _is_direct_child(
+        root, os.path.abspath(os.path.join(os.sep, "tmp", ".mig-abc"))
+    )
+    # DIRECT, matching the shape reclamation itself requires. A nested entry
+    # passed ownership, was then discarded by reclamation's own check, and a
+    # ledger holding only such lines came out empty and was unlinked.
+    assert not _is_direct_child(root, os.path.join(root, "Carol", ".mig-x"))
+    assert not _is_direct_child(root, os.path.join(root, ".mig-abc", "d"))
+
+
+def test_an_ambiguous_seed_filename_decodes_to_its_real_owner():
+    """The most specific pattern wins, so one tombstone cannot suppress another.
+
+    "facts_archive_Alice.json" matches "facts_{name}.json" as "archive_Alice"
+    and "facts_archive_{name}.json" as "Alice". Taking both meant a tombstone
+    on a character called "archive_Alice" suppressed Alice's seed, and the
+    suffix case is the same shape: "time_indexed_Carol.db" resolves through
+    "time_indexed_{name}.db" rather than "time_indexed_{name}".
+    """
+    from utils.config_manager.migrations import _seed_entry_owner_candidates
+
+    assert _seed_entry_owner_candidates("facts_archive_Alice.json") == {"Alice"}
+    assert _seed_entry_owner_candidates("time_indexed_Carol.db") == {"Carol"}
+    assert _seed_entry_owner_candidates("facts_Alice.json") == {"Alice"}
+    assert _seed_entry_owner_candidates("recent_小八.json") == {"小八"}
+    assert _seed_entry_owner_candidates("unrelated.txt") == set()
+
+
+def test_an_existing_empty_ledger_is_not_ours_to_append_to(tmp_path):
+    """The write and the tidy-up have to agree about the same file.
+
+    Our own ledger is unlinked the moment it empties, so an empty one left on
+    disk is somebody else's or a truncated remnant. Refusing to delete it
+    while happily writing into it was the two halves disagreeing.
+    """
+    from utils.config_manager.migrations import MigrationsMixin
+
+    app_docs = tmp_path / "app_docs"
+    staging = app_docs / ".mig-staging"
+    staging.mkdir(parents=True)
+    ledger = staging / "minted"
+    ledger.write_text("", encoding="utf-8")
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
+    manager = MigrationsMixin.__new__(MigrationsMixin)
+    manager.app_docs_dir = str(app_docs)
+    manager.memory_dir = str(memory)
+    manager._record_minted_workspace(memory / ".mig-abc")
+
+    assert ledger.read_text(encoding="utf-8") == "", (
+        "a workspace path was appended into an empty file we cannot show is ours"
+    )
+
+
+def test_a_symlink_loop_is_not_a_path_we_own(tmp_path, monkeypatch):
+    """``resolve`` raises on a loop, and the raise is not an answer.
+
+    OSError on most platforms and RuntimeError on some, so catching only the
+    first left a loop propagating out of an ownership check. Faked rather
+    than built, because a loop is awkward to create portably and the unit CI
+    job runs on Windows.
+    """
+    from utils.config_manager import migrations as migrations_module
+
+    real_resolve = migrations_module.Path.resolve
+
+    def _loops(self, *args, **kwargs):
+        if self.name == "looping":
+            raise RuntimeError("symlink loop")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(migrations_module.Path, "resolve", _loops)
+    assert not migrations_module._is_direct_child(
+        str(tmp_path), str(tmp_path / "looping")
+    )
