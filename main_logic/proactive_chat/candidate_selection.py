@@ -15,7 +15,23 @@ from .state import _source_hash
 def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
     """Render useful candidate evidence without leaking bulky raw metadata."""
 
-    title = str(item.get("title") or "").strip()
+    is_community_card = item.get("mode") == "community"
+
+    def _field_text(value: Any) -> str:
+        text = " ".join(str(value or "").split())
+        if not is_community_card:
+            return text
+        # Community card fields are public, untrusted text inside a prompt
+        # section whose structural delimiters use ``=`` and ``|``.
+        return (
+            text.replace("\\", "\\\\")
+            .replace("|", r"\u007c")
+            .replace("=", r"\u003d")
+            .replace("<", r"\u003c")
+            .replace(">", r"\u003e")
+        )
+
+    title = _field_text(item.get("title"))
     details: list[str] = []
     field_labels = (
         ("source", "来源"),
@@ -29,12 +45,12 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
         raw_value = item.get(field)
         if field == "tags" and isinstance(raw_value, list):
             value = "、".join(
-                " ".join(str(tag).split())
+                _field_text(tag)
                 for tag in raw_value
-                if " ".join(str(tag).split())
+                if _field_text(tag)
             )
         else:
-            value = " ".join(str(raw_value or "").split())
+            value = _field_text(raw_value)
         if not value:
             continue
         if field == "description_hint":
@@ -42,17 +58,17 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
         details.append(f"{label}: {value}")
     published_at = item.get("published_at")
     if published_at:
-        details.append(f"发布时间戳: {published_at}")
+        details.append(f"发布时间戳: {_field_text(published_at)}")
     suffix = f" | {' | '.join(details)}" if details else ""
     return f"{index}. {title}{suffix}"
 
 
 def _number_phase1_links_by_source(
-    links: list[dict[str, Any]],
+    links: list[dict[str, Any]], *, source_positions: dict[str, int] | None = None
 ) -> list[tuple[int, dict[str, Any]]]:
-    """Number displayable Phase 1 candidates independently for each source."""
+    """Number displayable candidates globally for each source in a Phase 1 prompt."""
 
-    positions: dict[str, int] = {}
+    positions = source_positions if source_positions is not None else {}
     numbered: list[tuple[int, dict[str, Any]]] = []
     for link in links:
         if not str(link.get("title") or "").strip():

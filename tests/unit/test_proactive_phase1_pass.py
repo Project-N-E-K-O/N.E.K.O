@@ -97,6 +97,29 @@ def test_phase1_candidate_numbers_are_source_local_when_sources_interleave():
     )
 
 
+def test_phase1_candidate_numbers_continue_across_source_sections():
+    positions: dict[str, int] = {}
+    personal_links = [{"title": "个人动态", "source": "B站"}]
+    video_links = [{"title": "视频推荐", "source": "B站"}]
+
+    first_section = candidate_selection._number_phase1_links_by_source(
+        personal_links, source_positions=positions
+    )
+    second_section = candidate_selection._number_phase1_links_by_source(
+        video_links, source_positions=positions
+    )
+
+    assert [number for number, _ in first_section] == [1]
+    assert [number for number, _ in second_section] == [2]
+    assert (
+        sr_parsing._lookup_link_by_phase1_selection(
+            {"title": "无关标题", "source": "B站", "number": "2"},
+            personal_links + video_links,
+        )
+        is video_links[0]
+    )
+
+
 def test_phase1_reserves_budget_for_linkless_window_context(monkeypatch):
     monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: False)
     sources = {

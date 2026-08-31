@@ -1099,7 +1099,7 @@ proactive_screen_web_zh = """你是一个面向年轻人的话题筛选助手。
 回复格式（严格遵守）：
 - 有值得分享的话题：
 来源：[来源平台名称，如Twitter/Reddit/微博/B站等]
-序号：[选中条目在其分类中的编号，如 3]
+序号：[选中条目在其来源平台中的全局编号，如 3]
 话题：[选中的原始标题，必须与汇总内容中的标题完全一致]
 简述：[2-3句话，为什么有趣、聊天切入点是什么]
 - 都不值得聊：只回复 [PASS]
@@ -1132,7 +1132,7 @@ proactive_screen_web_zh_tw = """你是一個面向年輕人的話題篩選助手
 回覆格式（嚴格遵守）：
 - 有值得分享的話題：
 來源：[來源平台名稱，例如 Twitter/Reddit/微博/B 站等]
-序號：[選中條目在它那一類裡的編號，例如 3]
+序號：[選中條目在其來源平台中的全域編號，例如 3]
 話題：[選中的原始標題，必須跟彙整內容裡的標題完全一致]
 簡述：[2-3 句話，為什麼有趣、聊天切入點是什麼]
 - 都不值得聊：只回覆 [PASS]
@@ -1165,7 +1165,7 @@ Critical rules:
 Reply format (strict):
 - If there's a worthy topic:
 Source: [platform name, e.g. Twitter/Reddit/Weibo/Bilibili]
-No: [item number within its category, e.g. 3]
+No: [global item number within its source platform, e.g. 3]
 Topic: [original title exactly as shown in the content]
 Summary: [2-3 sentences on why it's interesting, what's the chat angle]
 - If nothing is worth sharing: reply only [PASS]
@@ -2922,7 +2922,7 @@ Summary: [2-3 sentences on why it's interesting]
         "web": """[WEB]
 - 共有する価値のある話題がある場合：
 出典：[プラットフォーム名]
-番号：[カテゴリ内の番号]
+番号：[出典プラットフォーム内の通し番号]
 話題：[元のタイトルと完全一致]
 概要：[2〜3文]
 - 全て価値なし：[WEB] [PASS]""",
@@ -2937,7 +2937,7 @@ Summary: [2-3 sentences on why it's interesting]
         "web": """[WEB]
 - 공유할 가치가 있는 주제:
 출처: [플랫폼명]
-번호: [카테고리 내 번호]
+번호: [출처 플랫폼 내 전체 번호]
 주제: [원제목과 정확히 일치]
 요약: [2-3문장]
 - 가치 없음: [WEB] [PASS]""",
@@ -2952,7 +2952,7 @@ Summary: [2-3 sentences on why it's interesting]
         "web": """[WEB]
 - Если есть достойная тема:
 Источник: [название платформы]
-Номер: [номер пункта]
+Номер: [сквозной номер пункта в исходной платформе]
 Тема: [исходный заголовок точно как в контенте]
 Кратко: [2-3 предложения]
 - Если ничего: [WEB] [PASS]""",
@@ -2967,7 +2967,7 @@ Summary: [2-3 sentences on why it's interesting]
         "web": """[WEB]
 - Si hay un tema que vale la pena:
 Source: [nombre de plataforma, p. ej. Twitter/Reddit/Weibo/Bilibili]
-No: [número del elemento dentro de su categoría, p. ej. 3]
+No: [número global del elemento dentro de su plataforma de origen, p. ej. 3]
 Topic: [título original exactamente como aparece]
 Summary: [2-3 frases sobre por qué es interesante]
 - Si nada vale la pena: [WEB] [PASS]""",
@@ -2982,7 +2982,7 @@ Summary: [2-3 frases sobre por qué es interesante]
         "web": """[WEB]
 - Se houver um tema digno:
 Source: [nome da plataforma, ex. Twitter/Reddit/Weibo/Bilibili]
-No: [número do item dentro da categoria, ex. 3]
+No: [número global do item na plataforma de origem, ex. 3]
 Topic: [título original exatamente como aparece]
 Summary: [2-3 frases sobre por que é interessante]
 - Se nada valer compartilhar: [WEB] [PASS]""",

@@ -62,6 +62,7 @@ from .bilibili_content import (
     format_bilibili_phase2_context,
 )
 from .trending_content import (
+    NEKO_COMMUNITY_FEED_PAGE_SIZE,
     _fetch_content_by_region,
     _fetch_twitter_trending_fallback,
     _fetch_weibo_trending_fallback,

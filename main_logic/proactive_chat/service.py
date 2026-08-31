@@ -1650,6 +1650,7 @@ async def handle_proactive_chat(
                 len(items) for items in selected_by_mode.values()
             )
             remaining_fallback_modes = len(fallback_modes)
+            phase1_source_positions: dict[str, int] = {}
             for mode in web_modes:
                 src = sources[mode]
                 label_map = PROACTIVE_SOURCE_LABELS.get(
@@ -1665,7 +1666,9 @@ async def handle_proactive_chat(
                             _format_phase1_link_candidate(index, item),
                             PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
                         )
-                        for index, item in _number_phase1_links_by_source(selected_links)
+                        for index, item in _number_phase1_links_by_source(
+                            selected_links, source_positions=phase1_source_positions
+                        )
                     ]
                     if lines:
                         parts.append(f"--- {label} ---\n" + "\n".join(lines))

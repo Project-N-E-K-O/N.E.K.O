@@ -26,6 +26,7 @@ from utils.screenshot_utils import (
     decode_and_compress_screenshot_b64,
 )
 from utils.web_scraper import (
+    NEKO_COMMUNITY_FEED_PAGE_SIZE,
     fetch_neko_community_feed,
     fetch_news_content,
     fetch_personal_dynamics,
@@ -156,11 +157,16 @@ def _extract_links_from_raw(
                 url = post.get("url", "")
                 if title and url:
                     link = {"title": title, "url": url, "source": "喵宇宙社区"}
-                    if post.get("id"):
+                    post_id = str(post.get("id") or "").strip()
+                    if post_id:
                         # The public feed does not always expose per-card permalinks.
                         # Keep card identity internal so discover-page fallback URLs do
                         # not collapse every community card into one history entry.
-                        link["dedupe_key"] = f"neko-community:{post['id']}"
+                        link["dedupe_key"] = f"neko-community:{post_id}"
+                    else:
+                        link["dedupe_key"] = (
+                            f"neko-community:{url}|{str(title).strip().casefold()}"
+                        )
                     content = post.get("content", "")
                     if content and content != title:
                         link["description_hint"] = content
@@ -367,7 +373,9 @@ async def _fetch_source(
 
     if mode == "community":
         content = await fetch_neko_community_feed(
-            limit=PROACTIVE_PHASE1_FETCH_PER_SOURCE
+            # Keep the API page available for cooldown filtering; Phase 1 still
+            # caps the prompt with its cross-source total candidate budget.
+            limit=NEKO_COMMUNITY_FEED_PAGE_SIZE
         )
         if not content["success"]:
             raise ValueError(f"获取喵宇宙社区失败: {content.get('error')}")
