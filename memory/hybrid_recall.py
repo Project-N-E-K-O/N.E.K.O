@@ -92,6 +92,7 @@ import os
 import sys
 import time
 from collections import OrderedDict
+from datetime import datetime
 from typing import Any
 
 from config import (
@@ -104,6 +105,7 @@ from config import (
     HYBRID_RECALL_TIME_BUDGET,
     HYBRID_RECALL_VEC_CACHE_MAX_BYTES,
 )
+from memory.evidence import evidence_score
 from memory.script_fold import fold_script
 from utils.logger_config import get_module_logger
 
@@ -932,9 +934,12 @@ def _drop_archive_overlap(
     return out
 
 
-def _tag_tier(items: list[dict], tier: str) -> list[dict]:
-    """Shallow-copy each item and stamp ``_tier`` + ``target_type`` for
-    downstream hard_filter + result formatting. Doesn't mutate originals.
+def _tag_tier(
+    items: list[dict], tier: str, *, now: datetime | None = None,
+) -> list[dict]:
+    """Shallow-copy each item and stamp ``_tier`` + ``target_type`` (+ ``score``
+    for reflections) for downstream hard_filter + result formatting. Doesn't
+    mutate originals.
 
     Skip non-dict rows defensively: facts.json / reflections.json /
     facts_archive.json are all nominally list[dict] schemas, but manual edits /
@@ -944,6 +949,28 @@ def _tag_tier(items: list[dict], tier: str) -> list[dict]:
     hybrid_recall aborts, violating the "skip the single bad row, return the
     rest" design. Codex review on PR #1385.
     """
+    # ⚠️ ``score`` 必须在这里**现算**，不能指望行里带。``_hard_filter`` 声称
+    # "drop score<0"，但它读的是 ``o.get('score')`` —— 而 reflections.json 的
+    # 落盘 schema（memory/_reflection/schema.py）根本没有 ``score`` 键：evidence
+    # 是 ``reinforcement`` / ``disputation`` 两个累加器，score 一律是读时用
+    # ``evidence_score()`` 折算出来的。于是真实数据上 ``score is None``，那条
+    # 过滤整条空转 —— 用户反驳到 disputation 压到负分的反思，照样被 recall_memory
+    # 召回、原文注入 context，跟 system prompt 里的 ban 指令正面打架。
+    #
+    # Stage-2 的信号池（memory/facts.py:_aload_signal_targets）本来就是这么做的
+    # （建池时 ``'score': evidence_score(r, now)``），那条路径上过滤一直是真的
+    # 生效的。这里补齐同一份语义，两条召回面才对得上。
+    #
+    # ⚠️ **只给 reflection 算**。fact / fact_archive 行不参与 evidence 体系
+    # （facts.json 里没有 reinforcement / disputation 字段，也没有任何写入方给
+    # 它们派信号），盖一个恒 0 的 score 纯属噪音；更要紧的是 ``evidence_score``
+    # 对 ``protected`` 行返回 +inf，将来 fact 侧真加了字段时，语义该由那次改动
+    # 显式决定，而不是从这里的顺手泛化里继承过去。
+    #
+    # 单调性：只会**多**丢行，不会多留行 —— ``score=None`` 时过滤本就放行，现
+    # 在算出来 ≥0 的照旧放行，只有真负分的被拦。
+    if now is None:
+        now = datetime.now()
     out: list[dict] = []
     for it in items:
         if not isinstance(it, dict):
@@ -961,6 +988,21 @@ def _tag_tier(items: list[dict], tier: str) -> list[dict]:
         # sees uniform shape.
         if tier == 'reflection':
             d.setdefault('target_type', 'reflection')
+            # ⚠️ 覆盖式赋值，不是 setdefault：行里若真带了 ``score``，那是历史
+            # 遗留 / 手工编辑的陈旧快照，衰减早已算不准。唯一权威是现算值。
+            try:
+                d['score'] = evidence_score(d, now)
+            except Exception as exc:
+                # 单行字段类型坏掉（``reinforcement: "abc"``）不该让整池挂掉；
+                # 与本函数的 non-dict 跳过、``_hard_filter`` 的 per-entry
+                # try/except 同一策略。删掉 score 键 → 回落到"不按分过滤"，
+                # 与本次改动之前的行为一致（fail-open，不误杀）。
+                d.pop('score', None)
+                logger.debug(
+                    "[hybrid_recall] _tag_tier: score unavailable for "
+                    "reflection id=%r: %s: %s",
+                    d.get('id'), type(exc).__name__, exc,
+                )
         out.append(d)
     return out
 

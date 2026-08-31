@@ -61,6 +61,7 @@ from .contracts import (
     PROACTIVE_REASON_PASS_DUPLICATE,
     PROACTIVE_REASON_PASS_GENERATION_EMPTY,
     PROACTIVE_REASON_PASS_MODEL_PASS,
+    PROACTIVE_REASON_PASS_USER_DIRECTIVE,
     ProactiveChatResult,
     _proactive_pass_body,
 )
@@ -92,6 +93,60 @@ def _proactive_silence_since(mgr: Any) -> float | None:
     )
     valid = [float(value) for value in timestamps if value is not None]
     return max(valid) if valid else None
+
+
+def _append_directives_section(
+    memory_context: str, lanlan_name: str, lang: str,
+) -> str:
+    """Append the active ban-topic block to a Phase 2 memory context.
+
+    Phase 2 assembles its own system prompt and never goes through
+    ``_build_initial_prompt``, so without this the one path where the character
+    speaks unprompted is also the one path blind to "stop bringing X up".
+
+    Soft constraint only — the output-side gate is ``_proactive_directive_hits``.
+    Never raises: on failure the caller keeps the unmodified context.
+    """
+    try:
+        from memory.user_directives import get_user_directives_manager
+        block = get_user_directives_manager().render_prompt_block(
+            lanlan_name or "default", lang,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("[UserDirectives] proactive prompt injection skipped: %s", exc)
+        return memory_context
+    if not block:
+        return memory_context
+    return (memory_context or "") + block
+
+
+def _proactive_directive_hits(lanlan_name: str, draft: str) -> list[str]:
+    """Active ban-topic terms that literally appear in a proactive draft.
+
+    Case-insensitive substring match, which is the right shape for CJK (no word
+    boundaries) and stays consistent with how the terms were captured in the
+    first place — ``config.prompts.prompts_directives`` deliberately over-kills,
+    on the grounds that a false positive costs one skipped proactive message
+    while a miss costs the user being annoyed again by the exact thing they
+    just asked about.
+
+    Never raises: recall failures degrade to "no hit" so the anti-repeat gates
+    downstream keep their existing behaviour.
+    """
+    if not draft or not draft.strip():
+        return []
+    try:
+        from memory.user_directives import get_user_directives_manager
+        terms = get_user_directives_manager().get_active_terms(
+            lanlan_name or "default",
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("[UserDirectives] proactive gate skipped: %s", exc)
+        return []
+    if not terms:
+        return []
+    folded = draft.casefold()
+    return [t for t in terms if t and t.casefold() in folded]
 
 
 def _merge_regen_avoid_terms(*term_groups: Any) -> list[str]:
@@ -1173,6 +1228,40 @@ async def _guard_phase2_output(
             )
         )
 
+    # ── 用户显式 ban-topic 硬闸 ────────────────────────────────────
+    # Phase 2 prompt 里已经有一段软约束（service.py 注入），这里是出口兜底：
+    # 草稿里仍然逐字出现被 ban 的话题就直接 drop。
+    #
+    # ⚠️ **drop 而不是 regen**：regen 是一次额外的 LLM 调用，直接进账单，而
+    # 这道闸命中的前提已经是"模型看过禁令还是提了"，再花一次钱赌它改口不划算。
+    # drop 零成本，且语义正确——用户明说不想听，这次不搭话就是对的。
+    #
+    # ⚠️ **不受 exempt_text_dedup 豁免**。那个豁免的判据是"素材新鲜就别拿
+    # 台词复读度卡它"，针对的是 BM25 误杀模板化开场白；而用户 ban 的话题跟
+    # 素材新不新鲜无关——推歌台词里提到用户说过别提的事，照样该拦。
+    directive_hits = _proactive_directive_hits(lanlan_name, response_text)
+    if directive_hits:
+        active_logger.info(
+            "[%s] proactive blocked by user ban-topic directive (terms=%s)",
+            lanlan_name,
+            directive_hits,
+        )
+        print(
+            f"[{lanlan_name}] 主动搭话命中用户明确要求回避的话题，已拦截 "
+            f"(terms={directive_hits})"
+        )
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return _output(
+            result=ProactiveChatResult(
+                body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_USER_DIRECTIVE,
+                    message="主动搭话命中用户明确要求回避的话题，已拦截",
+                    directive_terms=directive_hits,
+                )
+            )
+        )
+
     anti_repeat_corpus = None
     unanswered_repeat_signal = None
     silence_since = _proactive_silence_since(mgr)
@@ -1502,6 +1591,28 @@ async def _guard_phase2_output(
                         message="BM25 regen 后字面相似度仍超阈值，已 drop",
                         similarity=regen_similarity,
                         threshold=_PROACTIVE_SIMILARITY_THRESHOLD,
+                    )
+                )
+            )
+        # 与出稿侧那道 ban-topic 闸对偶：走到 regen 的草稿本来是干净的，但
+        # 重写可能把被 ban 的话题引进来（avoidance prompt 只针对 BM25 词，
+        # 不认用户禁令）。同样是纯字符串匹配，零额外 LLM。
+        regen_directive_hits = _proactive_directive_hits(lanlan_name, cleaned)
+        if regen_directive_hits:
+            active_logger.info(
+                "[%s] proactive regen hit user ban-topic directive "
+                "(terms=%s), drop",
+                lanlan_name,
+                regen_directive_hits,
+            )
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return _output(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_PASS_USER_DIRECTIVE,
+                        message="改写后仍命中用户明确要求回避的话题，已 drop",
+                        directive_terms=regen_directive_hits,
                     )
                 )
             )

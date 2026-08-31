@@ -92,6 +92,7 @@ from main_logic.proactive_chat.candidate_selection import (
 from main_logic.proactive_chat.generation import (
     Phase2PromptContext,
     ProactiveModelConfig,
+    _append_directives_section,
     _decide_phase1_channels,
     _fetch_phase1_followups,
     _lookup_link_by_title,
@@ -2223,6 +2224,17 @@ async def handle_proactive_chat(
         phase2_memory_context = memory_context
         if followup_topics_prompt:
             phase2_memory_context = memory_context + "\n" + followup_topics_prompt
+
+        # ── 用户显式 ban-topic 注入 ─────────────────────────────────
+        # Phase 2 的 system prompt 自己拼，从不经过 _build_initial_prompt，
+        # 所以在此之前用户说过的"别再提 X"对**主动搭话**完全不可见：常规回复
+        # 受禁令约束，主动搭话照提不误——而主动搭话恰恰是"哪壶不开提哪壶"
+        # 最伤人的那条路径（用户没问，是 AI 自己挑起的）。
+        # 这里只做软约束（prompt 提醒）；出口还有一道 drop 硬闸，见
+        # generation.py 的 _proactive_directive_hits。两级都不额外烧 LLM。
+        phase2_memory_context = _append_directives_section(
+            phase2_memory_context, lanlan_name, proactive_lang,
+        )
 
         phase2_prompt_context = Phase2PromptContext(
             music_playing_hint=music_playing_hint,

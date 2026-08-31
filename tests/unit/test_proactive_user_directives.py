@@ -1,0 +1,400 @@
+# -*- coding: utf-8 -*-
+"""Contract for user ban-topic directives reaching the proactive-chat path.
+
+Before this, "别再提 X" only ever landed in ``_build_initial_prompt``'s system
+prompt, and proactive chat assembles its Phase 2 prompt separately — so the one
+path where the character speaks *unprompted* was the one path with no knowledge
+of what the user just asked it to drop.
+
+Two levels, neither of which may spend an extra LLM round-trip:
+
+1. **Soft** — the rendered directives block is appended to the Phase 2 memory
+   context (covered by ``test_service_injects_directive_block_into_phase2``).
+2. **Hard** — a draft that still contains a banned term is dropped outright at
+   the output gate. Dropped, never regenerated: regen is a paid LLM call, and
+   by the time this fires the model has already seen the ban and ignored it.
+"""  # noqa: DOCSTRING_CJK  # 引的是用户实际会说的那句话，换成英文就不是那个 term 了
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+import memory.anti_repeat as anti_repeat_module
+import memory.user_directives as user_directives_module
+from main_logic.proactive_chat.contracts import PROACTIVE_REASON_PASS_USER_DIRECTIVE
+from main_logic.proactive_chat.generation import (
+    _append_directives_section,
+    _guard_phase2_output,
+    _proactive_directive_hits,
+)
+from utils.llm_client import HumanMessage, SystemMessage
+
+
+class _NeverPreemptedState:
+    @staticmethod
+    def is_proactive_preempted(*_args):
+        return False
+
+
+def _install_directives(monkeypatch, terms):
+    """Point the module-level manager accessor at a stub holding ``terms``."""
+    manager = MagicMock()
+    manager.get_active_terms.return_value = list(terms)
+    monkeypatch.setattr(
+        user_directives_module,
+        "get_user_directives_manager",
+        lambda: manager,
+    )
+    return manager
+
+
+def _install_quiet_corpus(monkeypatch):
+    """Anti-repeat that never fires, so any drop is attributable to the ban gate."""
+    corpus = MagicMock()
+    corpus.apreload = AsyncMock()
+    corpus.score_unanswered_proactive_draft.return_value = (
+        anti_repeat_module.UnansweredProactiveRepeatSignal(
+            triggered=False,
+            match_count=0,
+            considered_count=0,
+            best_similarity=0.0,
+            repeated_terms=(),
+        )
+    )
+    corpus.score_draft.return_value = (0.0, {})
+    monkeypatch.setattr(
+        anti_repeat_module, "get_anti_repeat_corpus", lambda: corpus,
+    )
+    return corpus
+
+
+async def _run_guard(
+    *,
+    lanlan_name,
+    response_text,
+    make_llm,
+    source_tag="CHAT",
+    selected_music_link=None,
+    music_content=None,
+):
+    mgr = SimpleNamespace(
+        current_speech_id="sid",
+        state=_NeverPreemptedState(),
+        last_user_message_time=None,
+        proactive_engagement_observation_started_at=100.0,
+        handle_new_message=AsyncMock(),
+    )
+    output = await _guard_phase2_output(
+        mgr=mgr,
+        proactive_sid="sid",
+        lanlan_name=lanlan_name,
+        response_text=response_text,
+        full_text=response_text,
+        source_tag=source_tag,
+        active_channels=[],
+        selected_music_link=selected_music_link,
+        selected_meme_link=None,
+        music_content=music_content,
+        meme_content=None,
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=False,
+        make_llm=make_llm,
+        messages=[
+            SystemMessage(content="system"),
+            HumanMessage(content="begin"),
+        ],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+    return output, mgr
+
+
+# ── matcher ──────────────────────────────────────────────────────────
+
+
+def test_matcher_finds_banned_term_in_draft(monkeypatch):
+    _install_directives(monkeypatch, ["加班"])
+    assert _proactive_directive_hits("Neko", "今天又加班到很晚吧？") == ["加班"]
+
+
+def test_matcher_is_case_insensitive(monkeypatch):
+    _install_directives(monkeypatch, ["Work"])
+    assert _proactive_directive_hits("Neko", "how was WORK today") == ["Work"]
+
+
+def test_matcher_clean_draft_has_no_hits(monkeypatch):
+    _install_directives(monkeypatch, ["加班"])
+    assert _proactive_directive_hits("Neko", "今天天气真好啊") == []
+
+
+def test_matcher_returns_every_hit(monkeypatch):
+    _install_directives(monkeypatch, ["加班", "股票", "前任"])
+    hits = _proactive_directive_hits("Neko", "聊聊加班和股票吧")
+    assert set(hits) == {"加班", "股票"}
+
+
+def test_matcher_never_raises_when_memory_unavailable(monkeypatch):
+    """Recall failure must degrade to "no hit", not take the turn down."""
+    def _boom():
+        raise RuntimeError("memory dir gone")
+
+    monkeypatch.setattr(
+        user_directives_module, "get_user_directives_manager", _boom,
+    )
+    assert _proactive_directive_hits("Neko", "今天又加班到很晚吧？") == []
+
+
+def test_matcher_empty_draft_short_circuits(monkeypatch):
+    manager = _install_directives(monkeypatch, ["加班"])
+    assert _proactive_directive_hits("Neko", "   ") == []
+    # 空稿子连读都不该读一次盘
+    manager.get_active_terms.assert_not_called()
+
+
+# ── soft injection into the Phase 2 prompt ───────────────────────────
+
+
+def test_directive_block_appended_to_phase2_memory_context(monkeypatch):
+    manager = MagicMock()
+    manager.render_prompt_block.return_value = "\n\n[用户最近明确表示过...]\n- 加班"
+    monkeypatch.setattr(
+        user_directives_module, "get_user_directives_manager", lambda: manager,
+    )
+    out = _append_directives_section("原有记忆上下文", "Neko", "zh")
+    assert out.startswith("原有记忆上下文")
+    assert "加班" in out
+    # lanlan_name / lang 必须**透传**：写死成 "default" 或 "zh" 的话，多角色
+    # 与非中文用户会静默拿到别人的（或空的）禁令表。
+    manager.render_prompt_block.assert_called_once_with("Neko", "zh")
+
+
+def test_directive_block_falls_back_to_default_bucket(monkeypatch):
+    """An unnamed character reads "default" — matching the sink's bucket rule."""
+    manager = MagicMock()
+    manager.render_prompt_block.return_value = ""
+    monkeypatch.setattr(
+        user_directives_module, "get_user_directives_manager", lambda: manager,
+    )
+    _append_directives_section("ctx", "", "en")
+    manager.render_prompt_block.assert_called_once_with("default", "en")
+
+
+def test_no_directives_leaves_memory_context_byte_identical(monkeypatch):
+    manager = MagicMock()
+    manager.render_prompt_block.return_value = ""
+    monkeypatch.setattr(
+        user_directives_module, "get_user_directives_manager", lambda: manager,
+    )
+    assert _append_directives_section("原有记忆上下文", "Neko", "zh") == "原有记忆上下文"
+
+
+def test_injection_failure_keeps_original_context(monkeypatch):
+    def _boom():
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr(
+        user_directives_module, "get_user_directives_manager", _boom,
+    )
+    assert _append_directives_section("原有记忆上下文", "Neko", "zh") == "原有记忆上下文"
+
+
+def test_service_actually_calls_the_injection_helper():
+    """Static guard: a correct helper proves nothing about it being wired up."""
+    # 注入点在 ``handle_proactive_chat`` 这个巨型函数里，没有便宜的端到端驱动
+    # 方式；把调用点删掉的话，上面那几条 helper 单测**照样全绿**。这条按 AST
+    # 确认 service 里确实存在这次调用，并且结果被赋回 phase2_memory_context
+    # （只调用不接收返回值等于没注入）。
+    import ast
+    import inspect
+
+    import main_logic.proactive_chat.service as service_module
+
+    tree = ast.parse(inspect.getsource(service_module))
+    assigned = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        call = node.value
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if name != "_append_directives_section":
+            continue
+        targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "phase2_memory_context" in targets:
+            assigned = True
+            break
+    assert assigned, (
+        "service.py 必须把 _append_directives_section 的返回值赋回 "
+        "phase2_memory_context —— 否则主动搭话的 prompt 里没有用户禁令"
+    )
+
+
+# ── output gate ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_banned_draft_is_dropped_without_any_llm_call(monkeypatch):
+    """Core contract: a hit drops the message, and spends no LLM call."""
+    # ⚠️ ``make_llm_calls == 0`` 是这条测试的重点，不是附带断言。改成 regen
+    # 会让每一次命中都变成一次真实账单支出，而命中的前提已经是"模型看过禁令
+    # 还是提了"——再赌一次它改口不划算。
+    _install_directives(monkeypatch, ["加班"])
+    _install_quiet_corpus(monkeypatch)
+    make_llm_calls = 0
+
+    async def make_llm(**_kwargs):
+        nonlocal make_llm_calls
+        make_llm_calls += 1
+        raise AssertionError("ban gate must not trigger a regen LLM call")
+
+    output, mgr = await _run_guard(
+        lanlan_name="ban-gate-test",
+        response_text="博士今天又加班到这么晚，要注意身体呀。",
+        make_llm=make_llm,
+    )
+
+    assert output.result.body["reason_code"] == PROACTIVE_REASON_PASS_USER_DIRECTIVE
+    assert output.result.body["directive_terms"] == ["加班"]
+    assert make_llm_calls == 0
+    # drop 时要把 TTS / 轮次收尾掉，与既有 drop 路径同构
+    mgr.handle_new_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_clean_draft_passes_the_gate(monkeypatch):
+    """Control: directives active but the draft misses them -> passes through."""
+    # 少了这条，"永远 drop" 也能让上面那条通过。
+    _install_directives(monkeypatch, ["加班"])
+    _install_quiet_corpus(monkeypatch)
+
+    async def make_llm(**_kwargs):
+        raise AssertionError("clean draft should not regen")
+
+    output, _mgr = await _run_guard(
+        lanlan_name="ban-gate-pass-test",
+        response_text="博士今天的晚饭吃了什么呀？",
+        make_llm=make_llm,
+    )
+    # result is None == "这道闸没拦，继续正常投递流程"
+    assert output.result is None
+    assert output.response_text == "博士今天的晚饭吃了什么呀？"
+
+
+@pytest.mark.asyncio
+async def test_no_active_directives_leaves_gate_transparent(monkeypatch):
+    """With no directives at all, this gate must be fully transparent."""
+    _install_directives(monkeypatch, [])
+    _install_quiet_corpus(monkeypatch)
+
+    async def make_llm(**_kwargs):
+        raise AssertionError("should not regen")
+
+    output, _mgr = await _run_guard(
+        lanlan_name="ban-gate-empty-test",
+        response_text="博士今天又加班到这么晚，要注意身体呀。",
+        make_llm=make_llm,
+    )
+    # 同一段在有禁令时会被 drop（见 test_banned_draft_is_dropped_...），
+    # 没禁令时必须原样放行。
+    assert output.result is None
+
+
+async def _run_material_exempt_guard(monkeypatch, response_text, terms):
+    """Drive the guard with a parameter set that genuinely takes the exempt path."""
+    # ⚠️ ``dedup_tag`` 不等于 ``source_tag``：``source_tag='MUSIC'`` 但
+    # ``selected_music_link is None`` 会被降级成 ``'CHAT'``，于是根本进不了
+    # 豁免分支。第一版这条测试就是这么写的，"把闸挪到豁免之后"的变异从它下面
+    # 整个溜了过去。所以这里必须给一条真的 music link。
+    _install_directives(monkeypatch, terms)
+    corpus = _install_quiet_corpus(monkeypatch)
+    monkeypatch.setattr(
+        "main_logic.proactive_chat.generation._is_recent_proactive_material",
+        lambda *_a, **_kw: False,
+    )
+
+    async def make_llm(**_kwargs):
+        raise AssertionError("should not regen")
+
+    output, _mgr = await _run_guard(
+        lanlan_name="ban-gate-music-test",
+        response_text=response_text,
+        make_llm=make_llm,
+        source_tag="MUSIC",
+        selected_music_link={"title": "某首歌", "url": "https://example.invalid/s"},
+        music_content={"title": "某首歌"},
+    )
+    return output, corpus
+
+
+@pytest.mark.asyncio
+async def test_material_exempt_path_is_actually_taken(monkeypatch):
+    """Premise guard: confirm that parameter set really does take the exempt path."""
+    # 豁免生效时台词侧 BM25 被整段跳过（``score_draft`` 不会被调用）。没有这条
+    # 前提断言，下面那条"豁免也拦"就可能在一个从未豁免的路径上空转。
+    _output, corpus = await _run_material_exempt_guard(
+        monkeypatch, "这首歌真好听，一起听听看？", ["前任"],
+    )
+    corpus.score_draft.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_material_exempt_channel_is_still_gated(monkeypatch):
+    """The MUSIC/MEME material exemption does NOT exempt user directives."""
+    # ``exempt_text_dedup`` 的判据是"素材新鲜就别拿台词复读度卡它"，针对的是
+    # BM25 对模板化开场白的误杀；而用户 ban 的话题跟素材新不新鲜无关——推歌
+    # 台词里提到用户说过别提的事，照样该拦。把这道闸挪到豁免分支之后，这条会红。
+    output, _corpus = await _run_material_exempt_guard(
+        monkeypatch, "这首歌让我想起博士的前任了，听听看？", ["前任"],
+    )
+    assert (
+        output.result.body["reason_code"] == PROACTIVE_REASON_PASS_USER_DIRECTIVE
+    )
+
+
+@pytest.mark.asyncio
+async def test_regen_output_is_gated_too(monkeypatch):
+    """A regen that introduces a banned topic is dropped too (dual of the first gate)."""
+    # 走到 regen 的草稿本来是干净的，但 avoidance prompt 只针对 BM25 词、不认
+    # 用户禁令，重写完全可能把禁题带进来。
+    _install_directives(monkeypatch, ["前任"])
+    corpus = _install_quiet_corpus(monkeypatch)
+    # 让首稿越过 BM25 regen 阈值，从而真的走进 regen 分支
+    corpus.score_draft.side_effect = [(99.0, {"屏幕": 99.0}), (0.0, {})]
+
+    class _FakeLlm:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def ainvoke(self, _messages):
+            return SimpleNamespace(content="说起来博士的前任最近怎么样了？")
+
+    make_llm_calls = 0
+
+    async def make_llm(**_kwargs):
+        nonlocal make_llm_calls
+        make_llm_calls += 1
+        return _FakeLlm()
+
+    output, mgr = await _run_guard(
+        lanlan_name="ban-gate-regen-test",
+        response_text="屏幕上这个按钮好好看啊。",
+        make_llm=make_llm,
+    )
+
+    assert make_llm_calls == 1, "只应有 BM25 那一次既有 regen，本闸不额外加"
+    assert output.result.body["reason_code"] == PROACTIVE_REASON_PASS_USER_DIRECTIVE
+    assert output.result.body["directive_terms"] == ["前任"]
+    mgr.handle_new_message.assert_awaited_once()

@@ -214,6 +214,74 @@ class NotifyMixin:
 
         return prompt
 
+    async def _inject_pending_user_directives(self) -> None:
+        """Push freshly recorded ban-topic directives into the LIVE session.
+
+        ``_build_initial_prompt`` runs once per session, so a directive recorded
+        at turn N would otherwise not reach the prompt until the next session
+        rebuild — up to ``SESSION_TURN_THRESHOLD`` user turns away. The user
+        meanwhile said "stop bringing X up" and watches the character keep doing
+        it. This closes that window to the next turn.
+
+        Called from both user-utterance entry points (text and voice), right
+        after the plugin-bus publish that drives the recording sink.
+        """
+        # 分层：``memory``（L3）不能向上 import ``main_logic``（L4），所以
+        # sink 只负责落盘 + 置一个待办标记，真正的注入在这里（L4）完成。
+        # 与 app/runtime_bindings.py 挂 sink 是同一个理由的两半。
+        try:
+            from memory.user_directives import get_user_directives_manager
+            manager = get_user_directives_manager()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] manager unavailable: %s", exc)
+            return
+        # 与 _build_initial_prompt 的读取 key 对齐（sink 在 lanlan 为空 /
+        # "default" 时落到 "default" bucket）。
+        key = self.lanlan_name or "default"
+        try:
+            if not manager.take_pending_injection(key):
+                return
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] pending flag read failed: %s", exc)
+            return
+        try:
+            _lang = normalize_language_code(self.user_language, format='short')
+            # ⚠️ 渲染的是**全量活跃列表**，不是本轮新抽到的那几个 term——与
+            # _build_initial_prompt 注入的是同一段文本。只注入增量的话，模型
+            # 在本会话里看到的禁令集合会取决于"哪几条恰好是这一轮说的"，跟
+            # 会话重建后看到的集合不一致。
+            block = manager.render_prompt_block(key, _lang)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] mid-session render failed: %s", exc)
+            return
+        if not block or not block.strip():
+            return
+        try:
+            # lifetime='session_family'：既进当前会话，也写进 next-session
+            # 缓存。后者不是冗余保险，是**热切换竞态**的唯一解——预热
+            # （lifecycle._background_prepare_pending_session）已经跑过
+            # _build_initial_prompt 之后才落盘的指令，会整个错过那次 swap，
+            # 而下一次重建最长要再等一个完整周期。代价是新会话里这段文本
+            # 会和 system prompt 里的那段重复一次（内容一致、不矛盾，且缓存
+            # 被消费后即止），换竞态窗口内禁令不丢。
+            # timing='when_ready'：会话还没建好时排队，不丢。
+            result = await self.append_context(
+                source="user_directives",
+                role="system",
+                text=block.strip(),
+                audience="model",
+                timing="when_ready",
+                lifetime="session_family",
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] mid-session inject failed: %s", exc)
+            return
+        if getattr(result, "appended", False):
+            logger.info(
+                "[%s] user directives injected mid-session (targets=%s)",
+                self.lanlan_name, getattr(result, "targets", ()),
+            )
+
     def _is_agent_enabled(self):
         try:
             gate_ok, _ = self._config_manager.is_agent_api_ready()

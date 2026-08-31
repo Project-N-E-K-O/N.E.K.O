@@ -22,6 +22,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from memory.hybrid_recall import (
@@ -286,6 +287,79 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
         ids = [r["id"] for r in res["results"]]
         self.assertIn("good", ids)
         self.assertNotIn("bad", ids)
+
+    async def test_disputed_reflection_drops_out_of_recall(self):
+        """A net-negative reflection must not survive into recall results."""
+        # ⚠️ 用**真实落盘 schema** 的行，不是手工塞 score 的合成行。
+        # reflections.json 里根本没有 ``score`` 键（evidence 是 reinforcement /
+        # disputation 两个累加器，score 一律读时折算）。上面那条
+        # ``test_hard_filter_drops_negative_score`` 塞了 score 所以一直绿，但它
+        # 证明不了生产行为——真实数据上 ``score is None``，那道过滤整条空转，
+        # 被用户反驳到负分的反思照样被召回、原文注入 context，跟 system prompt
+        # 里的 ban 指令正面打架。这条按真实形状钉住。
+        now_iso = datetime.now().isoformat()
+        reflections = [
+            {
+                "id": "disputed", "text": "博士最喜欢的游戏是 The Witness",
+                "status": "confirmed",
+                "reinforcement": 0.0, "disputation": 2.0,
+                "disp_last_signal_at": now_iso,
+            },
+        ]
+        res = await self._run("博士 游戏", [], reflections)
+        self.assertNotIn("disputed", [r["id"] for r in res["results"]])
+
+    async def test_reinforced_reflection_survives_recall(self):
+        """Control: same missing score key, net-positive evidence, still recalled."""
+        # 少了这条，上面那条用"把所有 reflection 都过滤掉"也能通过。
+        now_iso = datetime.now().isoformat()
+        reflections = [
+            {
+                "id": "reinforced", "text": "博士最喜欢的游戏是 The Witness",
+                "status": "confirmed",
+                "reinforcement": 2.0, "disputation": 0.0,
+                "rein_last_signal_at": now_iso,
+            },
+        ]
+        res = await self._run("博士 游戏", [], reflections)
+        self.assertIn("reinforced", [r["id"] for r in res["results"]])
+
+    async def test_evidence_free_reflection_still_recalled(self):
+        """A row with no evidence fields at all (net 0) must not be dropped."""
+        # 钉住"只多丢负分行"这条单调性：改动之前 score=None 放行，改动之后
+        # 算出 0.0 仍然放行。
+        reflections = [
+            {"id": "plain", "text": "博士最喜欢的游戏是 The Witness",
+             "status": "confirmed"},
+        ]
+        res = await self._run("博士 游戏", [], reflections)
+        self.assertIn("plain", [r["id"] for r in res["results"]])
+
+    async def test_fact_rows_are_not_evidence_scored(self):
+        """The fact tier is outside the evidence system and must stay untouched."""
+        # facts.json 没有 reinforcement / disputation 字段，也没有写入方给它们
+        # 派信号；给 fact 盖一个恒 0 的 score 是噪音，而 ``evidence_score`` 对
+        # ``protected`` 行返回 +inf —— 那个语义该由将来真加字段的那次改动显式
+        # 决定，不该从这里顺手泛化过去。
+        facts = [{"id": "f_protected", "text": "博士养了只猫", "protected": True}]
+        tagged = _tag_tier(facts, "fact")
+        self.assertNotIn("score", tagged[0])
+        # 且 protected fact 不会被 hard_filter 当 persona 丢掉之外的理由影响：
+        # 这里只断言没有被本次改动加上 score 键。
+
+    async def test_stale_score_key_is_recomputed_not_kept(self):
+        """A stale on-row score snapshot must be overwritten by the live value."""
+        # 手工编辑 / 历史迁移可能留下 score 键，那个值不带衰减、算不准；唯一
+        # 权威是按当前时间现算。写成 setdefault 的话这条会红。
+        now_iso = datetime.now().isoformat()
+        rows = [{
+            "id": "stale", "text": "...", "status": "confirmed",
+            "score": 99.0,  # 陈旧快照
+            "reinforcement": 0.0, "disputation": 3.0,
+            "disp_last_signal_at": now_iso,
+        }]
+        tagged = _tag_tier(rows, "reflection")
+        self.assertLess(tagged[0]["score"], 0.0)
 
     async def test_hard_filter_drops_suppressed(self):
         facts = [

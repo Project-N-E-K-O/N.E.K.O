@@ -1295,6 +1295,12 @@ class TurnMixin:
                 # 这里只覆盖语音路径，避免非语音复用路径重复发布。
                 self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
 
+                # 与文本路径（_process_stream_data_internal）对偶：dispatch 已
+                # 同步跑完 ban-topic 抽取 + 落盘，本轮真抽到新指令就立刻推进
+                # 当前会话。realtime 侧走 prime_context → session.update，是
+                # 中途改 instructions 的既有通道。
+                await self._inject_pending_user_directives()
+
                 # Mini-game 邀请关键词兜底：与文本路径
                 # （_process_stream_data_internal）对偶。语音用户没法点
                 # ChoicePrompt 三按钮，只能说话——口头"现在不想玩"必须和打字 /
