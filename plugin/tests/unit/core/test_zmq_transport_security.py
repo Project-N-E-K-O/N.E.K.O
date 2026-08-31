@@ -922,3 +922,43 @@ def test_a_held_lock_defers_the_close_to_the_sender(
     with pytest.raises(Exception):
         transport.send_uplink_nowait(zmq_transport.CH_MSG, {"x": 1})
     assert closed == ["msg"], "被打断的发送方没有在自己的 finally 里把 socket 关掉"
+
+
+@pytest.mark.plugin_unit
+def test_an_oversized_control_frame_is_refused_at_the_sender() -> None:
+    """Silence here is not a dropped frame — it is a dropped connection.
+
+    libzmq enforces MAXMSGSIZE in the receiver's engine and closes the
+    offending peer, so one valid-but-large tool result would tear down the
+    control uplink with nothing on either side saying why. The ceiling is a
+    transport fact and the SDK puts no limit on tool output, so the sender's
+    job is to say so, not to pretend it fits.
+
+    Mutation: delete the ``_refuse_oversized_uplink_frame`` call in
+    ``send_uplink``.
+    """
+    sock = _NeverWritableSock()
+    transport = _transport_with(sock, threading.Lock())
+    cap = zmq_transport._control_uplink_max_bytes()
+
+    with pytest.raises(ValueError) as excinfo:
+        transport.send_uplink(zmq_transport.CH_RES, {"output": "x" * (cap + 4096)})
+
+    message = str(excinfo.value)
+    assert str(cap) in message, "错误信息里没有上限，看到日志的人无从判断"
+    assert sock.sends == 0
+
+
+@pytest.mark.plugin_unit
+def test_the_message_channel_keeps_its_silent_drop() -> None:
+    """The refusal is deliberately control-only.
+
+    The message path validates per item upstream and has a test pinning that an
+    oversized frame is dropped silently *without* killing the connection.
+    Extending the refusal there changed that behaviour and broke it — so the
+    asymmetry is the point, not an oversight.
+    """
+    big = b"x" * (zmq_transport._message_uplink_max_bytes() + 4096)
+
+    zmq_transport._refuse_oversized_uplink_frame(zmq_transport.CH_MSG, big)
+    zmq_transport._refuse_oversized_uplink_frame(zmq_transport.CH_MSG_BATCH, big)

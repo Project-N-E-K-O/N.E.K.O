@@ -4,6 +4,7 @@ import queue
 import os
 import secrets
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -45,10 +46,58 @@ _RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError
 _INGEST_AUTH_TOKEN = secrets.token_urlsafe(32)
 
 
+def _scrub_inherited_plane_credentials() -> None:
+    """Blank the copies of the ingest token the child inherits elsewhere.
+
+    Reminting the module global is not enough on its own: the same credential
+    is handed to ``build_message_plane_runner`` at startup and lives on in
+    ``plugin.server.lifecycle._service._message_plane_runner._auth_token``, and
+    again on the ingest server that runner holds. Both are module-level
+    singletons, so a forked plugin child inherits them and can read the real
+    token straight off them.
+
+    Swept generically over the runner's own attributes rather than named one by
+    one: the runner keeps its servers in ``_rpc`` / ``_ingest`` / ``_pub``, and
+    a fourth added later would otherwise keep the credential reachable with
+    nothing failing to say so.
+
+    Reads ``sys.modules`` instead of importing, for the same reason the host
+    credential scrub in ``zmq_transport`` does: this runs in an
+    ``after_in_child`` hook, where an import can deadlock on the import lock a
+    parent thread held at fork time.
+    """
+    mod = sys.modules.get("plugin.server.lifecycle")
+    service = getattr(mod, "_service", None) if mod is not None else None
+    runner = getattr(service, "_message_plane_runner", None)
+    if runner is None:
+        return
+
+    def _blank(obj: object) -> None:
+        if obj is not None and hasattr(obj, "_auth_token"):
+            try:
+                obj._auth_token = ""
+            except Exception:
+                pass
+
+    _blank(runner)
+    try:
+        held = list(vars(runner).values())
+    except Exception:
+        held = []
+    for value in held:
+        _blank(value)
+    # 顺手把引用本身摘掉：子进程永远不该操作这个 plane。
+    try:
+        service._message_plane_runner = None
+    except Exception:
+        pass
+
+
 def _remint_ingest_token_in_child() -> None:
     """Give a forked child a credential the host's plane will reject."""
     global _INGEST_AUTH_TOKEN
     _INGEST_AUTH_TOKEN = secrets.token_urlsafe(32)
+    _scrub_inherited_plane_credentials()
 
 
 # 注册这件事本身要可观测。本仓两个 pytest job 都跑 windows-latest，而 Windows

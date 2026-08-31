@@ -225,6 +225,36 @@ def _control_uplink_max_bytes() -> int:
     return max(1, int(PLUGIN_ZMQ_CONTROL_UPLINK_MAX_BYTES))
 
 
+def _refuse_oversized_uplink_frame(channel: str, data: bytes) -> None:
+    """Fail loudly here rather than letting the receiving engine drop it.
+
+    libzmq enforces MAXMSGSIZE in the receiver's engine, and an oversized frame
+    does not merely get discarded — it takes the offending peer's connection
+    with it (see the note above ``_control_uplink_max_bytes``). So a single
+    valid-but-large tool result would tear down the plugin's control uplink,
+    with nothing on either side saying why.
+
+    The ceiling is a transport fact, not a contract: the SDK places no limit on
+    what a tool may return, so this cannot be "the output limit". It is the
+    point at which the caller has to be told, instead of the host waiting for a
+    result that was destroyed in transit. Callers of ``ChannelSender.put`` all
+    log around it, so this surfaces as a named failure with both numbers in it.
+    """
+    # 只管控制通道。消息那侧的丢弃语义是被测试钉住的设计（上游已经按
+    # MESSAGE_PLANE_PAYLOAD_MAX_BYTES 逐条校验过，传输层的上限是最后一道，
+    # 且那条用例明确断言"静默、但连接还活着"）。控制帧两样都没有：工具输出
+    # 在 SDK 契约里没有上限，而它和图片共用同一帧。
+    if channel in _MESSAGE_UPLINK_CHANNELS:
+        return
+    cap = _control_uplink_max_bytes()
+    if len(data) > cap:
+        raise ValueError(
+            f"uplink frame too large for channel {channel}: "
+            f"{len(data)} > {cap} bytes; the receiving socket would drop it "
+            "and close the connection"
+        )
+
+
 def _authenticate_image_metadata(
     metadata: dict,
     *,
@@ -633,6 +663,7 @@ class ChildTransport:
         is what ``Queue.put(timeout=...)`` raises when it cannot deliver.
         """
         data = _encode_uplink(self._uplink_token, channel, msg)
+        _refuse_oversized_uplink_frame(channel, data)
         sock, lock = self._uplink_socket(channel)
         budget = max(0.0, float(timeout))
         deadline = time.monotonic() + budget
@@ -666,6 +697,7 @@ class ChildTransport:
         method's name a lie while a bounded ``send_uplink`` held the lock.
         """
         data = _encode_uplink(self._uplink_token, channel, msg)
+        _refuse_oversized_uplink_frame(channel, data)
         sock, lock = self._uplink_socket(channel)
         if not lock.acquire(timeout=_UPLINK_NOWAIT_LOCK_WAIT_S):
             raise queue.Full(f"uplink busy: {channel}")
