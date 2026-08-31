@@ -34,6 +34,7 @@ class FakeCanvas {{
     this.classList = {{ contains: () => false }};
     this.drawCalls = [];
     this.hasVisiblePixels = hasVisiblePixels;
+    this.sparseVisiblePixel = false;
   }}
   getContext() {{
     return {{
@@ -42,13 +43,15 @@ class FakeCanvas {{
       drawImage: (source, ...args) => {{
         this.drawCalls.push([source, ...args]);
         this.hasVisiblePixels = source?.hasVisiblePixels !== false;
+        this.sparseVisiblePixel = source?.sparseVisiblePixel === true;
       }},
       getImageData: () => ({{
         data: new Proxy({{}}, {{
           get: (_target, key) => {{
             const index = Number(key);
             if (!Number.isInteger(index)) return undefined;
-            return this.hasVisiblePixels && index % 4 === 3 ? 255 : 0;
+            if (!this.hasVisiblePixels || index % 4 !== 3) return 0;
+            return !this.sparseVisiblePixel || index === 3 ? 255 : 0;
           }},
         }}),
       }}),
@@ -148,6 +151,13 @@ vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'avatar-portrait.
   assert.equal(portraitResult.cropRectPixels.height, portraitResult.sourceCanvas.height);
   assert.ok(portraitResult.sourceCanvas.drawCalls[0][1] > 0);
   assert.ok(portraitResult.sourceCanvas.drawCalls[0][2] > 0);
+
+  const sparsePortrait = Object.assign({{}}, squarePortrait, {{
+    currentSrc: '/user_pngtuber/sparse.png', sparseVisiblePixel: true,
+  }});
+  window.pngtuberManager = {{ image: sparsePortrait, ensureContainer() {{}} }};
+  const sparseResult = await window.avatarPortrait.capture({{ modelType: 'pngtuber' }});
+  assert.equal(sparseResult.modelType, 'pngtuber');
 
   const hiddenLayeredCanvas = new FakeCanvas(800, 1200);
   hiddenLayeredCanvas.hidden = true;

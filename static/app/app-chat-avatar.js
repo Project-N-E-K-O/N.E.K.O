@@ -403,9 +403,13 @@
     function appendCardDropModelIdentity(body) {
         const modelType = getCurrentModelType();
         const modelKey = getCurrentModelCacheKey();
-        if (modelType) body.modelType = modelType;
-        if (modelType) body.modelKey = modelKey && !modelKey.endsWith(':') ? modelKey : '';
-        body.modelRevision = cardDropModelRevision;
+        // Electron follower windows can receive the avatar/type without the model
+        // path. Keep their avatar/name sync, but leave authoritative identity to Pet.
+        if (modelType && modelKey && !modelKey.endsWith(':')) {
+            body.modelType = modelType;
+            body.modelKey = modelKey;
+            body.modelRevision = cardDropModelRevision;
+        }
         return body;
     }
 

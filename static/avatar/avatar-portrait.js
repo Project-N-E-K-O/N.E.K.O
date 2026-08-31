@@ -647,7 +647,7 @@
         };
     }
 
-    function hasVisiblePixelsInCrop(canvas, rect) {
+    function hasVisiblePixelsInCrop(canvas, rect, options = {}) {
         if (!canvas || !rect) return false;
         const width = Math.max(1, Math.min(canvas.width, Math.round(rect.width)));
         const height = Math.max(1, Math.min(canvas.height, Math.round(rect.height)));
@@ -692,8 +692,9 @@
             return true;
         }
 
-        const stepX = Math.max(1, Math.floor(analysisWidth / 18));
-        const stepY = Math.max(1, Math.floor(analysisHeight / 18));
+        const requireAny = options.requireAny === true;
+        const stepX = requireAny ? 1 : Math.max(1, Math.floor(analysisWidth / 18));
+        const stepY = requireAny ? 1 : Math.max(1, Math.floor(analysisHeight / 18));
         let visibleCount = 0;
         let sampleCount = 0;
 
@@ -707,11 +708,12 @@
                 sampleCount += 1;
                 if (alpha > 8 && (r < 250 || g < 250 || b < 250 || alpha > 24)) {
                     visibleCount += 1;
+                    if (requireAny) return true;
                 }
             }
         }
 
-        return sampleCount > 0 && (visibleCount / sampleCount) >= 0.03;
+        return !requireAny && sampleCount > 0 && (visibleCount / sampleCount) >= 0.03;
     }
 
     function hasVisiblePixelsInCanvas(canvas) {
@@ -722,6 +724,16 @@
             width: canvas.width,
             height: canvas.height
         });
+    }
+
+    function hasAnyVisiblePixelInCanvas(canvas) {
+        if (!canvas) return false;
+        return hasVisiblePixelsInCrop(canvas, {
+            x: 0,
+            y: 0,
+            width: canvas.width,
+            height: canvas.height
+        }, { requireAny: true });
     }
 
     function createOutputCanvas(width, height) {
@@ -1816,7 +1828,7 @@
                 } catch (error) {
                     throw createCanvasExportError(error);
                 }
-                if (!hasVisiblePixelsInCanvas(canvas)) {
+                if (!hasAnyVisiblePixelInCanvas(canvas)) {
                     throw createError('PNGTuber 画面尚未就绪，无法提取头像');
                 }
                 return {

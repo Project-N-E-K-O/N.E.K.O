@@ -55,8 +55,9 @@ def test_card_drop_snapshot_is_bound_to_current_model_identity():
     assert "window.vrmManager?.currentModel?.url" in source
     assert "window.vrmModel" in source
     assert "function appendCardDropModelIdentity(body)" in source
+    assert "if (modelType && modelKey && !modelKey.endsWith(':'))" in source
     assert "body.modelType = modelType;" in source
-    assert "body.modelKey = modelKey && !modelKey.endsWith(':') ? modelKey : '';" in source
+    assert "body.modelKey = modelKey;" in source
     assert "let cardDropModelRevision = Date.now();" in source
     assert "body.modelRevision = cardDropModelRevision;" in source
     assert "function advanceCardDropModelRevision()" in source
