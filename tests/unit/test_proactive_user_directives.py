@@ -310,6 +310,87 @@ def test_injection_failure_keeps_original_context(monkeypatch):
     assert _append_directives_section("原有记忆上下文", "Neko", "zh") == "原有记忆上下文"
 
 
+_SENSITIVE_PRINT_NAMES = frozenset({"system_prompt", "prompt", "messages"})
+
+
+def _exposed_names(node, inside_len=False):
+    """Yield sensitive identifiers an expression would actually render.
+
+    ``len(x)`` only reveals a size, so anything under it is exempt; everything
+    else that reaches the output — a bare name, a subscript, an attribute, a
+    method call on it — counts as exposing the body.
+    """
+    import ast
+
+    if isinstance(node, ast.Call):
+        is_len = isinstance(node.func, ast.Name) and node.func.id == "len"
+        for child in ast.iter_child_nodes(node):
+            yield from _exposed_names(child, inside_len or is_len)
+        return
+    if inside_len:
+        return
+    if isinstance(node, ast.Name):
+        if node.id in _SENSITIVE_PRINT_NAMES:
+            yield node.id
+        return
+    if isinstance(node, (ast.Subscript, ast.Attribute)):
+        # ``messages[0]`` / ``system_prompt.upper()`` 照样把正文渲染出去；
+        # 剥到最里层的那个名字来判。
+        base = node
+        while isinstance(base, (ast.Subscript, ast.Attribute)):
+            base = base.value
+        if isinstance(base, ast.Name) and base.id in _SENSITIVE_PRINT_NAMES:
+            yield base.id
+            return
+    for child in ast.iter_child_nodes(node):
+        yield from _exposed_names(child, inside_len)
+
+
+def _print_calls_exposing(source: str):
+    """Return ``[(lineno, name)]`` for every print that would render a body."""
+    import ast
+
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "print"):
+            continue
+        for arg in list(node.args) + [kw.value for kw in node.keywords]:
+            for name in _exposed_names(arg):
+                found.append((getattr(node, "lineno", "?"), name))
+    return found
+
+
+@pytest.mark.parametrize("snippet", [
+    "print(system_prompt)",                      # 裸传参
+    'print("debug", messages[0])',               # 下标
+    'print(f"{system_prompt.upper()}")',         # 属性 / 方法调用
+    'print(f"{system_prompt}")',                 # f-string 插值
+    'print("head " + system_prompt)',            # 拼接
+    'print("%s" % system_prompt)',               # 旧式格式化
+    'print("{}".format(system_prompt))',         # format
+    'print("x", file=None, end=prompt)',         # 关键字参数
+])
+def test_print_guard_catches_every_leak_shape(snippet):
+    """⚠️ The guard itself must not be shape-blind — it is the only regression net."""
+    # 第一版只认 f-string 插值一种写法，上面除第四条外全部能绕过去（coderabbit）。
+    # 守卫覆盖不全等于守卫失效，而它的唯一存在意义就是防未来回归。
+    assert _print_calls_exposing(snippet), f"漏网：{snippet}"
+
+
+@pytest.mark.parametrize("snippet", [
+    'print(f"prompt_chars={len(system_prompt)}")',   # 只输出规模
+    'print(f"n={len(messages)}")',
+    'print("model=", model_name)',                   # 无关变量
+    'print(f"{actual_model} | {use_vision}")',
+])
+def test_print_guard_allows_safe_shapes(snippet):
+    """Control: the guard must not fire on size-only or unrelated output."""
+    # 过严的守卫会逼后来人绕开写晦涩代码，同样是一种失效 —— 这组钉住那一侧。
+    assert not _print_calls_exposing(snippet), f"误报：{snippet}"
+
+
 def test_no_module_prints_a_directive_bearing_prompt():
     """⚠️ The Phase 2 prompt carries ban terms — it must never be printed whole.
 
@@ -320,31 +401,13 @@ def test_no_module_prints_a_directive_bearing_prompt():
     one arrives *indirectly* via the prompt, which is why a first sweep that
     only grepped direct variables missed it.
     """
-    import ast
     import inspect
 
     # 从已 import 的函数反查模块，不再单独 import 一次 —— 同一模块既 ``import``
     # 又 ``import from`` 会被 code-quality 扫出来，而这里本来就不需要第二个入口。
     gen_module = inspect.getmodule(_proactive_directive_hits)
 
-    SENSITIVE = {"system_prompt", "prompt", "messages"}
-    tree = ast.parse(inspect.getsource(gen_module))
-    offenders = []
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "print"):
-            continue
-        # ⚠️ 判据是**直接插值**，不是"名字出现过"。`f"{len(system_prompt)}"`
-        # 只输出规模、是安全的，把它也算违规会逼着后来人绕开守卫写晦涩代码
-        # （守卫过严同样是失效的一种）。所以只看 FormattedValue 的 value 是不是
-        # 裸 Name —— 包在 len() / 任何调用里的都放行。
-        for sub in ast.walk(node):
-            if not isinstance(sub, ast.FormattedValue):
-                continue
-            v = sub.value
-            if isinstance(v, ast.Name) and v.id in SENSITIVE:
-                offenders.append((getattr(node, "lineno", "?"), v.id))
+    offenders = _print_calls_exposing(inspect.getsource(gen_module))
     assert not offenders, (
         "这些 print 会把含禁令块的 prompt 正文刷到 stdout："
         f"{offenders} —— 只输出模型 / 模态 / 长度，别输出正文"
