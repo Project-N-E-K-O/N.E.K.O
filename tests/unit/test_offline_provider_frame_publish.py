@@ -992,18 +992,65 @@ def test_an_oversized_frame_never_enters_the_session_channel():
     assert len(sent) == 1 and len(sent[0]["image_base64"]) == 32
 
 
-def test_the_frame_bound_matches_the_tool_image_delivery_ceiling():
-    """One quantity, two call sites -- pinned equal so neither drifts alone.
+def test_a_ladder_max_tool_image_survives_the_frame_publish():
+    """Build the event and MEASURE it. Comparing constants cannot see this.
 
-    A tool image is published onto this same channel, so its delivery ceiling
-    and the channel's own bound are the same number by construction, not by
-    coincidence.
+    Both ceilings read 500 KiB and looked consistent, but one bounds the image
+    and the other bounds the whole event -- and the event carries event_id,
+    source, mime, turn_id, generation, metadata and lanlan_name beside the
+    pixels. So an image compressed to exactly the ladder's limit was rejected
+    at the publish: the model got the picture and no plugin ever did, which is
+    the one thing this copy exists to prevent.
+
+    Mutation: set ``_TOOL_IMAGE_DELIVER_MAX_B64_BYTES`` back to
+    ``PROVIDER_FRAME_MAX_B64_BYTES``.
     """
-    from main_logic.agent_event_bus import PROVIDER_FRAME_MAX_B64_BYTES
+    from main_logic import agent_event_bus
+    from main_logic.tool_calling import _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
+
+    sent: list = []
+
+    async def _capture(event):
+        sent.append(event)
+        return True
+
+    with patch.object(agent_event_bus, "publish_session_event_threadsafe", _capture):
+        async def _go():
+            # 阶梯允许产出的最大一张，配上这条路会带的全部字段。
+            return await agent_event_bus.publish_provider_frame_observed_best_effort(
+                "a-character-with-a-long-name",
+                image_base64="A" * _TOOL_IMAGE_DELIVER_MAX_B64_BYTES,
+                source="plugin",
+                captured_at=1788095048.5590525,
+                turn_id="asr-0-0",
+                generation=3,
+                mime="image/jpeg",
+                metadata={"tool_name": "a_plugin_tool_with_a_long_name"},
+            )
+
+        published = asyncio.run(_go())
+
+    assert published is True, (
+        "阶梯压到上限的工具图在帧发布处被丢了——模型看到了，插件永远读不到"
+    )
+    assert len(sent) == 1
+
+
+def test_the_image_budget_is_the_event_ceiling_minus_its_envelope():
+    """The relationship, stated where someone changing either number reads it."""
+    from main_logic.agent_event_bus import (
+        PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES,
+        PROVIDER_FRAME_MAX_B64_BYTES,
+        PROVIDER_FRAME_MAX_IMAGE_B64_BYTES,
+    )
     from main_logic.tool_calling import _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
     from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
 
-    assert PROVIDER_FRAME_MAX_B64_BYTES == _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
+    assert PROVIDER_FRAME_MAX_IMAGE_B64_BYTES == (
+        PROVIDER_FRAME_MAX_B64_BYTES - PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES
+    )
+    assert _TOOL_IMAGE_DELIVER_MAX_B64_BYTES == PROVIDER_FRAME_MAX_IMAGE_B64_BYTES
+    # 事件整体仍要装得进 plane 的记录界（那一侧按 msgpack 量整条记录）。
     assert PROVIDER_FRAME_MAX_B64_BYTES < MESSAGE_PLANE_PAYLOAD_MAX_BYTES
 
 

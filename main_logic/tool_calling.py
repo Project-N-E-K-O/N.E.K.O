@@ -61,11 +61,19 @@ ToolHandler = Callable[[Dict[str, Any]], Union[Awaitable[Any], Any]]
 _MAX_TOOL_IMAGE_B64_BYTES = 2 * 1024 * 1024
 
 # What actually rides the request -- and therefore what the frames bus can
-# carry. 500 KiB rather than the plane's own 512 KiB bound: that bound is
-# measured on the whole packed record, and mime / turn_id / metadata need room
-# beside the pixels. Anything between the two ceilings is re-encoded rather
-# than refused; see ``_fit_tool_image_for_delivery``.
-_TOOL_IMAGE_DELIVER_MAX_B64_BYTES = 500 * 1024
+# carry. It is the frame channel's IMAGE budget, which is that channel's event
+# ceiling minus the envelope around the pixels (event_id, source, mime,
+# turn_id, generation, metadata, lanlan_name). Not the event ceiling itself:
+# both were 500 KiB for a while and looked consistent, but one measures the
+# image and the other measures image + envelope, so an image compressed to
+# exactly the ladder's limit was silently dropped at the publish -- the model
+# got it, no plugin did. Pinned equal to
+# ``agent_event_bus.PROVIDER_FRAME_MAX_IMAGE_B64_BYTES`` by a test that builds
+# a full-size event and measures it, rather than by comparing constants.
+#
+# Not imported from there at runtime: agent_event_bus pulls in pyzmq, and this
+# module sits on the tool path.
+_TOOL_IMAGE_DELIVER_MAX_B64_BYTES = 500 * 1024 - 1024
 _MAX_TOOL_IMAGES = 2
 _MAX_TOOL_IMAGE_PIXELS = 3840 * 2160
 _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS = 2000

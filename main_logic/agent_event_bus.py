@@ -105,6 +105,19 @@ def _int_env(env_key: str, default: int, *, minimum: int) -> int:
 # 打包记录算，像素旁边还有 mime / turn_id / metadata。
 PROVIDER_FRAME_MAX_B64_BYTES = 500 * 1024
 
+# 上面那个数量的是**整条事件**，而事件里除了像素还有 event_id / source / mime /
+# turn_id / generation / metadata / lanlan_name。所以图片自己的预算要从中扣掉
+# 信封。实测今天的信封是 264 字节；留 1 KiB 是给更长的 turn_id 和 metadata。
+#
+# 这一条是踩出来的：两个常量都写成 500 KiB、看起来自洽，但一个量图片、另一个
+# 量图片+信封，于是阶梯刚好压到上限的图会在发布处被静默丢掉——模型收到了，
+# 插件收不到，正是这条抄送存在的理由。守卫因此改成**造一条满额事件再量**，
+# 而不是比两个常量。
+PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES = 1024
+PROVIDER_FRAME_MAX_IMAGE_B64_BYTES = (
+    PROVIDER_FRAME_MAX_B64_BYTES - PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES
+)
+
 AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT = _int_env(
     "NEKO_AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT", 8, minimum=1,
 )
