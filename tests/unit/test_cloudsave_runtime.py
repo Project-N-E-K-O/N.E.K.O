@@ -4938,3 +4938,99 @@ def test_clearing_read_only_keeps_a_directory_traversable(tmp_path, monkeypatch)
     for mode in directory_modes:
         assert mode & stat_module.S_IREAD, "a directory was left unreadable"
         assert mode & stat_module.S_IEXEC, "a directory was left untraversable"
+
+
+def test_a_deletion_is_recorded_even_with_cloudsave_disabled(tmp_path, monkeypatch):
+    """The tombstone stopped being a cloudsave artifact.
+
+    The seed migration reads it to tell "deleted on purpose" from "never
+    migrated", so skipping it when cloudsave is off left that question
+    unanswerable after a restart -- the project seed was republished and the
+    deleted memory came back. Nothing reported it, because the delete itself
+    succeeded.
+    """
+    from unittest.mock import MagicMock
+
+    from main_routers.characters_router import crud
+
+    # Disabled by PREFERENCE, which is the case that must still record.
+    monkeypatch.setattr(crud, "is_cloudsave_disabled", lambda: True)
+    monkeypatch.setattr(
+        crud, "is_cloudsave_disabled_due_to_local_state_unavailable", lambda: False
+    )
+
+    cm = MagicMock()
+    cm.load_cloudsave_local_state.return_value = {"next_sequence_number": 7}
+    cm.load_character_tombstones_state.return_value = {
+        "version": 1,
+        "tombstones": [],
+    }
+
+    state = crud._build_character_tombstones_state(cm, "Carol")
+
+    names = [entry["character_name"] for entry in state["tombstones"]]
+    assert names == ["Carol"], state
+    assert state["tombstones"][0]["sequence_number"] == 7, (
+        "the sequence restarted instead of continuing the cloudsave one"
+    )
+    # And it must not have gone through the empty-default path.
+    cm.build_default_character_tombstones_state.assert_not_called()
+
+
+def test_the_delete_path_captures_a_rollback_snapshot_unconditionally():
+    """Writing the record without one would survive a failed delete.
+
+    That leaves a tombstone for a character who still exists: her seed is
+    suppressed, and a later cloudsave upload would propagate a deletion that
+    never happened. The capture and the write have to be governed by the same
+    condition, which is now no condition at all.
+    """
+    import inspect
+
+    from main_routers.characters_router import crud
+
+    source = inspect.getsource(crud)
+    assert "if not is_cloudsave_disabled():" not in source, (
+        "the broad cloudsave guard is back in front of a tombstone path, so "
+        "deletions go unrecorded for everyone who merely turned it off"
+    )
+    assert (
+        "tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())"
+        in source
+    ), "the rollback snapshot is no longer captured"
+    # The capture and the write must share ONE condition. Two spellings drift,
+    # and drifting here leaves a tombstone for a character who still exists.
+    assert source.count("is_cloudsave_disabled_due_to_local_state_unavailable()") == 3, (
+        "the build, the snapshot and the write no longer share one guard: %d"
+        % source.count("is_cloudsave_disabled_due_to_local_state_unavailable()")
+    )
+
+
+def test_a_broken_state_directory_still_skips_the_tombstone(monkeypatch):
+    """The one reason that is not a preference.
+
+    Cloudsave can be disabled BECAUSE the local state directory is
+    unavailable, and reading or writing the tombstone there fails and takes
+    the delete with it. An existing regression test pins that the delete path
+    must not touch tombstone state at all in that case.
+    """
+    from unittest.mock import MagicMock
+
+    from main_routers.characters_router import crud
+
+    monkeypatch.setattr(crud, "is_cloudsave_disabled", lambda: True)
+    monkeypatch.setattr(
+        crud, "is_cloudsave_disabled_due_to_local_state_unavailable", lambda: True
+    )
+
+    cm = MagicMock()
+    cm.build_default_character_tombstones_state.return_value = {
+        "version": 1,
+        "tombstones": [],
+    }
+
+    state = crud._build_character_tombstones_state(cm, "Carol")
+
+    assert state["tombstones"] == []
+    cm.load_cloudsave_local_state.assert_not_called()
+    cm.load_character_tombstones_state.assert_not_called()
