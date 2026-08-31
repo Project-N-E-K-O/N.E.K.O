@@ -501,8 +501,27 @@ def test_ban_gate_runs_before_any_repeat_detection():
         "必须在这里就断言失败"
     )
 
+    # ⚠️ 只看 `_guard_phase2_output` **自己作用域**里的调用，遇到嵌套 callable
+    # 就不再下降。`ast.walk` 会走进 `record_regen_effect` 的函数体，把体内那句
+    # `record_anti_repeat_decision` 当成一个检测点 —— 但那是**定义位置**，不是
+    # **调用位置**。今天它恰好落在两闸之间所以没出错，那是位置巧合：把这个嵌套
+    # 函数的 def 挪到闸之前，守卫立刻误报（coderabbit）。
+    # 判据要的是执行顺序，那由**调用点**决定；嵌套函数的调用点本身在直接作用域
+    # 里，照常会被收集到。
+    def _direct_calls(fn_node):
+        stack = list(ast.iter_child_nodes(fn_node))
+        while stack:
+            node = stack.pop()
+            if isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+            ):
+                continue
+            if isinstance(node, ast.Call):
+                yield node
+            stack.extend(ast.iter_child_nodes(node))
+
     gate_lines, initial_detectors, regen_detectors = [], [], []
-    for node in ast.walk(guard_fn):
+    for node in _direct_calls(guard_fn):
         if not isinstance(node, ast.Call):
             continue
         fn = node.func
