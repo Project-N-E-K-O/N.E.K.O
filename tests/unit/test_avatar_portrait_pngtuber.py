@@ -130,6 +130,28 @@ vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'avatar-portrait.
   assert.equal(loadedResult.sourceCanvas.width, 900);
   assert.equal(loadedResult.sourceCanvas.height, 1200);
 
+  const stalledImage = {{
+    tagName: 'IMG', width: 0, height: 0, clientWidth: 0, clientHeight: 0,
+    naturalWidth: 0, naturalHeight: 0, complete: false, hidden: false,
+    style: {{ display: '' }}, classList: {{ contains: () => false }},
+    currentSrc: '/user_pngtuber/stalled.png',
+    addEventListener() {{}},
+    removeEventListener() {{}},
+  }};
+  window.pngtuberManager = {{ image: stalledImage, ensureContainer() {{}} }};
+  window.setTimeout = (callback, delay) => {{
+    assert.equal(delay, 15000);
+    Promise.resolve().then(callback);
+    return 1;
+  }};
+  window.clearTimeout = () => {{}};
+  await assert.rejects(
+    () => window.avatarPortrait.capture({{ modelType: 'pngtuber' }}),
+    /PNGTuber 图片加载超时/,
+  );
+  delete window.setTimeout;
+  delete window.clearTimeout;
+
   window.pngtuberManager = {{
     image: runtimeCanvas,
     ensureContainer() {{}},

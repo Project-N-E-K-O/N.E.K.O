@@ -28,6 +28,7 @@
         // 'portrait' - 立绘模式（全身或大半身）
         cropMode: 'headshot'
     });
+    const PNGTUBER_IMAGE_LOAD_TIMEOUT_MS = 15000;
 
     function clamp(value, min, max) {
         return Math.min(max, Math.max(min, value));
@@ -151,20 +152,49 @@
             return Promise.reject(createError('PNGTuber 图片加载失败'));
         }
         return new Promise((resolve, reject) => {
+            let settled = false;
+            let timeoutId = null;
             const cleanup = () => {
                 drawable.removeEventListener?.('load', onLoad);
                 drawable.removeEventListener?.('error', onError);
+                if (timeoutId !== null) {
+                    (global.clearTimeout || clearTimeout)(timeoutId);
+                    timeoutId = null;
+                }
             };
             const onLoad = () => {
+                if (settled) return;
+                settled = true;
                 cleanup();
-                resolve();
+                if (drawable.naturalWidth > 0 && drawable.naturalHeight > 0) {
+                    resolve();
+                } else {
+                    reject(createError('PNGTuber 图片加载失败'));
+                }
             };
             const onError = () => {
+                if (settled) return;
+                settled = true;
                 cleanup();
                 reject(createError('PNGTuber 图片加载失败'));
             };
+            const onTimeout = () => {
+                if (settled) return;
+                settled = true;
+                timeoutId = null;
+                cleanup();
+                reject(createError('PNGTuber 图片加载超时'));
+            };
             drawable.addEventListener?.('load', onLoad, { once: true });
             drawable.addEventListener?.('error', onError, { once: true });
+            timeoutId = (global.setTimeout || setTimeout)(onTimeout, PNGTUBER_IMAGE_LOAD_TIMEOUT_MS);
+
+            // Avoid missing a load/error event fired between the initial complete
+            // check and listener registration.
+            if (drawable.complete) {
+                if (drawable.naturalWidth > 0 && drawable.naturalHeight > 0) onLoad();
+                else onError();
+            }
         });
     }
 
