@@ -1143,9 +1143,20 @@ def test_the_batch_size_setting_is_clamped_where_it_is_loaded(
     try:
         assert reloaded.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE == expected
 
-        batcher_clamped = max(1, int(configured))
-        assert batcher_clamped <= reloaded.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE, (
-            "子进程会发出宿主必然拒收的批量大小"
+        # 读真实批处理器算出来的值，而不是在测试里把 max(1, ...) 再抄一遍：
+        # 抄一遍的话，实现里的钳位公式一改，测试的期望跟着一起变，这条断言
+        # 就永远成立（CodeRabbit）。
+        batcher = zmq_transport._AuthenticatedMessageBatcher(
+            object(),  # type: ignore[arg-type]
+            batch_size=int(configured),
+            flush_interval_ms=5,
+            max_queue=8,
+            reject_ratio=0.9,
+            enqueue_timeout_s=0,
+        )
+        assert batcher._batch_size <= reloaded.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE, (
+            f"子进程会发出宿主必然拒收的批量大小："
+            f"{batcher._batch_size} > {reloaded.PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE}"
         )
     finally:
         monkeypatch.delenv("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", raising=False)
