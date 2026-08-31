@@ -156,6 +156,11 @@ def _extract_links_from_raw(
                 url = post.get("url", "")
                 if title and url:
                     link = {"title": title, "url": url, "source": "喵宇宙社区"}
+                    if post.get("id"):
+                        # The public feed does not always expose per-card permalinks.
+                        # Keep card identity internal so discover-page fallback URLs do
+                        # not collapse every community card into one history entry.
+                        link["dedupe_key"] = f"neko-community:{post['id']}"
                     content = post.get("content", "")
                     if content and content != title:
                         link["description_hint"] = content

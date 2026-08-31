@@ -1745,7 +1745,9 @@ async def handle_proactive_chat(
         if web_parsed and web_parsed.get("title"):
             matched = _lookup_link_by_title(web_parsed.get("title", ""), all_web_links)
             topic_key = _source_hash(
-                matched.get("url", "") if matched else "",
+                (matched.get("dedupe_key") or matched.get("url", ""))
+                if matched
+                else "",
                 web_parsed.get("title", ""),
             )
             # matched 的链接已经在 picking 阶段过了一次 _should_skip_source，

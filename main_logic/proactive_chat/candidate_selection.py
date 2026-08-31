@@ -83,7 +83,10 @@ def _round_robin_phase1_links(
             while positions[mode] < len(links):
                 link = dict(links[positions[mode]])
                 positions[mode] += 1
-                key = _source_hash(link.get("url", ""), link.get("title", ""))
+                key = _source_hash(
+                    link.get("dedupe_key") or link.get("url", ""),
+                    link.get("title", ""),
+                )
                 if key and (key in seen_keys or _should_skip_source(key)):
                     continue
                 if key:

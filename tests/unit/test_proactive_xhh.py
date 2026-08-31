@@ -19,7 +19,10 @@ from utils.web_scraper.trending_content import (
 from main_routers.system_router.proactive_content import _log_news_content
 from main_routers.system_router.proactive_parsing import _extract_links_from_raw
 from main_logic.proactive_chat.contracts import ProactiveChatCommand
-from main_logic.proactive_chat.candidate_selection import _format_phase1_link_candidate
+from main_logic.proactive_chat.candidate_selection import (
+    _format_phase1_link_candidate,
+    _round_robin_phase1_links,
+)
 from main_logic.proactive_chat import sources as proactive_sources
 from utils.web_scraper.platform_helpers import (
     build_xhh_cookie_header,
@@ -294,6 +297,7 @@ async def test_community_mode_fetches_only_neko_community_cards():
             "title": "猫娘们正在讨论的新点子",
             "url": "https://community.project-neko.cn/posts/post-1",
             "source": "喵宇宙社区",
+            "dedupe_key": "neko-community:post-1",
             "description_hint": "一起来分享今天的灵感和小发现。",
             "author": "小猫",
             "tags": ["灵感", "闲聊"],
@@ -496,6 +500,35 @@ def test_community_links_use_neko_community_cards():
             "url": "https://community.project-neko.cn/discover",
             "source": "喵宇宙社区",
         }
+    ]
+
+
+def test_community_cards_use_distinct_dedupe_keys_with_shared_discover_url():
+    links = _extract_links_from_raw(
+        "community",
+        {
+            "posts": [
+                {
+                    "id": "card-1",
+                    "title": "第一张卡",
+                    "url": "https://community.project-neko.cn/discover",
+                },
+                {
+                    "id": "card-2",
+                    "title": "第二张卡",
+                    "url": "https://community.project-neko.cn/discover",
+                },
+            ]
+        },
+    )
+
+    selected = _round_robin_phase1_links(
+        ["community"], {"community": {"links": links}}, total=2
+    )
+
+    assert [link["dedupe_key"] for link in selected["community"]] == [
+        "neko-community:card-1",
+        "neko-community:card-2",
     ]
 
 
