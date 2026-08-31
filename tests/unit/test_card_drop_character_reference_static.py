@@ -57,6 +57,10 @@ def test_card_drop_snapshot_is_bound_to_current_model_identity():
     assert "function appendCardDropModelIdentity(body)" in source
     assert "body.modelType = modelType;" in source
     assert "body.modelKey = modelKey && !modelKey.endsWith(':') ? modelKey : '';" in source
+    assert "let cardDropModelRevision = Date.now();" in source
+    assert "body.modelRevision = cardDropModelRevision;" in source
+    assert "function advanceCardDropModelRevision()" in source
+    assert "cardDropModelRevision = Math.max(cardDropModelRevision + 1, Date.now());" in source
     assert "cacheKey !== getCurrentModelCacheKey()" in source
     assert "pendingAutoCapture = true;" in source
     assert "window.addEventListener('pngtuber-model-loaded'" in source

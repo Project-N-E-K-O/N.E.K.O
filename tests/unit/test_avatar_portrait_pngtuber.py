@@ -106,8 +106,8 @@ vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'avatar-portrait.
   const intrinsicResult = await window.avatarPortrait.capture({{
     modelType: 'pngtuber', width: 768, height: 1024,
   }});
-  assert.equal(intrinsicResult.sourceCanvas.width, 1600);
-  assert.equal(intrinsicResult.sourceCanvas.height, 2400);
+  assert.equal(intrinsicResult.sourceCanvas.width, 1365);
+  assert.equal(intrinsicResult.sourceCanvas.height, 2048);
 
   const loadingImage = {{
     tagName: 'IMG', width: 0, height: 0, clientWidth: 0, clientHeight: 0,

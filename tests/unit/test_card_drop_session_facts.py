@@ -223,6 +223,45 @@ async def test_main_active_character_type_only_change_clears_prior_model_key(
 
 
 @pytest.mark.asyncio
+async def test_main_active_character_rejects_stale_model_revision_before_mutation(
+    monkeypatch,
+):
+    from app.main_server import web_app
+
+    snapshot = {
+        "name": "N.E.K.O",
+        "modelType": "pngtuber",
+        "modelKey": "pngtuber:new-model",
+        "modelRevision": 200,
+        "dataUrl": "new-avatar",
+        "characterReferenceDataUrl": "new-reference",
+    }
+    monkeypatch.setattr(web_app, "_card_drop_active_character", snapshot)
+
+    response = await web_app.set_card_drop_active_character(
+        _main_server_request(),
+        {
+            "name": "N.E.K.O",
+            "modelType": "live2d",
+            "modelKey": "live2d:old-model",
+            "modelRevision": 100,
+            "dataUrl": "old-avatar",
+            "characterReferenceDataUrl": "old-reference",
+        },
+    )
+
+    assert response == {"ok": False, "stale": True}
+    assert snapshot == {
+        "name": "N.E.K.O",
+        "modelType": "pngtuber",
+        "modelKey": "pngtuber:new-model",
+        "modelRevision": 200,
+        "dataUrl": "new-avatar",
+        "characterReferenceDataUrl": "new-reference",
+    }
+
+
+@pytest.mark.asyncio
 async def test_main_active_character_get_exposes_model_identity(monkeypatch):
     from app.main_server import web_app
 

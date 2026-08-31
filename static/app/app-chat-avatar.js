@@ -21,6 +21,7 @@
     let characterReferenceRetryCacheKey = '';
     let autoCaptureTimer = null;
     let lastScheduledCacheKey = '';
+    let cardDropModelRevision = Date.now();
     // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
     let externalAvatarDataUrl = '';
     let externalAvatarModelType = '';
@@ -403,7 +404,12 @@
         const modelKey = getCurrentModelCacheKey();
         if (modelType) body.modelType = modelType;
         if (modelType) body.modelKey = modelKey && !modelKey.endsWith(':') ? modelKey : '';
+        body.modelRevision = cardDropModelRevision;
         return body;
+    }
+
+    function advanceCardDropModelRevision() {
+        cardDropModelRevision = Math.max(cardDropModelRevision + 1, Date.now());
     }
 
     function hasUsableCachedPreview() {
@@ -1381,6 +1387,7 @@
     }
 
     function handleModelLoaded(reason) {
+        advanceCardDropModelRevision();
         var newCacheKey = getCurrentModelCacheKey();
         if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
             // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称

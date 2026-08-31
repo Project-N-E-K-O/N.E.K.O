@@ -29,6 +29,8 @@
         cropMode: 'headshot'
     });
     const PNGTUBER_IMAGE_LOAD_TIMEOUT_MS = 15000;
+    const PNGTUBER_SOURCE_MAX_EDGE = 2048;
+    const VISIBILITY_ANALYSIS_MAX_EDGE = 256;
 
     function clamp(value, min, max) {
         return Math.min(max, Math.max(min, value));
@@ -652,9 +654,15 @@
         const safeWidth = Math.max(1, Math.min(width, canvas.width - x));
         const safeHeight = Math.max(1, Math.min(height, canvas.height - y));
 
+        const analysisScale = Math.min(
+            1,
+            VISIBILITY_ANALYSIS_MAX_EDGE / Math.max(safeWidth, safeHeight)
+        );
+        const analysisWidth = Math.max(1, Math.round(safeWidth * analysisScale));
+        const analysisHeight = Math.max(1, Math.round(safeHeight * analysisScale));
         const analysisCanvas = document.createElement('canvas');
-        analysisCanvas.width = safeWidth;
-        analysisCanvas.height = safeHeight;
+        analysisCanvas.width = analysisWidth;
+        analysisCanvas.height = analysisHeight;
 
         let ctx = null;
         try {
@@ -674,22 +682,22 @@
                 safeHeight,
                 0,
                 0,
-                safeWidth,
-                safeHeight
+                analysisWidth,
+                analysisHeight
             );
-            imageData = ctx.getImageData(0, 0, safeWidth, safeHeight).data;
+            imageData = ctx.getImageData(0, 0, analysisWidth, analysisHeight).data;
         } catch (_) {
             return true;
         }
 
-        const stepX = Math.max(1, Math.floor(safeWidth / 18));
-        const stepY = Math.max(1, Math.floor(safeHeight / 18));
+        const stepX = Math.max(1, Math.floor(analysisWidth / 18));
+        const stepY = Math.max(1, Math.floor(analysisHeight / 18));
         let visibleCount = 0;
         let sampleCount = 0;
 
-        for (let py = 0; py < safeHeight; py += stepY) {
-            for (let px = 0; px < safeWidth; px += stepX) {
-                const idx = (py * safeWidth + px) * 4;
+        for (let py = 0; py < analysisHeight; py += stepY) {
+            for (let px = 0; px < analysisWidth; px += stepX) {
+                const idx = (py * analysisWidth + px) * 4;
                 const alpha = imageData[idx + 3];
                 const r = imageData[idx];
                 const g = imageData[idx + 1];
@@ -1773,11 +1781,17 @@
                 if (!drawable || !size.width || !size.height) {
                     throw createError('PNGTuber 画面尚未就绪，无法提取头像');
                 }
-                const canvas = createOutputCanvas(size.width, size.height);
+                const sourceScale = Math.min(
+                    1,
+                    PNGTUBER_SOURCE_MAX_EDGE / Math.max(size.width, size.height)
+                );
+                const sourceWidth = Math.max(1, Math.round(size.width * sourceScale));
+                const sourceHeight = Math.max(1, Math.round(size.height * sourceScale));
+                const canvas = createOutputCanvas(sourceWidth, sourceHeight);
                 const context = canvas.getContext('2d');
                 if (!context) throw createError('无法创建 PNGTuber 导出画布');
                 try {
-                    context.drawImage(drawable, 0, 0, size.width, size.height);
+                    context.drawImage(drawable, 0, 0, sourceWidth, sourceHeight);
                 } catch (error) {
                     throw createCanvasExportError(error);
                 }
@@ -1786,8 +1800,8 @@
                 }
                 return {
                     canvas,
-                    cropRectCss: { x: 0, y: 0, width: size.width, height: size.height },
-                    cropRectPixels: { x: 0, y: 0, width: size.width, height: size.height },
+                    cropRectCss: { x: 0, y: 0, width: sourceWidth, height: sourceHeight },
+                    cropRectPixels: { x: 0, y: 0, width: sourceWidth, height: sourceHeight },
                     sourceCanvas: canvas,
                     modelType: 'pngtuber'
                 };

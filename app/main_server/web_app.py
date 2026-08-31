@@ -436,6 +436,24 @@ async def set_card_drop_active_character(request: Request, payload: dict):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
     if not isinstance(payload, dict):
         return {"ok": True}
+    revision_alias = next(
+        (alias for alias in ("modelRevision", "model_revision") if alias in payload),
+        None,
+    )
+    if revision_alias is not None:
+        try:
+            incoming_revision = max(0, int(payload.get(revision_alias) or 0))
+        except (TypeError, ValueError):
+            incoming_revision = 0
+        try:
+            current_revision = max(
+                0, int(_card_drop_active_character.get("modelRevision") or 0)
+            )
+        except (TypeError, ValueError):
+            current_revision = 0
+        if incoming_revision < current_revision:
+            return {"ok": False, "stale": True}
+        _card_drop_active_character["modelRevision"] = incoming_revision
     name_changed = False
     if "name" in payload:
         next_name = str(payload.get("name") or "")
