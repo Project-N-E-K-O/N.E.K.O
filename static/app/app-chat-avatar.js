@@ -24,6 +24,7 @@
     let lastScheduledCacheKey = '';
     let cardDropModelRevision = Date.now();
     let pngtuberModelLoading = false;
+    let pngtuberModelLoadToken = 0;
     // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
     let externalAvatarDataUrl = '';
     let externalAvatarModelType = '';
@@ -1501,16 +1502,23 @@
             handleModelLoaded('mmd-model-loaded');
         });
 
-        window.addEventListener('pngtuber-model-loading', function () {
+        window.addEventListener('pngtuber-model-loading', function (event) {
+            const loadToken = Number(event?.detail?.loadToken) || 0;
+            if (loadToken < pngtuberModelLoadToken) return;
+            pngtuberModelLoadToken = loadToken;
             handleModelLoading();
         });
 
-        window.addEventListener('pngtuber-model-loaded', function () {
+        window.addEventListener('pngtuber-model-loaded', function (event) {
+            const loadToken = Number(event?.detail?.loadToken) || 0;
+            if (loadToken !== pngtuberModelLoadToken) return;
             pngtuberModelLoading = false;
             handleModelLoaded('pngtuber-model-loaded');
         });
 
-        window.addEventListener('pngtuber-model-load-finished', function () {
+        window.addEventListener('pngtuber-model-load-finished', function (event) {
+            const loadToken = Number(event?.detail?.loadToken) || 0;
+            if (loadToken !== pngtuberModelLoadToken) return;
             pngtuberModelLoading = false;
         });
     }

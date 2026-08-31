@@ -114,6 +114,21 @@ def test_pngtuber_loading_invalidates_snapshot_without_early_reference_capture()
 
 
 @pytest.mark.unit
+def test_pngtuber_loading_state_ignores_stale_lifecycle_events():
+    source = _read(APP_CHAT_AVATAR_PATH)
+    listeners = source.split("function bindModelLoadListeners()", 1)[1].split(
+        "function handleOutsidePointer",
+        1,
+    )[0]
+
+    assert "let pngtuberModelLoadToken = 0;" in source
+    assert "pngtuber-model-loading', function (event)" in listeners
+    assert "if (loadToken < pngtuberModelLoadToken) return;" in listeners
+    assert "pngtuberModelLoadToken = loadToken;" in listeners
+    assert listeners.count("if (loadToken !== pngtuberModelLoadToken) return;") == 2
+
+
+@pytest.mark.unit
 def test_same_cache_key_reload_invalidates_inflight_capture_revision():
     source = _read(APP_CHAT_AVATAR_PATH)
     model_loaded_block = source.split("function handleModelLoaded(reason)", 1)[1].split(

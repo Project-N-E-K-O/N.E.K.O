@@ -117,6 +117,15 @@ vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'avatar-portrait.
   assert.equal(intrinsicResult.sourceCanvas.width, 1365);
   assert.equal(intrinsicResult.sourceCanvas.height, 2048);
 
+  const remoteCorsImage = Object.assign({{}}, highResolutionImage, {{
+    currentSrc: 'https://assets.example.test/avatar.png',
+  }});
+  window.pngtuberManager = {{ image: remoteCorsImage, ensureContainer() {{}} }};
+  const remoteResult = await window.avatarPortrait.capture({{
+    modelType: 'pngtuber', width: 512, height: 512,
+  }});
+  assert.equal(remoteResult.modelType, 'pngtuber');
+
   const loadingImage = {{
     tagName: 'IMG', width: 0, height: 0, clientWidth: 0, clientHeight: 0,
     naturalWidth: 0, naturalHeight: 0, complete: false, hidden: false,

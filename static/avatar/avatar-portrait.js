@@ -202,20 +202,6 @@
         });
     }
 
-    function assertPNGTuberDrawableIsExportable(drawable) {
-        if (!isPNGTuberImageElement(drawable)) return;
-        const src = String(drawable.currentSrc || drawable.src || '').trim();
-        if (!src || !global.location?.href) return;
-        try {
-            const resolved = new URL(src, global.location.href);
-            if (/^https?:$/.test(resolved.protocol) && resolved.origin !== global.location.origin) {
-                throw createError('远程 PNGTuber 图片未启用同源访问，无法导出头像');
-            }
-        } catch (error) {
-            if (String(error?.message || '').startsWith('[avatar-portrait]')) throw error;
-        }
-    }
-
     function getCanvasMetrics(canvas) {
         const rect = canvas?.getBoundingClientRect?.();
         const cssWidth = finiteOr(rect?.width, 0) || finiteOr(canvas?.clientWidth, 0) || finiteOr(canvas?.width, 0) || 1;
@@ -1782,7 +1768,6 @@
                 ctx.drawable = getPNGTuberCaptureDrawable(ctx.manager, { allowHidden: true }) || ctx.drawable;
                 if (ctx.drawable) {
                     await waitForPNGTuberDrawable(ctx.drawable);
-                    assertPNGTuberDrawableIsExportable(ctx.drawable);
                 }
             },
             renderSource(ctx, options = {}) {

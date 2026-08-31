@@ -34,6 +34,7 @@
     const PNGTUBER_BREATHING_IDLE_FPS = 20;
     const PNGTUBER_ANIMATION_IDLE_FPS = 30;
     const PNGTUBER_FULL_RATE_HOLD_MS = 900;
+    let pngtuberLoadSequence = 0;
 
     function clampNumber(value, min, max, fallback) {
         const parsed = Number(value);
@@ -61,6 +62,16 @@
         return path;
     }
 
+    function assignImageSource(image, src) {
+        if (!image) return;
+        if (/^https?:\/\//i.test(String(src || ''))) {
+            image.crossOrigin = 'anonymous';
+        } else {
+            image.removeAttribute?.('crossorigin');
+        }
+        image.src = src;
+    }
+
     function isPNGTuberPlusLayerVisible(showTalk, showBlink, speaking, blinking) {
         const value = (Number(showTalk) || 0)
             + ((Number(showBlink) || 0) * 3)
@@ -82,7 +93,7 @@
             const img = new Image();
             img.onload = () => resolve(img);
             img.onerror = reject;
-            img.src = src;
+            assignImageSource(img, src);
         });
     }
 
@@ -378,7 +389,7 @@
                 if (!src || seen.has(src)) return;
                 seen.add(src);
                 const img = new Image();
-                img.src = src;
+                assignImageSource(img, src);
             });
         }
 
@@ -2519,7 +2530,7 @@
             }
             const nextSrc = src || this.config.drag_image || this.config.idle_image || DEFAULT_PLACEHOLDER;
             if (this.image && nextSrc && this.image.getAttribute('src') !== nextSrc) {
-                this.image.src = nextSrc;
+                assignImageSource(this.image, nextSrc);
             }
             this.applyTransform();
             this.updateLockIconPosition();
@@ -3599,12 +3610,15 @@
             }, delayMs);
         }
 
-        async load(config) {
+        async load(config, options = {}) {
             this.detachDragListeners();
             this.clearEmotion({ render: false });
             this._modelManagerUseCurrentPlacement = false;
             this.config = normalizeConfig(config || {});
-            window.dispatchEvent(new CustomEvent('pngtuber-model-loading'));
+            const loadToken = Number(options.loadToken) || 0;
+            window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {
+                detail: { loadToken }
+            }));
             await this.setupLayeredAdapter();
             this.ensureContainer();
             this.preloadImages();
@@ -3734,7 +3748,7 @@
             }
             const nextSrc = this.stateToSrc(this.state);
             if (this.image && this.image.getAttribute('src') !== nextSrc) {
-                this.image.src = nextSrc;
+                assignImageSource(this.image, nextSrc);
             }
             this.applyTransform();
             this.updateLockIconPosition();
@@ -4757,12 +4771,13 @@
     }
 
     async function loadPNGTuberAvatar(config) {
+        const loadToken = ++pngtuberLoadSequence;
         try {
             await hideOtherAvatarRuntimesForPNGTuber();
             if (!window.pngtuberManager) {
                 window.pngtuberManager = new PNGTuberManager();
             }
-            await window.pngtuberManager.load(config || {});
+            await window.pngtuberManager.load(config || {}, { loadToken });
             if (document.body?.classList.contains('model-manager-page')
                 && window._modelManagerCurrentAvatarType
                 && window._modelManagerCurrentAvatarType !== 'pngtuber') {
@@ -4772,10 +4787,14 @@
             await hideOtherAvatarRuntimesForPNGTuber();
             window.pngtuberManager.show();
             await hideOtherAvatarRuntimesForPNGTuber();
-            window.dispatchEvent(new CustomEvent('pngtuber-model-loaded'));
+            window.dispatchEvent(new CustomEvent('pngtuber-model-loaded', {
+                detail: { loadToken }
+            }));
             return window.pngtuberManager;
         } finally {
-            window.dispatchEvent(new CustomEvent('pngtuber-model-load-finished'));
+            window.dispatchEvent(new CustomEvent('pngtuber-model-load-finished', {
+                detail: { loadToken }
+            }));
         }
     }
 

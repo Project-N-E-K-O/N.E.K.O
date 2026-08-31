@@ -1077,12 +1077,12 @@ def test_layered_pngtuber_can_render_full_resolution_snapshot_without_resizing_r
 def test_pngtuber_load_announces_identity_change_before_async_setup():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     load_block = source[
-        source.index("        async load(config) {"):
+        source.index("        async load(config, options = {}) {"):
         source.index("        stateToSrc(state)")
     ]
 
     config_assignment = "this.config = normalizeConfig(config || {});"
-    loading_event = "window.dispatchEvent(new CustomEvent('pngtuber-model-loading'));"
+    loading_event = "window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {"
     async_setup = "await this.setupLayeredAdapter();"
     assert load_block.index(config_assignment) < load_block.index(loading_event)
     assert load_block.index(loading_event) < load_block.index(async_setup)
@@ -1097,7 +1097,39 @@ def test_pngtuber_loader_finishes_loading_state_on_every_exit():
 
     assert "try {" in loader_block
     assert "} finally {" in loader_block
-    assert "window.dispatchEvent(new CustomEvent('pngtuber-model-load-finished'));" in loader_block
+    assert "window.dispatchEvent(new CustomEvent('pngtuber-model-load-finished', {" in loader_block
+
+
+def test_pngtuber_loader_binds_lifecycle_events_to_one_load_token():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    load_block = source[
+        source.index("        async load(config, options = {}) {"):
+        source.index("        stateToSrc(state)")
+    ]
+    loader_block = source[
+        source.index("    async function loadPNGTuberAvatar(config) {"):
+        source.index("    function playPNGTuberAnimation")
+    ]
+
+    assert "let pngtuberLoadSequence = 0;" in source
+    assert "const loadToken = ++pngtuberLoadSequence;" in loader_block
+    assert "await window.pngtuberManager.load(config || {}, { loadToken });" in loader_block
+    assert "const loadToken = Number(options.loadToken) || 0;" in load_block
+    assert load_block.count("detail: { loadToken }") == 1
+    assert loader_block.count("detail: { loadToken }") == 2
+
+
+def test_pngtuber_remote_images_enable_anonymous_cors_before_loading():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    assign_block = source[
+        source.index("    function assignImageSource(image, src) {"):
+        source.index("    function isPNGTuberPlusLayerVisible")
+    ]
+
+    assert "image.crossOrigin = 'anonymous';" in assign_block
+    assert assign_block.index("image.crossOrigin = 'anonymous';") < assign_block.index("image.src = src;")
+    assert "assignImageSource(img, src);" in source
+    assert "assignImageSource(this.image, nextSrc);" in source
 
 
 def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():
