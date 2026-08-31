@@ -17,7 +17,12 @@ from plugin.server.application.plugins.layout_migration import migrate_legacy_pl
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
-from plugin.server.messaging.plane_bridge import ingest_auth_token, start_bridge, stop_bridge
+from plugin.server.messaging.plane_bridge import (
+    ingest_auth_token,
+    refresh_ingest_endpoint,
+    start_bridge,
+    stop_bridge,
+)
 from plugin.server.messaging.proactive_bridge import (
     start_proactive_bridge,
     stop_proactive_bridge,
@@ -277,6 +282,20 @@ class ServerLifecycleService:
         # 开关（构造时读一次），不是「start() 跑没跑」——start() 之前
         # enqueue_delta 照常入队，线程起来后排空。实测 publish_record 在
         # start_bridge() 之前返回 True。
+        # 必须在 runner 起完之后、bridge 起之前：配置端口被占时 runner 会挑
+        # 一个备用端口并写回环境变量，而 _bridge 是 import 期就建好的、那时
+        # 冻结的还是原来那个地址。不刷新的话，端口一冲突，push_message /
+        # frames / conversations 全都发向那个被占的端点，而调用方已经拿到
+        # submitted=True——正是这条路要消灭的那种静默不投递。
+        try:
+            refresh_ingest_endpoint()
+        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
+            logger.warning(
+                "failed to refresh ingest endpoint: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+
         try:
             start_bridge()
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:

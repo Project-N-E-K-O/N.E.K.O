@@ -191,3 +191,73 @@ def test_restarting_the_bridge_does_not_reuse_the_old_readiness() -> None:
         )
     finally:
         bridge.stop()
+
+
+# ── the bridge must follow the plane to its fallback port ──────────────
+
+
+@pytest.mark.plugin_unit
+def test_refresh_picks_up_the_endpoint_the_runner_actually_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_bridge`` freezes the endpoint at import; the runner moves it later.
+
+    ``build_message_plane_runner`` calls ``_resolve_endpoint_with_fallback``
+    when the configured port is occupied and publishes the new address by
+    writing it back into the environment — after this module was imported and
+    its singleton built. Without the refresh, a port collision sends every
+    queued record to the occupied endpoint while ``push_message()`` has already
+    answered ``submitted=True``.
+
+    Mutation: delete the ``_bridge._endpoint = ...`` assignment in
+    ``refresh_ingest_endpoint``.
+    """
+    from plugin.server.messaging import plane_bridge
+
+    original = plane_bridge._bridge._endpoint
+    try:
+        monkeypatch.setenv(
+            "NEKO_MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT", "tcp://127.0.0.1:49999"
+        )
+
+        returned = plane_bridge.refresh_ingest_endpoint()
+
+        assert returned == "tcp://127.0.0.1:49999"
+        assert plane_bridge._bridge._endpoint == "tcp://127.0.0.1:49999", (
+            "bridge 还指着 import 期冻结的地址——端口一冲突就静默不投递"
+        )
+    finally:
+        plane_bridge._bridge._endpoint = original
+
+
+@pytest.mark.plugin_unit
+def test_the_refresh_runs_before_the_bridge_starts() -> None:
+    """Order is the contract: refreshing after ``start_bridge()`` is too late.
+
+    The consumer thread reads ``self._endpoint`` when it connects, so the
+    refresh has to land first. Asserted from the source because standing up a
+    real plane with an occupied port to observe it would test the OS.
+    """
+    import ast
+    import inspect
+    from pathlib import Path
+
+    from plugin.server import lifecycle as lifecycle_mod
+
+    # AST, not a text search: the first textual hit for "start_bridge()" in this
+    # file is inside a comment, so find() ranks a comment above the call.
+    tree = ast.parse(Path(inspect.getfile(lifecycle_mod)).read_text(encoding="utf-8"))
+    calls: dict[str, list[int]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            calls.setdefault(node.func.id, []).append(node.lineno)
+
+    refresh_lines = calls.get("refresh_ingest_endpoint", [])
+    start_lines = calls.get("start_bridge", [])
+
+    assert refresh_lines, "启动路径里根本没调 refresh_ingest_endpoint"
+    assert start_lines, "前提没成立：找不到 start_bridge() 调用"
+    assert max(refresh_lines) < min(start_lines), (
+        f"refresh 在第 {refresh_lines} 行、start_bridge 在第 {start_lines} 行——"
+        "刷新排在启动之后等于没刷新"
+    )

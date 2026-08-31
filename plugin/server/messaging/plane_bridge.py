@@ -304,6 +304,37 @@ def stop_bridge() -> None:
     _bridge.stop()
 
 
+def refresh_ingest_endpoint() -> str:
+    """Re-read the ingest endpoint the plane actually bound, and return it.
+
+    ``_bridge`` is a module-level singleton built when this module is first
+    imported, and it freezes ``MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT`` — a value
+    ``plugin.settings`` read from the environment at ITS import. That is before
+    ``build_message_plane_runner()`` runs, and the runner moves the plane to a
+    fallback port when the configured one is occupied
+    (``_resolve_endpoint_with_fallback``), publishing the new address by
+    writing ``NEKO_MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT`` back into the
+    environment.
+
+    Without this, a port collision sends every queued record — plugin messages,
+    frames, conversations — to the occupied endpoint while ``push_message()``
+    has already answered ``submitted=True``, which is the exact silent
+    non-delivery this whole path exists to remove.
+
+    Deliberately explicit rather than a re-read inside ``start()``: callers that
+    set ``_endpoint`` themselves (the in-process transport tests bind inproc
+    addresses) must not have it overwritten from the environment underneath
+    them. The lifecycle service is the one place that knows the runner has
+    already chosen, so it is the one place that asks.
+    """
+    endpoint = os.getenv(
+        "NEKO_MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",
+        os.getenv("NEKO_MESSAGE_PLANE_INGEST", str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT)),
+    )
+    _bridge._endpoint = str(endpoint)
+    return _bridge._endpoint
+
+
 def publish_record(*, store: str, record: dict[str, object], topic: str = "all") -> bool:
     """Queue one record for the plane. Returns whether it was accepted.
 
