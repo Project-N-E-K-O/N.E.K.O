@@ -123,6 +123,8 @@ def test_card_drop_character_reference_http_failures_remain_retryable():
     assert ".then(function (response)" in post_block
     assert "if (!response.ok)" in post_block
     assert "response.status" in post_block
+    assert "response.json()" in post_block
+    assert "payload.ok === false || payload.stale === true" in post_block
     assert "return false;" in post_block
 
 

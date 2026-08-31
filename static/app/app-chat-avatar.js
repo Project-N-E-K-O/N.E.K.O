@@ -477,7 +477,13 @@
                 );
                 return false;
             }
-            return true;
+            return response.json()
+                .then(function (payload) {
+                    return !(payload && (payload.ok === false || payload.stale === true));
+                })
+                .catch(function () {
+                    return true;
+                });
         }).catch(function (err) {
             console.warn('[chat-avatar] card-drop character reference sync failed:', err);
             return false;
