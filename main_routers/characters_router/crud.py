@@ -62,6 +62,10 @@ from utils.character_memory import (
     begin_character_recent_transaction,
     character_config_mutation_lock,
     delete_character_memory_storage,
+    evict_character_runtime_caches,
+    fence_character_runtime_writes,
+    retire_character_runtime_caches,
+    unfence_character_runtime_writes,
     finalize_character_recent_delete,
     finalize_character_recent_rename,
     list_character_memory_paths,
@@ -498,23 +502,82 @@ async def _rollback_character_operation(
     recent_transaction: dict | None = None,
     resume_derived_task_names: tuple[str, ...] = (),
     release_derived_task_claims: dict[str, tuple[str, ...]] | None = None,
+    restored_live_character_names: tuple[str, ...] = (),
+    reretired_absent_character_names: tuple[str, ...] = (),
+    # Every name this rollback might touch, whether or not the operation got
+    # far enough to retire it. SEPARATE from the two tuples above on
+    # purpose: those say what was actually retired and drive the lifecycle
+    # calls, and a caller has to be free to pass them empty -- which it does
+    # whenever the storage op raised before retiring anything. Scoping the
+    # fence to them made it inert on exactly that path: measured, the stale
+    # flush destroyed the restored history with the fence "held".
+    fenced_character_names: tuple[str, ...] = (),
     reason: str,
 ) -> str:
     rollback_errors: list[str] = []
 
-    try:
-        await asyncio.to_thread(_restore_snapshot_paths, memory_snapshot_records)
-    except Exception as exc:
-        rollback_errors.append(f"memory restore failed: {exc}")
-
-    try:
-        await asyncio.to_thread(
-            config_manager.save_characters,
-            characters_snapshot,
-            bypass_write_fence=True,
+    # Retirement cannot cover this window, for the same reason a rename's
+    # merge needs the fence: it refuses to CREATE a directory but permits a
+    # write into one that already exists. The restore below recreates
+    # memory/<name>/ while the name is still retired, and the save that
+    # follows is a real await -- so a detached flush staged before the
+    # delete lands on the freshly restored file and overwrites it with the
+    # stale snapshot it was holding. Measured: three decisions restored,
+    # one left on disk. The mirror on rename rollback is the orphan the
+    # re-retirement below says it prevents, one await too late to do so.
+    #
+    # In a finally, and around BOTH steps. Releasing inside the else instead
+    # leaks the fence whenever save_characters raises, and a fence left up
+    # silences that character's sidecars for the life of the process --
+    # worse than the write it was installed to stop.
+    fenced_names = tuple(
+        dict.fromkeys(
+            (
+                *fenced_character_names,
+                *restored_live_character_names,
+                *reretired_absent_character_names,
+            )
         )
-    except Exception as exc:
-        rollback_errors.append(f"characters restore failed: {exc}")
+    )
+    fence_character_runtime_writes(*fenced_names)
+    try:
+        try:
+            await asyncio.to_thread(
+                _restore_snapshot_paths, memory_snapshot_records,
+            )
+        except Exception as exc:
+            rollback_errors.append(f"memory restore failed: {exc}")
+
+        try:
+            await asyncio.to_thread(
+                config_manager.save_characters,
+                characters_snapshot,
+                bypass_write_fence=True,
+            )
+        except Exception as exc:
+            rollback_errors.append(f"characters restore failed: {exc}")
+        else:
+            # The name is back in characters.json, so it is a LIVE identity again.
+            # The delete path retired it in every sidecar store before removing
+            # anything, and this restore goes through save_characters rather than
+            # the activation helper, so nothing else lifts that retirement: a
+            # character that had no memory directory yet would keep dropping its
+            # startup greeting and anti-repeat decisions until a restart, because
+            # a retired name never creates its directory.
+            #
+            # Scoped to names the caller says it actually restored, and only on the
+            # branch where the restore SUCCEEDED -- lifting retirement for a name
+            # that is genuinely gone would reinstate the orphan-directory
+            # resurrection the retirement exists to prevent.
+            evict_character_runtime_caches(*restored_live_character_names)
+            # The mirror: a name the operation made live, and the rollback un-made.
+            # A rename target was evicted (lifting any retirement an earlier delete
+            # of that same name installed); once the rename is undone it is not a
+            # live identity, so it goes back to retired or a late flush recreates its
+            # directory for a character that does not exist.
+            retire_character_runtime_caches(*reretired_absent_character_names)
+    finally:
+        unfence_character_runtime_writes(*fenced_names)
 
     if recent_rename_result is not None:
         try:
@@ -700,6 +763,13 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
     memory_rename_result = None
     recent_transaction = None
     memory_snapshot_records = []
+    # Empty until the storage op that actually retires them has returned. The
+    # rollback block is shared with failures from well before that point, and
+    # evicting there is not a harmless no-op: it pops the cache and advances the
+    # sequence fence, destroying a concurrently recorded decision instead of
+    # delaying it.
+    retired_names: tuple[str, ...] = ()
+    reretire_names: tuple[str, ...] = ()
     rename_committed = False
     released_memory_handle = False
     release_claim_token = create_derived_task_claim_token()
@@ -776,6 +846,14 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
             )
             if rename_cancelled:
                 raise asyncio.CancelledError
+            retired_names = (old_name,)
+            # The storage op also EVICTED the target name, lifting any retirement
+            # a previous delete of that same name had installed. A rolled-back
+            # rename leaves that name not-live again -- the rename never happened
+            # and a target must be free to begin with -- so it has to go back to
+            # retired, or a late flush recreates memory/<new_name>/ for an
+            # identity that does not exist.
+            reretire_names = (new_name,)
 
             # 重命名角色真源
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
@@ -826,6 +904,9 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
                     release_derived_task_claims={
                         old_name: (release_claim_token,),
                     },
+                    restored_live_character_names=retired_names,
+                    reretired_absent_character_names=reretire_names,
+                    fenced_character_names=(old_name, new_name),
                     reason=f"角色重命名回滚（memory_server 重载失败）: {old_name} -> {new_name}",
                 )
                 logger.error(
@@ -868,6 +949,9 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
                         release_derived_task_claims={
                             old_name: (release_claim_token,),
                         },
+                        restored_live_character_names=retired_names,
+                        reretired_absent_character_names=reretire_names,
+                        fenced_character_names=(old_name, new_name),
                         reason=f"任务取消：角色重命名回滚 {old_name} -> {new_name}",
                     )
                 )
@@ -884,6 +968,9 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
                         release_derived_task_claims={
                             old_name: (release_claim_token,),
                         },
+                        restored_live_character_names=retired_names,
+                        reretired_absent_character_names=reretire_names,
+                        fenced_character_names=(old_name, new_name),
                         reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
                     )
                 )
@@ -905,6 +992,9 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
                         release_derived_task_claims={
                             old_name: (release_claim_token,),
                         },
+                        restored_live_character_names=retired_names,
+                        reretired_absent_character_names=reretire_names,
+                        fenced_character_names=(old_name, new_name),
                         reason=f"角色重命名回滚: {old_name} -> {new_name}",
                     )
                 )
@@ -1505,6 +1595,21 @@ async def _delete_catgirl_by_name_serialized(name: str):
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
 
+        # Every other end-of-identity path retires the sidecar stores; this
+        # branch returned without doing so, and a snapshot staged while the
+        # removal was in flight then flushed afterwards -- writing
+        # anti_repeat_effects.json straight into the memory ROOT for ".",
+        # and creating a phantom "a/b/" tree for a name carrying historical
+        # separators. facts_sync enumerates any directory under memory/ as a
+        # character, so the artifact outlives the deletion.
+        #
+        # Placement is load-bearing: this has to run AFTER the last point a
+        # rollback can fire. Both rollback calls above pass no
+        # restored_live_character_names, which is the only thing that lifts
+        # retirement, so retiring inside the try would return the name to
+        # characters.json retired and silently drop every later write.
+        retire_character_runtime_caches(name)
+
         return {
             "success": True,
             "unsafe_name_rescue": True,
@@ -1525,6 +1630,11 @@ async def _delete_catgirl_by_name_serialized(name: str):
         tombstone_snapshot = None
         recent_delete_result = None
         recent_transaction = None
+        # Empty until delete_character_memory_storage has actually retired the
+        # name. The rollback block is shared with failures from before that
+        # point, and evicting there pops the cache and advances the sequence
+        # fence, destroying a concurrently recorded decision.
+        retired_names: tuple[str, ...] = ()
         memory_server_reloaded = False
         delete_committed = False
         released_memory_handle = False
@@ -1589,15 +1699,28 @@ async def _delete_catgirl_by_name_serialized(name: str):
             if not is_cloudsave_disabled():
                 tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
 
-            delete_result, delete_cancelled = await _await_thread_call_to_completion(
-                delete_character_memory_storage,
-                _config_manager,
-                name,
-                capture_pending=True,
-                keep_recent_locks=True,
-                recent_transaction=recent_transaction,
-            )
+            try:
+                delete_result, delete_cancelled = await _await_thread_call_to_completion(
+                    delete_character_memory_storage,
+                    _config_manager,
+                    name,
+                    capture_pending=True,
+                    keep_recent_locks=True,
+                    recent_transaction=recent_transaction,
+                )
+            except BaseException:
+                # It retires the name as its first act, so a raise partway
+                # through still leaves it retired. The rollback below restores
+                # the files and the config entry, which makes the name live
+                # again -- and a live name that is still retired drops every
+                # later sidecar write. Unlike rename this cannot live in the
+                # helper: the unsubscribe caller removes the config entry
+                # BEFORE calling it and never rolls back, so for that one the
+                # name really is gone and must stay retired.
+                retired_names = (name,)
+                raise
             removed_memory_paths, recent_delete_result = delete_result
+            retired_names = (name,)
             if delete_cancelled:
                 raise asyncio.CancelledError
             for entry_path in removed_memory_paths:
@@ -1654,6 +1777,8 @@ async def _delete_catgirl_by_name_serialized(name: str):
                         release_derived_task_claims={
                             name: (release_claim_token,),
                         },
+                        restored_live_character_names=retired_names,
+                        fenced_character_names=(name,),
                         reason=f"任务取消：删除角色回滚 {name}",
                     )
                 )
@@ -1671,6 +1796,8 @@ async def _delete_catgirl_by_name_serialized(name: str):
                         release_derived_task_claims={
                             name: (release_claim_token,),
                         },
+                        restored_live_character_names=retired_names,
+                        fenced_character_names=(name,),
                         reason=f"维护模式：删除角色回滚 {name}",
                     )
                 )
@@ -1693,6 +1820,8 @@ async def _delete_catgirl_by_name_serialized(name: str):
                         release_derived_task_claims={
                             name: (release_claim_token,),
                         },
+                        restored_live_character_names=retired_names,
+                        fenced_character_names=(name,),
                         reason=f"删除角色回滚: {name}",
                     )
                 )

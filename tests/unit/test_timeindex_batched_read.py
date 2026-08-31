@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import importlib.util
+import json
 import sys
 import threading
 import tracemalloc
@@ -92,27 +93,31 @@ def timeindex_module():
                 sys.modules[name] = old_module
 
 
-def _create_manager(timeindex_module, tmp_path, rows, *, indexed=True):
+def _create_manager(
+    timeindex_module,
+    tmp_path,
+    rows,
+    *,
+    indexed=True,
+    include_timestamp=True,
+):
     engine = create_engine(f"sqlite:///{tmp_path / 'time-index.db'}")
     with engine.begin() as conn:
+        timestamp_column = ", timestamp DATETIME" if include_timestamp else ""
         conn.execute(
             text(
                 f"CREATE TABLE {_TABLE} ("
-                "session_id TEXT, message TEXT, timestamp DATETIME)"
+                f"session_id TEXT, message TEXT{timestamp_column})"
             )
         )
-        if indexed:
+        if indexed and include_timestamp:
             conn.execute(
                 text(f"CREATE INDEX idx_{_TABLE}_timestamp ON {_TABLE}(timestamp)")
             )
         if rows:
-            conn.execute(
-                text(
-                    f"INSERT INTO {_TABLE}(session_id, message, timestamp) "
-                    "VALUES (:session_id, :message, :timestamp)"
-                ),
-                rows,
-            )
+            columns = "session_id, message, timestamp" if include_timestamp else "session_id, message"
+            values = ":session_id, :message, :timestamp" if include_timestamp else ":session_id, :message"
+            conn.execute(text(f"INSERT INTO {_TABLE}({columns}) VALUES ({values})"), rows)
 
     manager = timeindex_module.TimeIndexedMemory.__new__(
         timeindex_module.TimeIndexedMemory
@@ -128,6 +133,252 @@ def _create_manager(timeindex_module, tmp_path, rows, *, indexed=True):
 
 def _flatten(batches):
     return [row for batch in batches for row in batch]
+
+
+def _stored_message(role, content):
+    return json.dumps(
+        {"type": role, "data": {"content": content}},
+        ensure_ascii=False,
+    )
+
+
+def test_latest_assistant_texts_are_bounded_filtered_and_chronological(
+    timeindex_module,
+    tmp_path,
+):
+    timestamp = "2026-01-01 00:00:00.000000"
+    rows = [
+        {
+            "session_id": "1",
+            "message": _stored_message("human", "user secret"),
+            "timestamp": timestamp,
+        },
+        {
+            "session_id": "2",
+            "message": _stored_message("ai", "oldest answer"),
+            "timestamp": timestamp,
+        },
+        {"session_id": "3", "message": "not-json", "timestamp": timestamp},
+        {
+            "session_id": "4",
+            "message": _stored_message(
+                "ai",
+                [
+                    {"type": "image", "url": "private"},
+                    {"type": "text", "text": "middle answer"},
+                ],
+            ),
+            "timestamp": timestamp,
+        },
+        {
+            "session_id": "5",
+            "message": _stored_message("system", "system secret"),
+            "timestamp": timestamp,
+        },
+        {
+            "session_id": "6",
+            "message": _stored_message("ai", "latest answer"),
+            "timestamp": timestamp,
+        },
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 2, batch_size=2)
+    finally:
+        engine.dispose()
+
+    assert result.source_available is True
+    assert result.messages == ["middle answer", "latest answer"]
+    assert result.skipped_row_count == 1
+
+
+def test_latest_assistant_texts_include_null_timestamps_across_pages(
+    timeindex_module,
+    tmp_path,
+):
+    rows = [
+        {
+            "session_id": "new",
+            "message": _stored_message("ai", "newest answer"),
+            "timestamp": "2026-01-02 00:00:00.000000",
+        },
+        {
+            "session_id": "old",
+            "message": _stored_message("ai", "older answer"),
+            "timestamp": "2026-01-01 00:00:00.000000",
+        },
+        {
+            "session_id": "legacy-a",
+            "message": _stored_message("ai", "legacy answer a"),
+            "timestamp": None,
+        },
+        {
+            "session_id": "legacy-b",
+            "message": _stored_message("ai", "legacy answer b"),
+            "timestamp": None,
+        },
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 4, batch_size=1)
+    finally:
+        engine.dispose()
+
+    assert result.source_available is True
+    assert result.messages == [
+        "legacy answer a",
+        "legacy answer b",
+        "older answer",
+        "newest answer",
+    ]
+
+
+def test_latest_assistant_texts_support_legacy_schema_without_timestamp(
+    timeindex_module,
+    tmp_path,
+):
+    rows = [
+        {"session_id": "1", "message": _stored_message("ai", "old")},
+        {"session_id": "2", "message": _stored_message("human", "skip")},
+        {"session_id": "3", "message": _stored_message("ai", "new")},
+    ]
+    manager, engine = _create_manager(
+        timeindex_module,
+        tmp_path,
+        rows,
+        indexed=False,
+        include_timestamp=False,
+    )
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 2, batch_size=1)
+    finally:
+        engine.dispose()
+
+    assert result.messages == ["old", "new"]
+    assert result.source_available is True
+
+
+def test_latest_assistant_texts_exclude_history_only_action_note(
+    timeindex_module,
+    tmp_path,
+):
+    visible = "给你放首歌～"
+    stored = json.dumps(
+        {
+            "type": "ai",
+            "data": {
+                "content": f"{visible}\n[给小明放了《稻香》— 周杰伦]",
+                "additional_kwargs": {
+                    "anti_repeat_visible_text_length": str(len(visible))
+                },
+            },
+        },
+        ensure_ascii=False,
+    )
+    rows = [{"session_id": "1", "message": stored, "timestamp": None}]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 1)
+    finally:
+        engine.dispose()
+
+    assert result.messages == [visible]
+
+
+def test_latest_assistant_texts_exclude_legacy_history_only_action_notes(
+    timeindex_module,
+    tmp_path,
+):
+    rows = [
+        {
+            "session_id": "1",
+            "message": _stored_message(
+                "ai", 'Visible reply\n[Played for Alice: "Song" by Artist]'
+            ),
+            "timestamp": "2026-01-01 00:00:00.000000",
+        },
+        {
+            "session_id": "2",
+            "message": _stored_message(
+                "ai", "另一条回复\n[给小明分享了《文章》（来自 网站）]"
+            ),
+            "timestamp": "2026-01-02 00:00:00.000000",
+        },
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 2)
+    finally:
+        engine.dispose()
+
+    assert result.messages == ["Visible reply", "另一条回复"]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_messages"),
+    [
+        ('[Played for Alice: "Song" by Artist]', []),
+        (
+            'Visible reply\n[Played for Alice: "Song" by Artist]\n',
+            ["Visible reply"],
+        ),
+    ],
+)
+def test_latest_assistant_texts_exclude_legacy_action_note_boundaries(
+    timeindex_module,
+    tmp_path,
+    content,
+    expected_messages,
+):
+    rows = [
+        {
+            "session_id": "1",
+            "message": _stored_message("ai", content),
+            "timestamp": None,
+        }
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 1)
+    finally:
+        engine.dispose()
+
+    assert result.messages == expected_messages
+
+
+def test_latest_assistant_texts_preserve_non_template_bracketed_tail(
+    timeindex_module,
+    tmp_path,
+):
+    content = 'Visible reply\n[Played for effect, not metadata]'
+    rows = [
+        {
+            "session_id": "1",
+            "message": _stored_message("ai", content),
+            "timestamp": None,
+        }
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 1)
+    finally:
+        engine.dispose()
+
+    assert result.messages == [content]
+
+
+def test_latest_assistant_texts_missing_source_does_not_create_engine(
+    timeindex_module,
+):
+    manager = timeindex_module.TimeIndexedMemory.__new__(
+        timeindex_module.TimeIndexedMemory
+    )
+    manager.engines = {}
+    manager._ensure_engine_exists = lambda _name, readonly=False: False
+
+    result = manager.retrieve_latest_assistant_texts("missing", 100)
+
+    assert result == timeindex_module.LatestAssistantTexts([], False, 0)
 
 
 def test_batches_preserve_order_limit_and_legacy_list_api(timeindex_module, tmp_path):
@@ -748,3 +999,642 @@ def test_batched_read_reduces_python_peak_memory(
         if tracemalloc.is_tracing():
             tracemalloc.stop()
         engine.dispose()
+
+
+def test_block_list_assistant_rows_honor_the_visible_text_boundary():
+    """Block-list content is the shape cross_server actually persists.
+
+    ``main_logic/cross_server.py`` rebuilds every assistant turn as
+    ``[{"type": "text", ...}]``, so a guard that only ran on the string branch
+    was effectively never enforced on real rows.
+    """
+    from memory.timeindex import _assistant_record_from_stored_message
+
+    note = '[给博士放了《晴天》— 周杰伦]'
+    stored = json.dumps(
+        {
+            "type": "ai",
+            "data": {
+                "content": [
+                    {"type": "text", "text": "今天也要好好休息哦\n" + note},
+                ]
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    record = _assistant_record_from_stored_message(stored)
+
+    assert record is not None
+    assert record[0] == "今天也要好好休息哦"
+    assert note not in record[0]
+
+
+def test_block_list_assistant_rows_truncate_to_the_recorded_visible_length():
+    from memory.timeindex import _assistant_record_from_stored_message
+
+    visible = "今天也要好好休息哦"
+    stored = json.dumps(
+        {
+            "type": "ai",
+            "data": {
+                "content": [{"type": "text", "text": visible + "\n[hidden note]"}],
+                "additional_kwargs": {
+                    "anti_repeat_response_id": "turn-1",
+                    "anti_repeat_visible_text_length": str(len(visible)),
+                },
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    record = _assistant_record_from_stored_message(stored)
+
+    assert record == (visible, "turn-1")
+
+
+def test_block_list_assistant_rows_reject_an_impossible_visible_length():
+    from memory.timeindex import _assistant_record_from_stored_message
+
+    stored = json.dumps(
+        {
+            "type": "ai",
+            "data": {
+                "content": [{"type": "text", "text": "short"}],
+                "additional_kwargs": {"anti_repeat_visible_text_length": "9999"},
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    assert _assistant_record_from_stored_message(stored) is None
+
+
+def test_latest_assistant_texts_keep_response_ids_positionally_aligned(
+    timeindex_module,
+    tmp_path,
+):
+    """`response_ids` must be one entry per message, `None` where absent.
+
+    A compacted list loses the alignment the caller needs to tell WHICH analyzed
+    replies are linkable. With a mix of legacy rows and newer ones, a compacted
+    list looks like full coverage of a shorter window, and the panel would label
+    a partial aggregate as handling for the whole requested range.
+    """
+
+    def _row(session_id, text, response_id, stamp):
+        data = {"content": text}
+        if response_id is not None:
+            data["additional_kwargs"] = {"anti_repeat_response_id": response_id}
+        return {
+            "session_id": session_id,
+            "message": json.dumps({"type": "ai", "data": data}, ensure_ascii=False),
+            "timestamp": stamp,
+        }
+
+    rows = [
+        _row("1", "oldest reply", None, "2026-01-01 00:00:00.000000"),
+        _row("2", "middle reply", "turn-b", "2026-01-02 00:00:00.000000"),
+        _row("3", "newest reply", None, "2026-01-03 00:00:00.000000"),
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 10)
+    finally:
+        engine.dispose()
+
+    assert result.messages == ["oldest reply", "middle reply", "newest reply"]
+    assert len(result.response_ids) == len(result.messages)
+    assert result.response_ids == [None, "turn-b", None]
+
+
+def test_damaged_visible_length_drops_only_its_own_row():
+    """One damaged metadata field must not fail the whole insights request.
+
+    A digit string longer than CPython's int-conversion limit passes isdigit()
+    and then raises ValueError, which escaped the per-row parser. So does a
+    superscript: "²".isdigit() is True while int("²") raises. A
+    present-but-unusable value drops just that row -- falling back to the legacy
+    stripper could read past the visible text and expose the hidden tail.
+
+    This pins the CONTRACT (damaged field drops its own row, never escapes), not
+    each individual guard. The `isdecimal()` predicate, the length bound and the
+    `try/except` are deliberately redundant, so removing any ONE of them leaves
+    this test green; removing the predicate and the catch together reddens it.
+    """
+    from memory.timeindex import _assistant_record_from_stored_message
+
+    def _row(value):
+        return json.dumps(
+            {
+                "type": "ai",
+                "data": {
+                    "content": "hello there",
+                    "additional_kwargs": {"anti_repeat_visible_text_length": value},
+                },
+            }
+        )
+
+    assert _assistant_record_from_stored_message(_row("9" * 5000)) is None
+    assert _assistant_record_from_stored_message(_row("abc")) is None
+    assert _assistant_record_from_stored_message(_row(12)) is None
+    # isdigit() is not an int() predicate: superscripts satisfy it and raise.
+    assert _assistant_record_from_stored_message(_row("²")) is None
+    assert _assistant_record_from_stored_message(_row("³²")) is None
+    assert _assistant_record_from_stored_message(_row("5")) == ("hello", None)
+    # An EXPLICIT null is unusable metadata, not a missing key: `.get()` cannot
+    # tell them apart, and falling back to the legacy stripper on a corrupt
+    # field risks reading past the visible text.
+    assert _assistant_record_from_stored_message(_row(None)) is None
+    # Non-ASCII DECIMAL digits are accepted by int() and stay supported.
+    assert _assistant_record_from_stored_message(
+        _row("٥")
+    ) == ("hello", None)
+
+
+def test_engine_initialization_is_serialized_per_character(timeindex_module):
+    """Re-landed from c64d7ab31, which was reverted without a recorded reason.
+
+    `_ensure_engine_exists_unlocked` is "read the cached engine -> dispose it ->
+    rebuild", and this PR added a concurrent reader
+    (`retrieve_latest_assistant_texts`, readonly, under `asyncio.to_thread`)
+    racing the writer `/cache` drives. Without the per-character lock the
+    writable branch can dispose the very engine the reader is querying.
+    """
+    manager = timeindex_module.TimeIndexedMemory(recent_history_manager=None)
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_attempted = threading.Event()
+    second_entered = threading.Event()
+    call_lock = threading.Lock()
+    call_count = 0
+    errors: list[BaseException] = []
+
+    def fake_ensure(_name, db_path=None, readonly=False):
+        nonlocal call_count
+        with call_lock:
+            call_count += 1
+            current_call = call_count
+        if current_call == 1:
+            first_entered.set()
+            if not release_first.wait(2):
+                raise TimeoutError("test did not release first initialization")
+        else:
+            second_entered.set()
+        return True
+
+    manager._ensure_engine_exists_unlocked = fake_ensure
+
+    def run_first():
+        try:
+            manager._ensure_engine_exists("cat", readonly=True)
+        except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
+            errors.append(exc)
+
+    def run_second():
+        second_attempted.set()
+        try:
+            manager._ensure_engine_exists("cat", readonly=False)
+        except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`
+            errors.append(exc)
+
+    first = threading.Thread(target=run_first)
+    second = threading.Thread(target=run_second)
+    first.start()
+    assert first_entered.wait(1)
+    second.start()
+    assert second_attempted.wait(1)
+    # The second caller must still be blocked on the lock, not inside the body.
+    assert not second_entered.wait(0.1)
+    release_first.set()
+    first.join(2)
+    second.join(2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert call_count == 2
+
+
+def test_engine_disposal_shares_the_initialization_lock(timeindex_module):
+    """Disposal is the other half of the race, and the lock is re-entrant."""
+    manager = timeindex_module.TimeIndexedMemory(recent_history_manager=None)
+
+    lock = manager._get_engine_lock("cat")
+    assert manager._get_engine_lock("cat") is lock
+    assert manager._get_engine_lock("other") is not lock
+
+    # Re-entrant: the in-place repair branches dispose while already holding it.
+    with lock:
+        manager.dispose_engine("cat")
+
+    entered = threading.Event()
+    release = threading.Event()
+    disposed = threading.Event()
+
+    def hold_initialization(_name, db_path=None, readonly=False):
+        entered.set()
+        release.wait(2)
+        return True
+
+    manager._ensure_engine_exists_unlocked = hold_initialization
+
+    initializer = threading.Thread(
+        target=lambda: manager._ensure_engine_exists("cat", readonly=True)
+    )
+    disposer = threading.Thread(
+        target=lambda: (manager.dispose_engine("cat"), disposed.set())
+    )
+    initializer.start()
+    assert entered.wait(1)
+    disposer.start()
+    assert not disposed.wait(0.1), "disposal ran while initialization held the lock"
+    release.set()
+    initializer.join(2)
+    disposer.join(2)
+
+    assert disposed.is_set()
+    assert not initializer.is_alive()
+    assert not disposer.is_alive()
+
+
+def test_disposal_waits_for_an_in_flight_latest_assistant_read(
+    timeindex_module,
+    tmp_path,
+):
+    """A read in flight must keep its engine until it finishes.
+
+    The lock used to be released as soon as the engine was acquired, so
+    `dispose_engine` could take it and tear down the very engine the schema
+    probe and paging queries were still using — surfacing to the caller as
+    RuntimeError("latest assistant history read failed").
+    """
+    rows = [
+        {
+            "session_id": str(index),
+            "message": _stored_message("ai", f"reply {index}"),
+            "timestamp": f"2026-01-0{index} 00:00:00.000000",
+        }
+        for index in range(1, 4)
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    # The shared fixture builds the manager through __new__ and assigns only
+    # what the read path needs; disposal also consults this ledger.
+    manager._undisposed_pools = {}
+
+    read_started = threading.Event()
+    allow_read_to_finish = threading.Event()
+    disposal_returned = threading.Event()
+    results: list[object] = []
+    failures: list[BaseException] = []
+
+    original_validate = manager._validate_table_name
+
+    def blocking_validate(table_name):
+        # Called after the engine is acquired and before the schema probe, i.e.
+        # exactly the window the lock has to keep covered.
+        read_started.set()
+        allow_read_to_finish.wait(2)
+        return original_validate(table_name)
+
+    manager._validate_table_name = blocking_validate
+
+    def run_read():
+        try:
+            results.append(manager.retrieve_latest_assistant_texts("cat", 10))
+        except BaseException as exc:  # noqa: BLE001 - surfaced via `failures`
+            failures.append(exc)
+
+    def run_dispose():
+        try:
+            manager.dispose_engine("cat")
+        except BaseException as exc:  # noqa: BLE001 - surfaced via `failures`
+            failures.append(exc)
+        disposal_returned.set()
+
+    reader = threading.Thread(target=run_read)
+    disposer = threading.Thread(target=run_dispose)
+    try:
+        reader.start()
+        assert read_started.wait(2)
+        disposer.start()
+        assert not disposal_returned.wait(0.2), "disposal ran during an in-flight read"
+        allow_read_to_finish.set()
+        reader.join(5)
+        disposer.join(5)
+    finally:
+        allow_read_to_finish.set()
+        engine.dispose()
+
+    assert not reader.is_alive()
+    assert not disposer.is_alive()
+    assert failures == []
+    assert disposal_returned.is_set()
+    assert results and results[0].messages == ["reply 1", "reply 2", "reply 3"]
+
+
+def test_latest_assistant_texts_stop_at_the_scan_budget(timeindex_module, tmp_path):
+    """Rows EXAMINED bound the read, not only assistant messages found.
+
+    A history whose tail is all human rows used to page through the entire
+    table looking for a full window, holding the per-character engine lock the
+    whole time. The router's HTTP timeout does not stop the worker thread, so
+    that scan kept blocking the character's memory reads and writes long after
+    the request had given up.
+    """
+    timestamp = "2026-01-01 00:00:00.000000"
+    budget = timeindex_module._LATEST_ASSISTANT_MIN_SCAN_BUDGET
+    rows = [
+        {
+            "session_id": "0",
+            "message": _stored_message("ai", "buried answer"),
+            "timestamp": timestamp,
+        }
+    ]
+    rows += [
+        {
+            "session_id": str(index + 1),
+            "message": _stored_message("human", "user turn"),
+            "timestamp": timestamp,
+        }
+        for index in range(budget + 500)
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 1, batch_size=256)
+    finally:
+        engine.dispose()
+
+    assert result.source_available is True
+    assert result.messages == [], (
+        "the scan ran past its budget to reach the buried assistant row"
+    )
+    assert result.skipped_row_count <= budget + 256
+
+
+def _user_bodies_seen(timeindex_module, monkeypatch):
+    """Record every stored message the Python-side parser is handed."""
+    seen: list[object] = []
+    original = timeindex_module._assistant_record_from_stored_message
+
+    def _spy(message_raw):
+        seen.append(message_raw)
+        return original(message_raw)
+
+    monkeypatch.setattr(
+        timeindex_module, "_assistant_record_from_stored_message", _spy
+    )
+    return seen
+
+
+def test_user_turn_bodies_never_reach_this_process(
+    timeindex_module, tmp_path, monkeypatch
+):
+    """The role filter runs in SQL, so a user turn's text is never transferred.
+
+    Without it every row in the scanned window was SELECTed and materialized to
+    produce a handful of assistant replies -- reported as 4.3 MB of user prose
+    read to return one 17-character answer.
+    """
+    monkeypatch.setattr(timeindex_module, "_json1_supported", None)
+    seen = _user_bodies_seen(timeindex_module, monkeypatch)
+    timestamp = "2026-01-01 00:00:00.000000"
+    rows = [
+        {
+            "session_id": str(index),
+            "message": _stored_message("human", "PRIVATE-USER-TEXT " * 4096),
+            "timestamp": timestamp,
+        }
+        for index in range(8)
+    ]
+    rows.append(
+        {
+            "session_id": "9",
+            "message": _stored_message("ai", "the visible reply"),
+            "timestamp": timestamp,
+        }
+    )
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 100, batch_size=256)
+    finally:
+        engine.dispose()
+
+    # The reply still comes back, and the user rows are still counted as
+    # skipped -- otherwise "no user text was read" would also hold for a query
+    # that returned nothing at all.
+    assert result.messages == ["the visible reply"]
+    assert result.skipped_row_count == 8
+    assert not any("PRIVATE-USER-TEXT" in str(body) for body in seen)
+
+
+def test_the_role_filter_falls_back_when_the_sqlite_build_lacks_json1(
+    timeindex_module, tmp_path, monkeypatch
+):
+    """An older build without JSON1 reads more, but must not lose the feature."""
+    monkeypatch.setattr(timeindex_module, "_json1_supported", False)
+    seen = _user_bodies_seen(timeindex_module, monkeypatch)
+    timestamp = "2026-01-01 00:00:00.000000"
+    rows = [
+        {
+            "session_id": "1",
+            "message": _stored_message("human", "user secret"),
+            "timestamp": timestamp,
+        },
+        {
+            "session_id": "2",
+            "message": _stored_message("ai", "the visible reply"),
+            "timestamp": timestamp,
+        },
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 100, batch_size=256)
+    finally:
+        engine.dispose()
+
+    assert result.messages == ["the visible reply"]
+    assert result.skipped_row_count == 1
+    assert any("user secret" in str(body) for body in seen)
+
+
+def test_paging_advances_through_a_window_with_no_assistant_rows(
+    timeindex_module, tmp_path, monkeypatch
+):
+    """The cursor comes from the KEY window, not from the surviving rows.
+
+    Pushing the filter into the paged query would have made LIMIT count
+    matching rows, so one statement could walk an unbounded stretch of history;
+    keeping the two queries separate is what preserves the scan budget, and it
+    means a page containing no assistant row must still advance the cursor.
+    """
+    monkeypatch.setattr(timeindex_module, "_json1_supported", None)
+    timestamp = "2026-01-01 00:00:00.000000"
+    rows = [
+        {
+            "session_id": "0",
+            "message": _stored_message("ai", "the oldest answer"),
+            "timestamp": timestamp,
+        }
+    ]
+    rows += [
+        {
+            "session_id": str(index + 1),
+            "message": _stored_message("human", f"user turn {index}"),
+            "timestamp": timestamp,
+        }
+        for index in range(300)
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 5, batch_size=2)
+    finally:
+        engine.dispose()
+
+    assert result.messages == ["the oldest answer"]
+    assert result.skipped_row_count == 300
+
+
+def test_the_json1_probe_reports_a_modern_build(
+    timeindex_module, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(timeindex_module, "_json1_supported", None)
+    manager, engine = _create_manager(timeindex_module, tmp_path, [])
+    try:
+        assert timeindex_module._supports_json1(engine) is True
+    finally:
+        engine.dispose()
+
+
+def test_the_json1_probe_failing_costs_the_filter_not_the_feature(
+    timeindex_module, monkeypatch
+):
+    """JSON1 ships by default from SQLite 3.38, but an older build must not 500.
+
+    Falling back to an unfiltered body read costs memory on such a build;
+    letting the probe's error escape would cost the whole insights feature.
+    """
+    monkeypatch.setattr(timeindex_module, "_json1_supported", None)
+
+    class _BuildWithoutJson1:
+        def connect(self):
+            raise RuntimeError("no such function: json_valid")
+
+    assert timeindex_module._supports_json1(_BuildWithoutJson1()) is False
+    # Cached, so the probe costs one query per process rather than one per page.
+    assert timeindex_module._json1_supported is False
+
+
+def test_a_database_without_the_history_table_reports_no_source(
+    timeindex_module, tmp_path
+):
+    """PRAGMA table_info does not raise for a missing table -- it returns [].
+
+    So an empty or partially restored database read as "a schema with no
+    timestamp column", and the SELECT that followed failed against a table
+    that is not there. That surfaced as a 503, which the panel renders as a
+    retryable error, and no amount of retrying can create the table.
+
+    No table is exactly what source_available=False already means, and it is
+    the answer the engine-unavailable branches above give too.
+    """
+    from sqlalchemy import create_engine
+
+    manager = timeindex_module.TimeIndexedMemory(recent_history_manager=None)
+
+    # A real, perfectly readable database that simply holds something else.
+    db_path = tmp_path / "time_indexed.db"
+    engine = create_engine("sqlite:///" + str(db_path))
+    with engine.connect() as conn:
+        conn.execute(text("CREATE TABLE something_else (id INTEGER)"))
+        conn.commit()
+
+    manager.engines["Carol"] = engine
+    manager._ensure_engine_exists = lambda *_a, **_k: True
+
+    result = manager._retrieve_latest_assistant_texts_locked(
+        "Carol", 5, batch_size=200,
+    )
+
+    assert result.messages == []
+    assert result.source_available is False, (
+        "a missing table was reported as a failed read, which the panel shows "
+        "as retryable even though retrying cannot create it"
+    )
+
+    # The dual: a database that DOES have the table still reads from it, so
+    # the check cannot pass by reporting no source for everything.
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE " + timeindex_module.TIME_ORIGINAL_TABLE_NAME
+                + " (rowid INTEGER PRIMARY KEY, message TEXT)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO " + timeindex_module.TIME_ORIGINAL_TABLE_NAME
+                + " (message) VALUES (:m)"
+            ),
+            {"m": json.dumps({"type": "ai", "data": {"content": "hello there"}})},
+        )
+        conn.commit()
+
+    populated = manager._retrieve_latest_assistant_texts_locked(
+        "Carol", 5, batch_size=200,
+    )
+    assert populated.source_available is True
+    assert populated.messages == ["hello there"]
+
+
+def test_the_visible_boundary_counts_raw_characters_in_a_block_list(
+    timeindex_module,
+):
+    """The recorded length counts the text as it was WRITTEN.
+
+    ``main_logic/core/proactive.py`` stores ``len(full_text)`` and then appends
+    the history-only note to that same string, so the boundary indexes the raw
+    concatenation. Stripping each block first shortened the body, which slid the
+    boundary along by however much came off the front -- and what it slid into
+    is the note the rule exists to keep out.
+
+    The string branch is the oracle here: both shapes carry the same text and
+    the same recorded length, so they have to produce the same answer.
+    """
+    import json
+
+    def record(content, visible=None):
+        kwargs = {}
+        if visible is not None:
+            kwargs["anti_repeat_visible_text_length"] = str(visible)
+        return json.dumps(
+            {"type": "ai", "data": {"content": content, "additional_kwargs": kwargs}}
+        )
+
+    def read(raw):
+        got = timeindex_module._assistant_record_from_stored_message(raw)
+        return got[0] if got else None
+
+    visible = chr(10) + chr(10) + "好呀好呀"
+    hidden = chr(10) + "[hidden note]"
+    body = visible + hidden
+
+    from_blocks = read(record([{"type": "text", "text": body}], len(visible)))
+    from_string = read(record(body, len(visible)))
+
+    assert from_blocks == "好呀好呀", from_blocks
+    assert from_blocks == from_string, (
+        "the two content shapes disagree, which is the drift this boundary was "
+        "shared to prevent"
+    )
+
+    # The duals, so this cannot pass by never slicing. Without leading
+    # whitespace nothing moved before or after; with no recorded length the
+    # body is still trimmed; and a whitespace-only block is still dropped.
+    plain = "好呀好呀"
+    assert read(record([{"type": "text", "text": plain + hidden}], len(plain))) == plain
+    assert read(record([{"type": "text", "text": "  好呀好呀  "}])) == "好呀好呀"
+    assert (
+        read(record([{"type": "text", "text": "   "}, {"type": "text", "text": "好呀好呀"}]))
+        == "好呀好呀"
+    )

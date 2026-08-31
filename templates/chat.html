@@ -624,6 +624,11 @@
     <!-- 跳过：Live2D/VRM/Three.js、common_ui.js(DOM拖拽不兼容)、touch-config、tutorial -->
     <script src="/static/libs/ogg-opus-decoder.min.js?v={{ static_asset_version }}"></script>
     <script src="/static/jukebox/music_ui.js?v={{ static_asset_version }}"></script>
+    <!-- 点歌台门面：这一页也会收到 jukebox_control。多窗口分发下它会让位给主窗口，
+         但网页端单独开 /chat 时它就是唯一的收件人，没有门面就只能把 AI 发来的
+         点播指令整条丢掉（聊天窗自己的点歌台按钮同样是死的）。加载顺序与
+         index.html 保持一致：music_ui.js -> jukebox-loader.js -> index.js。 -->
+    <script src="/static/jukebox/jukebox-loader.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/index.js?v={{ static_asset_version }}"></script>
     <!-- 不加载 common_ui.js：它的 DOM 拖拽/resize 和独立窗口不兼容 -->
     <script src="/static/achievement_manager.js?v={{ static_asset_version }}"></script>

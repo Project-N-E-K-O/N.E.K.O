@@ -50,6 +50,22 @@
     let _musicPlayUrlClaimCleanupTimer = 0;
     let _musicPlayUrlCoordBeforeUnloadBound = false;
     let _musicPlayUrlBroadcastUnavailableWarned = false;
+    let _jukeboxControlQueue = Promise.resolve();
+    // 「顶替」世代。就地取消只够停住「已经在跑」的那条；还在队列里等着的那条尚未
+    // 取到任何取消世代，轮到它时会把此刻的世代当成最新的，于是在用户最后那条指令
+    // 之后又响起来——而 play 要等运行时初始化、预检、动画加载，这一响可能是好几秒。
+    // 播放类指令到达时记下当时的世代，轮到执行时对不上就整条跳过。
+    //
+    // 谁能顶替，按「绝对 / 相对」分：
+    //   stop 与 play 是绝对的——一个要静音，一个点名要这首，排在它们前面还没开跑
+    //   的播放指令一律作废；
+    //   next / previous 是相对当前曲目算的，把排在它前面那条 play 吞掉的话，它算
+    //   的就是旧位置了，所以它们只被顶替、不顶替别人。
+    // set_volume / set_mode 两头都不沾，永远不会被顺手丢掉。
+    //
+    // 放在这里而不是 Jukebox 里：转发出去的指令在拥有者窗口用的是另一套计数器，
+    // 作废判定必须留在发件的这一侧。
+    let _jukeboxSupersedeGeneration = 0;
     const MUSIC_PLAY_URL_SENDER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
     function gameRouteStateRevision() {
@@ -764,6 +780,153 @@
         }
 
         dispatchMusicPlayUrlResponse(response, 'websocket');
+    }
+
+    // 多窗口分发形态下同一条 WS 消息会被 RAW_MESSAGE 转发给多个窗口，chat 窗口和
+    // pet 窗口都会走到这里。谁来执行必须唯一，判据都能在本窗口内直接判定：
+    //   1. 独立点唱机窗口开着 -> 它才持有可见播放器，转发给它
+    //   2. 多窗口下的 chat 窗口 -> 让位给主窗口（它和点唱机窗口同 partition，
+    //      能听见拥有者；chat 处于 persist:neko-full-chat，听不见）
+    //   3. 其余（网页端单窗口、pet 窗口）-> 本地执行
+    function isSecondaryJukeboxControlSurface() {
+        return window.__NEKO_MULTI_WINDOW__ === true
+            && /^\/chat(?:_full)?(?:\/|$)/.test(window.location.pathname || '');
+    }
+
+    function dispatchJukeboxControl(payload, isNotSuperseded) {
+        // 归属必须在真正要执行的这一刻算，不能用入队之前的快照：排队期间独立
+        // 点唱机窗口可能刚打开（那就该转发，否则会在隐藏窗口里另起一条音轨），
+        // 也可能刚关闭（那就该本地执行，否则白等一次转发超时）。
+        var loader = window.__nekoJukeboxLoader;
+        var ownerAlive = !!(loader && typeof loader.hasControlOwner === 'function' && loader.hasControlOwner());
+        if (ownerAlive) return loader.forwardControl(payload);
+        if (!window.Jukebox || typeof window.Jukebox.executeControl !== 'function') {
+            // 分片正在加载：bootstrap.js 一落地就把带 executeControl 的惰性门面
+            // 换成了空对象，而 executeControl 定义在第五个分片里。这中间到达的
+            // 指令不该被丢掉（冷缓存/慢盘下这个窗口有几百毫秒到数秒），交给
+            // loader 等分片加载完再执行。
+            if (loader && typeof loader.load === 'function') {
+                return Promise.resolve(loader.load()).then(function (jukebox) {
+                    // 分片加载是几百毫秒到数秒的窗口，入队之前算好的两件事到这里
+                    // 都可能已经过期，都要重算。
+                    //
+                    // 顶替：这段时间里来的 stop / play 推进了顶替世代，但它那次
+                    // 就地取消对本条毫无作用 —— 分片加载期间 window.Jukebox 是
+                    // bootstrap 换上的空对象，cancelActivePlayback 还不存在，那次
+                    // 调用是静默空操作。runCommand 入口那次判定也早过去了。
+                    if (typeof isNotSuperseded === 'function' && !isNotSuperseded()) {
+                        console.log('[Jukebox] 跳过点歌台控制：分片加载期间已被后来的指令作废');
+                        return null;
+                    }
+                    // 归属：独立点唱机窗口可能刚打开并宣告归属，否则这条指令会在
+                    // 本窗口另起一条隐藏音轨。
+                    if (typeof loader.hasControlOwner === 'function' && loader.hasControlOwner()) {
+                        return loader.forwardControl(payload);
+                    }
+                    if (!jukebox || typeof jukebox.executeControl !== 'function') {
+                        console.log('[Jukebox] 跳过点歌台控制：分片加载后仍无控制入口');
+                        return null;
+                    }
+                    return jukebox.executeControl(payload);
+                });
+            }
+            console.log('[Jukebox] 跳过点歌台控制：当前窗口没有点歌台控制入口');
+            return Promise.resolve(null);
+        }
+        return window.Jukebox.executeControl(payload);
+    }
+
+    function handleJukeboxControlResponse(response) {
+        if (!response) return;
+
+        var command = response.command && typeof response.command === 'object' ? response.command : response;
+        var payload = {
+            action: command.action,
+            query: command.query || '',
+            value: command.value,
+            mode: command.mode,
+            headless: true
+        };
+
+        // 让位判据与有没有拥有者无关：同一条消息会被 RAW_MESSAGE 转给多个角色
+        // 窗口，它们都能看见同一个拥有者，于是会各转发一次、拥有者执行两遍 ——
+        // 一条 adjust_volume 被叠加，play 和切歌互相抢。只有主控制窗口能继续。
+        if (isSecondaryJukeboxControlSurface()) {
+            console.log('[Jukebox] 跳过点歌台控制：多窗口下由主窗口执行');
+            return;
+        }
+
+        var arrivalSupersedeGeneration = null;
+        // 判据只写一处，两个检查点共用：入队等待期间，以及分片加载的等待期间。
+        var isNotSuperseded = function () {
+            return arrivalSupersedeGeneration === null
+                || arrivalSupersedeGeneration === _jukeboxSupersedeGeneration;
+        };
+        var runCommand = function () {
+            // 排队期间被顶替了：整条跳过，别等轮到自己才把声音放出来。
+            if (!isNotSuperseded()) {
+                console.log('[Jukebox] 跳过点歌台控制：排队期间已被后来的指令作废');
+                return Promise.resolve();
+            }
+            return Promise.resolve(dispatchJukeboxControl(payload, isNotSuperseded)).then(function (result) {
+                console.log('[Jukebox] 点歌台控制完成:', result);
+            }).catch(function (error) {
+                console.warn('[Jukebox] 点歌台控制失败:', error);
+            });
+        };
+
+        // 取消动作排在它要取消的那个操作后面毫无意义：一条卡在慢动画加载里的
+        // play 会把后面所有指令一起堵死，而声音早就出来了。这不止 stop —— 后来的
+        // play / next / previous 同样是替换意图，用户已经不要那条在途的了。
+        //
+        // 但直接插队执行会把同一拍到达的两条颠倒（入队走的是微任务，插队是同步的），
+        // 结果变成「新的先跑、旧的后跑」。所以只把「作废在途播放」这一步就地做掉——
+        // 声音立刻停，卡住的那条也会在下一个世代检查处解开——指令本身仍然按顺序
+        // 排队执行，次序不变。
+        var normalizedControlAction = String(payload.action || '').trim().toLowerCase();
+        if (normalizedControlAction === 'stop' || normalizedControlAction === 'play') {
+            _jukeboxSupersedeGeneration += 1;
+        }
+        if (normalizedControlAction === 'play'
+            || normalizedControlAction === 'next'
+            || normalizedControlAction === 'previous') {
+            // 自增在前、取号在后，所以顶替者自己记的是新世代，不会被自己顶掉。
+            arrivalSupersedeGeneration = _jukeboxSupersedeGeneration;
+        }
+        var preemptingActions = ['stop', 'play', 'next', 'previous'];
+        if (preemptingActions.indexOf(normalizedControlAction) >= 0) {
+            // 取消也得按归属走：在途的那条 play 可能正跑在独立点唱机窗口里，
+            // 本窗口的 cancelActivePlayback 够不着它，队列里的 stop 就只能干等
+            // 一次转发超时。
+            //
+            // 两个可能的播放方都要取消，不能二选一（归属允许在指令排队期间变化），
+            // 而且必须各自包 try —— 共用一个的话前一个抛异常会把后一个整个跳过，
+            // 那正是这段代码要堵的洞。
+            var cancelLoader = window.__nekoJukeboxLoader;
+            var cancelOwnerAlive = !!(cancelLoader
+                && typeof cancelLoader.hasControlOwner === 'function'
+                && cancelLoader.hasControlOwner());
+            if (cancelOwnerAlive && typeof cancelLoader.cancelOnOwner === 'function') {
+                try {
+                    cancelLoader.cancelOnOwner(normalizedControlAction);
+                } catch (error) {
+                    console.warn('[Jukebox] 作废拥有者在途播放失败:', error);
+                }
+            }
+            if (window.Jukebox && typeof window.Jukebox.cancelActivePlayback === 'function') {
+                try {
+                    // 相对导航不静音：目标可能不存在，那时这条指令是空操作，
+                    // 不该把正在放的歌停掉。判据与顶替那套一致。
+                    window.Jukebox.cancelActivePlayback({
+                        silenceAudio: normalizedControlAction !== 'next'
+                            && normalizedControlAction !== 'previous'
+                    });
+                } catch (error) {
+                    console.warn('[Jukebox] 作废本地在途播放失败:', error);
+                }
+            }
+        }
+        _jukeboxControlQueue = _jukeboxControlQueue.then(runCommand, runCommand);
     }
 
     function readNewUserIcebreakerStore() {
@@ -4955,6 +5118,10 @@
                 // -------- music play url --------
                 } else if (response.type === 'music_play_url') {
                     handleMusicPlayUrlResponse(response);
+
+                // -------- jukebox control --------
+                } else if (response.type === 'jukebox_control') {
+                    handleJukeboxControlResponse(response);
 
                 // -------- repetition_warning --------
                 } else if (response.type === 'repetition_warning') {
