@@ -26,11 +26,13 @@ from utils.screenshot_utils import (
     decode_and_compress_screenshot_b64,
 )
 from utils.web_scraper import (
+    fetch_neko_community_feed,
     fetch_news_content,
     fetch_personal_dynamics,
     fetch_trending_content,
     fetch_video_content,
     fetch_window_context_content,
+    format_neko_community_feed,
     format_news_content,
     format_personal_dynamics,
     format_trending_content,
@@ -39,6 +41,7 @@ from utils.web_scraper import (
 )
 
 from .content_logging import (
+    _log_neko_community_content,
     _log_news_content,
     _log_personal_dynamics,
     _log_trending_content,
@@ -146,6 +149,15 @@ def _extract_links_from_raw(
                     [weibo_or_twitter, xhh_links, tieba_links]
                 )
             )
+
+        elif mode == "community":
+            for post in raw_data.get("posts", []) or []:
+                title = post.get("title", "")
+                url = post.get("url", "")
+                if title and url:
+                    links.append(
+                        {"title": title, "url": url, "source": "喵宇宙社区"}
+                    )
 
         elif mode == "video":
             video = raw_data.get("video", {})
@@ -336,6 +348,19 @@ async def _fetch_source(
         _log_news_content(lanlan_name, content)
         return mode, {
             "formatted_content": format_news_content(content),
+            "raw_data": content,
+            "links": _extract_links_from_raw(mode, content),
+        }
+
+    if mode == "community":
+        content = await fetch_neko_community_feed(
+            limit=PROACTIVE_PHASE1_FETCH_PER_SOURCE
+        )
+        if not content["success"]:
+            raise ValueError(f"获取喵宇宙社区失败: {content.get('error')}")
+        _log_neko_community_content(lanlan_name, content)
+        return mode, {
+            "formatted_content": format_neko_community_feed(content.get("posts", [])),
             "raw_data": content,
             "links": _extract_links_from_raw(mode, content),
         }

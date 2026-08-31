@@ -51,6 +51,12 @@ XHH_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
 )
+NEKO_COMMUNITY_FEED_API = "https://community.project-neko.cn/api/feed"
+NEKO_COMMUNITY_DISCOVER_URL = "https://community.project-neko.cn/discover"
+# The community API's discover feed is deliberately fetched as its first page
+# of 60 cards. The caller's smaller ``limit`` is applied after normalization,
+# so Phase 1 keeps its existing prompt budget while still getting a varied pool.
+NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
 
 
 async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
@@ -1683,6 +1689,164 @@ def format_xhh_feed(posts: list[dict[str, Any]]) -> str:
             line += f"\n   {description[:300]}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
+    """Return the first list-shaped card collection from a feed response."""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    containers: list[Any] = [payload]
+    for key in ("data", "result", "feed"):
+        value = payload.get(key)
+        if isinstance(value, (dict, list)):
+            containers.append(value)
+    for container in containers:
+        if isinstance(container, list):
+            return [item for item in container if isinstance(item, dict)]
+        if not isinstance(container, dict):
+            continue
+        for key in ("items", "posts", "cards", "results", "list"):
+            value = container.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _community_text(value: Any) -> str:
+    """Flatten the common text shapes used by public community feed cards."""
+    if isinstance(value, str):
+        return _plain_xhh_text(value)
+    if isinstance(value, dict):
+        for key in ("text", "content", "body", "value", "name", "display_name"):
+            text = _community_text(value.get(key))
+            if text:
+                return text
+        return ""
+    if isinstance(value, list):
+        return _plain_xhh_text(" ".join(_community_text(item) for item in value))
+    return ""
+
+
+def _community_label_values(items: Any) -> list[str]:
+    values: list[str] = []
+    for item in items if isinstance(items, list) else []:
+        value = _community_text(item)
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
+def _community_card_url(raw: dict[str, Any]) -> str:
+    for key in ("url", "link", "permalink", "canonical_url", "path"):
+        candidate = _community_text(raw.get(key))
+        if not candidate:
+            continue
+        if candidate.startswith(("http://", "https://")):
+            return candidate
+        if candidate.startswith("/"):
+            return urljoin(NEKO_COMMUNITY_DISCOVER_URL, candidate)
+    # The feed API does not need to expose a post permalink for a card to stay
+    # useful: the discover page is a safe, stable fallback for the source card.
+    return NEKO_COMMUNITY_DISCOVER_URL
+
+
+def normalize_neko_community_feed(
+    payload: Any,
+    *,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Normalize public N.E.K.O community feed cards for proactive chat."""
+    posts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in _community_feed_items(payload):
+        title = _community_text(
+            raw.get("title") or raw.get("headline") or raw.get("subject")
+        )
+        content = _community_text(
+            raw.get("content")
+            or raw.get("body")
+            or raw.get("text")
+            or raw.get("description")
+            or raw.get("excerpt")
+        )
+        if not title:
+            title = content[:80]
+        if not title:
+            continue
+        author_data = raw.get("author") or raw.get("user") or raw.get("creator")
+        author = _community_text(author_data)
+        labels = _community_label_values(
+            raw.get("tags") or raw.get("topics") or raw.get("categories")
+        )
+        url = _community_card_url(raw)
+        item_id = _community_text(raw.get("id") or raw.get("post_id") or raw.get("uuid"))
+        dedupe_key = item_id or f"{url}|{title.casefold()}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        posts.append(
+            {
+                "id": item_id,
+                "title": title,
+                "content": content,
+                "author": author,
+                "tags": labels,
+                "url": url,
+                "created_at": raw.get("created_at") or raw.get("createdAt"),
+            }
+        )
+        if len(posts) >= max(1, int(limit)):
+            break
+    return posts
+
+
+def format_neko_community_feed(posts: list[dict[str, Any]]) -> str:
+    """Format N.E.K.O community cards as bounded, prompt-ready material."""
+    lines: list[str] = []
+    for index, post in enumerate(posts, start=1):
+        details: list[str] = []
+        if post.get("author"):
+            details.append(f"作者: {post['author']}")
+        if post.get("tags"):
+            details.append("话题: " + "、".join(post["tags"][:5]))
+        suffix = f"（{'；'.join(details)}）" if details else ""
+        line = f"{index}. {post['title']}{suffix}"
+        content = _plain_xhh_text(post.get("content"))
+        if content and content != post["title"]:
+            line += f"\n   {content[:300]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
+    """Fetch the public first-page discover cards from the N.E.K.O community."""
+    try:
+        response = await get_external_http_client().get(
+            NEKO_COMMUNITY_FEED_API,
+            params={"offset": 0, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE},
+            headers={
+                "Accept": "application/json",
+                "Referer": NEKO_COMMUNITY_DISCOVER_URL,
+                "User-Agent": XHH_USER_AGENT,
+            },
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        posts = normalize_neko_community_feed(payload, limit=limit)
+        if not posts:
+            raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
+        return {
+            "success": True,
+            "posts": posts,
+            "formatted_content": format_neko_community_feed(posts),
+        }
+    except Exception as exc:
+        logger.warning(f"获取喵宇宙社区内容失败: {type(exc).__name__}: {exc}")
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}", "posts": []}
 
 
 async def fetch_xhh_feed_content(limit: int = 10) -> dict[str, Any]:

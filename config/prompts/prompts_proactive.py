@@ -2125,6 +2125,7 @@ PROACTIVE_CHAT_PROMPTS = {
         "screenshot": proactive_chat_prompt_screenshot,
         "window": proactive_chat_prompt_window_search,
         "news": proactive_chat_prompt_news,
+        "community": proactive_chat_prompt_news,
         "video": proactive_chat_prompt_video,
         "personal": proactive_chat_prompt_personal,
         "music": proactive_chat_prompt_music,
@@ -2134,6 +2135,7 @@ PROACTIVE_CHAT_PROMPTS = {
         "screenshot": proactive_chat_prompt_screenshot_zh_tw,
         "window": proactive_chat_prompt_window_search_zh_tw,
         "news": proactive_chat_prompt_news_zh_tw,
+        "community": proactive_chat_prompt_news_zh_tw,
         "video": proactive_chat_prompt_video_zh_tw,
         "personal": proactive_chat_prompt_personal_zh_tw,
         "music": proactive_chat_prompt_music_zh_tw,
@@ -2143,6 +2145,7 @@ PROACTIVE_CHAT_PROMPTS = {
         "screenshot": proactive_chat_prompt_screenshot_en,
         "window": proactive_chat_prompt_window_search_en,
         "news": proactive_chat_prompt_news_en,
+        "community": proactive_chat_prompt_news_en,
         "video": proactive_chat_prompt_video_en,
         "personal": proactive_chat_prompt_personal_en,
         "music": proactive_chat_prompt_music_en,
@@ -2152,6 +2155,7 @@ PROACTIVE_CHAT_PROMPTS = {
         "screenshot": proactive_chat_prompt_screenshot_ja,
         "window": proactive_chat_prompt_window_search_ja,
         "news": proactive_chat_prompt_news_ja,
+        "community": proactive_chat_prompt_news_ja,
         "video": proactive_chat_prompt_video_ja,
         "personal": proactive_chat_prompt_personal_ja,
         "music": proactive_chat_prompt_music_ja,
@@ -2161,6 +2165,7 @@ PROACTIVE_CHAT_PROMPTS = {
         "screenshot": proactive_chat_prompt_screenshot_ko,
         "window": proactive_chat_prompt_window_search_ko,
         "news": proactive_chat_prompt_news_ko,
+        "community": proactive_chat_prompt_news_ko,
         "video": proactive_chat_prompt_video_ko,
         "personal": proactive_chat_prompt_personal_ko,
         "music": proactive_chat_prompt_music_ko,
@@ -2170,6 +2175,7 @@ PROACTIVE_CHAT_PROMPTS = {
         "screenshot": proactive_chat_prompt_screenshot_ru,
         "window": proactive_chat_prompt_window_search_ru,
         "news": proactive_chat_prompt_news_ru,
+        "community": proactive_chat_prompt_news_ru,
         "video": proactive_chat_prompt_video_ru,
         "personal": proactive_chat_prompt_personal_ru,
         "music": proactive_chat_prompt_music_ru,
@@ -2179,6 +2185,7 @@ PROACTIVE_CHAT_PROMPTS = {
         "screenshot": proactive_chat_prompt_screenshot_es,
         "window": proactive_chat_prompt_window_search_es,
         "news": proactive_chat_prompt_news_es,
+        "community": proactive_chat_prompt_news_es,
         "video": proactive_chat_prompt_video_es,
         "personal": proactive_chat_prompt_personal_es,
         "music": proactive_chat_prompt_music_es,
@@ -2188,6 +2195,7 @@ PROACTIVE_CHAT_PROMPTS = {
         "screenshot": proactive_chat_prompt_screenshot_pt,
         "window": proactive_chat_prompt_window_search_pt,
         "news": proactive_chat_prompt_news_pt,
+        "community": proactive_chat_prompt_news_pt,
         "video": proactive_chat_prompt_video_pt,
         "personal": proactive_chat_prompt_personal_pt,
         "music": proactive_chat_prompt_music_pt,
@@ -3811,6 +3819,7 @@ REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS = {
 PROACTIVE_SOURCE_LABELS = {
     "zh": {
         "news": "热议话题",
+        "community": "喵宇宙社区",
         "video": "视频推荐",
         "home": "首页推荐",
         "window": "窗口上下文",
@@ -3820,6 +3829,7 @@ PROACTIVE_SOURCE_LABELS = {
     },
     "zh-TW": {
         "news": "熱議話題",
+        "community": "喵宇宙社群",
         "video": "影片推薦",
         "home": "首頁推薦",
         "window": "視窗上下文",
@@ -3829,6 +3839,7 @@ PROACTIVE_SOURCE_LABELS = {
     },
     "en": {
         "news": "Trending Topics",
+        "community": "N.E.K.O Community",
         "video": "Video Recommendations",
         "home": "Home Recommendations",
         "window": "Window Context",
@@ -3838,6 +3849,7 @@ PROACTIVE_SOURCE_LABELS = {
     },
     "ja": {
         "news": "トレンド話題",
+        "community": "N.E.K.O コミュニティ",
         "video": "動画のおすすめ",
         "home": "ホームおすすめ",
         "window": "ウィンドウコンテキスト",
@@ -3847,6 +3859,7 @@ PROACTIVE_SOURCE_LABELS = {
     },
     "ko": {
         "news": "화제의 토픽",
+        "community": "N.E.K.O 커뮤니티",
         "video": "동영상 추천",
         "home": "홈 추천",
         "window": "창 컨텍스트",
@@ -3856,6 +3869,7 @@ PROACTIVE_SOURCE_LABELS = {
     },
     "ru": {
         "news": "Горячие темы",
+        "community": "Сообщество N.E.K.O",
         "video": "Видео рекомендации",
         "home": "Рекомендации на главной",
         "window": "Контекст окна",
@@ -3865,6 +3879,7 @@ PROACTIVE_SOURCE_LABELS = {
     },
     "es": {
         "news": "Temas en tendencia",
+        "community": "Comunidad N.E.K.O",
         "video": "Recomendaciones de video",
         "home": "Recomendaciones de inicio",
         "window": "Contexto de ventana",
@@ -3874,6 +3889,7 @@ PROACTIVE_SOURCE_LABELS = {
     },
     "pt": {
         "news": "Assuntos em alta",
+        "community": "Comunidade N.E.K.O",
         "video": "Recomendações de vídeo",
         "home": "Recomendações iniciais",
         "window": "Contexto da janela",
@@ -6009,7 +6025,7 @@ def build_proactive_action_note(
     Priority is music > meme > web, matching the frontend's usual material display
     importance.
 
-    The web sub-channel set ``{'web', 'news', 'video', 'home', 'personal', 'window'}``
+    The web sub-channel set ``{'web', 'news', 'community', 'video', 'home', 'personal', 'window'}``
     is kept in sync with the mode set produced by ``web_link.get('mode', 'web')`` in
     ``main_routers/system_router.py:build_proactive_response`` — missing any one of
     them sends that channel to the trailing chat fallback, where the music-first
@@ -6115,7 +6131,7 @@ def build_proactive_action_note(
         return _try_music()
     if channel == "meme":
         return _try_meme(allow_typeless_fallback=True)
-    if channel in {"web", "news", "video", "home", "personal", "window"}:
+    if channel in {"web", "news", "community", "video", "home", "personal", "window"}:
         return _try_web()
 
     # chat / unknown / 空 / 其它未识别通道 —— 回退探测 source_links 实际素材，

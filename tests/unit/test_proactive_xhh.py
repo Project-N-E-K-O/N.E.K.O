@@ -2,19 +2,24 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from utils.web_scraper.trending_content import (
     fetch_news_content,
+    fetch_neko_community_feed,
     fetch_xhh_feed_content,
     format_news_content,
+    format_neko_community_feed,
+    normalize_neko_community_feed,
     format_xhh_feed,
     normalize_xhh_feed,
 )
 from main_routers.system_router.proactive_content import _log_news_content
 from main_routers.system_router.proactive_parsing import _extract_links_from_raw
+from main_logic.proactive_chat.contracts import ProactiveChatCommand
+from main_logic.proactive_chat import sources as proactive_sources
 from utils.web_scraper.platform_helpers import (
     build_xhh_cookie_header,
     build_xhh_request_keys,
@@ -42,6 +47,27 @@ SAMPLE_PAYLOAD = {
             {"linkid": 2, "title": ""},
         ]
     },
+}
+
+SAMPLE_NEKO_COMMUNITY_PAYLOAD = {
+    "data": {
+        "items": [
+            {
+                "id": "post-1",
+                "title": "猫娘们正在讨论的新点子",
+                "content": "一起来分享今天的灵感和小发现。",
+                "author": {"display_name": "小猫"},
+                "tags": [{"name": "灵感"}, {"name": "闲聊"}],
+                "path": "/posts/post-1",
+                "created_at": "2026-08-31T00:00:00Z",
+            },
+            {
+                "id": "post-1",
+                "title": "重复卡牌",
+            },
+            {"id": "post-2", "content": "没有标题时也应当可用。"},
+        ]
+    }
 }
 
 
@@ -116,6 +142,35 @@ def test_normalize_and_format_xhh_feed():
     assert "话题: 游戏、闲聊" in formatted
 
 
+def test_normalize_and_format_neko_community_feed():
+    posts = normalize_neko_community_feed(SAMPLE_NEKO_COMMUNITY_PAYLOAD, limit=10)
+
+    assert posts == [
+        {
+            "id": "post-1",
+            "title": "猫娘们正在讨论的新点子",
+            "content": "一起来分享今天的灵感和小发现。",
+            "author": "小猫",
+            "tags": ["灵感", "闲聊"],
+            "url": "https://community.project-neko.cn/posts/post-1",
+            "created_at": "2026-08-31T00:00:00Z",
+        },
+        {
+            "id": "post-2",
+            "title": "没有标题时也应当可用。",
+            "content": "没有标题时也应当可用。",
+            "author": "",
+            "tags": [],
+            "url": "https://community.project-neko.cn/discover",
+            "created_at": None,
+        },
+    ]
+    formatted = format_neko_community_feed(posts)
+    assert "猫娘们正在讨论的新点子" in formatted
+    assert "作者: 小猫" in formatted
+    assert "话题: 灵感、闲聊" in formatted
+
+
 class _FakeResponse:
     def raise_for_status(self) -> None:
         return None
@@ -154,6 +209,64 @@ async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
     assert kwargs["params"]["hkey"]
     assert kwargs["headers"]["Referer"] == "https://www.xiaoheihe.cn/"
     assert "Cookie" not in kwargs["headers"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_neko_community_feed_uses_discover_endpoint():
+    class CommunityResponse(_FakeResponse):
+        def json(self):
+            return SAMPLE_NEKO_COMMUNITY_PAYLOAD
+
+    class CommunityClient(_FakeClient):
+        async def get(self, url, **kwargs):
+            self.call = (url, kwargs)
+            return CommunityResponse()
+
+    client = CommunityClient()
+    with patch(
+        "utils.web_scraper.trending_content.get_external_http_client",
+        return_value=client,
+    ):
+        result = await fetch_neko_community_feed(limit=1)
+
+    assert result["success"] is True
+    assert result["posts"][0]["title"] == "猫娘们正在讨论的新点子"
+    url, kwargs = client.call
+    assert url == "https://community.project-neko.cn/api/feed"
+    assert kwargs["params"] == {"offset": 0, "limit": 60}
+    assert kwargs["headers"]["Referer"] == "https://community.project-neko.cn/discover"
+
+
+@pytest.mark.asyncio
+async def test_community_mode_fetches_only_neko_community_cards():
+    community = {
+        "success": True,
+        "posts": normalize_neko_community_feed(SAMPLE_NEKO_COMMUNITY_PAYLOAD, limit=1),
+    }
+    fetch_community = AsyncMock(return_value=community)
+    fetch_news = AsyncMock()
+    with patch.object(
+        proactive_sources,
+        "fetch_neko_community_feed",
+        fetch_community,
+    ), patch.object(proactive_sources, "fetch_news_content", fetch_news):
+        mode, result = await proactive_sources._fetch_source(
+            "community",
+            command=ProactiveChatCommand(),
+            lanlan_name="test",
+            log=MagicMock(),
+        )
+
+    assert mode == "community"
+    assert result["links"] == [
+        {
+            "title": "猫娘们正在讨论的新点子",
+            "url": "https://community.project-neko.cn/posts/post-1",
+            "source": "喵宇宙社区",
+        }
+    ]
+    fetch_community.assert_awaited_once_with(limit=10)
+    fetch_news.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -261,7 +374,10 @@ async def test_news_aggregates_weibo_tieba_and_xhh():
     ), patch(
         "utils.web_scraper.trending_content.fetch_xhh_feed_content",
         new=AsyncMock(return_value=xhh),
-    ) as fetch_xhh:
+    ) as fetch_xhh, patch(
+        "utils.web_scraper.trending_content.fetch_neko_community_feed",
+        new=AsyncMock(),
+    ) as fetch_community:
         result = await fetch_news_content(limit=3)
 
     assert result["success"] is True
@@ -269,6 +385,7 @@ async def test_news_aggregates_weibo_tieba_and_xhh():
     assert result["tieba"] is tieba
     assert result["xhh"] is xhh
     fetch_xhh.assert_awaited_once_with(3)
+    fetch_community.assert_not_awaited()
     formatted = format_news_content(result)
     assert "微博话题" in formatted
     assert "贴吧话题" in formatted
@@ -291,13 +408,18 @@ async def test_news_keeps_xhh_source_outside_china_region():
     ), patch(
         "utils.web_scraper.trending_content.fetch_xhh_feed_content",
         new=AsyncMock(return_value=xhh),
-    ):
+    ), patch(
+        "utils.web_scraper.trending_content.fetch_neko_community_feed",
+        new=AsyncMock(),
+    ) as fetch_community:
         result = await fetch_news_content(limit=2)
 
     assert result["region"] == "non-china"
     assert result["news"] is twitter
     assert result["xhh"] is xhh
-    assert "Xiaoheihe Home" in format_news_content(result)
+    formatted = format_news_content(result)
+    assert "Xiaoheihe Home" in formatted
+    fetch_community.assert_not_awaited()
 
 
 def test_news_links_round_robin_weibo_and_xhh():
@@ -321,6 +443,25 @@ def test_news_links_round_robin_weibo_and_xhh():
 
     assert [link["source"] for link in links[:4]] == ["微博", "小黑盒", "微博", "小黑盒"]
     assert any(link["source"] == "小黑盒" for link in links[:12])
+
+
+def test_community_links_use_neko_community_cards():
+    raw = {
+        "posts": [
+            {
+                "title": "社区卡牌",
+                "url": "https://community.project-neko.cn/discover",
+            }
+        ],
+    }
+
+    assert _extract_links_from_raw("community", raw) == [
+        {
+            "title": "社区卡牌",
+            "url": "https://community.project-neko.cn/discover",
+            "source": "喵宇宙社区",
+        }
+    ]
 
 
 def test_personal_links_interleave_non_empty_groups_until_exhausted():

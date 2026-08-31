@@ -283,7 +283,7 @@ def test_action_note_web_subchannels_all_route_to_web_template():
     误识别成"放歌"。
     """
     link = {'title': 'foo', 'source': 'bar'}
-    for ch in ('web', 'news', 'video', 'home', 'personal', 'window'):
+    for ch in ('web', 'news', 'community', 'video', 'home', 'personal', 'window'):
         note = build_proactive_action_note(ch, [link], 'zh', master_name=MASTER)
         assert note != '', f'channel={ch} 漏到 fallback'
         assert 'foo' in note and 'bar' in note
