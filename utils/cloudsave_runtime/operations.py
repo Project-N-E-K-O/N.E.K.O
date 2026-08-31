@@ -1691,8 +1691,6 @@ def import_local_cloudsave_snapshot(
                     # can be held across an rmtree. It is the same move the
                     # migration's own publish steps make, re-checking one
                     # statement before the irreversible one.
-                    # Asked AGAIN: a workspace can be minted, recorded or
-                    # locked during the file-apply phase, which is long.
                     if _is_migration_workspace(target_path):
                         continue
                     if target_path.exists():
