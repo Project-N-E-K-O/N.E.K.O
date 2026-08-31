@@ -22,6 +22,22 @@ if TYPE_CHECKING:
 
 from .messages import BaseMessage
 
+
+_PERSISTED_ADDITIONAL_KWARGS = (
+    "anti_repeat_response_id",
+    "anti_repeat_visible_text_length",
+)
+
+
+def _persisted_additional_kwargs(message: BaseMessage) -> dict[str, str]:
+    persisted: dict[str, str] = {}
+    for key in _PERSISTED_ADDITIONAL_KWARGS:
+        value = message.additional_kwargs.get(key)
+        if isinstance(value, str) and value:
+            persisted[key] = value
+    return persisted
+
+
 class SQLChatMessageHistory:
     """Minimal SQLite message store for memory/timeindex.py.
 
@@ -29,7 +45,7 @@ class SQLChatMessageHistory:
 
         id          INTEGER PRIMARY KEY AUTOINCREMENT
         session_id  TEXT
-        message     TEXT   -- JSON-serialized {"type": ..., "data": {"content": ...}}
+        message     TEXT   -- JSON-serialized {"type": ..., "data": {...}}
     """
 
     _engine_cache: dict = {}
@@ -56,7 +72,11 @@ class SQLChatMessageHistory:
 
     def _serialize(self, message: Any) -> str:
         if isinstance(message, BaseMessage):
-            return _json.dumps({"type": message.type, "data": {"content": message.content}}, ensure_ascii=False)
+            data = {"content": message.content}
+            persisted_kwargs = _persisted_additional_kwargs(message)
+            if persisted_kwargs:
+                data["additional_kwargs"] = persisted_kwargs
+            return _json.dumps({"type": message.type, "data": data}, ensure_ascii=False)
         if isinstance(message, dict):
             return _json.dumps(message, ensure_ascii=False)
         return _json.dumps({"type": "system", "data": {"content": str(message)}}, ensure_ascii=False)

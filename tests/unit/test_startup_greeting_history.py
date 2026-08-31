@@ -171,6 +171,10 @@ async def test_corrupt_history_is_backed_up_and_self_heals(
     tmp_path, persisted_bytes
 ):
     history = _build_history(tmp_path)
+    # The read path no longer creates memory/<name>/ -- creating it there made
+    # a cache MISS resurrect a directory a delete had just removed -- so these
+    # fixtures have to make it themselves.
+    (tmp_path / "Neko").mkdir(exist_ok=True)
     path = history._file_path("Neko")
     with open(path, "wb") as file:
         file.write(persisted_bytes)
@@ -207,6 +211,10 @@ async def test_corrupt_history_is_backed_up_and_self_heals(
 @pytest.mark.asyncio
 async def test_stale_legacy_backup_does_not_mask_current_corruption(tmp_path):
     history = _build_history(tmp_path)
+    # The read path no longer creates memory/<name>/ -- creating it there made
+    # a cache MISS resurrect a directory a delete had just removed -- so these
+    # fixtures have to make it themselves.
+    (tmp_path / "Neko").mkdir(exist_ok=True)
     path = history._file_path("Neko")
     legacy_backup_path = f"{path}.corrupt.bak"
     earlier_corruption = b'{"records":"earlier"}'
@@ -258,6 +266,10 @@ async def test_recovery_backs_up_parsed_snapshot_and_retries_changed_source(
     tmp_path, monkeypatch
 ):
     history = _build_history(tmp_path)
+    # The read path no longer creates memory/<name>/ -- creating it there made
+    # a cache MISS resurrect a directory a delete had just removed -- so these
+    # fixtures have to make it themselves.
+    (tmp_path / "Neko").mkdir(exist_ok=True)
     path = history._file_path("Neko")
     corrupt_bytes = b'{"records":'
     replacement_bytes = json.dumps(
@@ -315,6 +327,10 @@ async def test_corrupt_history_backup_failure_denies_reservation(
     tmp_path, monkeypatch
 ):
     history = _build_history(tmp_path)
+    # The read path no longer creates memory/<name>/ -- creating it there made
+    # a cache MISS resurrect a directory a delete had just removed -- so these
+    # fixtures have to make it themselves.
+    (tmp_path / "Neko").mkdir(exist_ok=True)
     path = history._file_path("Neko")
     persisted_bytes = b'{"records":'
     with open(path, "wb") as file:
@@ -342,6 +358,10 @@ async def test_transient_read_oserror_keeps_cache_absent_and_denies_reservation(
     tmp_path, monkeypatch
 ):
     history = _build_history(tmp_path)
+    # The read path no longer creates memory/<name>/ -- creating it there made
+    # a cache MISS resurrect a directory a delete had just removed -- so these
+    # fixtures have to make it themselves.
+    (tmp_path / "Neko").mkdir(exist_ok=True)
     path = history._file_path("Neko")
     with open(path, "w", encoding="utf-8") as file:
         json.dump({"version": 1, "records": []}, file)
@@ -408,3 +428,61 @@ def test_invalid_commit_timestamps_are_rejected(tmp_path):
             )
             is None
         )
+
+
+def test_a_retired_greeting_write_does_not_recreate_a_removed_directory(tmp_path):
+    """The greeting history lazily creates memory/<name>/ on every write.
+
+    Fencing alone only covers snapshots staged BEFORE the eviction, so a
+    greeting committed while a delete or rename-away was still in flight ran
+    once the lifecycle operation released its fence and made the directory the
+    caller had just removed reappear -- with a sidecar in it, so the deleted
+    identity looked like it still had memory.
+    """
+    import shutil
+
+    history = _build_history(tmp_path)
+    (tmp_path / "Neko").mkdir()
+    staged = history.stage_committed(
+        "Neko", "下午好", variant_key="memory_followup", committed_at=1000.0
+    )
+    history._flush_snapshot(*staged)
+    assert (tmp_path / "Neko" / "startup_greetings.json").exists()
+
+    history.retire_character("Neko")
+    shutil.rmtree(tmp_path / "Neko")
+
+    staged = history.stage_committed(
+        "Neko", "晚上好", variant_key="memory_followup", committed_at=2000.0
+    )
+    history._flush_snapshot(*staged)
+
+    assert not (tmp_path / "Neko").exists()
+
+
+def test_evicting_a_live_greeting_identity_does_not_retire_it(tmp_path):
+    """Eviction names a LIVE identity and is what lifts an earlier retirement.
+
+    Directory existence never lifts it: the delete path retires while the
+    doomed tree is still on disk.
+    """
+    import shutil
+
+    history = _build_history(tmp_path)
+    (tmp_path / "Neko").mkdir()
+    history.retire_character("Neko")
+    shutil.rmtree(tmp_path / "Neko")
+    staged = history.stage_committed(
+        "Neko", "下午好", variant_key="memory_followup", committed_at=1000.0
+    )
+    history._flush_snapshot(*staged)
+    assert not (tmp_path / "Neko").exists()
+
+    history.evict_character("Neko")
+
+    assert "Neko" not in history._retired
+    staged = history.stage_committed(
+        "Neko", "晚上好", variant_key="memory_followup", committed_at=2000.0
+    )
+    history._flush_snapshot(*staged)
+    assert (tmp_path / "Neko" / "startup_greetings.json").exists()

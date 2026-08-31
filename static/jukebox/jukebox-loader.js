@@ -36,6 +36,8 @@
         }
       },
 
+      init: function() {},
+
       getPlayer: function() {
         return null;
       },
@@ -246,11 +248,8 @@
     window.Jukebox_togglePause = facade.togglePause;
   }
 
-  if (typeof window.__nekoJukeboxToggle === 'function') {
-    ensureNativeJukeboxFacade();
-    return;
-  }
-
+  // 原生桥（Electron）下不再提前 return：AI 控制面需要惰性门面在任何形态下都存在，
+  // 文件尾部只有在 __nekoJukeboxToggle 缺席时才会接管它。
   var SCRIPT_ID_PREFIX = 'neko-jukebox-part-';
   var SCRIPT_PATHS = [
     '/static/jukebox/jukebox/bootstrap.js',
@@ -262,6 +261,7 @@
   ];
   var TOAST_ID = 'neko-jukebox-loader-toast';
   var STYLE_ID = 'neko-jukebox-loader-style';
+  var REQUIRED_CONTROL_API_VERSION = 3;
   var currentScript = document.currentScript;
   var assetQuery = getAssetQuery(currentScript && currentScript.src);
   var loadPromise = null;
@@ -273,6 +273,25 @@
 
   window.__NEKO_JUKEBOX_LAZY_LOADER__ = true;
 
+  function hasRequiredControlApi(jukebox) {
+    if (!jukebox || typeof jukebox.executeControl !== 'function') return false;
+    var version = Number(jukebox.controlApiVersion || jukebox.__controlApiVersion || 0);
+    if (version >= REQUIRED_CONTROL_API_VERSION) return true;
+    return Array.isArray(jukebox.supportedControlActions)
+      && jukebox.supportedControlActions.indexOf('adjust_volume') >= 0
+      && jukebox.supportedControlActions.indexOf('set_mode') >= 0
+      && jukebox.supportedControlActions.indexOf('previous') >= 0;
+  }
+
+  function isLoadedJukebox(jukebox) {
+    return !!(
+      jukebox
+      && !jukebox.__nekoLazyFacade
+      && !jukebox.__nativeBridgeFacade
+      && hasRequiredControlApi(jukebox)
+    );
+  }
+
   function getAssetQuery(src) {
     if (!src) return '';
     try {
@@ -281,6 +300,24 @@
     } catch (_) {
       var queryIndex = src.indexOf('?');
       return queryIndex >= 0 ? src.slice(queryIndex) : '';
+    }
+  }
+
+  function buildJukeboxPartSrc(scriptPath) {
+    try {
+      var url = new URL(scriptPath, window.location.href);
+      if (assetQuery) {
+        var inherited = new URLSearchParams(assetQuery.replace(/^\?/, ''));
+        inherited.forEach(function(value, key) {
+          url.searchParams.set(key, value);
+        });
+      }
+      url.searchParams.set('jukebox_control_api', String(REQUIRED_CONTROL_API_VERSION));
+      return url.pathname + url.search;
+    } catch (_) {
+      var query = assetQuery || '';
+      var separator = query ? '&' : '?';
+      return scriptPath + query + separator + 'jukebox_control_api=' + encodeURIComponent(String(REQUIRED_CONTROL_API_VERSION));
     }
   }
 
@@ -424,6 +461,178 @@
     hideToast(2800);
   }
 
+  // ===== 跨窗口控制归属（角色窗口一侧）=====
+  // 独立点唱机窗口（templates/jukebox.html）持有用户看得见的播放器，但它既不加载
+  // 本文件也不加载 app-websocket.js。它开着的时候，控制指令必须转发过去，而不是
+  // 在角色窗口里另起一个隐藏运行时 —— 那会让 stop/next/音量/模式对可见播放器全部
+  // 失效，play 还会同时响两条音轨。
+  var CONTROL_OWNER_CHANNEL = 'neko-jukebox-control';
+  var CONTROL_OWNER_TTL_MS = 6000;      // 拥有者心跳 2s 一次，容三拍
+  var CONTROL_FORWARD_TIMEOUT_MS = 5000;
+  var controlChannel = null;
+  var controlOwnerExpiresAt = 0;
+  var pendingForwards = new Map();
+  var forwardSeq = 0;
+
+  function ensureControlChannel() {
+    if (controlChannel) return controlChannel;
+    if (typeof BroadcastChannel === 'undefined') return null;
+    try {
+      controlChannel = new BroadcastChannel(CONTROL_OWNER_CHANNEL);
+    } catch (_) {
+      return null;
+    }
+    controlChannel.onmessage = function(event) {
+      var data = event && event.data;
+      if (!data || typeof data !== 'object') return;
+      if (data.type === 'jukebox_owner_alive') {
+        controlOwnerExpiresAt = Date.now() + CONTROL_OWNER_TTL_MS;
+        return;
+      }
+      if (data.type === 'jukebox_owner_gone') {
+        controlOwnerExpiresAt = 0;
+        // 已经交出去的那些也要立刻了结：它们等的是拥有者的回执，而拥有者刚说自己
+        // 没了。干等 TTL 的话，本地队列里排在后面的指令一并卡住。逐条结掉之后
+        // 迟到的 jukebox_control_result 会因为已从表里删掉而成为空操作。
+        var abandoned = Array.from(pendingForwards.values());
+        pendingForwards.clear();
+        abandoned.forEach(function(settle) {
+          try {
+            settle({ ok: false, action: '', message: 'jukebox_owner_gone' });
+          } catch (_) {}
+        });
+        return;
+      }
+      if (data.type === 'jukebox_control_result') {
+        var settle = pendingForwards.get(data.requestId);
+        if (settle) {
+          pendingForwards.delete(data.requestId);
+          settle(data.result);
+        }
+      }
+    };
+    try {
+      // 刚起来时主动问一声，不用干等第一个心跳。
+      controlChannel.postMessage({ type: 'jukebox_owner_query' });
+    } catch (_) {}
+    return controlChannel;
+  }
+
+  function hasControlOwner() {
+    ensureControlChannel();
+    return Date.now() < controlOwnerExpiresAt;
+  }
+
+  function cancelControlOnOwner(action) {
+    var channel = ensureControlChannel();
+    if (!channel) return false;
+    try {
+      // 只是一个信号，不等回执：它要在拥有者那条在途指令还没结束时就生效。
+      // 带上发起动作：拥有者据此决定要不要顶替它排队中的播放指令 —— 判据必须
+      // 跟发件侧一致，否则 next / previous 在本地不顶替、转发出去却顶替。
+      channel.postMessage({
+        type: 'jukebox_cancel_request',
+        action: String(action || '').trim().toLowerCase()
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function forwardControlToOwner(command) {
+    var channel = ensureControlChannel();
+    if (!channel) {
+      return Promise.resolve({ ok: false, action: (command && command.action) || '', message: 'jukebox_owner_unreachable' });
+    }
+    forwardSeq += 1;
+    var requestId = 'ctl-' + forwardSeq + '-' + Date.now();
+    return new Promise(function(resolve) {
+      var settled = false;
+      var finish = function(result) {
+        if (settled) return;
+        settled = true;
+        pendingForwards.delete(requestId);
+        resolve(result);
+      };
+      pendingForwards.set(requestId, finish);
+      setTimeout(function() {
+        // 超时不回落本地执行：那样会在隐藏窗口里再起一条音轨，比失败更糟。
+        finish({ ok: false, action: (command && command.action) || '', message: 'jukebox_owner_timeout' });
+      }, CONTROL_FORWARD_TIMEOUT_MS);
+      try {
+        // 把超时预算随请求带过去：拥有者据此丢弃「调用方已经不等了」的陈旧请求。
+        // 常量只在这里定义一份，不在两个文件各存一份。
+        channel.postMessage({
+          type: 'jukebox_control_request',
+          requestId: requestId,
+          command: command || {},
+          ttlMs: CONTROL_FORWARD_TIMEOUT_MS
+        });
+      } catch (_) {
+        finish({ ok: false, action: (command && command.action) || '', message: 'jukebox_owner_unreachable' });
+      }
+    });
+  }
+
+  function clearPendingUnload() {
+    if (unloadTimer) {
+      clearTimeout(unloadTimer);
+      unloadTimer = null;
+    }
+  }
+
+  function ensureLazyJukeboxFacade() {
+    if (!window.Jukebox && typeof window.__nekoJukeboxToggle === 'function') {
+      ensureNativeJukeboxFacade();
+    }
+    if (isLoadedJukebox(window.Jukebox)) return window.Jukebox;
+    if (window.Jukebox && window.Jukebox.__nekoLazyFacade) return window.Jukebox;
+
+    var facade = window.Jukebox || {
+      State: {
+        isOpen: false,
+        isHidden: false,
+        currentSong: null,
+        isPlaying: false,
+        isPaused: false,
+        isVMDPlaying: false
+      },
+      toggle: toggleJukebox
+    };
+    if (!facade.__nativeBridgeFacade) {
+      facade.__nekoLazyFacade = true;
+    }
+    if (typeof facade.toggle !== 'function') {
+      facade.toggle = toggleJukebox;
+    }
+    if (typeof facade.init !== 'function') {
+      facade.init = function() {};
+    }
+    facade.ensureRuntime = async function(options) {
+      // unloadJukebox() 排的是 3 秒定时器；控制指令落在这个窗口里而不撤销它的话，
+      // parts 刚加载完就会被 finalizeUnload 把 window.Jukebox 删掉。
+      clearPendingUnload();
+      var jukebox = await loadJukeboxScript();
+      initJukebox(jukebox);
+      if (!jukebox || typeof jukebox.ensureRuntime !== 'function') {
+        throw new Error('Jukebox runtime API unavailable');
+      }
+      return jukebox.ensureRuntime(options || {});
+    };
+    facade.executeControl = async function(command) {
+      clearPendingUnload();
+      var jukebox = await loadJukeboxScript();
+      initJukebox(jukebox);
+      if (!jukebox || typeof jukebox.executeControl !== 'function') {
+        throw new Error('Jukebox control API unavailable');
+      }
+      return jukebox.executeControl(command || {});
+    };
+    window.Jukebox = facade;
+    return window.Jukebox;
+  }
+
   function getJukeboxPartScriptId(scriptPath) {
     var fileName = scriptPath.split('/').pop() || 'part';
     return SCRIPT_ID_PREFIX + fileName.replace(/\.js$/, '');
@@ -439,7 +648,7 @@
     return new Promise(function(resolve, reject) {
       var script = document.createElement('script');
       script.id = getJukeboxPartScriptId(scriptPath);
-      script.src = scriptPath + assetQuery;
+      script.src = buildJukeboxPartSrc(scriptPath);
       script.async = false;
       script.dataset.nekoJukeboxPart = 'true';
       script.dataset.nekoJukeboxLazy = 'true';
@@ -455,8 +664,8 @@
   }
 
   function loadJukeboxScript() {
+    if (isLoadedJukebox(window.Jukebox)) return Promise.resolve(window.Jukebox);
     if (loadPromise) return loadPromise;
-    if (window.Jukebox) return Promise.resolve(window.Jukebox);
 
     removeJukeboxScripts();
     console.log('[JukeboxLoader] 按需加载点歌台资源');
@@ -465,7 +674,7 @@
         return loadJukeboxPart(scriptPath);
       });
     }, Promise.resolve()).then(function() {
-      if (!window.Jukebox) {
+      if (!isLoadedJukebox(window.Jukebox)) {
         throw new Error('Jukebox global missing after parts loaded');
       }
       console.log('[JukeboxLoader] 点歌台资源已加载');
@@ -478,6 +687,7 @@
         window.Jukebox = undefined;
       }
       loadPromise = null;
+      ensureLazyJukeboxFacade();
       throw error;
     });
 
@@ -488,6 +698,22 @@
     if (!jukebox || jukebox.__nekoLazyLoaderInitialized) return;
     if (typeof jukebox.init === 'function') {
       jukebox.init();
+    }
+    if (typeof jukebox.executeControl === 'function' && !jukebox.__nekoLazyLoaderExecuteWrapped) {
+      var originalExecuteControl = jukebox.executeControl;
+      jukebox.executeControl = function(command) {
+        clearPendingUnload();
+        return originalExecuteControl.call(jukebox, command);
+      };
+      jukebox.__nekoLazyLoaderExecuteWrapped = true;
+    }
+    if (typeof jukebox.ensureRuntime === 'function' && !jukebox.__nekoLazyLoaderRuntimeWrapped) {
+      var originalEnsureRuntime = jukebox.ensureRuntime;
+      jukebox.ensureRuntime = function(options) {
+        clearPendingUnload();
+        return originalEnsureRuntime.call(jukebox, options);
+      };
+      jukebox.__nekoLazyLoaderRuntimeWrapped = true;
     }
     jukebox.__nekoLazyLoaderInitialized = true;
   }
@@ -505,17 +731,14 @@
   }
 
   async function toggleJukebox() {
-    if (unloadTimer) {
-      clearTimeout(unloadTimer);
-      unloadTimer = null;
-    }
+    clearPendingUnload();
 
     if (toggleInFlight) {
       showInitializing();
       return;
     }
 
-    if (window.Jukebox && window.Jukebox.State) {
+    if (window.Jukebox && window.Jukebox.State && !window.Jukebox.__nekoLazyFacade) {
       showOrOpenJukebox(window.Jukebox);
       return;
     }
@@ -565,6 +788,7 @@
         window[name] = undefined;
       }
     });
+    ensureLazyJukeboxFacade();
     console.log('[JukeboxLoader] 点歌台资源已卸载');
   }
 
@@ -593,12 +817,23 @@
 
   window.addEventListener('neko:jukebox-full-close', unloadJukebox);
 
-  window.__nekoJukeboxToggle = toggleJukebox;
-  window.__nekoJukeboxToggle.__nekoJukeboxWebLoader = true;
+  if (typeof window.__nekoJukeboxToggle === 'function') {
+    ensureNativeJukeboxFacade();
+  }
+  ensureLazyJukeboxFacade();
+
+  if (typeof window.__nekoJukeboxToggle !== 'function') {
+    window.__nekoJukeboxToggle = toggleJukebox;
+    window.__nekoJukeboxToggle.__nekoJukeboxWebLoader = true;
+  }
+  ensureControlChannel();
   window.__nekoJukeboxLoader = {
     load: loadJukeboxScript,
     toggle: toggleJukebox,
     unload: unloadJukebox,
-    getState: getState
+    getState: getState,
+    hasControlOwner: hasControlOwner,
+    forwardControl: forwardControlToOwner,
+    cancelOnOwner: cancelControlOnOwner
   };
 })();

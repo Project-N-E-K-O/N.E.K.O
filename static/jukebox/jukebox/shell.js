@@ -142,7 +142,7 @@ Object.assign(window.Jukebox, {
     }
 
     requestAnimationFrame(() => {
-      setTimeout(() => {
+      setTimeout(async () => {
         if (!Jukebox.State.isOpen || !Jukebox.State.container) {
           console.log('[Jukebox] 点歌台已关闭，取消初始化');
           return;
@@ -150,10 +150,21 @@ Object.assign(window.Jukebox, {
         console.log('[Jukebox] 准备加载歌曲，检查容器...');
         const tbody = document.getElementById('jukebox-song-list');
         console.log('[Jukebox] 歌曲列表容器:', tbody);
-        Jukebox.loadSongs();
+        await Jukebox.loadSongs();
         Jukebox.initPlayer();
         Jukebox.initVolumeSlider();
         Jukebox.updateCalibrationVisibility();
+        // 到这里才算真的能执行指令：曲库拉完了、播放器建好了。归属本身在窗口
+        // 一起来时就宣告过了（见 jukebox-standalone.js），这中间到达的指令攒在
+        // 队列里，此刻按到达顺序放出去。
+        if (window.__NEKO_JUKEBOX_STANDALONE__ && Jukebox.getPlayer()) {
+          Jukebox.markControlOwnerReady();
+        }
+        if (Jukebox.State.currentSong && Jukebox.State.isPaused) {
+          Jukebox.updatePausedStatus(Jukebox.State.currentSong);
+        } else if (Jukebox.State.currentSong && (Jukebox.State.isPlaying || Jukebox.State.isVMDPlaying)) {
+          Jukebox.updatePlayingStatus(Jukebox.State.currentSong);
+        }
       }, 100);
     });
 
@@ -245,9 +256,18 @@ Object.assign(window.Jukebox, {
     Jukebox.State.audioElement = null;
   },
 
-  prepareForUnload: function() {
+  closeBroadcastChannel: function() {
+    try {
+      if (Jukebox._broadcastChannel) {
+        Jukebox._broadcastChannel.onmessage = null;
+        Jukebox._broadcastChannel.close();
+        Jukebox._broadcastChannel = null;
+      }
+    } catch (_) {}
+  },
+
+  cleanupUiRuntimeShell: function() {
     Jukebox.stopProgressUpdate();
-    Jukebox.destroyPlayer();
     Jukebox.hideTooltip();
 
     if (Jukebox.State.marqueeRaf) {
@@ -259,15 +279,50 @@ Object.assign(window.Jukebox, {
     }
 
     Jukebox.stopConfigPolling();
+    Jukebox.closeBroadcastChannel();
+  },
 
-    try {
-      if (Jukebox._broadcastChannel) {
-        Jukebox._broadcastChannel.onmessage = null;
-        Jukebox._broadcastChannel.close();
-        Jukebox._broadcastChannel = null;
-      }
-    } catch (_) {}
+  prepareForUnload: function() {
+    Jukebox.cleanupUiRuntimeShell();
+    // 在途的指令必须先作废，再拆宿主。否则一条正卡在拉配置/预检里的指令恢复后
+    // 会重建隐藏宿主、在用户明确销毁之后起播，而随后的最终卸载只删全局变量，
+    // 那个复活的播放器就没人销毁了。
+    //
+    // 单靠推进 playRequestId 拦不住：executePlayControl 会在恢复后自己
+    // ++playRequestId 取一个更新的世代，比对照样通过。teardown 需要一个它抢不到
+    // 的独立计数器。
+    Jukebox.State.teardownEpoch += 1;
+    Jukebox.State.runtimeInitPromise = null;
+    Jukebox.State.playRequestId += 1;
+    Jukebox.destroyPlayer();
+    Jukebox.destroyRuntimeHost();
+    Jukebox.State.headlessRuntimeRequested = false;
+  },
 
+  hasHeadlessRuntime: function() {
+    if (!Jukebox.State.isRuntimeReady) return false;
+    if (!Jukebox.State.headlessRuntimeRequested) return false;
+    if (!Jukebox.getPlayer()) return false;
+    // 无头宿主是自己建的时候，它必须还挂在 DOM 上；复用 music_ui 的共享播放器
+    // 或面板播放器时压根没有这个宿主，不能拿它当判据。
+    if (Jukebox.State.runtimeHost) {
+      return document.body.contains(Jukebox.State.runtimeHost);
+    }
+    return true;
+  },
+
+  // 面板先开、AI 再借同一个播放器起播时，播放器的 DOM 在面板容器里；close()
+  // 会把容器整个 remove 掉。保活前先把播放器节点移进无头宿主 —— appendChild
+  // 是移动而不是重建，APlayer 实例和正在播的音频都不受影响。
+  adoptPlayerIntoRuntimeHost: function() {
+    const playerContainer = document.getElementById('jukebox-player');
+    if (!playerContainer) return false;
+    const host = Jukebox.ensureRuntimeHost();
+    if (!host) return false;
+    if (!host.contains(playerContainer)) {
+      host.appendChild(playerContainer);
+    }
+    return true;
   },
 
   notifyFullClose: function(reason) {
@@ -279,8 +334,18 @@ Object.assign(window.Jukebox, {
   },
 
   close: function() {
-    Jukebox.stopPlayback();
-    Jukebox.prepareForUnload();
+    // 独立点唱机窗口的关闭会把整个窗口销毁：「保活」的运行时根本活不下来，而
+    // 跳过 stopPlayback 还会连带跳过 IPC 的 stopVMD，让 Pet 那边的舞蹈继续跳。
+    // 转发过来的 AI 指令一律带 headless:true，连调个音量都会把
+    // headlessRuntimeRequested 置真，所以这里必须显式排除独立窗口。
+    const preserveRuntime = !window.__NEKO_JUKEBOX_STANDALONE__ && Jukebox.hasHeadlessRuntime();
+    if (preserveRuntime) {
+      Jukebox.adoptPlayerIntoRuntimeHost();
+      Jukebox.cleanupUiRuntimeShell();
+    } else {
+      Jukebox.stopPlayback();
+      Jukebox.prepareForUnload();
+    }
 
     // 销毁管理器面板（移除 DOM 节点 + 清理拖拽监听）
     Jukebox.SongActionManager.destroy();
@@ -319,20 +384,12 @@ Object.assign(window.Jukebox, {
     Jukebox.State.isOpen = false;
     Jukebox.State.isHidden = false;
     Jukebox.State.hasCustomWindowSize = false;
-    Jukebox.stopConfigPolling();
     Jukebox.State.configRevision = null;
 
-    // 清理 BroadcastChannel
-    try {
-      if (Jukebox._broadcastChannel) {
-        Jukebox._broadcastChannel.onmessage = null;
-        Jukebox._broadcastChannel.close();
-        Jukebox._broadcastChannel = null;
-      }
-    } catch (e) {}
-
-    // 清空歌曲列表和元素映射，确保下次打开时重新渲染
-    Jukebox.State.songs = [];
+    if (!preserveRuntime) {
+      // 清空歌曲列表，确保完整卸载后下次打开时重新加载。
+      Jukebox.State.songs = [];
+    }
     Jukebox.State.songElements = {};
 
     const jukeboxButton = document.getElementById('jukeboxButton');
@@ -341,7 +398,9 @@ Object.assign(window.Jukebox, {
     }
 
     console.log('[Jukebox] 点歌台已关闭');
-    Jukebox.notifyFullClose('close');
+    if (!preserveRuntime) {
+      Jukebox.notifyFullClose('close');
+    }
   },
 
   destroy: function() {

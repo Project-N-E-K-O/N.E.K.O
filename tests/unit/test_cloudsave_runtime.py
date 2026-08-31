@@ -6,7 +6,9 @@ import sqlite3
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -14,6 +16,45 @@ import pytest
 from utils.file_utils import atomic_write_json
 
 
+@contextmanager
+def _isolated_sidecar_stores(memory_dir, config_manager=None):
+    """Swap the three sidecar singletons for FRESH instances.
+
+    Saving the module globals and restoring them is not enough. These tests
+    mutate ``_cache`` and ``_retired`` on the EXISTING objects, and putting the
+    same reference back leaves those mutations in place -- so an entry another
+    test also uses is silently dropped and the suite becomes order-dependent.
+    """
+    import memory.anti_repeat as anti_repeat_module
+    import memory.anti_repeat_effects as effects_module
+    import memory.startup_greeting_history as greeting_module
+
+    # A real config manager when the test drives a real flush: the write path
+    # enters cloudsave_writable_transaction, which needs more than memory_dir.
+    if config_manager is None:
+        config_manager = SimpleNamespace(memory_dir=str(memory_dir))
+    store = effects_module.AntiRepeatEffectStore()
+    store._config_manager = config_manager
+    corpus = anti_repeat_module.AntiRepeatCorpus()
+    corpus._config_manager = config_manager
+    greeting = greeting_module.StartupGreetingHistory(config_manager)
+
+    previous = (
+        effects_module._GLOBAL_STORE,
+        anti_repeat_module._GLOBAL_CORPUS,
+        greeting_module._GLOBAL_HISTORY,
+    )
+    effects_module._GLOBAL_STORE = store
+    anti_repeat_module._GLOBAL_CORPUS = corpus
+    greeting_module._GLOBAL_HISTORY = greeting
+    try:
+        yield (store, corpus, greeting)
+    finally:
+        (
+            effects_module._GLOBAL_STORE,
+            anti_repeat_module._GLOBAL_CORPUS,
+            greeting_module._GLOBAL_HISTORY,
+        ) = previous
 def _make_config_manager(
     tmp_path,
     platform: str | None = None,
@@ -2523,6 +2564,85 @@ def test_restore_cloudsave_operation_backup_restores_previous_character_state(tm
         )
 
 
+
+@pytest.mark.unit
+def test_restoring_an_operation_backup_evicts_the_sidecar_caches(tmp_path):
+    """The dual of the failed-rollback case, driven through the real entry.
+
+    A failed export or import must NOT evict, because it only reverts a
+    flush that raced it and the cache is the fresher copy. Rolling an
+    operation back on purpose is the opposite: the older files are what
+    was asked for, and a cache left loaded writes the rolled-back content
+    straight back out.
+
+    This drives ``restore_cloudsave_operation_backup`` rather than the
+    private helper. The helper is already covered directly, and that
+    turned out to prove nothing about the call sites: flipping either of
+    them to False left the whole suite green.
+    """
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    _write_runtime_state(source_cm, character_name="小满")
+    export_cloudsave_character_unit(source_cm, "小满")
+    _write_runtime_state(target_cm, character_name="小满")
+    shutil.copytree(
+        source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True
+    )
+
+    import_result = import_cloudsave_character_unit(
+        target_cm, "小满", overwrite=True
+    )
+
+    with _isolated_sidecar_stores(
+        Path(target_cm.memory_dir), config_manager=target_cm
+    ) as (store, corpus, greeting):
+        store._cache["小满"] = {"version": 1, "daily_buckets": {"stale": {}}}
+        corpus._cache["小满"] = [{"stale": True}]
+        greeting._cache["小满"] = ["stale"]
+
+        restore_cloudsave_operation_backup(
+            target_cm, import_result["backup_path"]
+        )
+
+        assert "小满" not in store._cache, (
+            "the rollback reverted the files but left a cache to write them back"
+        )
+        assert "小满" not in corpus._cache
+        assert "小满" not in greeting._cache
+
+        # The same entry has a second restore path for schema-1 metadata,
+        # sixty lines away from the one above. Flipping only that one left
+        # the suite green, so it is driven here too rather than assumed to
+        # match its neighbour.
+        metadata_path = Path(import_result["backup_path"]) / "_operation.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata.pop("recent_state", None)
+        metadata["schema_version"] = 1
+        metadata_path.write_text(
+            json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
+        )
+
+        store._cache["小满"] = {"version": 1, "daily_buckets": {"stale": {}}}
+        corpus._cache["小满"] = [{"stale": True}]
+        greeting._cache["小满"] = ["stale"]
+
+        restore_cloudsave_operation_backup(
+            target_cm, import_result["backup_path"]
+        )
+
+        assert "小满" not in store._cache, (
+            "the schema-1 restore path left a cache to write the files back"
+        )
+        assert "小满" not in corpus._cache
+        assert "小满" not in greeting._cache
+
+
 @pytest.mark.unit
 def test_export_creates_valid_sqlite_shadow_copy_for_time_indexed_db(tmp_path):
     cm = _make_config_manager(tmp_path)
@@ -3245,6 +3365,574 @@ def test_standard_data_candidates_on_unix_platforms(tmp_path):
 
 
 @pytest.mark.unit
+def test_cloud_import_evicts_stale_per_character_caches(tmp_path):
+    """An import replaces character files; the in-memory caches must not survive.
+
+    Each sidecar cache keeps ``{name: data}`` and only re-reads on a MISS, so a
+    stale entry shadows the file that was just imported and the next flush
+    writes it back over the imported contents — silently undoing part of the
+    restore. Drives the real `import_local_cloudsave_snapshot`, so it fails if
+    the eviction call site is removed rather than just the helper.
+    """
+    from utils.cloudsave_runtime import (
+        export_local_cloudsave_snapshot,
+        import_local_cloudsave_snapshot,
+    )
+
+    cm = _make_config_manager(tmp_path)
+    _write_runtime_state(cm)
+    export_local_cloudsave_snapshot(cm)
+
+    with _isolated_sidecar_stores(tmp_path) as (store, corpus, greeting):
+        store._cache["小满"] = {"version": 1, "daily_buckets": {"stale": {}}}
+        corpus._cache["小满"] = [{"stale": True}]
+        greeting._cache["小满"] = ["stale"]
+
+        # The name was deleted earlier, so it is retired and whatever sits in
+        # the caches belongs to that removed identity.
+        store._retired.add("小满")
+
+        import_local_cloudsave_snapshot(cm)
+
+        # Retirement lifted: an imported profile is a LIVE identity, and left
+        # retired it would be denied the lazy directory creation every sibling
+        # memory writer gets.
+        assert "小满" not in store._retired
+        # ...and the deleted identity's cache goes with it, so the reused name
+        # cannot inherit its aggregates. (The live-identity case, where the
+        # cache must SURVIVE, is covered by the single-character download test
+        # and by the staged-write test below.)
+        assert "小满" not in store._cache
+
+
+@pytest.mark.unit
+def test_corpus_eviction_forgets_the_cache_without_writing_the_file(tmp_path):
+    """`evict_character` is not `clear`: it must not persist an empty payload.
+
+    Using `clear` for import eviction would delete the corpus that was just
+    imported, which is the opposite of the intent.
+    """
+    import memory.anti_repeat as anti_repeat_module
+
+    corpus = anti_repeat_module.AntiRepeatCorpus()
+    corpus._cache["小满"] = [{"stale": True}]
+
+    corpus.evict_character("小满")
+
+    assert "小满" not in corpus._cache
+    # `clear` bumps the written sequence by flushing; eviction must not.
+    assert corpus._written_seq.get("小满", 0) == 0
+
+
+@pytest.mark.unit
+def test_single_character_download_revives_without_evicting(tmp_path):
+    """A download lifts retirement and leaves the untouched caches alone.
+
+    The apply rewrites only MANAGED_MEMORY_FILENAMES, which contains none of
+    the three sidecars, so evicting them would drop nothing stale and would
+    raise each store's sequence fence -- silently discarding a snapshot staged
+    but not yet flushed, i.e. the reply just delivered. What the download does
+    need is the retirement lifted, so a name reused after an earlier delete can
+    create its directory again.
+    """
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    _write_runtime_state(source_cm, character_name="云端角色")
+    export_cloudsave_character_unit(source_cm, "云端角色")
+    _write_runtime_state(target_cm, character_name="本地角色")
+    shutil.copytree(
+        source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True
+    )
+
+    with _isolated_sidecar_stores(tmp_path) as (store, corpus, greeting):
+        store._cache["云端角色"] = {"version": 1, "daily_buckets": {"stale": {}}}
+        corpus._cache["云端角色"] = [{"stale": True}]
+        greeting._cache["云端角色"] = ["stale"]
+
+        import_cloudsave_character_unit(target_cm, "云端角色")
+
+        # See the full-snapshot test: the apply never touches these files, so
+        # their caches stay.
+        assert store._cache["云端角色"] == {"version": 1, "daily_buckets": {"stale": {}}}
+        assert corpus._cache["云端角色"] == [{"stale": True}]
+        assert greeting._cache["云端角色"] == ["stale"]
+        assert "云端角色" not in store._retired, (
+            "a downloaded character stayed retired and cannot create sidecars"
+        )
+
+
+@pytest.mark.unit
+def test_a_download_does_not_discard_a_staged_sidecar_write(tmp_path):
+    """Evicting fences the sequence, which drops a staged-but-unflushed write.
+
+    ``record_anti_repeat_decision`` stages a snapshot and flushes it detached,
+    so there is an ordinary window where ``_staged_seq > _written_seq``. An
+    eviction in that window sets both to the staged value, and the pending
+    flush then early-returns on ``seq <= _written_seq`` and is lost -- the
+    reply just delivered never reaches the file. The apply never touches this
+    sidecar, so there is nothing to evict for in the first place.
+    """
+    import memory.anti_repeat_effects as effects_module
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    _write_runtime_state(source_cm, character_name="云端角色")
+    export_cloudsave_character_unit(source_cm, "云端角色")
+    _write_runtime_state(target_cm, character_name="云端角色")
+    shutil.copytree(
+        source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True
+    )
+
+    with _isolated_sidecar_stores(
+        Path(target_cm.memory_dir), config_manager=target_cm
+    ) as (store, _c, _g):
+        decision = effects_module.AntiRepeatDecision(
+            source="proactive",
+            reasons=("bm25",),
+            action="block",
+            outcome="blocked_initial",
+        )
+        store.record_decision("云端角色", decision, now=1_700_000_000.0)
+        # Staged, deliberately not flushed -- the detached-flush window.
+        staged = store.stage_decision(
+            "云端角色", decision, now=1_700_000_001.0
+        )
+
+        import_cloudsave_character_unit(
+            target_cm, "云端角色", overwrite=True
+        )
+
+        store._flush_snapshot(*staged)
+
+    persisted = json.loads(
+        (Path(target_cm.memory_dir) / "云端角色" / "anti_repeat_effects.json")
+        .read_text(encoding="utf-8")
+    )
+    detected = [
+        bucket["counters"]["detected"]
+        for bucket in persisted["daily_buckets"].values()
+    ]
+    assert detected == [2], (
+        "the import fenced away a staged sidecar write: %s" % persisted
+    )
+
+
+@pytest.mark.unit
+def test_a_failed_download_does_not_discard_a_staged_sidecar_write(
+    tmp_path, monkeypatch
+):
+    """The dual of the success path: a rollback must not fence one either.
+
+    The apply never writes the three sidecars, so the failure rollback
+    puts them back byte-identical -- except for anything flushed while the
+    operation was in flight, which it reverts. The loaded cache is
+    therefore at least as fresh as the file it is restored over, and
+    evicting adopts the older state: the sequence fence advances, the
+    pending flush early-returns on ``seq <= _written_seq``, and the reply
+    just delivered never reaches disk.
+
+    The deliberate rollback in ``restore_cloudsave_operation_backup`` is
+    the opposite case and still evicts -- there the older state is what
+    was asked for.
+    """
+    import memory.anti_repeat_effects as effects_module
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+        operations,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    _write_runtime_state(source_cm, character_name="云端角色")
+    export_cloudsave_character_unit(source_cm, "云端角色")
+    _write_runtime_state(target_cm, character_name="云端角色")
+    shutil.copytree(
+        source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True
+    )
+
+    with _isolated_sidecar_stores(
+        Path(target_cm.memory_dir), config_manager=target_cm
+    ) as (store, _c, _g):
+        decision = effects_module.AntiRepeatDecision(
+            source="proactive",
+            reasons=("bm25",),
+            action="block",
+            outcome="blocked_initial",
+        )
+        store.record_decision(
+            "云端角色", decision, now=1_700_000_000.0
+        )
+        # Staged, deliberately not flushed -- the detached-flush window.
+        staged = store.stage_decision(
+            "云端角色", decision, now=1_700_000_001.0
+        )
+
+        # Fail AFTER the apply, so the rollback runs with a write in
+        # flight. This is the only difference from the success-path test.
+        def _detail_fails(*args, **kwargs):
+            raise RuntimeError("detail build failed")
+
+        monkeypatch.setattr(
+            operations, "build_cloudsave_character_detail", _detail_fails
+        )
+        with pytest.raises(RuntimeError):
+            import_cloudsave_character_unit(
+                target_cm, "云端角色", overwrite=True
+            )
+        monkeypatch.undo()
+
+        store._flush_snapshot(*staged)
+
+    persisted = json.loads(
+        (
+            Path(target_cm.memory_dir)
+            / "云端角色"
+            / "anti_repeat_effects.json"
+        ).read_text(encoding="utf-8")
+    )
+    detected = [
+        bucket["counters"]["detected"]
+        for bucket in persisted["daily_buckets"].values()
+    ]
+    assert detected == [2], (
+        "the failed import fenced away a staged sidecar write: %s" % persisted
+    )
+
+
+@pytest.mark.unit
+def test_restoring_a_backup_drops_the_caches_it_replaces(tmp_path):
+    """The RESTORE does replace the sidecars, unlike the apply.
+
+    ``_restore_backup_records`` rmtree+copytree's whole ``memory/<name>/``
+    directories, so it puts the three sidecars back to their pre-operation
+    contents underneath any loaded cache. That used to be covered only by
+    accident, because the success path evicted before the rollback ran; now
+    that the success path merely lifts retirement, the restore has to evict for
+    itself. The eviction lives in the restore helper rather than at its four
+    call sites, so every caller is covered.
+    """
+    from utils.cloudsave_runtime import operations
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    character_dir = memory_root / "小满"
+    character_dir.mkdir(parents=True, exist_ok=True)
+    (character_dir / "anti_repeat_effects.json").write_text(
+        json.dumps({"version": 1, "daily_buckets": {"after": {}}}),
+        encoding="utf-8",
+    )
+    backup_dir = tmp_path / "backup" / "小满"
+    backup_dir.mkdir(parents=True)
+    (backup_dir / "anti_repeat_effects.json").write_text(
+        json.dumps({"version": 1, "daily_buckets": {"before": {}}}),
+        encoding="utf-8",
+    )
+
+    with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
+        store._cache["小满"] = {"version": 1, "daily_buckets": {"stale": {}}}
+        corpus._cache["小满"] = [{"stale": True}]
+        greeting._cache["小满"] = ["stale"]
+
+        operations._restore_backup_records(
+            cm,
+            [{"target": character_dir, "backup": backup_dir, "is_dir": True}],
+            evict_sidecar_caches=True,
+        )
+
+        assert "小满" not in store._cache, (
+            "the restore replaced the file but left the cache shadowing it"
+        )
+        assert "小满" not in corpus._cache
+        assert "小满" not in greeting._cache
+
+    restored = json.loads(
+        (character_dir / "anti_repeat_effects.json").read_text(encoding="utf-8")
+    )
+    assert restored["daily_buckets"] == {"before": {}}
+
+
+@pytest.mark.unit
+def test_the_eviction_name_lookup_resolves_both_sides(tmp_path):
+    """A memory_dir that is not already normalised still matches.
+
+    ``restore_cloudsave_operation_backup`` builds its targets through
+    ``_resolve_managed_target_path``, which resolves. Comparing those against
+    a raw ``config_manager.memory_dir`` meant a root carrying a symlink, a
+    "~" or a ".." never matched: the name list came back empty, nothing was
+    evicted, and the stale caches wrote over what the rollback had just put
+    back.
+
+    The unnormalised form here is a ".." rather than a symlink -- it
+    reproduces the same mismatch, is a real way to configure a path, and
+    does not need a privilege Windows CI cannot grant. The call site itself
+    is covered by the restore test above.
+    """
+    from utils.cloudsave_runtime import operations
+
+    memory_root = tmp_path / "memory"
+    character_dir = memory_root / "小满"
+    character_dir.mkdir(parents=True)
+    backup_dir = tmp_path / "backup" / "小满"
+    backup_dir.mkdir(parents=True)
+    records = [
+        {"target": character_dir.resolve(), "backup": backup_dir, "is_dir": True}
+    ]
+
+    straight = SimpleNamespace(memory_dir=str(memory_root))
+    assert operations._memory_character_names_from_backup_records(
+        straight, records
+    ) == (("小满",), ())
+
+    # Same directory, spelled with a detour. Path keeps ".." literally, so
+    # an unresolved comparison sees a different string.
+    detour = tmp_path / "sidestep" / ".." / "memory"
+    (tmp_path / "sidestep").mkdir()
+    assert Path(detour) != memory_root, (
+        "the detour normalised on its own -- this test would prove nothing"
+    )
+    assert Path(detour).resolve() == memory_root.resolve()
+
+    crooked = SimpleNamespace(memory_dir=str(detour))
+    assert operations._memory_character_names_from_backup_records(
+        crooked, records
+    ) == (("小满",), ()), (
+        "an unnormalised memory_dir found no characters to evict"
+    )
+
+    # The dual: a directory that is genuinely elsewhere is still refused.
+    outside = tmp_path / "elsewhere" / "小满"
+    outside.mkdir(parents=True)
+    assert operations._memory_character_names_from_backup_records(
+        straight,
+        [{"target": outside.resolve(), "backup": backup_dir, "is_dir": True}],
+    ) == ((), ())
+
+    # The other side of the comparison: a TARGET spelled with a detour has
+    # to normalise too, not just the root.
+    (memory_root / "sidestep").mkdir()
+    crooked_target = memory_root / "sidestep" / ".." / "小满"
+    assert Path(crooked_target) != character_dir
+    assert operations._memory_character_names_from_backup_records(
+        straight,
+        [{"target": crooked_target, "backup": backup_dir, "is_dir": True}],
+    ) == (("小满",), ()), (
+        "an unnormalised target found no character to evict"
+    )
+
+    # And an empty target contributes nothing rather than resolving to the
+    # working directory and donating its name. Only observable when the
+    # working directory really is a child of the configured root, so the
+    # root is chosen to make it so -- otherwise the guard is decorative and
+    # deleting it would stay green.
+    assert operations._memory_character_names_from_backup_records(
+        straight, [{"target": "", "is_dir": True}]
+    ) == ((), ())
+    cwd_parent = SimpleNamespace(memory_dir=str(Path.cwd().parent))
+    assert operations._memory_character_names_from_backup_records(
+        cwd_parent, [{"target": "", "is_dir": True}]
+    ) == ((), ()), (
+        "an empty target resolved to the working directory and was treated "
+        "as a character"
+    )
+
+    # A record with NO backup is one the restore DELETES -- the operation
+    # being rolled back is what created the directory. Those names have to
+    # come back on the retire side, not the evict side: evicting leaves the
+    # name live, and a write still in flight would recreate the directory
+    # for a character the restored characters.json no longer contains.
+    assert operations._memory_character_names_from_backup_records(
+        straight,
+        [{"target": character_dir.resolve(), "backup": None, "is_dir": True}],
+    ) == ((), ("小满",)), (
+        "a directory the restore removes was queued for eviction, which "
+        "leaves the deleted name free to recreate it"
+    )
+
+
+@pytest.mark.unit
+def test_restoring_away_a_downloaded_character_retires_it(tmp_path):
+    """Deleting a directory the operation created must retire, not evict.
+
+    A download that creates a previously absent character records its
+    memory directory with no backup -- there was nothing there to save --
+    and with is_dir False, because that flag is captured before the
+    directory exists. Rolling the operation back deletes the directory, but
+    the successful import had already revived the sidecar stores for that
+    name, so an anti-repeat or greeting write still in flight would recreate
+    memory/<name>/ for a character the restored characters.json no longer
+    contains.
+
+    Driven through the real import and restore rather than the name helper:
+    the helper alone stayed green with the retire call deleted and with the
+    is_dir refresh deleted.
+    """
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    _write_runtime_state(source_cm, character_name="新来的")
+    export_cloudsave_character_unit(source_cm, "新来的")
+    # The target knows a DIFFERENT character, so the downloaded one is
+    # genuinely absent before the import.
+    _write_runtime_state(target_cm, character_name="小满")
+    shutil.copytree(
+        source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True
+    )
+    memory_root = Path(target_cm.memory_dir)
+    assert not (memory_root / "新来的").exists()
+
+    with _isolated_sidecar_stores(
+        memory_root, config_manager=target_cm
+    ) as (store, corpus, greeting):
+        result = import_cloudsave_character_unit(
+            target_cm, "新来的", overwrite=True
+        )
+        assert (memory_root / "新来的").is_dir(), (
+            "the import did not create the directory, so the scenario "
+            "under test never happened"
+        )
+        assert "新来的" not in store._retired
+
+        restore_cloudsave_operation_backup(
+            target_cm, result["backup_path"]
+        )
+
+        assert not (memory_root / "新来的").exists(), (
+            "the restore did not remove the downloaded directory"
+        )
+        for label, sidecar in (
+            ("effects", store), ("corpus", corpus), ("greeting", greeting),
+        ):
+            assert "新来的" in sidecar._retired, (
+                f"{label} left the deleted name live, so a write still in "
+                "flight would recreate its directory"
+            )
+
+        # The behaviour that retirement buys: an in-flight write does not
+        # put the directory back.
+        import memory.anti_repeat_effects as effects_module
+
+        store.record_decision(
+            "新来的",
+            effects_module.AntiRepeatDecision(
+                source="proactive",
+                reasons=("bm25",),
+                action="block",
+                outcome="blocked_initial",
+            ),
+            now=1_700_000_000.0,
+        )
+        assert not (memory_root / "新来的").exists(), (
+            "a write after the rollback recreated the deleted character's "
+            "directory"
+        )
+
+@pytest.mark.unit
+def test_a_failed_restore_still_retires_the_directory_it_removed(tmp_path):
+    """The retirement must not be the thing a mid-restore failure skips.
+
+    Records are processed deepest-first, so the character directory is removed
+    EARLY and the runtime/state files come after it. The lifecycle handling sat
+    after the loop, so one of those later records raising left the removal in
+    place and skipped the retirement outright -- leaving the name live with no
+    directory, ready for the next in-flight write to recreate it as an orphan
+    that ``character_memory_exists`` reports as a character the restored
+    characters.json no longer contains.
+
+    The failure is injected into the LAST thing the loop does, gated on the
+    directory already being gone, so it can only fire in the window this is
+    about. The sibling test above is the same scenario without the failure.
+    """
+    from utils import cloudsave_runtime as _facade
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    _write_runtime_state(source_cm, character_name="新来的")
+    export_cloudsave_character_unit(source_cm, "新来的")
+    _write_runtime_state(target_cm, character_name="小满")
+    shutil.copytree(
+        source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True
+    )
+    memory_root = Path(target_cm.memory_dir)
+
+    with _isolated_sidecar_stores(
+        memory_root, config_manager=target_cm
+    ) as (store, corpus, greeting):
+        result = import_cloudsave_character_unit(
+            target_cm, "新来的", overwrite=True
+        )
+        assert (memory_root / "新来的").is_dir(), (
+            "the import did not create the directory, so the scenario "
+            "under test never happened"
+        )
+
+        real_apply = _facade._apply_runtime_file
+        fired = []
+
+        def _fail_once_the_directory_is_gone(source_path, target_path):
+            if not (memory_root / "新来的").exists() and not fired:
+                fired.append(True)
+                raise OSError("a later record could not be put back")
+            return real_apply(source_path, target_path)
+
+        with patch.object(
+            _facade, "_apply_runtime_file", _fail_once_the_directory_is_gone
+        ):
+            with pytest.raises(OSError):
+                restore_cloudsave_operation_backup(
+                    target_cm, result["backup_path"]
+                )
+
+        assert fired, "the injected failure never fired, so this proves nothing"
+        assert not (memory_root / "新来的").exists(), (
+            "the restore did not remove the downloaded directory"
+        )
+        for label, sidecar in (
+            ("effects", store), ("corpus", corpus), ("greeting", greeting),
+        ):
+            assert "新来的" in sidecar._retired, (
+                f"{label} left the deleted name live after the restore failed"
+            )
+
+        # The behaviour the retirement buys, which is the whole point: an
+        # in-flight write does not put the directory back.
+        import memory.anti_repeat_effects as effects_module
+
+        store.record_decision(
+            "新来的",
+            effects_module.AntiRepeatDecision(
+                source="proactive",
+                reasons=("bm25",),
+                action="block",
+                outcome="blocked_initial",
+            ),
+            now=1_700_000_000.0,
+        )
+        assert not (memory_root / "新来的").exists(), (
+            "a write after the failed restore recreated the deleted "
+            "character's directory"
+        )
+
+
 def test_runtime_root_counts_an_interrupted_avatar_transaction_as_content(tmp_path):
     """An interrupted update may leave `.backup` as a tool's only copy; empty means replaced."""
     cm = _make_config_manager(tmp_path)
@@ -3302,3 +3990,70 @@ def test_transactional_entry_pattern_tracks_the_avatar_tool_store_naming():
         name = f".{tool_id}{suffix}"
         assert owner.fullmatch(name) is not None, "样本名和 store 的命名脱节"
         assert pattern.fullmatch(name) is None, suffix
+
+
+@pytest.mark.unit
+def test_a_restore_evicts_only_the_characters_it_reached(tmp_path, monkeypatch):
+    """A character whose directory was never touched still matches its cache.
+
+    Records are processed deepest-first and the loop stops at the first raise,
+    so a failure early on leaves later characters completely untouched. Evicting
+    those adopts an older state anyway: the sequence fence advances past a flush
+    that is still pending, and a reply already delivered never reaches disk.
+
+    The raising record itself must still count as reached -- its removal may
+    already have happened, which is why the lifecycle block sits in a finally at
+    all. Both halves are asserted here.
+    """
+    import memory.anti_repeat_effects as effects_module
+    from utils.cloudsave_runtime import operations as operations_module
+
+    reached = []
+
+    def _record_names(_config_manager, records):
+        reached.append(
+            [str(record["target"]) for record in records]
+        )
+        return (), ()
+
+    monkeypatch.setattr(
+        operations_module,
+        "_memory_character_names_from_backup_records",
+        _record_names,
+    )
+
+    deep = tmp_path / "memory" / "Deep"
+    shallow = tmp_path / "state.json"
+    deep.mkdir(parents=True)
+    (deep / "facts.json").write_text("[1]", encoding="utf-8")
+    shallow.write_text("{}", encoding="utf-8")
+
+    backup_records = [
+        {"target": deep, "backup": None, "is_dir": True},
+        {"target": shallow, "backup": None, "is_dir": False},
+    ]
+
+    # Deepest-first, so `deep` is processed and `shallow` never is.
+    def _boom(*_args, **_kwargs):
+        raise OSError("restore failed partway")
+
+    monkeypatch.setattr(operations_module.shutil, "rmtree", _boom)
+
+    with pytest.raises(OSError):
+        operations_module._restore_backup_records(
+            SimpleNamespace(memory_dir=str(tmp_path / "memory")),
+            backup_records,
+            evict_sidecar_caches=True,
+        )
+
+    assert reached, "the lifecycle block never ran, so this proves nothing"
+    seen = reached[-1]
+    assert str(deep) in seen, (
+        "the record that raised was skipped, but its removal may already have "
+        "happened -- that is the case the finally exists for"
+    )
+    assert str(shallow) not in seen, (
+        "a record the loop never reached was evicted anyway, which adopts an "
+        "older state for a file this call never touched"
+    )
+    assert effects_module is not None
