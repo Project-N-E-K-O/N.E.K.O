@@ -97,11 +97,20 @@ def test_pngtuber_loading_invalidates_snapshot_without_early_reference_capture()
     assert "window.addEventListener('pngtuber-model-loading'" in source
     assert "let pngtuberModelLoading = false;" in source
     assert "pngtuberModelLoading = true;" in loading_block
+    assert "clearTimeout(autoCaptureTimer);" in loading_block
+    assert "autoCaptureTimer = null;" in loading_block
     assert "advanceCardDropModelRevision();" in loading_block
     assert "invalidateCachedPreview();" in loading_block
     assert "syncAvatarToCardDrop('', { scheduleReference: false });" in loading_block
     assert "pngtuberModelLoading = false;" in source
     assert "pngtuberModelLoading && getCurrentModelType() === 'pngtuber'" in source
+    render_block = source.split("async function renderAvatarPreview(options = {})", 1)[1].split(
+        "function scheduleAutoCapture",
+        1,
+    )[0]
+    assert "if (pngtuberModelLoading && getCurrentModelType() === 'pngtuber')" in render_block
+    assert "pendingAutoCapture = true;" in render_block
+    assert "window.addEventListener('pngtuber-model-load-finished'" in source
 
 
 @pytest.mark.unit

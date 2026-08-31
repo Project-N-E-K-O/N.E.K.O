@@ -4757,22 +4757,26 @@
     }
 
     async function loadPNGTuberAvatar(config) {
-        await hideOtherAvatarRuntimesForPNGTuber();
-        if (!window.pngtuberManager) {
-            window.pngtuberManager = new PNGTuberManager();
-        }
-        await window.pngtuberManager.load(config || {});
-        if (document.body?.classList.contains('model-manager-page')
-            && window._modelManagerCurrentAvatarType
-            && window._modelManagerCurrentAvatarType !== 'pngtuber') {
-            window.pngtuberManager.hide();
+        try {
+            await hideOtherAvatarRuntimesForPNGTuber();
+            if (!window.pngtuberManager) {
+                window.pngtuberManager = new PNGTuberManager();
+            }
+            await window.pngtuberManager.load(config || {});
+            if (document.body?.classList.contains('model-manager-page')
+                && window._modelManagerCurrentAvatarType
+                && window._modelManagerCurrentAvatarType !== 'pngtuber') {
+                window.pngtuberManager.hide();
+                return window.pngtuberManager;
+            }
+            await hideOtherAvatarRuntimesForPNGTuber();
+            window.pngtuberManager.show();
+            await hideOtherAvatarRuntimesForPNGTuber();
+            window.dispatchEvent(new CustomEvent('pngtuber-model-loaded'));
             return window.pngtuberManager;
+        } finally {
+            window.dispatchEvent(new CustomEvent('pngtuber-model-load-finished'));
         }
-        await hideOtherAvatarRuntimesForPNGTuber();
-        window.pngtuberManager.show();
-        await hideOtherAvatarRuntimesForPNGTuber();
-        window.dispatchEvent(new CustomEvent('pngtuber-model-loaded'));
-        return window.pngtuberManager;
     }
 
     function playPNGTuberAnimation(target, options = {}) {

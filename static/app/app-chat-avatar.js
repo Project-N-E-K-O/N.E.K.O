@@ -1274,6 +1274,11 @@
         const trigger = options.trigger || null;
         const manualCrop = options.manualCrop === true;
 
+        if (pngtuberModelLoading && getCurrentModelType() === 'pngtuber') {
+            pendingAutoCapture = true;
+            return;
+        }
+
         if (isCapturing) {
             if (showCard) {
                 setPreviewVisible(true, trigger);
@@ -1465,6 +1470,10 @@
 
     function handleModelLoading() {
         pngtuberModelLoading = true;
+        if (autoCaptureTimer) {
+            clearTimeout(autoCaptureTimer);
+            autoCaptureTimer = null;
+        }
         advanceCardDropModelRevision();
         invalidateCachedPreview();
         syncAvatarToCardDrop('', { scheduleReference: false });
@@ -1499,6 +1508,10 @@
         window.addEventListener('pngtuber-model-loaded', function () {
             pngtuberModelLoading = false;
             handleModelLoaded('pngtuber-model-loaded');
+        });
+
+        window.addEventListener('pngtuber-model-load-finished', function () {
+            pngtuberModelLoading = false;
         });
     }
 

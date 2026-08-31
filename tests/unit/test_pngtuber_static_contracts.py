@@ -1088,6 +1088,18 @@ def test_pngtuber_load_announces_identity_change_before_async_setup():
     assert load_block.index(loading_event) < load_block.index(async_setup)
 
 
+def test_pngtuber_loader_finishes_loading_state_on_every_exit():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    loader_block = source[
+        source.index("    async function loadPNGTuberAvatar(config) {"):
+        source.index("    function playPNGTuberAnimation")
+    ]
+
+    assert "try {" in loader_block
+    assert "} finally {" in loader_block
+    assert "window.dispatchEvent(new CustomEvent('pngtuber-model-load-finished'));" in loader_block
+
+
 def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     attach_block = source[
