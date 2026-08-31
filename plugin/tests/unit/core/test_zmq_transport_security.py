@@ -1038,6 +1038,35 @@ def test_a_restarted_batcher_actually_sends_again(force_abandon: bool) -> None:
 # ── pack and unpack must agree on their options ────────────────────────
 
 
+def _assert_same_including_key_types(got, expected, path: str = "data") -> None:
+    """Compare dicts by key TYPE as well as value.
+
+    ``==`` alone is too weak for this contract: Python hashes ``True`` and ``1``
+    to the same slot and compares them equal, and ``2024 == 2024.0``, so
+    ``{True: 1} == {1: 1}`` and ``{2024: 3} == {2024.0: 3}`` are both True. A
+    decoder that quietly widened bool keys to int, or int keys to float, would
+    slip past a plain equality assertion — and preserving the key type is
+    precisely what OPT_NON_STR_KEYS is for (CodeRabbit).
+    """
+    assert type(got) is type(expected), f"{path}: {type(got)} != {type(expected)}"
+    if isinstance(expected, dict):
+        got_keys = sorted(got.keys(), key=repr)
+        exp_keys = sorted(expected.keys(), key=repr)
+        assert [(type(k), k) for k in got_keys] == [(type(k), k) for k in exp_keys], (
+            f"{path}: 键的类型或取值变了 {[(type(k).__name__, k) for k in got_keys]} "
+            f"!= {[(type(k).__name__, k) for k in exp_keys]}"
+        )
+        for k in exp_keys:
+            match = next(kk for kk in got_keys if type(kk) is type(k) and kk == k)
+            _assert_same_including_key_types(got[match], expected[k], f"{path}[{k!r}]")
+    elif isinstance(expected, list):
+        assert len(got) == len(expected), f"{path}: 长度变了"
+        for i, (g, e) in enumerate(zip(got, expected)):
+            _assert_same_including_key_types(g, e, f"{path}[{i}]")
+    else:
+        assert got == expected, f"{path}: {got!r} != {expected!r}"
+
+
 @pytest.mark.plugin_unit
 @pytest.mark.parametrize(
     "value",
@@ -1067,7 +1096,7 @@ def test_non_string_keys_survive_the_uplink(value: dict) -> None:
     channel, decoded = zmq_transport._decode_uplink(raw, expected_token="tok")
 
     assert channel == zmq_transport.CH_RES
-    assert decoded["data"] == value, "非字符串键在上行里被改写了"
+    _assert_same_including_key_types(decoded["data"], value)
 
 
 @pytest.mark.plugin_unit
