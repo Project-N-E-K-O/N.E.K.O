@@ -4856,3 +4856,85 @@ def test_a_restore_evicts_only_the_characters_it_reached(tmp_path, monkeypatch):
         "older state for a file this call never touched"
     )
     assert effects_module is not None
+
+
+def test_a_whitespace_only_ledger_is_left_alone(tmp_path):
+    """Blank lines are not ownership evidence either.
+
+    Testing ``recorded`` for truth told a whitespace-only file apart from an
+    empty one, though neither carries any evidence -- so somebody else's file
+    holding two newlines was unlinked while their empty one was kept.
+    """
+    from utils.config_manager.migrations import MigrationsMixin
+
+    app_docs = tmp_path / "app_docs"
+    staging = app_docs / ".mig-staging"
+    staging.mkdir(parents=True)
+    ledger = staging / "minted"
+    theirs = "\n   \n\n"
+    ledger.write_text(theirs, encoding="utf-8")
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
+    manager = MigrationsMixin.__new__(MigrationsMixin)
+    manager.app_docs_dir = str(app_docs)
+    manager.memory_dir = str(memory)
+    manager._reclaim_recorded_workspaces(None, 0.0)
+
+    assert ledger.exists(), "a whitespace-only ledger was unlinked"
+    assert ledger.read_text(encoding="utf-8") == theirs
+
+
+def test_clearing_read_only_keeps_a_directory_traversable(tmp_path, monkeypatch):
+    """S_IWRITE alone is 0o200, which takes read and execute off a directory.
+
+    The retry then cannot unlink what is inside, so the tree it was meant to
+    remove stays -- and on POSIX under a non-root account that is the whole
+    reason this handler exists.
+
+    Asserted on the MODE REQUESTED rather than on whether the tree went.
+    Windows honours only the write bit and does not block directory traversal
+    on the read-only attribute, so the removal succeeds there either way --
+    a mutation reverting the fix left this green when it asserted the
+    outcome, and Windows is where this project's unit CI runs.
+    """
+    import os
+    import stat as stat_module
+
+    from utils.config_manager import migrations as migrations_module
+
+    tree = tmp_path / "tree"
+    inner = tree / "inner"
+    inner.mkdir(parents=True)
+    (inner / "leaf.txt").write_text("x", encoding="utf-8")
+    # Read-only from the inside out, which is what a packaged seed copies.
+    os.chmod(inner / "leaf.txt", stat_module.S_IREAD)
+    os.chmod(inner, stat_module.S_IREAD | stat_module.S_IEXEC)
+    os.chmod(tree, stat_module.S_IREAD | stat_module.S_IEXEC)
+
+    requested = []
+    real_chmod = os.chmod
+
+    def _record(path, mode, *args, **kwargs):
+        requested.append((os.path.basename(str(path)), mode))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(migrations_module.os, "chmod", _record)
+    try:
+        migrations_module._force_rmtree(tree)
+        assert not tree.exists(), "a read-only tree survived the removal"
+    finally:
+        monkeypatch.undo()
+        for path in (tree, inner):
+            if path.exists():
+                os.chmod(path, 0o700)
+
+    directory_modes = [
+        mode for name, mode in requested if name in {"tree", "inner"}
+    ]
+    assert directory_modes, (
+        "the handler never chmodded a directory, so nothing was exercised"
+    )
+    for mode in directory_modes:
+        assert mode & stat_module.S_IREAD, "a directory was left unreadable"
+        assert mode & stat_module.S_IEXEC, "a directory was left untraversable"

@@ -225,7 +225,20 @@ def _force_rmtree(path):
     """
     def _clear_read_only(_func, target, _exc):
         try:
-            os.chmod(target, stat.S_IWRITE)
+            # ADD the write bit; do not replace the mode with it. Setting
+            # S_IWRITE alone is 0o200, which on POSIX takes read and execute
+            # off a directory and leaves it untraversable -- so the retry
+            # cannot unlink what is inside and the tree stays. Windows only
+            # reads the write bit here, so keeping the rest costs nothing
+            # there.
+            try:
+                current = os.stat(target).st_mode
+            except OSError:
+                current = 0
+            os.chmod(target, current | stat.S_IWRITE | stat.S_IREAD)
+            if os.path.isdir(target):
+                # Traversal, which is what an unwritable parent was blocking.
+                os.chmod(target, os.stat(target).st_mode | stat.S_IEXEC)
             _func(target)
         except OSError:
             # The caller checks whether the tree actually went; a
@@ -997,6 +1010,30 @@ class MigrationsMixin:
                 # ownership, so the ledger is the whole answer and
                 # there is nothing else in here to enumerate.
                 return
+            # OWNERSHIP HERE IS POSITION, and that is a decision rather
+            # than a proof.
+            #
+            # The sweep below treats every aged, marked, unlocked child of
+            # this directory as a workspace of ours. That holds only while
+            # nothing else claims the reserved name, and app_docs_dir is not
+            # exclusively ours -- plugin/plugins/_shared/rapidocr/_paths.py
+            # and plugin/server/routes/_install_task_store.py both create
+            # their own directories under it. So a pre-existing
+            # ".mig-staging" belonging to somebody else, holding an aged
+            # child with a stray ".lock", would have that child removed.
+            #
+            # Weighed and kept, deliberately. Refusing to sweep a directory
+            # this run did not create is the obvious guard, but our own is
+            # rmdir'd at the end of a run -- so one found on disk means the
+            # PREVIOUS run crashed, which is the case this sweep exists for.
+            # That guard would trade a narrow collision for crash remnants
+            # accumulating for ever. Moving this namespace onto the ledger
+            # was the other option; the ledger lives inside the directory
+            # whose ownership is in question, so it cannot settle it.
+            #
+            # The character namespace does NOT rely on position, because
+            # nothing there can prove ownership -- see the ledger above.
+            #
             # A link or a plain file at the reserved name means we never
             # used it -- the preparation step worked around it. Do not walk
             # it and do not rmdir it: on Windows rmdir removes a DIRECTORY
@@ -1197,14 +1234,17 @@ class MigrationsMixin:
                 ledger.write_text(
                     "\n".join(remaining) + "\n", encoding="utf-8"
                 )
-            elif recorded:
-                # Ours to remove: it HELD lines, every one of them ours,
-                # checked before any was acted on, and none is left.
+            elif any(line.strip() for line in recorded):
+                # Ours to remove: it HELD real entries, every one of them
+                # ours, checked before any was acted on, and none is left.
                 #
-                # An EMPTY ledger is not removed. Our own emptied file and a
-                # user's or plugin's empty one are the same bytes, so there
-                # is nothing to tell them apart -- and leaving ours behind
-                # costs an empty file, while removing theirs is data loss.
+                # A ledger with NO entries is not removed, and blank lines do
+                # not count as entries -- testing ``recorded`` for truth told
+                # a whitespace-only file apart from an empty one, though
+                # neither carries any ownership evidence. Our own emptied
+                # file and a user's or plugin's are the same either way, so
+                # leaving ours behind costs an empty file while removing
+                # theirs is data loss.
                 ledger.unlink()
         except OSError:
             # A stale record costs one revisit next run.
