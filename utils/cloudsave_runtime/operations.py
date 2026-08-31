@@ -1403,29 +1403,44 @@ def import_local_cloudsave_snapshot(
 
         from utils.config_manager.migrations import (
             _MIGRATION_WORKSPACE_PREFIX,
+            _workspace_is_live,
             recorded_workspace_paths,
         )
 
-        # OWNERSHIP, not a shape. Four narrower readings of the on-disk
-        # evidence were reported in turn -- the prefix, the prefix plus a
-        # marker, a held lock, a held lock on a regular file -- and the
-        # migration's own comment says why none of them can work: a character
-        # may legally be named ".mig-anything" and may hold a ".lock", so
-        # every such shape is reproducible by the very data this is trying to
-        # tell apart. The ledger is the evidence that comment names, and
-        # reclamation has always used it.
-        minted_workspaces = recorded_workspace_paths(
-            getattr(config_manager, "app_docs_dir", "")
-        )
+        def _is_migration_workspace(path):
+            """RECORDED or LIVE. Both, because the two misses differ in cost.
+
+            The ledger is the only unforgeable evidence, and it carries the
+            normal case: it is written immediately after mkdtemp and before
+            the workspace is used. But recording is best effort -- the append
+            swallows OSError and the migration locks and uses the workspace
+            regardless -- so a full disk or a read-only app_docs leaves an
+            in-flight workspace unrecorded, and deleting that destroys a copy
+            in progress.
+
+            Liveness covers exactly that gap. It is the forgeable half: a
+            character called ".mig-x" whose directory holds a ".lock" some
+            process holds open would be spared. Forging it needs a live
+            process holding an exclusive lock on a file inside a character
+            directory, which nothing in the product writes there and no
+            amount of cloud data can arrange -- and the cost if it happens is
+            stale data kept, against data destroyed the other way.
+            """
+            if not path.name.startswith(_MIGRATION_WORKSPACE_PREFIX):
+                return False
+            if path.resolve(strict=False) in recorded_workspace_paths(
+                getattr(config_manager, "app_docs_dir", "")
+            ):
+                return True
+            return _workspace_is_live(path)
+
 
         memory_root = Path(config_manager.memory_dir)
         if memory_root.exists():
             for child in memory_root.iterdir():
                 if not child.is_dir():
                     continue
-                if child.name.startswith(
-                    _MIGRATION_WORKSPACE_PREFIX
-                ) and child.resolve(strict=False) in minted_workspaces:
+                if _is_migration_workspace(child):
                     # A startup migration WORKSPACE, not stale runtime
                     # data. When memory/ is a junction onto another
                     # volume the migration has to stage inside it, and
@@ -1549,13 +1564,9 @@ def import_local_cloudsave_snapshot(
                     # can be held across an rmtree. It is the same move the
                     # migration's own publish steps make, re-checking one
                     # statement before the irreversible one.
-                    if target_path.name.startswith(
-                        _MIGRATION_WORKSPACE_PREFIX
-                    ) and target_path.resolve(strict=False) in (
-                        recorded_workspace_paths(
-                            getattr(config_manager, "app_docs_dir", "")
-                        )
-                    ):
+                    # Asked AGAIN: a workspace can be minted, recorded or
+                    # locked during the file-apply phase, which is long.
+                    if _is_migration_workspace(target_path):
                         continue
                     if target_path.exists():
                         shutil.rmtree(target_path)
@@ -1575,6 +1586,15 @@ def import_local_cloudsave_snapshot(
                         reverse=True,
                     ):
                         target_path = record["target"]
+                        # Rollback has to ask the same question the deletion
+                        # loop does. A workspace recorded after enumeration is
+                        # skipped there but is still in backup_records, so an
+                        # unrelated failure elsewhere would have this restore a
+                        # stale backup over a tree another process is writing
+                        # -- and leave that migration's seed unavailable for
+                        # the session.
+                        if _is_migration_workspace(target_path):
+                            continue
                         if target_path.exists():
                             if target_path.is_dir():
                                 shutil.rmtree(target_path, ignore_errors=True)

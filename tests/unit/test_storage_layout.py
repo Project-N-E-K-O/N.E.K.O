@@ -2541,3 +2541,104 @@ def test_the_recheck_does_not_spare_an_ordinary_stale_directory(tmp_path):
         "the ownership re-check spared a directory that carries no prefix, so "
         "a corrupted ledger naming a character could delete-proof it"
     )
+
+
+@pytest.mark.unit
+def test_an_unrecorded_but_live_workspace_survives(tmp_path):
+    """The gap ownership cannot see, and why liveness is still consulted.
+
+    ``_record_minted_workspace`` swallows OSError, and the migration goes on
+    to lock and use the workspace regardless -- so a full disk or a read-only
+    app_docs leaves an in-flight workspace with no ledger line. Deleting it
+    destroys a copy in progress and takes that seed out for the session,
+    which is the more expensive of the two misses.
+    """
+    from utils.cloudsave_runtime.operations import (
+        bootstrap_local_cloudsave_environment,
+        export_local_cloudsave_snapshot,
+        import_local_cloudsave_snapshot,
+    )
+    from utils.config_manager.migrations import (
+        _MIGRATION_WORKSPACE_LOCK_NAME,
+        _MIGRATION_WORKSPACE_PREFIX,
+        _hold_workspace_lock,
+    )
+
+    config_manager = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(config_manager)
+    memory_root = Path(config_manager.memory_dir)
+    memory_root.mkdir(parents=True, exist_ok=True)
+    export_local_cloudsave_snapshot(config_manager)
+
+    # Deliberately NOT recorded: this is the ledger-append-failed case.
+    unrecorded = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "unrecorded")
+    unrecorded.mkdir()
+    marker = unrecorded / _MIGRATION_WORKSPACE_LOCK_NAME
+    marker.write_bytes(b"")
+
+    handle = open(marker, "r+b")
+    try:
+        _hold_workspace_lock(handle)
+        import_local_cloudsave_snapshot(config_manager)
+    finally:
+        handle.close()
+
+    assert unrecorded.exists(), (
+        "an unrecorded workspace with a HELD lock was deleted mid-copy"
+    )
+
+
+@pytest.mark.unit
+def test_rollback_does_not_restore_over_a_workspace_that_became_ours(tmp_path):
+    """The deletion loop re-checks; the rollback path did not.
+
+    A workspace recorded after enumeration is skipped by the deletion loop but
+    is still in ``backup_records``. If anything unrelated then fails, rollback
+    removed every recorded target and restored its backup -- over a tree
+    another process was writing, leaving that seed unavailable for the
+    session.
+    """
+    from utils.cloudsave_runtime import operations as operations_module
+    from utils.cloudsave_runtime.operations import (
+        bootstrap_local_cloudsave_environment,
+        export_local_cloudsave_snapshot,
+        import_local_cloudsave_snapshot,
+    )
+    from utils.config_manager import migrations as migrations_module
+    from utils.config_manager.migrations import _MIGRATION_WORKSPACE_PREFIX
+
+    config_manager = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(config_manager)
+    memory_root = Path(config_manager.memory_dir)
+    memory_root.mkdir(parents=True, exist_ok=True)
+    export_local_cloudsave_snapshot(config_manager)
+
+    late = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "late")
+    (late / "d").mkdir(parents=True)
+    (late / "d" / "in-flight.json").write_text("[fresh]", encoding="utf-8")
+
+    seen = []
+
+    def _unrecorded_then_recorded(app_docs_dir):
+        seen.append(app_docs_dir)
+        # Unknown while the sweep runs; ours by the time anything else looks.
+        if len(seen) == 1:
+            return set()
+        return {late.resolve(strict=False)}
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("an unrelated apply failed after the backups")
+
+    with patch.object(
+        migrations_module, "recorded_workspace_paths", _unrecorded_then_recorded
+    ), patch.object(
+        migrations_module, "_workspace_is_live", lambda path: False
+    ), patch.object(
+        operations_module, "set_recent_pending_unlocked", _boom
+    ):
+        with pytest.raises(Exception):
+            import_local_cloudsave_snapshot(config_manager)
+
+    assert (late / "d" / "in-flight.json").read_text(encoding="utf-8") == "[fresh]", (
+        "rollback restored a stale backup over a live migration workspace"
+    )

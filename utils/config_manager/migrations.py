@@ -350,6 +350,35 @@ _MIGRATION_LEDGER_NAME = "minted"
 _MIGRATION_WORKSPACE_LOCK = None
 
 
+def _ledger_lines_are_all_ours(lines):
+    """Whether every line in a ledger looks like something we wrote.
+
+    A ``minted`` file that already belonged to a user or a plugin is adopted
+    by the reader, and the tidy-up at the end of reclamation would then
+    DELETE it. Path validation stops the directories it names from being
+    removed; it does not stop the file itself from being.
+
+    Every line we write is an absolute path whose final component carries the
+    workspace prefix, because that is the only kind of path
+    ``_record_minted_workspace`` is ever given. One line that is not means
+    the file is not ours to rewrite or remove.
+
+    An empty ledger IS ours -- that is what our own file looks like once the
+    last workspace has been reclaimed.
+    """
+    for line in lines:
+        entry = line.strip()
+        if not entry:
+            continue
+        if not os.path.basename(entry).startswith(
+            _MIGRATION_WORKSPACE_PREFIX
+        ):
+            return False
+        if not os.path.isabs(entry):
+            return False
+    return True
+
+
 def _ledger_is_usable(ledger):
     """Whether this path is a ledger we may read or append to.
 
@@ -401,6 +430,14 @@ def recorded_workspace_paths(app_docs_dir):
     try:
         lines = ledger.read_text(encoding="utf-8").splitlines()
     except OSError:
+        return set()
+    except UnicodeDecodeError:
+        # NOT an OSError, so it escapes the handler above. Reclamation
+        # already learned this one: a ledger truncated mid-character by a
+        # kill. There it came out of a finally and failed the launch; here
+        # it would come out of a cloud import. A second reader that did not
+        # inherit the first reader's handling is the same asymmetry this
+        # module keeps paying for.
         return set()
     recorded = set()
     for line in lines:
@@ -884,6 +921,18 @@ class MigrationsMixin:
             # and would have failed the launch on every attempt --
             # reclamation is best effort and must never do that.
             return
+        if not _ledger_lines_are_all_ours(recorded):
+            # A "minted" that already belonged to a user or a plugin. Path
+            # validation stops the directories its lines name from being
+            # removed, but the tidy-up below would still DELETE the file
+            # itself -- so the whole pass is skipped rather than adopting
+            # somebody else's record and then unlinking it.
+            #
+            # The cost is that a genuinely corrupted ledger of ours stops
+            # being reclaimed, leaving directories behind. That is the
+            # cheaper of the two mistakes, and the direction every other
+            # refusal on this path already takes.
+            return
         kept = Path(keep) if keep is not None else None
         namespace = Path(self.memory_dir)
         remaining = []
@@ -953,6 +1002,8 @@ class MigrationsMixin:
                     "\n".join(remaining) + "\n", encoding="utf-8"
                 )
             else:
+                # Ours to remove: every line was one of ours, checked
+                # before any of them was acted on.
                 ledger.unlink()
         except OSError:
             # A stale record costs one revisit next run.

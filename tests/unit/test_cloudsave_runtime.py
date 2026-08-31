@@ -3361,28 +3361,35 @@ def test_a_held_lock_still_vetoes_the_deletion(tmp_path):
     assert not _workspace_is_live(workspace)
 
 
-def test_the_import_exempts_on_ownership_not_on_a_shape():
-    """Four narrower readings of the on-disk evidence were reported in turn.
+def test_the_import_asks_ownership_first_and_liveness_only_as_fallback():
+    """Recorded OR live, and one predicate rather than three call sites.
 
-    The prefix; the prefix plus a marker file; a held lock; a held lock on a
-    regular file. Each was a tighter guess at a question the shapes cannot
-    answer, because a character may legally be named ".mig-anything" and may
-    hold a ".lock" -- so the swept data can reproduce every one of them.
+    The ledger is the only unforgeable evidence and carries the normal case.
+    Liveness covers the one gap it cannot: recording is best effort, so a
+    full disk leaves an in-flight workspace unrecorded, and deleting that
+    destroys a copy in progress.
 
-    The ledger is the evidence the module's own comment names, and
-    reclamation always used it. This pins the import to it as well.
+    The order matters and is asserted: ownership is consulted first, so the
+    forgeable half is only ever reached for a workspace the ledger does not
+    know about.
     """
     import inspect
 
     from utils.cloudsave_runtime import operations
 
     source = inspect.getsource(operations)
-    assert "recorded_workspace_paths(" in source
-    assert "_workspace_is_live" not in source, (
-        "the import is back to reading liveness as ownership"
+    assert "def _is_migration_workspace(path):" in source
+    assert source.count("_is_migration_workspace(") == 4, (
+        "a call site stopped using the shared predicate: %d"
+        % source.count("_is_migration_workspace(")
     )
+    body = source[source.index("def _is_migration_workspace(path):"):]
+    body = body[: body.index("memory_root = ")]
+    assert body.index("recorded_workspace_paths(") < body.index(
+        "_workspace_is_live("
+    ), "liveness is consulted before ownership"
     assert "_MIGRATION_WORKSPACE_LOCK_NAME" not in source, (
-        "the import is back to testing for the marker file"
+        "the import is back to testing for the marker file directly"
     )
 
 
@@ -3644,3 +3651,87 @@ def test_an_unreadable_ledger_exempts_nothing(tmp_path):
 
     assert recorded_workspace_paths(str(tmp_path)) == set()
     assert recorded_workspace_paths("") == set()
+
+
+def test_an_unowned_ledger_is_neither_rewritten_nor_deleted(tmp_path):
+    """A "minted" that already belonged to someone else must survive.
+
+    Path validation stops the directories a hostile line names from being
+    removed. It does not stop the tidy-up from unlinking the file that holds
+    those lines, which is somebody's data.
+    """
+    from utils.config_manager.migrations import MigrationsMixin
+
+    app_docs = tmp_path / "app_docs"
+    staging = app_docs / ".mig-staging"
+    staging.mkdir(parents=True)
+    ledger = staging / "minted"
+    theirs = "some plugin's notes, not paths at all\n"
+    ledger.write_text(theirs, encoding="utf-8")
+
+    manager = MigrationsMixin.__new__(MigrationsMixin)
+    manager.app_docs_dir = str(app_docs)
+    manager.memory_dir = str(tmp_path / "memory")
+    manager._reclaim_recorded_workspaces(None, 0.0)
+
+    assert ledger.read_text(encoding="utf-8") == theirs, (
+        "reclamation rewrote or deleted a ledger it could not show was ours"
+    )
+
+
+def test_our_own_ledger_is_still_reclaimed(tmp_path):
+    """The dual, so the refusal cannot pass by never reclaiming anything."""
+    from utils.config_manager.migrations import (
+        _MIGRATION_WORKSPACE_PREFIX,
+        MigrationsMixin,
+    )
+
+    app_docs = tmp_path / "app_docs"
+    staging = app_docs / ".mig-staging"
+    staging.mkdir(parents=True)
+    memory = tmp_path / "memory"
+    memory.mkdir()
+
+    gone = memory / (_MIGRATION_WORKSPACE_PREFIX + "already-removed")
+    ledger = staging / "minted"
+    ledger.write_text(str(gone.resolve(strict=False)) + "\n", encoding="utf-8")
+
+    manager = MigrationsMixin.__new__(MigrationsMixin)
+    manager.app_docs_dir = str(app_docs)
+    manager.memory_dir = str(memory)
+    manager._reclaim_recorded_workspaces(None, 0.0)
+
+    assert not ledger.exists(), (
+        "a ledger holding only our own, already-gone entries was kept"
+    )
+
+
+def test_the_ledger_ownership_rule_reads_every_line(tmp_path):
+    """One foreign line is enough; our own lines around it prove nothing."""
+    from utils.config_manager.migrations import _ledger_lines_are_all_ours
+
+    ours = "C:" + chr(92) + "x" + chr(92) + ".mig-abc"
+    assert _ledger_lines_are_all_ours([ours])
+    assert _ledger_lines_are_all_ours([])
+    assert _ledger_lines_are_all_ours(["", "  "])
+    assert not _ledger_lines_are_all_ours([ours, "/etc/passwd"])
+    assert not _ledger_lines_are_all_ours(["relative/.mig-abc"])
+    assert not _ledger_lines_are_all_ours(["some plugin's notes"])
+
+
+def test_a_truncated_ledger_does_not_escape_the_new_reader(tmp_path):
+    """The handling reclamation already had, which this reader lacked.
+
+    A ledger truncated mid-character by a kill raises UnicodeDecodeError,
+    which is not an OSError and so escaped the handler beside it. In
+    reclamation that came out of a finally and failed the launch; here it
+    would come out of a cloud import.
+    """
+    from utils.config_manager.migrations import recorded_workspace_paths
+
+    staging = tmp_path / ".mig-staging"
+    staging.mkdir()
+    # A UTF-8 three-byte character cut after its first byte.
+    (staging / "minted").write_bytes(b"/x/.mig-abc\n" + b"\xe5\xa5")
+
+    assert recorded_workspace_paths(str(tmp_path)) == set()
