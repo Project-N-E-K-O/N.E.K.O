@@ -466,6 +466,28 @@ def parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]
     return images, warnings
 
 
+def looks_like_tool_envelope(body: Any) -> bool:
+    """Is this the remote-callback envelope, or the tool's own business data?
+
+    The wire shape ``/api/tools/register`` documents is
+    ``{"output": <any JSON>, "is_error": bool}``, so either key marks an
+    envelope. Anything else is the tool's own dict and belongs in ``output``
+    untouched -- in particular an ``images`` key on its own, which a search
+    tool uses for result URLs. Parsing that as the pixel channel pulls the key
+    out of the model-visible output and then rejects the URLs as malformed
+    base64, replacing the tool's data with warnings.
+
+    Deliberately NOT the same predicate as the plugin callback route in
+    ``plugin/server/routes/llm_tools.py``: that one receives a plugin
+    handler's return value, where a bare ``output`` key is ordinary data, so it
+    additionally requires ``images``. Same-looking condition, different wire
+    contract -- do not merge them.
+    """
+    if not isinstance(body, dict):
+        return False
+    return "is_error" in body or "output" in body
+
+
 def tool_result_from_envelope(call: "ToolCall", body: Any) -> ToolResult:
     """Normalize a local/remote handler return value into ``ToolResult``.
 

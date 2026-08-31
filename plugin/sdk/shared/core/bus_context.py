@@ -289,6 +289,11 @@ class SdkBusFrameRecord:
     frame_id: str | None = None
     type: str = "provider_frame"
     timestamp: float | None = None
+    # 和 timestamp 同值，两个名字都留着：``timestamp`` 是所有 bus record 共用的
+    # 排序字段，``captured_at`` 是 frames 自己的对外字段名（core 的 FrameRecord
+    # 有它，SDK 文档也写了它）。只折成 timestamp 的话，照文档写的插件会直接
+    # AttributeError。
+    captured_at: float | None = None
     source: str | None = None
     image_base64: str | None = None
     mime: str | None = None
@@ -300,10 +305,12 @@ class SdkBusFrameRecord:
     @classmethod
     def from_raw(cls, raw: object) -> "SdkBusFrameRecord":
         generation = _read_first(raw, "generation")
+        captured_at = _as_float(_read_first(raw, "captured_at", "timestamp", "time"))
         return cls(
             frame_id=_as_str(_read_first(raw, "frame_id", "id")),
             type=_as_str(_read_first(raw, "type")) or "provider_frame",
-            timestamp=_as_float(_read_first(raw, "captured_at", "timestamp", "time")),
+            timestamp=captured_at,
+            captured_at=captured_at,
             source=_as_str(_read_first(raw, "source")),
             image_base64=_as_str(_read_first(raw, "image_base64")),
             mime=_as_str(_read_first(raw, "mime")),
@@ -318,6 +325,7 @@ class SdkBusFrameRecord:
             "frame_id": self.frame_id,
             "type": self.type,
             "timestamp": self.timestamp,
+            "captured_at": self.captured_at,
             "source": self.source,
             "image_base64": self.image_base64,
             "mime": self.mime,

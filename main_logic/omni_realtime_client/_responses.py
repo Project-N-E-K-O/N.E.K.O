@@ -2465,6 +2465,11 @@ class _ResponseMixin:
                     bypass_rate_limit=True,
                     cache_latest=False,
                     event_id=visual_event_id,
+                    # 与下面 external-description 那一支同源：这是主动搭话/问候
+                    # 那一轮附的图，用户根本不知道有这么一轮。漏了这个参数就落成
+                    # 默认值，帧抄送里按 "proactive" 过滤的插件会漏掉 native
+                    # provider 这条路。
+                    source="proactive",
                 )
             except asyncio.CancelledError:
                 _remove_visual_rejection_handler()

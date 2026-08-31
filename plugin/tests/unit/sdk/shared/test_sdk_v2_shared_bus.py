@@ -1014,3 +1014,34 @@ class TestSdkBusContext:
     def test_ensure_wraps_none(self) -> None:
         result = ensure_sdk_bus_context(None, host_ctx=object())
         assert isinstance(result, SdkBusContext)
+
+
+# ── the SDK frame record must not narrow the advertised contract ────────
+
+
+def test_sdk_frame_record_exposes_captured_at() -> None:
+    """The SDK reference documents ``captured_at`` on frame records.
+
+    ``from_raw`` read ``captured_at`` off the wire but folded it into
+    ``timestamp`` only, so a plugin following the documented field name got an
+    ``AttributeError``. ``FrameRecord`` in ``plugin/core/bus/frames.py`` keeps
+    the field, and the SDK wrapper must not be narrower than what it wraps.
+    """
+    from plugin.sdk.shared.core.bus_context import SdkBusFrameRecord
+
+    record = SdkBusFrameRecord.from_raw(
+        {"id": "f1", "captured_at": 1234.5, "source": "screen", "mime": "image/jpeg"}
+    )
+
+    assert record.captured_at == 1234.5
+    assert record.timestamp == 1234.5, "两个名字必须同值，不然排序和字段各说各话"
+    assert record.dump()["captured_at"] == 1234.5, "dump() 里漏了就等于没暴露"
+
+
+def test_sdk_frame_record_captured_at_falls_back_like_timestamp() -> None:
+    """A record that only carries ``timestamp`` must still answer both."""
+    from plugin.sdk.shared.core.bus_context import SdkBusFrameRecord
+
+    record = SdkBusFrameRecord.from_raw({"id": "f2", "timestamp": 7.0})
+
+    assert record.captured_at == 7.0 and record.timestamp == 7.0

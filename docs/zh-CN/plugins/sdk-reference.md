@@ -327,7 +327,7 @@ latest = frames.sort(by="timestamp", reverse=True).limit(1)
 
 **它不是日志，也不是队列。** 帧在四个位置被有意丢弃：message plane 的 PUB 套接字对慢订阅方和到达高水位时都会丢包；宿主侧的发布是非阻塞的；发送队列有上限，一旦落后就直接拒收新帧；store 本身只保留个位数（`NEKO_MESSAGE_PLANE_FRAMES_STORE_MAXLEN`，取值被夹在 2-8，默认 4）。轮询"每一帧"，或者认为读到过一次的帧还在，都会出错。
 
-每条记录带有 `image_base64`（只有一份，不存在可读的裸字节副本）、`mime`、`source`、`captured_at`、`turn_id`、`generation` 和 `frame_id`。`source` 是宿主给这一帧归的通道：`screen`、`camera`、`plugin`、`callback`、`proactive`、`user`，以及这一轮被重排后宿主已经说不准时的 `unknown`。请按 `frame_id` 去重：`generation` 只为常驻画面排序，一次性提示图不会让它前进，所以两条记录可能共用同一个值。
+每条记录带有 `image_base64`（只有一份，不存在可读的裸字节副本）、`mime`、`source`、`captured_at`、`turn_id`、`generation` 和 `frame_id`。`source` 是宿主给这一帧归的通道：`screen`、`camera`、`plugin`、`callback`、`proactive`、`user`，以及这一轮被重排后宿主已经说不准时的 `unknown`。`screen` 和 `camera` 只在语音路径上区分这两条实时通道；文字模式下用户分享的每一帧——共享的屏幕、相机截图、拖进来的照片——都走同一条不区分来源的队列，因此一律报作 `user`。想在两种模式下都拿到「用户给角色看的东西」，请按 `user` 过滤。请按 `frame_id` 去重：`generation` 只为常驻画面排序，一次性提示图不会让它前进，所以两条记录可能共用同一个值。
 
 工具返回的图片也在这条总线上——前提是携带它们的那次后继请求已经得到应答。这类帧的 `source` 为 `"plugin"`，`metadata` 为 `{"tool_name": "..."}`。工具最多可以返回 2 MiB base64；超过投递预算（500 KiB）的部分由宿主按模型画面的同一套 profile 重新编码（JPEG，最大 1280×720），使其落在 message plane 的记录上限之内，从而同时到达模型和这条总线。此时记录里的 `mime` 会是 `image/jpeg`（即便工具交回的是 PNG），工具结果里也会带一条模型可见的说明，告诉它这张图被重新编码过。压缩之后仍然放不下的图会被丢弃，并附带自己的告警。读像素之前先读 `source`：标为 `plugin` 的帧是某个插件交给模型的媒体（未必是你自己的），不是用户共享给角色的画面。
 

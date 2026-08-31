@@ -80,6 +80,7 @@ from main_logic.tool_calling import (
     ToolResult,
     _MAX_TOOL_IMAGE_B64_BYTES,
     _MAX_TOOL_IMAGES,
+    looks_like_tool_envelope,
     parse_tool_images,
     tool_result_from_envelope,
     tool_result_output_payload,
@@ -402,6 +403,13 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
     except Exception:
         body = {"output": resp.text}
     if not isinstance(body, dict):
+        body = {"output": body}
+    if not looks_like_tool_envelope(body):
+        # 普通业务字典。以前这里是 body.get("output", body)，原样透传；换成
+        # tool_result_from_envelope 之后，一个返回 {"images": [...urls...]} 的
+        # 搜索类工具会被当成像素信封拆掉——images 从模型可见输出里被摘走，再
+        # 按 base64 校验失败变成一串警告。插件回调那条路（llm_tools.py）本来
+        # 就做了这个判别，这里少了一份。
         body = {"output": body}
     return await asyncio.to_thread(tool_result_from_envelope, call, body)
 

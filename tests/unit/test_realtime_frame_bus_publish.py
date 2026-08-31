@@ -534,3 +534,52 @@ async def test_close_stops_new_realtime_frame_copies_from_starting():
     assert client._fire_frame_copy(_late()) is None, (
         "close 之后仍然接受了新的帧抄送"
     )
+
+
+# ── every cue image in prompt_ephemeral is a proactive frame ────────────
+
+
+def test_prompt_ephemeral_labels_every_cue_image_proactive() -> None:
+    """Both delivery branches, not just the one that was noticed.
+
+    ``prompt_ephemeral`` sends its snapshot two ways: natively when the
+    provider supports images, and via an external description otherwise. Only
+    the second passed ``source="proactive"``; the native one fell through to
+    ``stream_image``'s ``"unknown"`` default, so a plugin filtering the frames
+    bus for proactive cues silently missed native providers.
+
+    Expressed as "every ``stream_image`` call inside this function", so a third
+    branch added later is covered without anyone remembering this test.
+    """
+    import ast
+    import inspect
+    from pathlib import Path
+
+    from main_logic.omni_realtime_client import _responses
+
+    tree = ast.parse(Path(inspect.getfile(_responses)).read_text(encoding="utf-8"))
+
+    target = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "prompt_ephemeral":
+            target = node
+    assert target is not None, "前提没成立：找不到 prompt_ephemeral"
+
+    calls = [
+        node
+        for node in ast.walk(target)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "stream_image"
+    ]
+    assert len(calls) >= 2, f"只找到 {len(calls)} 处 stream_image，分支结构变了"
+
+    for call in calls:
+        source = None
+        for kw in call.keywords:
+            if kw.arg == "source" and isinstance(kw.value, ast.Constant):
+                source = kw.value.value
+        assert source == "proactive", (
+            f"第 {call.lineno} 行的 stream_image 没传 source=\"proactive\"——"
+            "这一帧会以默认值进总线，按 proactive 过滤的插件读不到"
+        )
