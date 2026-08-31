@@ -543,13 +543,6 @@ curl -k https://localhost:48912
 
 ### 源码开发
 
-<details>
-<summary>点击展开开发者启动指南</summary>
-
-> 完整的开发者文档请访问 [project-neko.online](https://project-neko.online)
-
-**环境要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/) 包管理器、Node.js（>=20.19）
-
 > [!IMPORTANT]
 > ⚡⚡ 强烈建议：用「部分克隆」拉取本仓库！⚡⚡
 > **本仓库历史体积较大(`.git` 约 390 MB)**,因为历史里沉淀了大量旧版二进制资源(VRM 模型、MMD、贴图、音频、原生库等)。普通 `git clone` 会把这些**早已废弃的历史版本全部下载**,又慢又占空间。
@@ -565,6 +558,13 @@ curl -k https://localhost:48912
 > ```
 >
 > ⚠️ 仍可使用完整 `git clone`,但会下载全部历史,**不推荐**新参与者这样做。
+
+<details>
+<summary>点击展开开发者启动指南</summary>
+
+> 完整的开发者文档请访问 [project-neko.online](https://project-neko.online)
+
+**环境要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/) 包管理器、Node.js（>=20.19）
 
 ```bash
 # 1. 克隆项目（⚡ 强烈推荐用上方「部分克隆」命令；如确需完整历史，去掉 --filter 即可）
