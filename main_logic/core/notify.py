@@ -299,8 +299,14 @@ class NotifyMixin:
             # 顶到最前 —— 集合没变、字节变了 → 新 id → 又追加一份完整拷贝。而
             # 那恰恰是延长 TTL 的常规路径，等于去重在最该生效的场景下被绕过
             # （codex P2）。排序 + casefold 之后，只有集合真的变了才拿到新 id。
-            fingerprint = " | ".join(
-                sorted(t.casefold() for t in active_terms if t)
+            # ⚠️ 用 JSON 数组序列化，**不能**拿分隔符 join：``_normalize_term``
+            # 只做 strip + 长度校验，term 里什么字符都可能有。拿 " | " 拼的话
+            # ``["aa | bb", "cc"]`` 与 ``["aa", "bb | cc"]`` 得到同一个指纹 →
+            # 同一个 request_id → 新的禁令集合被 append_context 当成重复跳过、
+            # 本会话不生效（coderabbit）。JSON 自带引号与转义，天然无歧义。
+            fingerprint = json.dumps(
+                sorted(t.casefold() for t in active_terms if t),
+                ensure_ascii=False,
             )
             request_id = (
                 f"user_directives:{key}:"

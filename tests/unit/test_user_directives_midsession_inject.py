@@ -143,6 +143,31 @@ async def test_a_new_term_gets_a_different_request_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_distinct_term_sets_never_collide_on_a_separator(monkeypatch):
+    """Two different term sets must not share a request id via separator ambiguity."""
+    # ⚠️ `_normalize_term` 只做 strip + 长度校验，term 里什么字符都可能有。
+    # 指纹若拿分隔符 join，`["aa | bb", "cc"]` 与 `["aa", "bb | cc"]` 会得到
+    # 同一个串 → 同一个 request_id → 后一组禁令被 append_context 当成重复
+    # 跳过、本会话不生效（coderabbit）。JSON 序列化天然无歧义。
+    stub = _install(
+        monkeypatch, pending=True, block="\n\n[...]\n- aa | bb\n- cc",
+        terms=("aa | bb", "cc"),
+    )
+    mgr = _Manager()
+    await mgr._inject_pending_user_directives()
+    first = mgr.append_context.await_args.kwargs["request_id"]
+
+    stub.render_prompt_block.return_value = "\n\n[...]\n- aa\n- bb | cc"
+    stub.get_active_terms.return_value = ["aa", "bb | cc"]
+    await mgr._inject_pending_user_directives()
+    second = mgr.append_context.await_args.kwargs["request_id"]
+
+    assert first != second, (
+        "两组不同的 term 集合不能因为分隔符歧义撞成同一个 request_id"
+    )
+
+
+@pytest.mark.asyncio
 async def test_request_id_is_independent_of_display_order(monkeypatch):
     """⚠️ Reordering the same term set must NOT produce a new request id."""
     # 渲染块里的 term 按 ``last_seen_at`` 降序排，于是「重复说**较旧**的那一条」
