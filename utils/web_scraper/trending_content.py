@@ -1767,16 +1767,22 @@ def _community_card_url(raw: dict[str, Any]) -> str:
         "path",
     ):
         candidate = _community_text(raw.get(key))
-        if not candidate:
+        if not candidate or "\\" in candidate:
             continue
-        parsed_candidate = urlparse(candidate)
+        try:
+            parsed_candidate = urlparse(candidate)
+        except ValueError:
+            continue
         if parsed_candidate.scheme:
             if parsed_candidate.scheme.lower() not in {"http", "https"}:
                 continue
             resolved_url = candidate
         else:
             resolved_url = urljoin(discover_url, candidate)
-        parsed_url = urlparse(resolved_url)
+        try:
+            parsed_url = urlparse(resolved_url)
+        except ValueError:
+            continue
         if (
             parsed_url.scheme.lower() == community_origin.scheme.lower()
             and parsed_url.netloc.casefold() == community_origin.netloc.casefold()

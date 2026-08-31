@@ -245,6 +245,11 @@ def test_normalize_neko_community_feed_rejects_cross_origin_card_permalink():
                     "title": "外部网络路径",
                     "href": "//attacker.example/post-2",
                 },
+                {
+                    "id": "backslash-path",
+                    "title": "反斜杠外部路径",
+                    "path": r"\\attacker.example/post-3",
+                },
             ]
         }
     )
@@ -252,7 +257,25 @@ def test_normalize_neko_community_feed_rejects_cross_origin_card_permalink():
     assert [post["url"] for post in posts] == [
         "https://community.project-neko.cn/discover",
         "https://community.project-neko.cn/discover",
+        "https://community.project-neko.cn/discover",
     ]
+
+
+def test_normalize_neko_community_feed_skips_malformed_url_for_next_permalink():
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "id": "malformed-url",
+                    "title": "畸形 URL 卡牌",
+                    "url": "https://[",
+                    "path": "posts/fallback-card",
+                }
+            ]
+        }
+    )
+
+    assert posts[0]["url"] == "https://community.project-neko.cn/posts/fallback-card"
 
 
 class _FakeResponse:
