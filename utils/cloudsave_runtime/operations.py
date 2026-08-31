@@ -1402,8 +1402,8 @@ def import_local_cloudsave_snapshot(
                     delete_file_targets.add(target_path)
 
         from utils.config_manager.migrations import (
-            _MIGRATION_WORKSPACE_LOCK_NAME,
             _MIGRATION_WORKSPACE_PREFIX,
+            _workspace_is_live,
         )
 
         memory_root = Path(config_manager.memory_dir)
@@ -1411,9 +1411,9 @@ def import_local_cloudsave_snapshot(
             for child in memory_root.iterdir():
                 if not child.is_dir():
                     continue
-                if child.name.startswith(_MIGRATION_WORKSPACE_PREFIX) and (
-                    child / _MIGRATION_WORKSPACE_LOCK_NAME
-                ).exists():
+                if child.name.startswith(
+                    _MIGRATION_WORKSPACE_PREFIX
+                ) and _workspace_is_live(child):
                     # A startup migration WORKSPACE, not stale runtime
                     # data. When memory/ is a junction onto another
                     # volume the migration has to stage inside it, and
@@ -1421,12 +1421,19 @@ def import_local_cloudsave_snapshot(
                     # so removing it here deletes a half-copied character
                     # tree out from under the process writing it.
                     #
-                    # The MARKER as well as the prefix, because ".mig-x"
-                    # is a legal character name: exempting on the prefix
-                    # alone would keep a deleted character alive through
-                    # every import. Same ownership rule the migration own
-                    # reclamation uses, and a character directory holds no
-                    # ".lock".
+                    # The lock has to be HELD, not merely present. ".mig-x"
+                    # is a legal character name, so the prefix alone would
+                    # keep a deleted character alive through every import;
+                    # and a stray ".lock" sitting in such a character's
+                    # directory would do the same, which is what testing
+                    # for the file's existence allowed.
+                    #
+                    # ``_workspace_is_live`` is the migration's own answer
+                    # to this question and it is conservative in the right
+                    # direction: anything it cannot rule out reads as live,
+                    # so it can veto this deletion but never authorise one.
+                    # Only actually taking the lock counts as evidence the
+                    # owner is gone.
                     continue
                 if child.name not in imported_character_names:
                     delete_dir_targets.add(child)

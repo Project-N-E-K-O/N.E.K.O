@@ -3302,3 +3302,186 @@ def test_transactional_entry_pattern_tracks_the_avatar_tool_store_naming():
         name = f".{tool_id}{suffix}"
         assert owner.fullmatch(name) is not None, "样本名和 store 的命名脱节"
         assert pattern.fullmatch(name) is None, suffix
+
+
+# ---------------------------------------------------------------------------
+# Review round: the workspace exemption, the flat-file heartbeat, and the
+# ledger's symlinked parent.
+# ---------------------------------------------------------------------------
+
+
+def test_a_stray_lock_file_does_not_exempt_a_character_from_deletion(tmp_path):
+    """The exemption needs a HELD lock, not a file that happens to be there.
+
+    ".mig-x" is a legal character name. Exempting on the prefix alone kept a
+    cloud-deleted character alive through every import; exempting on the
+    prefix plus the mere EXISTENCE of ".lock" did the same for any such
+    character whose directory contained one.
+    """
+    from utils.config_manager.migrations import _workspace_is_live
+
+    character = tmp_path / ".mig-Carol"
+    character.mkdir()
+    (character / "time_indexed.db").write_bytes(b"")
+    (character / ".lock").write_bytes(b"")
+
+    assert not _workspace_is_live(character)
+
+    # A workspace killed before it could claim a marker is not live either;
+    # the age check is what covers that one.
+    abandoned = tmp_path / ".mig-abandoned"
+    abandoned.mkdir()
+    assert not _workspace_is_live(abandoned)
+
+
+def test_a_held_lock_still_vetoes_the_deletion(tmp_path):
+    """The dual. Without it the rule could pass by never exempting anything.
+
+    An import running while a migration copies into memory/ must not remove
+    the half-copied tree out from under it.
+    """
+    from utils.config_manager.migrations import (
+        _MIGRATION_WORKSPACE_LOCK_NAME,
+        _hold_workspace_lock,
+        _workspace_is_live,
+    )
+
+    workspace = tmp_path / ".mig-inflight"
+    workspace.mkdir()
+    marker = workspace / _MIGRATION_WORKSPACE_LOCK_NAME
+    marker.write_bytes(b"")
+
+    handle = open(marker, "r+b")
+    try:
+        _hold_workspace_lock(handle)
+        assert _workspace_is_live(workspace)
+    finally:
+        handle.close()
+
+    assert not _workspace_is_live(workspace)
+
+
+def test_the_import_asks_whether_the_lock_is_held_not_whether_it_exists():
+    """The call site, not just the predicate.
+
+    Both are needed: the predicate can be right while the import still tests
+    for the file, which is exactly the state this round found it in.
+    """
+    import inspect
+
+    from utils.cloudsave_runtime import operations
+
+    source = inspect.getsource(operations)
+    assert "_workspace_is_live(child)" in source
+    assert "_MIGRATION_WORKSPACE_LOCK_NAME" not in source, (
+        "the import is back to testing for the marker file"
+    )
+
+
+def test_the_heartbeat_beats_within_a_file_not_only_between_files(tmp_path):
+    """A single large seed must keep the workspace mtime moving.
+
+    Beating between files never covered one big file, which is the whole of
+    the flat-file branch and is reachable through copytree too when one
+    member dominates. A copy that beats once would let a stalled device carry
+    the workspace past the reclamation threshold mid-copy.
+    """
+    import os
+
+    from utils.config_manager.migrations import (
+        _MIGRATION_COPY_CHUNK,
+        _copy_with_heartbeat,
+    )
+
+    # The chunk size is PINNED, not just used to build the sample. The file
+    # below is sized from the constant, so raising the constant raises the
+    # file too and the beat count survives unchanged -- a mutation to one
+    # gigabyte passed this test untouched. A chunk that large also reads the
+    # whole file into memory, which is its own reason for a ceiling.
+    assert 64 * 1024 <= _MIGRATION_COPY_CHUNK <= 16 * 1024 * 1024
+
+    source = tmp_path / "big.bin"
+    source.write_bytes(b"x" * (_MIGRATION_COPY_CHUNK * 3 + 123))
+    os.chmod(source, 0o444)  # a packaged seed arrives read-only
+
+    beats = []
+    copy = _copy_with_heartbeat(lambda: beats.append(1))
+    destination = tmp_path / "out.bin"
+    copy(source, destination)
+
+    assert len(beats) > 2, "one file produced %d beats" % len(beats)
+    # And it is still a copy2 in every way that mattered.
+    assert destination.read_bytes() == source.read_bytes()
+    assert os.stat(destination).st_mode & 0o777 == os.stat(source).st_mode & 0o777
+    assert abs(os.stat(destination).st_mtime - os.stat(source).st_mtime) < 1e-6
+
+    # copy2 accepts a directory destination, so this has to as well.
+    into = tmp_path / "into"
+    into.mkdir()
+    copy(source, into)
+    assert (into / "big.bin").exists()
+
+
+def test_the_flat_file_branch_uses_the_heartbeat_copy():
+    """The call site again: the helper was already correct for the other branch."""
+    import inspect
+
+    from utils.config_manager import migrations
+
+    source = inspect.getsource(migrations.MigrationsMixin._migrate_memory_files_unlocked)
+    assert "_copy_with_heartbeat(beat)(item, staged_file)" in source
+    assert "shutil.copy2(item, staged_file)" not in source, (
+        "the flat-file branch is back to a bare copy2"
+    )
+
+
+def test_the_ledger_refuses_a_symlinked_parent(tmp_path):
+    """Recording must refuse what reclamation already refuses.
+
+    ``mkdir(exist_ok=True)`` accepts a symlink-to-directory at the reserved
+    name and the append then follows it, so a link pointing at unrelated user
+    or plugin data received a "minted" file -- or an existing one of theirs
+    was appended to.
+    """
+    import os
+
+    from utils.config_manager.migrations import MigrationsMixin
+
+    outsider = tmp_path / "somebody_elses_data"
+    outsider.mkdir()
+    (outsider / "minted").write_text("their own file\n", encoding="utf-8")
+
+    app_docs = tmp_path / "app_docs"
+    app_docs.mkdir()
+    link = app_docs / ".mig-staging"
+    try:
+        os.symlink(str(outsider), str(link), target_is_directory=True)
+    except (OSError, NotImplementedError, AttributeError):
+        import pytest
+
+        pytest.skip("this platform will not create the symlink")
+
+    manager = MigrationsMixin.__new__(MigrationsMixin)
+    manager.app_docs_dir = str(app_docs)
+    manager._record_minted_workspace(tmp_path / ".mig-abc")
+
+    assert (outsider / "minted").read_text(encoding="utf-8") == "their own file\n", (
+        "the record was written through the link into unrelated data"
+    )
+
+
+def test_the_ledger_still_records_through_an_ordinary_parent(tmp_path):
+    """The dual, so the guard cannot pass by never recording anything."""
+    from utils.config_manager.migrations import MigrationsMixin
+
+    app_docs = tmp_path / "app_docs"
+    app_docs.mkdir()
+
+    manager = MigrationsMixin.__new__(MigrationsMixin)
+    manager.app_docs_dir = str(app_docs)
+    workspace = tmp_path / ".mig-abc"
+    manager._record_minted_workspace(workspace)
+
+    ledger = app_docs / ".mig-staging" / "minted"
+    assert ledger.exists()
+    assert str(workspace) in ledger.read_text(encoding="utf-8")

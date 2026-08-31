@@ -573,13 +573,21 @@ def test_an_interrupted_loose_file_copy_publishes_nothing(tmp_path):
         '["the whole thing"]', encoding="utf-8"
     )
 
-    real_copy2 = migrations_module.shutil.copy2
+    # Patched at ``_copy_with_heartbeat``, which is the seam the flat-file
+    # branch uses -- it copies in chunks so the workspace mtime keeps moving
+    # during a large file, and no longer calls ``shutil.copy2`` for the
+    # bytes. Patching copy2 here intercepted nothing and the test passed
+    # against a copy that was never interrupted.
+    def _dies_partway(_beat):
+        def _copy(source, destination, *args, **kwargs):
+            Path(destination).write_text('["trun', encoding="utf-8")
+            raise OSError("interrupted partway through the copy")
 
-    def _die_partway(source, destination, *args, **kwargs):
-        Path(destination).write_text('["trun', encoding="utf-8")
-        raise OSError("interrupted partway through the copy")
+        return _copy
 
-    with patch.object(migrations_module.shutil, "copy2", _die_partway):
+    with patch.object(
+        migrations_module, "_copy_with_heartbeat", _dies_partway
+    ):
         config_manager.migrate_memory_files()
 
     assert not (runtime_root / "recent_Carol.json").exists(), (
@@ -596,7 +604,11 @@ def test_an_interrupted_loose_file_copy_publishes_nothing(tmp_path):
     assert (runtime_root / "recent_Carol.json").read_text(
         encoding="utf-8"
     ) == '["the whole thing"]'
-    assert real_copy2 is migrations_module.shutil.copy2
+    # The patch really came off, so the second run above was the real copier
+    # rather than the fake one still installed.
+    assert migrations_module._copy_with_heartbeat is not _dies_partway
+
+
 @pytest.mark.unit
 def test_a_source_name_near_the_filesystem_limit_still_migrates(tmp_path):
     """The staged name must not grow with the source name.
@@ -1648,10 +1660,23 @@ def test_a_destination_appearing_while_staging_is_still_authoritative(tmp_path):
         (winner / "facts.json").write_text("[live]", encoding="utf-8")
         return result
 
-    def _someone_else_gets_there_first_file(source, destination, *a, **k):
-        result = real_copy2(source, destination, *a, **k)
-        (runtime_root / "loose.json").write_text("[live]", encoding="utf-8")
-        return result
+    # The flat-file branch copies through ``_copy_with_heartbeat`` now, so
+    # the real copier comes from there rather than from ``shutil.copy2``.
+    # Patching copy2 stopped intercepting the loose-file copy entirely.
+    # Captured BEFORE the patch: reaching for it inside the factory calls the
+    # patched name and recurses until the migration reports "maximum
+    # recursion depth exceeded" and swallows the entry.
+    _real_heartbeat_copy = migrations_module._copy_with_heartbeat(lambda: None)
+
+    def _copier_that_lets_someone_else_win(_beat):
+        real_copy = _real_heartbeat_copy
+
+        def _copy(source, destination, *a, **k):
+            result = real_copy(source, destination, *a, **k)
+            (runtime_root / "loose.json").write_text("[live]", encoding="utf-8")
+            return result
+
+        return _copy
 
     def _record_publish(source, destination, *a, **k):
         published.append(Path(destination).name)
@@ -1660,7 +1685,8 @@ def test_a_destination_appearing_while_staging_is_still_authoritative(tmp_path):
     with patch.object(
         migrations_module.shutil, "copytree", _someone_else_gets_there_first_tree
     ), patch.object(
-        migrations_module.shutil, "copy2", _someone_else_gets_there_first_file
+        migrations_module, "_copy_with_heartbeat",
+        _copier_that_lets_someone_else_win,
     ), patch.object(
         migrations_module, "replace_with_busy_retry", _record_publish
     ):
@@ -2348,10 +2374,14 @@ def test_a_cloud_import_leaves_a_migration_workspace_alone(tmp_path):
     # Both appear AFTER the snapshot, so neither is in the imported set.
     from utils.config_manager.migrations import _MIGRATION_WORKSPACE_LOCK_NAME
 
+    from utils.config_manager.migrations import _hold_workspace_lock
+
     workspace = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "live")
     (workspace / "d").mkdir(parents=True)
     (workspace / "d" / "half.json").write_text("[1]", encoding="utf-8")
-    (workspace / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
+    marker = workspace / _MIGRATION_WORKSPACE_LOCK_NAME
+    marker.write_bytes(b"1")
+
     genuinely_stale = memory_root / "Ghost"
     genuinely_stale.mkdir()
     (genuinely_stale / "facts.json").write_text("[9]", encoding="utf-8")
@@ -2361,8 +2391,23 @@ def test_a_cloud_import_leaves_a_migration_workspace_alone(tmp_path):
     prefixed_character = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "Carol")
     prefixed_character.mkdir()
     (prefixed_character / "facts.json").write_text("[8]", encoding="utf-8")
+    # And one carrying BOTH the prefix and a stray marker FILE. This is the
+    # shape that made testing for the marker's existence too weak: nothing
+    # holds it, so it is not a live workspace, and a character deleted from
+    # the cloud must not survive by having a ".lock" in its directory.
+    prefixed_with_marker = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "Dora")
+    prefixed_with_marker.mkdir()
+    (prefixed_with_marker / "facts.json").write_text("[7]", encoding="utf-8")
+    (prefixed_with_marker / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"")
 
-    import_local_cloudsave_snapshot(config_manager)
+    # HELD, not merely present: that is what a migration in flight looks
+    # like, and it is the only thing that now buys the exemption.
+    handle = open(marker, "r+b")
+    try:
+        _hold_workspace_lock(handle)
+        import_local_cloudsave_snapshot(config_manager)
+    finally:
+        handle.close()
 
     assert (workspace / "d" / "half.json").exists(), (
         "the import deleted a migration workspace as stale runtime data"
@@ -2374,4 +2419,8 @@ def test_a_cloud_import_leaves_a_migration_workspace_alone(tmp_path):
     assert not prefixed_character.exists(), (
         "a character whose name carries the workspace prefix was exempted "
         "from the import, so deleting it can never take effect"
+    )
+    assert not prefixed_with_marker.exists(), (
+        "a character with the prefix AND an unheld .lock was exempted, so a "
+        "cloud deletion could never reach it"
     )

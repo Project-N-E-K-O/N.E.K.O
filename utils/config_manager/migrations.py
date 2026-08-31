@@ -141,8 +141,13 @@ def _workspace_heartbeat(workspace):
     return _beat
 
 
+# Big enough that the loop is not the cost, small enough that a stalled
+# device cannot sit inside one read for long.
+_MIGRATION_COPY_CHUNK = 4 * 1024 * 1024
+
+
 def _copy_with_heartbeat(beat):
-    """A copy2 that beats between files.
+    """A copy2 that beats DURING a file, not only between files.
 
     The lock is the real answer to "is this workspace live", but it can
     fail to be taken at all -- a filesystem that will not hold one, a
@@ -152,14 +157,38 @@ def _copy_with_heartbeat(beat):
     while it is being written and be reclaimed out from under itself.
 
     Touching the workspace once per ENTRY is not enough: the run can spend
-    the whole time inside one entry.
+    the whole time inside one entry. Beating between FILES was not enough
+    either, for the same reason one level down -- the run can spend the
+    whole time inside one file, which is the entire flat-file branch and
+    is also reachable through copytree when one member dominates.
+
+    Chunked rather than ``copy2``, so the beat lands while the bytes move.
+    Metadata is still copied afterwards, and a symlink that must not be
+    followed is handed straight to ``copy2`` -- there are no bytes to
+    stream in that case.
     """
 
     def _copy(source, destination, *, follow_symlinks=True):
         beat()
-        return shutil.copy2(
-            source, destination, follow_symlinks=follow_symlinks
-        )
+        if not follow_symlinks and os.path.islink(str(source)):
+            return shutil.copy2(source, destination, follow_symlinks=False)
+        destination = str(destination)
+        if os.path.isdir(destination):
+            destination = os.path.join(
+                destination, os.path.basename(str(source))
+            )
+        with open(str(source), "rb") as reader:
+            with open(destination, "wb") as writer:
+                while True:
+                    chunk = reader.read(_MIGRATION_COPY_CHUNK)
+                    if not chunk:
+                        break
+                    writer.write(chunk)
+                    beat()
+        # Same metadata ``copy2`` would have preserved, including the mode
+        # a packaged seed arrives read-only with.
+        shutil.copystat(str(source), destination)
+        return destination
 
     return _copy
 
@@ -707,8 +736,24 @@ class MigrationsMixin:
         The other way round costs a character.
         """
         ledger = self._migration_ledger_path()
+        parent = ledger.parent
+        if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+            # The SAME refusal reclamation makes, one step earlier. Both
+            # sides have to make it: "mkdir(exist_ok=True)" accepts a
+            # symlink-to-directory at the reserved name and the append
+            # then follows it, so a link pointing at unrelated user or
+            # plugin data got a "minted" file written into it -- or an
+            # existing one of theirs appended to. Reclamation already
+            # refuses to READ through such a link; refusing to WRITE
+            # through it is what stops the file existing at all.
+            #
+            # Skipping the record is the safe direction, and the one this
+            # function already takes on any other failure: an unrecorded
+            # workspace is never reclaimed, which costs a directory. The
+            # other way round costs a character.
+            return
         try:
-            ledger.parent.mkdir(parents=True, exist_ok=True)
+            parent.mkdir(parents=True, exist_ok=True)
             with open(ledger, "a", encoding="utf-8") as handle:
                 handle.write(str(workspace) + "\n")
                 handle.flush()
@@ -1008,14 +1053,30 @@ class MigrationsMixin:
                         os.close(handle)
                         staged_file = Path(staged_name)
                         try:
-                            shutil.copy2(item, staged_file)
+                            # The SAME heartbeat copy the directory branch
+                            # uses. A bare copy2 here never refreshed the
+                            # workspace mtime, so a large seed on a stalled
+                            # device could age past the reclamation
+                            # threshold mid-copy and be deleted out from
+                            # under itself by a concurrent run -- the age
+                            # check is all that is left whenever the
+                            # workspace lock could not be taken.
+                            beat = _workspace_heartbeat(staging_root)
+                            _copy_with_heartbeat(beat)(item, staged_file)
                             # Durability before publication, the same step
                             # this repo's atomic-write helpers take: without
                             # it a power loss after the rename can leave the
                             # destination NAME on disk with incomplete
                             # contents, and the next start treats it as
                             # authoritative and never retries it.
+                            #
+                            # Beaten around rather than during: one fsync is
+                            # a single call and cannot be subdivided, so the
+                            # most this can do is refuse to let the flush be
+                            # preceded by a long silent copy.
+                            beat()
                             _fsync_file(str(staged_file))
+                            beat()
                             # Re-checked HERE, not only before the copy.
                             # A runtime entry that appears while we are
                             # staging is authoritative too, and the
