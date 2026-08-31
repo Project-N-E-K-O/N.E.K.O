@@ -1,5 +1,8 @@
 Object.assign(window.Jukebox, {
 
+  controlApiVersion: 3,
+  supportedControlActions: ['play', 'next', 'previous', 'stop', 'set_volume', 'adjust_volume', 'set_mode'],
+
 
 
   Config: {
@@ -103,6 +106,10 @@ Object.assign(window.Jukebox, {
     isPaused: false,
     savedIdleAnimationUrl: null,
     savedVolume: 1,
+    // 面板建好、播放器还没建出来的窗口里用户拖过的音量。只有它非空时才在建
+    // 播放器后强行覆盖 —— savedVolume 的默认值是 1，拿它当「用户设过」会在冷
+    // 启动时把 APlayer 存在 localStorage 里的音量抹成 100%。
+    pendingVolume: null,
     isMuted: false,
     progressTimer: null,
     isSeeking: false,
@@ -115,6 +122,35 @@ Object.assign(window.Jukebox, {
     configRevision: null,
     configPollTimer: null,
     configPollInFlight: false,
+    runtimeHost: null,
+    runtimeInitPromise: null,
+    isRuntimeReady: false,
+    headlessRuntimeRequested: false,
+    teardownEpoch: 0,
+    // 取消专用世代。不能复用 playRequestId：一条还没轮到分配世代的 play
+    // （正卡在 ensureRuntime / 曲目检索的 await 里）会在恢复后自己 ++，
+    // 把取消推进的那一格盖过去，等值检查照样通过。
+    playCancelEpoch: 0,
+    // 当前这份音频是哪条播放请求起的。收尾清理只认它 —— currentSong 在接班者
+    // 起播期间会被临时清空，拿它当判据会把接班者的声音误停。
+    audioOwnerRequestId: null,
+    // 「欠着一次待机恢复」：stopVMD(true) 把舞蹈停掉却跳过恢复时置真，
+    // 由真正接上动画或真正回到静止的那一方清账。见 transport.js 的 settleIdleRestore。
+    idleRestorePending: false,
+    controlOwnerChannel: null,
+    controlOwnerHeartbeatTimer: null,
+    // 拥有者是否已经能真的执行指令（曲库拉完、播放器建好）。宣告归属要尽早，
+    // 执行却要等就绪——中间到达的指令先攒在 controlOwnerPending 里。
+    controlOwnerReady: false,
+    controlOwnerPending: [],
+    // 拥有者侧的顶替世代。就绪之后请求直接挂上 serveChain，就再也拿不下来了，
+    // 只能让它自己在开跑前发现「我已经过期了」。
+    controlOwnerSupersedeGeneration: 0,
+    fuzzySearchWorker: null,
+    fuzzySearchWorkerUrl: null,
+    fuzzySearchToken: 0,
+    fuzzySearchSettle: null,
+    lastPlaybackReport: null,
     isOpen: false,
     isHidden: false,
     container: null,
@@ -649,8 +685,9 @@ Object.assign(window.Jukebox, {
       ? Jukebox.getRandomAdjacentSong(direction)
       : Jukebox.getManualAdjacentSong(direction);
     if (nextSong) {
-      Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
+      return Jukebox.playSong(nextSong.id, { fromQueue: Jukebox.State.playbackMode === 'random' });
     }
+    return null;
   },
 
   toggleGlobalPlayPause: function() {

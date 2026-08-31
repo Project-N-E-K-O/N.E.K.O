@@ -499,6 +499,20 @@
         return window.SpeechRecognition || window.webkitSpeechRecognition || null;
     }
 
+    function publishGameVoiceBrowserTranscriptionState(ready, reason) {
+        if (
+            window.appWebSocket
+            && typeof window.appWebSocket.setGameVoiceTranscriptionState === 'function'
+        ) {
+            window.appWebSocket.setGameVoiceTranscriptionState({
+                transcription_mode: ready ? 'browser_fallback' : 'unavailable',
+                provider: 'browser',
+                ready: ready === true,
+                reason: String(reason || '')
+            });
+        }
+    }
+
     function gameVoiceRequestId() {
         return `game-voice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     }
@@ -549,8 +563,9 @@
 
     function getGameVoiceSttRouteSnapshot() {
         return {
-            gameType: S.gameVoiceSttGameType || 'soccer',
-            sessionId: S.gameVoiceSttSessionId || S.gameRouteSessionId || ''
+            gameType: S.gameVoiceSttGameType || S.gameRouteGameType || '',
+            sessionId: S.gameVoiceSttSessionId || S.gameRouteSessionId || '',
+            routeInstanceId: S.gameRouteInstanceId || ''
         };
     }
 
@@ -565,8 +580,13 @@
         }
 
         const frozenRoute = routeSnapshot || getGameVoiceSttRouteSnapshot();
-        const gameType = frozenRoute.gameType || 'soccer';
+        const gameType = frozenRoute.gameType || '';
         const sessionId = frozenRoute.sessionId || '';
+        const routeInstanceId = frozenRoute.routeInstanceId || '';
+        if (!gameType || !sessionId) {
+            console.warn('[GameVoiceSTT] missing source route identity, drop transcript');
+            return;
+        }
         const requestId = gameVoiceRequestId();
         console.log(`[GameVoiceSTT] 最终转写 | game=${gameType} request=${requestId} text="${text}"`);
         try {
@@ -576,6 +596,7 @@
                 body: JSON.stringify({
                     lanlan_name: lanlanName,
                     session_id: sessionId,
+                    sdk_route_instance_id: routeInstanceId,
                     transcript: text,
                     request_id: requestId,
                     source: 'main_voice_stt_gate'
@@ -599,7 +620,7 @@
                 stopGameVoiceSttGate();
                 return;
             }
-            console.log(`[GameVoiceSTT] 已提交足球路由 | game=${gameType} request=${requestId} handled=${result ? result.handled !== false : 'unknown'} text="${text}"`);
+            console.log(`[GameVoiceSTT] 已提交小游戏路由 | game=${gameType} request=${requestId} handled=${result ? result.handled !== false : 'unknown'} text="${text}"`);
         } catch (error) {
             console.warn('[GameVoiceSTT] transcript submit failed:', error);
         }
@@ -664,6 +685,7 @@
 
         const SpeechRecognition = getGameVoiceSpeechRecognition();
         if (!SpeechRecognition) {
+            publishGameVoiceBrowserTranscriptionState(false, 'browser_unsupported');
             if (!S.gameVoiceSttUnsupportedNotified) {
                 S.gameVoiceSttUnsupportedNotified = true;
                 console.warn('[GameVoiceSTT] 当前浏览器不支持 SpeechRecognition，无法启动游戏语音 STT gate');
@@ -704,6 +726,7 @@
             if (S.gameVoiceSttRecognition !== recognition) return;
             S.gameVoiceSttListening = true;
             S.gameVoiceSttStopping = false;
+            publishGameVoiceBrowserTranscriptionState(true, 'browser_ready');
             console.log('[GameVoiceSTT][Diag] recognition start');
         };
         recognition.onaudiostart = function () {
@@ -760,6 +783,8 @@
             }
             if (errorCode === 'no-speech') {
                 console.warn('[GameVoiceSTT][Diag] no-speech: 识别器启动了但没有形成可用语音。优先检查默认麦克风是否正确、是否有 audio/sound/speech start 日志。');
+            } else {
+                publishGameVoiceBrowserTranscriptionState(false, errorCode);
             }
             if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
                 if (typeof window.showStatusToast === 'function') {
@@ -788,7 +813,7 @@
             releaseOrdinaryMicCaptureForGameVoiceSttGate();
             S.gameVoiceSttRecognition.start();
             S.gameVoiceSttListening = true;
-            console.log(`[GameVoiceSTT] STT gate 已启动 | game=${S.gameVoiceSttGameType || 'soccer'} recording=${!!S.isRecording} ordinary_mic=released`);
+            console.log(`[GameVoiceSTT] STT gate 已启动 | game=${S.gameVoiceSttGameType || S.gameRouteGameType || '-'} recording=${!!S.isRecording} ordinary_mic=released`);
             return true;
         } catch (error) {
             if (error && error.name === 'InvalidStateError') {
@@ -798,6 +823,7 @@
             }
             console.warn('[GameVoiceSTT] recognition start failed:', error);
             S.gameVoiceSttListening = false;
+            publishGameVoiceBrowserTranscriptionState(false, 'browser_start_failed');
             restoreOrdinaryMicCaptureAfterGameVoiceSttFailure('recognition_start_failed', error);
             return false;
         }

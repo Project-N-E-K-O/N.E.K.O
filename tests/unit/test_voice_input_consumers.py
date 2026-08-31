@@ -38,6 +38,7 @@ async def test_core_consumer_cancels_the_session_captured_at_prepare() -> None:
     cancelled = AsyncMock()
     consumer = CoreChatVoiceInputConsumer(
         session_ref=lambda: current_session[0],
+        game_route_identity=lambda: ("example-game", "session-a", "route-a"),
         on_prepare=prepared,
         on_partial_event=AsyncMock(),
         on_final_event=AsyncMock(),
@@ -53,6 +54,9 @@ async def test_core_consumer_cancels_the_session_captured_at_prepare() -> None:
     assert context.token == token
     assert context.external_turn_id == "asr-11-1"
     assert context.session_ref is original_session
+    assert context.source_game_route_identity == (
+        "example-game", "session-a", "route-a"
+    )
     assert cancelled.await_args.args[1] == "consumer_switched"
 
 
@@ -62,6 +66,7 @@ async def test_core_consumer_final_uses_prepared_context_once() -> None:
     cancelled = AsyncMock()
     consumer = CoreChatVoiceInputConsumer(
         session_ref=lambda: original_session,
+        game_route_identity=lambda: None,
         on_prepare=AsyncMock(return_value=True),
         on_partial_event=AsyncMock(),
         on_final_event=final,
@@ -85,6 +90,7 @@ async def test_core_consumer_rejected_prepare_retains_context_for_cancel() -> No
     cancelled = AsyncMock()
     consumer = CoreChatVoiceInputConsumer(
         session_ref=lambda: session,
+        game_route_identity=lambda: None,
         on_prepare=AsyncMock(return_value=False),
         on_partial_event=AsyncMock(),
         on_final_event=AsyncMock(),
@@ -108,6 +114,7 @@ async def test_core_consumer_cancelled_prepare_retains_context_for_cancel() -> N
     cancelled = AsyncMock()
     consumer = CoreChatVoiceInputConsumer(
         session_ref=lambda: session,
+        game_route_identity=lambda: None,
         on_prepare=AsyncMock(side_effect=asyncio.CancelledError),
         on_partial_event=AsyncMock(),
         on_final_event=AsyncMock(),
@@ -133,7 +140,7 @@ async def test_game_consumer_uses_token_derived_request_id(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.get_active_game_route_identity",
-        lambda name: ("puzzle", "session-a") if name == "Lan" else None,
+        lambda name: ("puzzle", "session-a", "route-a") if name == "Lan" else None,
     )
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.route_external_voice_transcript",
@@ -153,6 +160,7 @@ async def test_game_consumer_uses_token_derived_request_id(monkeypatch) -> None:
         request_id="asr-11-3",
         game_type="puzzle",
         session_id="session-a",
+        sdk_route_instance_id="route-a",
     )
 
 
@@ -160,7 +168,7 @@ async def test_game_consumer_surfaces_route_delivery_failure(monkeypatch) -> Non
     routed = AsyncMock(return_value=False)
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.get_active_game_route_identity",
-        lambda _name: ("puzzle", "session-a"),
+        lambda _name: ("puzzle", "session-a", "route-a"),
     )
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.route_external_voice_transcript",
@@ -184,6 +192,7 @@ async def test_game_consumer_surfaces_route_delivery_failure(monkeypatch) -> Non
         request_id="asr-11-4",
         game_type="puzzle",
         session_id="session-a",
+        sdk_route_instance_id="route-a",
     )
 
 
@@ -206,7 +215,7 @@ async def test_game_consumer_is_fail_closed_when_route_is_unavailable(
 
 async def test_game_consumer_pins_route_identity_at_prepare(monkeypatch) -> None:
     routed = AsyncMock(return_value=True)
-    active_identity = ["maze", "session-a"]
+    active_identity = ["maze", "session-a", "route-a"]
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.get_active_game_route_identity",
         lambda _name: tuple(active_identity),
@@ -219,7 +228,7 @@ async def test_game_consumer_pins_route_identity_at_prepare(monkeypatch) -> None
     token = _token(turn_id=5)
 
     assert await consumer.prepare_turn(token) is True
-    active_identity[:] = ["maze", "session-b"]
+    active_identity[:] = ["maze", "session-b", "route-b"]
     await consumer.on_final(
         VoiceTranscriptEvent(turn_token=token, provider="qwen", text="left")
     )
@@ -230,4 +239,5 @@ async def test_game_consumer_pins_route_identity_at_prepare(monkeypatch) -> None
         request_id="asr-11-5",
         game_type="maze",
         session_id="session-a",
+        sdk_route_instance_id="route-a",
     )

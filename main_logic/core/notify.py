@@ -79,7 +79,7 @@ class NotifyMixin:
 
     def _has_connected_websocket(self) -> bool:
         websocket = self.websocket
-        if not websocket or not hasattr(websocket, 'client_state'):
+        if not websocket or not hasattr(websocket, "client_state"):
             return False
         try:
             return websocket.client_state == websocket.client_state.CONNECTED
@@ -113,12 +113,16 @@ class NotifyMixin:
     async def send_user_activity(self, interrupted_speech_id: Optional[str] = None):
         """Send the user-activity signal, attaching the interrupted speech_id for precise interruption control"""
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
                 if interrupted_speech_id is None:
                     interrupted_speech_id = self.current_speech_id
                 message = {
                     "type": "user_activity",
-                    "interrupted_speech_id": interrupted_speech_id  # 告诉前端应丢弃哪个 speech_id
+                    "interrupted_speech_id": interrupted_speech_id,  # 告诉前端应丢弃哪个 speech_id
                 }
                 await self.websocket.send_json(message)
         except WebSocketDisconnect:
@@ -136,7 +140,7 @@ class NotifyMixin:
 
     async def _build_initial_prompt(self) -> str:
         """Build the system prompt and inject active task summary when agent is enabled."""
-        _lang = normalize_language_code(self.user_language, format='short')
+        _lang = normalize_language_code(self.user_language, format="short")
         if self._is_agent_enabled():
             # Keep the current wrapper structure but revert prompt semantics:
             # do not distinguish browser/computer/plugin in the initial capability text.
@@ -156,9 +160,15 @@ class NotifyMixin:
             #     name=self.lanlan_name,
             #     capabilities=caps_text,
             # ) + self.lanlan_prompt
-            prompt = _loc(SESSION_INIT_PROMPT_AGENT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
+            prompt = (
+                _loc(SESSION_INIT_PROMPT_AGENT, _lang).format(name=self.lanlan_name)
+                + self.lanlan_prompt
+            )
         else:
-            prompt = _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
+            prompt = (
+                _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name)
+                + self.lanlan_prompt
+            )
         if self._is_agent_enabled():
             # Plugin summary (with plugin ids) is intentionally disabled to avoid
             # exposing implementation identifiers in the general agent prompt.
@@ -186,12 +196,15 @@ class NotifyMixin:
         # 这里只读。空时 render_prompt_block 返回 ""，对 prompt 长度无影响。
         try:
             from memory.user_directives import get_user_directives_manager
+
             prompt += get_user_directives_manager().render_prompt_block(
-                _directives_key, _lang,
+                _directives_key,
+                _lang,
             )
         except Exception as _exc:  # pragma: no cover - defensive
             logger.debug(
-                "[UserDirectives] prompt injection skipped: %s", _exc,
+                "[UserDirectives] prompt injection skipped: %s",
+                _exc,
             )
 
         # ── 防复读 soft hint 注入 ──────────────────────────────────
@@ -203,13 +216,22 @@ class NotifyMixin:
         try:
             from memory.anti_repeat import get_anti_repeat_corpus
             from config.prompts.prompts_directives import render_recent_topics_block
+
             anti_repeat_corpus = get_anti_repeat_corpus()
             await anti_repeat_corpus.apreload(_directives_key)
             topics = anti_repeat_corpus.top_recent_topics(_directives_key)
-            prompt += render_recent_topics_block(topics, _lang)
+            topic_block = render_recent_topics_block(topics, _lang)
+            prompt += topic_block
+            if topic_block:
+                from memory.anti_repeat_effects import (
+                    record_anti_repeat_soft_hint,
+                )
+
+                record_anti_repeat_soft_hint(_directives_key)
         except Exception as _exc:  # pragma: no cover - defensive
             logger.debug(
-                "[AntiRepeat] soft hint injection skipped: %s", _exc,
+                "[AntiRepeat] soft hint injection skipped: %s",
+                _exc,
             )
 
         return prompt
@@ -219,12 +241,16 @@ class NotifyMixin:
             gate_ok, _ = self._config_manager.is_agent_api_ready()
         except Exception:
             gate_ok = False
-        return gate_ok and self.agent_flags['agent_enabled'] and (
-            self.agent_flags['computer_use_enabled']
-            or self.agent_flags.get('browser_use_enabled', False)
-            or self.agent_flags.get('user_plugin_enabled', False)
-            or self.agent_flags.get('openclaw_enabled', False)
-            or self.agent_flags.get('openfang_enabled', False)
+        return (
+            gate_ok
+            and self.agent_flags["agent_enabled"]
+            and (
+                self.agent_flags["computer_use_enabled"]
+                or self.agent_flags.get("browser_use_enabled", False)
+                or self.agent_flags.get("user_plugin_enabled", False)
+                or self.agent_flags.get("openclaw_enabled", False)
+                or self.agent_flags.get("openfang_enabled", False)
+            )
         )
 
     async def _fetch_plugin_summary_prompt(self) -> str:
@@ -270,9 +296,11 @@ class NotifyMixin:
         # TOOL_SERVER_PORT 也是 127.0.0.1 内部服务
         try:
             from utils.internal_http_client import get_internal_http_client
+
             client = get_internal_http_client()
             resp = await client.get(
-                f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks", timeout=1.5,
+                f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks",
+                timeout=1.5,
             )
             if resp.status_code != 200:
                 return ""
@@ -281,12 +309,21 @@ class NotifyMixin:
             active = [t for t in tasks if t.get("status") in ("running", "queued")]
             if not active:
                 return ""
-            _lang = normalize_language_code(self.user_language, format='short')
+            _lang = normalize_language_code(self.user_language, format="short")
             lines = []
             for t in active:
                 params = t.get("params") or {}
-                desc = params.get("query") or params.get("instruction") or t.get("original_query") or t.get("id", "")[:8]
-                status = _loc(AGENT_TASK_STATUS_RUNNING, _lang) if t.get("status") == "running" else _loc(AGENT_TASK_STATUS_QUEUED, _lang)
+                desc = (
+                    params.get("query")
+                    or params.get("instruction")
+                    or t.get("original_query")
+                    or t.get("id", "")[:8]
+                )
+                status = (
+                    _loc(AGENT_TASK_STATUS_RUNNING, _lang)
+                    if t.get("status") == "running"
+                    else _loc(AGENT_TASK_STATUS_QUEUED, _lang)
+                )
                 lines.append(f"  - [{status}] {desc}")
             if len(lines) > 0:
                 return (
@@ -303,13 +340,14 @@ class NotifyMixin:
         """Get the translation service instance (lazily initialized)"""
         if self._translation_service is None:
             from utils.language_utils import get_translation_service
+
             self._translation_service = get_translation_service(self._config_manager)
         return self._translation_service
-    
+
     def set_user_language(self, language: str):
         """
         Set the user language (reuses normalize_language_code for normalization)
-        
+
         Supported normalization rules:
         - 'zh', 'zh-CN', 'zh-TW' and anything starting with 'zh' → 'zh-CN'
         - 'en', 'en-US', 'en-GB' and anything starting with 'en' → 'en'
@@ -331,7 +369,7 @@ class NotifyMixin:
             return
 
         # 使用公共函数进行语言代码归一化
-        normalized_lang = normalize_language_code(language, format='full')
+        normalized_lang = normalize_language_code(language, format="full")
 
         self.user_language = normalized_lang
         self._user_language_explicit = True
@@ -356,9 +394,9 @@ class NotifyMixin:
         """Apply a request/UI fallback without marking it as durable preference."""
         if not language or not is_supported_language_code(language):
             return
-        normalized_lang = normalize_language_code(language, format='full')
+        normalized_lang = normalize_language_code(language, format="full")
         self._conversation_render_language = normalized_lang
-        if getattr(self, '_user_language_explicit', False):
+        if getattr(self, "_user_language_explicit", False):
             return
         # Deliberately unconditional, mirroring set_user_language.  A "skip the
         # repeat" optimisation was tried and removed: the fields are assigned
@@ -401,7 +439,7 @@ class NotifyMixin:
         self._set_conversation_turn_language(None)
         self._register_builtin_tools()
         self._fire_task(self._sync_tools_to_active_session())
-    
+
     def _voice_owner_socket(self):
         """Return the socket holding the voice lease, when it is not the current one.
 
@@ -461,13 +499,19 @@ class NotifyMixin:
         """
         delivered = False
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
                 data = json.dumps({"type": "status", "message": message})
                 await self.websocket.send_text(data)
                 delivered = True
 
                 # 同步到同步服务器
-                self.sync_message_queue.put({'type': 'json', 'data': {"type": "status", "message": message}})
+                self.sync_message_queue.put(
+                    {"type": "json", "data": {"type": "status", "message": message}}
+                )
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             return delivered
@@ -475,7 +519,7 @@ class NotifyMixin:
             logger.error(f"💥 WS Send Status Error: {e}")
             return delivered
         return delivered
-    
+
     async def send_topic_hint(self, *, turn_id: Optional[str] = None) -> bool:
         """Show a frontend-only teaser bubble right before she opens a deep-topic hook.
 
@@ -487,16 +531,18 @@ class NotifyMixin:
         """
         if not (
             self.websocket
-            and hasattr(self.websocket, 'client_state')
+            and hasattr(self.websocket, "client_state")
             and self.websocket.client_state == self.websocket.client_state.CONNECTED
         ):
             return False
         try:
-            await self.websocket.send_json({
-                "type": "topic_hint",
-                "author": self.lanlan_name,
-                "turn_id": str(turn_id or ''),
-            })
+            await self.websocket.send_json(
+                {
+                    "type": "topic_hint",
+                    "author": self.lanlan_name,
+                    "turn_id": str(turn_id or ""),
+                }
+            )
             return True
         except WebSocketDisconnect:
             return False
@@ -513,26 +559,36 @@ class NotifyMixin:
         """
         if not (
             self.websocket
-            and hasattr(self.websocket, 'client_state')
+            and hasattr(self.websocket, "client_state")
             and self.websocket.client_state == self.websocket.client_state.CONNECTED
         ):
             return False
         try:
-            await self.websocket.send_json({
-                "type": "cancel_topic_hint",
-                "turn_id": str(turn_id or ''),
-            })
+            await self.websocket.send_json(
+                {
+                    "type": "cancel_topic_hint",
+                    "turn_id": str(turn_id or ""),
+                }
+            )
             return True
         except WebSocketDisconnect:
             return False
         except Exception as e:
-            logger.warning("[%s] send_cancel_topic_hint failed: %s", self.lanlan_name, e)
+            logger.warning(
+                "[%s] send_cancel_topic_hint failed: %s", self.lanlan_name, e
+            )
             return False
 
-    async def send_session_preparing(self, input_mode: str): # 通知前端session正在准备（静默期）
+    async def send_session_preparing(
+        self, input_mode: str
+    ):  # 通知前端session正在准备（静默期）
         payload = {"type": "session_preparing", "input_mode": input_mode}
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
                 try:
                     await self.websocket.send_text(json.dumps(payload))
                 except WebSocketDisconnect:
@@ -559,7 +615,7 @@ class NotifyMixin:
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Preparing Error: {e}")
-    
+
     async def send_session_started(
         self,
         input_mode: str,
@@ -567,7 +623,7 @@ class NotifyMixin:
         request_id: str | None = None,
         also_notify=None,
         microphone_route_override: str | None = None,
-    ): # 通知前端session已启动
+    ):  # 通知前端session已启动
         # Carry the SETTLED microphone route on the ack itself (Codex P2).
         #
         # The route verdict otherwise travels only as an ASR_INDEPENDENT_*
@@ -642,7 +698,11 @@ class NotifyMixin:
 
         display_socket = self.websocket
         try:
-            if display_socket and hasattr(display_socket, 'client_state') and display_socket.client_state == display_socket.client_state.CONNECTED:
+            if (
+                display_socket
+                and hasattr(display_socket, "client_state")
+                and display_socket.client_state == display_socket.client_state.CONNECTED
+            ):
                 # The requester can BE the display socket (it is simply the
                 # newest connection), and then this is its only copy -- so the
                 # override has to travel on this plane too when it is the one
@@ -752,11 +812,15 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send Addressed Ack Error: {e}")
 
-    async def send_session_failed(self, input_mode: str): # 通知前端session启动失败
+    async def send_session_failed(self, input_mode: str):  # 通知前端session启动失败
         """Notify the frontend that session start failed, so it hides the preparing banner and resets state"""
         payload = {"type": "session_failed", "input_mode": input_mode}
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
                 try:
                     await self.websocket.send_text(json.dumps(payload))
                 except WebSocketDisconnect:
@@ -787,30 +851,42 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send Session Failed Error: {e}")
 
-    async def send_avatar_interaction_ack(self, interaction_id: str, accepted: bool, reason: str = '', turn_id: str = ''):
+    async def send_avatar_interaction_ack(
+        self, interaction_id: str, accepted: bool, reason: str = "", turn_id: str = ""
+    ):
         """Acknowledge to the frontend the delivery result of an avatar-tap interaction, enabling retry and state wrap-up on the frontend."""
         if not interaction_id:
             return
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                await self.websocket.send_json({
-                    "type": "avatar_interaction_ack",
-                    "interaction_id": interaction_id,
-                    "accepted": bool(accepted),
-                    "reason": str(reason or ''),
-                    "turn_id": str(turn_id or ''),
-                })
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
+                await self.websocket.send_json(
+                    {
+                        "type": "avatar_interaction_ack",
+                        "interaction_id": interaction_id,
+                        "accepted": bool(accepted),
+                        "reason": str(reason or ""),
+                        "turn_id": str(turn_id or ""),
+                    }
+                )
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Avatar Interaction Ack Error: {e}")
 
-    async def send_session_ended_by_server(self): # 通知前端session已被服务器终止
+    async def send_session_ended_by_server(self):  # 通知前端session已被服务器终止
         """Notify the frontend that the session was terminated server-side (e.g. API disconnect), so it resets the session state"""
         payload = {"type": "session_ended_by_server", "input_mode": self.input_mode}
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
                 try:
                     await self.websocket.send_text(json.dumps(payload))
                 except WebSocketDisconnect:

@@ -1,6 +1,6 @@
 import { compareVersion } from '@/utils/version'
 
-export type EffectivePluginSource = 'builtin' | 'market' | 'manual' | 'unknown'
+export type EffectivePluginSource = 'builtin' | 'market' | 'manual' | 'imported' | 'unknown'
 
 export interface MarketInstalledState {
   plugin_id: string
@@ -50,7 +50,7 @@ export async function fetchInstalledProjection<T extends MarketInstalledState>(
   }
 }
 
-export function inferManualInstallConflict(
+export function inferUnresolvedLocalConflict(
   projectionLoaded: boolean,
   installedState: MarketInstalledState | null | undefined,
   localIdentityMatch: boolean
@@ -68,18 +68,20 @@ export function normalizeEffectiveSource(
   if (source === 'builtin') return 'builtin'
   if (source === 'market') return 'market'
   if (source === 'manual') return 'manual'
+  if (source === 'imported') return 'imported'
+  if (source === 'unknown') return 'unknown'
   if (source === 'user') return state.market_installed ? 'market' : 'manual'
   if (state.market_installed || state.latest_install_source) return 'market'
-  return source ? 'manual' : 'unknown'
+  return 'unknown'
 }
 
 export function deriveMarketPluginAction(
   state: MarketInstalledState | null | undefined,
   catalogVersion: string,
   hasRelease: boolean,
-  manualConflict = false
+  unresolvedLocalConflict = false
 ): MarketPluginAction {
-  const effectiveSource = manualConflict && !state ? 'manual' : normalizeEffectiveSource(state)
+  const effectiveSource = normalizeEffectiveSource(state)
   const currentVersion = String(
     state?.effective_version ||
       state?.latest_install_source?.version ||
@@ -89,10 +91,25 @@ export function deriveMarketPluginAction(
   // The local bridge may only know the lock version. The catalog card is the
   // authoritative latest release when it is available.
   const targetVersion = String(catalogVersion || state?.latest_market_version || '')
-  const installed = effectiveSource !== 'unknown'
+  const installed = Boolean(state) || unresolvedLocalConflict || effectiveSource !== 'unknown'
 
   if (effectiveSource === 'manual') {
-    return { kind: 'blocked', effectiveSource, currentVersion, targetVersion, installed }
+    return {
+      kind: hasRelease ? 'upgrade' : 'blocked',
+      effectiveSource,
+      currentVersion,
+      targetVersion,
+      installed,
+    }
+  }
+  if (effectiveSource === 'imported' || (effectiveSource === 'unknown' && installed)) {
+    return {
+      kind: 'blocked',
+      effectiveSource,
+      currentVersion,
+      targetVersion,
+      installed,
+    }
   }
   if (effectiveSource === 'builtin') {
     const canUpgrade =

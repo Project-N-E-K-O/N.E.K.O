@@ -541,11 +541,40 @@ class ProactiveMixin:
                 # 也不进 TTS。空 full_text + 非空 note 的场景目前不会发生
                 # （proactive 不允许空文本），但写法上仍然兜底拼接。
                 history_text = full_text
+                additional_kwargs = {
+                    "anti_repeat_response_id": str(commit_sid),
+                }
                 if action_note:
                     note = action_note.strip()
                     if note:
                         history_text = f"{full_text}\n{note}" if full_text else note
-                self.session._conversation_history.append(AIMessage(content=history_text))
+                        # Persist only the visible character count, never a
+                        # second copy of either the reply or the hidden note.
+                        additional_kwargs["anti_repeat_visible_text_length"] = str(
+                            len(full_text)
+                        )
+                response_id = str(commit_sid)
+                self.session._conversation_history.append(
+                    AIMessage(
+                        content=history_text,
+                        additional_kwargs=additional_kwargs,
+                    )
+                )
+                try:
+                    from memory.anti_repeat_effects import (
+                        mark_anti_repeat_response_delivered,
+                    )
+
+                    mark_anti_repeat_response_delivered(
+                        self.lanlan_name,
+                        response_id,
+                        now=publication_times[0] if publication_times else None,
+                    )
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug(
+                        "[AntiRepeatEffects] delivered response link skipped: %s",
+                        type(_exc).__name__,
+                    )
                 # 本轮拿到截图（有可用 vision 模型）时，把那张截图暂存到 session
                 # （仅暂存，不作为图片写进历史），下一条用户 text 回复经 stream_text
                 # 时会把它作为前导视觉背景注入——否则对话模型只看到搭话文本，回复

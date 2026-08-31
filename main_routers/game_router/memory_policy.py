@@ -46,6 +46,18 @@ _SOCCER_GAME_MEMORY_POLICY_FIELDS = (
 _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED = False
 
 
+_DEFAULT_GENERIC_GAME_MEMORY_ENABLED = False
+
+
+_GENERIC_GAME_MEMORY_POLICY_FIELDS = (
+    "game_memory_enabled",
+    "game_memory_player_interaction_enabled",
+    "game_memory_event_reply_enabled",
+    "game_memory_archive_enabled",
+    "game_memory_postgame_context_enabled",
+)
+
+
 _BADMINTON_GAME_MEMORY_POLICY_FIELDS = (
     "badminton_game_memory_enabled",
     "badminton_game_memory_player_interaction_enabled",
@@ -79,26 +91,21 @@ def _payload_bool_from_keys(data: dict, keys: tuple[str, ...]) -> bool | None:
 
 _GAME_MEMORY_POLICY_PAYLOAD_KEYS = {
     "game_memory_enabled": (
-        "soccer_game_memory_enabled", "soccerGameMemoryEnabled",
         "game_memory_enabled", "gameMemoryEnabled", "memoryEnabled", "enableGameMemory",
     ),
     "game_memory_player_interaction_enabled": (
-        "soccer_game_memory_player_interaction_enabled", "soccerGameMemoryPlayerInteractionEnabled",
         "game_player_interaction_memory_enabled", "gamePlayerInteractionMemoryEnabled",
         "game_memory_player_interaction_enabled", "gameMemoryPlayerInteractionEnabled",
     ),
     "game_memory_event_reply_enabled": (
-        "soccer_game_memory_event_reply_enabled", "soccerGameMemoryEventReplyEnabled",
         "game_event_reply_memory_enabled", "gameEventReplyMemoryEnabled",
         "game_memory_event_reply_enabled", "gameMemoryEventReplyEnabled",
     ),
     "game_memory_archive_enabled": (
-        "soccer_game_memory_archive_enabled", "soccerGameMemoryArchiveEnabled",
         "game_archive_memory_enabled", "gameArchiveMemoryEnabled",
         "game_memory_archive_enabled", "gameMemoryArchiveEnabled",
     ),
     "game_memory_postgame_context_enabled": (
-        "soccer_game_memory_postgame_context_enabled", "soccerGameMemoryPostgameContextEnabled",
         "game_postgame_context_memory_enabled", "gamePostgameContextMemoryEnabled",
         "game_memory_postgame_context_enabled", "gameMemoryPostgameContextEnabled",
     ),
@@ -106,11 +113,26 @@ _GAME_MEMORY_POLICY_PAYLOAD_KEYS = {
 
 
 _SOCCER_GAME_MEMORY_PAYLOAD_KEYS = {
-    "soccer_game_memory_enabled": _GAME_MEMORY_POLICY_PAYLOAD_KEYS["game_memory_enabled"],
-    "soccer_game_memory_player_interaction_enabled": _GAME_MEMORY_POLICY_PAYLOAD_KEYS["game_memory_player_interaction_enabled"],
-    "soccer_game_memory_event_reply_enabled": _GAME_MEMORY_POLICY_PAYLOAD_KEYS["game_memory_event_reply_enabled"],
-    "soccer_game_memory_archive_enabled": _GAME_MEMORY_POLICY_PAYLOAD_KEYS["game_memory_archive_enabled"],
-    "soccer_game_memory_postgame_context_enabled": _GAME_MEMORY_POLICY_PAYLOAD_KEYS["game_memory_postgame_context_enabled"],
+    "soccer_game_memory_enabled": (
+        "soccer_game_memory_enabled", "soccerGameMemoryEnabled",
+        *_GAME_MEMORY_POLICY_PAYLOAD_KEYS["game_memory_enabled"],
+    ),
+    "soccer_game_memory_player_interaction_enabled": (
+        "soccer_game_memory_player_interaction_enabled", "soccerGameMemoryPlayerInteractionEnabled",
+        *_GAME_MEMORY_POLICY_PAYLOAD_KEYS["game_memory_player_interaction_enabled"],
+    ),
+    "soccer_game_memory_event_reply_enabled": (
+        "soccer_game_memory_event_reply_enabled", "soccerGameMemoryEventReplyEnabled",
+        *_GAME_MEMORY_POLICY_PAYLOAD_KEYS["game_memory_event_reply_enabled"],
+    ),
+    "soccer_game_memory_archive_enabled": (
+        "soccer_game_memory_archive_enabled", "soccerGameMemoryArchiveEnabled",
+        *_GAME_MEMORY_POLICY_PAYLOAD_KEYS["game_memory_archive_enabled"],
+    ),
+    "soccer_game_memory_postgame_context_enabled": (
+        "soccer_game_memory_postgame_context_enabled", "soccerGameMemoryPostgameContextEnabled",
+        *_GAME_MEMORY_POLICY_PAYLOAD_KEYS["game_memory_postgame_context_enabled"],
+    ),
 }
 
 
@@ -143,31 +165,39 @@ _BADMINTON_GAME_MEMORY_PAYLOAD_KEYS = {
 
 
 def _normalize_game_memory_type(game_type: str | None) -> str:
-    game = str(game_type or "soccer").strip().lower()
+    game = str(game_type or "").strip().lower()
     if game in _BADMINTON_GAME_TYPES:
         return "badminton"
-    return "soccer"
+    if not game or game == "soccer":
+        return "soccer"
+    return "generic"
 
 
 def _game_memory_policy_fields(game_type: str | None) -> tuple[str, ...]:
     gt = _normalize_game_memory_type(game_type)
     if gt == "badminton":
         return _BADMINTON_GAME_MEMORY_POLICY_FIELDS
-    return _SOCCER_GAME_MEMORY_POLICY_FIELDS
+    if gt == "soccer":
+        return _SOCCER_GAME_MEMORY_POLICY_FIELDS
+    return _GENERIC_GAME_MEMORY_POLICY_FIELDS
 
 
 def _game_memory_payload_keys(game_type: str | None) -> dict:
     gt = _normalize_game_memory_type(game_type)
     if gt == "badminton":
         return _BADMINTON_GAME_MEMORY_PAYLOAD_KEYS
-    return _SOCCER_GAME_MEMORY_PAYLOAD_KEYS
+    if gt == "soccer":
+        return _SOCCER_GAME_MEMORY_PAYLOAD_KEYS
+    return _GAME_MEMORY_POLICY_PAYLOAD_KEYS
 
 
 def _game_memory_default_enabled(game_type: str | None) -> bool:
     gt = _normalize_game_memory_type(game_type)
     if gt == "badminton":
         return _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED
-    return _DEFAULT_SOCCER_GAME_MEMORY_ENABLED
+    if gt == "soccer":
+        return _DEFAULT_SOCCER_GAME_MEMORY_ENABLED
+    return _DEFAULT_GENERIC_GAME_MEMORY_ENABLED
 
 
 def _sync_generic_game_memory_aliases(policy: dict, fields: tuple[str, ...]) -> dict:
@@ -321,7 +351,8 @@ def _attach_game_memory_flag_to_event(
     policy = _game_memory_policy(gt, state or {})
     for field in fields:
         event_payload.setdefault(field, policy[field])
-        event_payload.setdefault(_game_memory_camel_key(gt, field), policy[field])
+        if gt in {"soccer", "badminton"}:
+            event_payload.setdefault(_game_memory_camel_key(gt, field), policy[field])
     event_payload.setdefault("gameMemoryEnabled", policy[fields[0]])
     event_payload.setdefault("game_memory_enabled", policy[fields[0]])
     event_payload.setdefault("gameMemoryPlayerInteractionEnabled", policy[fields[1]])

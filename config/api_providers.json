@@ -291,6 +291,18 @@
       "vision_model": "google/gemini-2.5-flash",
       "agent_model": "google/gemini-3-flash-preview"
     },
+    "orcarouter": {
+      "key": "orcarouter",
+      "name": "OrcaRouter",
+      "description": "第三方 Claude 中转网关，国内版不支持",
+      "openrouter_url": "https://api.orcarouter.ai/v1",
+      "conversation_model": "anthropic/claude-sonnet-5",
+      "summary_model": "anthropic/claude-sonnet-5",
+      "correction_model": "anthropic/claude-sonnet-5",
+      "emotion_model": "anthropic/claude-haiku-4.5",
+      "vision_model": "anthropic/claude-sonnet-5",
+      "agent_model": "anthropic/claude-sonnet-5"
+    },
     "vllm_omni": {
       "key": "vllm_omni",
       "name": "vLLM-Omni (TTS)",
@@ -355,7 +367,8 @@
     "elevenlabs": "ASSIST_API_KEY_ELEVENLABS",
     "claude": "ASSIST_API_KEY_CLAUDE",
     "grok": "ASSIST_API_KEY_GROK",
-    "openrouter": "ASSIST_API_KEY_OPENROUTER"
+    "openrouter": "ASSIST_API_KEY_OPENROUTER",
+    "orcarouter": "ASSIST_API_KEY_ORCAROUTER"
   },
   "api_key_registry": {
     "qwen": {
@@ -428,6 +441,10 @@
     },
     "openrouter": {
       "config_field": "assistApiKeyOpenrouter",
+      "restricted": true
+    },
+    "orcarouter": {
+      "config_field": "assistApiKeyOrcarouter",
       "restricted": true
     },
     "vllm_omni": {

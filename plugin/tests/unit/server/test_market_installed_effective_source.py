@@ -61,7 +61,7 @@ async def test_installed_projects_user_source_over_builtin_without_renaming(
     [installed] = response.installed
     assert installed.plugin_id == "study_companion"
     assert installed.path == str(user)
-    assert installed.effective_source == "manual"
+    assert installed.effective_source == "unknown"
     assert installed.effective_version == "0.1.6"
     assert installed.builtin_version == "0.1.5"
     assert installed.market_installed is False
@@ -222,7 +222,7 @@ async def test_installed_prefers_canonical_user_among_user_conflicts(
 
     [installed] = response.installed
     assert installed.path == str(canonical_user)
-    assert installed.effective_source == "manual"
+    assert installed.effective_source == "unknown"
     assert installed.effective_version == "0.1.6"
 
 
@@ -282,8 +282,60 @@ async def test_installed_preserves_registry_order_for_user_only_conflict(
 
     [installed] = response.installed
     assert installed.path == str(legacy_user)
-    assert installed.effective_source == "manual"
+    assert installed.effective_source == "unknown"
     assert installed.effective_version == "0.1.5"
+    assert installed.market_installed is False
+    assert installed.latest_install_source is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("channel", "expected_source"),
+    [("manual", "manual"), ("imported", "imported")],
+)
+async def test_installed_projects_exact_non_market_user_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    channel: str,
+    expected_source: str,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "installations" / "plugins"
+    _write_plugin(builtin_root, "study_companion", "0.1.5")
+    user = _write_plugin(user_root, "study_companion", "0.1.6")
+    policy = SimpleNamespace(
+        builtin_plugins_root=builtin_root.resolve(),
+        user_plugins_root=user_root.resolve(),
+    )
+    entry = market_bridge.LockEntry(
+        root_id="user",
+        directory_name="study_companion",
+        plugin_id="study_companion",
+        channel=channel,
+        reason="user_requested",
+        installed_at="2026-08-29T00:00:00.000000Z",
+        updated_at="2026-08-29T00:00:00.000000Z",
+        last_seen_at="2026-08-29T00:00:00.000000Z",
+    )
+    manager = SimpleNamespace(
+        builtin_root=builtin_root.resolve(),
+        user_root=user_root.resolve(),
+        load=lambda: None,
+        snapshot=lambda: SimpleNamespace(entries=(entry,)),
+    )
+    monkeypatch.setattr(market_bridge, "_verify_token", lambda _token: None)
+    monkeypatch.setattr(
+        market_bridge.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: policy),
+    )
+    monkeypatch.setattr(market_bridge, "get_install_source_manager", lambda: manager)
+
+    response = await market_bridge.market_installed(token="test")
+
+    [installed] = response.installed
+    assert installed.path == str(user)
+    assert installed.effective_source == expected_source
     assert installed.market_installed is False
     assert installed.latest_install_source is None
 

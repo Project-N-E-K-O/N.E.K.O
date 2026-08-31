@@ -140,12 +140,17 @@ I.mod = window.appInterpage;
     I.yuiGuideChatSpotlightResources = I.createAppInterpageScopedResources();
 
     /**
-     * Returns true if this action+timestamp was already processed (duplicate).
+     * Returns true if this action+timestamp+optional lifecycle sequence was
+     * already processed (duplicate).
      * First call for a given key returns false and registers it.
      */
-    I.isDuplicateMessage = function isDuplicateMessage(action, timestamp) {
+    I.isDuplicateMessage = function isDuplicateMessage(action, timestamp, lifecycleSequence) {
         if (!timestamp) return false;  // no timestamp → cannot deduplicate
         var key = action + '_' + timestamp;
+        var sequence = Number(lifecycleSequence);
+        if (Number.isSafeInteger(sequence) && sequence > 0) {
+            key += '_' + sequence;
+        }
         if (_processedMsgKeys[key]) return true;
         _processedMsgKeys[key] = true;
         setTimeout(function () { delete _processedMsgKeys[key]; }, 5000);

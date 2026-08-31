@@ -638,6 +638,75 @@ def test_import_reinstall_clears_profile_ownership_from_removed_entry(
     assert entry.profile_installed is False
 
 
+def test_import_takeover_does_not_inherit_manual_profile_ownership(
+    manager: InstallSourceManager,
+) -> None:
+    target = manager.user_root / "manual-import"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(
+        '[plugin]\nid = "manual-import"\n',
+        encoding="utf-8",
+    )
+    manager.reconcile()
+    manual_entry = manager.entry_for_directory(target, include_removed=False)
+    assert manual_entry is not None
+    assert manual_entry.channel == "manual"
+    assert manual_entry.profile_installed is None
+
+    manager.record_import(
+        directory_path=target,
+        package_filename="manual-import.neko-plugin",
+        package_sha256="e" * 64,
+        package_id="manual-import-package",
+        profile_dir="",
+    )
+
+    entry = manager.entry_for_directory(target, include_removed=False)
+    assert entry is not None
+    assert entry.channel == "imported"
+    assert entry.package_id == "manual-import-package"
+    assert entry.profile_dir == ""
+    assert entry.profile_installed is False
+
+
+def test_market_takeover_does_not_inherit_manual_profile_ownership(
+    manager: InstallSourceManager,
+) -> None:
+    target = manager.user_root / "manual-market"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(
+        '[plugin]\nid = "manual-market"\n',
+        encoding="utf-8",
+    )
+    manager.reconcile()
+    manual_entry = manager.entry_for_directory(target, include_removed=False)
+    assert manual_entry is not None
+    assert manual_entry.channel == "manual"
+    assert manual_entry.profile_installed is None
+
+    entry, _ = manager.record_market_upgrade(
+        root_id="user",
+        directory_name="manual-market",
+        plugin_id="manual-market",
+        market_detail={
+            "plugin_market_id": "manual-market",
+            "version": "2.0.0",
+            "package_url": "https://example.com/manual-market.neko-plugin",
+            "channel": "stable",
+            "package_sha256": "f" * 64,
+            "payload_hash": None,
+            "published_at": "2026-01-01T00:00:00.000000Z",
+        },
+        package_id="manual-market-package",
+        profile_dir="",
+    )
+
+    assert entry.channel == "market"
+    assert entry.package_id == "manual-market-package"
+    assert entry.profile_dir == ""
+    assert entry.profile_installed is False
+
+
 def test_market_upgrade_preserves_owned_profile_when_new_package_has_none(
     manager: InstallSourceManager,
     tmp_path: Path,

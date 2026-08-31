@@ -624,6 +624,11 @@
     <!-- 跳过：Live2D/VRM/Three.js、common_ui.js(DOM拖拽不兼容)、touch-config、tutorial -->
     <script src="/static/libs/ogg-opus-decoder.min.js?v={{ static_asset_version }}"></script>
     <script src="/static/jukebox/music_ui.js?v={{ static_asset_version }}"></script>
+    <!-- 点歌台门面：这一页也会收到 jukebox_control。多窗口分发下它会让位给主窗口，
+         但网页端单独开 /chat 时它就是唯一的收件人，没有门面就只能把 AI 发来的
+         点播指令整条丢掉（聊天窗自己的点歌台按钮同样是死的）。加载顺序与
+         index.html 保持一致：music_ui.js -> jukebox-loader.js -> index.js。 -->
+    <script src="/static/jukebox/jukebox-loader.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/index.js?v={{ static_asset_version }}"></script>
     <!-- 不加载 common_ui.js：它的 DOM 拖拽/resize 和独立窗口不兼容 -->
     <script src="/static/achievement_manager.js?v={{ static_asset_version }}"></script>
@@ -1289,17 +1294,38 @@
                 setTimeout(syncGameWindowStateOnInit, 100);
                 return;
             }
+            // Bootstrap snapshot vs. live socket: this fetch can start while route
+            // A is active and resolve after A's `closed` event has already been
+            // handled, and the dispatch below would then re-open a dead route on
+            // this page. Every close path advances the route state revision, so
+            // compare it across the request the same way the reconnect
+            // reconciliation in app-websocket.js does.
+            var routeRevisionAtBootstrap = -1;
+            try {
+                if (window.appState) {
+                    routeRevisionAtBootstrap = Number(window.appState.gameRouteStateRevision) || 0;
+                }
+            } catch (_) {}
             fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
                 .then(function(resp) { return resp && resp.ok ? resp.json() : null; })
                 .then(function(data) {
                     if (!data || !data.active) return;
+                    try {
+                        if (routeRevisionAtBootstrap >= 0 && window.appState
+                            && (Number(window.appState.gameRouteStateRevision) || 0)
+                                !== routeRevisionAtBootstrap) {
+                            console.log('[GameWindow] 忽略晚到的启动路由快照');
+                            return;
+                        }
+                    } catch (_) {}
                     try {
                         window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
                             detail: {
                                 action: 'opened',
                                 lanlanName: data.lanlan_name || lan,
                                 gameType: data.game_type || '',
-                                sessionId: data.session_id || ''
+                                sessionId: data.session_id || '',
+                                routeInstanceId: data.sdk_route_instance_id || ''
                             }
                         }));
                     } catch (_) {}

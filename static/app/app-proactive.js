@@ -1707,6 +1707,121 @@
         }
     }
 
+    /**
+     * 向 React 聊天窗追加一条 assistant 图片气泡。
+     *
+     * 消息构造、头像解析、镜像广播（__nekoMirrorChatAppend 同步到
+     * chat.html 等 follower 窗口，见 music_ui.js）与兜底路径都在这里，
+     * 调用方只提供 url / 文案 / id 前缀，避免每个图片来源各抄一份会
+     * 各自漂移的拷贝。
+     * 已知边界（与后端 send_* 的 display-plane 约束一致，见 notify.py）：
+     * WS 帧只送达最新连接的窗口，镜像广播经 BroadcastChannel、不跨
+     * Electron partition——隔离 partition 内的窗口（如宠物窗）看不到该
+     * 气泡，属既有限制。
+     * 返回 false 表示 React host 未就绪，调用方走旧 DOM 兜底。
+     */
+    function _appendReactImageBubble(url, alt, turnId, idPrefix, logTag, logDetail) {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.appendMessage !== 'function') {
+            return false;
+        }
+        var mirrorAppend = window.__nekoMirrorChatAppend;
+        var now = new Date();
+        var timeStr = now.getHours().toString().padStart(2, '0') + ':' +
+            now.getMinutes().toString().padStart(2, '0');
+        var assistantName = '';
+        if (window.lanlan_config && window.lanlan_config.lanlan_name) assistantName = window.lanlan_config.lanlan_name;
+        else if (window._currentCatgirl) assistantName = window._currentCatgirl;
+        else if (window.currentCatgirl) assistantName = window.currentCatgirl;
+        assistantName = assistantName || 'Neko';
+        var avatarUrl = '';
+        if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+            avatarUrl = window.appChatAvatar.getCurrentAvatarDataUrl() || '';
+        }
+        var msg = {
+            id: idPrefix + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+            role: 'assistant',
+            author: assistantName,
+            time: timeStr,
+            createdAt: Date.now(),
+            turnId: turnId,
+            avatarLabel: assistantName.trim().slice(0, 1).toUpperCase(),
+            avatarUrl: avatarUrl || undefined,
+            blocks: [{ type: 'image', url: url, alt: alt }],
+            status: 'sent'
+        };
+        if (typeof mirrorAppend === 'function') {
+            mirrorAppend(host, msg);
+        } else {
+            // 兜底：music_ui.js 未就绪时退化为只在本窗口显示
+            host.appendMessage(msg);
+        }
+        console.log(logTag, logDetail);
+        return true;
+    }
+    mod._appendReactImageBubble = _appendReactImageBubble;
+
+    /**
+     * 构建旧 DOM 聊天窗的图片气泡脚手架。
+     *
+     * 气泡结构（message/gemini/attachment 容器、时间戳+🎀 头部、居中图片
+     * 容器、currentTurnGeminiAttachments 登记、追加后滚动到底）与图片来源
+     * 无关，抽在这里防止每个来源各抄一份后各自漂移。返回 { bubble, img }，
+     * 调用方在 img 上挂各自差异化的 click/error 行为（meme 挂的是外链重试
+     * + 失败贴纸）。容器存在但不可见（React 聊天窗为主显示时旧容器
+     * display:none）时大声警告——否则"渲染成功"日志会制造假安全网。容器
+     * 缺失返回 null，由调用方决定如何提示。
+     */
+    function _createLegacyImageBubble(chatContainer, imgSrc, altText, maxHeight) {
+        // 与上方 docstring 及调用方的 `if (!parts)` 守卫对齐：容器缺失时
+        // 返回 null（调用方决定如何提示），而不是无条件建气泡。
+        if (!chatContainer) {
+            return null;
+        }
+        var imgBubble = document.createElement('div');
+        imgBubble.classList.add('message', 'gemini', 'attachment');
+        imgBubble.style.padding = '12px';
+        imgBubble.style.textAlign = 'left';
+
+        // 复刻 createGeminiBubble 的头部（与 meme 兜底同一来源）
+        var now = new Date();
+        var timestamp = now.getHours().toString().padStart(2, '0') + ':' +
+            now.getMinutes().toString().padStart(2, '0') + ':' +
+            now.getSeconds().toString().padStart(2, '0');
+        var headerSpan = document.createElement('span');
+        headerSpan.textContent = "[" + (window.appChat ? window.appChat.getCurrentTimeString() : timestamp) + "] \uD83C\uDF80 ";
+        imgBubble.appendChild(headerSpan);
+
+        var imgOuter = document.createElement('div');
+        imgOuter.style.marginTop = '8px';
+        imgOuter.style.textAlign = 'center';
+
+        var img = document.createElement('img');
+        img.src = imgSrc;
+        img.alt = altText;
+        img.style.cssText = 'max-width: 100%; max-height: ' + maxHeight + 'px; border-radius: 8px; cursor: pointer; display: inline-block;';
+        img.addEventListener('load', function () {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        });
+
+        imgOuter.appendChild(img);
+        imgBubble.appendChild(imgOuter);
+        chatContainer.appendChild(imgBubble);
+
+        if (window.currentTurnGeminiAttachments) {
+            window.currentTurnGeminiAttachments.push(imgBubble);
+        }
+
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+
+        if (!chatContainer.offsetParent) {
+            console.warn('[LegacyChat] 旧 DOM 聊天容器当前不可见（React 聊天窗为主显示），图片气泡将不可见:', imgSrc);
+        }
+
+        return { bubble: imgBubble, img: img };
+    }
+    mod._createLegacyImageBubble = _createLegacyImageBubble;
+
     function _showMemeBubbles(memeLinks, targetTurnId) {
         if (window.realisticGeminiCurrentTurnId !== targetTurnId) return;
         // [优化] 不再此处手动 addToHistory，因为正向的对话流(response_text) 已经由 finish_proactive_delivery 记录。
@@ -1724,50 +1839,19 @@
             ? String(targetTurnId) : undefined;
 
         // 优先通过 React 聊天窗口 API 显示表情包
+        // （PR #780 之后 proactive 只在 leader 触发，meme 只会暂存在 leader
+        // 的 _proactiveAttachmentBuffer 里；镜像广播由 _appendReactImageBubble
+        // 内部的 __nekoMirrorChatAppend 同步到所有窗口。）
         var host = window.reactChatWindowHost;
         if (host && typeof host.appendMessage === 'function') {
-            // PR #780 之后 proactive 只在 leader 触发，meme 只会暂存在 leader 的
-            // _proactiveAttachmentBuffer 里，flush 到 host.appendMessage 也只写
-            // 进 leader 的 React chat。用 music_ui 暴露的镜像 helper 同步到
-            // 所有窗口，保证 chat.html（follower）也能看到表情包气泡。
-            var mirrorAppend = window.__nekoMirrorChatAppend;
             for (var i = 0; i < memeLinks.length; i++) {
-                (function (meme) {
-                    if (!meme || !meme.safeUrl) return;
-                    var proxyUrl = '/api/meme/proxy-image?url=' + encodeURIComponent(meme.safeUrl);
-                    var now = new Date();
-                    var timeStr = now.getHours().toString().padStart(2, '0') + ':' +
-                        now.getMinutes().toString().padStart(2, '0');
-                    var assistantName = '';
-                    if (window.lanlan_config && window.lanlan_config.lanlan_name) assistantName = window.lanlan_config.lanlan_name;
-                    else if (window._currentCatgirl) assistantName = window._currentCatgirl;
-                    else if (window.currentCatgirl) assistantName = window.currentCatgirl;
-                    assistantName = assistantName || 'Neko';
-                    var avatarUrl = '';
-                    if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
-                        avatarUrl = window.appChatAvatar.getCurrentAvatarDataUrl() || '';
-                    }
-                    var msg = {
-                        id: 'meme-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-                        role: 'assistant',
-                        author: assistantName,
-                        time: timeStr,
-                        createdAt: Date.now(),
-                        turnId: memeTurnId,
-                        avatarLabel: assistantName.trim().slice(0, 1).toUpperCase(),
-                        avatarUrl: avatarUrl || undefined,
-                        blocks: [{ type: 'image', url: proxyUrl, alt: meme.title || 'Meme' }],
-                        status: 'sent'
-                    };
-                    if (typeof mirrorAppend === 'function') {
-                        // 本地 append + 广播镜像（music_ui.js 已装好监听器）
-                        mirrorAppend(host, msg);
-                    } else {
-                        // 兜底：music_ui.js 未就绪时退化为只在本窗口显示
-                        host.appendMessage(msg);
-                    }
-                    console.log('[Meme] 已展示图片气泡 (React):', meme.title);
-                })(memeLinks[i]);
+                var meme = memeLinks[i];
+                if (!meme || !meme.safeUrl) continue;
+                var proxyUrl = '/api/meme/proxy-image?url=' + encodeURIComponent(meme.safeUrl);
+                _appendReactImageBubble(
+                    proxyUrl, meme.title || 'Meme', memeTurnId, 'meme-',
+                    '[Meme] 已展示图片气泡 (React):', meme.title
+                );
             }
             return;
         }
@@ -1783,40 +1867,15 @@
             (function (meme) {
                 if (!meme || !meme.safeUrl) return;
 
-                // 创建包含时间戳、表情和图片的统一气泡
-                var imgBubble = document.createElement('div');
-                imgBubble.classList.add('message', 'gemini', 'attachment');
-                imgBubble.style.padding = '12px';
-                imgBubble.style.textAlign = 'left';
-
-                // 添加时间戳和 🎀 (复刻 createGeminiBubble 的头部)
-                var now = new Date();
-                var timestamp = now.getHours().toString().padStart(2, '0') + ':' +
-                    now.getMinutes().toString().padStart(2, '0') + ':' +
-                    now.getSeconds().toString().padStart(2, '0');
-
-                var headerSpan = document.createElement('span');
-                headerSpan.textContent = "[" + (window.appChat ? window.appChat.getCurrentTimeString() : timestamp) + "] \uD83C\uDF80 ";
-                imgBubble.appendChild(headerSpan);
-
-                // 添加图片容器（为了间距）
-                var imgOuter = document.createElement('div');
-                imgOuter.style.marginTop = '8px';
-                imgOuter.style.textAlign = 'center';
-
                 var proxyUrl = '/api/meme/proxy-image?url=' + encodeURIComponent(meme.safeUrl);
-                var img = document.createElement('img');
-                img.src = proxyUrl;
-                img.alt = meme.title || 'Meme';
-                img.style.cssText = 'max-width: 100%; max-height: 350px; border-radius: 8px; cursor: pointer; display: inline-block;';
+                var parts = _createLegacyImageBubble(chatContainer, proxyUrl, meme.title || 'Meme', 350);
+                if (!parts) return;
+                var img = parts.img;
 
                 // 【修复】添加重试机制，最多重试 2 次
                 var retryCount = 0;
                 var maxRetries = 2;
 
-                img.addEventListener('load', function () {
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
-                });
                 img.addEventListener('click', function (e) {
                     if (img.dataset.failed === 'true') return;
                     e.preventDefault();
@@ -1856,15 +1915,6 @@
                     }
                 });
 
-                imgOuter.appendChild(img);
-                imgBubble.appendChild(imgOuter);
-                chatContainer.appendChild(imgBubble);
-
-                if (window.currentTurnGeminiAttachments) {
-                    window.currentTurnGeminiAttachments.push(imgBubble);
-                }
-
-                chatContainer.scrollTop = chatContainer.scrollHeight;
                 console.log('[Meme] 已展示图片气泡:', meme.title);
             })(memeLinks[i]);
         }

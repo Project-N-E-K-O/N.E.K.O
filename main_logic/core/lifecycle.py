@@ -45,6 +45,7 @@ from utils.gptsovits_config import is_gsv_disabled_voice_id
 from config.prompts.prompts_sys import get_context_summary_ready
 from utils.config_manager import _as_bool, ensure_default_yui_voice_for_free_api
 from utils.language_utils import normalize_language_code, get_global_language_full
+from utils.game_route_state import get_active_game_route_generation_identity
 from queue import Empty
 from uuid import uuid4
 import httpx
@@ -1385,16 +1386,20 @@ class LifecycleMixin:
             await asyncio.sleep(0.5)
             logger.info("旧session清理完成")
 
-        # 如果当前不需要TTS但TTS线程仍在运行，发送停止信号
-        if not self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            logger.info("当前模式不需要TTS，关闭TTS线程")
-            try:
-                self.tts_request_queue.put(("__shutdown__", None))  # 通知线程退出
-                await asyncio.to_thread(self.tts_thread.join, 1.0)  # 等待线程结束
-            except Exception as e:
-                logger.error(f"关闭TTS线程时出错: {e}")
-            finally:
-                self.tts_thread = None
+        # 如果当前不需要TTS，worker 与其绑定的响应 handler 必须成对释放。
+        # handler 在启动时会捕获当时的 response queue；只关 worker 会让它
+        # 永久阻塞在旧队列，之后小游戏懒启动 TTS 时也无法消费新队列。
+        if not self.use_tts:
+            if self.tts_thread and self.tts_thread.is_alive():
+                logger.info("当前模式不需要TTS，关闭TTS线程")
+                try:
+                    self.tts_request_queue.put(("__shutdown__", None))  # 通知线程退出
+                    await asyncio.to_thread(self.tts_thread.join, 1.0)  # 等待线程结束
+                except Exception as e:
+                    logger.error(f"关闭TTS线程时出错: {e}")
+                finally:
+                    self.tts_thread = None
+            await self._stop_tts_response_handler()
 
     async def _start_session_start_tts_if_needed(self):
         """Asynchronously start the TTS process and wait for readiness"""
@@ -1480,19 +1485,14 @@ class LifecycleMixin:
             tts_ready = self.tts_ready
             logger.info(f"🎤 TTS线程已在运行，复用现有线程 (ready={tts_ready})")
 
-        # 确保旧的 TTS handler task 已经停止
+        # 确保旧的 TTS handler task 已经停止，同时按其绑定 queue 校验缓存所有权。
         if self.tts_handler_task and not self.tts_handler_task.done():
             logger.info("🎧 Cancelling old tts_handler_task...")
-            self.tts_handler_task.cancel()
-            try:
-                await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                # Cancel echo or slow exit of the superseded handler — safe to proceed either way.
-                pass
+        await self._stop_tts_response_handler()
 
         # 启动新的 TTS handler task
         logger.info(f"🎧 Creating tts_handler_task (response_queue id={id(self.tts_response_queue):#x})")
-        self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
+        self._start_tts_response_handler()
 
         # 仅在确认为就绪时才标记可发送，避免“假就绪”导致静默
         async with self.tts_cache_lock:
@@ -2234,6 +2234,10 @@ class LifecycleMixin:
                 on_sid_rotate=self.rotate_speech_id_for_response_done,
                 get_host_turn_id=self.read_current_speech_id,
                 on_input_transcript=self.handle_input_transcript,
+                on_input_transcript_with_route=self.handle_input_transcript,
+                get_input_route_identity=lambda: get_active_game_route_generation_identity(
+                    self.lanlan_name
+                ),
                 on_output_transcript=self.handle_output_transcript,
                 on_connection_error=self.handle_connection_error,
                 on_response_done=self.handle_response_complete,
@@ -2529,6 +2533,10 @@ class LifecycleMixin:
                     on_sid_rotate=self.rotate_speech_id_for_response_done,
                     get_host_turn_id=self.read_current_speech_id,
                     on_input_transcript=self.handle_input_transcript,
+                    on_input_transcript_with_route=self.handle_input_transcript,
+                    get_input_route_identity=lambda: get_active_game_route_generation_identity(
+                        self.lanlan_name
+                    ),
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
                     on_response_done=self.handle_response_complete,
@@ -3798,6 +3806,7 @@ class LifecycleMixin:
         # duplicate end_session callback can't reset the CURRENT live session's
         # gate or drop its queued cues (Codex P1).
         self._reset_proactive_gate()
+        self.clear_speech_playback_gains()
 
         # Stale expected_session callbacks have already returned above. Invalidate
         # ASR callbacks before any remaining teardown awaits can yield.

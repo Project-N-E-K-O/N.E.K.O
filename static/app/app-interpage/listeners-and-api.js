@@ -36,13 +36,33 @@
     );
 
     function cleanupAppInterpageTransientResources() {
+        var compactSurfaceTerminalPosted = true;
+        if (typeof I.isStandaloneChatPage === 'function' && I.isStandaloneChatPage()) {
+            compactSurfaceTerminalPosted = I.postIdleChatCompactSurfaceUnavailable('pagehide') !== false;
+        }
         I.clearYuiGuideChatFlushTimer();
         I.clearIcebreakerBridgeFlushTimer();
-        I.stopIdleChatCompactSurfaceHeartbeat();
+        // A failed terminal deliberately retains the last positive heartbeat so
+        // its next tick can retry the unavailable state.
+        if (compactSurfaceTerminalPosted) I.stopIdleChatCompactSurfaceHeartbeat();
         I.clearYuiGuideChatSpotlightTracking();
     }
 
     I.yuiGuideInterpageResources.addEventListener(window, 'pagehide', cleanupAppInterpageTransientResources);
+
+    function restoreIdleChatCompactSurfaceAfterPageShow(evt) {
+        if (!evt || evt.persisted !== true || !I.isStandaloneChatPage()) return;
+        if (document.hidden || !I.isIdleChatSurfaceAvailable()) return;
+        var chatHost = window.reactChatWindowHost;
+        if (chatHost && typeof chatHost.republishCompactSurfaceLayoutChange === 'function') {
+            chatHost.republishCompactSurfaceLayoutChange('pageshow-persisted');
+        }
+        if (chatHost && typeof chatHost.scheduleCompactMinimizeBallTracking === 'function') {
+            chatHost.scheduleCompactMinimizeBallTracking();
+        }
+    }
+
+    I.yuiGuideInterpageResources.addEventListener(window, 'pageshow', restoreIdleChatCompactSurfaceAfterPageShow);
 
     I.yuiGuideInterpageResources.addEventListener(window, 'neko:yui-guide:handoff-sent', function (evt) {
         if (I._isRelayingYuiGuideHandoffSent) return;
@@ -71,16 +91,39 @@
         });
     });
 
-    I.yuiGuideInterpageResources.addEventListener(window, 'neko:idle-chat-minimized-state', function (evt) {
+    function relayIdleChatMinimizedState(evt) {
         var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
         if (!detail || detail.via === 'broadcast-channel') return;
-        I.postInterpageMessage(Object.assign({
+        var sourceUpdatedAt = Number(detail.timestamp);
+        var lifecycleSequence = Number(detail.lifecycleSequence);
+        if (!Number.isFinite(sourceUpdatedAt) || sourceUpdatedAt <= 0 ||
+            !Number.isSafeInteger(lifecycleSequence) || lifecycleSequence <= 0) return;
+        if (detail.available !== false &&
+            typeof I.canResumeIdleChatCompactSurfaceLifecycle === 'function' &&
+            !I.canResumeIdleChatCompactSurfaceLifecycle(detail)) return;
+        var payload = Object.assign({
             action: 'idle_chat_minimized_state',
             source: 'chat-window',
             lanlan_name: I.getCurrentLanlanName(),
             timestamp: Date.now()
-        }, detail));
-    });
+        }, detail);
+        if (!I.postInterpageMessage(payload)) return;
+        var compactSurfaceWasUnavailable = false;
+        if (detail.available !== false && typeof I.resumeIdleChatCompactSurfaceLifecycle === 'function') {
+            compactSurfaceWasUnavailable = I.resumeIdleChatCompactSurfaceLifecycle(detail) === true;
+        }
+        if (compactSurfaceWasUnavailable && detail.minimized !== true) {
+            var chatHost = window.reactChatWindowHost;
+            if (chatHost && typeof chatHost.republishCompactSurfaceLayoutChange === 'function') {
+                chatHost.republishCompactSurfaceLayoutChange('native-availability-restored');
+            }
+            if (chatHost && typeof chatHost.scheduleCompactMinimizeBallTracking === 'function') {
+                chatHost.scheduleCompactMinimizeBallTracking();
+            }
+        }
+    }
+
+    I.yuiGuideInterpageResources.addEventListener(window, 'neko:idle-chat-minimized-state', relayIdleChatMinimizedState);
 
     I.yuiGuideInterpageResources.addEventListener(window, 'neko:compact-surface-layout-change', function (evt) {
         var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
@@ -89,6 +132,22 @@
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
     if (I.isStandaloneChatPage()) {
+        I.yuiGuideInterpageResources.addEventListener(document, 'visibilitychange', function () {
+            if (document.hidden || !I.isIdleChatSurfaceAvailable()) {
+                // hidden 页面仍会被 Electron 的 backgroundThrottling:false 定时唤醒；
+                // 先广播终止态，再停掉 compact 顶边坐标心跳。
+                I.postIdleChatCompactSurfaceUnavailable('visibility-hidden');
+                return;
+            }
+            var chatHost = window.reactChatWindowHost;
+            if (chatHost && typeof chatHost.republishCompactSurfaceLayoutChange === 'function') {
+                // 生命周期恢复不是几何变化；显式重发一次，不能让相同 snapshot 的去重吞掉 available:true。
+                chatHost.republishCompactSurfaceLayoutChange('visibility-visible');
+            }
+            if (chatHost && typeof chatHost.scheduleCompactMinimizeBallTracking === 'function') {
+                chatHost.scheduleCompactMinimizeBallTracking();
+            }
+        });
         var GOODBYE_COMPOSER_REQUEST_RETRY_DELAYS_MS = [100, 300, 700, 1500, 3000, 5000];
         var goodbyeComposerRequestRetryIndex = 0;
         var goodbyeComposerRequestTimer = 0;

@@ -4,6 +4,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.routes import plugins as route_module
 
@@ -59,6 +60,29 @@ async def test_delete_plugin_route_delegates_to_lifecycle_service(
         response = await client.delete("/plugin/demo")
         assert response.status_code == 200
         assert response.json()["plugin_id"] == "demo"
+
+
+@pytest.mark.asyncio
+async def test_delete_plugin_route_preserves_ownership_error_code(
+    plugin_route_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _delete_plugin(_plugin_id: str) -> dict[str, object]:
+        raise ServerDomainError(
+            code="PLUGIN_MANUAL_NOT_MANAGED",
+            message="manual plugin is not managed",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(route_module.lifecycle_service, "delete_plugin", _delete_plugin)
+
+    transport = ASGITransport(app=plugin_route_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.delete("/plugin/demo")
+
+    assert response.status_code == 409
+    assert response.headers["X-Error-Code"] == "PLUGIN_MANUAL_NOT_MANAGED"
+    assert response.json() == {"detail": "manual plugin is not managed"}
 
 
 @pytest.mark.asyncio

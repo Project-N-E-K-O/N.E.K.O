@@ -197,6 +197,12 @@ def _get_runtime_override_entry(plugin_id: str) -> RuntimeOverride | None:
         return None
 
 
+def get_runtime_override_entry(plugin_id: str) -> RuntimeOverride | None:
+    """Return an exact, detached snapshot of one persisted preference entry."""
+    override = _get_runtime_override_entry(plugin_id)
+    return dict(override) if isinstance(override, Mapping) else override
+
+
 def get_runtime_override(plugin_id: str) -> bool | None:
     """Return the persisted override for ``plugin_id`` or ``None`` if unset."""
     override = _get_runtime_override_entry(plugin_id)
@@ -336,6 +342,48 @@ def clear_runtime_override(plugin_id: str) -> None:
         _ensure_cache_can_be_written()
         _save_to_disk(candidate)
         _cache = candidate
+
+
+def restore_runtime_override(
+    plugin_id: str,
+    snapshot: RuntimeOverride | None,
+    *,
+    expected_current: RuntimeOverride | None,
+) -> bool:
+    """Restore an exact snapshot only if no newer preference replaced it."""
+    if not plugin_id:
+        return False
+
+    restored: RuntimeOverride | None
+    if snapshot is None or isinstance(snapshot, bool):
+        restored = snapshot
+    elif isinstance(snapshot, Mapping):
+        restored_mapping = dict(snapshot)
+        if not restored_mapping or set(restored_mapping) - {"enabled", "auto_start"}:
+            raise ValueError("invalid runtime override snapshot")
+        if any(not isinstance(value, bool) for value in restored_mapping.values()):
+            raise ValueError("invalid runtime override snapshot")
+        restored = restored_mapping
+    else:  # pragma: no cover - guarded by the public type contract
+        raise ValueError("invalid runtime override snapshot")
+
+    global _cache
+    with _cache_lock:
+        if _cache is None:
+            _cache = _load_from_disk()
+        if _cache.get(plugin_id) != expected_current:
+            return False
+        if _cache.get(plugin_id) == restored:
+            return True
+        candidate = dict(_cache)
+        if restored is None:
+            candidate.pop(plugin_id, None)
+        else:
+            candidate[plugin_id] = restored
+        _ensure_cache_can_be_written()
+        _save_to_disk(candidate)
+        _cache = candidate
+        return True
 
 
 def reset_cache_for_testing() -> None:

@@ -27,6 +27,7 @@ from plugin.neko_plugin_cli.public import (
 from plugin.server.application.install_source import (
     InstallSourceError,
     InstallSourceManager,
+    LockEntry,
     classify_plugin_path,
     get_install_source_manager,
 )
@@ -38,6 +39,11 @@ from plugin.server.application.plugin_cli.install_plan import (
     is_manifestless_state_directory,
 )
 from plugin.server.application.plugins import upgrade_support
+from plugin.server.application.plugins.installation_transactions.manual_takeover import (
+    is_manual_takeover_entry,
+    local_manual_takeover_confirmation_token,
+    manual_takeover_snapshot_sha256,
+)
 from plugin.server.application.plugins.source_switch import (
     SourceSwitchRequest,
     switch_builtin_source,
@@ -320,6 +326,10 @@ class PluginCliService:
         confirmation_token: str | None = None,
         _allow_external_profiles_root: bool = False,
     ) -> dict[str, object]:
+        install_source_manager = get_install_source_manager()
+        reload_install_source = getattr(install_source_manager, "load", None)
+        if callable(reload_install_source):
+            await asyncio.to_thread(reload_install_source)
         plan_dict = await self.plan_install(
             package=package,
             plugins_root=plugins_root,
@@ -411,12 +421,14 @@ class PluginCliService:
             field="installed_package_id",
         )
         profile_dir = profiles_root_path / installed_package_id
+        package_path = self._resolve_package_path(package)
         plan = self._apply_installed_package_identity(
             build_install_plan(
-                package_path=self._resolve_package_path(package),
+                package_path=package_path,
                 plugins_root=target_root,
                 builtin_plugins_root=policy.builtin_plugins_root,
             ),
+            package_path=package_path,
             target_root=target_root,
             profiles_root=profiles_root_path,
         )
@@ -431,12 +443,83 @@ class PluginCliService:
                 details=asdict(plan),
             )
 
+        manual_manager: InstallSourceManager | None = None
+        manual_entry: LockEntry | None = None
+        expected_manual_snapshot = ""
+        manual_package_has_profiles = False
+        if plan.reason == "manual_takeover":
+            manual_manager = self._require_install_source_manager()
+            manual_entry = manual_manager.entry_for_directory(target_dir)
+            if not is_manual_takeover_entry(manual_entry):
+                raise ServerDomainError(
+                    code="PLUGIN_UPGRADE_PLAN_CHANGED",
+                    message="manual plugin ownership changed after replacement confirmation",
+                    status_code=409,
+                    details=asdict(plan),
+                )
+            expected_manual_snapshot = await asyncio.to_thread(
+                manual_takeover_snapshot_sha256,
+                entry=manual_entry,
+                target_dir=target_dir,
+            )
+            rebound_token = await asyncio.to_thread(
+                local_manual_takeover_confirmation_token,
+                package_path=package_path,
+                target_dir=target_dir,
+                entry=manual_entry,
+                snapshot_sha256=expected_manual_snapshot,
+            )
+            if not secrets.compare_digest(confirmation_token, rebound_token):
+                raise ServerDomainError(
+                    code="PLUGIN_UPGRADE_PLAN_CHANGED",
+                    message="manual plugin changed after replacement confirmation",
+                    status_code=409,
+                    details=asdict(plan),
+                )
+            inspected = await asyncio.to_thread(inspect_package, package_path)
+            manual_package_has_profiles = bool(getattr(inspected, "profile_names", ()))
+            if manual_package_has_profiles and (
+                profile_dir.exists() or profile_dir.is_symlink()
+            ):
+                raise ServerDomainError(
+                    code="PLUGIN_PACKAGE_PROFILE_OWNERSHIP_CONFLICT",
+                    message=(
+                        "manual takeover cannot claim an existing package profile"
+                    ),
+                    status_code=409,
+                    details={
+                        "package_id": plan.package_id,
+                        "plugin_id": plan.plugin_id,
+                    },
+                )
+
         async def validate_manifestless_backup(backup_dir: Path) -> None:
             if not await asyncio.to_thread(is_manifestless_state_directory, backup_dir):
                 raise ValueError("manifest-less plugin state changed before installation")
 
+        async def validate_manual_takeover_backup(backup_dir: Path) -> None:
+            assert manual_entry is not None
+            staged_snapshot = await asyncio.to_thread(
+                manual_takeover_snapshot_sha256,
+                entry=manual_entry,
+                target_dir=backup_dir,
+            )
+            if not secrets.compare_digest(
+                expected_manual_snapshot,
+                staged_snapshot,
+            ):
+                raise ServerDomainError(
+                    code="PLUGIN_UPGRADE_PLAN_CHANGED",
+                    message="manual plugin changed while it was being stopped",
+                    status_code=409,
+                    details=asdict(plan),
+                )
+
+        source_write_attempted = False
+
         async def install_new() -> dict[str, object]:
-            return await asyncio.to_thread(
+            nonlocal source_write_attempted
+            install_result = await asyncio.to_thread(
                 self._install_sync,
                 package=package,
                 plugins_root=plugins_root,
@@ -446,6 +529,14 @@ class PluginCliService:
                 forced_directory_name=forced_directory_name,
                 _allow_external_profiles_root=_allow_external_profiles_root,
             )
+            if manual_manager is not None:
+                source_write_attempted = True
+                await self._record_manual_takeover_source(
+                    manager=manual_manager,
+                    install_result=install_result,
+                    package_path=package_path,
+                )
+            return install_result
 
         async def validate_new() -> None:
             plugin_id = self._read_installed_plugin_toml_id(target_dir)
@@ -464,25 +555,54 @@ class PluginCliService:
                 stop=upgrade_support.stop_plugin_for_replace,
                 start=start,
                 cleanup_backup=upgrade_support.remove_directory,
-                additional_targets=(profile_dir,),
+                additional_targets=(
+                    (profile_dir,)
+                    if manual_manager is None or manual_package_has_profiles
+                    else ()
+                ),
                 preserve_targets=(
-                    (target_dir, profile_dir)
-                    if plan.manifestless_state
-                    else (profile_dir,)
+                    ()
+                    if manual_manager is not None
+                    else (
+                        (target_dir, profile_dir)
+                        if plan.manifestless_state
+                        else (profile_dir,)
+                    )
                 ),
                 initialize_runtime_config=not plan.manifestless_state,
                 validate_backup=(
-                    validate_manifestless_backup
+                    validate_manual_takeover_backup
+                    if manual_manager is not None
+                    else validate_manifestless_backup
                     if plan.manifestless_state
                     else None
                 ),
             )
         except upgrade_support.ReplacePluginError as exc:
+            source_restored = True
+            if manual_entry is not None and source_write_attempted:
+                try:
+                    assert manual_manager is not None
+                    await asyncio.to_thread(
+                        manual_manager.restore_entry_for_rollback,
+                        manual_entry,
+                    )
+                except Exception as restore_exc:
+                    source_restored = False
+                    logger.error(
+                        "manual takeover source rollback failed plugin_id={} err_type={}",
+                        plan.plugin_id,
+                        type(restore_exc).__name__,
+                    )
+            details = _replacement_error_details(exc)
+            if not source_restored:
+                details["rollback_status"] = "incomplete"
+                details["source_rollback"] = "incomplete"
             raise ServerDomainError(
                 code="PLUGIN_UPGRADE_ROLLED_BACK",
                 message="plugin upgrade failed and rollback was attempted",
                 status_code=500,
-                details=_replacement_error_details(exc),
+                details=details,
             ) from exc
 
         response = {
@@ -493,6 +613,8 @@ class PluginCliService:
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
+        if manual_manager is not None:
+            return response
         return await self._record_requested_install_source(
             install_result=response,
             package=package,
@@ -542,6 +664,7 @@ class PluginCliService:
                 plugins_root=policy.user_plugins_root,
                 builtin_plugins_root=policy.builtin_plugins_root,
             ),
+            package_path=package_path,
             target_root=policy.user_plugins_root,
             profiles_root=policy.package_profiles_root,
         )
@@ -703,15 +826,16 @@ class PluginCliService:
         forced_directory_name: str,
         market_detail: dict[str, Any],
         actual_sha256: str,
+        manual_takeover_snapshot_sha256: str = "",
     ) -> dict[str, object]:
         """Restore a verified Market override while replace owns its directory.
 
         A Market upgrade temporarily moves the current user directory aside.
         During that window the normal install plan sees only the builtin copy
         and correctly classifies the package as a new builtin override. This
-        narrow path accepts that transient plan only when the existing Market
-        lock still proves that the missing user directory was an override of
-        this exact plugin/package identity.
+        narrow path accepts that transient plan only when the active lock is
+        either the existing Market owner or the exact manual owner already
+        bound to server-verified takeover evidence.
         """
 
         expected_sha256 = str(market_detail.get("package_sha256") or "").strip().lower()
@@ -748,13 +872,28 @@ class PluginCliService:
 
         manager = self._require_install_source_manager()
         entry = manager.find_active_market_entry(expected_plugin_id)
+        confirmed_manual_takeover = bool(
+            is_manual_takeover_entry(entry)
+            and len(manual_takeover_snapshot_sha256.strip()) == 64
+        )
+        if entry is None and len(manual_takeover_snapshot_sha256.strip()) == 64:
+            user_entry_reader = getattr(manager, "find_active_user_entry", None)
+            candidate = (
+                user_entry_reader(expected_plugin_id)
+                if callable(user_entry_reader)
+                else None
+            )
+            if is_manual_takeover_entry(candidate):
+                entry = candidate
+                confirmed_manual_takeover = True
         installed_package_id = str(getattr(entry, "package_id", "") or plugin_id)
         if (
             entry is None
             or getattr(entry, "root_id", "") != "user"
             or getattr(entry, "directory_name", "") != directory_name
             or getattr(entry, "plugin_id", "") != plugin_id
-            or installed_package_id != package_id
+            or (is_manual_takeover_entry(entry) and not confirmed_manual_takeover)
+            or (not confirmed_manual_takeover and installed_package_id != package_id)
         ):
             raise ValueError("Market replacement does not match the active install-source lock")
 
@@ -801,6 +940,25 @@ class PluginCliService:
         if warning is None:
             return install_result
         return {**install_result, "install_source_warning": warning}
+
+    async def _record_manual_takeover_source(
+        self,
+        *,
+        manager: InstallSourceManager,
+        install_result: dict[str, object],
+        package_path: Path,
+    ) -> None:
+        """Commit a manual takeover source row inside replacement rollback."""
+
+        package_sha256 = await asyncio.to_thread(self._sha256_file, package_path)
+        await asyncio.to_thread(
+            _record_install_source_for_install_result,
+            manager,
+            install_result,
+            package_path.name,
+            package_sha256,
+            None,
+        )
 
     async def analyze(
         self,
@@ -1054,6 +1212,12 @@ class PluginCliService:
                     forced_directory_name=forced_directory_name,
                     market_detail=market_detail,
                     actual_sha256=actual_sha256,
+                    manual_takeover_snapshot_sha256=str(
+                        install_source_override.get(
+                            "manual_takeover_snapshot_sha256"
+                        )
+                        or ""
+                    ),
                 )
             else:
                 unpack_result = await self.install(
@@ -1661,20 +1825,25 @@ class PluginCliService:
                     plugins_root=target_root,
                     builtin_plugins_root=policy.builtin_plugins_root,
                 ),
+                package_path=package_path,
                 target_root=target_root,
                 profiles_root=profiles_root_path,
             )
-            if plan.action == "override_builtin":
+            if plan.action == "override_builtin" or plan.reason == "manual_takeover":
                 inspected = inspect_package(package_path)
                 target_profile_dir = profiles_root_path / plan.package_id
-                if inspected.profile_names and (
+                if getattr(inspected, "profile_names", ()) and (
                     target_profile_dir.exists() or target_profile_dir.is_symlink()
                 ):
                     plan = replace(
                         plan,
                         action="blocked",
                         confirmation_token="",
-                        reason="override_profile_target_exists",
+                        reason=(
+                            "manual_takeover_profile_target_exists"
+                            if plan.reason == "manual_takeover"
+                            else "override_profile_target_exists"
+                        ),
                     )
             return asdict(plan)
         except Exception as exc:
@@ -1684,17 +1853,80 @@ class PluginCliService:
         self,
         plan: PluginInstallPlan,
         *,
+        package_path: Path,
         target_root: Path,
         profiles_root: Path,
     ) -> PluginInstallPlan:
+        target_dir = target_root / plan.directory_name
+        manager = get_install_source_manager()
+        entry_reader = getattr(manager, "entry_for_directory", None)
+        entry = entry_reader(target_dir) if callable(entry_reader) else None
+        if (
+            plan.action == "blocked"
+            and plan.reason == "plugin_builtin_override_market_required"
+            and is_manual_takeover_entry(entry)
+            and entry.plugin_id == plan.plugin_id
+            and entry.directory_name == plan.directory_name
+        ):
+            # A canonical builtin and its canonical user override are valid
+            # peers. Rebuild only the user-side replacement plan after the
+            # exact manual LockEntry proves this is an ownership transfer,
+            # not an attempt to overwrite the builtin source.
+            plan = build_install_plan(
+                package_path=package_path,
+                plugins_root=target_root,
+                builtin_plugins_root=None,
+            )
         if plan.action not in REPLACEMENT_ACTIONS:
             return plan
 
-        target_dir = target_root / plan.directory_name
-        manager = get_install_source_manager()
-        installed_package_id = (
-            manager.package_id_for_directory(target_dir) if manager is not None else ""
-        )
+        if not plan.manifestless_state and entry is None:
+            return replace(
+                plan,
+                action="blocked",
+                confirmation_token="",
+                reason="install_source_ownership_unknown",
+                current_source="unknown",
+                target_source="imported",
+            )
+        if is_manual_takeover_entry(entry):
+            assert isinstance(entry, LockEntry)
+            if bool(getattr(manager, "is_degraded", False)):
+                return replace(
+                    plan,
+                    action="blocked",
+                    confirmation_token="",
+                    reason="install_source_read_only",
+                    current_source="manual",
+                    target_source="imported",
+                )
+            if entry.plugin_id != plan.plugin_id or entry.directory_name != plan.directory_name:
+                return replace(
+                    plan,
+                    action="blocked",
+                    confirmation_token="",
+                    reason="manual_takeover_identity_mismatch",
+                    current_source="manual",
+                    target_source="imported",
+                )
+            return replace(
+                plan,
+                confirmation_token=local_manual_takeover_confirmation_token(
+                    package_path=package_path,
+                    target_dir=target_dir,
+                    entry=entry,
+                ),
+                reason="manual_takeover",
+                installed_package_id=plan.package_id,
+                current_source="manual",
+                target_source="imported",
+            )
+        installed_package_id = str(getattr(entry, "package_id", "") or "")
+        if not installed_package_id and plan.manifestless_state:
+            package_id_reader = getattr(manager, "package_id_for_directory", None)
+            installed_package_id = (
+                package_id_reader(target_dir) if callable(package_id_reader) else ""
+            )
         if not installed_package_id:
             # Legacy rows predate package identity tracking. Directory
             # existence cannot prove ownership because stale or unrelated

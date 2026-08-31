@@ -16,6 +16,10 @@
 import contextlib
 import functools
 
+from main_logic.proactive_delivery import (
+    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+    fit_images_to_turn_budget,
+)
 from utils.llm_client import (
     peek_dialog_slop_lang,
     reset_dialog_slop_lang,
@@ -208,6 +212,43 @@ class _LifecycleMixin:
         # images are present we switch to the vision model exactly like
         # stream_text does (一旦带图就永久切 vision — 既定设计；vision model 也能跑
         # 后续纯文本轮). The instruction itself stays ephemeral (not persisted).
+        # 在 `if images:` 之外初始化：纯文本的主动轮根本不进这个分支，而下面
+        # 的 emit 点无条件要读它。放在分支里的后果不是函数直接报错，而是文本已经发给
+        # 用户了、函数却因 UnboundLocalError 走到失败分支返回 False，主动
+        # 调度状态跟着被污染（CodeRabbit）。
+        _pending_budget_notice = None
+
+        async def _emit_pending_budget_notice() -> None:
+            """Send the staged trim notice, at most once, once the turn speaks.
+
+            Called from EVERY path that delivers visible text -- both the
+            per-chunk emit and the end-of-stream prefix flush. The flush is not
+            a rare corner: any reply shorter than ``_prefix_buffer_size`` is
+            delivered entirely by it, and an inline copy of this block on the
+            chunk path alone silently skipped the notice for exactly those
+            turns while still committing them (Codex). Anything added later
+            that emits visible text has to call this too.
+            """
+            nonlocal _pending_budget_notice
+            if _pending_budget_notice is None:
+                return
+            payload = _pending_budget_notice
+            # Clear BEFORE awaiting: the emit paths run per delta, and a slot
+            # still set while the send is in flight re-fires on the next one.
+            _pending_budget_notice = None
+            if not self.on_status_message:
+                return
+            try:
+                await self.on_status_message(json.dumps({
+                    "code": "TURN_IMAGES_TRIMMED",
+                    "details": payload,
+                }))
+            except Exception as _notice_error:
+                logger.warning(
+                    "could not report the proactive image trim to the user: %s",
+                    _notice_error,
+                )
+
         if images:
             # 一旦带图就永久切到 vision model（既定设计，见上）。vision model 也能
             # 跑后续纯文本轮，且凝神不再因 vision 而关闭思考。
@@ -216,15 +257,88 @@ class _LifecycleMixin:
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
                 )
                 await self.switch_model(self.vision_model, use_vision_config=True)
-            _ephemeral_content: list = []
-            for img_b64 in images:
-                _ephemeral_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
-                })
-            _ephemeral_content.append({"type": "text", "text": instruction})
-            logger.info(f"prompt_ephemeral: attaching {len(images)} proactive image(s)")
-            _ephemeral_msg = HumanMessage(content=_ephemeral_content)
+            # 走和 stream_text 同一条预算阶梯：归一化到模型档位 → 抽样 → 重压 →
+            # 最后才丢。这条路以前是仓库里**唯一**一个带图却完全没有预算闸的模型
+            # 调用——images 里的每一张都逐条原样贴成 data URL 就发出去了。
+            # 而它恰恰是最容易堆量的一条：调用方（core/proactive.py）把这一批
+            # 里**所有** callback 的 media_images 拼在一起传进来，每个 callback
+            # 自己已经能带到 8 张，合批之后没有任何人再看总量。它和用户轮共用同
+            # 一个 provider、同一个单请求上限，超了是整条请求被拒——只是这里被拒
+            # 的后果更隐蔽：用户根本不知道刚才有一轮主动搭话没发出去。
+            try:
+                _budget_images, _budget_notice = await fit_images_to_turn_budget(
+                    images,
+                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+                )
+            except Exception as _fit_error:
+                # 阶梯内部已经逐张兜底（单张失败就原样留着），能漏到这里的只剩
+                # 编程错误。这种情况下按原样送出，而不是让异常炸穿 prompt_ephemeral
+                # ——最坏是 provider 拒一条主动搭话，正好落在下面那条「失败就静默
+                # 放弃」的既定语义里；而炸穿会连带把调用方的 proactive 状态机
+                # 一起掀了。
+                logger.warning(
+                    "prompt_ephemeral: 图片预算阶梯异常，按原样附图: %s",
+                    _fit_error,
+                )
+                _budget_images, _budget_notice = list(images), None
+            if _budget_notice:
+                # 与 _streaming.py 同一判据：真丢了东西才 warning，纯归一化走
+                # info。rung 0 无条件执行，主动轮又是自发的，全按 warning 打等于
+                # 让「图小了一点」和「有几张没送出去」在日志里长得一模一样。
+                _budget_log = (
+                    logger.warning
+                    if _budget_notice.get("user_visible")
+                    else logger.info
+                )
+                _budget_log(
+                    "prompt_ephemeral images fitted for the %d-byte budget: "
+                    "%d -> %d image(s) (normalized=%s sampled=%s compressed=%s dropped=%d)",
+                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+                    _budget_notice["original_count"],
+                    _budget_notice["final_count"],
+                    _budget_notice.get("normalized"),
+                    _budget_notice["sampled"],
+                    _budget_notice["compressed"],
+                    _budget_notice["dropped"],
+                )
+                # 这里确实向前端弹了一条 —— 和下面「主动搭话失败静默吞掉」的立场
+                # 不冲突，因为两者说的不是一回事：
+                #   * 那条立场管的是**这一轮没能发生**。用户没在等回复，也从不知道
+                #     本来会有这么一轮，告诉他「刚才有句话没说出来」只是制造焦虑。
+                #   * 这里管的是**这一轮发生了，但内容缺了一块**。角色接下来会围着
+                #     她看到的图讲话，而被丢掉的那几张用户很可能还看得见——插件推
+                #     的图只要带 visibility=["chat"] 就同时渲染进了聊天气泡。不说，
+                #     用户面对的就是「她怎么对着这张图答非所问」，一个他无从解释、
+                #     只会归因于模型变笨的现象。
+                # 判据本身仍然是全仓统一的那条：只有**整张图被丢掉**才打扰用户，
+                # 归一化 / 抽样 / 重压一律只进日志（见 fit_images_to_turn_budget）。
+                #
+                # 但**暂存**，不在这里发。上面那段论证有个它自己没写出来的前提：
+                # 「这一轮发生了」。主动轮可能被取消、也可能 retry 用尽后按既定
+                # 立场静默放弃，这时先发出去的裁剪提示就成了「为一次从未发生的
+                # 回复报告它缺了什么」—— 用户看到一条孤零零的「图片已调整」，
+                # 而屏幕上根本没有与之相关的发言，比不提示更费解（Codex）。
+                # 改为挂起，等真正 emit 出第一段可见文本时再补发；那一刻
+                # 「这一轮发生了」才第一次成立。
+                _pending_budget_notice = (
+                    _budget_notice if _budget_notice.get("user_visible") else None
+                )
+            if _budget_images:
+                _ephemeral_content: list = []
+                for img_b64 in _budget_images:
+                    _ephemeral_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                    })
+                _ephemeral_content.append({"type": "text", "text": instruction})
+                logger.info(
+                    f"prompt_ephemeral: attaching {len(_budget_images)} proactive image(s)"
+                )
+                _ephemeral_msg = HumanMessage(content=_ephemeral_content)
+            else:
+                # 阶梯永远至少保住最后一张，所以走到这里只可能是调用方传了一串空
+                # 字符串。退回纯文本消息，别发一条只有 text block 的多模态壳子。
+                _ephemeral_msg = HumanMessage(content=instruction)
         else:
             _ephemeral_msg = HumanMessage(content=instruction)
         messages_to_send = self._conversation_history + [_ephemeral_msg]
@@ -309,6 +423,8 @@ class _LifecycleMixin:
                                 await self.on_text_delta(emit_content, is_first_chunk)
                             is_first_chunk = False
                             emitted_any = True
+                            # 这一轮确实开口了，挂起的裁剪提示现在才该出现。
+                            await _emit_pending_budget_notice()
 
                     # ── flush 前缀缓冲区（流提前结束时） ──
                     if prefix_buffer and not prefix_checked:
@@ -329,6 +445,10 @@ class _LifecycleMixin:
                                 await self.on_text_delta(flush_text, is_first_chunk)
                             is_first_chunk = False
                             emitted_any = True
+                            # 短于前缀缓冲阈值的回复整段走这条路，chunk 分支
+                            # 一次都不进 —— 少了这一行，那类回合会照常提交却
+                            # 永远不报裁剪。
+                            await _emit_pending_budget_notice()
 
                     break  # 流正常结束，跳出 retry 循环
 

@@ -120,6 +120,32 @@ def _patch_plugin_cli_settings(
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root or (builtin_root / "profiles"))
 
 
+def _set_imported_owner(
+    *,
+    tmp_path: Path,
+    builtin_root: Path,
+    user_root: Path,
+    directory_path: Path,
+    package_id: str,
+    profile_dir: Path | None = None,
+) -> InstallSourceManager:
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+    manager.record_import(
+        directory_path=directory_path,
+        package_filename=f"{package_id}.neko-plugin",
+        package_sha256="a" * 64,
+        package_id=package_id,
+        profile_dir=str(profile_dir) if profile_dir is not None else "",
+    )
+    set_global_manager(manager)
+    return manager
+
+
 class _MemoryUploadFile:
     def __init__(self) -> None:
         self.filename = "demo.neko-plugin"
@@ -764,13 +790,23 @@ async def test_plugin_cli_install_plan_reports_matching_plugin_upgrade(
         packages_root=tmp_path,
         profiles_root=tmp_path / "profiles",
     )
+    _set_imported_owner(
+        tmp_path=tmp_path,
+        builtin_root=tmp_path / "builtin",
+        user_root=plugins_root,
+        directory_path=installed,
+        package_id="simple_plugin",
+    )
 
-    transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        response = await client.post(
-            "/plugin-cli/install-plan",
-            json={"package": str(package_path)},
-        )
+    try:
+        transport = ASGITransport(app=plugin_cli_test_app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.post(
+                "/plugin-cli/install-plan",
+                json={"package": str(package_path)},
+            )
+    finally:
+        set_global_manager(None)
 
     assert response.status_code == 200
     assert response.json()["action"] == "upgrade"
@@ -882,41 +918,58 @@ async def test_plugin_cli_route_upgrades_in_place_after_confirmation(
         packages_root=packages_root,
         profiles_root=tmp_path / "profiles",
     )
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=tmp_path / "builtin",
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(tmp_path / "builtin", user_root),
+    )
+    set_global_manager(manager)
 
-    transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        install_response = await client.post(
-            "/plugin-cli/install",
-            json={"package": str(v1_package)},
-        )
-        assert install_response.status_code == 200, install_response.text
-        assert install_response.json()["operation"] == "install"
-        preserved_state = {
-            "config/user.toml": b"user-config",
-            "data/user.db": b"user-data",
-            "cache/user.cache": b"user-cache",
-        }
-        for relative_path, payload in preserved_state.items():
-            state_path = tmp_path / "runtime_data" / "plugins" / plugin_id / relative_path
-            state_path.parent.mkdir(parents=True, exist_ok=True)
-            state_path.write_bytes(payload)
+    try:
+        transport = ASGITransport(app=plugin_cli_test_app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            install_response = await client.post(
+                "/plugin-cli/install",
+                json={"package": str(v1_package)},
+            )
+            assert install_response.status_code == 200, install_response.text
+            assert install_response.json()["operation"] == "install"
+            manager.record_import(
+                directory_path=user_root / plugin_id,
+                package_filename=v1_package.name,
+                package_sha256="a" * 64,
+                package_id=plugin_id,
+                profile_dir=str(tmp_path / "profiles" / plugin_id),
+            )
+            preserved_state = {
+                "config/user.toml": b"user-config",
+                "data/user.db": b"user-data",
+                "cache/user.cache": b"user-cache",
+            }
+            for relative_path, payload in preserved_state.items():
+                state_path = tmp_path / "runtime_data" / "plugins" / plugin_id / relative_path
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                state_path.write_bytes(payload)
 
-        plan_response = await client.post(
-            "/plugin-cli/install-plan",
-            json={"package": str(v2_package)},
-        )
-        assert plan_response.status_code == 200, plan_response.text
-        plan = plan_response.json()
-        assert plan["action"] == "upgrade"
+            plan_response = await client.post(
+                "/plugin-cli/install-plan",
+                json={"package": str(v2_package)},
+            )
+            assert plan_response.status_code == 200, plan_response.text
+            plan = plan_response.json()
+            assert plan["action"] == "upgrade"
 
-        upgrade_response = await client.post(
-            "/plugin-cli/install",
-            json={
-                "package": str(v2_package),
-                "confirm_upgrade": True,
-                "confirmation_token": plan["confirmation_token"],
-            },
-        )
+            upgrade_response = await client.post(
+                "/plugin-cli/install",
+                json={
+                    "package": str(v2_package),
+                    "confirm_upgrade": True,
+                    "confirmation_token": plan["confirmation_token"],
+                },
+            )
+    finally:
+        set_global_manager(None)
 
     assert upgrade_response.status_code == 200, upgrade_response.text
     assert upgrade_response.json()["operation"] == "upgrade"
@@ -970,31 +1023,48 @@ async def test_plugin_cli_route_preserves_replacement_operation_after_confirmati
         packages_root=packages_root,
         profiles_root=tmp_path / "profiles",
     )
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=tmp_path / "builtin",
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(tmp_path / "builtin", user_root),
+    )
+    set_global_manager(manager)
 
-    transport = ASGITransport(app=plugin_cli_test_app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        install_response = await client.post(
-            "/plugin-cli/install",
-            json={"package": str(installed_package)},
-        )
-        assert install_response.status_code == 200, install_response.text
+    try:
+        transport = ASGITransport(app=plugin_cli_test_app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            install_response = await client.post(
+                "/plugin-cli/install",
+                json={"package": str(installed_package)},
+            )
+            assert install_response.status_code == 200, install_response.text
+            manager.record_import(
+                directory_path=user_root / plugin_id,
+                package_filename=installed_package.name,
+                package_sha256="a" * 64,
+                package_id=plugin_id,
+                profile_dir=str(tmp_path / "profiles" / plugin_id),
+            )
 
-        plan_response = await client.post(
-            "/plugin-cli/install-plan",
-            json={"package": str(replacement_package)},
-        )
-        assert plan_response.status_code == 200, plan_response.text
-        plan = plan_response.json()
-        assert plan["action"] == expected_operation
+            plan_response = await client.post(
+                "/plugin-cli/install-plan",
+                json={"package": str(replacement_package)},
+            )
+            assert plan_response.status_code == 200, plan_response.text
+            plan = plan_response.json()
+            assert plan["action"] == expected_operation
 
-        replacement_response = await client.post(
-            "/plugin-cli/install",
-            json={
-                "package": str(replacement_package),
-                "confirm_upgrade": True,
-                "confirmation_token": plan["confirmation_token"],
-            },
-        )
+            replacement_response = await client.post(
+                "/plugin-cli/install",
+                json={
+                    "package": str(replacement_package),
+                    "confirm_upgrade": True,
+                    "confirmation_token": plan["confirmation_token"],
+                },
+            )
+    finally:
+        set_global_manager(None)
 
     assert replacement_response.status_code == 200, replacement_response.text
     assert replacement_response.json()["operation"] == expected_operation

@@ -26,6 +26,20 @@
     var IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS = 1000;
     var idleChatCompactSurfaceHeartbeatTimer = 0;
     var idleChatCompactSurfaceLastPayload = null;
+    var idleChatCompactSurfaceStateRetryTimer = 0;
+    var idleChatCompactSurfaceStateRetryPayload = null;
+    var idleChatCompactSurfaceStateRetryGeneration = 0;
+    var idleChatCompactSurfaceTerminalWatermark = null;
+
+    I.nextIdleChatLifecycleSequence = function nextIdleChatLifecycleSequence() {
+        var sequence = Number(window.__nekoIdleChatLifecycleSequence);
+        if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence >= Number.MAX_SAFE_INTEGER) {
+            sequence = 0;
+        }
+        sequence += 1;
+        window.__nekoIdleChatLifecycleSequence = sequence;
+        return sequence;
+    };
 
     I.postInterpageMessage = function postInterpageMessage(message, options) {
         if (!message || typeof message !== 'object') {
@@ -62,11 +76,117 @@
         idleChatCompactSurfaceHeartbeatTimer = 0;
     }
 
+    I.stopIdleChatCompactSurfaceStateRetry = function stopIdleChatCompactSurfaceStateRetry() {
+        idleChatCompactSurfaceStateRetryGeneration += 1;
+        if (idleChatCompactSurfaceStateRetryTimer) {
+            I.yuiGuideInterpageResources.clearTimeout(idleChatCompactSurfaceStateRetryTimer);
+        }
+        idleChatCompactSurfaceStateRetryTimer = 0;
+        idleChatCompactSurfaceStateRetryPayload = null;
+    }
+
+    function isIdleChatCompactSurfaceLifecycleNewer(candidate, current) {
+        var candidateTimestamp = Number(candidate && candidate.timestamp);
+        var currentTimestamp = Number(current && current.timestamp);
+        if (!Number.isFinite(candidateTimestamp) || candidateTimestamp <= 0 ||
+            !Number.isFinite(currentTimestamp) || currentTimestamp <= 0) {
+            return false;
+        }
+        if (candidateTimestamp !== currentTimestamp) return candidateTimestamp > currentTimestamp;
+        var candidateSequence = Number(candidate && candidate.lifecycleSequence);
+        var currentSequence = Number(current && current.lifecycleSequence);
+        return Number.isSafeInteger(candidateSequence) && candidateSequence > 0 &&
+            Number.isSafeInteger(currentSequence) && currentSequence > 0 &&
+            candidateSequence > currentSequence;
+    }
+
+    I.canResumeIdleChatCompactSurfaceLifecycle = function canResumeIdleChatCompactSurfaceLifecycle(payload) {
+        return !idleChatCompactSurfaceTerminalWatermark ||
+            isIdleChatCompactSurfaceLifecycleNewer(payload, idleChatCompactSurfaceTerminalWatermark);
+    };
+
+    I.resumeIdleChatCompactSurfaceLifecycle = function resumeIdleChatCompactSurfaceLifecycle(payload) {
+        if (!I.canResumeIdleChatCompactSurfaceLifecycle(payload)) return false;
+        var wasUnavailable = !!idleChatCompactSurfaceTerminalWatermark;
+        idleChatCompactSurfaceTerminalWatermark = null;
+        I.stopIdleChatCompactSurfaceStateRetry();
+        if (wasUnavailable && idleChatCompactSurfaceLastPayload &&
+            idleChatCompactSurfaceLastPayload.available === false) {
+            idleChatCompactSurfaceLastPayload = null;
+        }
+        return wasUnavailable;
+    }
+
+    function tryPostIdleChatCompactSurfaceStateRetry() {
+        var pendingPayload = idleChatCompactSurfaceStateRetryPayload;
+        if (!pendingPayload) return true;
+        if (pendingPayload.available !== false &&
+            !I.canResumeIdleChatCompactSurfaceLifecycle(pendingPayload)) {
+            I.stopIdleChatCompactSurfaceStateRetry();
+            return true;
+        }
+        if (!I.postInterpageMessage(pendingPayload)) return false;
+        if (pendingPayload.available !== false) {
+            I.resumeIdleChatCompactSurfaceLifecycle(pendingPayload);
+        } else {
+            I.stopIdleChatCompactSurfaceStateRetry();
+        }
+        syncIdleChatCompactSurfaceHeartbeat(pendingPayload);
+        return true;
+    }
+
+    function scheduleIdleChatCompactSurfaceStateRetry(payload) {
+        idleChatCompactSurfaceStateRetryPayload = payload || null;
+        if (!idleChatCompactSurfaceStateRetryPayload || idleChatCompactSurfaceStateRetryTimer) return;
+        var generation = ++idleChatCompactSurfaceStateRetryGeneration;
+        idleChatCompactSurfaceStateRetryTimer = I.yuiGuideInterpageResources.setTimeout(function () {
+            if (generation !== idleChatCompactSurfaceStateRetryGeneration) return;
+            idleChatCompactSurfaceStateRetryTimer = 0;
+            var pendingPayload = idleChatCompactSurfaceStateRetryPayload;
+            if (!pendingPayload) return;
+            if (pendingPayload.available !== false && !I.isIdleChatSurfaceAvailable()) {
+                I.postIdleChatCompactSurfaceUnavailable('retry-window-hidden');
+                return;
+            }
+            if (!tryPostIdleChatCompactSurfaceStateRetry()) {
+                scheduleIdleChatCompactSurfaceStateRetry(pendingPayload);
+            }
+        }, IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS);
+    }
+
+    I.isIdleChatSurfaceAvailable = function isIdleChatSurfaceAvailable() {
+        var bridge = window.nekoChatWindow;
+        if (bridge && typeof bridge.isIdleTargetAvailable === 'function') {
+            try {
+                return bridge.isIdleTargetAvailable() === true;
+            } catch (_) {
+                return false;
+            }
+        }
+        return !document.hidden;
+    };
+
     function startIdleChatCompactSurfaceHeartbeat() {
         if (idleChatCompactSurfaceHeartbeatTimer) return;
         idleChatCompactSurfaceHeartbeatTimer = I.yuiGuideInterpageResources.setInterval(function () {
+            if (idleChatCompactSurfaceStateRetryPayload) {
+                var pendingPayload = idleChatCompactSurfaceStateRetryPayload;
+                if (pendingPayload.available !== false && !I.isIdleChatSurfaceAvailable()) {
+                    I.postIdleChatCompactSurfaceUnavailable('heartbeat-window-hidden');
+                    return;
+                }
+                if (!tryPostIdleChatCompactSurfaceStateRetry()) {
+                    scheduleIdleChatCompactSurfaceStateRetry(pendingPayload);
+                }
+                return;
+            }
+            if (!I.isIdleChatSurfaceAvailable()) {
+                I.postIdleChatCompactSurfaceUnavailable('heartbeat-window-hidden');
+                return;
+            }
             if (!I.nekoBroadcastChannel ||
                 !idleChatCompactSurfaceLastPayload ||
+                idleChatCompactSurfaceLastPayload.available === false ||
                 !idleChatCompactSurfaceLastPayload.visible ||
                 !idleChatCompactSurfaceLastPayload.screenRect) {
                 I.stopIdleChatCompactSurfaceHeartbeat();
@@ -82,28 +202,98 @@
 
     function syncIdleChatCompactSurfaceHeartbeat(payload) {
         idleChatCompactSurfaceLastPayload = payload || null;
-        if (payload && payload.visible && payload.screenRect) {
+        if (payload && payload.available !== false && payload.visible && payload.screenRect) {
             startIdleChatCompactSurfaceHeartbeat();
             return;
         }
         I.stopIdleChatCompactSurfaceHeartbeat();
     }
 
+    function normalizeIdleChatCompactSurfaceScreenRect(detail) {
+        if (!detail || typeof detail !== 'object') return null;
+        var rect = Object.prototype.hasOwnProperty.call(detail, 'screenRect')
+            ? detail.screenRect
+            : detail;
+        if (!rect || typeof rect !== 'object') return null;
+        var left = Number(rect.left);
+        var top = Number(rect.top);
+        var width = Number(rect.width);
+        var height = Number(rect.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+        return { left: left, top: top, width: width, height: height };
+    }
+
     I.postIdleChatCompactSurfaceState = function postIdleChatCompactSurfaceState(detail) {
-        var screenRect = detail && detail.screenRect ? detail.screenRect : null;
+        var available = !!(
+            (!detail || detail.available !== false)
+            && I.isIdleChatSurfaceAvailable()
+        );
+        var screenRect = available ? normalizeIdleChatCompactSurfaceScreenRect(detail) : null;
         var payload = {
             action: 'idle_chat_compact_surface_state',
             source: 'chat-window',
             lanlan_name: I.getCurrentLanlanName(),
+            reason: detail && typeof detail.reason === 'string' ? detail.reason : '',
+            available: available,
             visible: !!screenRect,
             screenRect: screenRect,
             resizeActive: !!(detail && detail.resizeActive),
             dragging: !!(detail && detail.dragging),
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            lifecycleSequence: I.nextIdleChatLifecycleSequence()
         };
-        I.postInterpageMessage(payload);
+        if (payload.available === false) {
+            idleChatCompactSurfaceTerminalWatermark = payload;
+        }
+        if (payload.available !== false &&
+            !I.canResumeIdleChatCompactSurfaceLifecycle(payload)) {
+            return false;
+        }
+        var posted = I.postInterpageMessage(payload);
+        // Keep the original lifecycle timestamp and retry independently. This
+        // also covers available:true states without a positive geometry heartbeat.
+        if (!posted) {
+            scheduleIdleChatCompactSurfaceStateRetry(payload);
+            return false;
+        }
+        if (payload.available !== false) {
+            I.resumeIdleChatCompactSurfaceLifecycle(payload);
+        } else {
+            I.stopIdleChatCompactSurfaceStateRetry();
+        }
         syncIdleChatCompactSurfaceHeartbeat(payload);
-    }
+        return posted;
+    };
+
+    I.postIdleChatCompactSurfaceUnavailable = function postIdleChatCompactSurfaceUnavailable(reason) {
+        var supersededRecovery = false;
+        if (idleChatCompactSurfaceStateRetryPayload) {
+            if (idleChatCompactSurfaceStateRetryPayload.available === false) {
+                var pendingPayload = idleChatCompactSurfaceStateRetryPayload;
+                var postedPending = tryPostIdleChatCompactSurfaceStateRetry();
+                if (!postedPending) scheduleIdleChatCompactSurfaceStateRetry(pendingPayload);
+                return postedPending;
+            }
+            // A newer unavailable state supersedes an undelivered recovery.
+            I.stopIdleChatCompactSurfaceStateRetry();
+            supersededRecovery = true;
+        }
+        if (!supersededRecovery && idleChatCompactSurfaceLastPayload &&
+            idleChatCompactSurfaceLastPayload.available === false &&
+            !idleChatCompactSurfaceHeartbeatTimer &&
+            !idleChatCompactSurfaceStateRetryTimer) {
+            return;
+        }
+        return I.postIdleChatCompactSurfaceState({
+            available: false,
+            screenRect: null,
+            reason: reason || 'window-hidden'
+        });
+    };
 
     function scheduleYuiGuideChatMessageFlush(delay) {
         if (_yuiGuideChatFlushTimer) return;

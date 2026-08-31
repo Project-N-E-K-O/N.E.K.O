@@ -17,10 +17,13 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import sys
+import threading
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from utils.logger_config import get_module_logger
 from utils.recent_file import (
     acquire_recent_file_locks,
     activate_recent_paths,
@@ -39,6 +42,206 @@ from utils.recent_file import (
     snapshot_recent_deletions,
     write_recent_payload_unlocked,
 )
+
+
+logger = get_module_logger(__name__, "Memory")
+
+
+# Per-character sidecar caches that shadow their own file: each keeps
+# ``{name: data}`` in memory and only re-reads from disk on a cache MISS, so
+# whenever a character directory is removed or replaced underneath them the
+# stale entry stays authoritative for both reads and the next flush — which
+# then writes it back over the new contents.
+#
+# Looked up through ``sys.modules`` rather than imported: eviction must not be
+# what drags the memory package into a process that never touched it, and a
+# module nobody loaded has no cache to evict.
+# (module, evictor, retiring evictor, reviving evictor). Every sidecar writer
+# needs all three:
+# each one lazily creates ``memory/<name>/`` on write, so a snapshot staged
+# while a delete was in flight would recreate the directory the caller had just
+# removed. Retiring is for identities that are going away; the plain evictor is
+# for live ones whose files changed underneath us, and it LIFTS retirement.
+_CHARACTER_RUNTIME_CACHE_EVICTORS = (
+    (
+        "memory.anti_repeat_effects",
+        "evict_cached_anti_repeat_effects",
+        "retire_cached_anti_repeat_effects",
+        "revive_cached_anti_repeat_effects",
+    ),
+    (
+        "memory.anti_repeat",
+        "evict_cached_anti_repeat_corpus",
+        "retire_cached_anti_repeat_corpus",
+        "revive_cached_anti_repeat_corpus",
+    ),
+    (
+        "memory.startup_greeting_history",
+        "evict_cached_startup_greeting_history",
+        "retire_cached_startup_greeting_history",
+        "revive_cached_startup_greeting_history",
+    ),
+)
+
+
+def _run_character_cache_evictors(names: tuple[str, ...], *, mode: str) -> None:
+    """Best-effort by construction: one module failing must not abort a delete,
+    rename or cloud-save import that has already touched the filesystem.
+    """
+    for module_name, evictor_name, retiring_name, reviving_name in (
+        _CHARACTER_RUNTIME_CACHE_EVICTORS
+    ):
+        module = sys.modules.get(module_name)
+        wanted = evictor_name
+        if mode == "retire" and retiring_name:
+            wanted = retiring_name
+        elif mode == "revive" and reviving_name:
+            wanted = reviving_name
+        evict = getattr(module, wanted, None)
+        if not callable(evict):
+            continue
+        try:
+            evict(*names)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(
+                "[CharacterMemory] cache eviction skipped for %s: %s",
+                module_name,
+                type(exc).__name__,
+            )
+
+
+_WRITE_FENCED: set[str] = set()
+_WRITE_FENCE_LOCK = threading.Lock()
+
+
+def set_character_write_fence(name: str, *, fenced: bool) -> None:
+    """Refuse or re-permit sidecar writes for one name, whatever is on disk.
+
+    Retirement is not enough for an operation that CREATES the directory
+    partway through. It only refuses to MAKE one, so a rename's merge opens
+    the door halfway: from that moment a write belonging to the identity
+    that used to own the name is allowed in, and because staging copies the
+    whole payload it replaces the history just moved there rather than
+    adding to it. This fence never consults the filesystem, so it holds for
+    the whole operation.
+
+    Process-wide rather than per store, deliberately. All three sidecars
+    have to refuse together or the gap only moves; and a store built DURING
+    the fenced window would otherwise start with an empty set of its own --
+    the hazard ``_PENDING_RETIREMENTS`` exists to work around for
+    retirement, which this shape avoids entirely.
+
+    It lives here rather than in ``memory`` because utils is the lower
+    layer: memory may import utils, not the other way round, and the stores
+    reach it from there.
+
+    Releasing is a discard, so it cannot raise and cannot leave a character
+    permanently unable to persist. Callers still have to release it in a
+    ``finally``: a fence left up is worse than the write it prevents.
+
+    A SET and not a counter, deliberately, even though that means one
+    release disarms every holder. The failure modes are not symmetric: an
+    unbalanced release with a counter leaves the fence up for the life of
+    the process, while an extra release with a set only reopens a window.
+    It relies on renames being serialised -- ``character_config_mutation_lock``
+    wraps the whole operation, and the recent-file locks serialise them
+    again -- so a second holder never arises today. A caller that renames
+    outside that lock would make the difference live.
+
+    SCOPE, measured rather than assumed: this covers the three sidecar
+    stores and nothing else. Every file-producing call in them goes through
+    ``_write_file_path`` or the corrupt-file backup, and both ask. Other
+    writers under the same ``memory/<name>/`` -- ``user_directives`` and its
+    siblings -- call ``ensure_character_dir`` unconditionally and are NOT
+    fenced, so the harms described at the rename call site remain reachable
+    through them. Closing that means fencing every writer, which is a
+    larger change than this one.
+
+    If it ever did leak, the blast radius is bounded: writes are dropped
+    while it is up, but the cache keeps them and the first write after the
+    release rewrites the whole payload. Persistence stops; data already in
+    memory is not lost.
+    """
+    if not name:
+        return
+    with _WRITE_FENCE_LOCK:
+        if fenced:
+            _WRITE_FENCED.add(name)
+        else:
+            _WRITE_FENCED.discard(name)
+
+
+def is_character_write_fenced(name: str) -> bool:
+    """Whether sidecar writes for this name are currently refused."""
+    if not name:
+        return False
+    with _WRITE_FENCE_LOCK:
+        return name in _WRITE_FENCED
+
+
+def fence_character_runtime_writes(*character_names: str) -> None:
+    """Refuse sidecar writes for these names until they are unfenced.
+
+    Retirement is the wrong tool for an operation that creates the
+    directory partway through -- see ``set_character_write_fence`` above.
+    Every caller must pair this with ``unfence_character_runtime_writes``
+    in a ``finally``: a fence left up silences that character's sidecars
+    for the life of the process.
+    """
+    for name in dict.fromkeys(n for n in character_names if n):
+        set_character_write_fence(name, fenced=True)
+
+
+def unfence_character_runtime_writes(*character_names: str) -> None:
+    """Re-permit sidecar writes. A discard, so it cannot fail."""
+    for name in dict.fromkeys(n for n in character_names if n):
+        set_character_write_fence(name, fenced=False)
+
+
+def evict_character_runtime_caches(*character_names: str) -> None:
+    """Drop caches for LIVE identities whose files just changed.
+
+    For a cloud-save import or a rename TARGET: the files on disk were
+    replaced, the cache would shadow them, but the identity is still real and
+    must keep persisting. Use ``retire_character_runtime_caches`` instead when
+    the directory is going away.
+    """
+    names = tuple(dict.fromkeys(name for name in character_names if name))
+    if not names:
+        return
+    _run_character_cache_evictors(names, mode="evict")
+
+
+def revive_character_runtime_caches(*character_names: str) -> None:
+    """Lift retirement for names an operation made live, and nothing else.
+
+    For a cloud import: it rewrites only the managed memory files, none of
+    which are these sidecars, so their caches still match what is on disk.
+    Evicting anyway would raise each store's sequence fence and discard a
+    snapshot staged but not yet flushed -- the just-delivered reply, statistic
+    or greeting. Only the retirement needs lifting, so a name reused after an
+    earlier delete can create its directory again.
+    """
+    names = tuple(dict.fromkeys(name for name in character_names if name))
+    if not names:
+        return
+    _run_character_cache_evictors(names, mode="revive")
+
+
+def retire_character_runtime_caches(*character_names: str) -> None:
+    """Drop caches for identities whose directories are being REMOVED.
+
+    For a delete or the source name of a rename. On top of the invalidation,
+    this retires the name in EVERY sidecar store, so a write staged while the
+    removal was still in flight cannot ``makedirs`` the directory back into
+    existence after the tree is gone.
+    """
+    names = tuple(dict.fromkeys(name for name in character_names if name))
+    if not names:
+        return
+    _run_character_cache_evictors(names, mode="retire")
+
+
 
 
 LEGACY_CHARACTER_MEMORY_FILE_MAP = {
@@ -66,6 +269,39 @@ MESSAGE_NAME_FIELDS = ("speaker", "author", "name", "character")
 # Reuse one transaction lock for those cooperating mutation paths so their
 # load -> mutate -> save snapshots cannot overtake each other.
 character_config_mutation_lock = asyncio.Lock()
+
+
+def is_legacy_vector_store_dir(root: Path, name: str) -> bool:
+    """Whether ``root/name`` is another character's vector store, not a name.
+
+    ``character_memory_exists("semantic_memory_Alice")`` is True, because that
+    very directory is one of the paths it checks for a character of that name
+    -- it confirms itself. Anything enumerating a memory root and offering
+    what it finds therefore offered a bogus identity, and analysing it read
+    ``memory/semantic_memory_Alice/time_indexed.db`` rather than Alice's,
+    reporting no history for a character who has plenty.
+
+    OWNERSHIP, not the prefix alone. "semantic_memory_x" is a legal character
+    name, and excluding on the prefix would hide a real character who happens
+    to be called that -- the same defect as a prefix-based exemption hiding a
+    real character from deletion. The owner has to actually exist for this to
+    be a vector store rather than a name.
+    """
+    prefix = "semantic_memory_"
+    if not name.startswith(prefix):
+        return False
+    owner = name[len(prefix):]
+    if not owner:
+        return False
+    try:
+        if (root / owner).is_dir():
+            return True
+        return any(
+            (root / pattern.format(name=owner)).exists()
+            for pattern in LEGACY_CHARACTER_MEMORY_FILE_MAP
+        )
+    except OSError:
+        return False
 
 
 def iter_character_memory_roots(config_manager) -> list[Path]:
@@ -338,6 +574,54 @@ def rename_character_memory_storage(
     generation_snapshot: dict[str, tuple[int, int]] = {}
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
+        # BOTH names are held shut for the duration of the move, and the
+        # target is only lifted once the rename has actually committed,
+        # below. The source loses its directory to the move. The target may
+        # have been DELETED earlier and still be retired, and evicting here
+        # lifted that retirement before anything had been moved -- so
+        # anything still holding the old name (an in-flight proactive turn, a
+        # session bound to it before the delete) was free to write for the
+        # whole window, and both outcomes were bad. Its flush creates
+        # memory/<new_name>/, which trips _merge_directories' colliding-child
+        # pre-flight and aborts the rename outright; or it stages first and
+        # flushes after the move, and since staging copies the WHOLE payload
+        # rather than a delta, the merged history is replaced by that one
+        # record -- four merged entries became one. All three stores stage
+        # the whole cached collection rather than a delta, so none of them
+        # is exempt.
+        #
+        # The reason this used to give -- that retiring the target would deny
+        # it the lazy directory creation every sibling writer gets -- does
+        # not survive measurement. It holds only until the move creates the
+        # directory, after which a retired name writes into it perfectly
+        # well; and the lift below always runs, so the target creates and
+        # writes normally afterwards even when there was nothing to merge.
+        retire_character_runtime_caches(old_name)
+        retire_character_runtime_caches(new_name)
+        # BOTH names, and for the same reason on each: retirement refuses to
+        # CREATE a directory but permits writing into one that exists.
+        #
+        # Target: the merge creates its directory partway through, and from
+        # that moment a write from the identity that used to own the name
+        # lands on the history just moved in.
+        #
+        # Source: its directory exists for the whole merge. On the
+        # child-by-child path a late write can recreate a file after the
+        # children are moved and before _merge_directories rmdir()s the
+        # source -- and that rmdir swallows its failure, so the rename
+        # reports success while memory/<old_name>/ survives with content and
+        # the renamed-away identity still looks like it has memory.
+        #
+        # The fence does not consult the filesystem, so it covers the whole
+        # operation; the finally is what guarantees it comes back down.
+        #
+        # Which makes retiring the TARGET above redundant, measured: with
+        # this fence in place, lifting there instead -- or not touching the
+        # target at all -- reddens nothing. It stays as the independent
+        # cover for the half before the merge creates the directory, for
+        # the case where this fence is somehow never set. Retiring the
+        # SOURCE is not redundant: its directory is going away.
+        fence_character_runtime_writes(old_name, new_name)
         # 目标角色名可能曾被改走；复用该名字前必须切断旧跳转，否则新角色会写进旧目标。
         (
             _,
@@ -382,6 +666,22 @@ def rename_character_memory_storage(
         set_recent_pending_unlocked(target_recent, target_pending)
         redirect_recent_paths(pending_sources, target_recent)
 
+        # Publication: the move has happened and this call is about to
+        # commit, so the target becomes a live identity again. As late as
+        # possible, because everything before it is still window.
+        #
+        # The lift has to DROP THE CACHE, not merely mark the name live: a
+        # write refused during the window still staged into it, and the move
+        # has just replaced the directory underneath, so nothing held for
+        # this name is still valid. Dropping it makes the next write re-read
+        # the merged file instead of flushing a window record over it.
+        #
+        # revive_character_runtime_caches would behave identically HERE --
+        # measured, and its retired branch evicts for this very reason -- but
+        # only because the target is retired by the line above. evict does
+        # not depend on that, so it is the one that states the intent.
+        evict_character_runtime_caches(new_name)
+
         result = {
             "changed": changed,
             "runtime_dir": runtime_target_dir,
@@ -399,6 +699,17 @@ def rename_character_memory_storage(
             release_character_recent_transaction(transaction)
         return result
     except BaseException:
+        # Undo the cache lifecycle too, by rule rather than by snapshot. At the
+        # moment this can raise, the config mutation and the "target must be
+        # free" check both still sit with the caller, so the SOURCE is
+        # unconditionally live and the TARGET unconditionally absent. Leaving
+        # them as-is stranded a live source retired -- every later sidecar write
+        # dropped, because a retired name never creates its directory -- and
+        # left the absent target reactivated, so a late write could recreate an
+        # identity that was never committed. The caller cannot fix it either:
+        # it fills its rollback name tuples from this function returning.
+        evict_character_runtime_caches(old_name)
+        retire_character_runtime_caches(new_name)
         restore_recent_registry_state(
             list(set(recent_paths) | activation_scope),
             redirect_snapshot,
@@ -410,6 +721,11 @@ def rename_character_memory_storage(
         if not keep_recent_locks:
             release_character_recent_transaction(transaction)
         raise
+    finally:
+        # Unconditional, and after the publication lift above: a fence that
+        # survived a raise would silence this character for the life of the
+        # process, which is worse than the write it exists to stop.
+        unfence_character_runtime_writes(old_name, new_name)
 
 
 def finalize_character_recent_rename(result: dict[str, Any]) -> None:
@@ -528,6 +844,7 @@ async def asave_characters_with_recent_activation(
             )))
         else:
             release_character_recent_transaction(transaction)
+            evict_character_runtime_caches(*character_names)
             return True
         raise
     except BaseException:
@@ -537,6 +854,13 @@ async def asave_characters_with_recent_activation(
         raise
     else:
         release_character_recent_transaction(transaction)
+        # Publishing an identity is the explicit "this character is live" event.
+        # A name deleted earlier in the process is still retired, and a freshly
+        # created profile has no memory/<name>/ yet, so without this lift the
+        # sidecar writers would drop its startup greeting and early proactive
+        # decisions instead of creating the directory. Rollback paths must NOT
+        # lift: nothing was published there.
+        evict_character_runtime_caches(*character_names)
         return False
 
 
@@ -557,6 +881,7 @@ def delete_character_memory_storage(
     )
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
+        retire_character_runtime_caches(character_name)
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
             for path in recent_candidates

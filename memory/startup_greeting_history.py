@@ -55,7 +55,13 @@ _MAX_RECORDS = 320
 _MAX_STORED_TEXT_CHARS = 160
 
 
+# One name, used by the write path AND by the cloud-save fence target.
+# They were separate literals and two of the three stores had already
+# drifted, so a fenced write reported a file that does not exist.
+_SIDECAR_FILENAME = "startup_greetings.json"
+
 @dataclass(frozen=True, slots=True)
+
 class StartupGreetingRecord:
     """One startup greeting that was actually committed to the client."""
 
@@ -140,13 +146,73 @@ class StartupGreetingHistory:
         self._written_seq: dict[str, int] = {}
         self._detached_flushes: set[asyncio.Task] = set()
         self._reservations: dict[str, tuple[str, float]] = {}
+        # Names retired by ``retire_character``; see ``_write_file_path``.
+        self._retired: set[str] = set()
 
     def _file_path(self, name: str) -> str:
-        from memory import ensure_character_dir
+        """Return the path for READING; it never creates the directory.
 
+        Creation belongs to ``_write_file_path`` alone. Creating it here made a
+        cache MISS resurrect a directory that a delete had just removed: the
+        eviction dropped the cache, so the very next record re-read from disk
+        and ``makedirs`` the tree back before any write was attempted.
+        """
         return os.path.join(
-            ensure_character_dir(self._config_manager.memory_dir, name),
-            "startup_greetings.json",
+            str(self._config_manager.memory_dir),
+            name,
+            _SIDECAR_FILENAME,
+        )
+
+    def _write_file_path(self, name: str) -> str | None:
+        """Return the save target, or None for a retired, removed identity.
+
+        The normal path is the lazy ``ensure_character_dir`` every sibling
+        memory writer uses. The exception is a name ``retire_character``
+        retired: fencing alone only covers snapshots staged BEFORE the
+        eviction, so a write staged while a delete or rename-away was still in
+        flight would run once the lifecycle operation released its fence and
+        ``makedirs`` the directory back into existence -- making a deleted
+        identity look like it still has memory.
+
+        A retired name may only write into a directory that already exists; it
+        never creates one. Only ``evict_character`` lifts retirement, and only
+        callers that KNOW the identity is live reach for it.
+
+        A same-named identity reusing a recreated directory can still pick up
+        the old one's data through the cache. It reproduces here too; what
+        holds it shut, why it is left as is, and what a new writer has to do
+        are recorded once in ``memory/anti_repeat_effects.py``
+        ``_write_file_path`` rather than three times over.
+        """
+        from memory import _is_within_memory_root, ensure_character_dir
+        from utils.character_memory import is_character_write_fenced
+
+        # Refused for the WHOLE of an operation that will create this
+        # directory partway through. Retirement below only declines to make
+        # one, so once a rename's merge has made it, a late write from the
+        # identity that used to own the name would land on the history just
+        # moved in -- and staging copies the whole payload, so it replaces
+        # it rather than adding to it.
+        if is_character_write_fenced(name):
+            return None
+
+        memory_dir = self._config_manager.memory_dir
+        character_dir = os.path.join(str(memory_dir), name)
+        if not _is_within_memory_root(str(memory_dir), name, character_dir):
+            # A historical unsafe name resolves outside its own directory:
+            # "." lands on the memory root itself and ".." escapes it
+            # entirely, so the sidecar would be written beside -- or above
+            # -- the whole memory tree. Refused for a LIVE name as well as a
+            # retired one, and refused BEFORE ensure_character_dir below can
+            # create anything.
+            return None
+        if name in self._retired:
+            if not os.path.isdir(character_dir):
+                return None
+            return os.path.join(character_dir, _SIDECAR_FILENAME)
+        return os.path.join(
+            ensure_character_dir(memory_dir, name),
+            _SIDECAR_FILENAME,
         )
 
     def _get_lock(self, name: str) -> threading.Lock:
@@ -212,6 +278,16 @@ class StartupGreetingHistory:
         corruptions separate from older recovery artifacts.
         """
 
+        from utils.character_memory import is_character_write_fenced
+
+        # The only write in this store that does not go through
+        # ``_write_file_path``, so the fence has to be asked here too --
+        # measured: while a rename held the fence up, a corrupt reload still
+        # dropped a .bak beside the sidecar and seeded an empty cache for a
+        # name that is supposed to be untouchable.
+        if is_character_write_fenced(name):
+            return None
+
         path = self._file_path(name)
         digest = hashlib.sha256(persisted_bytes).hexdigest()[:16]
         backup_path = f"{path}.corrupt.{digest}.bak"
@@ -256,21 +332,48 @@ class StartupGreetingHistory:
         return name, payload, seq
 
     def _flush_snapshot(self, name: str, payload: dict[str, Any], seq: int) -> None:
-        with self._get_write_lock(name):
-            if seq <= self._written_seq.get(name, 0):
-                return
-            try:
-                atomic_write_json(
-                    self._file_path(name), payload, indent=2, ensure_ascii=False
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[StartupGreetingHistory] save failed for %s: %s",
-                    name,
-                    exc,
-                )
-                return
-            self._written_seq[name] = seq
+        # The write barrier has to be inside the import critical section: a
+        # cloud-save import replaces `memory/<name>/` wholesale, and a snapshot
+        # staged BEFORE the replacement still carries a seq above
+        # `_written_seq`, so evicting afterwards cannot stop it — it takes the
+        # write lock, passes the sequence check and writes the old payload back
+        # over the imported file, which no later fence can undo.
+        # `cloudsave_writable_transaction` raises MaintenanceModeError while the
+        # import fence is closed, so the flush is skipped. Same shape as
+        # `memory/anti_repeat_effects.py`.
+        try:
+            from utils.cloudsave_runtime import cloudsave_writable_transaction
+
+            with cloudsave_writable_transaction(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{name}/{_SIDECAR_FILENAME}",
+            ):
+                with self._get_write_lock(name):
+                    if seq <= self._written_seq.get(name, 0):
+                        return
+                    target = self._write_file_path(name)
+                    if target is None:
+                        # Directory is gone (deleted or renamed away while this
+                        # turn was in flight). Fence the sequence and drop this
+                        # snapshot rather than recreating the directory.
+                        self._written_seq[name] = seq
+                        logger.debug(
+                            "[StartupGreetingHistory] skip save for removed "
+                            "character %s",
+                            name,
+                        )
+                        return
+                    atomic_write_json(
+                        target, payload, indent=2, ensure_ascii=False
+                    )
+                    self._written_seq[name] = seq
+        except Exception as exc:
+            logger.warning(
+                "[StartupGreetingHistory] save failed for %s: %s",
+                name,
+                exc,
+            )
 
     async def apreload(self, name: str) -> None:
         """Warm the disk-backed history before synchronous commit-point reads."""
@@ -502,9 +605,146 @@ class StartupGreetingHistory:
 
         task.add_done_callback(_done)
 
+    def _evict_unlocked(self, resolved: str) -> None:
+        fence = max(
+            self._staged_seq.get(resolved, 0),
+            self._written_seq.get(resolved, 0),
+        )
+        self._cache.pop(resolved, None)
+        self._reservations.pop(resolved, None)
+        self._staged_seq[resolved] = fence
+        self._written_seq[resolved] = fence
+
+    def evict_character(self, name: str) -> None:
+        """Forget a LIVE identity whose file changed underneath us.
+
+        Distinct from ``clear``, which WIPES the data and persists an empty
+        payload. Eviction is for when the file on disk changed underneath us --
+        a cloud-save import replaces ``memory/<name>/`` wholesale -- and the
+        cache would otherwise shadow the new contents and get flushed back over
+        them. The sequence fence stops a snapshot staged before the replacement
+        from doing exactly that.
+
+        This is also the explicit "the identity is live" event that lifts
+        retirement: a created, imported or renamed-to name is a real character,
+        and leaving it retired would deny it the lazy directory creation every
+        sibling memory writer gets. Directory existence never lifts retirement;
+        only this call does.
+        """
+        resolved = _resolve_name(name)
+        with self._get_lock(resolved):
+            with self._get_write_lock(resolved):
+                self._evict_unlocked(resolved)
+                self._retired.discard(resolved)
+
+    def revive_character(self, name: str) -> None:
+        """Mark a name live again WITHOUT dropping its cache or fencing it.
+
+        The cloud APPLY never rewrites this sidecar -- it is not in
+        ``MANAGED_MEMORY_FILENAMES`` -- so the cache still matches the file and
+        evicting would only raise the sequence fence, silently discarding a
+        snapshot that was staged and not yet flushed. What such an import DOES
+        need is the retirement lifted: a name reused after an earlier delete
+        cannot create its directory until something says it is live again.
+        """
+        resolved = _resolve_name(name)
+        with self._get_lock(resolved):
+            with self._get_write_lock(resolved):
+                if resolved not in self._retired:
+                    # Live identity: the cloud apply never rewrites this
+                    # sidecar, so the cache matches the file and the sequence
+                    # fence must not move -- moving it discards a snapshot
+                    # staged and not yet flushed.
+                    return
+                # Retired: everything cached or staged under this name belongs
+                # to the identity that was deleted -- a decision recorded
+                # between the retire and the rmtree repopulates the cache from
+                # the still-present file. Dropping and fencing it loses nothing
+                # the reused name is entitled to, and keeping it would flush a
+                # deleted character's aggregates under the new one.
+                self._evict_unlocked(resolved)
+                self._retired.discard(resolved)
+
+    def retire_character(self, name: str) -> None:
+        """Forget one identity whose directory is being REMOVED, and fence it.
+
+        The sequence fence only covers snapshots staged BEFORE this call.
+        Retirement is what stops a write staged while the delete or
+        rename-away is still in flight from recreating the directory.
+        """
+        resolved = _resolve_name(name)
+        with self._get_lock(resolved):
+            with self._get_write_lock(resolved):
+                self._evict_unlocked(resolved)
+                self._retired.add(resolved)
+
+
+# A retirement recorded BEFORE the singleton exists must not be lost. Delete
+# and rename retire the identity and only then remove the tree, while the
+# singleton is built lazily on the first runtime event -- so a generation
+# already in flight could construct a fresh instance with an empty retirement
+# set, whose first flush calls ``ensure_character_dir`` and puts the deleted
+# directory straight back. Measured: retiring before construction recreated
+# ``memory/<name>/`` and its sidecar, retiring after did not.
+_PENDING_RETIREMENTS: set[str] = set()
+
+
+def _record_pending_retirement(character_names, *, retired: bool):
+    """Update the pending set and return the singleton, under ONE lock.
+
+    The lock is _GLOBAL_HISTORY_LOCK, deliberately, and not a second lock of its own.
+    A builder that had copied the pending set but not yet published would
+    otherwise race a concurrent retire/revive: that caller reads ``None``,
+    returns early, and leaves its update only in the set the builder had
+    already copied -- so the published instance carries stale state, and a
+    delete can be resurrected or a live character blocked from creating
+    its directory. Sharing the lock makes both interleavings safe: either
+    the update lands before the copy, or it sees the published instance.
+    """
+    with _GLOBAL_HISTORY_LOCK:
+        for character_name in character_names:
+            if retired:
+                _PENDING_RETIREMENTS.add(character_name)
+            else:
+                # Eviction and revival both LIFT retirement, so they have
+                # to clear the pending record too -- otherwise a name
+                # retired and revived before construction would stay
+                # retired forever.
+                _PENDING_RETIREMENTS.discard(character_name)
+        return _GLOBAL_HISTORY
+
 
 _GLOBAL_HISTORY: StartupGreetingHistory | None = None
 _GLOBAL_HISTORY_LOCK = threading.Lock()
+
+
+def evict_cached_startup_greeting_history(*character_names: str) -> None:
+    """Evict loaded identities without creating the global history."""
+    names = list(dict.fromkeys(character_names))
+    history = _record_pending_retirement(names, retired=False)
+    if history is None:
+        return
+    for character_name in names:
+        history.evict_character(character_name)
+
+def revive_cached_startup_greeting_history(*character_names: str) -> None:
+    """Lift retirement for live identities without touching their caches."""
+    names = list(dict.fromkeys(character_names))
+    history = _record_pending_retirement(names, retired=False)
+    if history is None:
+        return
+    for character_name in names:
+        history.revive_character(character_name)
+
+
+def retire_cached_startup_greeting_history(*character_names: str) -> None:
+    """Retire removed identities without creating the global history."""
+    names = list(dict.fromkeys(character_names))
+    history = _record_pending_retirement(names, retired=True)
+    if history is None:
+        return
+    for character_name in names:
+        history.retire_character(character_name)
 
 
 def get_startup_greeting_history() -> StartupGreetingHistory:
@@ -512,5 +752,9 @@ def get_startup_greeting_history() -> StartupGreetingHistory:
     if _GLOBAL_HISTORY is None:
         with _GLOBAL_HISTORY_LOCK:
             if _GLOBAL_HISTORY is None:
-                _GLOBAL_HISTORY = StartupGreetingHistory()
+                built = StartupGreetingHistory()
+                # Already under the lock, so read the set directly: a
+                # helper that re-acquired it would deadlock.
+                built._retired.update(_PENDING_RETIREMENTS)
+                _GLOBAL_HISTORY = built
     return _GLOBAL_HISTORY

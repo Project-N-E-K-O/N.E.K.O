@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -15,6 +16,43 @@ from PIL import Image
 
 from main_routers.shared_state import init_shared_state
 
+
+@contextmanager
+def _isolated_sidecar_stores(memory_dir):
+    """Swap the three sidecar singletons for FRESH instances.
+
+    Saving the module globals and restoring them is not enough. These tests
+    mutate ``_cache`` and ``_retired`` on the EXISTING objects, and putting the
+    same reference back leaves those mutations in place -- so an entry another
+    test also uses is silently dropped and the suite becomes order-dependent.
+    """
+    import memory.anti_repeat as anti_repeat_module
+    import memory.anti_repeat_effects as effects_module
+    import memory.startup_greeting_history as greeting_module
+
+    config_manager = SimpleNamespace(memory_dir=str(memory_dir))
+    store = effects_module.AntiRepeatEffectStore()
+    store._config_manager = config_manager
+    corpus = anti_repeat_module.AntiRepeatCorpus()
+    corpus._config_manager = config_manager
+    greeting = greeting_module.StartupGreetingHistory(config_manager)
+
+    previous = (
+        effects_module._GLOBAL_STORE,
+        anti_repeat_module._GLOBAL_CORPUS,
+        greeting_module._GLOBAL_HISTORY,
+    )
+    effects_module._GLOBAL_STORE = store
+    anti_repeat_module._GLOBAL_CORPUS = corpus
+    greeting_module._GLOBAL_HISTORY = greeting
+    try:
+        yield (store, corpus, greeting)
+    finally:
+        (
+            effects_module._GLOBAL_STORE,
+            anti_repeat_module._GLOBAL_CORPUS,
+            greeting_module._GLOBAL_HISTORY,
+        ) = previous
 
 def _make_role_state_for_test(session_managers: dict) -> dict:
     """Seed role_state with pre-existing session_managers (post-#855 + cross_server async).
@@ -1569,6 +1607,111 @@ async def test_body_delete_rescues_unsafe_dot_character_without_touching_memory_
             assert "." not in cm.load_characters().get("猫娘", {})
             assert sentinel.read_text(encoding="utf-8") == "keep"
             mock_delete_memory.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unsafe_name", [".", "a/b"])
+async def test_unsafe_name_rescue_retires_the_sidecar_stores(unsafe_name):
+    """A rescued deletion must end the identity, not just its configuration.
+
+    Every other end-of-identity path retires the sidecar stores; this branch
+    returned without doing so, and a snapshot staged while the removal was in
+    flight then flushed afterwards -- writing ``anti_repeat_effects.json``
+    straight into the memory ROOT for ".", and creating a phantom "a/b/" tree
+    for a name carrying historical separators. ``facts_sync`` enumerates any
+    directory under ``memory/`` as a character, so the artifact outlives the
+    deletion.
+
+    The assertion is on the DISK, deliberately, not on the retirement flag: for
+    "." the flag can be set while the file still lands, because ``memory/.`` is
+    the root and therefore already exists, so ``_write_file_path`` still returns
+    a real path. What actually suppresses the write is the sequence fence, and
+    only a disk assertion sees that.
+    """
+    from memory import anti_repeat_effects
+
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})["正常角色"] = {"昵称": "正常角色"}
+            characters.setdefault("猫娘", {})[unsafe_name] = {"昵称": "坏角色"}
+            characters["当前猫娘"] = "正常角色"
+            cm.save_characters(characters, bypass_write_fence=True)
+
+            memory_root = Path(cm.memory_dir)
+            memory_root.mkdir(parents=True, exist_ok=True)
+            before = {path.name for path in memory_root.iterdir()}
+
+            store = anti_repeat_effects.AntiRepeatEffectStore()
+            store._config_manager = cm
+            with patch.object(anti_repeat_effects, "_GLOBAL_STORE", store):
+                # Staged while the removal is in flight, flushed after it lands.
+                staged = store.stage_decision(
+                    unsafe_name,
+                    anti_repeat_effects.AntiRepeatDecision(
+                        source="proactive",
+                        reasons=("bm25",),
+                        action="block",
+                        outcome="blocked_initial",
+                    ),
+                )
+
+                crud = reload_module("main_routers.characters_router.crud")
+                with (
+                    patch.object(
+                        crud, "notify_memory_server_reload", AsyncMock(return_value=True)
+                    ),
+                    patch.object(crud, "delete_character_memory_storage"),
+                ):
+                    result = await crud.delete_catgirl_by_body(
+                        _DummyRequest({"name": unsafe_name})
+                    )
+
+                assert result["success"] is True
+                assert result["unsafe_name_rescue"] is True
+
+                store._flush_snapshot(*staged)
+                # A SECOND write after the deletion pins the fence rather than
+                # the flag: a name whose directory happens to exist would
+                # otherwise keep writing.
+                store._flush_snapshot(
+                    *store.stage_decision(
+                        unsafe_name,
+                        anti_repeat_effects.AntiRepeatDecision(
+                            source="proactive",
+                            reasons=("bm25",),
+                            action="block",
+                            outcome="blocked_initial",
+                        ),
+                    )
+                )
+
+            after = {path.name for path in memory_root.iterdir()}
+            assert after == before, (
+                f"the rescued deletion left {sorted(after - before)} under memory/"
+            )
 
 
 @pytest.mark.unit
@@ -4800,7 +4943,7 @@ def test_timeindexed_dispose_and_rebuild_when_memory_dir_drifts(monkeypatch, tmp
 def test_timeindexed_short_circuits_when_memory_dir_unchanged(monkeypatch, tmp_path):
     """对偶用例：cached 与 expected 一致时 drift 检测不该误伤——cache 命中
     应仍然短路，不重建 engine。
-    """
+    """  # noqa: DOCSTRING_CJK
     from memory.timeindex import TimeIndexedMemory
 
     class _DummyEngine:
@@ -4852,3 +4995,1057 @@ def test_timeindexed_short_circuits_when_memory_dir_unchanged(monkeypatch, tmp_p
     assert ensure_calls == ["测试角色"]
     assert migrate_calls == ["测试角色"]
     assert engine.dispose_calls == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publishing_an_identity_lifts_sidecar_retirement(tmp_path):
+    """Creating a character is the explicit "this identity is live" event.
+
+    A name deleted earlier in the process stays retired, and a freshly created
+    profile has no memory/<name>/ yet -- so without this lift the sidecar writers
+    would drop its startup greeting and early proactive decisions instead of
+    creating the directory, and they would stay dropped until some unrelated
+    memory writer happened to make the directory.
+    """
+    from utils.character_memory import (
+        asave_characters_with_recent_activation,
+        retire_character_runtime_caches,
+    )
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+        async def asave_characters(self, _characters):
+            return None
+
+    config = _Config()
+    with _isolated_sidecar_stores(tmp_path) as stores:
+        retire_character_runtime_caches("Reborn")
+        assert all("Reborn" in store._retired for store in stores)
+
+        await asave_characters_with_recent_activation(
+            config, {"猫娘": {"Reborn": {}}}, "Reborn",
+        )
+
+        assert all("Reborn" not in store._retired for store in stores), (
+            "publishing an identity must reactivate its sidecar storage"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_rolled_back_delete_reactivates_the_sidecar_stores(tmp_path):
+    """A restored character is live again, so its retirement must be lifted.
+
+    The delete path retires the name in every sidecar store BEFORE removing
+    anything. If the operation then rolls back -- a failed memory-server reload,
+    a cancellation, maintenance mode -- the files and characters.json come back
+    through save_characters, which never reaches the activation helper that
+    lifts retirement. A character that had no memory directory yet would then
+    keep dropping its startup greeting and anti-repeat decisions, because a
+    retired name is refused the lazy directory creation every sibling writer
+    gets.
+    """
+    from main_routers.characters_router import crud
+    from utils.character_memory import retire_character_runtime_caches
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+        def save_characters(self, _characters, **_kwargs):
+            return None
+
+        def save_character_tombstones_state(self, _state):
+            return None
+
+    with _isolated_sidecar_stores(tmp_path) as stores:
+        retire_character_runtime_caches("Restored")
+        assert all("Restored" in store._retired for store in stores)
+
+        with (
+            patch.object(crud, "get_initialize_character_data",
+                         return_value=AsyncMock()),
+            patch.object(crud, "notify_memory_server_reload",
+                         AsyncMock(return_value=True)),
+        ):
+            errors = await crud._rollback_character_operation(
+                _Config(),
+                characters_snapshot={"猫娘": {"Restored": {}}},
+                memory_snapshot_records=[],
+                restored_live_character_names=("Restored",),
+                reason="test rollback",
+            )
+
+        assert errors == "", errors
+        assert all("Restored" not in store._retired for store in stores), (
+            "a rolled-back delete left the live character retired"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_failed_restore_leaves_the_character_retired(tmp_path):
+    """The lift is scoped to a restore that actually succeeded.
+
+    If characters.json could not be put back, the name is NOT live again --
+    lifting retirement there would let a decision staged mid-delete recreate the
+    directory that was just removed, which is the orphan the retirement exists
+    to prevent.
+    """
+    from main_routers.characters_router import crud
+    from utils.character_memory import retire_character_runtime_caches
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+        def save_characters(self, _characters, **_kwargs):
+            raise OSError("disk full")
+
+        def save_character_tombstones_state(self, _state):
+            return None
+
+    with _isolated_sidecar_stores(tmp_path) as stores:
+        retire_character_runtime_caches("Doomed")
+
+        with (
+            patch.object(crud, "get_initialize_character_data",
+                         return_value=AsyncMock()),
+            patch.object(crud, "notify_memory_server_reload",
+                         AsyncMock(return_value=True)),
+        ):
+            errors = await crud._rollback_character_operation(
+                _Config(),
+                characters_snapshot={"猫娘": {"Doomed": {}}},
+                memory_snapshot_records=[],
+                restored_live_character_names=("Doomed",),
+                reason="test rollback",
+            )
+
+        assert "characters restore failed" in errors
+        assert all("Doomed" in store._retired for store in stores), (
+            "retirement was lifted for a character that was never restored"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_rollback_before_retirement_does_not_evict(tmp_path):
+    """Eviction is not a harmless no-op on a name that was never retired.
+
+    The rollback block is shared with failures that happen before the storage
+    op ran. Evicting there pops the cache AND advances the sequence fence, so a
+    decision recorded while the operation was in flight is destroyed rather
+    than merely delayed -- it never reaches disk and it is gone from memory.
+    The route passes an EMPTY tuple until the retiring op has returned.
+    """
+    import memory.anti_repeat_effects as effects_module
+    from main_routers.characters_router import crud
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+        def save_characters(self, _characters, **_kwargs):
+            return None
+
+        def save_character_tombstones_state(self, _state):
+            return None
+
+    previous = effects_module._GLOBAL_STORE
+    try:
+        store = effects_module.AntiRepeatEffectStore()
+        store._config_manager = _Config()
+        effects_module._GLOBAL_STORE = store
+        (tmp_path / "Busy").mkdir()
+        store.record_decision(
+            "Busy",
+            effects_module.AntiRepeatDecision(
+                source="proactive",
+                reasons=("bm25",),
+                action="block",
+                outcome="blocked_initial",
+            ),
+            now=1_700_000_000.0,
+        )
+        assert "Busy" in store._cache
+
+        with (
+            patch.object(crud, "get_initialize_character_data",
+                         return_value=AsyncMock()),
+            patch.object(crud, "notify_memory_server_reload",
+                         AsyncMock(return_value=True)),
+        ):
+            await crud._rollback_character_operation(
+                _Config(),
+                characters_snapshot={"猫娘": {"Busy": {}}},
+                memory_snapshot_records=[],
+                restored_live_character_names=(),
+                reason="rollback before the storage op ran",
+            )
+
+        assert "Busy" in store._cache, (
+            "a rollback that retired nothing still evicted the live cache"
+        )
+    finally:
+        effects_module._GLOBAL_STORE = previous
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_early_delete_failure_tells_the_rollback_nothing_was_retired(tmp_path):
+    """The CALL SITE must pass an empty tuple, not just the helper honour one.
+
+    Cancelling during the release happens before delete_character_memory_storage
+    has retired anything, so the rollback must not evict: eviction pops the
+    cache and advances the sequence fence, destroying a decision recorded while
+    the operation was in flight.
+    """
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["DeleteMe"] = {"昵称": "DeleteMe"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        release_started = asyncio.Event()
+        finish_release = asyncio.Event()
+        rollback = AsyncMock(return_value="")
+
+        async def _release(*_args, **_kwargs):
+            release_started.set()
+            await finish_release.wait()
+            return True
+
+        with patch.object(
+            crud, "release_memory_server_character", side_effect=_release,
+        ), patch.object(crud, "_rollback_character_operation", rollback):
+            operation = asyncio.create_task(crud.delete_catgirl("DeleteMe"))
+            await asyncio.wait_for(release_started.wait(), timeout=3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            finish_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+    assert rollback.await_args.kwargs["restored_live_character_names"] == (), (
+        "a rollback from before the storage op claimed a name had been retired"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rename_rollback_restores_both_sides_of_the_retirement(tmp_path):
+    """A rolled-back rename restores the source AND un-does the target.
+
+    The storage op retires the source name and EVICTS the target, lifting any
+    retirement an earlier delete of that same name had installed. Undoing the
+    rename makes the target not-live again, so it has to go back to retired --
+    otherwise a late sidecar flush recreates its directory for an identity that
+    does not exist.
+    """
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["OldName"] = {"昵称": "OldName"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        rollback = AsyncMock(return_value="")
+
+        request = SimpleNamespace(
+            json=AsyncMock(return_value={"new_name": "NewName"}),
+        )
+        with patch.object(
+            crud, "notify_memory_server_reload", AsyncMock(return_value=False),
+        ), patch.object(
+            crud, "release_memory_server_character", AsyncMock(return_value=True),
+        ), patch.object(crud, "_rollback_character_operation", rollback):
+            response = await crud.rename_catgirl("OldName", request)
+
+    assert rollback.await_args is not None, (
+        "the route never reached the rollback: %s" % getattr(response, "body", response)
+    )
+
+    kwargs = rollback.await_args.kwargs
+    assert kwargs["restored_live_character_names"] == ("OldName",)
+    assert kwargs["reretired_absent_character_names"] == ("NewName",), (
+        "the rename target stayed live after the rename was undone"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_rollback_actually_re_retires_the_absent_name(tmp_path):
+    """The helper must DO the re-retirement, not merely accept the list.
+
+    Paired with the call-site test that pins which names are passed: this one
+    pins that they take effect, so the two together fail if either half is
+    removed.
+    """
+    from main_routers.characters_router import crud
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+        def save_characters(self, _characters, **_kwargs):
+            return None
+
+        def save_character_tombstones_state(self, _state):
+            return None
+
+    with _isolated_sidecar_stores(tmp_path) as stores:
+        assert all("Gone" not in store._retired for store in stores)
+
+        with (
+            patch.object(crud, "get_initialize_character_data",
+                         return_value=AsyncMock()),
+            patch.object(crud, "notify_memory_server_reload",
+                         AsyncMock(return_value=True)),
+        ):
+            await crud._rollback_character_operation(
+                _Config(),
+                characters_snapshot={"猫娘": {"Back": {}}},
+                memory_snapshot_records=[],
+                restored_live_character_names=("Back",),
+                reretired_absent_character_names=("Gone",),
+                reason="rename rollback",
+            )
+
+        assert all("Gone" in store._retired for store in stores), (
+            "the undone rename target was left live in a sidecar store"
+        )
+        assert all("Back" not in store._retired for store in stores)
+
+
+@pytest.mark.unit
+def test_a_failed_rename_restores_the_cache_lifecycle(tmp_path):
+    """A raise partway through must not strand either name.
+
+    The helper retires the source and evicts the target as its first act. If a
+    file move then raises, the caller never fills its rollback tuples -- it
+    fills them from this function RETURNING -- so without an inverse here the
+    live source stays retired (every later sidecar write dropped, since a
+    retired name never creates its directory) and the absent target stays
+    reactivated (a late write can recreate an identity never committed).
+    """
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    with _isolated_sidecar_stores(tmp_path) as stores:
+        # The target name was deleted earlier, so it is retired.
+        character_memory.retire_character_runtime_caches("Target")
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("cross-device move")
+
+        with patch.object(character_memory, "activate_recent_paths", _boom):
+            with pytest.raises(OSError):
+                character_memory.rename_character_memory_storage(
+                    cm, "Source", "Target",
+                )
+
+        assert all("Source" not in store._retired for store in stores), (
+            "the live source was left retired after a failed rename"
+        )
+        assert all("Target" in store._retired for store in stores), (
+            "the uncommitted target was left reactivated after a failed rename"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_raising_delete_still_tells_the_rollback_it_retired(tmp_path):
+    """The storage helper retires as its first act, so a raise still retired.
+
+    The rollback restores the files and the config entry, making the name live
+    again -- and a live name left retired drops every later sidecar write. The
+    route therefore has to record the retirement on the raise, not only on the
+    return.
+    """
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Boom"] = {"昵称": "Boom"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        rollback = AsyncMock(return_value="")
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("file in use")
+
+        with patch.object(
+            crud, "release_memory_server_character", AsyncMock(return_value=True),
+        ), patch.object(
+            crud, "delete_character_memory_storage", _boom,
+        ), patch.object(crud, "_rollback_character_operation", rollback):
+            response = await crud.delete_catgirl("Boom")
+
+    assert rollback.await_args is not None, (
+        "the route never reached the rollback: %s" % getattr(response, "body", response)
+    )
+    assert rollback.await_args.kwargs["restored_live_character_names"] == ("Boom",), (
+        "a delete that raised after retiring told the rollback nothing was retired"
+    )
+
+
+@pytest.mark.unit
+def test_sidecar_isolation_does_not_touch_the_process_singletons(tmp_path):
+    """The helper must swap instances, not mutate the shared ones.
+
+    Saving the module globals and restoring the same references leaves any
+    ``_cache`` / ``_retired`` mutation in place, so a name another test also
+    uses gets silently dropped and the suite turns order-dependent. This pins
+    the property directly: what the helper yields is NOT the process singleton,
+    and writing through it leaves the singleton untouched.
+    """
+    import memory.anti_repeat as anti_repeat_module
+    import memory.anti_repeat_effects as effects_module
+    import memory.startup_greeting_history as greeting_module
+
+    outer = (
+        effects_module.get_anti_repeat_effect_store(),
+        anti_repeat_module.get_anti_repeat_corpus(),
+        greeting_module.get_startup_greeting_history(),
+    )
+    outer_retired = [set(store._retired) for store in outer]
+    outer_cached = [set(store._cache) for store in outer]
+
+    with _isolated_sidecar_stores(tmp_path) as stores:
+        assert all(
+            inner is not shared for inner, shared in zip(stores, outer)
+        ), "the helper handed back the process singletons"
+        for store in stores:
+            store._retired.add("PollutionCanary")
+            store._cache["PollutionCanary"] = {}
+
+    assert [set(store._retired) for store in outer] == outer_retired
+    assert [set(store._cache) for store in outer] == outer_cached
+    assert effects_module._GLOBAL_STORE is outer[0]
+    assert anti_repeat_module._GLOBAL_CORPUS is outer[1]
+    assert greeting_module._GLOBAL_HISTORY is outer[2]
+
+
+def test_every_selectable_legacy_root_file_is_also_migrated(tmp_path):
+    """A name the panel offers has to have its history moved where readers look.
+
+    Every reader looks in ``memory/<name>/``, and the startup migration is
+    the only thing that puts a pre-layout file there. Its map was a second
+    copy that had fallen three entries behind the rename path's -- the
+    dotted database and both archive files -- so those characters kept a
+    history nothing could reach.
+
+    Driven off the DECODER's patterns rather than the migration map, so a
+    name the decoder recognises but the migration cannot move fails here.
+    Each runs in its own root because two of the patterns share a
+    destination. The unconfigured arm is the one that used to be skipped.
+    """
+    import memory as memory_pkg
+    from memory import (
+        _LEGACY_ROOT_ENTRY_PATTERNS,
+        _legacy_root_entry_owner as legacy_root_entry_owner,
+    )
+
+    # Directories are not decoded at all -- see
+    # ``test_the_migration_never_moves_a_directory`` -- so the pattern
+    # table is already files only.
+    file_patterns = list(_LEGACY_ROOT_ENTRY_PATTERNS)
+    assert file_patterns, "no selectable file patterns -- the test is inert"
+
+    for index, pattern in enumerate(file_patterns):
+        root = tmp_path / f"root{index}"
+        root.mkdir()
+        legacy = root / pattern.replace("{name}", "Carol")
+        legacy.write_text("legacy", encoding="utf-8")
+
+        assert legacy_root_entry_owner(legacy.name) == "Carol", (
+            f"the selector does not decode {legacy.name} -- this pattern is "
+            "not actually offerable, so the loop is testing the wrong thing"
+        )
+
+        # EMPTY names: an owner absent from characters.json is exactly the
+        # case the migration used to skip, leaving the file flat forever.
+        memory_pkg.migrate_to_character_dirs(str(root), [])
+
+        target = memory_pkg._MIGRATION_MAP.get(pattern)
+        assert target is not None, (
+            f"{pattern} is offered as Carol's history but the startup "
+            "migration has no rule for it"
+        )
+        moved = root / "Carol" / target
+        assert moved.exists(), f"{pattern} was offered but never migrated"
+        assert not legacy.exists(), f"{pattern} was copied, not moved"
+
+
+@pytest.mark.unit
+def test_a_rename_fences_the_target_against_its_deleted_identity(tmp_path):
+    """A previously deleted target stays fenced until the rename publishes.
+
+    The helper used to EVICT the target as its first act, which lifts the
+    retirement left by an earlier delete. Anything still holding that name
+    -- an in-flight proactive turn, a session bound to it before the delete
+    -- was then free to write for the duration of the move, and both
+    outcomes were bad. Its flush creates memory/<target>/, so
+    _merge_directories hits its colliding-child pre-flight and raises,
+    aborting the rename and stranding an orphan directory; or it stages
+    first and flushes after the move, and since staging copies the WHOLE
+    payload rather than a delta, the merged history is replaced by that one
+    record.
+
+    Retiring instead holds the name shut for the window -- a retired name
+    never creates a directory -- and the lift moves to the end, where the
+    rename has actually committed.
+
+    The lift has to be the EVICTING one. Publication drops the cache, and
+    that is what makes the next write re-read the merged file instead of
+    flushing whatever was staged during the window over the top of it.
+    """
+    import json
+
+    import memory.anti_repeat_effects as effects_module
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+
+    def detected(path):
+        if not path.exists():
+            return 0
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return sum(
+            bucket["counters"]["detected"]
+            for bucket in payload["daily_buckets"].values()
+        )
+
+    def days(path):
+        """Which day buckets are on disk -- the IDENTITY of the content.
+
+        Counting alone cannot tell the merged history from the same number
+        of late writes replacing it: staging copies the whole payload, so a
+        replacement can carry an identical entry count. The source records
+        and the injected ones are deliberately a day apart.
+        """
+        if not path.exists():
+            return set()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return set(payload["daily_buckets"])
+
+    with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
+        # The fixture hands the stores a SimpleNamespace carrying only
+        # memory_dir, while the write path reads app_docs_dir -- and the
+        # store swallows the AttributeError, so nothing reaches disk and
+        # every assertion below would pass over a file that was never
+        # written. Rebind to the real config manager, and prove it took.
+        for sidecar in (store, corpus, greeting):
+            sidecar._config_manager = cm
+
+        decision = effects_module.AntiRepeatDecision(
+            source="proactive",
+            reasons=("bm25",),
+            action="block",
+            outcome="blocked_initial",
+        )
+
+        (memory_root / "Source").mkdir(parents=True, exist_ok=True)
+        for tick in range(4):
+            store.record_decision(
+                "Source", decision, now=1_700_000_000.0 + tick * 60
+            )
+        source_file = memory_root / "Source" / "anti_repeat_effects.json"
+        assert detected(source_file) == 4, (
+            "the source history never reached disk, so this test would be "
+            "asserting over a file that does not exist"
+        )
+
+        # The target name was deleted earlier, so it is retired and has no
+        # directory of its own.
+        character_memory.retire_character_runtime_caches("Target")
+        assert not (memory_root / "Target").exists()
+
+        # A turn belonging to the DELETED target identity is still running
+        # and records inside the window -- after the lifecycle calls, before
+        # the move.
+        real_merge = character_memory._merge_directories
+        fired = []
+
+        def _record_inside_the_window(source_dir, target_dir):
+            # ONCE, and before any root has been merged. There are two
+            # memory roots, so this hook runs twice; letting it write on the
+            # second pass would be testing something else entirely, because
+            # by then the first merge has created the directory and a
+            # retired name is allowed to write into one that exists. This
+            # test pins the window BEFORE the directory exists, which is the
+            # half retirement can cover on its own; the pass after it is
+            # what the write fence covers, and
+            # ``test_the_rename_fence_covers_the_whole_merge`` pins that.
+            if not fired:
+                fired.append(True)
+                store.record_decision(
+                    "Target", decision, now=1_700_100_000.0
+                )
+            return real_merge(source_dir, target_dir)
+
+        with patch.object(
+            character_memory, "_merge_directories", _record_inside_the_window
+        ):
+            result = character_memory.rename_character_memory_storage(
+                cm, "Source", "Target",
+            )
+
+        assert fired, "the in-window write never happened"
+        assert result["exists_after"]
+        target_file = memory_root / "Target" / "anti_repeat_effects.json"
+        assert detected(target_file) == 4, (
+            "the renamed character lost its merged history to a write from "
+            "the identity that used to own the name"
+        )
+        assert days(target_file) == {"2023-11-14"}, (
+            "the entry COUNT survived but the content did not -- a whole-"
+            "payload write replaced the merged history with its own"
+        )
+
+        # The dual, so the fix cannot pass by stranding the target retired:
+        # publication lifts it, and the next write appends to the merged
+        # file rather than replacing it.
+        assert "Target" not in store._retired
+        store.record_decision("Target", decision, now=1_700_200_000.0)
+        assert detected(target_file) == 5, (
+            "after publication the target either could not write at all, or "
+            "flushed a stale cache over the merged file"
+        )
+        assert days(target_file) == {"2023-11-14", "2023-11-17"}, (
+            "the post-publication write replaced the merged history rather "
+            "than adding to it"
+        )
+
+
+@pytest.mark.unit
+def test_the_rename_fence_covers_the_whole_merge(tmp_path):
+    """Retirement stops short of the moment the merge creates the directory.
+
+    A retired name may not CREATE its directory but may write into one that
+    exists, so the first merge opens the door for everything after it: a
+    write from the identity that used to own the name lands on the history
+    just moved in, and staging copies the whole payload, so it replaces it.
+    Measured before the fence: four merged entries became two.
+
+    The injected write therefore fires on EVERY merge call, not just the
+    first -- there are two memory roots, and the second one is the pass that
+    used to get through.
+    """
+    import json
+
+    import memory.anti_repeat_effects as effects_module
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+
+    def detected(path):
+        if not path.exists():
+            return 0
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return sum(
+            bucket["counters"]["detected"]
+            for bucket in payload["daily_buckets"].values()
+        )
+
+    def days(path):
+        """Which day buckets are on disk -- the IDENTITY of the content.
+
+        Counting alone cannot tell the merged history from the same number
+        of late writes replacing it: staging copies the whole payload, so a
+        replacement can carry an identical entry count. The source records
+        and the injected ones are deliberately a day apart.
+        """
+        if not path.exists():
+            return set()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return set(payload["daily_buckets"])
+
+    with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
+        for sidecar in (store, corpus, greeting):
+            sidecar._config_manager = cm
+
+        decision = effects_module.AntiRepeatDecision(
+            source="proactive",
+            reasons=("bm25",),
+            action="block",
+            outcome="blocked_initial",
+        )
+        (memory_root / "Source").mkdir(parents=True, exist_ok=True)
+        for tick in range(4):
+            store.record_decision(
+                "Source", decision, now=1_700_000_000.0 + tick * 60
+            )
+        assert detected(memory_root / "Source" / "anti_repeat_effects.json") == 4
+
+        character_memory.retire_character_runtime_caches("Target")
+
+        real_merge = character_memory._merge_directories
+        calls = []
+
+        def _record_on_every_pass(source_dir, target_dir):
+            calls.append(True)
+            store.record_decision(
+                "Target", decision, now=1_700_100_000.0 + len(calls)
+            )
+            return real_merge(source_dir, target_dir)
+
+        with patch.object(
+            character_memory, "_merge_directories", _record_on_every_pass
+        ):
+            character_memory.rename_character_memory_storage(
+                cm, "Source", "Target",
+            )
+
+        assert len(calls) > 1, (
+            "only one merge pass ran, so the pass this test exists for "
+            "never happened"
+        )
+        target_file = memory_root / "Target" / "anti_repeat_effects.json"
+        assert detected(target_file) == 4, (
+            "a write after the merge created the directory replaced the "
+            "history that had just been moved into it"
+        )
+        assert days(target_file) == {"2023-11-14"}, (
+            "the entry COUNT survived but the content did not -- a whole-"
+            "payload write replaced the merged history with its own"
+        )
+
+        # And the fence is down afterwards, so the character still persists.
+        store.record_decision("Target", decision, now=1_700_200_000.0)
+        assert detected(target_file) == 5
+        assert days(target_file) == {"2023-11-14", "2023-11-17"}, (
+            "the post-publication write replaced the merged history rather "
+            "than adding to it"
+        )
+
+
+@pytest.mark.unit
+def test_a_failed_rename_releases_the_write_fence(tmp_path):
+    """A fence that survived a raise would silence the character for good.
+
+    It is process-wide and has no expiry, so a leak is permanent: every
+    later sidecar write for that name returns None and the character stops
+    persisting, with nothing on disk to show why. That is worse than the
+    write the fence exists to stop, which is why the release is in a
+    ``finally`` rather than after the last statement of the try.
+
+    Asserted through behaviour and not only the flag: the name is retired by
+    the rollback, so this lifts that the way a later publication would and
+    then checks a real write lands.
+    """
+    import json
+
+    import memory.anti_repeat_effects as effects_module
+    import utils.character_memory as character_memory
+    from utils.character_memory import is_character_write_fenced
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+
+    with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
+        for sidecar in (store, corpus, greeting):
+            sidecar._config_manager = cm
+        (memory_root / "Source").mkdir(parents=True, exist_ok=True)
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("cross-device move")
+
+        with patch.object(character_memory, "_merge_directories", _boom):
+            with pytest.raises(OSError):
+                character_memory.rename_character_memory_storage(
+                    cm, "Source", "Target",
+                )
+
+        assert not is_character_write_fenced("Target"), (
+            "the fence survived the failure and would silence this name for "
+            "the life of the process"
+        )
+
+        # Behaviour, not just the flag: lift the rollback's retirement the
+        # way a later publication would, and a real write has to land.
+        character_memory.evict_character_runtime_caches("Target")
+        decision = effects_module.AntiRepeatDecision(
+            source="proactive",
+            reasons=("bm25",),
+            action="block",
+            outcome="blocked_initial",
+        )
+        store.record_decision("Target", decision, now=1_700_300_000.0)
+        target_file = memory_root / "Target" / "anti_repeat_effects.json"
+        assert target_file.exists(), (
+            "the character could not persist after a failed rename"
+        )
+        payload = json.loads(target_file.read_text(encoding="utf-8"))
+        assert sum(
+            bucket["counters"]["detected"]
+            for bucket in payload["daily_buckets"].values()
+        ) == 1
+
+
+@pytest.mark.unit
+def test_a_late_source_write_does_not_leave_the_old_directory_behind(tmp_path):
+    """The source needs the fence for the same reason the target does.
+
+    Retirement refuses to CREATE a directory but permits writing into one
+    that exists -- and the source directory exists for the whole merge. On
+    the child-by-child path a write for the old name can recreate a file
+    after the children are moved and before ``_merge_directories`` rmdir()s
+    the source. That rmdir swallows its failure, so the rename reports
+    success while memory/<old_name>/ survives with content and the
+    renamed-away identity still looks like it has memory.
+
+    The target must already exist, or the merge takes the whole-directory
+    move instead and never reaches the rmdir at all.
+    """
+    import memory.anti_repeat_effects as effects_module
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+
+    with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
+        for sidecar in (store, corpus, greeting):
+            sidecar._config_manager = cm
+
+        decision = effects_module.AntiRepeatDecision(
+            source="proactive",
+            reasons=("bm25",),
+            action="block",
+            outcome="blocked_initial",
+        )
+
+        # The source carries one file, and the TARGET already exists with a
+        # non-colliding one, which is what forces the child-by-child path.
+        (memory_root / "Source").mkdir(parents=True)
+        (memory_root / "Source" / "facts.json").write_text(
+            "[1]", encoding="utf-8"
+        )
+        (memory_root / "Target").mkdir()
+        (memory_root / "Target" / "persona.json").write_text(
+            "[2]", encoding="utf-8"
+        )
+
+        real_move = character_memory._move_path
+        fired = []
+
+        def _write_for_the_old_name_after_the_move(source_path, target_path):
+            moved = real_move(source_path, target_path)
+            if not fired:
+                fired.append(True)
+                # The old identity is still in flight and records now --
+                # after its children moved, before the rmdir.
+                store.record_decision(
+                    "Source", decision, now=1_700_000_000.0
+                )
+            return moved
+
+        with patch.object(
+            character_memory, "_move_path", _write_for_the_old_name_after_the_move
+        ):
+            character_memory.rename_character_memory_storage(
+                cm, "Source", "Target",
+            )
+
+        assert fired, "the in-flight write never happened"
+        assert not (memory_root / "Source").exists(), (
+            "the renamed-away identity kept a directory, so it still looks "
+            "like it has memory: %s"
+            % sorted(
+                q.name for q in (memory_root / "Source").iterdir()
+            )
+        )
+        # The dual: the rename still did its job.
+        assert (memory_root / "Target" / "facts.json").read_text(
+            encoding="utf-8"
+        ) == "[1]"
+        assert (memory_root / "Target" / "persona.json").read_text(
+            encoding="utf-8"
+        ) == "[2]"
+
+        # The fence has to come DOWN for the source too. After the rename it
+        # is retired, so its writes are refused for that reason alone and a
+        # leak hides -- until the name is rescued back, when a fence still up
+        # would silence it for the life of the process.
+        from utils.character_memory import is_character_write_fenced
+
+        assert not is_character_write_fenced("Source")
+        character_memory.evict_character_runtime_caches("Source")
+        (memory_root / "Source").mkdir(exist_ok=True)
+        store.record_decision("Source", decision, now=1_700_100_000.0)
+        assert (
+            memory_root / "Source" / "anti_repeat_effects.json"
+        ).exists(), (
+            "a rescued source name could not persist -- the rename left its "
+            "write fence up"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restored_names", [("Restored",), ()],
+                         ids=["retired-something", "retired-nothing"])
+async def test_a_stale_flush_cannot_overwrite_what_the_rollback_just_restored(
+    tmp_path, restored_names,
+):
+    """Retirement does not cover the window the restore opens.
+
+    A retired name may write into a directory that already exists -- it only
+    refuses to CREATE one. The rollback recreates memory/<name>/ while the name
+    is still retired, and the ``save_characters`` after it is a real await, so a
+    snapshot staged before the delete lands on the freshly restored file and
+    replaces the whole history with the single decision it was holding.
+
+    The flush is invoked through ``_flush_snapshot`` directly, which is where
+    the detached path (``flush_staged_detached`` -> ``aflush_staged`` ->
+    ``to_thread``) ends up, so the ordering is deterministic rather than racing
+    a worker thread.
+
+    Both arms of the parametrization matter. "retired-nothing" is what
+    every caller passes when the storage op raised before retiring
+    anything -- the commonest way this rollback is reached -- and scoping
+    the fence to the lifecycle tuples made it inert on exactly that path.
+    """
+    import shutil
+
+    import memory.anti_repeat_effects as effects_module
+    from main_routers.characters_router import crud
+    from utils.character_memory import (
+        is_character_write_fenced,
+        retire_character_runtime_caches,
+    )
+
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    memory_root = Path(cm.memory_dir)
+
+    with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
+        for sidecar_store in (store, corpus, greeting):
+            sidecar_store._config_manager = cm
+
+        decision = effects_module.AntiRepeatDecision(
+            source="proactive",
+            reasons=("bm25",),
+            action="block",
+            outcome="blocked_initial",
+        )
+        sidecar = memory_root / "Restored" / effects_module._SIDECAR_FILENAME
+
+        (memory_root / "Restored").mkdir(parents=True)
+        for tick in range(3):
+            store.record_decision(
+                "Restored", decision, now=1_700_000_000.0 + tick,
+            )
+        restored_bytes = sidecar.read_bytes()
+
+        # The delete, in the order delete_character_memory_storage uses.
+        retire_character_runtime_caches("Restored")
+        shutil.rmtree(memory_root / "Restored")
+
+        # A turn already in flight stages now. The cache was dropped and there
+        # is no file to read, so this snapshot carries ONE decision -- which is
+        # what makes it destructive rather than merely redundant.
+        staged = store.stage_decision(
+            "Restored", decision, now=1_700_000_009.0,
+        )
+        assert staged is not None
+
+        def _restore(_records):
+            (memory_root / "Restored").mkdir(parents=True)
+            sidecar.write_bytes(restored_bytes)
+
+        flushed = []
+
+        def _save_characters(_characters, **_kwargs):
+            # Inside the await, after the restore and before the lifecycle
+            # calls -- exactly where a detached flush lands.
+            store._flush_snapshot(*staged)
+            flushed.append(True)
+
+        with (
+            patch.object(cm, "save_characters", _save_characters),
+            patch.object(crud, "_restore_snapshot_paths", _restore),
+            patch.object(
+                crud, "get_initialize_character_data", return_value=AsyncMock()
+            ),
+            patch.object(
+                crud, "notify_memory_server_reload", AsyncMock(return_value=True)
+            ),
+        ):
+            errors = await crud._rollback_character_operation(
+                cm,
+                characters_snapshot={"CAT": {"Restored": {}}},
+                memory_snapshot_records=[],
+                restored_live_character_names=restored_names,
+                fenced_character_names=("Restored",),
+                reason="restore then lifecycle",
+            )
+
+        assert flushed, "the stale flush never ran, so this proves nothing"
+        assert sidecar.read_bytes() == restored_bytes, (
+            "a snapshot staged before the delete overwrote the restored history"
+        )
+        # The rollback still did its job, and did not report the refusal as a
+        # failure of its own.
+        assert errors == "", errors
+
+        # The fence comes down again, so persistence resumes right after.
+        # Without this the guard would also pass if the fence LEAKED, which the
+        # fence's own docstring calls worse than the write it prevents.
+        assert not is_character_write_fenced("Restored")
+        store.record_decision("Restored", decision, now=1_700_000_020.0)
+        assert sidecar.read_bytes() != restored_bytes, (
+            "writes never resumed after the rollback -- the fence leaked"
+        )

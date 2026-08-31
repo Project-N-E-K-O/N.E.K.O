@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Awaitable, Callable, Dict, Optional, Tuple
+from weakref import WeakValueDictionary
 
 
 # Tuple key (not a `f"{lanlan}:{game_type}"` string):
@@ -68,17 +69,20 @@ def _route_state_key(lanlan_name: str, game_type: str) -> _RouteStateKey:
 # per ``(lanlan, game_type)`` slot in this process, regardless of
 # session_id churn. We deliberately keep entries around even after the
 # state slot is popped: a fresh ``/route/start`` racing against the tail of
-# a sweep finalize must serialize against that same instance, and the
-# memory cost is negligible (one ``asyncio.Lock`` per character × game).
-_route_state_locks: Dict[_RouteStateKey, "asyncio.Lock"] = {}
+# a sweep finalize must serialize against that same instance.  Weak values
+# preserve that guarantee while any owner/waiter still holds the lock, then
+# release idle historical keys once no coroutine references the instance.
+_route_state_locks: WeakValueDictionary[_RouteStateKey, "asyncio.Lock"] = (
+    WeakValueDictionary()
+)
 
 
 # Per-``lanlan_name`` supersede lock registry.
 #
 # OUTER lock (acquired BEFORE ``_route_state_locks``) for the
-# ``/route/start`` flow that scans ``_game_route_states`` for "any active
-# route for this lanlan_name regardless of game_type" and finalizes them
-# before activating a new one. Without this outer lock, two concurrent
+# lifecycle flows that scan or finalize a character's active route across
+# game types (start supersede, explicit end, and heartbeat expiry). Without
+# this outer lock, two concurrent
 # ``/route/start`` calls for the SAME ``lanlan_name`` but DIFFERENT
 # ``game_type`` acquire DIFFERENT per-(lanlan, game_type) locks, so each
 # scan misses the other's pending activation and both end up activating
@@ -92,7 +96,9 @@ _route_state_locks: Dict[_RouteStateKey, "asyncio.Lock"] = {}
 #
 # A code path that already holds an INNER lock must NOT then try to
 # acquire the OUTER lock for the same lanlan_name.
-_route_supersede_locks: Dict[str, "asyncio.Lock"] = {}
+_route_supersede_locks: WeakValueDictionary[str, "asyncio.Lock"] = (
+    WeakValueDictionary()
+)
 
 
 def _get_route_lock(lanlan_name: str, game_type: str) -> "asyncio.Lock":
@@ -152,13 +158,27 @@ def get_active_game_route_identity(
 ) -> tuple[str, str] | None:
     """Return the concrete active ``(game_type, session_id)`` identity."""
 
+    identity = get_active_game_route_generation_identity(lanlan_name)
+    return identity[:2] if identity is not None else None
+
+
+def get_active_game_route_generation_identity(
+    lanlan_name: str,
+) -> tuple[str, str, str] | None:
+    """Return the active route identity including its optional SDK generation."""
+
     target_lanlan = str(lanlan_name or "")
     for (key_lanlan, key_game), state in _game_route_states.items():
         if key_lanlan != target_lanlan or not state.get("game_route_active"):
             continue
         session_id = str(state.get("session_id") or "").strip()
-        if session_id:
-            return key_game, session_id
+        if not session_id:
+            continue
+        return (
+            key_game,
+            session_id,
+            str(state.get("_sdk_route_instance_id") or "").strip(),
+        )
     return None
 
 
@@ -185,6 +205,7 @@ async def route_external_voice_transcript(
     request_id: str | None = None,
     game_type: str | None = None,
     session_id: str | None = None,
+    sdk_route_instance_id: str | None = None,
 ) -> bool:
     """Dispatch a voice transcript into the active game route, if any.
 
@@ -201,4 +222,5 @@ async def route_external_voice_transcript(
         request_id=request_id,
         game_type=game_type,
         session_id=session_id,
+        sdk_route_instance_id=sdk_route_instance_id,
     ))

@@ -15,6 +15,7 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_DUPLICATE,
 )
 from main_logic.proactive_chat.delivery import _commit_proactive_delivery
+from main_logic.proactive_chat import generation as generation_module
 from main_logic.proactive_chat.generation import (
     _guard_phase2_output,
     _merge_regen_avoid_terms,
@@ -719,9 +720,11 @@ async def test_regenerated_fresh_music_recomputes_text_exemption(monkeypatch):
         "get_anti_repeat_corpus",
         lambda: corpus,
     )
-    literal_guard = MagicMock(return_value=(False, 0.0))
+    literal_guard = MagicMock(
+        return_value=generation_module.ProactiveSimilarityMatch()
+    )
     monkeypatch.setattr(
-        "main_logic.proactive_chat.generation._is_similar_to_recent_proactive_chat",
+        "main_logic.proactive_chat.generation._find_similar_recent_proactive_chat",
         literal_guard,
     )
 
@@ -868,9 +871,11 @@ async def test_initial_music_without_material_keeps_text_rechecks(monkeypatch):
         "get_anti_repeat_corpus",
         lambda: corpus,
     )
-    literal_guard = MagicMock(return_value=(False, 0.0))
+    literal_guard = MagicMock(
+        return_value=generation_module.ProactiveSimilarityMatch()
+    )
     monkeypatch.setattr(
-        "main_logic.proactive_chat.generation._is_similar_to_recent_proactive_chat",
+        "main_logic.proactive_chat.generation._find_similar_recent_proactive_chat",
         literal_guard,
     )
     mgr = SimpleNamespace(
@@ -1229,3 +1234,388 @@ async def test_rejected_mini_game_button_response_records_user_engagement(
         apply_choice.assert_called_once()
     else:
         apply_choice.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_regen_literal_block_records_its_own_reason_and_fragment(monkeypatch):
+    """A literal-similarity rejection of the REGENERATED draft must say so.
+
+    The recorder closure carries the initial draft's reasons and signature.
+    Reusing them for this outcome attributed a literal block to
+    BM25/unanswered-repeat and pointed the per-candidate handling record at the
+    initial draft's fragment.
+    """
+    captured = []
+    monkeypatch.setattr(
+        generation_module,
+        "record_anti_repeat_decision",
+        lambda name, decision: captured.append(decision),
+    )
+
+    corpus = MagicMock()
+    corpus.apreload = AsyncMock()
+    corpus.score_unanswered_proactive_draft.return_value = (
+        anti_repeat_module.UnansweredProactiveRepeatSignal(triggered=False)
+    )
+    # Over ANTI_REPEAT_REGEN_THRESHOLD on the initial draft -> take the regen
+    # path with reasons == ("bm25",); comfortably under the drop threshold
+    # afterwards so the literal guard is what rejects the rewrite.
+    corpus.score_draft.side_effect = [(12.0, {"旧话题": 12.0}), (0.0, {})]
+    monkeypatch.setattr(
+        anti_repeat_module, "get_anti_repeat_corpus", lambda: corpus
+    )
+
+    initial = "还是来聊聊这个一直重复的旧话题吧。"
+    regenerated = "[CHAT] 换个说法，但其实还是同一个旧梗。"
+
+    def _match(_name, message):
+        if message.strip().startswith("还是来聊聊"):
+            return generation_module.ProactiveSimilarityMatch()
+        return generation_module.ProactiveSimilarityMatch(
+            is_duplicate=True,
+            best_score=0.97,
+            matched_text="以前说过的那句话",
+            common_fragment="还是同一个旧梗",
+        )
+
+    monkeypatch.setattr(
+        "main_logic.proactive_chat.generation._find_similar_recent_proactive_chat",
+        _match,
+    )
+
+    regen_llm = MagicMock()
+    regen_llm.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(content=regenerated)
+    )
+    regen_llm.__aenter__ = AsyncMock(return_value=regen_llm)
+    regen_llm.__aexit__ = AsyncMock(return_value=False)
+    make_llm = AsyncMock(return_value=regen_llm)
+
+    mgr = SimpleNamespace(
+        state=_NeverPreemptedState(),
+        current_speech_id="sid",
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+        proactive_engagement_observation_started_at=100.0,
+        handle_new_message=AsyncMock(),
+    )
+
+    await _guard_phase2_output(
+        mgr=mgr,
+        proactive_sid="sid",
+        lanlan_name="regen-literal-attribution-test",
+        response_text=initial,
+        full_text=initial,
+        source_tag="CHAT",
+        active_channels=["chat"],
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        meme_content=None,
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=True,
+        make_llm=make_llm,
+        messages=[
+            SystemMessage(content="system"),
+            HumanMessage(content="begin"),
+        ],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    literal = [
+        decision
+        for decision in captured
+        if decision.outcome == "blocked_after_regen_literal"
+    ]
+    assert len(literal) == 1
+    decision = literal[0]
+    decision.validate()
+    assert "literal_similarity" in decision.reasons
+    assert "bm25" in decision.reasons
+    # The fragment must come from the REGENERATED draft, not the initial one.
+    assert decision.signature is not None
+    assert decision.signature.normalized_phrase == "还是同一个旧梗"
+
+
+@pytest.mark.asyncio
+async def test_regen_unanswered_block_records_its_own_reason_and_fragment(monkeypatch):
+    """Initial trips BM25, the REWRITE trips unanswered-repeat.
+
+    The recorder closure carries the initial draft's reasons and signature, so
+    without an override this outcome was counted as BM25 and pointed at the
+    initial fragment rather than the phrase that actually blocked delivery.
+    """
+    captured = []
+    monkeypatch.setattr(
+        generation_module,
+        "record_anti_repeat_decision",
+        lambda name, decision: captured.append(decision),
+    )
+
+    corpus = MagicMock()
+    corpus.apreload = AsyncMock()
+    corpus.score_unanswered_proactive_draft.side_effect = [
+        anti_repeat_module.UnansweredProactiveRepeatSignal(triggered=False),
+        anti_repeat_module.UnansweredProactiveRepeatSignal(
+            triggered=True,
+            match_count=2,
+            considered_count=8,
+            best_similarity=0.9,
+            repeated_terms=("改写后的老梗",),
+        ),
+    ]
+    corpus.score_draft.side_effect = [(12.0, {"旧话题": 12.0}), (0.0, {})]
+    monkeypatch.setattr(
+        anti_repeat_module, "get_anti_repeat_corpus", lambda: corpus
+    )
+    monkeypatch.setattr(
+        "main_logic.proactive_chat.generation._find_similar_recent_proactive_chat",
+        lambda _name, _message: generation_module.ProactiveSimilarityMatch(),
+    )
+
+    regen_llm = MagicMock()
+    regen_llm.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(content="[CHAT] 又提到了改写后的老梗这件事。")
+    )
+    regen_llm.__aenter__ = AsyncMock(return_value=regen_llm)
+    regen_llm.__aexit__ = AsyncMock(return_value=False)
+
+    mgr = SimpleNamespace(
+        state=_NeverPreemptedState(),
+        current_speech_id="sid",
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+        proactive_engagement_observation_started_at=100.0,
+        handle_new_message=AsyncMock(),
+    )
+
+    await _guard_phase2_output(
+        mgr=mgr,
+        proactive_sid="sid",
+        lanlan_name="regen-unanswered-attribution-test",
+        response_text="还是来聊聊这个一直重复的旧话题吧。",
+        full_text="还是来聊聊这个一直重复的旧话题吧。",
+        source_tag="CHAT",
+        active_channels=["chat"],
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        meme_content=None,
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=True,
+        make_llm=AsyncMock(return_value=regen_llm),
+        messages=[SystemMessage(content="system"), HumanMessage(content="begin")],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    blocked = [
+        decision
+        for decision in captured
+        if decision.outcome == "blocked_after_regen_unanswered"
+    ]
+    assert len(blocked) == 1
+    decision = blocked[0]
+    decision.validate()
+    assert "unanswered_repeat" in decision.reasons
+    assert "bm25" in decision.reasons
+    assert decision.signature is not None
+    assert decision.signature.normalized_phrase == "改写后的老梗"
+
+
+@pytest.mark.asyncio
+async def test_break_reminder_regen_block_records_the_rewrite_phrase(monkeypatch):
+    """The rewrite tripped the detector on ITS OWN phrase, not the initial one.
+
+    `record_break_repeat_effect` closes over the initial draft's signature, so
+    the suppression was attributed to the phrase that triggered the rewrite
+    rather than the one that blocked it.
+    """
+    from main_logic.proactive_chat import break_reminders
+
+    captured = []
+    monkeypatch.setattr(
+        break_reminders,
+        "record_anti_repeat_decision",
+        lambda name, decision: captured.append(decision),
+    )
+
+    corpus = MagicMock()
+    corpus.apreload = AsyncMock()
+    corpus.score_unanswered_proactive_draft.side_effect = [
+        anti_repeat_module.UnansweredProactiveRepeatSignal(
+            triggered=True,
+            match_count=2,
+            considered_count=2,
+            best_similarity=0.92,
+            repeated_terms=("记得起来喝水",),
+        ),
+        anti_repeat_module.UnansweredProactiveRepeatSignal(
+            triggered=True,
+            match_count=2,
+            considered_count=2,
+            best_similarity=0.91,
+            repeated_terms=("让眼睛放松",),
+        ),
+    ]
+    monkeypatch.setattr(break_reminders, "get_anti_repeat_corpus", lambda: corpus)
+    monkeypatch.setattr(break_reminders, "_record_proactive_chat", MagicMock())
+    monkeypatch.setattr(
+        break_reminders,
+        "create_chat_llm_async",
+        AsyncMock(
+            side_effect=[
+                _FakeStreamingLlm("记得起来喝水休息一下。"),
+                _FakeRegenLlm("先望望远处，让眼睛放松一会儿吧。"),
+            ]
+        ),
+    )
+
+    mgr = SimpleNamespace(
+        prepare_proactive_delivery=AsyncMock(return_value=True),
+        current_speech_id="break-sid",
+        state=SimpleNamespace(
+            fire=AsyncMock(), is_proactive_preempted=MagicMock(return_value=False)
+        ),
+        feed_tts_chunk=AsyncMock(return_value=True),
+        finish_proactive_delivery=AsyncMock(return_value=True),
+        handle_new_message=AsyncMock(),
+        proactive_engagement_observation_started_at=100.0,
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+    )
+
+    result = await break_reminders._deliver_break_reminder_via_llm(
+        lanlan_name="Neko",
+        mgr=mgr,
+        config_manager=SimpleNamespace(
+            aget_model_api_config=AsyncMock(
+                return_value={
+                    "model": "fake-model",
+                    "base_url": "http://127.0.0.1:9/v1",
+                    "api_key": "fake-key",
+                    "provider_type": "openai_compatible",
+                }
+            )
+        ),
+        system_prompt="Generate one concise water-break reminder.",
+        channel="work_break",
+        lang="zh",
+    )
+
+    assert result.repeat_suppressed is True
+    suppressed = [
+        decision
+        for decision in captured
+        if decision.outcome == "break_reminder_suppressed"
+    ]
+    assert len(suppressed) == 1
+    decision = suppressed[0]
+    decision.validate()
+    assert decision.signature is not None
+    # The REWRITE's phrase, not the initial draft's.
+    assert decision.signature.normalized_phrase == "让眼睛放松"
+
+
+@pytest.mark.asyncio
+async def test_regen_bm25_block_records_its_own_reason_and_fragment(monkeypatch):
+    """The rewrite was blocked by scoring the REWRITE, so say so.
+
+    This branch was the one my earlier sweep missed: it counted the three
+    `record_anti_repeat_decision` call sites instead of the seven outcome
+    branches routed through the two recorder closures.
+    """
+    captured = []
+    monkeypatch.setattr(
+        generation_module,
+        "record_anti_repeat_decision",
+        lambda name, decision: captured.append(decision),
+    )
+
+    corpus = MagicMock()
+    corpus.apreload = AsyncMock()
+    # Enter the rewrite via unanswered-repeat only, so `repeat_reasons` is
+    # ("unanswered_repeat",) and a leaked initial attribution is unmistakable.
+    corpus.score_unanswered_proactive_draft.side_effect = [
+        anti_repeat_module.UnansweredProactiveRepeatSignal(
+            triggered=True,
+            match_count=2,
+            considered_count=8,
+            best_similarity=0.9,
+            repeated_terms=("初稿的老梗",),
+        ),
+        anti_repeat_module.UnansweredProactiveRepeatSignal(triggered=False),
+    ]
+    corpus.score_draft.side_effect = [(0.0, {}), (20.0, {"改写后的新梗": 20.0})]
+    monkeypatch.setattr(
+        anti_repeat_module, "get_anti_repeat_corpus", lambda: corpus
+    )
+    monkeypatch.setattr(
+        "main_logic.proactive_chat.generation._find_similar_recent_proactive_chat",
+        lambda _name, _message: generation_module.ProactiveSimilarityMatch(),
+    )
+
+    regen_llm = MagicMock()
+    regen_llm.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(content="[CHAT] 又说起改写后的新梗这件事。")
+    )
+    regen_llm.__aenter__ = AsyncMock(return_value=regen_llm)
+    regen_llm.__aexit__ = AsyncMock(return_value=False)
+
+    mgr = SimpleNamespace(
+        state=_NeverPreemptedState(),
+        current_speech_id="sid",
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+        proactive_engagement_observation_started_at=100.0,
+        handle_new_message=AsyncMock(),
+    )
+
+    await _guard_phase2_output(
+        mgr=mgr,
+        proactive_sid="sid",
+        lanlan_name="regen-bm25-attribution-test",
+        response_text="还是来聊聊初稿的老梗吧。",
+        full_text="还是来聊聊初稿的老梗吧。",
+        source_tag="CHAT",
+        active_channels=["chat"],
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        meme_content=None,
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=True,
+        make_llm=AsyncMock(return_value=regen_llm),
+        messages=[SystemMessage(content="system"), HumanMessage(content="begin")],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    blocked = [
+        decision
+        for decision in captured
+        if decision.outcome == "blocked_after_regen_bm25"
+    ]
+    assert len(blocked) == 1
+    decision = blocked[0]
+    decision.validate()
+    assert "bm25" in decision.reasons
+    assert decision.signature is not None
+    # The REWRITE's phrase, not the initial draft's.
+    assert decision.signature.normalized_phrase == "改写后的新梗"

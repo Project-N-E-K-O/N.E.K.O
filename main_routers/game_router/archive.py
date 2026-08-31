@@ -150,6 +150,7 @@ def _build_game_archive(state: dict) -> dict:
         ],
         "game_context_organizer": organizer,
         "game_context_degraded": organizer.get("degraded") is True,
+        "sdk_memory_submissions": list(state.get("_sdk_memory_submissions") or [])[-16:],
         "preGameContext": state.get("preGameContext") if isinstance(state.get("preGameContext"), dict) else {},
         "pre_game_context_source": str(state.get("pre_game_context_source") or ""),
         "pre_game_context_error": str(state.get("pre_game_context_error") or ""),
@@ -387,6 +388,56 @@ def _normalize_game_archive_memory_highlights(value: Any) -> dict:
     }
 
 
+def _sdk_memory_submission_fallback_highlights(archive: dict) -> dict:
+    """Convert accepted SDK submissions into a compact deterministic fallback."""
+    submissions = archive.get("sdk_memory_submissions")
+    if not isinstance(submissions, list):
+        submissions = []
+
+    def compact(value: Any, *, max_chars: int) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            text = value
+        else:
+            try:
+                text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            except (TypeError, ValueError):
+                return ""
+        return _normalize_memory_highlight_text(text)[:max_chars]
+
+    summaries: list[str] = []
+    events: list[str] = []
+    latest_state = ""
+    latest_result = ""
+    for submission in reversed(submissions[-16:]):
+        if not isinstance(submission, dict):
+            continue
+        summary = compact(submission.get("summary"), max_chars=220)
+        if summary and summary not in summaries and len(summaries) < 3:
+            summaries.append(summary)
+        if not latest_result:
+            latest_result = compact(submission.get("result"), max_chars=180)
+        if not latest_state:
+            latest_state = compact(submission.get("state"), max_chars=180)
+        raw_events = submission.get("events")
+        if isinstance(raw_events, list):
+            for event in reversed(raw_events[-64:]):
+                event_text = compact(event, max_chars=180)
+                if event_text and event_text not in events and len(events) < 3:
+                    events.append(event_text)
+
+    important_events = list(reversed(events[:2]))
+    if latest_result and latest_result not in important_events:
+        important_events.append(latest_result)
+    return _normalize_game_archive_memory_highlights({
+        "important_records": list(reversed(summaries)),
+        "important_game_events": important_events,
+        "state_carryback": latest_state,
+        "memory_summary": summaries[0] if summaries else "",
+    })
+
+
 def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
     language = _archive_prompt_language(archive)
     labels = get_game_archive_fallback_highlight_labels(language)
@@ -417,12 +468,13 @@ def _fallback_game_archive_memory_highlights(archive: dict) -> dict:
             break
     event_records.reverse()
 
+    sdk_highlights = _sdk_memory_submission_fallback_highlights(archive)
     return {
-        "important_records": records[:3],
-        "important_game_events": event_records[:3],
-        "state_carryback": "",
+        "important_records": (sdk_highlights["important_records"] + records)[:3],
+        "important_game_events": (sdk_highlights["important_game_events"] + event_records)[:3],
+        "state_carryback": sdk_highlights["state_carryback"],
         "postgame_tone": "",
-        "memory_summary": "",
+        "memory_summary": sdk_highlights["memory_summary"],
     }
 
 
@@ -463,6 +515,10 @@ def _build_game_archive_memory_highlight_source(archive: dict) -> str:
             lines.append(labels["grouped_signals"].format(signals=signals_text))
         if context_summary or signals_text:
             lines.append(labels["selection_priority"])
+    sdk_memory_submissions = archive.get("sdk_memory_submissions")
+    if isinstance(sdk_memory_submissions, list) and sdk_memory_submissions:
+        lines.append(labels["sdk_memory_submissions"])
+        lines.append(json.dumps(sdk_memory_submissions[-16:], ensure_ascii=False))
     lines.append(labels["full_dialogues"])
     lines.extend(
         f"- {_dialog_memory_line(item, language)}"
@@ -530,7 +586,7 @@ async def _select_game_archive_memory_highlights(archive: dict) -> dict:
 
 async def _ensure_game_archive_memory_highlights(archive: dict) -> dict:
     if _archive_game_context_degraded(archive):
-        highlights = _normalize_game_archive_memory_highlights({})
+        highlights = _sdk_memory_submission_fallback_highlights(archive)
         highlights["source"] = {"provider": "game_context_organizer", "method": "degraded_minimal_facts"}
         archive["memory_highlights"] = highlights
         return highlights
@@ -610,24 +666,29 @@ def _build_game_archive_memory_summary_text(archive: dict, *, tail_count: int | 
         lines.append(labels["score"].format(score_text=score_text))
     else:
         lines.append(labels["no_score"])
+
+    def append_highlights() -> None:
+        if highlights["important_records"]:
+            lines.append(labels["important_records"])
+            lines.extend(f"- {item}" for item in highlights["important_records"])
+        if highlights["important_game_events"]:
+            lines.append(labels["important_game_events"])
+            lines.extend(f"- {item}" for item in highlights["important_game_events"])
+        if highlights["state_carryback"]:
+            lines.append(labels["state_carryback"].format(value=highlights["state_carryback"]))
+        if highlights["postgame_tone"]:
+            lines.append(labels["postgame_tone"].format(value=highlights["postgame_tone"]))
+        if highlights["memory_summary"]:
+            lines.append(labels["memory_summary"].format(value=highlights["memory_summary"]))
+
     if degraded:
         lines.append(labels["degraded"])
         lines.append(labels["degraded_no_tail"])
         lines.append(labels["degraded_followup"])
+        append_highlights()
         return "\n".join(lines)
 
-    if highlights["important_records"]:
-        lines.append(labels["important_records"])
-        lines.extend(f"- {item}" for item in highlights["important_records"])
-    if highlights["important_game_events"]:
-        lines.append(labels["important_game_events"])
-        lines.extend(f"- {item}" for item in highlights["important_game_events"])
-    if highlights["state_carryback"]:
-        lines.append(labels["state_carryback"].format(value=highlights["state_carryback"]))
-    if highlights["postgame_tone"]:
-        lines.append(labels["postgame_tone"].format(value=highlights["postgame_tone"]))
-    if highlights["memory_summary"]:
-        lines.append(labels["memory_summary"].format(value=highlights["memory_summary"]))
+    append_highlights()
     lines.append(labels["tail_rule"].format(tail_count=normalized_tail_count))
     return "\n".join(lines)
 

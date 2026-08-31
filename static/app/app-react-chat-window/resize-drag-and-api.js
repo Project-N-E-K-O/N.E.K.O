@@ -16,6 +16,11 @@
     const I = window.__appReactChatWindowParts || (window.__appReactChatWindowParts = {});
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
+    function getCurrentIdleChatLifecycleSequence() {
+        var sequence = Number(window.__nekoIdleChatLifecycleSequence);
+        return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : 0;
+    }
+
     function dispatchMinimizedYarnDragPhase(phase, dragState, shell) {
         if (!dragState || !dragState.minimizedYarn || !shell || typeof window.dispatchEvent !== 'function') return;
         var rect = shell.getBoundingClientRect();
@@ -27,6 +32,7 @@
                 source: 'react-chat-window',
                 coordinateSpace: 'viewport',
                 moved: dragState.moved === true,
+                lifecycleSequence: dragState.yarnLifecycleSequence,
                 screenRect: {
                     left: rect.left,
                     top: rect.top,
@@ -60,6 +66,7 @@
             compactSurface: compactSurface,
             moved: false,
             minimizedYarn: !!(I.minimized && !I.isElectronChatWindow()),
+            yarnLifecycleSequence: getCurrentIdleChatLifecycleSequence(),
             yarnSessionId: `react-yarn:${Date.now()}:${(I.yarnDragSequence = (I.yarnDragSequence || 0) + 1)}`
         };
 
@@ -952,6 +959,8 @@
         },
         isGalgameModeEnabled: function () { return !!I.state.galgameModeEnabled; },
         getChatSurfaceMode: function () { return I.getCurrentChatSurfaceMode(); },
+        republishCompactSurfaceLayoutChange: I.republishCompactSurfaceLayoutChange,
+        scheduleCompactMinimizeBallTracking: I.scheduleCompactMinimizeBallTracking,
         refreshGalgameOptions: I.fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: I.setMiniGameInvitePrompt,

@@ -229,6 +229,11 @@ class PluginPushMessage(BaseModel):
     message_type: Optional[str] = None
     description: Optional[str] = None
     content: Optional[str] = None
+    # 通常是 None。push_message 曾经把 parts[].binary_base64 解回裸字节再挂一份
+    # 到这里，一张图因此要走两遍线（约 2.34x），256 KiB 的 payload 上限实际只兜得
+    # 住约 110 KiB 的图。那份副本已经去掉：现在只有"调用方同时传了 binary_data=
+    # 和显式 parts=" 这一种形态会填充本字段——那时它是唯一的载体。其余情况请读
+    # parts[].binary_base64。
     binary_data: Optional[bytes] = None
     binary_url: Optional[str] = None
     mime: Optional[str] = None

@@ -45,6 +45,12 @@ from config.prompts.prompts_proactive import (
     get_proactive_generate_prompt,
 )
 from config.prompts.prompts_sys import _loc
+from memory.anti_repeat_effects import (
+    KEEP_INITIAL_SIGNATURE,
+    AntiRepeatDecision,
+    build_repeat_signature,
+    record_anti_repeat_decision,
+)
 from utils.llm_client import (
     HumanMessage,
     SystemMessage,
@@ -71,8 +77,9 @@ from .music_recommendation import (
 )
 from .state import (
     _PROACTIVE_SIMILARITY_THRESHOLD,
+    ProactiveSimilarityMatch,
+    _find_similar_recent_proactive_chat,
     _is_recent_proactive_material,
-    _is_similar_to_recent_proactive_chat,
     _proactive_material_key,
     _proactive_turn_still_owned,
 )
@@ -97,12 +104,32 @@ def _proactive_silence_since(mgr: Any) -> float | None:
 def _merge_regen_avoid_terms(*term_groups: Any) -> list[str]:
     """Interleave repeat signals while keeping the prompt injection bounded."""
     interleaved = (
-        term
-        for row in zip_longest(*term_groups)
-        for term in row
-        if term is not None
+        term for row in zip_longest(*term_groups) for term in row if term is not None
     )
     return list(dict.fromkeys(interleaved))[:ANTI_REPEAT_INJECT_TOP_K]
+
+
+def _score_regenerated_draft(
+    anti_repeat_corpus: Any,
+    lanlan_name: str,
+    text: str,
+    *,
+    exempt: bool,
+) -> tuple[float | None, dict]:
+    """Return a measured BM25 score and its terms, never a synthetic zero.
+
+    The terms come back because an outcome produced by scoring the REGENERATED
+    draft has to be attributed to that draft's phrases, not to the initial
+    draft's.
+    """
+    if exempt or anti_repeat_corpus is None:
+        return None, {}
+    try:
+        total, terms = anti_repeat_corpus.score_draft(lanlan_name, text)
+        return float(total), dict(terms or {})
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("[AntiRepeat] proactive regen score skipped: %s", exc)
+        return None, {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -527,16 +554,12 @@ async def _run_phase2_generation(
     use_vision = bool(screenshot_b64 and model_config.has_vision_model)
     disable_thinking = use_vision or not focus_thinking
     begin_text = _loc(BEGIN_GENERATE, proactive_lang)
-    human_text = (
-        f"{dynamic_context}\n\n{begin_text}" if dynamic_context else begin_text
-    )
+    human_text = f"{dynamic_context}\n\n{begin_text}" if dynamic_context else begin_text
     if use_vision:
         human_content: Any = [
             {
                 "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{screenshot_b64}"
-                },
+                "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64}"},
             },
             {"type": "text", "text": human_text},
         ]
@@ -578,16 +601,12 @@ async def _run_phase2_generation(
         return Phase2GuardedOutput(result=generated.result)
 
     silence_since_after_generation = _proactive_silence_since(mgr)
-    if (
-        silence_since_after_generation is not None
-        and (
-            silence_since_before_generation is None
-            or silence_since_after_generation > silence_since_before_generation
-        )
+    if silence_since_after_generation is not None and (
+        silence_since_before_generation is None
+        or silence_since_after_generation > silence_since_before_generation
     ):
         active_logger.info(
-            "[%s] proactive Phase 2 abandoned after user interaction "
-            "during generation",
+            "[%s] proactive Phase 2 abandoned after user interaction during generation",
             lanlan_name,
         )
         if _proactive_turn_still_owned(mgr, proactive_sid):
@@ -745,19 +764,16 @@ async def _generate_phase2_stream(
 
     thinking_stripper = (
         ThinkingStreamStripper()
-        if not phase2_disable_thinking
-        and leaks_thinking_in_content(conversation_model)
+        if not phase2_disable_thinking and leaks_thinking_in_content(conversation_model)
         else None
     )
     try:
         async with asyncio.timeout(25.0):
-            async with (
-                await make_llm(
-                    temperature=1.0,
-                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                    use_vision=phase2_use_vision,
-                    disable_thinking=phase2_disable_thinking,
-                )
+            async with await make_llm(
+                temperature=1.0,
+                max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                use_vision=phase2_use_vision,
+                disable_thinking=phase2_disable_thinking,
             ) as llm:
                 async for chunk in llm.astream(messages):
                     if mgr.state.is_proactive_preempted(proactive_sid):
@@ -805,9 +821,7 @@ async def _generate_phase2_stream(
                             or "[PASS]" in cleaned.upper()
                             or _text_is_pass_sentinel(cleaned)
                         ):
-                            print(
-                                f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort"
-                            )
+                            print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
                             _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                             break
 
@@ -835,9 +849,7 @@ async def _generate_phase2_stream(
 
                     combined = pass_probe + content
                     if "[PASS]" in combined.upper():
-                        print(
-                            f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort"
-                        )
+                        print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
                         _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                         break
                     safe_text = (
@@ -901,9 +913,7 @@ async def _generate_phase2_stream(
             await _emit_safe(cleaned)
 
     if not aborted and full_text.strip() and not source_tag and expects_source_tag:
-        print(
-            f"[{lanlan_name}] Phase 2 输出无合法来源标签，尝试格式自救 regen"
-        )
+        print(f"[{lanlan_name}] Phase 2 输出无合法来源标签，尝试格式自救 regen")
         if mgr.state.is_proactive_preempted(proactive_sid):
             _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
         else:
@@ -926,13 +936,11 @@ async def _generate_phase2_stream(
             fix_text = ""
             try:
                 async with asyncio.timeout(20.0):
-                    async with (
-                        await make_llm(
-                            temperature=1.0,
-                            max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                            use_vision=phase2_use_vision,
-                            disable_thinking=phase2_disable_thinking,
-                        )
+                    async with await make_llm(
+                        temperature=1.0,
+                        max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                        use_vision=phase2_use_vision,
+                        disable_thinking=phase2_disable_thinking,
                     ) as fix_llm:
                         fix_response = await fix_llm.ainvoke(
                             [messages[0], HumanMessage(content=fix_human_content)]
@@ -1098,16 +1106,12 @@ async def _guard_phase2_output(
         and selected_music_link is not None
         and not is_playing_music
         and not music_cooldown
-        and not any(
-            channel in ("vision", "web", "meme")
-            for channel in active_channels
-        )
+        and not any(channel in ("vision", "web", "meme") for channel in active_channels)
     )
     if music_only_pending and source_tag != "MUSIC":
         dedup_tag = "MUSIC"
-    elif (
-        (source_tag == "MEME" and selected_meme_link is None)
-        or (source_tag == "MUSIC" and selected_music_link is None)
+    elif (source_tag == "MEME" and selected_meme_link is None) or (
+        source_tag == "MUSIC" and selected_music_link is None
     ):
         dedup_tag = "CHAT"
     else:
@@ -1135,13 +1139,36 @@ async def _guard_phase2_output(
             material_key or "(none)",
         )
 
-    is_duplicate, similarity_score = False, 0.0
-    if not exempt_text_dedup:
-        is_duplicate, similarity_score = _is_similar_to_recent_proactive_chat(
-            lanlan_name,
-            response_text,
-        )
+    # One scan, not two: the guard verdict and the evidence fragment used by the
+    # effect record come from the same match. ``_is_similar_to_recent_proactive_chat``
+    # is only the historical (bool, score) wrapper around this call, so calling it
+    # first and then re-deriving the match ran the whole SequenceMatcher sweep over
+    # the recent-chat window twice on the block path. Both guard sites in this
+    # module go through the match object directly; the tuple wrapper stays in
+    # ``state`` for its other callers.
+    literal_match = (
+        ProactiveSimilarityMatch()
+        if exempt_text_dedup
+        else _find_similar_recent_proactive_chat(lanlan_name, response_text)
+    )
+    is_duplicate = literal_match.is_duplicate
+    similarity_score = literal_match.best_score
     if is_duplicate:
+        record_anti_repeat_decision(
+            lanlan_name,
+            AntiRepeatDecision(
+                source="proactive",
+                reasons=("literal_similarity",),
+                action="block",
+                outcome="blocked_initial",
+                signature=build_repeat_signature(
+                    response_text,
+                    language=proactive_lang,
+                    fallback_fragment=literal_match.common_fragment,
+                ),
+                response_id=str(proactive_sid),
+            ),
+        )
         active_logger.info(
             "[%s] proactive repeat guard blocked Phase 2 output "
             "(similarity=%.3f threshold=%.2f)",
@@ -1158,8 +1185,7 @@ async def _guard_phase2_output(
             await mgr.handle_new_message()
         else:
             active_logger.info(
-                "[%s] repeat guard hit but user already took over; "
-                "skip TTS cleanup",
+                "[%s] repeat guard hit but user already took over; skip TTS cleanup",
                 lanlan_name,
             )
         return _output(
@@ -1201,8 +1227,7 @@ async def _guard_phase2_output(
             )
 
     unanswered_repeat_triggered = bool(
-        unanswered_repeat_signal is not None
-        and unanswered_repeat_signal.triggered
+        unanswered_repeat_signal is not None and unanswered_repeat_signal.triggered
     )
     if unanswered_repeat_triggered:
         active_logger.info(
@@ -1233,10 +1258,7 @@ async def _guard_phase2_output(
     else:
         bm25_total, bm25_terms = 0.0, {}
 
-    if (
-        unanswered_repeat_triggered
-        or bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD
-    ):
+    if unanswered_repeat_triggered or bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD:
         initial_source_tag = source_tag
         if unanswered_repeat_triggered:
             avoid_terms = _merge_regen_avoid_terms(
@@ -1249,6 +1271,50 @@ async def _guard_phase2_output(
             )
         else:
             avoid_terms = list(bm25_terms.keys())[:ANTI_REPEAT_INJECT_TOP_K]
+        repeat_reasons = tuple(
+            reason
+            for reason, triggered in (
+                ("bm25", bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD),
+                ("unanswered_repeat", unanswered_repeat_triggered),
+            )
+            if triggered
+        )
+        repeat_signature = build_repeat_signature(
+            response_text,
+            avoid_terms,
+            language=proactive_lang,
+        )
+
+        def record_regen_effect(
+            outcome: str,
+            *,
+            score_after: float | None = None,
+            extra_reasons: tuple[str, ...] = (),
+            signature: Any = KEEP_INITIAL_SIGNATURE,
+        ) -> None:
+            # ``repeat_reasons`` / ``repeat_signature`` describe the INITIAL
+            # draft. An outcome produced by a different detector on the
+            # regenerated draft has to say so, otherwise reason totals and the
+            # per-candidate handling record attribute it to the wrong detector
+            # and the wrong fragment.
+            record_anti_repeat_decision(
+                lanlan_name,
+                AntiRepeatDecision(
+                    source="proactive",
+                    reasons=tuple(dict.fromkeys(repeat_reasons + extra_reasons)),
+                    action="regenerate",
+                    outcome=outcome,
+                    signature=(
+                        repeat_signature
+                        if signature is KEEP_INITIAL_SIGNATURE
+                        else signature
+                    ),
+                    score_before=bm25_total if bm25_total > 0 else None,
+                    score_after=score_after,
+                    response_id=str(proactive_sid),
+                ),
+            )
+
         active_logger.info(
             "[%s] proactive regen (bm25_score=%.2f threshold=%.2f "
             "unanswered_repeat=%s)",
@@ -1273,9 +1339,7 @@ async def _guard_phase2_output(
             regen_human_content: Any = [
                 {
                     "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{screenshot_b64}"
-                    },
+                    "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64}"},
                 },
                 {"type": "text", "text": regen_human_text},
             ]
@@ -1287,6 +1351,7 @@ async def _guard_phase2_output(
         ]
         regen_text = ""
         if mgr.state.is_proactive_preempted(proactive_sid):
+            record_regen_effect("abandoned_user_interaction")
             active_logger.info(
                 "[%s] proactive BM25 regen aborted: user preempted before ainvoke",
                 lanlan_name,
@@ -1302,13 +1367,11 @@ async def _guard_phase2_output(
         silence_since_before_regen = _proactive_silence_since(mgr)
         try:
             async with asyncio.timeout(20.0):
-                async with (
-                    await make_llm(
-                        temperature=1.0,
-                        max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                        use_vision=phase2_use_vision,
-                        disable_thinking=phase2_disable_thinking,
-                    )
+                async with await make_llm(
+                    temperature=1.0,
+                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                    use_vision=phase2_use_vision,
+                    disable_thinking=phase2_disable_thinking,
                 ) as regen_llm:
                     regen_response = await regen_llm.ainvoke(regen_messages)
                     regen_text = (
@@ -1325,13 +1388,11 @@ async def _guard_phase2_output(
             regen_text = ""
 
         silence_since_after_regen = _proactive_silence_since(mgr)
-        if (
-            silence_since_after_regen is not None
-            and (
-                silence_since_before_regen is None
-                or silence_since_after_regen > silence_since_before_regen
-            )
+        if silence_since_after_regen is not None and (
+            silence_since_before_regen is None
+            or silence_since_after_regen > silence_since_before_regen
         ):
+            record_regen_effect("abandoned_user_interaction")
             active_logger.info(
                 "[%s] proactive regen abandoned after user interaction",
                 lanlan_name,
@@ -1371,6 +1432,7 @@ async def _guard_phase2_output(
             or not cleaned.strip()
             or "[PASS]" in cleaned.upper()
         ):
+            record_regen_effect("regen_failed")
             active_logger.info(
                 "[%s] proactive BM25 regen returned empty/PASS/untagged, drop",
                 lanlan_name,
@@ -1390,10 +1452,7 @@ async def _guard_phase2_output(
             "CHAT"
             if (
                 (regen_source_tag == "MEME" and selected_meme_link is None)
-                or (
-                    regen_source_tag == "MUSIC"
-                    and selected_music_link is None
-                )
+                or (regen_source_tag == "MUSIC" and selected_music_link is None)
             )
             else regen_source_tag
         )
@@ -1411,17 +1470,30 @@ async def _guard_phase2_output(
             )
         )
 
-        if regen_exempt_text_dedup or anti_repeat_corpus is None:
-            regen_total = 0.0
-        else:
-            try:
-                regen_total, _ = anti_repeat_corpus.score_draft(
-                    lanlan_name,
+        regen_total, regen_bm25_terms = _score_regenerated_draft(
+            anti_repeat_corpus,
+            lanlan_name,
+            cleaned,
+            exempt=regen_exempt_text_dedup,
+        )
+        if (
+            regen_total is not None
+            and regen_total >= ANTI_REPEAT_DROP_THRESHOLD
+        ):
+            record_regen_effect(
+                "blocked_after_regen_bm25",
+                score_after=regen_total,
+                # Scored against the REGENERATED draft, so it carries that
+                # draft's reason and phrases. Without this the block was filed
+                # under whatever detector triggered the rewrite and pointed at
+                # a fragment from a draft that had already been discarded.
+                extra_reasons=("bm25",),
+                signature=build_repeat_signature(
                     cleaned,
-                )
-            except Exception:
-                regen_total = 0.0
-        if regen_total >= ANTI_REPEAT_DROP_THRESHOLD:
+                    list(regen_bm25_terms)[:ANTI_REPEAT_INJECT_TOP_K],
+                    language=proactive_lang,
+                ),
+            )
             active_logger.info(
                 "[%s] proactive BM25 regen still over drop (score=%.2f)",
                 lanlan_name,
@@ -1457,6 +1529,19 @@ async def _guard_phase2_output(
             regen_unanswered_repeat_signal is not None
             and regen_unanswered_repeat_signal.triggered
         ):
+            record_regen_effect(
+                "blocked_after_regen_unanswered",
+                score_after=regen_total,
+                # The REGENERATED draft is what tripped the unanswered-repeat
+                # detector; the closure's reasons/signature describe the initial
+                # one. Same correction as the literal branch below.
+                extra_reasons=("unanswered_repeat",),
+                signature=build_repeat_signature(
+                    cleaned,
+                    regen_unanswered_repeat_signal.repeated_terms,
+                    language=proactive_lang,
+                ),
+            )
             active_logger.info(
                 "[%s] proactive regen still repeats unanswered content "
                 "(matches=%d considered=%d best_similarity=%.3f), drop",
@@ -1481,15 +1566,29 @@ async def _guard_phase2_output(
                     )
                 )
             )
-        regen_duplicate, regen_similarity = False, 0.0
-        if not regen_exempt_text_dedup:
-            regen_duplicate, regen_similarity = (
-                _is_similar_to_recent_proactive_chat(lanlan_name, cleaned)
-            )
+        regen_match = (
+            ProactiveSimilarityMatch()
+            if regen_exempt_text_dedup
+            else _find_similar_recent_proactive_chat(lanlan_name, cleaned)
+        )
+        regen_duplicate = regen_match.is_duplicate
+        regen_similarity = regen_match.best_score
         if regen_duplicate:
+            record_regen_effect(
+                "blocked_after_regen_literal",
+                score_after=regen_total,
+                extra_reasons=("literal_similarity",),
+                # Derive the fragment from the regenerated match. Passing None
+                # when nothing safe can be derived is correct: an unattributed
+                # record beats one pointing at the initial draft's fragment.
+                signature=build_repeat_signature(
+                    cleaned,
+                    language=proactive_lang,
+                    fallback_fragment=regen_match.common_fragment,
+                ),
+            )
             active_logger.info(
-                "[%s] proactive BM25 regen still literal-dup "
-                "(similarity=%.3f)",
+                "[%s] proactive BM25 regen still literal-dup (similarity=%.3f)",
                 lanlan_name,
                 regen_similarity,
             )
@@ -1505,6 +1604,7 @@ async def _guard_phase2_output(
                     )
                 )
             )
+        record_regen_effect("regen_guard_passed", score_after=regen_total)
         source_tag = regen_source_tag
         if source_tag != "MUSIC":
             if selected_music_link is not None or music_content is not None:
@@ -1536,8 +1636,7 @@ async def _guard_phase2_output(
             await mgr.handle_new_message()
         else:
             active_logger.info(
-                "[%s] 降级拦截 abort 但用户已接管 "
-                "(state preempted)，跳过 TTS 清理",
+                "[%s] 降级拦截 abort 但用户已接管 (state preempted)，跳过 TTS 清理",
                 lanlan_name,
             )
         return _output(
@@ -1550,10 +1649,7 @@ async def _guard_phase2_output(
             is_music_used=False,
         )
     if music_cooldown and ai_wants_music:
-        print(
-            f"[{lanlan_name}] 音乐冷却期模型输出 [MUSIC]，"
-            "降级为 CHAT（不中止搭话）"
-        )
+        print(f"[{lanlan_name}] 音乐冷却期模型输出 [MUSIC]，降级为 CHAT（不中止搭话）")
         is_music_used = False
         music_content = None
         source_tag = "CHAT"
@@ -1578,18 +1674,19 @@ def _parse_web_screening_result(text: str) -> dict | None:
     # ^ + re.MULTILINE 锚定行首，防止匹配到 "有值得分享的话题：" 等前缀行
     # [ \t]* 替代 \s*，只吃水平空白，避免跨行捕获到下一行内容
     patterns = {
-        'title': r'^[ \t]*(?:话题|标题|Topic|Title|話題|주제)[ \t]*[：:][ \t]*(.+)',
-        'source': r'^[ \t]*(?:来源|Source|出典|출처)[ \t]*[：:][ \t]*(.+)',
-        'number': r'^[ \t]*(?:序号|No|番号|번호)\.?[ \t]*[：:][ \t]*(\d+)',
+        "title": r"^[ \t]*(?:话题|标题|Topic|Title|話題|주제)[ \t]*[：:][ \t]*(.+)",
+        "source": r"^[ \t]*(?:来源|Source|出典|출처)[ \t]*[：:][ \t]*(.+)",
+        "number": r"^[ \t]*(?:序号|No|番号|번호)\.?[ \t]*[：:][ \t]*(\d+)",
     }
     for key, pattern in patterns.items():
         match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
         if match:
             result[key] = match.group(1).strip()
 
-    if result.get('title'):
+    if result.get("title"):
         return result
     return None
+
 
 def _text_is_pass_sentinel(text: str) -> bool:
     """Return True when ``text`` as a whole is the PASS skip sentinel.
@@ -1598,7 +1695,7 @@ def _text_is_pass_sentinel(text: str) -> bool:
     bare "PASS" the model occasionally emits. Phase-agnostic — used by both
     the Phase 1 section parser and the Phase 2 stream guards.
     """
-    return bool(re.fullmatch(r'\s*\[?\s*PASS\s*\]?\s*', text or '', re.IGNORECASE))
+    return bool(re.fullmatch(r"\s*\[?\s*PASS\s*\]?\s*", text or "", re.IGNORECASE))
 
 
 def _parse_unified_phase1_result(text: str) -> dict:
@@ -1621,12 +1718,12 @@ def _parse_unified_phase1_result(text: str) -> dict:
         }
     """
     result: dict = {
-        'web': None,
-        'music_keyword': None,
-        'meme_keyword': None,
-        'web_pass': False,
-        'music_pass': False,
-        'meme_pass': False,
+        "web": None,
+        "music_keyword": None,
+        "meme_keyword": None,
+        "web_pass": False,
+        "music_pass": False,
+        "meme_pass": False,
     }
 
     # 按 [WEB] / [MUSIC] / [MEME] 分段
@@ -1639,83 +1736,91 @@ def _parse_unified_phase1_result(text: str) -> dict:
         stripped = line.strip()
         upper = stripped.upper()
         # 检测段标签
-        if upper.startswith('[WEB]'):
+        if upper.startswith("[WEB]"):
             if current_tag:
-                sections[current_tag] = '\n'.join(current_lines)
-            current_tag = 'web'
+                sections[current_tag] = "\n".join(current_lines)
+            current_tag = "web"
             # 标签行后面可能有内容（如 [WEB] [PASS]）
             remainder = stripped[5:].strip()
             current_lines = [remainder] if remainder else []
-        elif upper.startswith('[MUSIC]'):
+        elif upper.startswith("[MUSIC]"):
             if current_tag:
-                sections[current_tag] = '\n'.join(current_lines)
-            current_tag = 'music'
+                sections[current_tag] = "\n".join(current_lines)
+            current_tag = "music"
             remainder = stripped[7:].strip()
             current_lines = [remainder] if remainder else []
-        elif upper.startswith('[MEME]'):
+        elif upper.startswith("[MEME]"):
             if current_tag:
-                sections[current_tag] = '\n'.join(current_lines)
-            current_tag = 'meme'
+                sections[current_tag] = "\n".join(current_lines)
+            current_tag = "meme"
             remainder = stripped[6:].strip()
             current_lines = [remainder] if remainder else []
         else:
             current_lines.append(line)
 
     if current_tag:
-        sections[current_tag] = '\n'.join(current_lines)
+        sections[current_tag] = "\n".join(current_lines)
 
     # 如果 LLM 没有输出段标签（fallback：尝试当作纯 web 输出解析）
     if not sections:
         web_parsed = _parse_web_screening_result(text)
         if web_parsed:
-            result['web'] = web_parsed
+            result["web"] = web_parsed
         return result
 
     # --- 解析 web 段 ---
     # 先尝试提取结构化字段；LLM 经常同时输出话题详情和模板里的
     # "If nothing is worth sharing: [WEB] [PASS]" 行，导致 [PASS]
     # 误杀已填好的话题。因此优先以 parse 结果为准。
-    web_text = sections.get('web', '')
+    web_text = sections.get("web", "")
     if web_text:
         parsed_web = _parse_web_screening_result(web_text)
         if parsed_web:
-            result['web'] = parsed_web
+            result["web"] = parsed_web
         elif _text_is_pass_sentinel(web_text):
-            result['web_pass'] = True  # 确实是 PASS，web 保持 None
+            result["web_pass"] = True  # 确实是 PASS，web 保持 None
 
     # --- 解析 music 段 ---
-    music_text = sections.get('music', '')
+    music_text = sections.get("music", "")
     if music_text:
         music_text = music_text.strip()
         if _text_is_pass_sentinel(music_text):
-            result['music_pass'] = True
+            result["music_pass"] = True
         elif music_text:
             # 去掉前缀标签（如"关键词：" "keyword:" 等）
             keyword = re.sub(
-                r'(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+',
-                '', music_text, count=1
+                r"(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+",
+                "",
+                music_text,
+                count=1,
             )
-            keyword = keyword.strip('\'"「」【】[]《》<> \n\r\t')
+            keyword = keyword.strip("'\"「」【】[]《》<> \n\r\t")
             # 取第一行非空内容
-            keyword = keyword.splitlines()[0].strip() if keyword else ''
-            if keyword and not re.fullmatch(r'\[?\s*pass\s*\]?', keyword, re.IGNORECASE):
-                result['music_keyword'] = keyword
+            keyword = keyword.splitlines()[0].strip() if keyword else ""
+            if keyword and not re.fullmatch(
+                r"\[?\s*pass\s*\]?", keyword, re.IGNORECASE
+            ):
+                result["music_keyword"] = keyword
 
     # --- 解析 meme 段 ---
-    meme_text = sections.get('meme', '')
+    meme_text = sections.get("meme", "")
     if meme_text:
         meme_text = meme_text.strip()
         if _text_is_pass_sentinel(meme_text):
-            result['meme_pass'] = True
+            result["meme_pass"] = True
         elif meme_text:
             keyword = re.sub(
-                r'(?i).*?(?:关键词|keyword|キーワード|키워드|ключевое\s*слово)[：:\s]+',
-                '', meme_text, count=1
+                r"(?i).*?(?:关键词|keyword|キーワード|키워드|ключевое\s*слово)[：:\s]+",
+                "",
+                meme_text,
+                count=1,
             )
-            keyword = keyword.strip('\'"「」【】[]《》<> \n\r\t')
-            keyword = keyword.splitlines()[0].strip() if keyword else ''
-            if keyword and not re.fullmatch(r'\[?\s*pass\s*\]?', keyword, re.IGNORECASE):
-                result['meme_keyword'] = keyword
+            keyword = keyword.strip("'\"「」【】[]《》<> \n\r\t")
+            keyword = keyword.splitlines()[0].strip() if keyword else ""
+            if keyword and not re.fullmatch(
+                r"\[?\s*pass\s*\]?", keyword, re.IGNORECASE
+            ):
+                result["meme_keyword"] = keyword
 
     return result
 
@@ -1729,7 +1834,9 @@ _PROACTIVE_SCREEN_TAG_LEAKS = frozenset({"SCREEN", "SCREENSHOT", "VISION", "WIND
 _PROACTIVE_BRACKET_TAG_RE = re.compile(r"^\[([A-Za-z][A-Za-z0-9_-]{0,31})\]\s*")
 
 
-_PROACTIVE_LEGAL_TAG_RE = re.compile(r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", re.IGNORECASE)
+_PROACTIVE_LEGAL_TAG_RE = re.compile(
+    r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", re.IGNORECASE
+)
 
 
 _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS = (
@@ -1748,19 +1855,23 @@ _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS = (
 )
 
 
-_PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS = frozenset({
-    "QQ",
-    "当前界面",
-    "用户当前操作",
-    "上轮未收尾话题",
-    "屏幕内容",
-    "屏幕显示",
-})
+_PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS = frozenset(
+    {
+        "QQ",
+        "当前界面",
+        "用户当前操作",
+        "上轮未收尾话题",
+        "屏幕内容",
+        "屏幕显示",
+    }
+)
 
 
-_PROACTIVE_OBSERVED_SLASH_PREFIX_LABELS = frozenset({
-    "聊天中",
-})
+_PROACTIVE_OBSERVED_SLASH_PREFIX_LABELS = frozenset(
+    {
+        "聊天中",
+    }
+)
 
 
 def _get_proactive_context_leak_labels() -> frozenset[str]:
@@ -1798,12 +1909,12 @@ def _strip_proactive_label_slash_prefix(
         if not label:
             continue
         if folded.startswith(label):
-            rest = body[len(label):]
+            rest = body[len(label) :]
             sep = re.match(r"\s*/", rest)
             if sep:
-                return rest[sep.end():].lstrip()
+                return rest[sep.end() :].lstrip()
         if body.startswith("/") and folded[1:].startswith(label):
-            rest = body[1 + len(label):]
+            rest = body[1 + len(label) :]
             if _label_prefix_boundary_ok(label, rest):
                 rest = rest.lstrip()
                 if rest[:1] in "/：:":
@@ -1819,7 +1930,7 @@ def _strip_proactive_orphan_slash_prefix(body: str) -> str | None:
     match = re.match(r"^/(?:[ \t]+|\r?\n[ \t]*|$)", body)
     if not match:
         return None
-    rest = body[match.end():].lstrip()
+    rest = body[match.end() :].lstrip()
     if rest or match.end() == len(body):
         return rest
     return None
@@ -1844,7 +1955,7 @@ def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
     for pattern, source_tag in _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS:
         match = pattern.match(body)
         if match:
-            rest = body[match.end():].lstrip()
+            rest = body[match.end() :].lstrip()
             cleaned_rest = _strip_proactive_orphan_slash_prefix(rest)
             if cleaned_rest is not None:
                 rest = cleaned_rest
@@ -1884,19 +1995,19 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     tag = match.group(1).upper()
     if tag in _PROACTIVE_LEGAL_SOURCE_TAGS or tag not in _PROACTIVE_SCREEN_TAG_LEAKS:
         return text, ""
-    rest = body[match.end():].lstrip()
+    rest = body[match.end() :].lstrip()
     # 兼容 [Screen][CHAT] 组合：泄漏标签后若紧跟合法来源标签，剥掉并采用真实 tag
     # （否则该 [CHAT] 字面会作为正文漏给 TTS）；没有则按 CHAT 兜底。
     legal = _PROACTIVE_LEGAL_TAG_RE.match(rest)
     if legal:
-        return leading + rest[legal.end():].lstrip(), legal.group(1).upper()
+        return leading + rest[legal.end() :].lstrip(), legal.group(1).upper()
     return leading + rest, "CHAT"
 
 
 # Decoration a model may wrap a leaked label in (markdown bold/heading/bullet,
 # CJK + ASCII brackets). Stripped from both ends before matching so e.g.
 # "**屏幕细节轻问**" / "【回忆线索】" still resolve to the bare label.
-_INTENT_LABEL_DECOR = '*-•◦·#`_~【】「」[]《》（）() \t'
+_INTENT_LABEL_DECOR = "*-•◦·#`_~【】「」[]《》（）() \t"
 
 
 def _strip_proactive_intent_label_leak(text: str) -> str:
@@ -1929,7 +2040,7 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
 
     def _norm(segment: str) -> str:
         out = segment.strip().strip(_INTENT_LABEL_DECOR)
-        out = out.rstrip('：:').strip(_INTENT_LABEL_DECOR)
+        out = out.rstrip("：:").strip(_INTENT_LABEL_DECOR)
         return out.strip()
 
     # Bounded peel — a handful of stacked labels at most; never loop the body.
@@ -1941,9 +2052,9 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
         if slash_cleaned is not None:
             text = slash_cleaned
             continue
-        nl = body.find('\n')
+        nl = body.find("\n")
         first = body if nl == -1 else body[:nl]
-        rest = '' if nl == -1 else body[nl + 1:]
+        rest = "" if nl == -1 else body[nl + 1 :]
 
         # Case 1: the whole first line is a label, with real content after it.
         if rest.strip() and _norm(first).casefold() in labels:
@@ -1956,16 +2067,16 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
         # (e.g. "Memory cues: ...：...") would split on the wrong colon and
         # leave the leading label unstripped.
         sep_idx = -1
-        for sep in ('：', ':'):
+        for sep in ("：", ":"):
             idx = first.find(sep)
             if idx > 0 and (sep_idx == -1 or idx < sep_idx):
                 sep_idx = idx
         if sep_idx > 0:
             cand = _norm(first[:sep_idx]).casefold()
-            after = first[sep_idx + 1:].strip()
+            after = first[sep_idx + 1 :].strip()
             if cand in labels and (after or rest.strip()):
                 if after:
-                    text = after + ('\n' + rest if rest else '')
+                    text = after + ("\n" + rest if rest else "")
                 else:
                     text = rest
                 continue
@@ -1982,9 +2093,13 @@ def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
     """
     title_lower = title.lower().strip()
     for link in all_links:
-        link_title = link.get('title', '').lower().strip()
+        link_title = link.get("title", "").lower().strip()
         if not link_title:
             continue
-        if link_title == title_lower or link_title in title_lower or title_lower in link_title:
+        if (
+            link_title == title_lower
+            or link_title in title_lower
+            or title_lower in link_title
+        ):
             return link
     return None

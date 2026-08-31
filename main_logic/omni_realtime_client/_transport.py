@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from ._shared import (
+    GEMINI_CANCELLED_TERMINAL_TTL_SECONDS,
     Any,
     Callable,
     Dict,
@@ -67,10 +68,15 @@ class _RealtimeEventOwnerRetired(ConnectionError):
 # when the coroutine returns, and the outer budget still reaches the rotation.
 _STUCK_RELEASE_STEP_TIMEOUT = 0.5
 
+
 # How many finished response ids to remember for usage deduplication. A repeat
 # arrives right behind its original, so this only has to outlive the events
 # interleaved between them; it is a leak guard, not a history.
 _USAGE_RECORDED_ID_LIMIT = 32
+_INPUT_ROUTE_IDENTITY_ITEM_LIMIT = 8
+# ``None`` is a valid route owner (no active game route), so the "nothing to
+# freeze" answer needs its own sentinel.
+_NO_ROUTE_IDENTITY_COMMIT = object()
 
 # How many utterance ids a ``speech_started`` may have scoped and still be
 # recognised when that utterance's transcript arrives. Input transcription is
@@ -140,6 +146,233 @@ class RealtimeImagePayloadTooLargeError(RuntimeError):
 class _TransportMixin:
     _WS_FRAME_LIMIT = OMNI_WS_FRAME_LIMIT_BYTES  # safe threshold below 256KB server cap
 
+    def _clear_input_route_identities(self) -> None:
+        self._input_route_identity_captured = False
+        self._input_route_identity = None
+        self._input_route_identity_by_item.clear()
+        self._reset_input_route_identity_stream()
+
+    def _reset_input_route_identity_stream(self) -> None:
+        """Forget the per-buffer route observation after it was consumed."""
+        self._input_route_identity_stream_armed = False
+        self._input_route_identity_stream_owner = None
+
+    def _note_input_route_identity_frame(self, identity) -> None:
+        """Track the route owning the most recent frame before an onset.
+
+        The local onset gate (RMS / RNNoise) and the provider's server VAD are
+        independent detectors with independent thresholds, so "server VAD fired
+        but the local gate never armed a snapshot" is an ordinary outcome rather
+        than an anomaly. This observation covers that case: the frames
+        themselves still prove which route was active while they were captured.
+
+        Deliberately last-write-wins. Read the alternatives before changing it;
+        this line has already oscillated across four revisions, because every
+        variant that tries to be stricter here fails in the OTHER direction:
+
+        * Arming once and keeping the first owner (or freezing on one raw-RMS
+          frame) strands the mark on a pre-switch route, so the first utterance
+          after entering or replacing a route is rejected.
+        * Accumulating a per-buffer verdict and binding ``None`` when the buffer
+          looks like it spans two routes has to decide when its window ends, and
+          every window it fails to close leaks a stale owner into the next
+          utterance. Tried; it drops the player's first line whenever the mic was
+          already open across a route switch. See
+          ``test_idle_frames_before_a_route_switch_do_not_strand_the_next_utterance``
+          and ``test_a_finished_utterance_does_not_poison_the_next_one``.
+
+        Every one of those failures is a SILENT drop: the mismatch is rejected in
+        ``handle_input_transcript`` above the takeover dispatcher, so the game
+        receives nothing and nothing is logged. Overwriting is self-correcting
+        instead -- a stale owner survives at most until the next frame.
+
+        The accepted residual is the reverse error: if the route switches inside
+        the provider's onset delay and a post-switch frame is streamed before the
+        delayed ``speech_started``, that utterance binds the new route. The
+        exposure window is that onset delay (hundreds of ms), an order of
+        magnitude below the seconds-scale STT latency this ownership guards
+        against, and it additionally needs speech quiet enough that the local
+        gate never fired. Before this mechanism existed the misattribution window
+        was the entire STT latency, unconditionally -- so this is a much smaller
+        instance of a pre-existing error, not a new one.
+
+        Eliminating that residual needs the input buffer isolated when the route
+        changes, not another ownership heuristic. That belongs to the realtime
+        audio subsystem and must also cover Gemini, where ``clear_audio_buffer``
+        is a no-op and transcripts arrive with no ``item_id`` at all.
+
+        No "an utterance is already open" guard: once ``speech_started`` has
+        bound an item, that binding is fixed, and every frame between two onsets
+        is equally "before the next onset", so suppressing the ones after an
+        onset cannot change any outcome.
+        """
+        self._input_route_identity_stream_armed = True
+        self._input_route_identity_stream_owner = identity
+
+    def _pending_input_route_identity_commit(self):
+        """Read the owner a MANUAL commit would freeze, without freezing it.
+
+        MANUAL mode disables server VAD, so no ``speech_started`` ever arrives
+        and nothing binds an owner for the buffer being committed. The commit
+        itself IS that boundary, exactly as ``speech_started`` is in server-VAD
+        mode. The value is read here, at the boundary, so that frames streamed
+        while the commit is in flight cannot move it.
+
+        Returns ``_NO_ROUTE_IDENTITY_COMMIT`` when there is nothing to freeze --
+        a distinct sentinel because ``None`` is itself a valid owner (no route).
+        Never overrides a local onset snapshot: that is stronger evidence than
+        the frame mark.
+        """
+        if self._input_route_identity_captured:
+            return _NO_ROUTE_IDENTITY_COMMIT
+        if not self._input_route_identity_stream_armed:
+            return _NO_ROUTE_IDENTITY_COMMIT
+        return self._input_route_identity_stream_owner
+
+    def _apply_input_route_identity_commit(self, pending) -> None:
+        """Pin ownership once the MANUAL boundary actually reached the provider.
+
+        Only called on the success paths. A commit that never went out (no
+        session, missing SDK types, a send that raised on a still-usable
+        connection) leaves ownership unfrozen on purpose: that buffer will never
+        produce a transcript, so a freeze left behind would answer for the NEXT
+        utterance instead, and after a route change every one of those would be
+        rejected as a mismatch and silently dropped.
+        """
+        if pending is _NO_ROUTE_IDENTITY_COMMIT:
+            return
+        if self._input_route_identity_captured:
+            return
+        self._input_route_identity = pending
+        self._input_route_identity_captured = True
+
+    def _resolve_input_route_identity_owner(self):
+        """Return the route that owned the audio currently buffered, if provable.
+
+        Ownership comes only from observed frames or a local onset snapshot,
+        never from the route that happens to be active when a provider event
+        lands. With no evidence at all the answer is ``None``, not a guess.
+
+        That last case is reachable and must stay fail-closed: ``stream_audio``
+        calls ``clear_audio_buffer()`` itself on detected silence, which drops
+        the frame observation, so a ``speech_started`` the server had already
+        emitted for the pre-clear audio can arrive afterwards -- possibly after
+        the route moved on. Reading the live route there would tag the old audio
+        with the new route. Nothing is dropped by refusing: every frame arms the
+        observation (for Gemini too, which reaches this via ``stream_audio``
+        before its provider branch), so a genuine utterance always has evidence
+        by the time its onset is reported, and the buffer is only cleared here
+        because there was silence rather than speech.
+        """
+        if self._input_route_identity_captured:
+            return self._input_route_identity
+        if self._input_route_identity_stream_armed:
+            return self._input_route_identity_stream_owner
+        return None
+
+    def _read_input_route_identity(self):
+        identity = None
+        reader = getattr(self, "get_input_route_identity", None)
+        if callable(reader):
+            try:
+                candidate = reader()
+                if (
+                    isinstance(candidate, tuple)
+                    and len(candidate) == 3
+                ):
+                    identity = tuple(str(part or "") for part in candidate)
+            except Exception:
+                identity = None
+        return identity
+
+    def _capture_input_route_identity(self) -> None:
+        """Compatibility helper that snapshots the current route immediately."""
+        self._capture_input_route_identity_snapshot(
+            self._read_input_route_identity()
+        )
+
+    def _capture_input_route_identity_snapshot(self, identity) -> None:
+        """Commit the ingress snapshot owning the first confirmed speech frame."""
+        if self._input_route_identity_captured or bool(
+            getattr(self, "_audio_in_buffer", False)
+        ):
+            return
+        self._input_route_identity = identity
+        self._input_route_identity_captured = True
+
+    def _remember_input_route_identity(self, item_id: object = None) -> None:
+        """Compatibility helper for tests and non-stream ingress paths."""
+        identity = self._read_input_route_identity()
+        item_key = str(item_id or "").strip()
+        if item_key:
+            identities = self._input_route_identity_by_item
+            identities.pop(item_key, None)
+            identities[item_key] = identity
+            while len(identities) > _INPUT_ROUTE_IDENTITY_ITEM_LIMIT:
+                identities.pop(next(iter(identities)))
+            return
+        self._input_route_identity = identity
+        self._input_route_identity_captured = True
+
+    def _bind_input_route_identity_to_item(self, item_id: object = None) -> None:
+        """Bind a server-VAD item to the captured speech owner when available."""
+        item_key = str(item_id or "").strip()
+        if not item_key:
+            return
+        # Bind the route that actually owned this audio, in decreasing order of
+        # proof strength:
+        #   1. the local onset snapshot, when the client gate armed one;
+        #   2. otherwise the route observed on the streamed frames themselves —
+        #      the server event can arrive after the active route changes, but
+        #      the frames it is reporting on were still captured under a known
+        #      route, and one stable value across the whole buffer proves it;
+        #   3. None only when the route genuinely changed mid-buffer, so no
+        #      single owner exists.
+        # Pinning None whenever the local gate stayed quiet (its threshold is
+        # independent of the server's) would make ordinary soft speech
+        # unroutable and drop it before the takeover dispatcher ever sees it.
+        # Rejecting audio that predates a route switch stays the caller's job:
+        # ``handle_input_transcript`` compares this owner against the live route.
+        identity = self._resolve_input_route_identity_owner()
+        identities = self._input_route_identity_by_item
+        identities.pop(item_key, None)
+        identities[item_key] = identity
+        while len(identities) > _INPUT_ROUTE_IDENTITY_ITEM_LIMIT:
+            identities.pop(next(iter(identities)))
+        self._input_route_identity = None
+        self._input_route_identity_captured = False
+        self._reset_input_route_identity_stream()
+
+    def _take_input_route_identity(self, item_id: object = None):
+        item_key = str(item_id or "").strip()
+        if item_key:
+            if item_key in self._input_route_identity_by_item:
+                return self._input_route_identity_by_item.pop(item_key)
+            if self._has_server_vad:
+                # A server-VAD item has an exact owner or no provable owner. If
+                # its bounded mapping was evicted, falling through would consume
+                # the next utterance's global snapshot and misattribute the old
+                # final. MANUAL/client-VAD providers may still attach item IDs
+                # without ever emitting the event that creates this map.
+                return None
+        identity = self._resolve_input_route_identity_owner()
+        self._input_route_identity = None
+        self._input_route_identity_captured = False
+        self._reset_input_route_identity_stream()
+        return identity
+
+    async def _deliver_input_transcript(self, transcript: str, *, item_id: object = None) -> None:
+        identity = self._take_input_route_identity(item_id)
+        routed_callback = getattr(self, "on_input_transcript_with_route", None)
+        if callable(routed_callback):
+            await routed_callback(
+                transcript,
+                source_game_route_identity=identity,
+            )
+            return
+        if self.on_input_transcript:
+            await self.on_input_transcript(transcript)
+
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
         self._native_audio = native_audio
@@ -154,6 +387,7 @@ class _TransportMixin:
         # new session's first tool calls look like a burst. Cleared before the
         # provider branch so it covers both Gemini and the WS providers.
         self._recent_tool_call_times = []
+        self._clear_input_route_identities()
 
         # Same reason, same lifetime: response ids are scoped to a connection,
         # so a provider that restarts its numbering (or simply reuses an id)
@@ -808,6 +1042,10 @@ class _TransportMixin:
         )
 
         # 本地音量判定：用原始输入做 RMS，避免 VAD 延迟时误清 buffer
+        ingress_route_identity = self._read_input_route_identity()
+        # Observe ownership on every frame, not only on frames the local onset
+        # gate accepts: server VAD may commit an utterance the gate never heard.
+        self._note_input_route_identity_frame(ingress_route_identity)
         raw_samples = np.frombuffer(audio_chunk, dtype=np.int16)
         raw_loud = False
         if len(raw_samples) > 0:
@@ -864,6 +1102,22 @@ class _TransportMixin:
             ):
                 self._client_vad_active = False
             self._rnnoise_vad_active = _rnnoise_vad_live
+            # Local onset evidence for route ownership, deliberately OUTSIDE the
+            # `not self._has_server_vad` guard below: server VAD can commit an
+            # utterance this local gate never accepted, and the snapshot is the
+            # stronger evidence either way. `ingress_route_identity` was read
+            # before the first await, so what moves here is only when it is
+            # stored, not which route it names.
+            if _rnnoise_vad_live:
+                if audio_processor.speech_probability > 0.4:
+                    self._capture_input_route_identity_snapshot(
+                        ingress_route_identity
+                    )
+            elif raw_loud:
+                # RMS is the only local onset signal for 16 kHz/mobile input or
+                # when RNNoise is unavailable. Commit the pre-await ingress
+                # owner, never the route that happens to be active afterwards.
+                self._capture_input_route_identity_snapshot(ingress_route_identity)
             if not self._has_server_vad:
                 if _rnnoise_vad_live:
                     if audio_processor.speech_probability > 0.4:
@@ -2246,8 +2500,24 @@ class _TransportMixin:
         # interrupted / turn_complete）。记一笔「欠账」：那条终结属于**这一轮**，
         # 不能让它去结算之后才铸造的 external turn token —— 逐事件捕获的实现会
         # 让它捕获到新 token 并清掉，会话随即显得空闲而外部回合还活着。
-        # 一次性的：由下一个到达的终结消费掉，或在真正的新回合开始时作废。
+        # 一次性的：由下一个到达的终结消费掉，或在真正的新回合开始时作废
+        # （_gemini_support.py 的 turn-start 块），或到期。
         self._gemini_cancelled_terminal_pending = True
+        # 期限是独立于内容的第二道界。turn-start 那处作废只在「合法终结之前先来了
+        # AI 内容」时才跑得到；裸 turn_complete 绕过它，此后再无内容的情形也绕过
+        # 它。没有期限时，陈旧欠账会一直挂着直到吃掉某一条不属于它的终结。
+        self._gemini_cancelled_terminal_deadline = (
+            time.monotonic() + GEMINI_CANCELLED_TERMINAL_TTL_SECONDS
+        )
+        # 期限的起点要等中断真正送达 provider 才算数。Gemini 没有 response.cancel，
+        # 中断是靠后继内容送出去才生效的，所以 _gemini_send_user_turn 会把它重打
+        # 一次；这里先打是为了让下面任何一条 return 路径都带着期限离开，不至于落进
+        # deadline is None 的 fail-open。只允许重打一次，免得后续每次发送都续命。
+        self._gemini_cancelled_terminal_awaiting_delivery = True
+        # 身份：让 _gemini_send_user_turn 能认出「这笔欠账是不是我这次发送送达的」。
+        # 那边是 await 之后才读全局状态的，没有身份的话，一次**更早**发起、此刻才
+        # 返回的发送会把刚武装的这笔当成自己送的，提前起算 TTL。
+        self._gemini_cancelled_terminal_id = object()
 
         # 1. Cancel the current response
         # Presence, not truthiness — the third site in this file where a
@@ -2695,6 +2965,7 @@ class _TransportMixin:
                     self._speech_started_total += 1
                     logger.info("Speech detected")
                     self._response_arbiter.notify_server_vad_started()
+                    self._bind_input_route_identity_to_item(event.get("item_id"))
                     self._audio_in_buffer = True
                     # 重置静默计时器
                     self._last_speech_time = time.time()
@@ -2757,8 +3028,11 @@ class _TransportMixin:
                         self.note_user_turn_started()
                     self._print_input_transcript = True
                     transcript = event.get("transcript", "")
-                    if self.on_input_transcript:
-                        await self.on_input_transcript(transcript)
+                    if self.on_input_transcript or self.on_input_transcript_with_route:
+                        await self._deliver_input_transcript(
+                            transcript,
+                            item_id=event.get("item_id"),
+                        )
                         if await retire_if_replaced():
                             return
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
@@ -3034,6 +3308,7 @@ class _TransportMixin:
         """
 
         self._connection_generation += 1
+        self._clear_input_route_identities()
         self._advance_tool_scope()
         # A pending proactive outcome belongs to the connection that created
         # it. Left in place it makes the REPLACEMENT reject its own proactive
@@ -3058,6 +3333,14 @@ class _TransportMixin:
                 expected_provider_session=retired_outcome_owner[1],
                 expected_outcome_token=retired_outcome_owner[2],
             )
+        # 取消欠账同样属于退役的那条连接：替换连接上的第一条终结是**它自己**的，
+        # 被上一条连接的欠账吃掉就等于新回合的 token 没人结算。与上面退役 proactive
+        # outcome 同一判据。隔离重连那条路上 connect() 跑在 handle_interruption()
+        # 之前（_responses.py 的 prepare_external_voice_turn），不会抹掉刚武装的那笔。
+        self._gemini_cancelled_terminal_pending = False
+        self._gemini_cancelled_terminal_deadline = None
+        self._gemini_cancelled_terminal_awaiting_delivery = False
+        self._gemini_cancelled_terminal_id = None
         self._raw_speech_started_scope_pending_transcript = False
         self._raw_speech_started_scoped_item_ids = []
         # Provider response identity and interruption state belong to the

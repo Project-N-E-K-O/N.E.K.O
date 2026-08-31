@@ -58,9 +58,16 @@ from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writa
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
 from memory.outbox import OP_PERSIST_PROMPT_LOCALE
 from memory.persona.fusion import ExternalMemoryImportTooLargeError
+from utils.natural_expression_candidates import (
+    CandidateMinerError,
+    SourceMessage,
+    build_user_review_report,
+    normalize_language,
+)
 
 from . import gates, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
 from .runtime import app
 
@@ -73,6 +80,172 @@ class HistoryRequest(BaseModel):
 
 class PromptLocalePreferenceRequest(BaseModel):
     language: str
+
+
+class RepetitionInsightsRequest(BaseModel):
+    language: Literal["en", "es", "pt", "ru", "ja", "ko", "zh-CN", "zh-TW"]
+    assistant_message_limit: int = Field(default=100, ge=3, le=100)
+
+
+@app.post("/internal/memory/{lanlan_name}/repetition_insights")
+async def repetition_insights(lanlan_name: str, req: RepetitionInsightsRequest):
+    """Analyze persisted assistant text without models, writes, or egress."""
+    name_validation = validate_character_name(
+        lanlan_name,
+        allow_dots=True,
+        max_units=PROFILE_NAME_MAX_UNITS,
+    )
+    if name_validation.code not in {None, "reserved_route_name"}:
+        raise HTTPException(status_code=400, detail="Invalid lanlan_name")
+    # Validated on the STRIPPED form, read with the name as given. Every
+    # check above -- path separator, "..", trailing dot, reserved name,
+    # character class -- runs on the stripped value, and surrounding
+    # whitespace cannot reintroduce any of them, so reading the raw name
+    # loosens nothing.
+    #
+    # Re-stripping DOES lose the identity. The public route resolves the
+    # request to a characters.json key before calling here, and a key
+    # carrying padding was stripped straight back on arrival -- so the
+    # analysis read memory/<trimmed>/, which is an unrelated orphan when a
+    # delete left one behind. The two ends have to mean the same
+    # character.
+    if runtime.time_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized",
+        )
+
+    # Read-only is not the same as harmless while a cloud apply is running.
+    #
+    # The overwrite/import releases this character's SQLite handles and then
+    # replaces memory/<name>/ wholesale. A read arriving in that window --
+    # from a second browser tab or the Electron subtitle window -- opens the
+    # database again and CACHES the engine, and on Windows a pooled handle is
+    # enough to make the replacement fail. Nothing on this path takes the
+    # writability assertion, because nothing on it writes.
+    #
+    # 503 rather than a stale answer: the fence is short, and the panel
+    # already renders "unavailable" for this status.
+    from utils.cloudsave_runtime.fence import is_write_fence_active
+    from utils.config_manager import get_config_manager
+
+    try:
+        fenced = is_write_fence_active(get_config_manager())
+    except Exception:
+        # A fence we cannot read is not a reason to fail an analysis; the
+        # window is narrow and the pre-existing behaviour is to proceed.
+        fenced = False
+    if fenced:
+        raise HTTPException(
+            status_code=503,
+            detail="memory is being restored; try again shortly",
+        )
+
+    try:
+        language = normalize_language(req.language)
+        history = await runtime.time_manager.aretrieve_latest_assistant_texts(
+            lanlan_name,
+            req.assistant_message_limit,
+        )
+        source_messages = [
+            SourceMessage(language, content, source_line)
+            for source_line, content in enumerate(history.messages, start=1)
+        ]
+        report = await asyncio.to_thread(
+            build_user_review_report,
+            source_messages,
+        )
+    except CandidateMinerError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning(
+            "[RepetitionInsights] analysis unavailable for %s: %s",
+            lanlan_name,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="local memory analysis unavailable",
+        ) from exc
+
+    parameters = dict(report["parameters"])
+    parameters["assistant_message_limit"] = req.assistant_message_limit
+    summary = dict(report["summary"])
+    summary["source_available"] = history.source_available
+    # ``response_ids`` is positionally aligned with ``history.messages``, and
+    # the source lines the miner reports are 1-based positions into that same
+    # list, so they pick out exactly the replies it analyzed.
+    #
+    # Taking the last N instead assumed the survivors were a contiguous
+    # suffix. They are not: the budget drops the oldest message that is over
+    # its fair share, which can be an interior one, so the ids were offset --
+    # a reply that was mined went unattributed while one that was dropped got
+    # credited. The count-based form stays as the fallback for a report that
+    # predates the field.
+    aligned_ids = list(getattr(history, "response_ids", []))
+    analyzed_count = int(
+        summary.get("analyzed_message_count", summary["assistant_message_count"])
+    )
+    source_lines = summary.get("analyzed_source_lines")
+    if isinstance(source_lines, list) and source_lines:
+        window_ids = [
+            aligned_ids[position - 1]
+            for position in source_lines
+            if isinstance(position, int) and 1 <= position <= len(aligned_ids)
+        ]
+        # Partial alignment is not alignment. Anything short of one id per
+        # analyzed reply falls back to the day-scoped aggregate below, the
+        # same way a missing id already does.
+        if len(window_ids) != len(source_lines):
+            window_ids = []
+    else:
+        window_ids = aligned_ids[-analyzed_count:] if analyzed_count > 0 else []
+    # Message scope is only honest when EVERY analyzed reply is linkable. A
+    # partial set (legacy rows without the key mixed with newer ones, or ids
+    # belonging to messages the budget dropped) would let the panel label an
+    # out-of-window aggregate as "handling for the latest N replies". Anything
+    # short of full coverage falls back to the day-scoped aggregate.
+    scoped_ids = (
+        [str(response_id) for response_id in window_ids]
+        if window_ids and all(window_ids)
+        else []
+    )
+    logger.info(
+        "[RepetitionInsights] character=%s language=%s limit=%s messages=%s "
+        "analyzed=%s candidates=%s skipped=%s linked_ids=%s",
+        lanlan_name,
+        language,
+        req.assistant_message_limit,
+        summary["assistant_message_count"],
+        summary.get("analyzed_message_count", summary["assistant_message_count"]),
+        summary["candidate_count"],
+        history.skipped_row_count,
+        len(scoped_ids),
+    )
+    payload: dict[str, object] = {
+        "success": True,
+        "schema_version": report["schema_version"],
+        "artifact_type": report["artifact_type"],
+        "character_name": lanlan_name,
+        "language": language,
+        "parameters": parameters,
+        "summary": summary,
+        "candidates": report["candidates"],
+    }
+    if scoped_ids:
+        # Internal-only join keys. The public router removes these before the
+        # browser response, so runtime IDs never become UI/export data.
+        #
+        # Emitted ONLY when every analyzed reply carries one. Sending an empty
+        # list still selects the message-scoped branch in
+        # ``main_routers.memory_router``, which then reports "no linked records"
+        # forever instead of falling back to the day-scoped aggregate that does
+        # work. Assistant rows only carry the key when the writer preserved
+        # ``additional_kwargs`` end to end; the streamed cross_server path that
+        # feeds ``time_indexed_original`` today does not, so the fallback is the
+        # normal case rather than an edge case.
+        payload["_anti_repeat_response_ids"] = scoped_ids
+    return payload
 
 
 def _activate_request_language(language: str | None) -> str:

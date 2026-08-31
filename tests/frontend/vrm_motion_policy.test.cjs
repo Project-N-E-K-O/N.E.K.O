@@ -121,7 +121,12 @@ assert.equal(buttonsSource.includes('_nekoMotionPendingUserText'), false);
 assert.match(buttonsSource, /requestId: requestId,\s*text: text,\s*source:/);
 assert.match(
     websocketSource,
-    /requestId: resolveAssistantRequestId\(response\.request_id, response\.meta\),\s*text: normalizedVoiceTranscript,\s*source: 'voice'/
+    // The value is no longer pinned: the mini-game route propagates the real
+    // transcript source instead of always claiming 'voice'. What this guard is
+    // for -- the websocket path dispatching requestId/text/source itself rather
+    // than stashing pending user text -- is unchanged, and the sibling
+    // buttonsSource assertion above already leaves the value open the same way.
+    /requestId: resolveAssistantRequestId\(response\.request_id, response\.meta\),\s*text: normalizedVoiceTranscript,\s*source: /
 );
 assert.equal(bridgeSource.includes('USER_TEXT_LIMIT'), false);
 assert.equal(bridgeSource.includes("new BroadcastChannel('neko_motion_lifecycle')"), false);

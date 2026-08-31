@@ -1232,7 +1232,7 @@ async def test_model_path_caps_total_image_bytes_per_push(monkeypatch) -> None:
     # Pool sized from the MEASURED normalized fixture: room for one, not two.
     # Hardcoding a figure would drift the moment the fixture or codec changes.
     _one = character_runtime._approx_decoded_bytes(
-        character_runtime._normalize_inline_image_to_jpeg_base64(
+        character_runtime._normalize_inline_image_to_model_profile(
             _expands_under_jpeg_base64()
         )
     )
@@ -1278,7 +1278,7 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
     # Pool sized from the MEASURED normalized fixture: room for one, not two.
     # Hardcoding a figure would drift the moment the fixture or codec changes.
     _one = character_runtime._approx_decoded_bytes(
-        character_runtime._normalize_inline_image_to_jpeg_base64(
+        character_runtime._normalize_inline_image_to_model_profile(
             _expands_under_jpeg_base64()
         )
     )
@@ -1419,10 +1419,16 @@ async def test_budget_is_charged_on_the_retained_bytes(monkeypatch) -> None:
         lambda _name: manager,
     )
     # Pool that fits the compressible source several times over but not the
-    # expanded jpeg twice.
+    # expanded jpeg twice. Measured through the resolver's OWN normalizer, so
+    # the figure follows the model profile instead of being a second guess at
+    # what the resolver retains.
     expanding = _expands_under_jpeg_base64()
-    normalized = character_runtime._normalize_inline_image_to_jpeg_base64(expanding)
+    normalized = character_runtime._normalize_inline_image_to_model_profile(expanding)
     grown = character_runtime._approx_decoded_bytes(normalized)
+    # The premise, asserted rather than assumed: if a codec change ever made
+    # the jpeg SMALLER than the png, charging the source would over-count and
+    # this test would pass while proving the opposite of its name.
+    assert grown > character_runtime._approx_decoded_bytes(expanding)
     monkeypatch.setattr(
         character_runtime, "_PLUGIN_IMAGE_TOTAL_MAX_BYTES", int(grown * 1.5)
     )
@@ -1683,12 +1689,24 @@ def _expands_under_jpeg_base64() -> str:
     """A png that provably GROWS when normalized to jpeg.
 
     Flat colour is the extreme of png-compressible and the worst case for
-    jpeg, which spends bytes per block regardless. Measured ~16 KiB png against
-    ~63 KiB jpeg. Callers assert the growth as a precondition, so a codec change
+    jpeg, which spends bytes per block regardless. Measured ~4 KiB png against
+    ~15 KiB jpeg. Callers assert the growth as a precondition, so a codec change
     fails loudly instead of quietly making the test prove nothing.
+
+    Sized to the MODEL PROFILE, and derived from those constants rather than
+    hardcoded. The model resolver now bounds every copy it returns to that
+    profile, so a bigger fixture (this was 2000x2000) comes back DOWNSCALED --
+    and the byte-budget tests below, which are about accounting and not about
+    resolution, would silently be measuring the resize instead of the jpeg
+    expansion they claim to measure. At exactly the profile the resize is a
+    no-op and the claim stays true.
     """
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
     source = BytesIO()
-    Image.new("RGB", (2000, 2000), "white").save(source, format="PNG")
+    Image.new(
+        "RGB", (MODEL_IMAGE_MAX_WIDTH, COMPRESS_TARGET_HEIGHT), "white"
+    ).save(source, format="PNG")
     return base64.b64encode(source.getvalue()).decode("ascii")
 
 
@@ -2849,3 +2867,910 @@ async def test_cancelled_budget_fitting_gives_both_image_queues_back():
     assert client._pending_plugin_images == ["plugin-frame"]
     # 这一轮什么都没提交。
     assert client._conversation_history == []
+
+
+# ---------------------------------------------------------------------------
+# The numbers PLUGIN_DEVELOPMENT_GUIDE.md hands plugin authors.
+#
+# Every ceiling below had zero tests: the inline payload cap, the four upload
+# ceilings, and the double-carry that makes the inline cap mean roughly half of
+# what it says. A plugin author reads those figures out of the guide and sizes
+# their screenshots against them, so a constant raised without touching the
+# prose is not a doc nit -- it is a contract the host stopped honouring while
+# still advertising it. Pin both halves and match them against each other.
+# ---------------------------------------------------------------------------
+
+
+def _guide_text() -> str:
+    from pathlib import Path
+
+    guide = (
+        Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
+    )
+    return guide.read_text(encoding="utf-8")
+
+
+def test_message_plane_payload_ceiling_is_pinned_and_documented() -> None:
+    """The inline push cap is 512 KiB, and the guide must print that number.
+
+    The guide used to say "256 KB", which reads as 256000 and is not what the
+    ingest server measures against. Pin the shipped default and require the
+    guide to carry the exact byte count, so moving the cap without touching the
+    prose fails here rather than in a plugin author's head.
+
+    512 rather than 256 because the constant budgets ENCODED bytes: an inline
+    image travels base64 at 4/3 of its raw size, so the 256 KiB picture the
+    guide tells authors they may push needs 341 KiB of envelope to fit. This
+    literal is also what keeps the derived figure in the sibling test below
+    honest -- without it, moving the constant would move the assertion with it.
+    """
+    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    assert MESSAGE_PLANE_PAYLOAD_MAX_BYTES == 512 * 1024
+
+    text = _guide_text()
+    assert (
+        f"`MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = {MESSAGE_PLANE_PAYLOAD_MAX_BYTES}"
+        in text
+    )
+    # KiB, spelled out, because the whole point of the correction is that the
+    # unit was wrong and not just the formatting.
+    assert f"（{MESSAGE_PLANE_PAYLOAD_MAX_BYTES // 1024} **KiB**" in text
+
+
+def test_every_push_reason_the_sdk_can_return_is_documented() -> None:
+    """The guide's `reason` list must be the code's, derived and not retyped.
+
+    ``payload_too_large`` shipped while the guide's list still named three
+    values, which is the failure mode a hand-written list always has: nobody
+    edits prose when they add a branch. So derive the set from the function
+    itself. A checklist copied out of today's code is the same bug one release
+    later; the literal below is only a tripwire that makes "a reason moved"
+    fail loudly enough that someone goes and reads the prose.
+
+    Two shapes carry a reason out of ``push_message``: the ``"reason"`` value
+    of a returned dict, and the ``primary_failure_reason`` local that feeds
+    those returns (the conditional form hides two constants inside one
+    expression, which a regex over ``"reason": "..."`` would miss entirely --
+    that is why this walks the AST).
+
+    Mutation A: delete `payload_too_large` from the guide's reason list -- red
+    on the coverage loop.
+    Mutation B: rename the constant in the SDK, e.g. ``payload_too_large`` ->
+    ``payload_oversize``, without touching the guide -- red on both.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from plugin.core.context import PluginContext
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(PluginContext.push_message)))
+
+    def _string_constants(node) -> set:
+        return {
+            sub.value
+            for sub in ast.walk(node)
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+        }
+
+    reasons: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and key.value == "reason":
+                    reasons |= _string_constants(value)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id == "primary_failure_reason"
+                ):
+                    reasons |= _string_constants(node.value)
+
+    assert reasons == {
+        "backpressure",
+        "transport_error",
+        "transport_unavailable",
+        "payload_too_large",
+    }, "a reason was added, removed or renamed -- fix the guide, then this literal"
+
+    text = _guide_text()
+    for reason in sorted(reasons):
+        assert f"`{reason}`" in text, f"push_message can return {reason}, undocumented"
+
+
+def test_image_upload_ceilings_are_pinned_and_documented() -> None:
+    """The four upload ceilings, pinned as literals and matched to the guide.
+
+    These are the limits that turn into a raised exception in a plugin's face
+    (32 MiB source, 16 MP source, 8 MiB normalized output) plus the silent
+    downscale edge. All four were undocumented and untested; both gaps are
+    closed here in one place so neither side can drift alone.
+    """
+    from plugin.sdk.shared.core.images import (
+        MAX_IMAGE_EDGE,
+        MAX_SOURCE_IMAGE_BYTES,
+        MAX_SOURCE_IMAGE_PIXELS,
+        MAX_UPLOADED_IMAGE_BYTES,
+    )
+
+    assert MAX_IMAGE_EDGE == 2048
+    assert MAX_UPLOADED_IMAGE_BYTES == 8 * 1024 * 1024
+    assert MAX_SOURCE_IMAGE_BYTES == 32 * 1024 * 1024
+    assert MAX_SOURCE_IMAGE_PIXELS == 16 * 1024 * 1024
+
+    text = _guide_text()
+    assert f"`MAX_IMAGE_EDGE` = {MAX_IMAGE_EDGE}" in text
+    assert f"`MAX_UPLOADED_IMAGE_BYTES` = {MAX_UPLOADED_IMAGE_BYTES}" in text
+    assert f"`MAX_SOURCE_IMAGE_BYTES` = {MAX_SOURCE_IMAGE_BYTES}" in text
+    assert f"`MAX_SOURCE_IMAGE_PIXELS` = {MAX_SOURCE_IMAGE_PIXELS}" in text
+
+
+def _push_one_inline_image(monkeypatch, raw_len: int):
+    """Push one inline image through the real writer; return (result, payload).
+
+    ``payload`` is None when the push was refused. No ZMQ endpoint in a unit
+    test, so this falls through to the legacy host queue -- which hands back
+    the very same ``_build_wire_payload`` envelope the ingest server would have
+    measured, which is the whole point of measuring here rather than
+    hand-rolling a dict.
+    """
+    import logging
+    import queue
+    from pathlib import Path
+
+    from plugin.core import context as context_module
+    from plugin.core.context import PluginContext
+
+    monkeypatch.setattr(context_module, "zmq", None)
+
+    message_queue: "queue.Queue" = queue.Queue()
+    ctx = PluginContext(
+        plugin_id="demo_plugin",
+        config_path=Path("plugin.toml"),
+        logger=logging.getLogger("test"),
+        status_queue=queue.Queue(),
+        message_queue=message_queue,
+    )
+    result = ctx.push_message(
+        visibility=["chat"],
+        ai_behavior="respond",
+        parts=[
+            {"type": "text", "text": "look"},
+            {"type": "image", "data": bytes(raw_len), "mime": "image/png"},
+        ],
+    )
+    if not result["submitted"]:
+        assert message_queue.empty(), "a refused push must not reach the transport"
+        return result, None
+    return result, message_queue.get_nowait()
+
+
+def test_an_inline_image_rides_the_wire_envelope_once(monkeypatch) -> None:
+    """One inline image is carried base64, and NOT a second time raw.
+
+    This test used to assert the opposite, and the guide used to print ~110 KiB
+    as the effective ceiling because of it: the envelope carried the picture
+    twice -- base64 in ``parts[].binary_base64`` (+33%) and the same bytes raw
+    in the legacy ``binary_data`` field -- costing ~2.34x the source, so an
+    image at half the advertised cap already did not fit.
+
+    Both halves of the fix are pinned here, because either one alone leaves the
+    guide lying. Dropping the duplicate takes the envelope from ~2.34x to ~4/3,
+    and raising the cap to 512 KiB is what makes 4/3 of a documented 256 KiB
+    image actually fit. The measured figures the guide now prints are asserted
+    against the real writer rather than restated.
+
+    Mutation A: restore the raw ``binary_data`` duplicate in
+    ``_build_wire_payload`` -- the ratio and the acceptance case both fail.
+    Mutation B: put ``MESSAGE_PLANE_PAYLOAD_MAX_BYTES`` back to 256*1024 --
+    the acceptance case and the bracketed ceiling both fail.
+    """
+    import ormsgpack
+
+    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    raw_len = 256 * 1024
+    result, payload = _push_one_inline_image(monkeypatch, raw_len)
+    assert result["submitted"] is True
+
+    assert base64.b64decode(payload["parts"][1]["binary_base64"]) == bytes(raw_len)
+    # The legacy field is the thing that used to double the bill. It is only
+    # populated now for the one shape where it is the sole carrier (caller
+    # passed binary_data= BESIDE parts=), which is not this shape.
+    assert payload["binary_data"] is None
+
+    packed = len(ormsgpack.packb(payload))
+    # base64 is 4/3; the envelope adds a few hundred bytes on top of that and
+    # nothing else. The upper bound is what would fail if the duplicate came
+    # back -- 2.34x is nowhere near 1.34x.
+    assert 4 / 3 <= packed / raw_len < 1.34
+    # The acceptance case the guide promises in so many words: a 256 KiB inline
+    # image fits the shipped default. Under either half of the old world it did
+    # not.
+    assert packed <= MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    text = _guide_text()
+    # The effective raw-bytes ceiling, derived from the constant the sibling
+    # test pins to a literal, so the two cannot drift apart quietly.
+    effective_kib = MESSAGE_PLANE_PAYLOAD_MAX_BYTES * 3 // 4 // 1024
+    assert effective_kib == 384
+    assert f"**约 {effective_kib} KiB**" in text
+    # The two concrete measurements the guide quotes, checked against the
+    # writer instead of trusted. A doc number nobody measures is how the
+    # 110 KiB line survived a rewrite of the thing it described.
+    assert f"{packed / 1024:.1f} KiB" == "341.8 KiB"
+    assert "341.8 KiB" in text
+    assert "383.6 KiB" in text
+    # Bracket that last figure rather than bisect for it: at 383 KiB the packed
+    # envelope is still under the cap and at 385 KiB it is over, which is only
+    # true if the cap AND the single carry are both in place.
+    #
+    # The under case is measured on the ENVELOPE, because a push that succeeds
+    # hands the wire payload back and the byte count is the thing the guide
+    # quotes.
+    #
+    # The over case is measured on push_message()'s VERDICT instead, and the
+    # reason it changed is worth recording. It used to read the envelope too,
+    # justified by "the payload_too_large gate sits on the ZMQ branch and this
+    # fixture has no ZMQ, so a verdict would only test which transport happened
+    # to be available". That justification died when the gate was added to the
+    # legacy queue exit as well (CodeRabbit found it missing there): the guard
+    # is now on all three exits, so an oversized push is refused everywhere and
+    # there is no envelope left to read back -- packb(None) is one byte, which
+    # is exactly how this surfaced.
+    #
+    # Asserting the refusal is also the stronger claim. The bracket exists to
+    # pin the ceiling the guide prints, and what a plugin author actually meets
+    # at 385 KiB is a rejection, not a byte count they cannot observe.
+    _, under = _push_one_inline_image(monkeypatch, 383 * 1024)
+    assert len(ormsgpack.packb(under)) <= MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+    over_result, over = _push_one_inline_image(monkeypatch, 385 * 1024)
+    assert over is None
+    assert over_result == {
+        "ok": False,
+        "submitted": False,
+        "reason": "payload_too_large",
+    }
+    # 110 KiB is allowed to survive, but only as history. Banning the number
+    # would be the wrong pin -- the paragraph explaining why the effective
+    # ceiling used to sit below the cap is exactly what makes an author trust
+    # the new figure instead of re-deriving it. So pin the FRAMING: it appears
+    # once, in a paragraph that says it used to be that way and names the
+    # 2.34x double carry as the reason.
+    assert text.count("110 KiB") == 1
+    # Blockquote paragraphs are separated by a bare "> " line, not a blank one.
+    history = next(p for p in text.split("\n>\n") if "110 KiB" in p)
+    assert "曾经" in history and "2.34" in history
+    assert "384 KiB" not in history, (
+        "the current ceiling must not be stated inside the historical paragraph"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The proactive text turn (prompt_ephemeral) and the model/display fork
+#
+# Two separate holes, one theme: an image reached a model at whatever
+# resolution it happened to arrive with.
+#
+#   * prompt_ephemeral attached every entry of ``images`` verbatim as a
+#     data: URL. It was the only image-bearing model call in the repo with no
+#     budget ladder at all -- the same provider, the same per-request ceiling
+#     as a user turn, but nothing between the plugin's bytes and the wire.
+#   * _resolve_plugin_model_image re-encoded INLINE bytes and passed URL bytes
+#     through untouched. The SDK bounds an upload's long edge at 2048, so the
+#     measured plugin frame is 2048x1536 / ~49 KiB: far under any byte budget,
+#     and therefore never trimmed by one.
+# ---------------------------------------------------------------------------
+
+
+def _gradient_rgb(width: int, height: int) -> Image.Image:
+    """A real, non-degenerate picture of exactly this size.
+
+    Three different ramps, not flat colour: a flat image compresses to almost
+    nothing at ANY size, so a byte-budget assertion built on one would be
+    measuring rounding noise rather than the picture. Built from
+    ``linear_gradient`` + one resize so a 2048x1536 fixture costs microseconds
+    instead of two million python-level pixel writes.
+    """
+    ramp = Image.linear_gradient("L").resize((width, height))
+    return Image.merge(
+        "RGB", (ramp, ramp.rotate(180), ramp.transpose(Image.FLIP_LEFT_RIGHT))
+    )
+
+
+def _jpeg_b64(width: int, height: int) -> str:
+    buffer = BytesIO()
+    _gradient_rgb(width, height).save(buffer, format="JPEG", quality=92)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _png_b64(width: int, height: int) -> str:
+    """The same picture as a png, for the inline (re-encoded) branch."""
+    buffer = BytesIO()
+    _gradient_rgb(width, height).save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _image_size(b64: str) -> tuple[int, int]:
+    with Image.open(BytesIO(base64.b64decode(b64))) as image:
+        return image.size
+
+
+def _image_format(b64: str) -> str:
+    with Image.open(BytesIO(base64.b64decode(b64))) as image:
+        return str(image.format or "").upper()
+
+
+def _offline_client_for_ephemeral():
+    """The minimum needed to drive prompt_ephemeral to its finally block.
+
+    Modelled on the harness in test_proactive_vision_screenshot_staging.py.
+    ``vision_model`` is left empty so the model switch stays out of the path --
+    these tests are about what gets ATTACHED, not about which model receives it.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock as _AsyncMock, MagicMock as _MagicMock
+    from main_logic.omni_offline_client._client import OmniOfflineClient
+    from utils.llm_client import SystemMessage
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._pending_plugin_images = []
+    client._proactive_image_to_inject = None
+    client._proactive_image_staged_at = 0.0
+    client._proactive_image_history_len = 0
+    client.model = "m"
+    client.vision_model = ""
+    client._is_responding = False
+    client._prefix_buffer_size = 0
+    client.master_name = "M"
+    client.lanlan_name = "L"
+    client.on_text_delta = _AsyncMock()
+    client.on_status_message = _AsyncMock()
+    client.on_response_done = _AsyncMock()
+    client.on_proactive_done = _AsyncMock()
+    client._begin_reasoning_stream = _MagicMock(return_value=1)
+    client._notify_reasoning_done = _AsyncMock()
+
+    sent: list = []
+
+    async def _fake_stream(messages):
+        sent.append(messages)
+        yield SimpleNamespace(content="看到了喵~")
+
+    client._astream_visible_with_tools = _fake_stream
+    return client, sent
+
+
+def _attached_images(messages: list) -> list[str]:
+    """The base64 payloads of every image block on the ephemeral message."""
+    content = messages[-1].content
+    if not isinstance(content, list):
+        return []
+    return [
+        block["image_url"]["url"].split("base64,", 1)[1]
+        for block in content
+        if block.get("type") == "image_url"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_proactive_prompt_ephemeral_images_go_through_the_budget_ladder(
+    monkeypatch,
+) -> None:
+    """The proactive turn now obeys the same ladder as a user turn.
+
+    Mutation: replace the ``fit_images_to_turn_budget`` call in
+    ``prompt_ephemeral`` with ``_budget_images = images`` (what the code did
+    before). Every assertion below fails -- five 1600x1200 frames reach the
+    model untouched and the user is told nothing.
+    """
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
+    client, sent = _offline_client_for_ephemeral()
+    # The LAST frame has a different aspect ratio on purpose. Every frame comes
+    # out of rung 0 at 720 high, but only this one comes out 1280 wide, so the
+    # survivor's shape says WHICH input survived -- and the ladder's rule is
+    # that the newest frame, the one the instruction is about, is the one it
+    # must never drop. With five identical fixtures that would be unobservable.
+    oversized = [_jpeg_b64(1600, 1200) for _ in range(4)] + [_jpeg_b64(1600, 900)]
+    # Budget squeezed to roughly one normalized frame and a half, so the ladder
+    # has to walk all the way down: sample five to three, re-compress, then
+    # drop from the front. Derived from the MEASURED normalized size, because a
+    # hardcoded figure drifts the moment the profile or the codec moves.
+    from utils.screenshot_utils import normalize_image_for_model
+
+    one_normalized = len(base64.b64decode(normalize_image_for_model(oversized[0])))
+    monkeypatch.setattr(
+        _lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one_normalized * 1.5)
+    )
+
+    committed = await client.prompt_ephemeral("======主动搭话======", images=oversized)
+
+    assert committed is True
+    attached = _attached_images(sent[-1])
+    # Something was actually dropped, so the ladder ran to its last rung.
+    assert 0 < len(attached) < len(oversized)
+    # And what survived is at the model profile, not at 1600x1200.
+    for payload in attached:
+        width, height = _image_size(payload)
+        assert width <= MODEL_IMAGE_MAX_WIDTH
+        assert height <= COMPRESS_TARGET_HEIGHT
+    # The last frame is the one the instruction is about; the ladder keeps it.
+    # 1280x720 is reachable only from the 1600x900 input (the 1600x1200 ones
+    # normalize to 960x720), so this identifies the survivor rather than merely
+    # re-checking the bound above.
+    assert _image_size(attached[-1]) == (MODEL_IMAGE_MAX_WIDTH, COMPRESS_TARGET_HEIGHT)
+
+
+@pytest.mark.asyncio
+async def test_proactive_prompt_ephemeral_toasts_only_when_frames_left_the_turn(
+    monkeypatch,
+) -> None:
+    """The gate is "a frame is gone", not "the ladder did something".
+
+    Both directions, because a one-sided assertion here is worth little:
+    a turn that silently loses a frame is as bad as one that toasts about
+    routine housekeeping. The loud half uses three frames on purpose -- that is
+    ``TURN_IMAGE_SAMPLE_KEEP``, so the sample rung cannot fire and this stays a
+    test of the drop rung specifically; the sampling half of the same gate is
+    covered in test_proactive_delivery.py where the ladder itself is under
+    test.
+
+    Mutation A: gate on ``if _budget_notice`` instead of
+    ``_budget_notice.get("user_visible")`` -- the quiet case fails.
+    Mutation B: drop the ``on_status_message`` call entirely -- the loud case
+    fails.
+    """
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+    from utils.screenshot_utils import normalize_image_for_model
+
+    # ── Quiet: normalization alone. One oversized frame, budget untouched, so
+    #    rung 0 rewrites it and nothing is lost from the reader's point of view.
+    client, sent = _offline_client_for_ephemeral()
+    only = _jpeg_b64(1600, 1200)
+
+    await client.prompt_ephemeral("======主动搭话======", images=[only])
+
+    attached = _attached_images(sent[-1])
+    assert len(attached) == 1
+    width, height = _image_size(attached[0])
+    # It really was rewritten -- otherwise "no toast" would prove nothing.
+    assert (width, height) != (1600, 1200)
+    assert width <= MODEL_IMAGE_MAX_WIDTH and height <= COMPRESS_TARGET_HEIGHT
+    client.on_status_message.assert_not_awaited()
+
+    # ── Loud: whole frames dropped. Same call, budget squeezed.
+    client, sent = _offline_client_for_ephemeral()
+    frames = [_jpeg_b64(1600, 1200) for _ in range(3)]
+    one_normalized = len(base64.b64decode(normalize_image_for_model(frames[0])))
+    monkeypatch.setattr(
+        _lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one_normalized * 1.5)
+    )
+
+    await client.prompt_ephemeral("======主动搭话======", images=frames)
+
+    client.on_status_message.assert_awaited_once()
+    import json as _json
+
+    payload = _json.loads(client.on_status_message.await_args.args[0])
+    assert payload["code"] == "TURN_IMAGES_TRIMMED"
+    assert payload["details"]["dropped"] > 0
+    assert payload["details"]["user_visible"] is True
+    # The frontend interpolates these two into the toast copy, so an empty
+    # notice would render "images trimmed from {{original_count}}".
+    assert payload["details"]["original_count"] == 3
+    assert payload["details"]["final_count"] == len(_attached_images(sent[-1]))
+
+
+@pytest.mark.asyncio
+async def test_one_inline_image_reaches_chat_full_size_and_the_model_at_720p(
+    monkeypatch,
+) -> None:
+    """The fork, on the inline branch: same part, two deliberately different copies.
+
+    Mutation A (model side): put ``_normalize_inline_image_to_jpeg_base64``
+    back in ``_resolve_plugin_model_image`` -- the model image comes back
+    2048x1536 and the size assertion fails.
+    Mutation B (chat side): make ``_build_plugin_chat_blocks`` re-encode the
+    inline payload through the model normalizer -- the chat block is no longer
+    the plugin's own bytes and the identity assertion fails.
+    """
+    from app import main_server
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
+    manager = _manager()
+    # 2048x1536 is the MEASURED shape of an SDK-normalized plugin frame: the
+    # SDK bounds the long edge at MAX_IMAGE_EDGE=2048, and nothing downstream
+    # bounded the other one.
+    original = _png_b64(2048, 1536)
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": ["chat"],
+        "parts": [
+            {"type": "image", "binary_base64": original, "mime": "image/png"}
+        ],
+    })
+
+    # ── Chat: the plugin's own bytes, byte for byte, at the uploaded size.
+    manager.render_chat_blocks.assert_awaited_once()
+    blocks = manager.render_chat_blocks.await_args.args[0]
+    images = [block for block in blocks if block["type"] == "image"]
+    assert len(images) == 1
+    assert images[0]["url"] == f"data:image/png;base64,{original}"
+    assert _image_size(images[0]["url"].split("base64,", 1)[1]) == (2048, 1536)
+
+    # ── Model: jpeg, inside the profile.
+    manager.session.stream_image.assert_awaited_once()
+    model_b64 = manager.session.stream_image.await_args.args[0]
+    assert _image_format(model_b64) == "JPEG"
+    width, height = _image_size(model_b64)
+    assert width <= MODEL_IMAGE_MAX_WIDTH
+    assert height <= COMPRESS_TARGET_HEIGHT
+    # Stated as an asymmetry rather than as two independent facts: the point is
+    # that ONE part produced two different resolutions on purpose.
+    assert (width, height) != (2048, 1536)
+
+
+@pytest.mark.asyncio
+async def test_one_url_image_reaches_chat_by_reference_and_the_model_at_720p(
+    monkeypatch,
+) -> None:
+    """The same fork on the URL branch, which is where the hole actually was.
+
+    The inline branch always re-encoded; the URL branch returned the fetched
+    bytes verbatim, and those bytes are the measured 2048x1536 / ~49 KiB frame
+    that no byte budget ever objects to.
+
+    Mutation A (model side): drop the ``normalize_image_for_model`` call after
+    ``_fetch_plugin_image_base64`` -- the model gets 2048x1536 back.
+    Mutation B (chat side): render the fetched bytes inline instead of the
+    ``/media/<id>`` path -- the chat block stops being a reference and the URL
+    assertion fails.
+    """
+    from app import main_server
+    from utils.screenshot_utils import COMPRESS_TARGET_HEIGHT, MODEL_IMAGE_MAX_WIDTH
+
+    manager = _manager()
+    fetched = _jpeg_b64(2048, 1536)
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    # Mocked at the FETCH, deliberately: the resolver -- not the transfer -- is
+    # what has to own the profile guarantee, so bypassing the transfer must not
+    # bypass the bound.
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=fetched),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": ["chat"],
+        "parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
+    })
+
+    # ── Chat: a reference the browser fetches itself, so the reader gets the
+    #    uploaded resolution and those bytes never touch a model request.
+    manager.render_chat_blocks.assert_awaited_once()
+    blocks = manager.render_chat_blocks.await_args.args[0]
+    assert [block for block in blocks if block["type"] == "image"] == [
+        {"type": "image", "url": _browser_url(_IMAGE_URL)}
+    ]
+
+    # ── Model: the same picture, bounded.
+    manager.session.stream_image.assert_awaited_once()
+    model_b64 = manager.session.stream_image.await_args.args[0]
+    assert model_b64 != fetched, "the URL branch used to pass bytes through"
+    assert _image_format(model_b64) == "JPEG"
+    width, height = _image_size(model_b64)
+    assert width <= MODEL_IMAGE_MAX_WIDTH
+    assert height <= COMPRESS_TARGET_HEIGHT
+
+
+@pytest.mark.asyncio
+async def test_routine_normalization_is_logged_below_warning(monkeypatch) -> None:
+    """Log level follows the same "did anything actually go missing" question.
+
+    rung 0 is unconditional, so an ordinary attached photo produces a notice on
+    essentially every turn that carries one. Emitting all of them at WARNING
+    makes "the picture got smaller" and "whole frames never reached the model"
+    indistinguishable in the log, and the second one is what someone greps for
+    at 2am (Codex).
+
+    The module logger is swapped rather than using caplog: this project's
+    loggers do not propagate into the stdlib root handler, so caplog collects
+    nothing here and the test would pass by observing an empty list.
+
+    Both directions asserted -- a one-sided version would pass just as happily
+    against a branch that logged everything at info, burying the case that
+    matters.
+    """
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import normalize_image_for_model
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def _make(self, level):
+            def _log(message, *args, **kwargs):
+                self.calls.append((level, str(message)))
+            return _log
+
+        def __getattr__(self, name):
+            return self._make(name)
+
+    def _budget_levels(rec):
+        return [lvl for lvl, msg in rec.calls if "images fitted for the" in msg]
+
+    # Quiet: one oversized frame, budget untouched. Normalization only.
+    recorder = _Recorder()
+    monkeypatch.setattr(_lifecycle, "logger", recorder)
+    client, _sent = _offline_client_for_ephemeral()
+    await client.prompt_ephemeral("======主动搭话======", images=[_jpeg_b64(1600, 1200)])
+
+    assert _budget_levels(recorder) == ["info"], (
+        f"routine normalization should log once at info, got {_budget_levels(recorder)}"
+    )
+
+    # Loud: whole frames dropped.
+    recorder = _Recorder()
+    monkeypatch.setattr(_lifecycle, "logger", recorder)
+    frames = [_jpeg_b64(1600, 1200) for _ in range(3)]
+    one = len(base64.b64decode(normalize_image_for_model(frames[0])))
+    monkeypatch.setattr(_lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one * 1.5))
+    client, _sent = _offline_client_for_ephemeral()
+    await client.prompt_ephemeral("======主动搭话======", images=frames)
+
+    assert _budget_levels(recorder) == ["warning"], (
+        f"losing whole frames must stay at warning, got {_budget_levels(recorder)}"
+    )
+
+
+def test_every_budget_notice_log_picks_its_level_from_user_visible() -> None:
+    """Both notice call sites must share the level rule, not just the tested one.
+
+    The behavioural test above drives prompt_ephemeral (_lifecycle.py). The
+    other call site is stream_text (_streaming.py), whose fixture is far
+    heavier, and a mutation that reverts ONLY that one would otherwise sail
+    through green -- verified: flipping _streaming.py back to an unconditional
+    logger.warning failed nothing.
+
+    So this pins the shape at both sites. It is deliberately a source
+    assertion and deliberately narrow: it does not claim the logging works,
+    only that neither site has drifted back to a hardcoded level while the
+    other kept the rule.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    sites = [
+        root / "main_logic" / "omni_offline_client" / "_streaming.py",
+        root / "main_logic" / "omni_offline_client" / "_lifecycle.py",
+    ]
+    for path in sites:
+        text = path.read_text(encoding="utf-8")
+        assert "images fitted for the" in text, f"{path.name}: notice log vanished"
+        # The level must be chosen from the notice, never hardcoded at the call.
+        assert re.search(
+            r"_budget_log\s*=\s*\(\s*logger\.warning\s*if\s*_budget_notice\.get\(\s*[\"']user_visible[\"']\s*\)\s*else\s*logger\.info\s*\)",
+            text,
+        ), f"{path.name}: budget notice no longer picks its level from user_visible"
+        assert not re.search(
+            r"logger\.warning\(\s*\n\s*[\"']((prompt_ephemeral )?[Tt]urn )?[Ii]mages fitted", text
+        ), f"{path.name}: budget notice is hardcoded to warning again"
+
+
+@pytest.mark.asyncio
+async def test_trim_notice_waits_for_the_proactive_turn_to_actually_speak(
+    monkeypatch,
+) -> None:
+    """No visible output means no trim notice, however much was trimmed.
+
+    The notice used to fire as soon as the ladder ran, i.e. before the LLM was
+    even called. A proactive turn can then be cancelled, exhaust its retries, or
+    come back empty -- all of which prompt_ephemeral deliberately keeps silent,
+    because the user never asked for this turn and never knew it was coming.
+    The result was a lone "images were adjusted" toast attached to nothing: no
+    reply on screen, no way to make sense of it. Worse than saying nothing
+    (Codex).
+
+    Staging it until the first emitted text is what makes the earlier rationale
+    true again -- that rationale rests on "this turn happened", which is only
+    established at that moment.
+
+    The empty stream here stands in for the whole family: cancelled, retried to
+    exhaustion, or answered with nothing. They differ in how they end, not in
+    what the user sees, which is nothing.
+    """
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import normalize_image_for_model
+
+    client, _sent = _offline_client_for_ephemeral()
+
+    async def _silent_stream(messages):
+        # 流正常结束却一个可见字符都没有：emitted_any 保持 False。
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    client._astream_visible_with_tools = _silent_stream
+
+    frames = [_jpeg_b64(1600, 1200) for _ in range(3)]
+    one = len(base64.b64decode(normalize_image_for_model(frames[0])))
+    monkeypatch.setattr(
+        _lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one * 1.5)
+    )
+
+    await client.prompt_ephemeral("======主动搭话======", images=frames)
+
+    # The ladder definitely dropped frames -- otherwise this proves nothing.
+    trims = [
+        call for call in client.on_status_message.await_args_list
+        if "TURN_IMAGES_TRIMMED" in str(call)
+    ]
+    assert trims == [], (
+        "a turn that never spoke must not report what it trimmed: "
+        f"{trims}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_trim_notice_fires_once_across_a_multi_chunk_stream(monkeypatch) -> None:
+    """Staging must clear on send, or every chunk re-fires the toast.
+
+    The send sits inside the per-chunk emit branch, which is the only place
+    that knows the turn has spoken. That branch runs once per delta, so the
+    pending slot has to be cleared as it fires. The single-chunk fixture used
+    by the sibling tests cannot see the difference -- verified: removing the
+    clear failed nothing until this test existed.
+
+    Ten chunks rather than two so an off-by-one in the clearing (say, clearing
+    on the second delta) still shows up as a count, not as a coin flip.
+    """
+    from types import SimpleNamespace
+
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import normalize_image_for_model
+
+    client, _sent = _offline_client_for_ephemeral()
+
+    async def _chatty_stream(messages):
+        for index in range(10):
+            yield SimpleNamespace(content=f"第{index}段喵~")
+
+    client._astream_visible_with_tools = _chatty_stream
+
+    frames = [_jpeg_b64(1600, 1200) for _ in range(3)]
+    one = len(base64.b64decode(normalize_image_for_model(frames[0])))
+    monkeypatch.setattr(
+        _lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one * 1.5)
+    )
+
+    await client.prompt_ephemeral("======主动搭话======", images=frames)
+
+    trims = [
+        call for call in client.on_status_message.await_args_list
+        if "TURN_IMAGES_TRIMMED" in str(call)
+    ]
+    assert len(trims) == 1, (
+        f"the trim notice must be sent exactly once per turn, got {len(trims)}"
+    )
+    # And it did arrive -- a clear that fired too early would also give len 0.
+    assert client.on_text_delta.await_count == 10
+
+
+@pytest.mark.asyncio
+async def test_text_only_proactive_turn_completes_without_touching_image_state() -> None:
+    """A proactive turn with no images at all must still finish cleanly.
+
+    The staged-notice slot is read unconditionally at the first emitted delta,
+    but it was being bound inside ``if images:``. A text-only proactive turn --
+    by far the common case -- therefore raised UnboundLocalError at that read.
+
+    The failure mode is worse than a crash in isolation: on_text_delta has
+    ALREADY delivered the first chunk to the user by then, so the reader sees a
+    reply while prompt_ephemeral falls into its failure branch and returns
+    False. The proactive scheduler then treats a turn the user plainly saw as
+    one that never happened.
+
+    Both halves are asserted for that reason -- returning True is not enough if
+    the text never arrived, and delivered text is not enough if the turn is
+    still reported as failed.
+    """
+    from types import SimpleNamespace
+
+    client, sent = _offline_client_for_ephemeral()
+
+    async def _talky(messages):
+        # 替掉夹具的 stream 就丢了它对 sent 的追加，这里补上，
+        # 否则「LLM 被调用了」这条断言测的是夹具自己。
+        sent.append(messages)
+        yield SimpleNamespace(content="今天也想你了喵~")
+
+    client._astream_visible_with_tools = _talky
+
+    result = await client.prompt_ephemeral("======主动搭话======")
+
+    assert client.on_text_delta.await_count == 1, "the turn must actually speak"
+    assert result is not False, (
+        "a text-only proactive turn delivered its text but was reported failed"
+    )
+    # No image state was involved, so no trim notice may appear either.
+    trims = [
+        call for call in client.on_status_message.await_args_list
+        if "TURN_IMAGES_TRIMMED" in str(call)
+    ]
+    assert trims == []
+    assert sent, "the LLM should have been called"
+
+
+@pytest.mark.asyncio
+async def test_trim_notice_survives_a_reply_shorter_than_the_prefix_buffer(
+    monkeypatch,
+) -> None:
+    """A short reply is delivered by the flush path, which must notice too.
+
+    ``_prefix_buffer_size`` holds back the opening characters so a leading
+    "MasterName:" can be stripped before anything reaches the screen. A reply
+    shorter than that threshold therefore never satisfies the per-chunk emit
+    branch at all -- the whole thing is delivered by the end-of-stream flush.
+
+    The staged notice originally lived inline on the chunk branch only, so
+    those turns committed normally and silently dropped TURN_IMAGES_TRIMMED
+    (Codex). Every fixture in this file sets ``_prefix_buffer_size = 0``, which
+    is why 451 passing tests never went near it.
+    """
+    from types import SimpleNamespace
+
+    from main_logic.omni_offline_client import _lifecycle
+    from utils.screenshot_utils import normalize_image_for_model
+
+    client, _sent = _offline_client_for_ephemeral()
+    # Big enough that the whole reply below stays buffered to the very end.
+    client._prefix_buffer_size = 64
+
+    async def _short_reply(messages):
+        yield SimpleNamespace(content="喵~")
+
+    client._astream_visible_with_tools = _short_reply
+
+    frames = [_jpeg_b64(1600, 1200) for _ in range(3)]
+    one = len(base64.b64decode(normalize_image_for_model(frames[0])))
+    monkeypatch.setattr(
+        _lifecycle, "TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES", int(one * 1.5)
+    )
+
+    await client.prompt_ephemeral("======主动搭话======", images=frames)
+
+    # The reply really did go out through the flush, not the chunk branch.
+    assert client.on_text_delta.await_count == 1
+    trims = [
+        call for call in client.on_status_message.await_args_list
+        if "TURN_IMAGES_TRIMMED" in str(call)
+    ]
+    assert len(trims) == 1, (
+        f"a short reply still lost whole frames and must say so, got {len(trims)}"
+    )
