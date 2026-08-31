@@ -223,8 +223,15 @@ def stop_bridge() -> None:
     _bridge.stop()
 
 
-def publish_record(*, store: str, record: dict[str, object], topic: str = "all") -> None:
-    _bridge.enqueue_delta(store=store, topic=topic, payload=record)
+def publish_record(*, store: str, record: dict[str, object], topic: str = "all") -> bool:
+    """Queue one record for the plane. Returns whether it was accepted.
+
+    The result used to be dropped. It is reported now because one caller --
+    the plugin message uplink -- is the only thing standing between
+    ``push_message()`` and the character actually speaking, and a silent
+    refusal there is indistinguishable from a message that was delivered.
+    """
+    return bool(_bridge.enqueue_delta(store=store, topic=topic, payload=record))
 
 
 def publish_snapshot(

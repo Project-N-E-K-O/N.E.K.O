@@ -683,10 +683,54 @@ class PluginCommunicationResourceManager:
             return
         await self._forward_message(msg)
 
-    async def _forward_message(self, msg: Dict[str, Any]) -> None:
-        if not self._message_target_queue:
-            return
+    def _publish_message_to_plane(self, msg: Dict[str, Any]) -> bool:
+        """Write one plugin message into the message plane. Best effort.
 
+        This is the path that actually reaches the user: ``ProactiveBridge``
+        subscribes to the plane's ``messages.`` topic and pushes what it sees to
+        main_server. The control-plane store this method sits next to is a cache
+        -- ``append_message_record``'s own comment forbids mirroring it into the
+        plane -- and ``_message_target_queue`` has no consumer, so without this
+        write ``push_message()`` answers ``submitted=True`` for a message nobody
+        will ever hear.
+
+        The host is the writer on purpose. A plugin writing the ingest socket
+        directly (what this branch replaced) can put any ``plugin_id`` it likes
+        in the envelope; by the time a record gets here ``_route_message`` has
+        stamped the id bound to the authenticated transport it arrived on.
+
+        Never raises into the uplink consumer: a plane that is down must not
+        take the message loop with it.
+        """
+        try:
+            from plugin.message_plane.stores import (
+                MESSAGES_STORE_NAME,
+                MESSAGES_TOPIC,
+            )
+            from plugin.server.messaging.plane_bridge import publish_record
+
+            queued = publish_record(
+                store=MESSAGES_STORE_NAME,
+                record=msg,
+                topic=MESSAGES_TOPIC,
+            )
+        except Exception:
+            self.logger.debug(
+                "Plugin {} message not written to the message plane",
+                self.plugin_id,
+                exc_info=True,
+            )
+            return False
+        if not queued:
+            # Refused, not crashed: the bridge is disabled or its queue is full.
+            # Worth a line -- the plugin has already been told ``submitted``.
+            self.logger.debug(
+                "Plugin {} message refused by the message plane bridge",
+                self.plugin_id,
+            )
+        return queued
+
+    async def _forward_message(self, msg: Dict[str, Any]) -> None:
         if isinstance(msg, dict) and not msg.get("_bus_stored"):
             try:
                 from plugin.core.state import state
@@ -699,6 +743,14 @@ class PluginCommunicationResourceManager:
                 state.append_message_record(msg)
             except Exception:
                 self.logger.debug("Failed to store message for plugin {}", self.plugin_id, exc_info=True)
+            # After the cache and BEFORE the legacy queue guard below: the plane
+            # is the delivery path and the queue is a leftover, so a host with no
+            # queue wired must still deliver. Gated on the same "not yet stored"
+            # condition so a record replayed through here is not published twice.
+            self._publish_message_to_plane(msg)
+
+        if not self._message_target_queue:
+            return
 
         try:
             await asyncio.wait_for(self._message_target_queue.put(msg), timeout=0.05)

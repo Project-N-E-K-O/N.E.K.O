@@ -322,9 +322,19 @@ CONVERSATIONS_STORE_NAME = "conversations"
 CONVERSATIONS_TOPIC = "all"
 
 
+# 插件推送的消息。和 conversations 一样单列常量：读侧（proactive_bridge 订阅
+# "messages." 前缀）、注册表、以及宿主的写入方原本会各写一遍字面量，多一处就
+# 多一个漏改时静默丢消息的入口——这条链断过一次，代价是 push_message 返回
+# submitted=True 而角色一句话都不说。
+MESSAGES_STORE_NAME = "messages"
+
+# 与 conversations / frames 同：topic 写死 "all"。
+MESSAGES_TOPIC = "all"
+
+
 # 通用 store：都用 MESSAGE_PLANE_STORE_MAXLEN。
 DEFAULT_STORE_NAMES: tuple[str, ...] = (
-    "messages",
+    MESSAGES_STORE_NAME,
     "events",
     "lifecycle",
     "runs",

@@ -486,3 +486,137 @@ async def test_entry_update_register_uses_outer_entry_id_for_meta() -> None:
             state.event_handlers.update(handlers_backup)
         with state._snapshot_cache_lock:
             state._snapshot_cache = cache_backup
+
+
+# ---------------------------------------------------------------------------
+# push_message 的实际投递路径：message plane
+# ---------------------------------------------------------------------------
+#
+# 插件推送要走到用户耳朵里，唯一的路是 message plane —— ProactiveBridge 订阅
+# 它的 "messages." 前缀，收到才会推给 main_server。控制面那个 store 是缓存
+# （append_message_record 自己的注释禁止把它镜像进 plane），而
+# _message_target_queue 全仓没有消费者。这条链断过一次：push_message() 返回
+# submitted=True，角色一句话都不说。
+
+
+def _capture_plane(monkeypatch, *, accepted: bool = True) -> list[dict]:
+    """Record every write the host makes to the message plane."""
+    import plugin.server.messaging.plane_bridge as plane_bridge
+
+    written: list[dict] = []
+
+    def _publish_record(*, store, record, topic="all"):
+        written.append({"store": store, "topic": topic, "record": copy.deepcopy(record)})
+        return accepted
+
+    monkeypatch.setattr(plane_bridge, "publish_record", _publish_record)
+    return written
+
+
+@pytest.mark.asyncio
+async def test_a_pushed_message_reaches_the_message_plane(monkeypatch) -> None:
+    """The delivery path itself.
+
+    Mutation: drop the ``_publish_message_to_plane`` call from
+    ``_forward_message``. Everything else about the turn still looks healthy --
+    which is exactly why this went unnoticed.
+    """
+    from plugin.message_plane.stores import MESSAGES_STORE_NAME, MESSAGES_TOPIC
+
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    manager._message_target_queue = asyncio.Queue()
+    monkeypatch.setattr(state, "append_message_record", lambda record: None)
+    written = _capture_plane(monkeypatch)
+
+    await manager._route_message(
+        {
+            "type": "MESSAGE_PUSH",
+            "plugin_id": "victim-plugin",
+            "parts": [{"type": "text", "text": "hello"}],
+        }
+    )
+
+    assert len(written) == 1, "消息没有进入 message plane"
+    hop = written[0]
+    # ProactiveBridge 订阅 "messages." 前缀，而 PUB 的 topic 是 f"{store}.{topic}"。
+    assert hop["store"] == MESSAGES_STORE_NAME
+    assert hop["topic"] == MESSAGES_TOPIC
+    # 身份是宿主在认证传输上绑定的那个，不是 payload 自称的。
+    assert hop["record"]["plugin_id"] == "authenticated-plugin"
+
+
+@pytest.mark.asyncio
+async def test_the_plane_write_does_not_depend_on_the_legacy_queue(monkeypatch) -> None:
+    """No consumer reads that queue, so it must not gate delivery.
+
+    Mutation: put the plane write back behind the ``_message_target_queue``
+    guard.
+    """
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    manager._message_target_queue = None
+    monkeypatch.setattr(state, "append_message_record", lambda record: None)
+    written = _capture_plane(monkeypatch)
+
+    await manager._route_message(
+        {"type": "MESSAGE_PUSH", "parts": [{"type": "text", "text": "hello"}]}
+    )
+
+    assert len(written) == 1, "没有 legacy 队列时消息就到不了 plane"
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_record_is_not_published_twice(monkeypatch) -> None:
+    """``_bus_stored`` already marks a record as handled; honour it here too."""
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    manager._message_target_queue = asyncio.Queue()
+    monkeypatch.setattr(state, "append_message_record", lambda record: None)
+    written = _capture_plane(monkeypatch)
+
+    await manager._route_message(
+        {
+            "type": "MESSAGE_PUSH",
+            "_bus_stored": True,
+            "parts": [{"type": "text", "text": "hello"}],
+        }
+    )
+
+    assert written == [], "已经处理过的记录被重复写进了 plane"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_plane_does_not_take_down_the_message_loop(monkeypatch) -> None:
+    """A plane that raises must not kill the uplink consumer."""
+    import plugin.server.messaging.plane_bridge as plane_bridge
+
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    target_queue: asyncio.Queue = asyncio.Queue()
+    manager._message_target_queue = target_queue
+    monkeypatch.setattr(state, "append_message_record", lambda record: None)
+
+    def _explode(**_kwargs):
+        raise RuntimeError("plane down")
+
+    monkeypatch.setattr(plane_bridge, "publish_record", _explode)
+
+    await manager._route_message(
+        {"type": "MESSAGE_PUSH", "parts": [{"type": "text", "text": "hello"}]}
+    )
+
+    # 回合继续：legacy 队列照常收到，异常没有向上冒。
+    assert target_queue.qsize() == 1
