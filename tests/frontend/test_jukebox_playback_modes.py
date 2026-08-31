@@ -7156,13 +7156,17 @@ def test_jukebox_targetless_previous_leaves_the_music_playing(mock_page: Page):
 
 @pytest.mark.frontend
 def test_jukebox_close_tears_down_when_only_the_panel_was_used(mock_page: Page):
-    """The preserve-on-close branch must not fire without a headless request.
+    """A hand-driven panel must tear down on close, not be kept alive.
 
-    hasHeadlessRuntime() keys on State.headlessRuntimeRequested precisely to
-    tell "the AI asked for a runtime" apart from "the user opened the panel and
-    played something".  Without that key, closing a panel that was only ever
-    driven by hand would preserve a runtime nobody asked to keep alive: the
-    music would go on playing with no UI, and the parts would never unload.
+    Only ensureRuntime() sets isRuntimeReady, and the panel path in open() never
+    calls it -- so a session the user drove by hand reaches close() with the
+    runtime not ready, and the preserve branch must not fire.  Preserving it
+    would leave music playing with no UI and the parts never unloading.
+
+    Deliberately does NOT fabricate isRuntimeReady: an earlier version of this
+    test set it to true so that hasHeadlessRuntime()'s headlessRuntimeRequested
+    check would be reached, and thereby claimed coverage of a state the app
+    cannot produce -- every caller that sets isRuntimeReady also sets the flag.
     """
     setup_headless_jukebox_page(mock_page)
 
@@ -7182,13 +7186,14 @@ def test_jukebox_close_tears_down_when_only_the_panel_was_used(mock_page: Page):
           J.State.container = wrapper;
           J.State.styleElement = style;
           J.State.isOpen = true;
-          J.State.isRuntimeReady = true;
           J.initPlayer({ headless: false });
           await J.playSong('song1');
 
           const before = {
-            // 全程没有任何 headless 指令，这个标志必须还是假的。
+            // 全程没有任何 headless 指令，也没人调过 ensureRuntime：这就是
+            // 「用户自己开面板放歌」的真实状态。
             headlessRuntimeRequested: J.State.headlessRuntimeRequested,
+            isRuntimeReady: J.State.isRuntimeReady,
             playing: J.State.isPlaying
           };
 
@@ -7213,8 +7218,12 @@ def test_jukebox_close_tears_down_when_only_the_panel_was_used(mock_page: Page):
         """
     )
 
-    assert result["before"] == {"headlessRuntimeRequested": False, "playing": True}
-    # 没人请求过无头运行时：关闭就该停播、彻底拆除、通知卸载分片。
+    assert result["before"] == {
+        "headlessRuntimeRequested": False,
+        "isRuntimeReady": False,
+        "playing": True,
+    }
+    # 手动开的面板：关闭就该停播、彻底拆除、通知卸载分片。
     assert result["stopped"] == 1, result
     assert result["fullCloseEvents"] == 1, result
     assert result["isPlaying"] is False
