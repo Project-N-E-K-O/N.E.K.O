@@ -118,7 +118,12 @@ class FrameRecord(BusRecord):
 
 
 class FrameList(_PluginBusList[FrameRecord]):
-    pass
+    # 帧是快照，链式操作就地算完，不重放。文档里写的
+    # ``frames = await bus.frames.get(...)`` 之后 ``.sort(...).limit(1)``
+    # 走的正是这条路：没有这个开关，物化时会在事件循环里同步调
+    # ``FrameClient.get()``，拿回一个协程当 list 用。conversations 那侧不需要
+    # 同样的开关——它的列表根本不挂 plan，天生就是 eager。
+    _snapshot_chain = True
 
 
 class FrameClient(BusRpcClientBase):

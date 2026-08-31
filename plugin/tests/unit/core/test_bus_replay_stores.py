@@ -13,6 +13,7 @@ missing from it.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -103,3 +104,108 @@ def test_the_replayable_stores_match_what_clients_expose() -> None:
                 f"client 暴露了 store {store!r}，但 _replay_plan 不认识它——"
                 "插件对它做任何链式操作都会抛"
             )
+
+
+# ── the documented chain, run the way the docs run it ──────────────────
+
+
+class _StubRpc:
+    """Stands in for the ZMQ round trip on both the sync and async seam."""
+
+    RESP = {
+        "ok": True,
+        "result": {
+            "items": [
+                {"payload": {"id": "f1", "captured_at": 2.0, "source": "screen"}},
+                {"payload": {"id": "f2", "captured_at": 1.0, "source": "screen"}},
+                {"payload": {"id": "f3", "captured_at": 3.0, "source": "screen"}},
+            ]
+        },
+    }
+
+    async def request_async(self, **_kw):
+        return self.RESP
+
+    def request(self, **_kw):
+        return self.RESP
+
+
+def _frame_client():
+    from plugin.core.bus.frames import FrameClient
+
+    ctx = SimpleNamespace(plugin_id="demo", _mp_rpc_client=_StubRpc(), bus=None)
+    client = FrameClient(ctx)
+    ctx.bus = SimpleNamespace(frames=client)
+    return ctx, client
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_documented_frame_chain_works_inside_an_async_handler() -> None:
+    """``await bus.frames.get(...)`` then ``.sort(...).limit(1)``.
+
+    That is the example in docs/plugins/sdk-reference.md, and a plugin handler
+    is async, so this is the only way it ever runs. Without ``FrameList``
+    declaring itself a snapshot the chain puts the list in lazy mode, and
+    materialization synchronously calls ``FrameClient.get()`` while the loop is
+    running -- which returns a coroutine, not a list:
+    ``AttributeError: 'coroutine' object has no attribute 'sort'``.
+
+    Mutation: drop ``FrameList._snapshot_chain``.
+    """
+    _ctx, client = _frame_client()
+    frames = await client.get(max_count=9)
+
+    latest = frames.sort(by="timestamp", reverse=True).limit(2)
+
+    assert [r.frame_id for r in latest] == ["f3", "f1"], (
+        "链式结果不对——不崩不等于排对了：lazy 模式下 sort() 根本不在本地算"
+    )
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_async_and_sync_frame_chains_agree() -> None:
+    """The same expression must not depend on whether a loop is running.
+
+    A fix that only stops the crash could still leave the async path returning
+    unsorted records; pinning it against the sync path is what makes that
+    visible.
+    """
+    def _sync_leg():
+        # In a worker thread on purpose: ``get()`` branches on whether a loop is
+        # running, and this test function is itself a coroutine, so calling it
+        # here would be the async path wearing a sync name.
+        _sctx, sync_client = _frame_client()
+        return [
+            r.frame_id
+            for r in sync_client.get(max_count=9)
+            .sort(by="timestamp", reverse=True)
+            .limit(2)
+        ]
+
+    sync_out = await asyncio.to_thread(_sync_leg)
+
+    _actx, async_client = _frame_client()
+    frames = await async_client.get(max_count=9)
+    async_out = [r.frame_id for r in frames.sort(by="timestamp", reverse=True).limit(2)]
+
+    assert async_out == sync_out == ["f3", "f1"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_frames_can_still_be_reloaded_explicitly() -> None:
+    """The snapshot flag must not cost the frames list its replay plan.
+
+    ``_is_lazy_mode()`` gates chaining; ``reload_with``/``reload_with_async``
+    look at ``_plan`` directly. Keeping the plan is what lets a plugin ask for
+    fresh frames on purpose -- and it is why ``_replay_plan``'s ``frames``
+    branch is still a live path rather than dead code.
+    """
+    ctx, client = _frame_client()
+    frames = await client.get(max_count=9)
+
+    assert frames._plan is not None, "计划被顺手删了——显式 reload 就没了"
+    refreshed = await frames.reload_with_async(ctx)
+    assert [r.frame_id for r in refreshed] == ["f1", "f2", "f3"]

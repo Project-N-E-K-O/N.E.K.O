@@ -295,7 +295,18 @@ class BusList(BusListCore, Generic[TRecord]):
         self._plan: Optional[TraceNode] = plan
         self._cache_valid: bool = True
 
+    # 只读快照 store 的列表把它翻成 True。lazy 模式下 sort()/limit()/filter()
+    # **不在本地算**，只记计划、等物化时重放；而重放是同步调 client.get()，在
+    # 事件循环里那一调拿回的是协程（get() 自己会转发到 get_async），于是
+    # `await bus.frames.get(...)` 之后一链式就 AttributeError，还漏一个没 await
+    # 的协程。快照没有"重放到最新"的语义可言——它就是一次读到的那批——所以本地
+    # 算才是对的。_plan 仍然保留：reload_with()/reload_with_async() 直接看
+    # _plan，不看这个开关，显式刷新照旧可用。
+    _snapshot_chain: bool = False
+
     def _is_lazy_mode(self) -> bool:
+        if self._snapshot_chain:
+            return False
         return self._ctx is not None and self._plan is not None
 
     def _invalidate_cache(self) -> None:
