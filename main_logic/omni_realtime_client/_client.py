@@ -116,6 +116,10 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         on_status_message: Optional[Callable[[str], Awaitable[None]]] = None,
         on_repetition_detected: Optional[Callable[[], Awaitable[None]]] = None,
         get_host_turn_id: Optional[Callable[[], "str | None"]] = None,
+        # Which character this session belongs to. Optional because the field
+        # is only used to attribute frame copies -- a caller that does not pass
+        # it gets the previous behaviour (unattributed) rather than a crash.
+        lanlan_name: Optional[str] = None,
         extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]]] = None,
         api_type: Optional[str] = None,
         on_tool_call: Optional[OnToolCallCallback] = None,
@@ -170,6 +174,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.on_status_message = on_status_message
         self.on_repetition_detected = on_repetition_detected
         self.get_host_turn_id = get_host_turn_id
+        self.lanlan_name = lanlan_name
         self.extra_event_handlers = extra_event_handlers or {}
         self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
         # Tool handlers have narrower ownership than generic background work:

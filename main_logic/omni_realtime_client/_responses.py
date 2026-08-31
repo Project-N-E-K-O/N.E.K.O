@@ -877,11 +877,12 @@ class _ResponseMixin:
             # while the store indexes captured_at as a wall clock -- a monotonic
             # reading there would file every frame near the epoch. The forwarder
             # stamps arrival time instead, and turn_id is what ties these frames
-            # to the turn they were sent with. lanlan_name is None because the
-            # realtime client is never told which character owns it.
+            # to the turn they were sent with. The character name comes off the
+            # session: frames/all is shared, so without it a plugin cannot tell
+            # one character's pictures from another's.
             try:
                 if await publish_provider_frame_observed_best_effort(
-                    None,
+                    getattr(self, "lanlan_name", None),
                     image_base64=image_b64,
                     source=source,
                     turn_id=turn_id,

@@ -2232,6 +2232,8 @@ class LifecycleMixin:
                 api_key=realtime_config['api_key'],
                 model=realtime_config['model'],
                 voice=self._resolve_realtime_voice(realtime_config),
+                # 同上：帧抄送的角色归属。
+                lanlan_name=self.lanlan_name,
                 on_text_delta=self.handle_text_data,
                 on_audio_delta=self.handle_audio_data,
                 on_audio_done=self.handle_audio_done,
@@ -2533,6 +2535,10 @@ class LifecycleMixin:
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
                     voice=self._resolve_realtime_voice(realtime_config),
+                    # 帧抄送要能归到角色：多角色同时开实时会话时，frames/all
+                    # 是共享的，没有这个名字插件分不出哪一帧属于谁（离线侧一直
+                    # 是带名字的，realtime 这侧此前恒为 None）。
+                    lanlan_name=self.lanlan_name,
                     on_text_delta=self.handle_text_data,
                     on_audio_delta=self.handle_audio_data,
                     on_audio_done=self.handle_audio_done,

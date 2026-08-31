@@ -462,3 +462,53 @@ async def test_close_cancels_the_in_flight_frame_copies():
     assert task.done(), "close 返回时抄送还在跑"
     assert task.cancelled()
     assert not client._frame_copy_tasks, "集合没被清空"
+
+
+@pytest.mark.unit
+async def test_a_realtime_frame_is_attributed_to_its_character(monkeypatch):
+    """frames/all is shared, so an unattributed frame is an unusable one.
+
+    With several characters holding realtime sessions at once, a plugin reading
+    the bus could not tell whose pictures it was looking at -- while offline
+    frames carried the name correctly. The client is told which character it
+    belongs to at construction.
+
+    Mutation: drop ``lanlan_name`` from the constructor, or publish ``None``
+    again from the transport / responses publish sites.
+    """
+    recorder = _install_recorder(monkeypatch)
+    client = _make_client("qwen-omni-turbo")
+    client.lanlan_name = "neko-b"
+
+    result = await client.stream_image(DUMMY_IMAGE_B64, source="screen")
+
+    assert result.accepted is True
+    await _wait_for_publish(recorder)
+    assert [call["lanlan_name"] for call in recorder.calls] == ["neko-b"]
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_the_constructor_carries_the_character_name():
+    """The plumbing, not just the field.
+
+    ``core/lifecycle.py`` passes it at construction; a client built without it
+    keeps the old unattributed behaviour rather than raising, which is why this
+    pins both halves.
+    """
+    named = OmniRealtimeClient(
+        base_url="wss://test.example.com",
+        api_key="k",
+        model="qwen-omni-turbo",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        lanlan_name="neko-a",
+    )
+    assert named.lanlan_name == "neko-a"
+
+    unnamed = OmniRealtimeClient(
+        base_url="wss://test.example.com",
+        api_key="k",
+        model="qwen-omni-turbo",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+    )
+    assert unnamed.lanlan_name is None

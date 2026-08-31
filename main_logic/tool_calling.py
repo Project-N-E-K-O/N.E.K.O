@@ -55,7 +55,17 @@ ToolHandler = Callable[[Dict[str, Any]], Union[Awaitable[Any], Any]]
 # Ceilings on the image channel of a tool result. A handler that hands back a
 # 4K frame would stall the whole tool loop, so the limit is enforced here for
 # both in-process handlers and remote plugin callbacks.
+# What a tool is ALLOWED to hand back. Kept where it was: this is the
+# author-facing contract, and shrinking it to suit a transport detail would
+# push the problem onto every tool that returns a screenshot.
 _MAX_TOOL_IMAGE_B64_BYTES = 2 * 1024 * 1024
+
+# What actually rides the request -- and therefore what the frames bus can
+# carry. 500 KiB rather than the plane's own 512 KiB bound: that bound is
+# measured on the whole packed record, and mime / turn_id / metadata need room
+# beside the pixels. Anything between the two ceilings is re-encoded rather
+# than refused; see ``_fit_tool_image_for_delivery``.
+_TOOL_IMAGE_DELIVER_MAX_B64_BYTES = 500 * 1024
 _MAX_TOOL_IMAGES = 2
 _MAX_TOOL_IMAGE_PIXELS = 3840 * 2160
 _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS = 2000
@@ -266,6 +276,42 @@ def _decode_tool_image_b64(data_b64: str) -> Tuple[bytes, str] | None:
     return raw, detected_mime
 
 
+def _fit_tool_image_for_delivery(data_b64: str) -> Tuple[str, str] | None:
+    """Bring one tool image under the delivery ceiling. ``(b64, mime)`` or None.
+
+    Runs the same ``normalize_image_for_model`` profile every other model-bound
+    image goes through (JPEG q80, at most 1280x720), so a tool screenshot ends
+    up looking like a screen frame rather than like its own special case. That
+    function is a fixed point, so an image already inside the profile comes back
+    as the identical object and this costs nothing.
+
+    Returns None when the result still does not fit, which is the honest
+    outcome: the caller drops the image with a model-visible warning rather than
+    sending pixels whose bus copy would be silently refused downstream.
+
+    Synchronous and CPU-bound, like the decode above it. Both call sites reach
+    this through ``asyncio.to_thread`` -- see ``tool_result_from_envelope``'s
+    callers -- which is why re-encoding here does not stall the event loop.
+    """
+    if len(data_b64) <= _TOOL_IMAGE_DELIVER_MAX_B64_BYTES:
+        return data_b64, ""
+    try:
+        from utils.screenshot_utils import normalize_image_for_model
+
+        shrunk = normalize_image_for_model(data_b64)
+    except Exception:
+        return None
+    if not isinstance(shrunk, str) or not shrunk:
+        return None
+    if len(shrunk) > _TOOL_IMAGE_DELIVER_MAX_B64_BYTES:
+        return None
+    # normalize_image_for_model always emits JPEG, so the declared mime has to
+    # follow the bytes -- a PNG that was re-encoded and still announced as PNG
+    # would fail the provider's own sniffing, and would put a wrong ``mime`` on
+    # the bus record.
+    return shrunk, "image/jpeg"
+
+
 def _normalize_tool_image_mime(mime: Any) -> str | None:
     """Strip parameters / case so ``Image/PNG; charset=binary`` can match."""
     if not isinstance(mime, str):
@@ -345,8 +391,21 @@ def parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]
                 "truncated"
             )
             vision_prompt = vision_prompt[:_MAX_TOOL_IMAGE_VISION_PROMPT_CHARS]
+        fitted = _fit_tool_image_for_delivery(normalized_data_b64)
+        if fitted is None:
+            warnings.append(
+                f"image #{index} could not be compressed under "
+                f"{_TOOL_IMAGE_DELIVER_MAX_B64_BYTES} base64 bytes; dropped"
+            )
+            continue
+        delivered_b64, rewritten_mime = fitted
+        if rewritten_mime:
+            mime = rewritten_mime
+            warnings.append(
+                f"image #{index} was re-encoded to fit the delivery budget"
+            )
         images.append(ToolImage(
-            data_b64=normalized_data_b64,
+            data_b64=delivered_b64,
             mime=mime,
             vision_prompt=vision_prompt,
         ))

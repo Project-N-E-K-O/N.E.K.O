@@ -634,3 +634,93 @@ async def test_offline_client_is_born_knowing_which_session_it_is():
 
     assert [image.data_b64 for image in out.images] == ["IMG"]
     assert "_image_warnings" not in out.output
+
+
+# ---------------------------------------------------------------------------
+# 投递上限与内置压缩
+# ---------------------------------------------------------------------------
+#
+# 工具可以交回 2 MiB base64，而 message plane 拒收超过 512 KiB 的整条记录。
+# 中间那一段以前是「模型收到、总线收不到」；现在宿主按模型画面的同一套 profile
+# 重新编码，让两边看到的是同一张、且都到得了。
+
+
+def _oversized_jpeg_b64(side: int = 1000) -> str:
+    """A valid JPEG comfortably over the delivery ceiling but under the input one."""
+    import base64
+    import io as _io
+    import random
+
+    from PIL import Image
+
+    random.seed(20260831)
+    img = Image.frombytes(
+        "RGB", (side, side),
+        bytes(random.getrandbits(8) for _ in range(side * side * 3)),
+    )
+    buf = _io.BytesIO()
+    img.save(buf, format="JPEG", quality=92)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_an_oversized_tool_image_is_compressed_not_dropped():
+    """The point of the change: it arrives, smaller.
+
+    Mutation: delete the ``_fit_tool_image_for_delivery`` call, or make it
+    return the input unchanged.
+    """
+    from main_logic.tool_calling import (
+        _MAX_TOOL_IMAGE_B64_BYTES,
+        _TOOL_IMAGE_DELIVER_MAX_B64_BYTES,
+        parse_tool_images,
+    )
+
+    big = _oversized_jpeg_b64()
+    assert len(big) > _TOOL_IMAGE_DELIVER_MAX_B64_BYTES, "前提没成立：这张图没超投递上限"
+    assert len(big) <= _MAX_TOOL_IMAGE_B64_BYTES, "前提没成立：这张图连入口上限都过不了"
+
+    images, warnings = parse_tool_images(
+        {"images": [{"data_b64": big, "mime": "image/jpeg", "vision_prompt": "look"}]}
+    )
+
+    assert len(images) == 1, f"图被丢掉了: {warnings}"
+    assert len(images[0].data_b64) <= _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
+    assert images[0].data_b64 != big, "根本没压"
+    assert images[0].mime == "image/jpeg"
+    assert any("re-encoded" in w for w in warnings), "压缩这件事对模型不可见"
+
+
+def test_a_small_tool_image_is_returned_untouched():
+    """The profile is a fixed point; an image already inside it must not churn.
+
+    Re-encoding every payload would degrade the picture one JPEG round-trip at
+    a time, for images that were fine to begin with.
+
+    Mutation: drop the size test in ``_fit_tool_image_for_delivery`` so every
+    image is re-encoded.
+    """
+    from main_logic.tool_calling import parse_tool_images
+
+    images, warnings = parse_tool_images(
+        {"images": [{"data_b64": _TINY_PNG_B64, "mime": "image/png"}]}
+    )
+
+    assert len(images) == 1
+    assert images[0].data_b64 == _TINY_PNG_B64, "小图被无谓地重编码了"
+    assert images[0].mime == "image/png", "小图的 mime 被改写了"
+    assert not any("re-encoded" in w for w in warnings)
+
+
+def test_the_delivery_ceiling_leaves_room_beside_the_pixels():
+    """500 KiB, not the plane's 512 KiB.
+
+    The plane measures the whole packed record, so mime / turn_id / metadata
+    need space beside the image. Pinning the relationship rather than the
+    literal: if someone raises the image ceiling to the plane's own bound, this
+    is what says why that is wrong.
+    """
+    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    from main_logic.tool_calling import _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
+
+    assert _TOOL_IMAGE_DELIVER_MAX_B64_BYTES < MESSAGE_PLANE_PAYLOAD_MAX_BYTES
