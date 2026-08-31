@@ -25,7 +25,7 @@ def test_card_drop_character_reference_retries_independently_of_avatar_cache():
     assert "function syncCharacterReferenceToCardDrop(reason)" in source
     assert "function queueCharacterReferenceRetry(reason)" in source
     assert "characterReferenceRetryAttempts >= CHARACTER_REFERENCE_RETRY_LIMIT" in source
-    assert "postCharacterReferenceToCardDrop(characterReferenceDataUrl)" in source
+    assert "postCharacterReferenceToCardDrop(characterReferenceDataUrl, captureRevision)" in source
     assert "scheduleCharacterReferenceSync('avatar-sync');" in source
     assert (
         "if (hasUsableCachedPreview()) {\n"
@@ -62,8 +62,35 @@ def test_card_drop_snapshot_is_bound_to_current_model_identity():
     assert "function advanceCardDropModelRevision()" in source
     assert "cardDropModelRevision = Math.max(cardDropModelRevision + 1, Date.now());" in source
     assert "cacheKey !== getCurrentModelCacheKey()" in source
+    assert "captureRevision !== cardDropModelRevision" in source
+    assert "const captureRevision = cardDropModelRevision;" in source
+    assert "applyPreviewResult(result, cacheKey, captureRevision);" in source
     assert "pendingAutoCapture = true;" in source
     assert "window.addEventListener('pngtuber-model-loaded'" in source
+
+
+@pytest.mark.unit
+def test_same_cache_key_reload_invalidates_inflight_capture_revision():
+    source = _read(APP_CHAT_AVATAR_PATH)
+    model_loaded_block = source.split("function handleModelLoaded(reason)", 1)[1].split(
+        "function bindModelLoadListeners()",
+        1,
+    )[0]
+    avatar_capture_block = source.split("async function renderAvatarPreview", 1)[1].split(
+        "function scheduleAutoCapture",
+        1,
+    )[0]
+    reference_capture_block = source.split(
+        "function captureCharacterReferenceDataUrl(captureRevision)", 1
+    )[1].split("/**\n     * 把当前头像", 1)[0]
+
+    assert model_loaded_block.index("advanceCardDropModelRevision();") < model_loaded_block.index(
+        "var newCacheKey = getCurrentModelCacheKey();"
+    )
+    assert "const captureRevision = cardDropModelRevision;" in avatar_capture_block
+    assert "if (captureRevision !== cardDropModelRevision)" in avatar_capture_block
+    assert "pendingCharacterReferenceRevision === captureRevision" in reference_capture_block
+    assert "if (cardDropModelRevision !== captureRevision) return '';" in reference_capture_block
 
 
 @pytest.mark.unit
@@ -100,16 +127,19 @@ def test_card_drop_character_reference_http_failures_remain_retryable():
 
 
 @pytest.mark.unit
-def test_character_reference_pending_capture_is_bound_to_its_cache_key():
+def test_character_reference_pending_capture_is_bound_to_model_revision():
     source = _read(APP_CHAT_AVATAR_PATH)
-    capture_block = source.split("function captureCharacterReferenceDataUrl()", 1)[1].split(
+    capture_block = source.split(
+        "function captureCharacterReferenceDataUrl(captureRevision)", 1
+    )[1].split(
         "/**\n     * 把当前头像",
         1,
     )[0]
     matching_pending_guard = (
         "if (\n"
         "            pendingCharacterReference &&\n"
-        "            pendingCharacterReferenceCacheKey === cacheKey\n"
+        "            pendingCharacterReferenceCacheKey === cacheKey &&\n"
+        "            pendingCharacterReferenceRevision === captureRevision\n"
         "        ) {\n"
         "            return pendingCharacterReference;\n"
         "        }"
@@ -117,7 +147,8 @@ def test_character_reference_pending_capture_is_bound_to_its_cache_key():
     stale_result_guard = (
         ".then(function (result) {\n"
         "                if (getCharacterReferenceCacheKey() !== cacheKey) return '';\n"
-        "                return rememberCharacterReferenceResult(result, cacheKey);\n"
+        "                if (cardDropModelRevision !== captureRevision) return '';\n"
+        "                return rememberCharacterReferenceResult(result, cacheKey, captureRevision);\n"
         "            })"
     )
     pending_capture_binding = (
@@ -125,14 +156,19 @@ def test_character_reference_pending_capture_is_bound_to_its_cache_key():
         "                if (pendingCharacterReference === capturePromise) {\n"
         "                    pendingCharacterReference = null;\n"
         "                    pendingCharacterReferenceCacheKey = '';\n"
+        "                    pendingCharacterReferenceRevision = 0;\n"
         "                }\n"
         "            });\n"
         "        pendingCharacterReference = capturePromise;\n"
         "        pendingCharacterReferenceCacheKey = cacheKey;\n"
+        "        pendingCharacterReferenceRevision = captureRevision;\n"
         "        return capturePromise;"
     )
 
     assert "let pendingCharacterReferenceCacheKey = '';" in source
+    assert "let pendingCharacterReferenceRevision = 0;" in source
+    assert "cachedCharacterReference.modelRevision === captureRevision" in capture_block
+    assert "referenceBody.modelRevision = captureRevision;" in source
     assert matching_pending_guard in capture_block
     assert stale_result_guard in capture_block
     assert pending_capture_binding in capture_block

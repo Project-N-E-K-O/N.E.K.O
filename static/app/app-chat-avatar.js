@@ -16,6 +16,7 @@
     let cachedCharacterReference = null;
     let pendingCharacterReference = null;
     let pendingCharacterReferenceCacheKey = '';
+    let pendingCharacterReferenceRevision = 0;
     let characterReferenceRetryTimer = null;
     let characterReferenceRetryAttempts = 0;
     let characterReferenceRetryCacheKey = '';
@@ -440,6 +441,7 @@
         return !!(
             cachedCharacterReference &&
             cachedCharacterReference.cacheKey === cacheKey &&
+            cachedCharacterReference.modelRevision === cardDropModelRevision &&
             isRasterImageDataUrl(cachedCharacterReference.dataUrl)
         );
     }
@@ -454,12 +456,14 @@
         }
     }
 
-    function postCharacterReferenceToCardDrop(characterReferenceDataUrl) {
+    function postCharacterReferenceToCardDrop(characterReferenceDataUrl, captureRevision) {
         if (!characterReferenceDataUrl) return Promise.resolve(false);
+        if (captureRevision !== cardDropModelRevision) return Promise.resolve(false);
         var _nekoName = getActiveLanlanName();
         var referenceBody = appendCardDropModelIdentity({
             characterReferenceDataUrl: characterReferenceDataUrl
         });
+        referenceBody.modelRevision = captureRevision;
         if (_nekoName) referenceBody.name = _nekoName;
         return fetch('/api/card-drop/active-character', {
             method: 'POST',
@@ -504,15 +508,16 @@
         var modelCacheKey = getCurrentModelCacheKey();
         if (!modelCacheKey || modelCacheKey.endsWith(':')) return Promise.resolve(false);
         var cacheKey = getCharacterReferenceCacheKey();
+        var captureRevision = cardDropModelRevision;
         ensureCharacterReferenceRetryCacheKey(cacheKey);
         characterReferenceRetryAttempts += 1;
-        return captureCharacterReferenceDataUrl()
+        return captureCharacterReferenceDataUrl(captureRevision)
             .then(function (characterReferenceDataUrl) {
                 if (!characterReferenceDataUrl) {
                     queueCharacterReferenceRetry(reason || 'empty-capture');
                     return false;
                 }
-                return postCharacterReferenceToCardDrop(characterReferenceDataUrl)
+                return postCharacterReferenceToCardDrop(characterReferenceDataUrl, captureRevision)
                     .then(function (posted) {
                         if (posted) {
                             characterReferenceRetryAttempts = 0;
@@ -540,13 +545,14 @@
         }, hasUsableCachedCharacterReference() ? 0 : 240);
     }
 
-    function rememberCharacterReferenceResult(result, cacheKey) {
+    function rememberCharacterReferenceResult(result, cacheKey, captureRevision) {
         var dataUrl = result && result.dataUrl ? result.dataUrl : '';
         if (isRasterImageDataUrl(dataUrl)) {
             cachedCharacterReference = {
                 cacheKey: cacheKey,
                 dataUrl: dataUrl,
                 modelType: result.modelType || getCurrentModelType(),
+                modelRevision: captureRevision,
                 capturedAt: Date.now()
             };
             return dataUrl;
@@ -630,18 +636,23 @@
         });
     }
 
-    function captureCharacterReferenceDataUrl() {
+    function captureCharacterReferenceDataUrl(captureRevision) {
         var cacheKey = getCharacterReferenceCacheKey();
+        captureRevision = Number.isFinite(captureRevision)
+            ? captureRevision
+            : cardDropModelRevision;
         if (
             cachedCharacterReference &&
             cachedCharacterReference.cacheKey === cacheKey &&
+            cachedCharacterReference.modelRevision === captureRevision &&
             isRasterImageDataUrl(cachedCharacterReference.dataUrl)
         ) {
             return Promise.resolve(cachedCharacterReference.dataUrl);
         }
         if (
             pendingCharacterReference &&
-            pendingCharacterReferenceCacheKey === cacheKey
+            pendingCharacterReferenceCacheKey === cacheKey &&
+            pendingCharacterReferenceRevision === captureRevision
         ) {
             return pendingCharacterReference;
         }
@@ -663,7 +674,8 @@
             })
             .then(function (result) {
                 if (getCharacterReferenceCacheKey() !== cacheKey) return '';
-                return rememberCharacterReferenceResult(result, cacheKey);
+                if (cardDropModelRevision !== captureRevision) return '';
+                return rememberCharacterReferenceResult(result, cacheKey, captureRevision);
             })
             .catch(function (err) {
                 console.warn('[chat-avatar] card-drop character reference capture failed:', err);
@@ -673,10 +685,12 @@
                 if (pendingCharacterReference === capturePromise) {
                     pendingCharacterReference = null;
                     pendingCharacterReferenceCacheKey = '';
+                    pendingCharacterReferenceRevision = 0;
                 }
             });
         pendingCharacterReference = capturePromise;
         pendingCharacterReferenceCacheKey = cacheKey;
+        pendingCharacterReferenceRevision = captureRevision;
         return capturePromise;
     }
 
@@ -705,8 +719,12 @@
         scheduleCharacterReferenceSync('avatar-sync');
     }
 
-    function applyPreviewResult(result, cacheKey) {
-        if (!cacheKey || cacheKey !== getCurrentModelCacheKey()) {
+    function applyPreviewResult(result, cacheKey, captureRevision) {
+        if (
+            !cacheKey ||
+            cacheKey !== getCurrentModelCacheKey() ||
+            captureRevision !== cardDropModelRevision
+        ) {
             pendingAutoCapture = true;
             return false;
         }
@@ -901,6 +919,7 @@
             var currentSourceHeight = sourceHeight;
             var currentModelType = options.modelType || getCurrentModelType();
             var currentCacheKey = options.cacheKey || getCurrentModelCacheKey();
+            var currentModelRevision = options.modelRevision || cardDropModelRevision;
             var recaptureFn = typeof options.recaptureFn === 'function' ? options.recaptureFn : null;
             var displayW, displayH, scaleRatio;
             var crop = { x: 0, y: 0, size: 0 };
@@ -962,6 +981,7 @@
                 currentSourceHeight = next.sourceHeight || currentSourceHeight || 640;
                 currentModelType = next.modelType || currentModelType || getCurrentModelType();
                 currentCacheKey = next.cacheKey || currentCacheKey || getCurrentModelCacheKey();
+                currentModelRevision = next.modelRevision || currentModelRevision;
                 drag = null;
                 img.src = currentSourceDataUrl;
                 initLayout();
@@ -1073,7 +1093,8 @@
                         },
                         sourceDataUrl: currentSourceDataUrl,
                         modelType: currentModelType,
-                        cacheKey: currentCacheKey
+                        cacheKey: currentCacheKey,
+                        modelRevision: currentModelRevision
                     });
                 } else {
                     resolve(null);
@@ -1256,6 +1277,7 @@
         const token = ++activeCaptureToken;
         activeCaptureCardVisible = showCard;
         const cacheKey = getCurrentModelCacheKey();
+        const captureRevision = cardDropModelRevision;
         const prevCachedPreview = cachedPreview ? Object.assign({}, cachedPreview) : null;
         if (showCard) {
             setPreviewVisible(true, trigger);
@@ -1269,6 +1291,10 @@
         try {
             const result = await captureAvatarPreview({ includeSourceDataUrl: manualCrop });
             if (token !== activeCaptureToken) return;
+            if (captureRevision !== cardDropModelRevision) {
+                pendingAutoCapture = true;
+                return;
+            }
 
             if (manualCrop && result.sourceDataUrl) {
                 setLoadingState(false);
@@ -1279,7 +1305,11 @@
 
                 async function recaptureCropperSource() {
                     var freshCacheKey = getCurrentModelCacheKey();
+                    var freshRevision = cardDropModelRevision;
                     var fresh = await captureAvatarPreview({ includeSourceDataUrl: true });
+                    if (freshRevision !== cardDropModelRevision) {
+                        throw new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
+                    }
                     if (!fresh || !fresh.sourceDataUrl) {
                         throw new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
                     }
@@ -1290,13 +1320,15 @@
                         sourceWidth: dims.w,
                         sourceHeight: dims.h,
                         modelType: fresh.modelType || getCurrentModelType(),
-                        cacheKey: freshCacheKey || getCurrentModelCacheKey()
+                        cacheKey: freshCacheKey || getCurrentModelCacheKey(),
+                        modelRevision: freshRevision
                     };
                 }
 
                 var userCrop = await openAvatarCropper(result.sourceDataUrl, defRect, srcDims.w, srcDims.h, {
                     modelType: result.modelType || getCurrentModelType(),
                     cacheKey: cacheKey,
+                    modelRevision: captureRevision,
                     recaptureFn: recaptureCropperSource
                 });
                 if (token !== activeCaptureToken) return;
@@ -1305,7 +1337,8 @@
                     var croppedDataUrl = await cropSourceToAvatar(userCrop.sourceDataUrl, userCrop.cropRect);
                     applyPreviewResult(
                         { dataUrl: croppedDataUrl, modelType: userCrop.modelType || result.modelType },
-                        userCrop.cacheKey || cacheKey
+                        userCrop.cacheKey || cacheKey,
+                        userCrop.modelRevision || captureRevision
                     );
                 } else {
                     if (prevCachedPreview) {
@@ -1321,7 +1354,7 @@
                     setPreviewNote(translateLabel('chat.avatarPreviewCropCancelled', '已取消手动裁剪，保持原头像不变。'));
                 }
             } else {
-                applyPreviewResult(result, cacheKey);
+                applyPreviewResult(result, cacheKey, captureRevision);
             }
         } catch (error) {
             if (token !== activeCaptureToken) return;
