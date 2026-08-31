@@ -350,6 +350,70 @@ _MIGRATION_LEDGER_NAME = "minted"
 _MIGRATION_WORKSPACE_LOCK = None
 
 
+def _ledger_is_usable(ledger):
+    """Whether this path is a ledger we may read or append to.
+
+    An ORDINARY FILE, or nothing. A symlinked leaf or parent points at
+    somebody else's file and its contents are not our record; and a FIFO
+    passes every link check while ``read_text`` blocks for ever on it,
+    waiting for a writer, on the startup path with the migration lock held.
+    Absent is fine -- that is the normal case on the layout that never mints
+    inside the character namespace.
+
+    The LEAF needs no separate link check: ``lstat`` does not follow one, so
+    S_ISREG already rejects a link, a dangling link and a FIFO alike. An
+    explicit ``is_symlink()`` here was a second spelling of the same rule --
+    a mutation deleting it changed nothing -- and two spellings drift. The
+    PARENT still needs its own, because that one is about a directory.
+    """
+    parent = ledger.parent
+    if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+        return False
+    try:
+        mode = os.lstat(str(ledger)).st_mode
+    except OSError:
+        # Absent, which is the ordinary case: nothing minted in the
+        # character namespace on this layout.
+        return True
+    return stat.S_ISREG(mode)
+
+
+def recorded_workspace_paths(app_docs_dir):
+    """Workspace paths this migration wrote down as its own.
+
+    The only ownership evidence there is, and the same file reclamation has
+    always keyed on. Callers outside this module need it because a name and a
+    marker inside ``memory_dir`` are shapes anyone can reproduce -- a
+    character may legally be called ".mig-anything" and may hold a ".lock".
+
+    Resolved, so a caller comparing an enumerated child against these gets the
+    same spelling on a junctioned memory root.
+
+    Empty on anything unreadable, which is the safe direction for the caller
+    this exists for: an import that cannot read the ledger exempts nothing and
+    deletes stale data, rather than exempting everything and keeping it.
+    """
+    ledger = (
+        Path(app_docs_dir) / _MIGRATION_STAGING_DIR / _MIGRATION_LEDGER_NAME
+    )
+    if not _ledger_is_usable(ledger):
+        return set()
+    try:
+        lines = ledger.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return set()
+    recorded = set()
+    for line in lines:
+        entry = line.strip()
+        if not entry:
+            continue
+        try:
+            recorded.add(Path(entry).resolve(strict=False))
+        except OSError:
+            continue
+    return recorded
+
+
 def _hold_workspace_lock(handle):
     """Take an exclusive, non-blocking lock on an open workspace marker."""
     handle.seek(0)
@@ -764,25 +828,19 @@ class MigrationsMixin:
         """
         ledger = self._migration_ledger_path()
         parent = ledger.parent
-        # The LEAF as well as the parent: an append through a symlinked
-        # "minted" writes workspace paths into whatever it points at, and
-        # reclamation then reads that file back as though it were ours.
-        if ledger.is_symlink():
-            return
-        if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
-            # The SAME refusal reclamation makes, one step earlier. Both
-            # sides have to make it: "mkdir(exist_ok=True)" accepts a
-            # symlink-to-directory at the reserved name and the append
-            # then follows it, so a link pointing at unrelated user or
-            # plugin data got a "minted" file written into it -- or an
-            # existing one of theirs appended to. Reclamation already
-            # refuses to READ through such a link; refusing to WRITE
-            # through it is what stops the file existing at all.
-            #
-            # Skipping the record is the safe direction, and the one this
-            # function already takes on any other failure: an unrecorded
-            # workspace is never reclaimed, which costs a directory. The
-            # other way round costs a character.
+        # The SAME refusal reclamation makes, one step earlier. Both sides
+        # have to make it: "mkdir(exist_ok=True)" accepts a
+        # symlink-to-directory at the reserved name and the append then
+        # follows it, so a link pointing at unrelated user or plugin data got
+        # a "minted" file written into it -- or an existing one of theirs
+        # appended to. Refusing to WRITE through it is what stops the file
+        # existing at all.
+        #
+        # Skipping the record is the safe direction, and the one this
+        # function already takes on any other failure: an unrecorded
+        # workspace is never reclaimed, which costs a directory. The other
+        # way round costs a character.
+        if not _ledger_is_usable(ledger):
             return
         try:
             parent.mkdir(parents=True, exist_ok=True)
@@ -807,18 +865,11 @@ class MigrationsMixin:
         workspace that is fresh, or that somebody still holds, stays.
         """
         ledger = self._migration_ledger_path()
-        parent = ledger.parent
-        # The LEAF as well, matching the write side: a symlinked "minted"
-        # would be read as our record and then unlinked by the tidy-up at
-        # the end of this function.
-        if ledger.is_symlink():
-            return
-        if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
-            # The same refusal preparation makes, for the same reason and
-            # one step earlier: a link at the reserved name points at
-            # somebody else's directory, so anything called "minted" in
-            # there is theirs. Reading it is bad enough; the tidy-up at
-            # the end of this function would then UNLINK it.
+        # The same refusal preparation makes: a link at the reserved name --
+        # leaf or parent -- points at somebody else's file, so anything
+        # called "minted" in there is theirs. Reading it is bad enough; the
+        # tidy-up at the end of this function would then UNLINK it.
+        if not _ledger_is_usable(ledger):
             return
         try:
             recorded = ledger.read_text(encoding="utf-8").splitlines()

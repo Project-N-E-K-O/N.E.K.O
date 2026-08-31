@@ -17,6 +17,28 @@ from utils.storage_policy import save_storage_policy
 from utils.file_utils import atomic_write_json
 
 
+def _record_workspace_in_ledger(config_manager, workspace):
+    """Write the ledger line the migration writes when it mints one.
+
+    Exemption is keyed on this file, so a hand-made workspace directory is
+    not a workspace as far as the import is concerned -- which is the whole
+    point of the criterion.
+    """
+    from utils.config_manager.migrations import (
+        _MIGRATION_LEDGER_NAME,
+        _MIGRATION_STAGING_DIR,
+    )
+
+    ledger = (
+        Path(config_manager.app_docs_dir)
+        / _MIGRATION_STAGING_DIR
+        / _MIGRATION_LEDGER_NAME
+    )
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger, "a", encoding="utf-8") as handle:
+        handle.write(str(Path(workspace).resolve(strict=False)) + "\n")
+
+
 def _make_config_manager(tmp_path: Path):
     from utils.config_manager import ConfigManager
 
@@ -2373,13 +2395,13 @@ def test_a_cloud_import_leaves_a_migration_workspace_alone(tmp_path):
     # Both appear AFTER the snapshot, so neither is in the imported set.
     from utils.config_manager.migrations import _MIGRATION_WORKSPACE_LOCK_NAME
 
-    from utils.config_manager.migrations import _hold_workspace_lock
-
     workspace = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "live")
     (workspace / "d").mkdir(parents=True)
     (workspace / "d" / "half.json").write_text("[1]", encoding="utf-8")
-    marker = workspace / _MIGRATION_WORKSPACE_LOCK_NAME
-    marker.write_bytes(b"1")
+    (workspace / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"1")
+    # RECORDED, which is what makes it ours. A marker and a prefix are shapes
+    # the data being swept can reproduce; only the ledger cannot.
+    _record_workspace_in_ledger(config_manager, workspace)
 
     genuinely_stale = memory_root / "Ghost"
     genuinely_stale.mkdir()
@@ -2398,15 +2420,14 @@ def test_a_cloud_import_leaves_a_migration_workspace_alone(tmp_path):
     prefixed_with_marker.mkdir()
     (prefixed_with_marker / "facts.json").write_text("[7]", encoding="utf-8")
     (prefixed_with_marker / _MIGRATION_WORKSPACE_LOCK_NAME).write_bytes(b"")
-
-    # HELD, not merely present: that is what a migration in flight looks
-    # like, and it is the only thing that now buys the exemption.
-    handle = open(marker, "r+b")
-    try:
-        _hold_workspace_lock(handle)
-        import_local_cloudsave_snapshot(config_manager)
-    finally:
-        handle.close()
+    # Not recorded, so not ours. The marker is left UNHELD on purpose: the
+    # import backs a character up before removing it, and on Windows it
+    # cannot copy a file another handle holds exclusively, so holding one
+    # here would fail the backup rather than exercise the rule. That a held
+    # lock cannot exempt anything either is pinned by the structural test
+    # forbidding _workspace_is_live in the import -- the criterion does not
+    # read locks at all any more.
+    import_local_cloudsave_snapshot(config_manager)
 
     assert (workspace / "d" / "half.json").exists(), (
         "the import deleted a migration workspace as stale runtime data"
@@ -2420,8 +2441,9 @@ def test_a_cloud_import_leaves_a_migration_workspace_alone(tmp_path):
         "from the import, so deleting it can never take effect"
     )
     assert not prefixed_with_marker.exists(), (
-        "a character with the prefix AND an unheld .lock was exempted, so a "
-        "cloud deletion could never reach it"
+        "a character with the prefix AND a .lock was exempted, so a cloud "
+        "deletion could never reach it -- the marker is a shape the swept "
+        "data can reproduce, which is why the ledger decides"
     )
 
 
@@ -2458,25 +2480,29 @@ def test_a_workspace_that_becomes_live_after_enumeration_survives(tmp_path):
     (late / "d" / "half.json").write_text("[1]", encoding="utf-8")
 
     answers = []
+    real_recorded = migrations_module.recorded_workspace_paths
 
-    def _not_live_then_live(path):
-        answers.append(str(path))
-        # False the first time the sweep asks, True by the time the deletion
-        # loop asks -- the migration claimed it in between.
-        return len(answers) > 1
+    def _unrecorded_then_recorded(app_docs_dir):
+        # Empty the first time the sweep asks, populated by the time the
+        # deletion loop asks -- a migration minted and recorded this
+        # workspace during the file-apply phase, which is long.
+        answers.append(app_docs_dir)
+        if len(answers) == 1:
+            return set()
+        return real_recorded(app_docs_dir) | {late.resolve(strict=False)}
 
     # Patched on the SOURCE module: operations imports the name inside the
     # function, so it is not an attribute of that module to patch.
     with patch.object(
-        migrations_module, "_workspace_is_live", _not_live_then_live
+        migrations_module, "recorded_workspace_paths", _unrecorded_then_recorded
     ):
         import_local_cloudsave_snapshot(config_manager)
 
     assert len(answers) >= 2, (
-        "liveness was asked once, so the deletion loop never re-checked"
+        "ownership was read once, so the deletion loop never re-checked"
     )
     assert (late / "d" / "half.json").exists(), (
-        "a workspace that went live after enumeration was deleted anyway"
+        "a workspace recorded after enumeration was deleted anyway"
     )
 
 
@@ -2505,10 +2531,13 @@ def test_the_recheck_does_not_spare_an_ordinary_stale_directory(tmp_path):
     (stale / "facts.json").write_text("[9]", encoding="utf-8")
 
     with patch.object(
-        migrations_module, "_workspace_is_live", lambda path: True
+        migrations_module,
+        "recorded_workspace_paths",
+        lambda app_docs_dir: {stale.resolve(strict=False)},
     ):
         import_local_cloudsave_snapshot(config_manager)
 
     assert not stale.exists(), (
-        "the liveness re-check spared a directory that carries no prefix"
+        "the ownership re-check spared a directory that carries no prefix, so "
+        "a corrupted ledger naming a character could delete-proof it"
     )

@@ -3361,18 +3361,26 @@ def test_a_held_lock_still_vetoes_the_deletion(tmp_path):
     assert not _workspace_is_live(workspace)
 
 
-def test_the_import_asks_whether_the_lock_is_held_not_whether_it_exists():
-    """The call site, not just the predicate.
+def test_the_import_exempts_on_ownership_not_on_a_shape():
+    """Four narrower readings of the on-disk evidence were reported in turn.
 
-    Both are needed: the predicate can be right while the import still tests
-    for the file, which is exactly the state this round found it in.
+    The prefix; the prefix plus a marker file; a held lock; a held lock on a
+    regular file. Each was a tighter guess at a question the shapes cannot
+    answer, because a character may legally be named ".mig-anything" and may
+    hold a ".lock" -- so the swept data can reproduce every one of them.
+
+    The ledger is the evidence the module's own comment names, and
+    reclamation always used it. This pins the import to it as well.
     """
     import inspect
 
     from utils.cloudsave_runtime import operations
 
     source = inspect.getsource(operations)
-    assert "_workspace_is_live(child)" in source
+    assert "recorded_workspace_paths(" in source
+    assert "_workspace_is_live" not in source, (
+        "the import is back to reading liveness as ownership"
+    )
     assert "_MIGRATION_WORKSPACE_LOCK_NAME" not in source, (
         "the import is back to testing for the marker file"
     )
@@ -3586,3 +3594,53 @@ def test_the_ledger_refuses_a_symlinked_leaf(tmp_path):
     # Reclamation refuses the same shape, and must not unlink it either.
     manager._reclaim_recorded_workspaces(set(), 0.0)
     assert outsider.exists(), "reclamation deleted an outsider's file"
+
+
+def test_a_ledger_that_is_not_an_ordinary_file_is_refused(tmp_path, monkeypatch):
+    """A symlink guard lets a FIFO through, and reading one never returns.
+
+    On POSIX a named pipe at ".mig-staging/minted" passes every link check
+    while ``read_text`` blocks for ever waiting for a writer -- on the startup
+    path, with the migration lock held. Same shape as the copy regression, so
+    it is refused by the same kind of check.
+
+    The mode is faked rather than made with ``os.mkfifo``: the unit CI job
+    runs on Windows, where a POSIX-only test would silently never execute.
+    """
+    import os
+    import stat as stat_module
+
+    from utils.config_manager import migrations as migrations_module
+
+    staging = tmp_path / ".mig-staging"
+    staging.mkdir()
+    ledger = staging / "minted"
+    ledger.write_text("/somewhere/.mig-abc\n", encoding="utf-8")
+
+    real_lstat = os.lstat
+
+    def _fifo_lstat(path, *args, **kwargs):
+        result = real_lstat(path, *args, **kwargs)
+        if str(path) == str(ledger):
+            return os.stat_result(
+                (stat_module.S_IFIFO | 0o644,) + tuple(result)[1:]
+            )
+        return result
+
+    # The real file first, so this cannot pass by never reading anything.
+    assert migrations_module.recorded_workspace_paths(str(tmp_path))
+
+    monkeypatch.setattr(migrations_module.os, "lstat", _fifo_lstat)
+    assert migrations_module.recorded_workspace_paths(str(tmp_path)) == set()
+
+
+def test_an_unreadable_ledger_exempts_nothing(tmp_path):
+    """The safe direction for the import: exempt nothing, delete stale data.
+
+    Returning everything would be the other way round -- an import that
+    cannot read the ledger would keep every stale directory for ever.
+    """
+    from utils.config_manager.migrations import recorded_workspace_paths
+
+    assert recorded_workspace_paths(str(tmp_path)) == set()
+    assert recorded_workspace_paths("") == set()

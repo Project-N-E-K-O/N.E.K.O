@@ -1403,7 +1403,19 @@ def import_local_cloudsave_snapshot(
 
         from utils.config_manager.migrations import (
             _MIGRATION_WORKSPACE_PREFIX,
-            _workspace_is_live,
+            recorded_workspace_paths,
+        )
+
+        # OWNERSHIP, not a shape. Four narrower readings of the on-disk
+        # evidence were reported in turn -- the prefix, the prefix plus a
+        # marker, a held lock, a held lock on a regular file -- and the
+        # migration's own comment says why none of them can work: a character
+        # may legally be named ".mig-anything" and may hold a ".lock", so
+        # every such shape is reproducible by the very data this is trying to
+        # tell apart. The ledger is the evidence that comment names, and
+        # reclamation has always used it.
+        minted_workspaces = recorded_workspace_paths(
+            getattr(config_manager, "app_docs_dir", "")
         )
 
         memory_root = Path(config_manager.memory_dir)
@@ -1413,7 +1425,7 @@ def import_local_cloudsave_snapshot(
                     continue
                 if child.name.startswith(
                     _MIGRATION_WORKSPACE_PREFIX
-                ) and _workspace_is_live(child):
+                ) and child.resolve(strict=False) in minted_workspaces:
                     # A startup migration WORKSPACE, not stale runtime
                     # data. When memory/ is a junction onto another
                     # volume the migration has to stage inside it, and
@@ -1421,19 +1433,20 @@ def import_local_cloudsave_snapshot(
                     # so removing it here deletes a half-copied character
                     # tree out from under the process writing it.
                     #
-                    # The lock has to be HELD, not merely present. ".mig-x"
-                    # is a legal character name, so the prefix alone would
-                    # keep a deleted character alive through every import;
-                    # and a stray ".lock" sitting in such a character's
-                    # directory would do the same, which is what testing
-                    # for the file's existence allowed.
+                    # Exempt because it is IN THE LEDGER. Four narrower
+                    # readings of the on-disk evidence were reported in
+                    # turn -- the prefix, the prefix plus a marker file, a
+                    # held lock, a held lock on a regular file -- and each
+                    # was a tighter guess at a question those shapes
+                    # cannot answer: a character may legally be named
+                    # ".mig-anything" and may hold a ".lock", so the very
+                    # data being swept can reproduce every one of them.
                     #
-                    # ``_workspace_is_live`` is the migration's own answer
-                    # to this question and it is conservative in the right
-                    # direction: anything it cannot rule out reads as live,
-                    # so it can veto this deletion but never authorise one.
-                    # Only actually taking the lock counts as evidence the
-                    # owner is gone.
+                    # The ledger is written immediately after mkdtemp and
+                    # before the workspace is used, so a workspace whose
+                    # lock is not claimed yet is already recorded; and a
+                    # character's stray marker never will be, however
+                    # firmly something holds it.
                     continue
                 if child.name not in imported_character_names:
                     delete_dir_targets.add(child)
@@ -1538,7 +1551,11 @@ def import_local_cloudsave_snapshot(
                     # statement before the irreversible one.
                     if target_path.name.startswith(
                         _MIGRATION_WORKSPACE_PREFIX
-                    ) and _workspace_is_live(target_path):
+                    ) and target_path.resolve(strict=False) in (
+                        recorded_workspace_paths(
+                            getattr(config_manager, "app_docs_dir", "")
+                        )
+                    ):
                         continue
                     if target_path.exists():
                         shutil.rmtree(target_path)
