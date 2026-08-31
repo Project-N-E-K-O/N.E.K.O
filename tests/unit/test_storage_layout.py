@@ -2423,3 +2423,92 @@ def test_a_cloud_import_leaves_a_migration_workspace_alone(tmp_path):
         "a character with the prefix AND an unheld .lock was exempted, so a "
         "cloud deletion could never reach it"
     )
+
+
+@pytest.mark.unit
+def test_a_workspace_that_becomes_live_after_enumeration_survives(tmp_path):
+    """The liveness answer can change between the sweep and the removal.
+
+    A cross-device migration that has returned from ``mkdtemp()`` but has not
+    yet created and locked its marker reads as inactive while the delete set
+    is built, and can claim the workspace and begin copying during the
+    file-apply phase -- which is long. Asking once scheduled it for deletion
+    and never looked again.
+
+    Driven by making the predicate answer False then True, because that is
+    exactly the transition: what is asserted is that the second answer is
+    taken, not how the race is won.
+    """
+    from utils.cloudsave_runtime.operations import (
+        bootstrap_local_cloudsave_environment,
+        export_local_cloudsave_snapshot,
+        import_local_cloudsave_snapshot,
+    )
+    from utils.config_manager import migrations as migrations_module
+    from utils.config_manager.migrations import _MIGRATION_WORKSPACE_PREFIX
+
+    config_manager = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(config_manager)
+    memory_root = Path(config_manager.memory_dir)
+    memory_root.mkdir(parents=True, exist_ok=True)
+    export_local_cloudsave_snapshot(config_manager)
+
+    late = memory_root / (_MIGRATION_WORKSPACE_PREFIX + "late")
+    (late / "d").mkdir(parents=True)
+    (late / "d" / "half.json").write_text("[1]", encoding="utf-8")
+
+    answers = []
+
+    def _not_live_then_live(path):
+        answers.append(str(path))
+        # False the first time the sweep asks, True by the time the deletion
+        # loop asks -- the migration claimed it in between.
+        return len(answers) > 1
+
+    # Patched on the SOURCE module: operations imports the name inside the
+    # function, so it is not an attribute of that module to patch.
+    with patch.object(
+        migrations_module, "_workspace_is_live", _not_live_then_live
+    ):
+        import_local_cloudsave_snapshot(config_manager)
+
+    assert len(answers) >= 2, (
+        "liveness was asked once, so the deletion loop never re-checked"
+    )
+    assert (late / "d" / "half.json").exists(), (
+        "a workspace that went live after enumeration was deleted anyway"
+    )
+
+
+@pytest.mark.unit
+def test_the_recheck_does_not_spare_an_ordinary_stale_directory(tmp_path):
+    """The dual: the re-check must not turn the sweep off.
+
+    It is keyed on the workspace prefix, so a stale character directory is
+    removed whatever the predicate would say about it.
+    """
+    from utils.cloudsave_runtime.operations import (
+        bootstrap_local_cloudsave_environment,
+        export_local_cloudsave_snapshot,
+        import_local_cloudsave_snapshot,
+    )
+    from utils.config_manager import migrations as migrations_module
+
+    config_manager = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(config_manager)
+    memory_root = Path(config_manager.memory_dir)
+    memory_root.mkdir(parents=True, exist_ok=True)
+    export_local_cloudsave_snapshot(config_manager)
+
+    stale = memory_root / "Ghost"
+    stale.mkdir()
+    (stale / "facts.json").write_text("[9]", encoding="utf-8")
+
+    with patch.object(
+        migrations_module, "_workspace_is_live", lambda path: True
+    ):
+        import_local_cloudsave_snapshot(config_manager)
+
+    assert not stale.exists(), (
+        "the liveness re-check spared a directory that carries no prefix"
+    )

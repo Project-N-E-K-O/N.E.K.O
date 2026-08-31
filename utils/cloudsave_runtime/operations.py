@@ -1525,6 +1525,21 @@ def import_local_cloudsave_snapshot(
                         _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
 
                 for target_path in sorted(delete_dir_targets, key=lambda path: len(path.parts), reverse=True):
+                    # Asked AGAIN, because the answer can change after
+                    # enumeration. A cross-device migration that had returned
+                    # from mkdtemp() but not yet created and locked its marker
+                    # read as inactive when this set was built, and could
+                    # claim the workspace and begin copying during the
+                    # file-apply phase above -- which is long.
+                    #
+                    # This narrows the window rather than closing it: nothing
+                    # can be held across an rmtree. It is the same move the
+                    # migration's own publish steps make, re-checking one
+                    # statement before the irreversible one.
+                    if target_path.name.startswith(
+                        _MIGRATION_WORKSPACE_PREFIX
+                    ) and _workspace_is_live(target_path):
+                        continue
                     if target_path.exists():
                         shutil.rmtree(target_path)
 
