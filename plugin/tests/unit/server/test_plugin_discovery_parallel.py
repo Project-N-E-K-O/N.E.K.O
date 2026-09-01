@@ -38,11 +38,12 @@ def _reset_publication_ordering():
         "_REGISTRY_REFRESH_TICKET",
         "_REGISTRY_PUBLISHED_TICKET",
         "_REGISTRY_CACHE_BLIND_UNTIL",
+        "_REGISTRY_PUBLISHED_WAS_FORCED",
     )
     saved = {name: getattr(module, name) for name in names}
     published = dict(module._REGISTRY_PUBLISHED_PLUGIN_TICKET)
     for name in names:
-        setattr(module, name, 0)
+        setattr(module, name, False if name.endswith("_WAS_FORCED") else 0)
     module._REGISTRY_PUBLISHED_PLUGIN_TICKET.clear()
     try:
         yield
@@ -622,6 +623,60 @@ def test_a_deferred_scan_keeps_the_entries_it_could_not_rescan(
     assert module._keep_known_entries_on_deferred_scan(fresh, previous) is fresh, (
         "扫描成功、确实没有条目的情况，被旧条目污染了"
     )
+
+
+def test_forced_refreshes_are_still_ordered_among_themselves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"Force outranks a cached read" must not become "force outranks everything".
+
+    Two forced refreshes both read the disk, so the newer one is authoritative.
+    Exempting `forced` from ticket ordering wholesale lets an older forced
+    refresh finish last and put back the very entries and tool schemas the newer
+    one had just corrected (codex).
+
+    Mutation: exempt `forced` from the ticket comparison entirely.
+    """
+    older = module._take_registry_refresh_ticket()
+    newer = module._take_registry_refresh_ticket()
+
+    with module._registry_publication(newer, forced=True) as may_publish:
+        assert may_publish, "新的那次 force 自己都发布不了"
+
+    with module._registry_publication(older, forced=True) as may_publish:
+        assert not may_publish, (
+            "更旧的 force 后落地，把更新的 force 结果盖回去了"
+        )
+
+    # 而 force 压过缓存喂出来的普通结果这条不能被削掉。
+    module._REGISTRY_PUBLISHED_TICKET = 0
+    module._REGISTRY_PUBLISHED_WAS_FORCED = False
+    module._REGISTRY_CACHE_BLIND_UNTIL = 0
+    stale_force = module._take_registry_refresh_ticket()
+    cached = module._take_registry_refresh_ticket()
+
+    with module._registry_publication(cached, forced=False) as may_publish:
+        assert may_publish
+
+    with module._registry_publication(stale_force, forced=True) as may_publish:
+        assert may_publish, "force 让位给了一份可能来自缓存的普通结果"
+
+
+def test_forced_ordering_is_per_plugin_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same rule at record granularity, where the full refresh applies it.
+
+    Mutation: drop ``published_forced`` from the per-plugin comparison.
+    """
+    older = module._take_registry_refresh_ticket()
+    newer = module._take_registry_refresh_ticket()
+    path = Path("/demo/plugin.toml")
+
+    assert module._may_publish_record(newer, path, forced=True, plugin_id="demo")
+    assert not module._may_publish_record(
+        older, path, forced=True, plugin_id="demo"
+    ), "更旧的 force 在按插件那一层把更新的 force 盖回去了"
 
 
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(

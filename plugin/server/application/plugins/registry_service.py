@@ -479,7 +479,9 @@ _REGISTRY_PUBLISHED_TICKET = 0
 #
 # 所以顺序按**每个插件**判：全量刷新逐条比，单插件刷新只比自己那一条。谁的号新谁
 # 说了算，互不牵连（codex）。
-_REGISTRY_PUBLISHED_PLUGIN_TICKET: dict[str, int] = {}
+# 值是 (号, 这次发布是不是 force)。第二项承重：force 只该压过**缓存喂出来的**
+# 结果，不该压过一次更新的 force——两次 force 都是读盘，新的那次说了算。
+_REGISTRY_PUBLISHED_PLUGIN_TICKET: dict[str, tuple[int, bool]] = {}
 
 
 def _publication_keys(plugin_id: str | None, config_path: Path) -> tuple[str, ...]:
@@ -520,6 +522,8 @@ def _keep_known_entries_on_deferred_scan(
 # 而 force 存在的全部理由就是缓存看不见插件目录**之外**的变化（共享 vendor、
 # site-packages）——让那份缓存结果把 force 的结果顶掉，正好是反的（CodeRabbit）。
 _REGISTRY_CACHE_BLIND_UNTIL = 0
+# 当前 _REGISTRY_PUBLISHED_TICKET 那次发布是不是 force。
+_REGISTRY_PUBLISHED_WAS_FORCED = False
 
 
 def _may_publish_record(
@@ -530,16 +534,23 @@ def _may_publish_record(
     Caller holds ``_REGISTRY_PUBLISH_GUARD``.
     """
     keys = _publication_keys(plugin_id, config_path)
-    published = max(
-        (_REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, 0) for key in keys), default=0
-    )
-    # force 读的是盘，普通刷新可能读的是缓存，所以 force 不让位。
-    if not forced and ticket < published:
+    published, published_forced = 0, False
+    for key in keys:
+        seen_ticket, seen_forced = _REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, (0, False))
+        if seen_ticket > published:
+            published, published_forced = seen_ticket, seen_forced
+        elif seen_ticket == published:
+            published_forced = published_forced or seen_forced
+    if ticket < published and (not forced or published_forced):
+        # 让位的条件：要么我们是普通刷新（对手可能读的是盘，我们可能读的是缓存），
+        # 要么对手也是 force 而且比我们新（两边都读盘，新的说了算）。
         return False
     for key in keys:
-        _REGISTRY_PUBLISHED_PLUGIN_TICKET[key] = max(
-            _REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, 0), ticket
-        )
+        seen_ticket, seen_forced = _REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, (0, False))
+        if ticket >= seen_ticket:
+            _REGISTRY_PUBLISHED_PLUGIN_TICKET[key] = (ticket, forced)
+        elif forced:
+            _REGISTRY_PUBLISHED_PLUGIN_TICKET[key] = (seen_ticket, True)
     return True
 
 
@@ -620,22 +631,38 @@ class _registry_publication:
 
     def __enter__(self) -> bool:
         global _REGISTRY_PUBLISHED_TICKET, _REGISTRY_CACHE_BLIND_UNTIL
+        global _REGISTRY_PUBLISHED_WAS_FORCED
 
         _REGISTRY_PUBLISH_GUARD.acquire()
-        # force 从不让位：它是唯一能看见目录外变化的那次读盘，被一份缓存结果顶掉
-        # 就意味着升级/换源静默丢失，而返回值还是 success=True、added/updated 全空，
-        # 调用方看不出任何异常（CodeRabbit）。
-        if not self._forced and (
-            self._ticket < _REGISTRY_PUBLISHED_TICKET
-            or self._ticket <= _REGISTRY_CACHE_BLIND_UNTIL
-        ):
+        # force 不让位于**缓存喂出来的**结果：它是唯一能看见目录外变化的那次读盘，
+        # 被一份缓存结果顶掉就意味着升级/换源静默丢失，而返回值还是 success=True、
+        # added/updated 全空，调用方看不出任何异常（CodeRabbit）。
+        #
+        # 但 force 之间仍然按号排：两次 force 都是读盘，一次更新的 force 说了算，
+        # 否则先开始、后落地的那次会把新元数据和工具 schema 又换回旧的（codex）。
+        if self._forced:
+            outranked = (
+                self._ticket < _REGISTRY_PUBLISHED_TICKET
+                and _REGISTRY_PUBLISHED_WAS_FORCED
+            )
+        else:
+            outranked = (
+                self._ticket < _REGISTRY_PUBLISHED_TICKET
+                or self._ticket <= _REGISTRY_CACHE_BLIND_UNTIL
+            )
+        if outranked:
             _REGISTRY_PUBLISH_GUARD.release()
             return False
         if self._forced:
             # 此刻还在途的普通刷新，它们的数据可能来自这次 force 刚作废掉的缓存，
             # 一律挡在门外。之后才领号的不受影响。
             _REGISTRY_CACHE_BLIND_UNTIL = _REGISTRY_REFRESH_TICKET
-        _REGISTRY_PUBLISHED_TICKET = max(_REGISTRY_PUBLISHED_TICKET, self._ticket)
+        if self._ticket >= _REGISTRY_PUBLISHED_TICKET:
+            _REGISTRY_PUBLISHED_TICKET = self._ticket
+            _REGISTRY_PUBLISHED_WAS_FORCED = self._forced
+        elif self._forced:
+            # 旧的 force 后落地，盖掉了更新的普通结果——盘上现在是 force 的内容。
+            _REGISTRY_PUBLISHED_WAS_FORCED = True
         self._held = True
         return True
 
