@@ -20,6 +20,7 @@
             avatar_floating_day2_intro: zhAudio('嘻嘻，可别以为这个聊.mp3'),
             avatar_floating_day2_avatar_tools_intro: zhAudio('在这个小按钮里，有许.mp3'),
             avatar_floating_day2_avatar_tools_props: zhAudio('你可以随时来摸摸我的.mp3'),
+            avatar_floating_day2_tool_wheel_rotation: zhAudio('day2-tool-wheel-rotation.mp3'),
             avatar_floating_day2_galgame_intro: zhAudio('快点开这个【Galg.mp3'),
             avatar_floating_day2_galgame_choices: zhAudio('你选的每一个对话，都.mp3'),
             avatar_floating_day2_wrap_intro: zhAudio('今天带你认识的这些功.mp3'),
@@ -80,16 +81,28 @@
                     afterSceneDelayMs: 0
                 },
                 {
+                    id: 'day2_tool_wheel_rotation',
+                    timelinePlayback: true,
+                    textKey: 'tutorial.avatarFloating.day2.toolWheelRotation',
+                    voiceKey: 'avatar_floating_day2_tool_wheel_rotation',
+                    text: '对啦，这个弧形菜单是可以转动的哦~ 轻轻转一转，就能把藏在旁边的小功能带到面前来啦！',
+                    emotion: 'happy',
+                    persistent: 'chat-tool-toggle',
+                    target: 'chat-galgame',
+                    cursorAction: 'move',
+                    operation: 'rotate-galgame-tool-into-center'
+                },
+                {
                     id: 'day2_galgame_entry',
                     timelinePlayback: true,
                     textKey: 'tutorial.avatarFloating.day2.galgameIntro',
                     voiceKey: 'avatar_floating_day2_galgame_intro',
                     text: '快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。',
                     emotion: 'surprised',
-                    persistent: 'chat-tool-toggle',
                     target: 'chat-galgame',
-                    cursorAction: 'move',
-                    operation: 'rotate-galgame-tool-into-center'
+                    cursorTarget: 'chat-galgame',
+                    cursorAction: 'hold',
+                    cursorHoldFreezePoint: true
                 },
                 {
                     id: 'day2_galgame_choices',

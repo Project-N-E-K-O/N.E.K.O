@@ -1003,22 +1003,27 @@ def _tag_tier(
             # 条目正是该被召回的东西。加上 ``disputation > 0`` 这一维，过滤
             # 的语义才真正等于那句 docstring：**有人反驳过，且反驳压过了确认**。
             #
-            # 没有 disputation 的行不盖 score 键 → 回落到"不按分过滤"，与本次
-            # 改动之前的行为一致。
+            # 没有 disputation 的行**原样不动**：真实数据里 reflections.json 就
+            # 没有 score 键，不动 = 没有键 = 回落到"不按分过滤"，正是想要的。
+            #
+            # ⚠️ 这里曾经写的是 ``d.pop('score', None)``，方向恰好反了。改动前
+            # ``_tag_tier`` 根本不碰这个键，所以"与改动之前一致"要求的是**不碰**
+            # 而不是删：盘上真带着 ``score: -5.0`` 的陈旧行（下面那条注释自己
+            # 承认这种行存在），原样走 ``_hard_filter`` 会被丢掉，pop 之后反而
+            # **活了下来** —— 与"只会多丢行、不会多留行"的单调性主张正相反。
+            # 实测 ``{"id":"stale_neg","status":"confirmed","score":-5.0}``：
+            # 直接过 _hard_filter 得 []，先过 _tag_tier 再过则得 ['stale_neg']。
             try:
                 if float(d.get('disputation', 0.0) or 0.0) > 0.0:
                     # ⚠️ 覆盖式赋值，不是 setdefault：行里若真带了 ``score``，
                     # 那是历史遗留 / 手工编辑的陈旧快照，衰减早已算不准。
                     # 唯一权威是现算值。
                     d['score'] = evidence_score(d, now)
-                else:
-                    d.pop('score', None)
             except Exception as exc:
                 # 单行字段类型坏掉（``reinforcement: "abc"``）不该让整池挂掉；
                 # 与本函数的 non-dict 跳过、``_hard_filter`` 的 per-entry
-                # try/except 同一策略。删掉 score 键 → 回落到"不按分过滤"，
-                # 与本次改动之前的行为一致（fail-open，不误杀）。
-                d.pop('score', None)
+                # try/except 同一策略。这里同样**不删** score 键：算不出现值时
+                # 保留盘上原值，是最接近"本函数没跑过"的状态。
                 logger.debug(
                     "[hybrid_recall] _tag_tier: score unavailable for "
                     "reflection id=%r: %s: %s",

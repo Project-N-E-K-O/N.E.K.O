@@ -78,6 +78,7 @@ ban-topic regex vs. negative-keyword scan
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import List, Tuple
 
 from config.prompts._locale import normalize_prompt_locale, prompt_locale_fallback_key
@@ -585,6 +586,14 @@ _ZH_TRAILING_FILLERS = (
 # 就内联在 'zh' 这一项里，繁中用户照样命中。开一个 'zh-TW' 键反而会造出
 # "同一批词分两处维护、改一边忘另一边"的漂移面——这个模块为此吃过四次亏
 # （见 _ZH_NEG 那段"派生不手抄"的注释）。
+# ⚠️ **人称代词与指代词是同一维，不是两维**。判据（"单独拿出来指代什么"）对
+# ``我`` / ``me`` / ``我们`` 的答案与对 ``这个`` 的完全一样：它们指向说话现场的
+# 参与者，不指向任何话题内容。而危害比指代词那批**更大** —— ``别再提我了`` /
+# ``stop talking about me`` 恰恰是这功能最自然的用法之一，抽出来的 term 就是
+# ``me``，实测让三条最普通的英文主动搭话草稿（"Hey, let me know how the build
+# went!" 等）3/3 全被 drop，词边界在这里救不了场（``me`` 本身就是完整的词）。
+# 那正是这张表当初为 ``it`` → ``favorite`` 建立时要挡的同一类 P1，而 TTL 递增
+# 之后中招代价从 3 天变成最长 30 天。
 _SEMANTICALLY_EMPTY_TERMS_BY_LOCALE: dict[str, frozenset[str]] = {  # noqa: PROMPT_ZH_TW  # 判据词表非渲染模板，繁体字形内联在 zh 项
     "zh": frozenset({
         "这个", "這個", "那个", "那個", "这些", "這些", "那些",
@@ -595,31 +604,66 @@ _SEMANTICALLY_EMPTY_TERMS_BY_LOCALE: dict[str, frozenset[str]] = {  # noqa: PROM
         "这样的事", "這樣的事", "这类事", "這類事",
         "刚才的事", "剛才的事", "刚刚的事", "剛剛的事",
         "这一切", "這一切", "那一切",
+        # 人称 / 反身 / 领属。单字的（我 / 你 / 他）够不到 _TERM_MIN_LEN=2，
+        # 抽取侧本来就存不下，不列进来当噪音。
+        "我们", "我們", "咱们", "咱們", "你们", "你們",
+        "他们", "他們", "她们", "她們", "它们", "它們",
+        "自己", "我自己", "你自己", "他自己", "她自己", "自个儿", "自個兒",
+        "我的", "你的", "他的", "她的", "我们的", "我們的", "你们的", "你們的",
     }),
     "en": frozenset({
         "this", "that", "these", "those", "it", "them",
         "this thing", "that thing", "this topic", "that topic",
         "this stuff", "that stuff", "this one", "that one",
         "the topic", "the subject", "anything", "everything", "all this",
+        # 人称 / 反身 / 领属（"i" 是单字符，够不到 _TERM_MIN_LEN）
+        "me", "you", "we", "us", "him", "her", "he", "she",
+        "my", "your", "our", "his", "hers", "its", "their", "theirs",
+        "mine", "yours", "ours",
+        "myself", "yourself", "yourselves", "ourselves",
+        "himself", "herself", "itself", "themselves", "oneself",
     }),
     "ja": frozenset({
         "これ", "それ", "あれ", "この話", "その話", "あの話",
         "この件", "その件", "あの件", "こんな話", "そんな話",
         "この話題", "その話題",
+        # 人称 / 反身。単漢字（私 / 僕 / 君 / 俺）は _TERM_MIN_LEN に届かない。
+        "わたし", "あたし", "ぼく", "おれ", "あなた", "きみ", "おまえ", "お前",
+        "自分", "自分自身", "私たち", "僕たち", "俺たち", "わたしたち",
+        "あなたたち", "君たち", "私自身",
     }),
     "ko": frozenset({
         "이거", "그거", "저거", "이것", "그것", "저것",
         "이 얘기", "그 얘기", "이 이야기", "그 이야기",
         "이 일", "그 일", "이 주제", "그 주제",
+        # 인칭 / 재귀
+        "우리", "우리들", "저희", "너희", "당신", "그들", "그녀",
+        "자기", "자신", "자기자신", "제가", "저는",
     }),
     "ru": frozenset({
         "это", "то", "этом", "этому", "об этом", "эту тему", "эта тема",
+        # Личные / возвратные / притяжательные
+        "мы", "вы", "он", "она", "они", "оно",
+        "меня", "тебя", "нас", "вас", "его", "её", "ее", "их",
+        "мне", "тебе", "нам", "вам", "себя", "себе",
+        "мой", "твой", "наш", "ваш", "свой", "моя", "твоя", "наша", "ваша",
     }),
     "es": frozenset({
         "esto", "eso", "aquello", "este tema", "ese tema", "esta cosa",
+        # Personales / reflexivos / posesivos
+        "yo", "tú", "tu", "él", "el", "ella", "ellos", "ellas",
+        "nosotros", "nosotras", "vosotros", "vosotras", "usted", "ustedes",
+        "mí", "mi", "ti", "te", "nos", "su", "sus",
+        "mío", "mía", "tuyo", "tuya", "suyo", "suya",
+        "mí mismo", "sí mismo", "ti mismo",
     }),
     "pt": frozenset({
         "isso", "isto", "aquilo", "esse tema", "este tema", "essa coisa",
+        # Pessoais / reflexivos / possessivos
+        "eu", "tu", "ele", "ela", "eles", "elas", "nós", "vós",
+        "você", "vocês", "mim", "ti", "si", "me", "te", "nos", "vos",
+        "meu", "minha", "teu", "tua", "seu", "sua", "nosso", "nossa",
+        "dele", "dela", "si mesmo", "mim mesmo",
     }),
 }
 
@@ -628,9 +672,39 @@ _SEMANTICALLY_EMPTY_TERMS_BY_LOCALE: dict[str, frozenset[str]] = {  # noqa: PROM
 # 不存在同形歧义 —— 它们在任何一种语言里都是纯指代词，没有哪个是别的语言的
 # 实义内容词。（``_TRIM_TRAIL_TOKENS_BY_LOCALE`` 必须分表是因为 ``唄`` 那类
 # 同码位歧义，这里没有那个问题。）
+# ⚠️ 建集时就 NFC 归一，别只归一查询侧：源码字面量本身可能以分解形式存进文件
+# （编辑器 / 剪贴板差异），那样查询侧再怎么归一也对不上。两侧同一形式才闭合。
 _SEMANTICALLY_EMPTY_TERMS = frozenset(
-    t for terms in _SEMANTICALLY_EMPTY_TERMS_BY_LOCALE.values() for t in terms
+    unicodedata.normalize("NFC", t)
+    for terms in _SEMANTICALLY_EMPTY_TERMS_BY_LOCALE.values() for t in terms
 )
+
+
+def term_needs_case_sensitive_match(term: str) -> bool:
+    """Whether a term must be matched case-sensitively: a name spelled like a pronoun.
+
+    English writes ``the US`` / the films ``Us`` and ``Her`` with capitals and
+    the pronouns ``us`` / ``her`` without, so case is the one local signal that
+    separates the two. Same criterion ``_trim_term`` already uses to keep
+    ``Never Please`` intact while still stripping a trailing ``please``.
+
+    ⚠️ **Only for terms that actually collide with the table.** Widening this to
+    "any capitalized term" costs far more than it buys: ``Work`` (an IME
+    capitalizing the first letter, or just a sentence-initial capture) would
+    then stop matching ``work`` / ``WORK`` in a draft, a fresh miss on the
+    ordinary path — while the collision this exists for is confined to terms
+    whose casefold is in ``_SEMANTICALLY_EMPTY_TERMS``. Pinned by
+    ``test_matcher_is_case_insensitive``.
+
+    Complementary to ``is_semantically_empty_term`` — for a term whose casefold
+    is in the table, exactly one of the two is true (lowercase → exempt from the
+    hard gate, capitalized → gated but matched case-sensitively). Terms outside
+    the table get False from both and follow the ordinary path.
+    """
+    normalized = unicodedata.normalize("NFC", term.strip())
+    if not any(ch.isupper() for ch in normalized):
+        return False
+    return normalized.casefold() in _SEMANTICALLY_EMPTY_TERMS
 
 
 def is_semantically_empty_term(term: str) -> bool:
@@ -639,8 +713,27 @@ def is_semantically_empty_term(term: str) -> bool:
     Consumers use this to decide whether a directive term is specific enough to
     hard-block output on. It is deliberately NOT applied at extraction time —
     see the table's comment for why the two sides differ.
+
+    ⚠️ Capitalized terms are never exempt. ``stop talking about US`` (the
+    country) and the films ``Us`` / ``Her`` all yield terms whose casefold lands
+    on a pronoun in the table; exempting them means the hard gate skips a topic
+    the user explicitly banned, which is strictly worse than before the pronoun
+    entries existed. The proactive gate pairs this with a case-sensitive match
+    for such terms, so ``US`` no longer matches the ``us`` in "Want us to…" —
+    fixing only this half would silence proactive chat wholesale instead.
+
+    ⚠️ NFC first. Accented Spanish/Portuguese entries (``él`` / ``mí`` / ``você``)
+    can reach the store decomposed (``e`` + combining acute) from an IME or a
+    pasted string, which is a different codepoint sequence from the composed
+    form written in the table above — the lookup would silently miss and the
+    pronoun would go back to hard-blocking every draft. The proactive gate
+    normalizes for the same reason (``generation._normalize_for_match``); this
+    predicate has to agree with it or the two disagree on the same term.
     """
-    return term.strip().casefold() in _SEMANTICALLY_EMPTY_TERMS
+    normalized = unicodedata.normalize("NFC", term.strip())
+    if any(ch.isupper() for ch in normalized):
+        return False
+    return normalized.casefold() in _SEMANTICALLY_EMPTY_TERMS
 
 # 话题里允许出现的**一个单位**。四条 zh 模板共用一份，别再各写各的。
 #

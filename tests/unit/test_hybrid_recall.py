@@ -380,6 +380,43 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
         tagged = _tag_tier(rows, "reflection")
         self.assertLess(tagged[0]["score"], 0.0)
 
+    async def test_tagging_only_ever_drops_rows_never_resurrects_one(self):
+        """``_tag_tier`` must be monotone against a bare ``_hard_filter``."""
+        # ⚠️ 这条钉的是**方向**。``disputation <= 0`` 那支一度写的是
+        # ``d.pop('score', None)``，理由是"回落到不按分过滤，与改动前一致"——
+        # 但改动前 _tag_tier 根本不碰这个键，所以"一致"要求的是不碰而不是删：
+        # 盘上带着陈旧 ``score: -5.0`` 的行原样会被 _hard_filter 丢掉，pop 之后
+        # 反而活了下来，与那句单调性注释正相反。
+        # 只断言 stale_neg 被丢是不够的（把 pop 换成任何别的写法都能过），
+        # 用集合包含关系直接编码"只减不增"。
+        from memory.recall import MemoryRecallReranker
+
+        def _rows():
+            return [
+                {"id": "stale_neg", "text": "陈旧负分", "status": "confirmed",
+                 "score": -5.0},
+                {"id": "silent", "text": "用户没接话", "status": "confirmed",
+                 "reinforcement": -0.2, "disputation": 0.0},
+                {"id": "disputed", "text": "被反驳过", "status": "confirmed",
+                 "reinforcement": 0.0, "disputation": 3.0,
+                 "disp_last_signal_at": datetime.now().isoformat()},
+            ]
+
+        baseline = {
+            r["id"] for r in MemoryRecallReranker._hard_filter(_rows())
+        }
+        tagged = {
+            r["id"] for r in MemoryRecallReranker._hard_filter(
+                _tag_tier(_rows(), "reflection")
+            )
+        }
+        # 前提：裸过滤本来就丢 stale_neg（否则这条测不到任何东西）
+        self.assertNotIn("stale_neg", baseline)
+        self.assertLessEqual(tagged, baseline)
+        # 而"沉默"那类（rein 负、disp=0）必须仍然活着 —— 单调性不能靠一刀切
+        # 多杀来满足，那会把实测 17.8% 的活跃 reflection 一起抹掉。
+        self.assertIn("silent", tagged)
+
     async def test_hard_filter_drops_suppressed(self):
         facts = [
             {"id": "ok", "text": "博士养了只猫", "score": 1.0},

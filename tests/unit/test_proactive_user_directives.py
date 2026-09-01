@@ -24,6 +24,11 @@ import pytest
 
 import memory.anti_repeat as anti_repeat_module
 import memory.user_directives as user_directives_module
+from config.prompts.prompts_directives import (
+    extract_directives,
+    is_semantically_empty_term,
+    term_needs_case_sensitive_match,
+)
 from main_logic.proactive_chat.contracts import PROACTIVE_REASON_PASS_USER_DIRECTIVE
 from main_logic.proactive_chat.generation import (
     _append_directives_section,
@@ -170,6 +175,147 @@ def test_bare_referents_never_hard_block(monkeypatch, term, draft):
     # 能看到、更别说删掉它。所以判据落在消费侧：软约束照旧注入，硬拦截跳过。
     _install_directives(monkeypatch, [term])
     assert _proactive_directive_hits("Neko", draft) == []
+
+
+@pytest.mark.parametrize("utterance,draft", [
+    ("stop talking about me", "Hey, let me know how the build went!"),
+    ("stop talking about us", "Want us to pick a movie tonight?"),
+    ("以后别提我们了", "我们要不要一起看个电影？"),
+    ("别再说你自己了", "你自己最近还好吗？"),
+    ("别再提自己了", "自己一个人别硬扛啊。"),
+])
+def test_pronoun_directives_never_silence_ordinary_drafts(
+    monkeypatch, utterance, draft,
+):
+    """Personal pronouns are the same axis as demonstratives, and hurt more.
+
+    "别再提我了" / "stop talking about me" is one of the most natural ways to
+    use this feature, and the term it yields is ``me`` — which matches three
+    out of three perfectly ordinary English drafts. Word boundaries do not
+    save it: ``me`` *is* a whole word. That is the identical P1 this table was
+    first built for (``it`` matching ``favorite``), and with the escalating
+    TTL the blast radius went from 3 days to 30.
+    """  # noqa: DOCSTRING_CJK  # 引的是用户实际会说的那句话
+    # ⚠️ 前提断言：这条测试的意义全在"抽取侧确实会产出这个 term"上。抽取行为
+    # 哪天变了（正则收紧 / 长度门变化），没有这句的话测试会静默变成空转绿。
+    hits = extract_directives(utterance)
+    assert hits, f"{utterance!r} 不再被抽成 ban_topic，本测试的前提已失效"
+    terms = [t for _, _, t in hits]
+    _install_directives(monkeypatch, terms)
+
+    assert _proactive_directive_hits("Neko", draft) == []
+
+
+@pytest.mark.parametrize("term,blocked_draft,ignored_draft", [
+    # 国名 vs 代词
+    ("US", "The US economy is wild these days.", "Want us to pick a movie?"),
+    # 电影《我们》/《她》
+    ("Us", "Want to watch Us tonight?", "Want us to pick a movie?"),
+    ("Her", "Her is still my favorite film.", "Did you ask her about it?"),
+    # #3013 R4：IT 行业 vs 代词 it
+    ("IT", "The IT department replied.", "How is it going for you?"),
+])
+def test_capitalized_terms_are_names_not_pronouns(
+    monkeypatch, term, blocked_draft, ignored_draft,
+):
+    """A capitalized term is a proper name: still gated, but matched case-sensitively.
+
+    Both halves are load-bearing and neither works alone:
+
+    - exempting it (case-folding down onto the pronoun table) silently drops
+      the hard gate for a topic the user explicitly banned — strictly worse
+      than before the pronoun entries existed;
+    - gating it while still matching case-insensitively fires on every
+      ordinary ``us`` / ``her`` / ``it`` in the draft, which is the
+      proactive-silence P1 the table was built to prevent.
+    """
+    _install_directives(monkeypatch, [term])
+    assert _proactive_directive_hits("Neko", blocked_draft) == [term]
+    assert _proactive_directive_hits("Neko", ignored_draft) == []
+
+
+@pytest.mark.parametrize("term", ["us", "her", "me", "it", "this"])
+def test_lowercase_pronouns_stay_exempt(monkeypatch, term):
+    """Control for the rule above: the lowercase spelling is still the pronoun."""
+    # 没有这条，把"含大写才豁免"写反（变成"只豁免大写"）也能让上面那组全绿。
+    _install_directives(monkeypatch, [term])
+    assert _proactive_directive_hits(
+        "Neko", "Want us to pick a movie, or should I ask her about it?",
+    ) == []
+
+
+@pytest.mark.parametrize("term,exempt,case_sensitive", [
+    # 撞表 + 全小写 → 豁免硬闸
+    ("us", True, False),
+    ("it", True, False),
+    ("me", True, False),
+    # 撞表 + 含大写 → 不豁免，且必须大小写敏感
+    ("US", False, True),
+    ("Us", False, True),
+    ("IT", False, True),
+    # 不撞表 → 两者都 False，走普通的大小写不敏感路径
+    ("work", False, False),
+    ("Work", False, False),
+    ("加班", False, False),
+])
+def test_exemption_and_case_sensitivity_are_complementary(
+    term, exempt, case_sensitive,
+):
+    """For any term, at most one of the two rules applies — never both.
+
+    The pair has to stay complementary or one of two P1s comes back: exempting
+    a capitalized name silently drops the ban, and case-folding it back down
+    fires on every ordinary pronoun in the draft. Note the third group — the
+    case-sensitive rule must NOT widen to "any capitalized term", or an
+    IME-capitalized ``Work`` stops matching ``work``.
+    """
+    assert is_semantically_empty_term(term) is exempt
+    assert term_needs_case_sensitive_match(term) is case_sensitive
+    assert not (exempt and case_sensitive)
+
+
+def test_pronoun_skip_does_not_disarm_the_gate_for_content_terms(monkeypatch):
+    """Control: the same drafts must still be blocked by a real content term."""
+    # 没有这条对照，上面那组只要"硬闸整个失效"就会全绿 —— 变异实测过这个方向。
+    _install_directives(monkeypatch, ["加班"])
+    assert _proactive_directive_hits("Neko", "我们今天还要加班吗？") == ["加班"]
+
+
+def test_accented_pronoun_is_matched_regardless_of_unicode_form(monkeypatch):
+    """A decomposed accented pronoun must still be recognised as empty."""
+    # ⚠️ ``is_semantically_empty_term`` 走 NFC 归一，否则 IME / 粘贴来的分解形式
+    # （e + 组合重音符）与表里的合成形式逐码位不等，查表静默落空，这个西语代词
+    # 会退回去硬拦截每一条草稿 —— 正是上面那条 P1 的重演，只是换了触发条件。
+    import unicodedata
+
+    decomposed = unicodedata.normalize("NFD", "él")
+    assert decomposed != "él", "前提：两种 Unicode 形式确实不同"
+    _install_directives(monkeypatch, [decomposed])
+
+    assert _proactive_directive_hits("Neko", "él dijo algo interesante") == []
+
+
+def test_hits_degrade_but_still_block_when_script_fold_is_unavailable(
+    monkeypatch,
+):
+    """``Never raises`` must hold in the very case the lazy import cites."""
+    # ⚠️ ``from memory.script_fold import fold_script`` 的理由写的就是"memory 层
+    # 在偏窄的 entrypoint 下未必加载"，而它一度落在 try 之外 —— 契约在它自己举的
+    # 那个场景下不成立。降级方向也钉住：不折叠**继续匹配**，不是放弃整道闸，
+    # 所以同字形的 ``加班`` 仍然拦得住。
+    _install_directives(monkeypatch, ["加班"])
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _boom_on_script_fold(name, *args, **kwargs):
+        if name == "memory.script_fold":
+            raise ImportError("simulated narrow entrypoint")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _boom_on_script_fold)
+
+    assert _proactive_directive_hits("Neko", "今天又加班到很晚吧？") == ["加班"]
 
 
 def test_bare_referent_does_not_mask_a_real_term_in_the_same_list(monkeypatch):

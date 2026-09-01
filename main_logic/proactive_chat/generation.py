@@ -38,6 +38,7 @@ from config import (
 )
 from config.prompts.prompts_directives import (
     is_semantically_empty_term,
+    term_needs_case_sensitive_match,
     render_format_fix_instruction,
     render_regen_avoid_instruction,
 )
@@ -158,14 +159,24 @@ def _normalize_for_match(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
 
-def _directive_term_in_draft(term: str, draft_folded: str) -> bool:
-    """Whether ``term`` occurs in an already-casefolded draft.
+def _directive_term_in_draft(
+    term: str, draft_folded: str, *, fold_case: bool = True,
+) -> bool:
+    """Whether ``term`` occurs in a draft the caller already normalized.
 
     Latin/Cyrillic/Greek terms match only when not glued to another letter of
     the same family; CJK/kana/hangul are written without spaces and can only
     be matched as substrings.
+
+    ⚠️ ``fold_case`` must agree with how the caller prepared ``draft_folded``:
+    True expects a casefolded draft, False expects one that kept its case. A
+    capitalized term (``US``, ``Us``, ``Her``) is a proper name, and matching it
+    case-insensitively would fire on every ordinary ``us`` / ``her`` in the
+    draft — the pronoun-silencing P1 all over again. See
+    ``term_needs_case_sensitive_match``.
     """
-    folded_term = _normalize_for_match(term).casefold()
+    normalized_term = _normalize_for_match(term)
+    folded_term = normalized_term.casefold() if fold_case else normalized_term
     if not folded_term:
         return False
     if _BOUNDARYLESS_SCRIPT_RE.search(folded_term):
@@ -216,7 +227,13 @@ def _proactive_directive_hits(lanlan_name: str, draft: str) -> list[str]:
         return []
     # 延迟 import：memory 层在偏窄的 entrypoint 下未必加载，与本函数其余
     # 部分对 memory 的取用方式一致。
-    from memory.script_fold import fold_script
+    # ⚠️ import **和**调用都必须在 try 内。docstring 承诺 "Never raises"，而这个
+    # 延迟 import 的理由恰恰是"memory 层未必加载"—— 它自己举的那个场景正是会抛
+    # 的场景，放在 try 外等于契约在唯一相关的情况下不成立（上面那次
+    # get_active_terms 已经护住了，唯独这里漏了）。
+    def _no_fold(text: str) -> str:
+        return text
+
     # ⚠️ 繁简折叠两侧都做。用户换个输入法说"别再提遊戲"，落盘 term 是繁体，
     # 而角色按 locale 输出简体"游戏"——不折的话逐字不等、直接漏杀，用户明确
     # 禁掉的话题照样被推到脸上。项目里 memory.script_fold 就是为这条造的
@@ -224,18 +241,40 @@ def _proactive_directive_hits(lanlan_name: str, draft: str) -> list[str]:
     # 分词各走各的"的覆辙。
     # ⚠️ 还要 Unicode 归一：西 / 葡的重音字母可能以分解形式（e + 组合重音符）
     # 落盘，与合成形式（é）逐字节不等，重音 term 会静默永不命中（codex）。
-    folded = _normalize_for_match(fold_script(draft)).casefold()
+    try:
+        from memory.script_fold import fold_script
+        folded = _normalize_for_match(fold_script(draft)).casefold()
+    except Exception as exc:  # pragma: no cover - defensive
+        # ⚠️ 降级成**不折叠继续匹配**，不是放弃整道闸。折叠只解决跨字形
+        # （遊戲/游戏）那一档，丢了它仍能拦住同字形的绝大多数命中；而直接
+        # return [] 会把用户明确禁掉的话题原样推到脸上 —— 两者严格可比，
+        # 降级那侧在任何输入上都不比放弃更差。
+        logger.debug("[UserDirectives] script fold unavailable: %s", exc)
+        fold_script = _no_fold
+        folded = _normalize_for_match(draft).casefold()
     # ⚠️ 纯指代词（``这个`` / ``this`` / ``それ``）只走软约束，不参与硬拦截。
     # 抽取侧是会存下它们的（"别再讲这个了"），而且那个行为被既有测试成片钉着，
     # 不该由这条改动顺手动；但拿汉语最高频的词去做子串匹配，等于让主动搭话在
     # 这条指令的整个生命周期里（递增 TTL 后最长 30 天）全面静默，而用户今天
     # 没有界面能看到、更别说删掉它。判据与危害都在消费侧，就在消费侧收口。
-    return [
-        t for t in terms
-        if t
-        and not is_semantically_empty_term(t)
-        and _directive_term_in_draft(fold_script(t), folded)
-    ]
+    # ⚠️ 保留大小写的那一份草稿，专给专名 term 用（``US`` / ``Us`` / ``Her``）。
+    # 它们在表里的小写形态是代词，casefold 之后会命中草稿里每一个普通的
+    # ``us`` / ``her``；反过来若把它们当代词豁免，用户明确 ban 掉的话题就直接
+    # 放行了。两条路都是 P1，所以判据落在 term 自己的大小写上，两侧配套。
+    cased = _normalize_for_match(fold_script(draft))
+    hits: list[str] = []
+    for t in terms:
+        if not t or is_semantically_empty_term(t):
+            continue
+        folded_t = fold_script(t)
+        case_sensitive = term_needs_case_sensitive_match(folded_t)
+        if _directive_term_in_draft(
+            folded_t,
+            cased if case_sensitive else folded,
+            fold_case=not case_sensitive,
+        ):
+            hits.append(t)
+    return hits
 
 
 def _merge_regen_avoid_terms(*term_groups: Any) -> list[str]:

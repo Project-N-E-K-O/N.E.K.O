@@ -971,6 +971,7 @@
     const GUIDE_AUDIO_DURATIONS_BY_KEY = Object.freeze({
         avatar_floating_day2_avatar_tools_intro: Object.freeze({ zh: 4400, ja: 5904, en: 4336, ko: 6060, ru: 5120 }),
         avatar_floating_day2_avatar_tools_props: Object.freeze({ zh: 13320, ja: 16144, en: 14681, ko: 14420, ru: 14942 }),
+        avatar_floating_day2_tool_wheel_rotation: Object.freeze({ zh: 8832, ja: 10893, en: 9247, ko: 11729, ru: 7915 }),
         avatar_floating_day2_galgame_choices: Object.freeze({ zh: 9800, ja: 12382, en: 9639, ko: 11755, ru: 12931 }),
         avatar_floating_day2_galgame_intro: Object.freeze({ zh: 6640, ja: 8333, en: 7262, ko: 8803, ru: 7393 }),
         avatar_floating_day2_intro: Object.freeze({ zh: 12960, ja: 17711, en: 14054, ko: 17241, ru: 16535 }),

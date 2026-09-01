@@ -271,14 +271,15 @@ test('day2 round scenes use the interaction tools flow after day swap', () => {
         .filter(scene => scene.timelinePlayback === true)
         .map(scene => scene.id);
 
-    assert.equal(timelineSceneIds.length, 7);
+    assert.equal(timelineSceneIds.length, 8);
     assert.equal(timelineSceneIds[0], 'day2_tool_toggle_intro');
     assert.equal(timelineSceneIds[1], 'day2_avatar_tools');
     assert.equal(timelineSceneIds[2], 'day2_avatar_tools_props');
-    assert.equal(timelineSceneIds[3], 'day2_galgame_entry');
-    assert.equal(timelineSceneIds[4], 'day2_galgame_choices');
-    assert.equal(timelineSceneIds[5], 'day2_wrap');
-    assert.equal(timelineSceneIds[6], 'day2_wrap_ready');
+    assert.equal(timelineSceneIds[3], 'day2_tool_wheel_rotation');
+    assert.equal(timelineSceneIds[4], 'day2_galgame_entry');
+    assert.equal(timelineSceneIds[5], 'day2_galgame_choices');
+    assert.equal(timelineSceneIds[6], 'day2_wrap');
+    assert.equal(timelineSceneIds[7], 'day2_wrap_ready');
 });
 
 test('day3 personalization detail delegates narration and panel tour to SettingsTourFlow from timeline after day swap', () => {
