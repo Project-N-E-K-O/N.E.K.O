@@ -411,7 +411,7 @@ def test_the_startup_clamp_never_widens_and_never_reaches_zero() -> None:
     assert module._clamp_startup_timeout(10.0, None) == 10.0, "没有预算时不该改动配置值"
 
 
-def test_one_deadline_covers_both_lock_layers() -> None:
+def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -> None:
     """The two lock stages share a budget; they must not each spend a full one.
 
     ``_CrossLoopLock`` runs first and the file lock second. With each stage
@@ -427,17 +427,14 @@ def test_one_deadline_covers_both_lock_layers() -> None:
     budget = 0.60
     process_lock_held_for = 0.40
 
-    async def _scenario() -> tuple[str, float]:
-        # 文件锁永远争用：预算怎么分配，全看跨进程那一层还剩多少。
-        def _always_contended(handle):
-            raise OSError(module.errno.EACCES, "held")
+    # 文件锁永远争用：预算怎么分配，全看跨进程那一层还剩多少。
+    def _always_contended(handle):
+        raise OSError(module.errno.EACCES, "held")
 
-        module._lock_file_once_original = module._lock_file_once
-        module._lock_file_once = _always_contended
-        module._FILE_LOCK_RETRY_INTERVAL_SECONDS_original = (
-            module._FILE_LOCK_RETRY_INTERVAL_SECONDS
-        )
-        module._FILE_LOCK_RETRY_INTERVAL_SECONDS = 0.01
+    monkeypatch.setattr(module, "_lock_file_once", _always_contended)
+    monkeypatch.setattr(module, "_FILE_LOCK_RETRY_INTERVAL_SECONDS", 0.01)
+
+    async def _scenario() -> tuple[str, float]:
         held = module._HeldPluginOperationLock()
         try:
             await module._PROCESS_LOCK.acquire()
@@ -457,10 +454,14 @@ def test_one_deadline_covers_both_lock_layers() -> None:
                     await releaser
             return "acquired", time.monotonic() - started
         finally:
-            module._lock_file_once = module._lock_file_once_original
-            module._FILE_LOCK_RETRY_INTERVAL_SECONDS = (
-                module._FILE_LOCK_RETRY_INTERVAL_SECONDS_original
-            )
+            # 这个用例直接调 __aenter__，所以没有 __aexit__ 替我们收尾。真让它拿到
+            # 了锁（说明被测的行为坏了）就必须在这里还回去：全局那把锁留在持有态
+            # 的话，后面每一个要用它的用例都会永远挂住——而挂住不是失败，是没有
+            # 结果。这一段本身不是断言，是不让一条红用例把整个会话带走。
+            if held._acquired:
+                if held._file_lock_handle is not None:
+                    module._release_file_lock_sync(held._file_lock_handle)
+                module._PROCESS_LOCK.release()
 
     outcome, elapsed = asyncio.run(_scenario())
 
