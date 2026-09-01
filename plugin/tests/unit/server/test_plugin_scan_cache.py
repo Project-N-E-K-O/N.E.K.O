@@ -883,6 +883,81 @@ def test_a_file_symlink_also_makes_the_tree_uncacheable(
     )
 
 
+def test_a_symlinked_plugin_root_is_never_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The root itself can be the symlink, and scandir walks straight past that.
+
+    Listing a symlinked root shows nothing unusual inside it, so the tree cached
+    normally — while repointing the root at a different copy left the key
+    untouched (CodeRabbit).
+
+    Mutation: only look for symlinks among the entries, not at the root.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "plugin.toml").write_text("[plugin]" + chr(10), encoding="utf-8")
+    (real / "entry.py").write_text("x = 1" + chr(10), encoding="utf-8")
+    for path in real.iterdir():
+        _age(path, 60)
+    linked_root = tmp_path / "demo"
+    try:
+        os.symlink(real, linked_root, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform gate
+        pytest.skip(f"这台机器不允许建目录软链：{exc}")
+
+    calls: list = []
+    config_path = linked_root / "plugin.toml"
+    _scan(monkeypatch, config_path, calls)
+    _scan(monkeypatch, config_path, calls)
+
+    assert len(calls) == 2, "插件根自己是软链，这棵树却进了缓存"
+
+
+def test_capacity_eviction_invalidates_in_flight_scans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clearing the cache for capacity throws away evidence others rely on.
+
+    The "an ordinary scan never overwrites a forced entry" rule reads the entry
+    that is there. A capacity clear removes it, so a scan sharing that
+    generation then sees an empty slot and writes its older read (codex).
+    Capacity eviction now invalidates in-flight results the same way the
+    generation-table overflow does.
+
+    Mutation: clear without bumping the epoch.
+    """
+    config_path = _plugin_dir(tmp_path)
+    monkeypatch.setattr(module, "_SCAN_CACHE_MAX_ENTRIES", 1)
+    module._SCAN_CACHE.clear()
+
+    before = module._SCAN_EPOCH
+    calls: list = []
+
+    def _fake(**inner):
+        calls.append(inner["plugin_id"])
+        return "v"
+
+    monkeypatch.setattr(module, "_scan_plugin_metadata_uncached", _fake)
+
+    def _run(plugin_id: str):
+        return module.scan_plugin_metadata_isolated(
+            plugin_id=plugin_id,
+            module_path="entry",
+            class_name="C",
+            config_path=config_path,
+            conf={},
+            pdata={},
+        )
+
+    _run("demo")        # 写第 1 条
+    _run("demo-other")  # 不同的键，触发容量清表
+
+    assert module._SCAN_EPOCH != before, (
+        "按容量清表没有作废在途结果——共享同一代次的扫描会把更旧的读数写进来"
+    )
+
+
 def test_concurrent_scans_are_capped_across_the_whole_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

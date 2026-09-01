@@ -794,6 +794,8 @@ _NEVER_SETTLED = -1
 #    盖住"这个键我们从没见过"的在途扫描——按键的表里根本没有它的条目。
 _SCAN_GENERATION: dict[tuple, int] = {}
 _SCAN_EPOCH = 0
+# 缓存被显式清掉过几次。只增不减，注册表那边拿它对账。
+_SCAN_CACHE_CLEAR_COUNT = 0
 
 
 def _bump_scan_epoch_locked() -> None:
@@ -879,7 +881,10 @@ def _plugin_source_fingerprint(config_path: Path) -> tuple[tuple, int]:
     entries: list[tuple[str, int, int]] = []
     newest = 0
     unreadable = False
-    saw_symlink = False
+    # 插件根目录本身就可能是软链。scandir 会跟着它进去，里面一个软链都看不到，
+    # 于是整棵树照常进缓存——而把根重新指向另一份代码，键一点都不会变
+    # （CodeRabbit）。所以先问根自己。
+    saw_symlink = os.path.islink(root)
 
     # 用 scandir 手写下降，而不是 os.walk + Path.stat。
     #
@@ -958,6 +963,17 @@ def _scan_cache_key(
     )
 
 
+def scan_cache_clear_count() -> int:
+    """How many times the cache has been declared untrustworthy.
+
+    注册表那边用它来判断"我开始扫之后，有没有人动过盘"。清缓存的调用方恰好就是
+    那几条改盘的事务（卸载、替换、换源），而它们都在插件操作锁里跑，刷新路由却不
+    进那把锁——所以这是两者之间唯一现成的信号。
+    """
+    with _SCAN_CACHE_LOCK:
+        return _SCAN_CACHE_CLEAR_COUNT
+
+
 def clear_plugin_metadata_scan_cache() -> None:
     """Drop every cached scan, and invalidate the ones still in flight.
 
@@ -968,11 +984,14 @@ def clear_plugin_metadata_scan_cache() -> None:
     is untested code that a guard test made look covered — and its path
     matching was unnormalized, so it would not have matched reliably anyway.
     """
+    global _SCAN_CACHE_CLEAR_COUNT
+
     with _SCAN_CACHE_LOCK:
         # 同时作废在途的扫描：它们是在清缓存**之前**读的盘，写回去等于把刚被
         # 明确宣布过时的内容又放回缓存。
         _bump_scan_epoch_locked()
         _SCAN_CACHE.clear()
+        _SCAN_CACHE_CLEAR_COUNT += 1
 
 
 def scan_plugin_metadata_isolated(
@@ -1062,6 +1081,11 @@ def scan_plugin_metadata_isolated(
                 # 上，但两个子进程读外部依赖的先后无法保证——不覆盖它。
                 return result
             if len(_SCAN_CACHE) >= _SCAN_CACHE_MAX_ENTRIES:
+                # 清表会把别人赖以判断的那条 force 记录一起扔掉：一个共享同一代次
+                # 的普通扫描随后就看不到"这里躺着 force 的结果"，于是把自己读到的
+                # 更旧的依赖写进来（codex）。和代次表溢出同一个处理——顺手把在途的
+                # 结果一起作废。我们自己已经过了检查，不受影响。
                 _SCAN_CACHE.clear()
+                _bump_scan_epoch_locked()
             _SCAN_CACHE[key] = (result, force)
     return result

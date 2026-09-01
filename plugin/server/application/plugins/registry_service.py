@@ -33,6 +33,7 @@ from plugin.server.application.plugins.metadata_scanner import (
     clear_plugin_metadata_scan_cache,
     MAX_CONCURRENT_METADATA_SCANS,
     PluginMetadataScanError,
+    scan_cache_clear_count,
     scan_plugin_metadata_isolated,
 )
 from plugin.core.state import state
@@ -682,6 +683,21 @@ class _registry_publication_of:
             self._held = False
             _REGISTRY_PUBLISH_GUARD.release()
         return False
+
+
+def _disk_transaction_superseded(clears_at_start: int) -> bool:
+    """Whether a disk-mutating transaction landed while this refresh was scanning.
+
+    force 只跟别的 force 比号，这条规则本身是对的——但它有个盲区：卸载/替换/换源
+    这些**改盘**的事务，收尾时发的是一次普通刷新。一次更早开始的 force 扫描于是能
+    绕过它、把事务前的快照发布上去，把刚卸载的插件复活，或者把升级后的元数据换回
+    旧的（codex）。
+
+    刷新路由不进插件操作锁，所以两者之间没有互斥。但那些事务都会显式清扫描缓存，
+    而清缓存是有计数的——扫描期间计数变过，就说明盘在我们脚下被换过，这份快照不
+    该再发布。
+    """
+    return scan_cache_clear_count() != clears_at_start
 
 
 class _registry_publication:
@@ -1360,6 +1376,7 @@ class PluginRegistryService:
 
     def _refresh_registry_sync(self, force: bool = False) -> dict[str, object]:
         ticket = _take_registry_refresh_ticket()
+        clears_at_start = scan_cache_clear_count()
         roots = tuple(PLUGIN_CONFIG_ROOTS)
         _prepare_plugin_import_roots(roots, logger)
 
@@ -1375,7 +1392,7 @@ class PluginRegistryService:
         # 的旧记录和删除接着写进去——注册表照样被旧的一份盖掉（codex）。锁从认号
         # 一直握到提交结束，发布之间才真的有序。
         with _registry_publication(ticket, forced=force) as may_publish:
-            if not may_publish:
+            if not may_publish or _disk_transaction_superseded(clears_at_start):
                 # 我们扫描期间已经有更晚开始的刷新把结果发布出去了。手上这份是照着更旧
                 # 的盘面读出来的，写进注册表就是把它盖回去。
                 logger.info(
@@ -1496,6 +1513,7 @@ class PluginRegistryService:
         self, plugin_id: str, force: bool = False
     ) -> dict[str, object]:
         ticket = _take_registry_refresh_ticket()
+        clears_at_start = scan_cache_clear_count()
         normalized_plugin_id = plugin_id.strip()
         if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
             raise ServerDomainError(
@@ -1562,7 +1580,7 @@ class PluginRegistryService:
         with _registry_publication_of(
             config_path, ticket, forced=force, plugin_id=record.plugin_id
         ) as may_publish:
-            if not may_publish:
+            if not may_publish or _disk_transaction_superseded(clears_at_start):
                 logger.info(
                     "plugin refresh #{} for {} superseded before publishing",
                     ticket,

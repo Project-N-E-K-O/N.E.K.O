@@ -959,11 +959,7 @@ def test_an_ordinary_ticket_cannot_make_one_force_outrank_another(
 
     Mutation: store "was the last publication forced" as a flag again.
     """
-    ordinary = module._take_registry_refresh_ticket()      # 3rd to publish? no: 1st
-    older_force = module._take_registry_refresh_ticket()
-    newer_force = module._take_registry_refresh_ticket()
-
-    # 让号的大小关系是 ordinary 最大：重新领，顺序反过来。
+    # 号的大小关系必须是 ordinary 最大：先领两张 force，再领普通那张。
     module._REGISTRY_REFRESH_TICKET = 0
     module._REGISTRY_PUBLISHED_TICKET = 0
     module._REGISTRY_PUBLISHED_FORCED_TICKET = 0
@@ -983,6 +979,75 @@ def test_an_ordinary_ticket_cannot_make_one_force_outrank_another(
             "更新的 force 被挡住了——挡它的是一次**普通**刷新的号，"
             "只因为一次更旧的 force 把 force 标记嫁接到了那个号上"
         )
+
+
+def test_a_disk_transaction_supersedes_an_older_forced_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"force never yields to ordinary" has a blind spot: transactions.
+
+    Uninstall, replacement and source-switch mutate the tree and then finish
+    with an *ordinary* refresh. A forced `/plugins/refresh` that started before
+    the transaction would sail past ordering — it only compares itself against
+    other forced tickets — and publish its pre-transaction snapshot, resurrecting
+    an uninstalled plugin or restoring pre-upgrade metadata (codex). The refresh
+    routes do not take the plugin operation lock, so nothing else serialises the
+    two.
+
+    Those transactions all clear the scan cache, and that clear is counted, so a
+    refresh can tell whether the ground moved under it.
+
+    Mutation: drop the `_disk_transaction_superseded` check.
+    """
+    import threading
+
+    from plugin.server.application.plugins import metadata_scanner
+
+    scanning = threading.Event()
+    let_finish = threading.Event()
+    applied: list[str] = []
+
+    def _discover(roots, *, force=False, force_targets=frozenset()):
+        scanning.set()
+        assert let_finish.wait(timeout=5)
+        return SimpleNamespace(
+            records=[SimpleNamespace(plugin_id="ghost",
+                                     config_path=Path("/ghost/plugin.toml"),
+                                     meta_payload={})],
+            failures=[], config_paths=set(), shadowed=[],
+        )
+
+    def _apply(record, *, existing_snapshot, preferred_runtime_plugin_id=None):
+        applied.append(record.plugin_id)
+        return record.plugin_id, {}
+
+    monkeypatch.setattr(module, "_discover_registry_snapshot_sync", _discover)
+    monkeypatch.setattr(module, "_apply_discovery_record_sync", _apply)
+    monkeypatch.setattr(module, "_prepare_plugin_import_roots", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_get_registered_plugin_snapshot_sync", dict)
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", list)
+    monkeypatch.setattr(module, "_find_existing_runtime_plugin_id_by_config_path", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_select_managed_fields", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_collect_missing_plugin_ids_sync", lambda *a, **k: set())
+    monkeypatch.setattr(module, "_remove_stale_plugin_metadata_sync", lambda *a, **k: ([], []))
+    monkeypatch.setattr(module, "_source_for_config_path", lambda *a, **k: "user")
+
+    service = module.PluginRegistryService()
+    forced = threading.Thread(
+        target=lambda: service._refresh_registry_sync(force=True)
+    )
+    forced.start()
+    assert scanning.wait(timeout=5), "前提没成立：force 扫描没开始"
+
+    # 卸载事务在它扫描期间落地：改了盘，并显式作废扫描缓存。
+    metadata_scanner.clear_plugin_metadata_scan_cache()
+
+    let_finish.set()
+    forced.join(timeout=10)
+
+    assert applied == [], (
+        f"一次更早开始的 force 扫描把事务前的快照发布上去了，插件被复活：{applied}"
+    )
 
 
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(
