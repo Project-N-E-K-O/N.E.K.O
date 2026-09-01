@@ -90,10 +90,17 @@ def test_vllm_clone_configuration_warning_names_active_tts_provider(mock_page: P
                 ttsModelProvider: 'vllm_omni',
             })"""
         )
+        legacy_enabled_warning = mock_page.evaluate(
+            """() => getVllmOmniCloneConfigurationWarning({
+                enableCustomApi: 'on',
+                ttsModelProvider: 'vllm_omni',
+            })"""
+        )
 
         assert "跟随辅助API" in warning
         assert "自定义 API 已关闭" in warning
         assert configured_warning == ""
+        assert legacy_enabled_warning == ""
     finally:
         mock_page.unroute("**/api/config/steam_language")
         mock_page.unroute("**/api/config/api_providers")

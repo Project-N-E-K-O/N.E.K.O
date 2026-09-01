@@ -590,6 +590,13 @@ function getConfiguredTtsProviderLabel(provider) {
     return normalizedProvider || voiceCloneI18n('voice.providerUnknown', 'Other');
 }
 
+function isVoiceCloneConfigFlagEnabled(value) {
+    if (typeof value === 'string') {
+        return ['true', '1', 'yes', 'on'].includes(value.trim().toLowerCase());
+    }
+    return typeof value === 'number' ? value !== 0 : value === true;
+}
+
 function getVllmOmniCloneConfigurationWarning(cfg) {
     if (!cfg || typeof cfg !== 'object') {
         return window.t
@@ -598,7 +605,7 @@ function getVllmOmniCloneConfigurationWarning(cfg) {
     }
     const configuredProvider = String((cfg && cfg.ttsModelProvider) || '').trim().toLowerCase();
     const providerLabel = getConfiguredTtsProviderLabel(configuredProvider);
-    const customApiEnabled = !!(cfg && (cfg.enableCustomApi === true || cfg.enableCustomApi === 'true'));
+    const customApiEnabled = isVoiceCloneConfigFlagEnabled(cfg.enableCustomApi);
 
     if (!customApiEnabled) {
         return window.t
@@ -1950,6 +1957,11 @@ async function registerVoice() {
         }
     }
 
+    // Lock the form before refreshing configuration. The refresh can retry for
+    // several seconds, and keeping inputs active would allow concurrent uploads
+    // or a request assembled from values edited during that wait.
+    setFormDisabled(true);
+
     let vllmOmniConfigurationWarning = '';
     if (currentVoiceSource === 'clone' && provider === 'vllm_omni') {
         // This is informational only: an inline vLLM-Omni clone can be saved
@@ -1961,7 +1973,6 @@ async function registerVoice() {
         );
     }
 
-    setFormDisabled(true);
     resultDiv.textContent = currentVoiceSource === 'design'
         ? (window.t ? window.t('voice.generatingVoice') : 'Generating voice, please wait...')
         : (window.t ? window.t('voice.registering') : '正在注册声音，请稍后！');
