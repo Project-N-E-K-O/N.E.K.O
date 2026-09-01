@@ -56,8 +56,8 @@ def _rewrite(path: Path, text: str) -> None:
     _age(path, 30)
 
 
-def _plugin_dir(tmp_path: Path, body: str = "x = 1\n") -> Path:
-    root = tmp_path / "demo"
+def _plugin_dir(tmp_path: Path, body: str = "x = 1\n", name: str = "demo") -> Path:
+    root = tmp_path / name
     root.mkdir()
     (root / "plugin.toml").write_text("[plugin]\n", encoding="utf-8")
     (root / "entry.py").write_text(body, encoding="utf-8")
@@ -440,6 +440,128 @@ def test_a_stale_normal_scan_does_not_overwrite_a_forced_one(
     assert holder["result"] == "OLD", "前提没成立：慢扫描没拿到旧结果"
 
     assert _run() == "NEW", "慢扫描把 force 刚写进去的新结果盖回了旧的"
+
+
+def test_concurrent_forced_scans_do_not_cancel_each_other(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A forced full refresh scans many plugins at once. They are not rivals.
+
+    With a single global generation counter every worker in that refresh bumps
+    the same number, so all but the last one see a changed generation at the
+    write and throw their fresh result away. And because force did not evict,
+    the *old* entries stayed put — so the next ordinary refresh serves exactly
+    the stale metadata the forced refresh existed to replace. The whole refresh
+    is voided (codex).
+
+    Mutation: go back to one global counter bumped by force.
+    """
+    import threading
+
+    first = _plugin_dir(tmp_path, name="a")
+    second = _plugin_dir(tmp_path, name="b")
+    calls: list[str] = []
+    guard = threading.Lock()
+    overlapping = [True]
+    both_inside = threading.Barrier(2, timeout=5)
+
+    def _fake(**inner):
+        with guard:
+            calls.append(inner["plugin_id"])
+        # 两个强扫必须在时间上真的重叠，否则这个用例测不到互相作废。屏障只在那
+        # 一段生效：留着的话，后面本不该发生的扫描会卡在屏障上，把一次失败变成
+        # 一次挂死。
+        if overlapping[0]:
+            both_inside.wait()
+        return "v"
+
+    monkeypatch.setattr(module, "_scan_plugin_metadata_uncached", _fake)
+
+    def _run(config_path: Path, *, force: bool = False):
+        return module.scan_plugin_metadata_isolated(
+            plugin_id=config_path.parent.name,
+            module_path="entry",
+            class_name="C",
+            config_path=config_path,
+            conf={},
+            pdata={},
+            force=force,
+        )
+
+    workers = [
+        threading.Thread(target=_run, args=(path,), kwargs={"force": True})
+        for path in (first, second)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=10)
+    overlapping[0] = False
+    assert sorted(calls) == ["a", "b"], f"前提没成立：两个强扫没都跑起来 {calls}"
+
+    # 两份结果都该留在缓存里；再普通读一次不应该再起扫描。
+    _run(first)
+    _run(second)
+
+    assert sorted(calls) == ["a", "b"], (
+        f"并发强扫互相把结果作废了，普通读取又扫了一遍：{calls}"
+    )
+
+
+def test_force_drops_the_stale_entry_before_it_scans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Force means the cached answer is not trustworthy — so drop it now.
+
+    Waiting to overwrite it is not enough: if this scan's write is later
+    discarded (a second force superseded it), the old entry is still sitting
+    there and the next ordinary read serves it (codex).
+
+    Mutation: remove the ``_SCAN_CACHE.pop(key, None)`` from the forced path.
+    """
+    import threading
+
+    config_path = _plugin_dir(tmp_path)
+    calls: list[str] = []
+    forcer: threading.Thread | None = None
+    forced_inside = threading.Event()
+    let_forced_finish = threading.Event()
+
+    def _fake(**inner):
+        calls.append(inner["plugin_id"])
+        if threading.current_thread() is forcer:
+            forced_inside.set()
+            let_forced_finish.wait(timeout=5)
+        return "v"
+
+    monkeypatch.setattr(module, "_scan_plugin_metadata_uncached", _fake)
+
+    def _run(*, force: bool = False):
+        return module.scan_plugin_metadata_isolated(
+            plugin_id="demo",
+            module_path="entry",
+            class_name="C",
+            config_path=config_path,
+            conf={},
+            pdata={},
+            force=force,
+        )
+
+    _run()  # 焐热
+    assert len(calls) == 1
+
+    forcer = threading.Thread(target=lambda: _run(force=True))
+    forcer.start()
+    assert forced_inside.wait(timeout=5), "前提没成立：强扫没进去"
+
+    # 强扫已经开始、还没写回。此刻普通读取绝不能拿到那条被宣布不可信的旧条目。
+    _run()
+    let_forced_finish.set()
+    forcer.join(timeout=5)
+
+    assert len(calls) == 3, (
+        f"force 开始后旧条目还留在缓存里，普通读取直接命中了它：{calls}"
+    )
 
 
 def test_concurrent_scans_are_capped_across_the_whole_server(

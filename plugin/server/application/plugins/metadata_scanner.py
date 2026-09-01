@@ -765,16 +765,28 @@ _SCAN_KEY_IGNORED_DIRS = frozenset({"__pycache__", ".git", ".mypy_cache", ".ruff
 _CACHE_SETTLE_NS = 2_000_000_000
 _NEVER_SETTLED = -1
 
-# 缓存写入的"代"。force 扫描和显式清缓存都会 +1。
+# 两道"这份结果还算数吗"的闸，管的是两件不同的事。
 #
-# 普通扫描和 force 扫描算出来的键完全一样——键只看插件目录，而 force 存在的意义
-# 正是目录外的变化（共享 vendor、site-packages）。于是一次开始得早、结束得晚的
-# 普通扫描能把 force 刚写进去的新结果盖回旧的，之后每次普通读取都拿到那份陈旧
-# 元数据，恰好废掉 force 的语义（CodeRabbit）。扫描开始时记下当时的代，写缓存前
-# 再比一次，不一样就放弃写入。
+# 起因：普通扫描和 force 扫描算出来的键完全一样——键只看插件目录，而 force 存在
+# 的意义正是目录外的变化（共享 vendor、site-packages）。于是一次开始得早、结束得
+# 晚的普通扫描能把 force 刚写进去的新结果盖回旧的，之后每次普通读取都拿到那份
+# 陈旧元数据，恰好废掉 force 的语义（CodeRabbit）。
 #
-# 故意做成全局计数而不是按键：代价只是"这一轮不进缓存"，下一轮照样命中；换来的
-# 是没有需要回收的按键状态，也不会漏掉"清缓存"这条同样会让在途结果作废的路径。
+# ① 按键的 generation，只有 force 会 +1。
+#
+#    先前这里用的是一个全局计数，那是错的，而且错得比原问题更糟：一次
+#    refresh_registry(force=True) 会并发地强扫十几个插件，每个 worker 都把全局
+#    计数 +1，于是除了最后一个之外每个 worker 在写缓存前都看到"代不一样"，把
+#    自己刚读出来的新结果全部丢掉。又因为 force 不删旧条目，那些旧条目原封不动
+#    留在缓存里，下一次普通刷新照样把它们端出来——整次强制刷新等于没做（codex）。
+#    按键分代之后，强扫兄弟插件之间互不干扰。
+#
+# ② 全局 epoch，只有显式清缓存会 +1。
+#
+#    清缓存的语义就是"缓存里的东西现在都不可信"，让所有在途结果一起作废正是想
+#    要的效果；而它是低频的单次调用，不存在①那种自相残杀。放一个全局计数还能
+#    盖住"这个键我们从没见过"的在途扫描——按键的表里根本没有它的条目。
+_SCAN_GENERATION: dict[tuple, int] = {}
 _SCAN_EPOCH = 0
 
 
@@ -783,6 +795,23 @@ def _bump_scan_epoch_locked() -> None:
     global _SCAN_EPOCH
 
     _SCAN_EPOCH += 1
+
+
+def _begin_scan(key: tuple, *, force: bool) -> tuple[int, int]:
+    """Stamp a scan about to run, and drop what ``force`` says is untrustworthy."""
+    with _SCAN_CACHE_LOCK:
+        generation = _SCAN_GENERATION.get(key, 0)
+        if force:
+            generation += 1
+            if len(_SCAN_GENERATION) >= _SCAN_CACHE_MAX_ENTRIES:
+                _SCAN_GENERATION.clear()
+            _SCAN_GENERATION[key] = generation
+            # force 的意思是"缓存里那个答案不可信"，所以现在就把它扔掉，而不是等
+            # 着用新结果覆盖。这次扫描的结果万一没能写进去（被更晚的一次 force
+            # 顶掉），旧条目还留着的话，后面一次普通读取会把它端出来，这次 force
+            # 就白做了（codex）。
+            _SCAN_CACHE.pop(key, None)
+        return generation, _SCAN_EPOCH
 
 
 def _scan_with_slot(**kwargs: Any) -> IsolatedPluginMetadata:
@@ -940,10 +969,7 @@ def scan_plugin_metadata_isolated(
             timeout=timeout,
         )
 
-    with _SCAN_CACHE_LOCK:
-        if force:
-            _bump_scan_epoch_locked()
-        epoch = _SCAN_EPOCH
+    generation, epoch = _begin_scan(key, force=force)
 
     result = _scan_with_slot(
         plugin_id=plugin_id,
@@ -962,9 +988,10 @@ def scan_plugin_metadata_isolated(
     )
     if settled:
         with _SCAN_CACHE_LOCK:
-            if _SCAN_EPOCH != epoch:
-                # 这一轮开始之后有人 force 扫过、或者把缓存清了。手上这份是照着
-                # 旧内容读出来的，写回去就是拿陈旧结果盖掉更新的那份。
+            if _SCAN_GENERATION.get(key, 0) != generation or _SCAN_EPOCH != epoch:
+                # 这一轮开始之后，同一个键又被 force 扫过，或者缓存被整个清了。
+                # 手上这份是照着旧内容读出来的，写回去就是拿陈旧结果盖掉更新的
+                # 那份。
                 return result
             if len(_SCAN_CACHE) >= _SCAN_CACHE_MAX_ENTRIES:
                 _SCAN_CACHE.clear()
