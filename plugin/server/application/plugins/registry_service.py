@@ -482,8 +482,35 @@ _REGISTRY_PUBLISHED_TICKET = 0
 _REGISTRY_PUBLISHED_PLUGIN_TICKET: dict[str, int] = {}
 
 
-def _publication_key(config_path: Path) -> str:
-    return str(_resolve_config_path(config_path))
+def _publication_keys(plugin_id: str | None, config_path: Path) -> tuple[str, ...]:
+    """The identities a publication of this record has to be ordered against.
+
+    路径**和**插件 id 都算，因为两者都会变而且不同步。只按路径排的话，一个插件从
+    内置源换到用户覆盖（路径变了）时，后一次单插件刷新把新号记在新路径上，而一次
+    更早的全量刷新查的是旧路径、发现没人认领，就把自己那份陈旧记录发布上去，把插件
+    指回一个已经被取代的源（codex）。只按 id 排则漏掉 id 被冲突改名的情况。两个键
+    都认：任何一个上被更新的号占了，就让位。
+    """
+    keys = [f"path:{_resolve_config_path(config_path)}"]
+    if plugin_id:
+        keys.append(f"id:{plugin_id}")
+    return tuple(keys)
+
+
+def _keep_known_entries_on_deferred_scan(
+    record: PluginDiscoveryRecord,
+    previous: object,
+) -> PluginDiscoveryRecord:
+    """Carry the last good ``entries_preview`` through a scan that never ran."""
+    payload = record.meta_payload
+    if not payload.get("runtime_scan_deferred"):
+        return record
+    if not isinstance(previous, dict):
+        return record
+    kept = previous.get("entries_preview")
+    if not kept:
+        return record
+    return replace(record, meta_payload={**payload, "entries_preview": kept})
 
 
 # 一次 force 发布之后，号 <= 这个值的**普通**刷新一律作废。
@@ -495,17 +522,24 @@ def _publication_key(config_path: Path) -> str:
 _REGISTRY_CACHE_BLIND_UNTIL = 0
 
 
-def _may_publish_record(ticket: int, config_path: Path, *, forced: bool) -> bool:
+def _may_publish_record(
+    ticket: int, config_path: Path, *, forced: bool, plugin_id: str | None = None
+) -> bool:
     """Whether this refresh still owns the latest word on that one plugin.
 
     Caller holds ``_REGISTRY_PUBLISH_GUARD``.
     """
-    key = _publication_key(config_path)
-    published = _REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, 0)
+    keys = _publication_keys(plugin_id, config_path)
+    published = max(
+        (_REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, 0) for key in keys), default=0
+    )
     # force 读的是盘，普通刷新可能读的是缓存，所以 force 不让位。
     if not forced and ticket < published:
         return False
-    _REGISTRY_PUBLISHED_PLUGIN_TICKET[key] = max(published, ticket)
+    for key in keys:
+        _REGISTRY_PUBLISHED_PLUGIN_TICKET[key] = max(
+            _REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, 0), ticket
+        )
     return True
 
 
@@ -525,10 +559,18 @@ class _registry_publication_of:
     plugin instead of the whole registry.
     """
 
-    __slots__ = ("_config_path", "_ticket", "_forced", "_held")
+    __slots__ = ("_config_path", "_plugin_id", "_ticket", "_forced", "_held")
 
-    def __init__(self, config_path: Path, ticket: int, *, forced: bool) -> None:
+    def __init__(
+        self,
+        config_path: Path,
+        ticket: int,
+        *,
+        forced: bool,
+        plugin_id: str | None = None,
+    ) -> None:
         self._config_path = config_path
+        self._plugin_id = plugin_id
         self._ticket = ticket
         self._forced = forced
         self._held = False
@@ -536,7 +578,10 @@ class _registry_publication_of:
     def __enter__(self) -> bool:
         _REGISTRY_PUBLISH_GUARD.acquire()
         if not _may_publish_record(
-            self._ticket, self._config_path, forced=self._forced
+            self._ticket,
+            self._config_path,
+            forced=self._forced,
+            plugin_id=self._plugin_id,
         ):
             _REGISTRY_PUBLISH_GUARD.release()
             return False
@@ -903,6 +948,11 @@ def _build_discovery_payload(
     # 下一次刷新会重试它们。
     if _scan_failure_is_transient(error_type, scan_timeout):
         payload.pop("runtime_load_state", None)
+        # 这一轮没扫成，所以 entries_preview 是个空壳（FailedPluginStub 生出来的）。
+        # 直接发布会把插件上一次扫出来的条目和工具 schema 抹掉，而刷新还报 success
+        # ——停着的插件就这么从 /plugins 里少了半张脸，直到下次扫描碰巧成功（codex）。
+        # 打个标记，发布的时候把上一次的条目接回去。
+        payload["runtime_scan_deferred"] = True
         payload["runtime_load_error_type"] = error_type
         payload["runtime_load_error_message"] = error_message or ""
         payload["runtime_load_error_phase"] = error_phase or "metadata_scan"
@@ -1252,7 +1302,9 @@ class PluginRegistryService:
             ]
 
             for record in snapshot.records:
-                if not _may_publish_record(ticket, record.config_path, forced=force):
+                if not _may_publish_record(
+                    ticket, record.config_path, forced=force, plugin_id=record.plugin_id
+                ):
                     # 这个插件在我们扫描期间被一次更晚的刷新更新过了。别的插件照常
                     # 发布——整轮作废是过度反应，那正是按插件分号要避免的。
                     unchanged.append(record.plugin_id)
@@ -1271,7 +1323,9 @@ class PluginRegistryService:
                     previous_plugin_id = previous_runtime_plugin_id or record.plugin_id
                     previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
                     resolved_id, payload = _apply_discovery_record_sync(
-                        record,
+                        _keep_known_entries_on_deferred_scan(
+                            record, existing_snapshot.get(previous_plugin_id)
+                        ),
                         existing_snapshot=existing_snapshot,
                         preferred_runtime_plugin_id=previous_runtime_plugin_id,
                     )
@@ -1396,7 +1450,9 @@ class PluginRegistryService:
         # 否则一次慢的全量刷新醒过来照样能把这条刚更新的记录盖回旧的（codex）。
         # 但它只推**自己这一条**的号：单插件刷新是 start_plugin 的必经之路，让它去
         # 推全局号等于启动一个插件就能作废一次全量刷新。
-        with _registry_publication_of(config_path, ticket, forced=force) as may_publish:
+        with _registry_publication_of(
+            config_path, ticket, forced=force, plugin_id=record.plugin_id
+        ) as may_publish:
             if not may_publish:
                 logger.info(
                     "plugin refresh #{} for {} superseded before publishing",
@@ -1420,7 +1476,9 @@ class PluginRegistryService:
             previous_plugin_id = previous_runtime_plugin_id or normalized_plugin_id
             previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
             resolved_id, payload = _apply_discovery_record_sync(
-                record,
+                _keep_known_entries_on_deferred_scan(
+                    record, existing_snapshot.get(previous_plugin_id)
+                ),
                 existing_snapshot=existing_snapshot,
                 preferred_runtime_plugin_id=previous_runtime_plugin_id,
             )

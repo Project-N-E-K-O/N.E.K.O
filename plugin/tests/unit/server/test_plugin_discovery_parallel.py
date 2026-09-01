@@ -553,6 +553,77 @@ def test_a_forced_publication_shuts_out_refreshes_still_in_flight(
         )
 
 
+def test_publication_order_follows_the_plugin_not_just_its_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plugin can move between config paths while a refresh is scanning.
+
+    Promotion from a builtin source to a user override changes the path. Keying
+    the ordering on the path alone means a later refresh records its ticket
+    under the *new* path while an older refresh checks the *old* one, finds it
+    unclaimed, and publishes its stale record — pointing the plugin back at a
+    source that was just superseded (codex).
+
+    Mutation: order on the resolved config path only.
+    """
+    module._REGISTRY_PUBLISHED_PLUGIN_TICKET.clear()
+
+    older = module._take_registry_refresh_ticket()
+    newer = module._take_registry_refresh_ticket()
+
+    # 新的那次刷新在**新**路径上发布了 demo。
+    assert module._may_publish_record(
+        newer, Path("/user/demo/plugin.toml"), forced=False, plugin_id="demo"
+    )
+
+    # 更早的那次还拿着**旧**路径上的记录。路径对不上，但插件是同一个。
+    assert not module._may_publish_record(
+        older, Path("/builtin/demo/plugin.toml"), forced=False, plugin_id="demo"
+    ), "换了路径就认不出是同一个插件，旧记录把新的盖回去了"
+
+
+def test_a_deferred_scan_keeps_the_entries_it_could_not_rescan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not scanning a plugin is not the same as learning it has no entries.
+
+    A budget-exhausted scan builds ``entries_preview`` from a stub, and
+    publishing that wipes the plugin's last known-good entries and tool schemas
+    from ``/plugins`` — while the refresh still reports success — until some
+    later scan happens to succeed (codex).
+
+    Mutation: publish the record unchanged on a deferred scan.
+    """
+    def _record(payload: dict) -> module.PluginDiscoveryRecord:
+        # 用真的 dataclass：production 走的是 dataclasses.replace，SimpleNamespace
+        # 在那里会直接抛 TypeError，替身反而测不到东西。
+        return module.PluginDiscoveryRecord(
+            plugin_id="demo",
+            original_plugin_id="demo",
+            config_path=tmp_path / "demo" / "plugin.toml",
+            entry_point="mod:Cls",
+            plugin_type="plugin",
+            enabled=True,
+            auto_start=True,
+            meta_payload=payload,
+        )
+
+    record = _record({"runtime_scan_deferred": True, "entries_preview": []})
+    previous = {"entries_preview": [{"id": "demo.hello"}]}
+
+    kept = module._keep_known_entries_on_deferred_scan(record, previous)
+
+    assert kept.meta_payload["entries_preview"] == [{"id": "demo.hello"}], (
+        "这一轮没扫成，却把上一次扫出来的条目抹掉了"
+    )
+
+    # 而真正扫成功的那次必须原样发布，不能把旧条目粘回去。
+    fresh = _record({"entries_preview": []})
+    assert module._keep_known_entries_on_deferred_scan(fresh, previous) is fresh, (
+        "扫描成功、确实没有条目的情况，被旧条目污染了"
+    )
+
+
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -745,8 +745,6 @@ class PluginCliService:
                 )
 
         async def refresh_registry() -> object:
-            import asyncio
-
             from plugin.server.application.plugins.lifecycle_service import plugin_registry_service
             from plugin.server.application.plugins.metadata_scanner import (
                 clear_plugin_metadata_scan_cache,
