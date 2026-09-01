@@ -801,27 +801,85 @@ def test_the_symlink_check_is_wired_into_the_fingerprint(
 ) -> None:
     """The same property without needing symlink privileges.
 
-    The test above is skipped wherever creating a directory symlink is not
-    permitted — which includes plenty of Windows setups, i.e. exactly the
-    platform this PR is about. This one asserts the same branch through a
-    patched ``islink`` so the guard still runs there.
+    The test above is skipped wherever creating a symlink is not permitted —
+    which includes plenty of Windows setups, i.e. exactly the platform this PR
+    is about. This one drives the real ``os.scandir`` and only overrides
+    ``is_symlink()`` on one entry, so the production branch is genuinely
+    exercised where a ``skipif`` guard would be silently absent.
 
-    Mutation: ignore directory symlinks and let the tree settle normally.
+    Its first version patched ``os.path.islink``, which the fingerprint stopped
+    calling when the walk moved to ``scandir`` — the guard kept passing while
+    testing nothing. The suite caught that; hence patching at the level the
+    code actually reads.
+
+    Mutation: ignore symlinks and let the tree settle normally.
     """
     config_path = _plugin_dir(tmp_path)
     (config_path.parent / "lib").mkdir()
 
-    real_islink = os.path.islink
-    monkeypatch.setattr(
-        os.path,
-        "islink",
-        lambda path: str(path).endswith("lib") or real_islink(path),
-    )
+    real_scandir = os.scandir
 
+    class _PretendLink:
+        def __init__(self, entry):
+            self._entry = entry
+
+        def __getattr__(self, name):
+            return getattr(self._entry, name)
+
+        def is_symlink(self):
+            return True
+
+    class _Scan:
+        def __init__(self, entries):
+            self._entries = entries
+
+        def __enter__(self):
+            return self._entries
+
+        def __exit__(self, *exc):
+            return False
+
+    def _scandir(path, *args, **kwargs):
+        with real_scandir(path, *args, **kwargs) as scan:
+            items = list(scan)
+        return _Scan([_PretendLink(e) if e.name == "lib" else e for e in items])
+
+    monkeypatch.setattr(os, "scandir", _scandir)
     _, newest = module._plugin_source_fingerprint(config_path)
+    monkeypatch.undo()
 
-    assert newest == module._NEVER_SETTLED, (
-        "目录软链没有让这棵树变成不可缓存"
+    assert newest == module._NEVER_SETTLED, "软链没有让这棵树变成不可缓存"
+
+
+def test_a_file_symlink_also_makes_the_tree_uncacheable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file symlink hides a retarget, not just a subtree.
+
+    ``stat()`` follows the link and records only the target's mtime and size, so
+    repointing it at a same-size file with the same timestamp — the ordinary
+    shape of versioned files copied with timestamps preserved — leaves the key
+    identical while Python imports different code (codex).
+
+    Mutation: only treat *directory* symlinks as uncacheable.
+    """
+    config_path = _plugin_dir(tmp_path)
+    target = tmp_path / "real_helper.py"
+    target.write_text("y = 1" + chr(10), encoding="utf-8")
+    link = config_path.parent / "helper.py"
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform gate
+        pytest.skip(f"这台机器不允许建软链：{exc}")
+    _age(target, 60)
+
+    calls: list = []
+    _scan(monkeypatch, config_path, calls)
+    _scan(monkeypatch, config_path, calls)
+
+    assert len(calls) == 2, (
+        "带文件软链的插件进了缓存——把链重新指向同样大小、同样时间戳的文件，"
+        "键一点都不会变"
     )
 
 

@@ -8,6 +8,7 @@ anyway after the user was told it failed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 
 import pytest
@@ -869,13 +870,47 @@ async def test_a_spent_stop_budget_skips_the_cleanup_instead_of_buying_a_second(
     monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
 
     service = module.PluginLifecycleService()
-    try:
+    # 这个替身 host 只把 shutdown 走通，stop_plugin 后面那些收尾会因为注册表里
+    # 没有这个插件而抛领域错误。我们要看的是"有没有发起清理"，抛什么不重要——
+    # 但也不能连 KeyboardInterrupt 一起吞掉，所以只挡 Exception。
+    with contextlib.suppress(Exception):
         await service.stop_plugin("p0", stop_deadline=time.monotonic() - 5.0)
-    except BaseException:
-        pass
 
     assert handed == [], (
         f"预算见底还是发起了清理，每个插件都会在锁上多压一秒：{handed}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_replacing_a_stopped_plugin_still_drops_the_scan_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Upgrading a plugin that was not running still changes the tree.
+
+    The invalidation lived in the restart path, and `replace_plugin` only
+    restarts when the plugin was already running — so upgrading a stopped
+    plugin never dropped the cache, and the next ordinary start could come up on
+    pre-upgrade metadata (codex). It now hangs off the unconditional
+    `invalidate_cache` stage instead.
+
+    Mutation: move the clear back into the restart path only.
+    """
+    from plugin.server.application.plugins.installation_transactions import replace as module
+    from plugin.server.application.plugins import metadata_scanner
+
+    cleared: list[int] = []
+    monkeypatch.setattr(
+        metadata_scanner, "clear_plugin_metadata_scan_cache", lambda: cleared.append(1)
+    )
+    monkeypatch.setattr(
+        "plugin.core.host.evict_cached_plugin_modules", lambda plugin_id: None
+    )
+
+    # 这是 replace 的 invalidate_cache 阶段调的那一个，不经过重启。
+    module._evict_replaced_plugin_modules("demo")
+
+    assert cleared == [1], (
+        f"替换一个停着的插件没有作废扫描缓存：{cleared}"
     )
 
 

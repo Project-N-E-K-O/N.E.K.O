@@ -205,6 +205,9 @@ async def run_rollback(
     restored = True
     try:
         await restore_directory(backup_dir, target_dir)
+        # 回滚同样是"树变了"。而且它比升级更容易骗过指纹：备份是拷回去的，时间戳
+        # 完全可能原样保留。这条路不走上面那个 invalidate_cache 阶段，所以自己清。
+        await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
     except Exception as exc:
         restored = False
         logger.error(
@@ -274,8 +277,18 @@ def _notify_rollback_start(callback: Callable[[], None] | None) -> None:
 
 def _evict_replaced_plugin_modules(plugin_id: str) -> None:
     from plugin.core.host import evict_cached_plugin_modules
+    from plugin.server.application.plugins.metadata_scanner import (
+        clear_plugin_metadata_scan_cache,
+    )
 
     evict_cached_plugin_modules(plugin_id)
+    # 扫描缓存和已导入模块是同一类东西：都是从这棵树推导出来的，而树刚被换掉。
+    #
+    # 原来只在重启那条路上清（_start_plugin 里），可 replace_plugin 只在插件**本来
+    # 就在跑**时才重启——升级一个停着的插件时那句清理根本不执行，之后一次普通启动
+    # 就会拿到升级前的元数据（codex）。这个"invalidate_cache"阶段是无条件跑的，
+    # 放这里才对。
+    clear_plugin_metadata_scan_cache()
 
 
 def _path_is_within(path: Path, root: Path) -> bool:

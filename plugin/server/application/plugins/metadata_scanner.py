@@ -879,41 +879,57 @@ def _plugin_source_fingerprint(config_path: Path) -> tuple[tuple, int]:
     entries: list[tuple[str, int, int]] = []
     newest = 0
     unreadable = False
+    saw_symlink = False
 
-    def _note_error(_exc: OSError) -> None:
-        nonlocal unreadable
-        unreadable = True
-
-    followed_symlink = False
-    for dirpath, dirnames, filenames in os.walk(root, onerror=_note_error):
-        # 原地改 dirnames 才有剪枝效果——os.walk 拿它决定接下来下降到哪里。
-        dirnames[:] = sorted(
-            name for name in dirnames if name not in _SCAN_KEY_IGNORED_DIRS
-        )
-        # os.walk 默认不跟目录软链，rglob 当年也不跟——所以软链后面那棵树从来就不
-        # 在指纹里。以前无所谓（每次都真扫），有了缓存就不一样了：插件通过
-        # demo/lib -> ../../shared/lib 引入代码时，改目标文件不会让键变化，普通刷新
-        # 会端出升级前的条目和工具 schema（codex）。
-        #
-        # 跟进去不行：软链可能指向 site-packages 那种巨树，也可能成环，而这个遍历
-        # 就在热路径上。选另一头——这棵树干脆不进缓存。代价是这类插件每次都真扫，
-        # 只是慢，不会错。
-        if any(
-            os.path.islink(os.path.join(dirpath, name)) for name in dirnames
-        ):
-            followed_symlink = True
-        for name in sorted(filenames):
-            path = Path(dirpath) / name
+    # 用 scandir 手写下降，而不是 os.walk + Path.stat。
+    #
+    # 一次 scandir 拿回来的 DirEntry 自带类型和（Windows 上）stat 信息，所以
+    # is_symlink()/is_dir()/stat() 都不用再多一次 syscall。os.walk 只给名字，判断
+    # 软链就得对每个文件再来一次 lstat——在这条本来就是为了变快而存在的路径上，
+    # 那是凭空多出一倍的系统调用。
+    stack = [str(root)]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as scan:
+                children = list(scan)
+        except OSError:
+            # 目录读不了就整棵树不可缓存，让这次扫描照常进行。
+            unreadable = True
+            continue
+        for entry in children:
             try:
-                st = path.stat()
+                # 软链（目录的和文件的都算）一律让这棵树不进缓存。
+                #
+                # 目录软链：os.walk 不跟，rglob 当年也不跟，所以软链后面那棵树从来
+                # 就不在指纹里。文件软链更隐蔽：stat() 会跟过去，只记下目标的
+                # mtime/size，于是把链重新指向另一个同样大小、同样时间戳的文件
+                # （带时间戳拷贝的版本化文件就是这个形状）之后，键一点没变，而
+                # Python 已经在 import 另一份代码了（codex）。
+                #
+                # 跟进去不行：软链可能指向 site-packages 那种巨树，也可能成环，而
+                # 这个遍历就在热路径上。选另一头——不进缓存。这类插件每次都真扫，
+                # 只是慢，不会错。
+                if entry.is_symlink():
+                    saw_symlink = True
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name not in _SCAN_KEY_IGNORED_DIRS:
+                        stack.append(entry.path)
+                    continue
+                st = entry.stat(follow_symlinks=False)
             except OSError:
                 continue
-            entries.append((os.path.relpath(path, root), st.st_mtime_ns, st.st_size))
+            entries.append(
+                (os.path.relpath(entry.path, root), st.st_mtime_ns, st.st_size)
+            )
             newest = max(newest, st.st_mtime_ns)
+
+    # 排序放在最后：这样指纹不依赖下降顺序，栈序换了也不会平白让缓存失效。
+    entries.sort()
     if unreadable:
-        # 目录读不了就返回一个不可缓存的指纹，让这次扫描照常进行。
         return (("<unreadable>", 0, 0),), _NEVER_SETTLED
-    if followed_symlink:
+    if saw_symlink:
         # 键照常带上看得见的那部分（不同插件仍然分得开），但永远不"安定"，
         # 也就永远不进缓存——没有条目写进去，就不可能有陈旧命中。
         return tuple(entries), _NEVER_SETTLED
