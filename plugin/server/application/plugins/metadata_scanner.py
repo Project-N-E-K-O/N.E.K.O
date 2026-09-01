@@ -884,11 +884,24 @@ def _plugin_source_fingerprint(config_path: Path) -> tuple[tuple, int]:
         nonlocal unreadable
         unreadable = True
 
+    followed_symlink = False
     for dirpath, dirnames, filenames in os.walk(root, onerror=_note_error):
         # 原地改 dirnames 才有剪枝效果——os.walk 拿它决定接下来下降到哪里。
         dirnames[:] = sorted(
             name for name in dirnames if name not in _SCAN_KEY_IGNORED_DIRS
         )
+        # os.walk 默认不跟目录软链，rglob 当年也不跟——所以软链后面那棵树从来就不
+        # 在指纹里。以前无所谓（每次都真扫），有了缓存就不一样了：插件通过
+        # demo/lib -> ../../shared/lib 引入代码时，改目标文件不会让键变化，普通刷新
+        # 会端出升级前的条目和工具 schema（codex）。
+        #
+        # 跟进去不行：软链可能指向 site-packages 那种巨树，也可能成环，而这个遍历
+        # 就在热路径上。选另一头——这棵树干脆不进缓存。代价是这类插件每次都真扫，
+        # 只是慢，不会错。
+        if any(
+            os.path.islink(os.path.join(dirpath, name)) for name in dirnames
+        ):
+            followed_symlink = True
         for name in sorted(filenames):
             path = Path(dirpath) / name
             try:
@@ -900,6 +913,10 @@ def _plugin_source_fingerprint(config_path: Path) -> tuple[tuple, int]:
     if unreadable:
         # 目录读不了就返回一个不可缓存的指纹，让这次扫描照常进行。
         return (("<unreadable>", 0, 0),), _NEVER_SETTLED
+    if followed_symlink:
+        # 键照常带上看得见的那部分（不同插件仍然分得开），但永远不"安定"，
+        # 也就永远不进缓存——没有条目写进去，就不可能有陈旧命中。
+        return tuple(entries), _NEVER_SETTLED
     return tuple(entries), newest
 
 

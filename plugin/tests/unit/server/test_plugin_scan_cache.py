@@ -758,6 +758,73 @@ def test_an_ordinary_scan_does_not_overwrite_a_forced_entry(
     )
 
 
+def test_a_plugin_behind_a_directory_symlink_is_never_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the fingerprint cannot see, the cache must not answer for.
+
+    Neither ``os.walk`` nor the ``rglob`` it replaced descends into directory
+    symlinks, so a plugin importing through ``demo/lib -> ../../shared/lib`` has
+    that whole subtree missing from its key. Without a cache that was merely
+    invisible; with one it means editing the target leaves the key unchanged and
+    an ordinary refresh serves pre-edit entries and tool schemas (codex).
+
+    Following the link is the wrong side of the trade — it can point at
+    site-packages or form a cycle, and this walk is on the hot path. So the tree
+    simply never caches: such a plugin pays a real scan every time, which is
+    slow rather than wrong.
+
+    Mutation: ignore directory symlinks and let the tree settle normally.
+    """
+    config_path = _plugin_dir(tmp_path)
+    linked = config_path.parent / "lib"
+    target = tmp_path / "shared"
+    target.mkdir()
+    (target / "helper.py").write_text("y = 1" + chr(10), encoding="utf-8")
+    try:
+        os.symlink(target, linked, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform gate
+        pytest.skip(f"这台机器不允许建目录软链：{exc}")
+    _age(linked, 60)
+
+    calls: list = []
+    _scan(monkeypatch, config_path, calls)
+    _scan(monkeypatch, config_path, calls)
+
+    assert len(calls) == 2, (
+        "带目录软链的插件进了缓存——软链后面那棵树不在指纹里，改了也发现不了"
+    )
+
+
+def test_the_symlink_check_is_wired_into_the_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same property without needing symlink privileges.
+
+    The test above is skipped wherever creating a directory symlink is not
+    permitted — which includes plenty of Windows setups, i.e. exactly the
+    platform this PR is about. This one asserts the same branch through a
+    patched ``islink`` so the guard still runs there.
+
+    Mutation: ignore directory symlinks and let the tree settle normally.
+    """
+    config_path = _plugin_dir(tmp_path)
+    (config_path.parent / "lib").mkdir()
+
+    real_islink = os.path.islink
+    monkeypatch.setattr(
+        os.path,
+        "islink",
+        lambda path: str(path).endswith("lib") or real_islink(path),
+    )
+
+    _, newest = module._plugin_source_fingerprint(config_path)
+
+    assert newest == module._NEVER_SETTLED, (
+        "目录软链没有让这棵树变成不可缓存"
+    )
+
+
 def test_concurrent_scans_are_capped_across_the_whole_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
