@@ -138,12 +138,61 @@ def test_single_process_run_still_honours_an_explicit_pin(monkeypatch, isolated_
 
 
 @pytest.mark.unit
-def test_two_xdist_workers_resolve_different_ports(monkeypatch, isolated_runtime_test_ports):
-    monkeypatch.setenv("NEKO_MEMORY_SERVER_PORT", "13479")
+@pytest.mark.parametrize("port_name", ["MEMORY_SERVER_PORT", "MAIN_SERVER_PORT"])
+def test_worker_bands_never_overlap_across_workers(monkeypatch, isolated_runtime_test_ports, port_name):
+    """The property that actually buys cross-process uniqueness.
 
-    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
-    first = project_conftest._resolve_runtime_test_port("MEMORY_SERVER_PORT")
-    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
-    second = project_conftest._resolve_runtime_test_port("MEMORY_SERVER_PORT")
+    An earlier version of this test set PYTEST_XDIST_WORKER twice in ONE process
+    and asserted the two results differed. That proves only that the inherited
+    env value is ignored -- it cannot establish anything about two real workers,
+    because both probes were uncoordinated calls to the same OS ephemeral pool
+    (Codex caught this on #3022). What makes two workers safe is that the slot is
+    computed from the worker index, so this pins the arithmetic instead: every
+    worker maps to a distinct port, and no port is shared between the two slots.
+    """
+    monkeypatch.delenv("NEKO_MEMORY_SERVER_PORT", raising=False)
+    monkeypatch.delenv("NEKO_MAIN_SERVER_PORT", raising=False)
 
-    assert first != second
+    seen = {}
+    for index in range(32):
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", f"gw{index}")
+        port = project_conftest._xdist_band_port(port_name)
+        if port is None:
+            continue  # slot occupied on this machine; the caller falls back to probing
+        assert port not in seen, (
+            f"gw{index} and gw{seen[port]} both map to {port}; two workers would bind the same address"
+        )
+        seen[port] = index
+
+    assert len(seen) >= 24, f"only {len(seen)}/32 worker slots were usable"
+
+
+@pytest.mark.unit
+def test_the_two_port_slots_do_not_collide_within_a_worker(monkeypatch, isolated_runtime_test_ports):
+    """Dual of the above: distinct workers differ, and so do the two ports one worker owns."""
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")
+
+    memory = project_conftest._xdist_band_port("MEMORY_SERVER_PORT")
+    main = project_conftest._xdist_band_port("MAIN_SERVER_PORT")
+
+    assert memory is not None and main is not None
+    assert memory != main
+
+
+@pytest.mark.unit
+def test_worker_band_is_below_the_ephemeral_range(monkeypatch, isolated_runtime_test_ports):
+    """A slot inside the ephemeral range could be handed to an unrelated process by bind(0)."""
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw31")
+
+    for port_name in ("MEMORY_SERVER_PORT", "MAIN_SERVER_PORT"):
+        port = project_conftest._xdist_band_port(port_name)
+        if port is not None:
+            assert port < 49152, f"{port_name} slot {port} sits in the Windows ephemeral range"
+
+
+@pytest.mark.unit
+def test_non_xdist_run_has_no_band_and_falls_back_to_probing(monkeypatch, isolated_runtime_test_ports):
+    """Outside xdist there is no worker index, so the allocator must keep probing."""
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+
+    assert project_conftest._xdist_band_port("MEMORY_SERVER_PORT") is None

@@ -108,6 +108,7 @@ import threading
 import time
 import json
 import logging
+import re
 import socket
 from unittest.mock import patch
 from pathlib import Path
@@ -126,6 +127,13 @@ logger = logging.getLogger(__name__)
 SYSTEM_CHROME_PATH = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 _RUNTIME_TEST_PORTS: dict[str, int] = {}
 _RUNTIME_TEST_PORT_RETRY_LIMIT = 10
+
+# Ports the runtime fixtures bind, in the order they get a slot in a worker's band.
+_RUNTIME_TEST_PORT_SLOTS = ("MEMORY_SERVER_PORT", "MAIN_SERVER_PORT")
+# Deterministic per-worker bands live BELOW the Windows ephemeral range
+# (49152-65535), so an unrelated process asking the OS for "any free port"
+# cannot be handed a slot this run has reserved.
+_XDIST_PORT_BAND_BASE = 21000
 
 # Map camelCase keys in api_keys.json to UPPER_SNAKE_CASE env vars expected by ConfigManager
 KEY_MAPPING = {
@@ -253,6 +261,46 @@ def _find_free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _port_is_bindable(port: int) -> bool:
+    """Whether 127.0.0.1:``port`` can be bound right now."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _xdist_worker_index() -> int | None:
+    """``gw7`` -> 7. None when not running under an xdist worker."""
+    match = re.fullmatch(r"gw(\d+)", os.environ.get("PYTEST_XDIST_WORKER", ""))
+    return int(match.group(1)) if match else None
+
+
+def _xdist_band_port(port_name: str) -> int | None:
+    """A port reserved for this worker by arithmetic rather than by probing.
+
+    ``_find_free_local_port`` asks the OS for an ephemeral port and closes the
+    probe socket before anything binds it, so two workers probing at the same
+    moment can be handed the same port -- and on Windows SO_REUSEADDR lets the
+    second server bind it anyway, which is how a worker ends up silently talking
+    to another worker's server.
+
+    Deriving the port from the worker index removes the window instead of making
+    it narrower: two workers cannot compute the same slot. Returns None when the
+    slot is unusable (a stale process on it, a band collision with unrelated
+    software) so the caller can fall back to probing.
+    """
+    index = _xdist_worker_index()
+    if index is None or port_name not in _RUNTIME_TEST_PORT_SLOTS:
+        return None
+    offset = _RUNTIME_TEST_PORT_SLOTS.index(port_name)
+    port = _XDIST_PORT_BAND_BASE + index * len(_RUNTIME_TEST_PORT_SLOTS) + offset
+    if port > 65535 or not _port_is_bindable(port):
+        return None
+    return port
+
+
 def _set_runtime_test_port(port_name: str, port_value: int) -> None:
     os.environ[f"NEKO_{port_name}"] = str(port_value)
 
@@ -291,6 +339,10 @@ def _resolve_runtime_test_port(port_name: str) -> int:
             os.environ.get("PYTEST_XDIST_WORKER"),
         )
         raw_value = None
+    if not raw_value:
+        banded = _xdist_band_port(port_name)
+        if banded is not None:
+            return banded
     if raw_value:
         try:
             port_value = int(raw_value)
