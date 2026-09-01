@@ -74,6 +74,21 @@ async def _start_plugin(plugin_id: str) -> None:
     if not plugin_id:
         return
     from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService
+    from plugin.server.application.plugins.metadata_scanner import (
+        clear_plugin_metadata_scan_cache,
+    )
+
+    # 替换/回滚刚动过盘，缓存里那份元数据描述的是动之前。
+    #
+    # 指纹（路径 + mtime_ns + size）多数情况下会自己变，但两条路走不通：升级时只有
+    # 目录**外**的依赖变了（共享 vendor、site-packages），指纹看不见；回滚是从备份
+    # 拷回去，时间戳完全可能被原样保留。而这条重启路径最终调的是
+    # start_plugin(refresh_registry=True) -> refresh_plugin()，**没有** force，于是
+    # 新运行时会带着升级前的 entries 和工具 schema 起来（codex）。
+    #
+    # 用显式清理而不是给这条链路加 force：和 uninstall 那边同一个写法，也不用给
+    # 一串被测试替身顶掉的函数加关键字参数。
+    await asyncio.to_thread(clear_plugin_metadata_scan_cache)
 
     try:
         await PluginLifecycleService().start_plugin(plugin_id)

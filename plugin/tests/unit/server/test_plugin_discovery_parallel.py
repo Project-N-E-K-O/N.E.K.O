@@ -262,6 +262,79 @@ def test_a_full_refresh_still_forces_everything(
     assert forced == {"p00": True, "p01": True}, f"全量 force 被收窄了：{forced}"
 
 
+def test_an_older_refresh_does_not_publish_over_a_newer_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refreshes are not serialized, and publishing is not atomic.
+
+    Two overlapping full refreshes both walk ``snapshot.records`` and write into
+    ``state.plugins``. The one that started *first* can finish last and put the
+    older registry contents back — silently undoing a successful upgrade or
+    source switch. The race predates this PR, but the cache amplifies it from a
+    coincidence into the normal case: a warm refresh takes ~0.14 s against ~3.3 s
+    cold, so "later request finishes first" is now routine (codex).
+
+    Mutation: drop the ``_claim_registry_publish`` check.
+    """
+    import threading
+
+    module._REGISTRY_REFRESH_TICKET = 0
+    module._REGISTRY_PUBLISHED_TICKET = 0
+
+    slow_started = threading.Event()
+    let_slow_finish = threading.Event()
+    slow: threading.Thread | None = None
+    applied: list[str] = []
+
+    def _discover(roots, *, force=False, force_targets=frozenset()):
+        if threading.current_thread() is slow:
+            slow_started.set()
+            let_slow_finish.wait(timeout=5)
+            tag = "old"
+        else:
+            tag = "new"
+        return SimpleNamespace(
+            records=[SimpleNamespace(plugin_id=tag, config_path=Path(f"/{tag}/plugin.toml"),
+                                     meta_payload={})],
+            failures=[],
+            config_paths=set(),
+            shadowed=[],
+        )
+
+    def _apply(record, *, existing_snapshot, preferred_runtime_plugin_id=None):
+        applied.append(record.plugin_id)
+        return record.plugin_id, {}
+
+    monkeypatch.setattr(module, "_discover_registry_snapshot_sync", _discover)
+    monkeypatch.setattr(module, "_apply_discovery_record_sync", _apply)
+    monkeypatch.setattr(module, "_prepare_plugin_import_roots", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_get_registered_plugin_snapshot_sync", dict)
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", list)
+    monkeypatch.setattr(module, "_find_existing_runtime_plugin_id_by_config_path", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_select_managed_fields", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_collect_missing_plugin_ids_sync", lambda *a, **k: set())
+    monkeypatch.setattr(module, "_remove_stale_plugin_metadata_sync", lambda *a, **k: ([], []))
+    monkeypatch.setattr(module, "_source_for_config_path", lambda *a, **k: "user")
+
+    service = module.PluginRegistryService()
+
+    slow = threading.Thread(target=lambda: service._refresh_registry_sync())
+    slow.start()
+    assert slow_started.wait(timeout=5), "前提没成立：先开始的那次刷新没跑起来"
+
+    # 后开始的这次整个跑完并发布。
+    later = service._refresh_registry_sync()
+    assert applied == ["new"], f"前提没成立：后开始的刷新没发布 {applied}"
+    assert not later.get("superseded")
+
+    let_slow_finish.set()
+    slow.join(timeout=5)
+
+    assert applied == ["new"], (
+        f"先开始的那次刷新在后面把更新的注册表内容盖回去了：{applied}"
+    )
+
+
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 try:
@@ -433,6 +434,40 @@ _DISCOVERY_SCAN_MAX_WORKERS = MAX_CONCURRENT_METADATA_SCANS
 # 这些扫描失败说的是"这一刻没扫成"，不是"这个插件坏了"，所以不该让插件掉进
 # runtime_load_state="failed"——那个状态会把它从自启动名单里除名。
 _TRANSIENT_SCAN_ERROR_TYPES = frozenset({"ScanBudgetExhausted", "TimeoutExpired"})
+
+# 全量刷新的发布序号。
+#
+# 刷新之间没有串行化，而发布是"把 discovery 结果逐条写进 state.plugins"。两次刷新
+# 重叠时，先开始的那次完全可能后落地，于是把更新的那份注册表内容盖回旧的——一次
+# 成功的升级/换源就这样被一个更早的请求悄悄撤销了（codex）。
+#
+# 这个竞态本来就在（刷新从来没有串行化过），但本 PR 把它放大了：命中缓存的刷新
+# 只要 0.14s，而冷扫描要 3.3s，"后发先至"从此是常态而不是巧合。
+#
+# 做法和扫描缓存那两道闸同构：开工前领号，发布前认号，比已发布的号旧就整个放弃
+# 发布。被放弃的那次不会丢信息——顶掉它的那次是后开始的，看到的盘面只会更新。
+_REGISTRY_PUBLISH_GUARD = threading.Lock()
+_REGISTRY_REFRESH_TICKET = 0
+_REGISTRY_PUBLISHED_TICKET = 0
+
+
+def _take_registry_refresh_ticket() -> int:
+    global _REGISTRY_REFRESH_TICKET
+
+    with _REGISTRY_PUBLISH_GUARD:
+        _REGISTRY_REFRESH_TICKET += 1
+        return _REGISTRY_REFRESH_TICKET
+
+
+def _claim_registry_publish(ticket: int) -> bool:
+    """Whether this refresh may still write its snapshot into ``state.plugins``."""
+    global _REGISTRY_PUBLISHED_TICKET
+
+    with _REGISTRY_PUBLISH_GUARD:
+        if ticket < _REGISTRY_PUBLISHED_TICKET:
+            return False
+        _REGISTRY_PUBLISHED_TICKET = ticket
+        return True
 _DISCOVERY_SCAN_MIN_WORKERS = 2
 
 
@@ -1040,6 +1075,7 @@ class PluginRegistryService:
         return await asyncio.to_thread(self._order_plugin_ids_sync, plugin_ids)
 
     def _refresh_registry_sync(self, force: bool = False) -> dict[str, object]:
+        ticket = _take_registry_refresh_ticket()
         roots = tuple(PLUGIN_CONFIG_ROOTS)
         _prepare_plugin_import_roots(roots, logger)
 
@@ -1050,6 +1086,26 @@ class PluginRegistryService:
         unchanged: list[str] = []
         refreshed_ids: set[str] = set()
         snapshot = _discover_registry_snapshot_sync(roots, force=force)
+        if not _claim_registry_publish(ticket):
+            # 我们扫描期间已经有更晚开始的刷新把结果发布出去了。手上这份是照着更旧
+            # 的盘面读出来的，写进注册表就是把它盖回去。
+            logger.info(
+                "registry refresh #{} superseded before publishing; discarding {} record(s)",
+                ticket,
+                len(snapshot.records),
+            )
+            return {
+                "success": True,
+                "added": [],
+                "updated": [],
+                "removed": [],
+                "removed_running": [],
+                "unchanged": [record.plugin_id for record in snapshot.records],
+                "failed": [],
+                "shadowed": [],
+                "scanned_count": len(snapshot.records) + len(snapshot.failures),
+                "superseded": True,
+            }
         failed = [
             {
                 "plugin_id": item.plugin_id or "",

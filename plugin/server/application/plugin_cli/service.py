@@ -745,8 +745,21 @@ class PluginCliService:
                 )
 
         async def refresh_registry() -> object:
-            from plugin.server.application.plugins.lifecycle_service import plugin_registry_service
+            import asyncio
 
+            from plugin.server.application.plugins.lifecycle_service import plugin_registry_service
+            from plugin.server.application.plugins.metadata_scanner import (
+                clear_plugin_metadata_scan_cache,
+            )
+
+            # 换源/回滚之后必须真的重扫：选中的源变了，而元数据缓存的键只看插件
+            # 目录的内容，换源本身它是看不见的（codex）。
+            #
+            # 用显式清理而不是 refresh_registry(force=True)——和 uninstall、replace
+            # 两条路同一个写法。原因就写在 uninstall 里：refresh_registry 在测试里
+            # 被替身顶掉，多一个关键字参数会把那些替身全打挂；而"作废缓存"本来也
+            # 不是刷新的职责，是换源这一步的职责。
+            await asyncio.to_thread(clear_plugin_metadata_scan_cache)
             return await plugin_registry_service.refresh_registry()
 
         async def validate_promoted_source() -> None:

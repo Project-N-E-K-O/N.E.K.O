@@ -490,6 +490,86 @@ async def test_a_late_stop_is_still_asked_to_shut_down_not_just_killed(
     ), f"预算见底时把关停上限压到了下界以下，插件会被直接杀掉：{handed}"
 
 
+@pytest.mark.asyncio
+async def test_restarting_after_a_replacement_drops_the_scan_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement or rollback just moved files; the cache describes before.
+
+    The fingerprint usually notices, but two paths defeat it: an upgrade where
+    only an out-of-directory dependency changed (shared vendor, site-packages),
+    and a rollback that copies files back from a backup with their timestamps
+    preserved. This restart path ends in
+    ``start_plugin(refresh_registry=True) -> refresh_plugin()`` with **no**
+    force, so the new runtime would come up carrying pre-upgrade entries and
+    tool schemas (codex).
+
+    Mutation: drop the ``clear_plugin_metadata_scan_cache`` call.
+    """
+    from plugin.server.application.plugins.installation_transactions import replace as module
+    from plugin.server.application.plugins import lifecycle_service, metadata_scanner
+
+    cleared: list[int] = []
+    monkeypatch.setattr(
+        metadata_scanner,
+        "clear_plugin_metadata_scan_cache",
+        lambda: cleared.append(1),
+    )
+
+    class _Service:
+        async def start_plugin(self, plugin_id, *a, **k):
+            # 顺序也承重：清缓存必须在重启**之前**。反过来的话新运行时已经带着
+            # 旧元数据起来了，事后再清也追不回来。
+            assert cleared, "重启之前没有清掉扫描缓存——新运行时会带着旧元数据起来"
+            return {"success": True}
+
+    # 两个都是函数内 import，所以要打在它们各自的来源模块上。
+    monkeypatch.setattr(lifecycle_service, "PluginLifecycleService", _Service)
+
+    await module._start_plugin("demo")
+
+    assert cleared == [1], f"替换后的重启没有作废扫描缓存：{cleared}"
+
+
+def test_switching_the_selected_source_forces_a_rescan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Promotion and rollback change *which* source is selected.
+
+    The scan cache key only sees the contents of the plugin directory, so a
+    source switch is invisible to it — the refresh has to say force explicitly
+    or it can answer from the previous source's metadata (codex).
+
+    This one is a structural guard, and deliberately so: the refresh callback is
+    a closure built deep inside a source-switch transaction, and standing that
+    whole transaction up would test the transaction rather than this. What it
+    pins is the pairing and the order — the cache is dropped *before* the
+    refresh reads it — which is the part that goes wrong.
+
+    Mutation: drop the ``clear_plugin_metadata_scan_cache`` call from that
+    callback, or move it after the refresh.
+    """
+    import inspect
+
+    from plugin.server.application.plugin_cli import service as module
+
+    source = inspect.getsource(module)
+    marker = "async def refresh_registry() -> object:"
+    assert marker in source, "换源刷新回调不见了，这条守卫已经不知道自己在盯什么"
+
+    body = source[source.index(marker) :]
+    body = body[: body.index("async def", len(marker))]
+    clear_at = body.find("clear_plugin_metadata_scan_cache)")
+    refresh_at = body.find("plugin_registry_service.refresh_registry()")
+
+    assert clear_at != -1, (
+        "换源/回滚的刷新没有作废扫描缓存，可能拿上一个源的元数据回答"
+    )
+    assert refresh_at != -1 and clear_at < refresh_at, (
+        "缓存是在刷新之后才清的——刷新已经把旧元数据读出去了"
+    )
+
+
 def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -> None:
     """The two lock stages share a budget; they must not each spend a full one.
 
