@@ -679,6 +679,36 @@ def test_forced_ordering_is_per_plugin_too(
     ), "更旧的 force 在按插件那一层把更新的 force 盖回去了"
 
 
+def test_the_blind_barrier_covers_single_plugin_publications_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One barrier, both publication paths.
+
+    A forced refresh shuts out the ordinary refreshes already in flight because
+    their reads may have come from cache entries it has since evicted. That has
+    to apply to single-plugin refreshes as well — and they are the *common*
+    case, since every ``start_plugin(refresh_registry=True)`` goes through one
+    (CodeRabbit).
+
+    Mutation: check the barrier only in the whole-registry gate.
+    """
+    forced = module._take_registry_refresh_ticket()
+    in_flight_single = module._take_registry_refresh_ticket()
+
+    with module._registry_publication(forced, forced=True) as may_publish:
+        assert may_publish
+
+    assert not module._may_publish_record(
+        in_flight_single, Path("/demo/plugin.toml"), forced=False, plugin_id="demo"
+    ), "force 发布之后，在途的单插件刷新还能写入可能来自旧缓存的结果"
+
+    # 屏障之后才领号的单插件刷新不受影响。
+    later = module._take_registry_refresh_ticket()
+    assert module._may_publish_record(
+        later, Path("/demo/plugin.toml"), forced=False, plugin_id="demo"
+    ), "屏障把之后才开始的刷新也挡住了，那就永远刷不动了"
+
+
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

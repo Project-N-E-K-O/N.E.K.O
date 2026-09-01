@@ -533,6 +533,11 @@ def _may_publish_record(
 
     Caller holds ``_REGISTRY_PUBLISH_GUARD``.
     """
+    if not forced and ticket <= _REGISTRY_CACHE_BLIND_UNTIL:
+        # 屏障对两条发布路径一视同仁。只让全量刷新那道门认它的话，一次在 force 扫描
+        # 期间开始的**单插件**刷新照样能把可能来自旧缓存的结果写进去——而单插件刷新
+        # 是 start_plugin 的必经之路，它比全量刷新常见得多（CodeRabbit）。
+        return False
     keys = _publication_keys(plugin_id, config_path)
     published, published_forced = 0, False
     for key in keys:
