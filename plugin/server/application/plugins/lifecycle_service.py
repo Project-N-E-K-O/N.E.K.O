@@ -12,7 +12,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from fastapi import HTTPException
 
@@ -89,6 +89,22 @@ _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 _MIN_CLAMPED_STEP_TIMEOUT = 1.0
 # 清理远端工具表这一步在没有预算约束时愿意花的时间（它自己内部还有更细的超时）。
 _CLEAR_TOOLS_BUDGET_SECONDS = 2.0
+
+
+def _resolve_python_requirements(
+    conf: Any,
+    config_path: Path,
+    plugin_id: str,
+) -> tuple[list[str], list[Path], list[str]]:
+    """Read a plugin's declared Python deps and check them against its vendor dir.
+
+    三步全是磁盘 I/O：读 pyproject.toml、列出 vendor/ 下每个 dist-info、逐个读它们
+    的 METADATA。合成一个函数只是为了让调用方能一次 to_thread 掉，见 start_plugin。
+    """
+    requirements = _collect_plugin_python_requirements(conf, config_path, logger, plugin_id)
+    paths = _collect_plugin_python_requirement_paths(config_path)
+    missing = _find_missing_python_requirements(requirements, search_paths=paths)
+    return requirements, paths, missing
 
 
 def _clamp_step_timeout(configured: float, budget: float | None) -> float:
@@ -877,16 +893,26 @@ class PluginLifecycleService:
                     error_type="DuplicatePlugin",
                 )
             current_plugin_id = resolved_id
-            python_requirements = _collect_plugin_python_requirements(
+            # 这一步是真正的磁盘 I/O，而且原本直接跑在事件循环线程上：一个 200
+            # 个分发包的 vendor 目录冷读实测 0.31s、600 个 0.97s（Windows 本机；
+            # 热读分别是 45ms / 184ms），整个服务器在这期间不响应任何请求
+            # （Greptile）。挪进线程——它周围每一步本来就是这么做的（建 host、
+            # 元数据扫描、运行时元数据落盘）。
+            #
+            # 不给它套超时。这是一道**前置闸门**，不是可以缩短的步骤：超时之后
+            # 只剩两条路，蒙着头启动（缺依赖的进程起来就死，代价是一次完整的子
+            # 进程 spawn，更贵），或者判它依赖缺失（把好插件误报成硬失败，最坏）。
+            # 它花掉的时间本来就落在预算里——_remaining_step_budget 在它**之后**
+            # 才取，所以后面每一步的上限已经被它扣减过了。
+            (
+                python_requirements,
+                python_requirement_paths,
+                unsatisfied_python_requirements,
+            ) = await asyncio.to_thread(
+                _resolve_python_requirements,
                 conf,
                 config_path,
-                logger,
                 current_plugin_id,
-            )
-            python_requirement_paths = _collect_plugin_python_requirement_paths(config_path)
-            unsatisfied_python_requirements = _find_missing_python_requirements(
-                python_requirements,
-                search_paths=python_requirement_paths,
             )
             if unsatisfied_python_requirements:
                 raise _to_domain_error(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -3976,3 +3977,95 @@ async def test_stop_plugin_returns_partial_success_on_preference_write_failure(
             module.state.event_handlers.update(handlers_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_plugin_checks_python_requirements_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """依赖闸门是真磁盘 I/O，不能占着事件循环跑。
+
+    列 vendor/ 下每个 dist-info 再逐个读 METADATA，在 Windows 上冷读实测 0.31s
+    （200 个分发包）到 0.97s（600 个）。跑在循环线程上就是整台服务器这段时间不
+    响应任何请求。这条守卫盯的是"在哪个线程跑"，不是"跑没跑"。
+    """
+    config_path = tmp_path / "vendor_adapter" / "plugin.toml"
+    vendor_dir = config_path.parent / "vendor"
+    vendor_dir.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'vendor_adapter'",
+                "name = 'Vendor Adapter'",
+                "type = 'adapter'",
+                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (config_path.parent / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["demo-lib>=2"]\n',
+        encoding="utf-8",
+    )
+
+    loop_thread = threading.current_thread()
+    seen: dict[str, object] = {}
+
+    def _fake_find_missing(requirements, *, search_paths=None):
+        seen["thread"] = threading.current_thread()
+        seen["requirements"] = list(requirements)
+        seen["search_paths"] = list(search_paths or [])
+        # 返回的名字**故意跟声明的不一样**：闸门读的必须是检查器的判定，
+        # 不是插件自己声明的那张清单。两者都非空，所以只断言"抛了错"分不出
+        # 解包顺序错位——错位之后错误信息会把"缺什么"报成声明清单，用户照着
+        # 去装的就是本来就装好的那个包（变异存活验出来的）。
+        return ["missing-pkg>=9"]
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_plugin", lambda _plugin_id: {"success": True})
+    monkeypatch.setattr(module, "_get_plugin_config_path", lambda _plugin_id: config_path)
+    monkeypatch.setattr(
+        module,
+        "resolve_plugin_config_from_path",
+        lambda *args, **kwargs: {
+            "effective_config": kwargs["base_config"],
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+    monkeypatch.setattr(module, "_find_missing_python_requirements", _fake_find_missing)
+    monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+    monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().start_plugin(
+                "vendor_adapter", refresh_registry=False
+            )
+
+        assert exc_info.value.code == "PLUGIN_PYTHON_DEPENDENCIES_MISSING"
+        assert "missing-pkg>=9" in str(exc_info.value)
+        assert seen["requirements"] == ["demo-lib>=2"]
+        assert seen["search_paths"] == [vendor_dir]
+        assert seen["thread"] is not loop_thread
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
