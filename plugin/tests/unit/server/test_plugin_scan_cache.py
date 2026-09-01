@@ -564,6 +564,51 @@ def test_force_drops_the_stale_entry_before_it_scans(
     )
 
 
+def test_a_forced_scan_with_no_budget_left_still_drops_the_stale_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """"That cached answer is untrustworthy" does not depend on having time.
+
+    A forced scan that arrives with the round budget already spent bails out
+    before it can run — but if it also bails out before evicting, the entry it
+    just declared stale sits there and the next ordinary read serves it. Letting
+    the cache go cold is the right side to err on: cold costs one rescan, stale
+    is wrong metadata that nothing will correct.
+
+    Mutation: put ``_begin_scan`` back below the ``timeout <= 0`` return.
+    """
+    config_path = _plugin_dir(tmp_path)
+    calls: list[str] = []
+
+    def _fake(**inner):
+        calls.append(inner["plugin_id"])
+        return "v"
+
+    monkeypatch.setattr(module, "_scan_plugin_metadata_uncached", _fake)
+
+    def _run(*, force: bool = False, timeout: float = 10.0):
+        return module.scan_plugin_metadata_isolated(
+            plugin_id="demo",
+            module_path="entry",
+            class_name="C",
+            config_path=config_path,
+            conf={},
+            pdata={},
+            force=force,
+            timeout=timeout,
+        )
+
+    _run()  # 焐热
+    assert len(calls) == 1
+
+    _run(force=True, timeout=0.0)  # 预算见底的强制刷新
+    _run()  # 普通读取：必须重扫，不能吃到那条已经被宣布不可信的
+
+    assert len(calls) == 3, (
+        f"预算见底的 force 没删掉旧条目，普通读取直接命中了它：{calls}"
+    )
+
+
 def test_concurrent_scans_are_capped_across_the_whole_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

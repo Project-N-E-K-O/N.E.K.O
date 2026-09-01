@@ -955,6 +955,12 @@ def scan_plugin_metadata_isolated(
             # 资格，而它其实什么都没发生（codex）。
             return hit
 
+    # 盖章要排在预算判断**前面**。放在后面的话，一次预算已经见底的 force 会在下面
+    # 那条 return 上直接走掉，它宣布不可信的那条旧条目原封不动留在缓存里，下一次
+    # 普通读取照样把它端出来——force 的意思是"缓存里那个答案不可信"，这个意思跟
+    # 这一刻还有没有时间扫无关。宁可让缓存变冷，也不能留着一条已经被宣布过时的。
+    generation, epoch = _begin_scan(key, force=force)
+
     if timeout <= 0:
         # 缓存里没有，预算也没了：这条路不写缓存——"现在没时间"描述的是此刻，
         # 不是"这个插件是什么"。
@@ -968,8 +974,6 @@ def scan_plugin_metadata_isolated(
             python_requirement_paths=python_requirement_paths,
             timeout=timeout,
         )
-
-    generation, epoch = _begin_scan(key, force=force)
 
     result = _scan_with_slot(
         plugin_id=plugin_id,
