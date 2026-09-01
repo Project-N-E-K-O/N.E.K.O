@@ -288,6 +288,15 @@ async def clear_plugin_tools(plugin_id: str, *, role: Optional[str] = None) -> D
     async with _lock:
         owned = list(_plugin_tools.pop(plugin_id, {}).keys())
 
+    if not owned:
+        # 这个插件一个工具都没注册过，没什么可清。之前不管有没有都发这一次
+        # POST，而它是在 stop_plugin 的跨进程锁**里面**等的：main_server 没在
+        # 监听时，本机 loopback 的拒连实测要约 2s（httpx 的 connect 超时是
+        # 2.0s），reload-all 八个插件就是锁链上十几秒的纯死时间。
+        #
+        # 接收端本来也在数量为 0 时短路，所以不发和发是同一个结果。
+        return {"ok": True, "cleared": 0}
+
     payload = {"source": _source_tag(plugin_id), "role": role}
     client = _get_http_client()
     url = f"{_main_server_base_url()}/api/tools/clear"

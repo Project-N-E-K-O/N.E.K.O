@@ -1,9 +1,10 @@
+import os
 """
 插件管理路由
 """
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins import (
@@ -13,6 +14,10 @@ from plugin.server.application.plugins import (
 )
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
+from plugin.server.application.plugins.operation_lock import (
+    PluginOperationBusy,
+    bounded_operation_wait,
+)
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 from plugin.server.lifecycle import ensure_plugin_messaging_started
 
@@ -27,6 +32,8 @@ registry_service = PluginRegistryService()
 async def plugin_status(plugin_id: Optional[str] = Query(default=None)) -> dict[str, object]:
     try:
         return await query_service.get_plugin_status(plugin_id)
+    except PluginOperationBusy:
+        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -34,15 +41,41 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)) -> dict[
 async def list_plugins(locale: Optional[str] = Query(default=None)) -> dict[str, object]:
     try:
         return await query_service.list_plugins(locale=locale)
+    except PluginOperationBusy:
+        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
+
+
+# 用户在等的那些插件操作，抢锁不能无限等。
+#
+# 前端 30s 就放弃，而放弃之后那次操作照样会落地（mutation 被 asyncio.shield 保
+# 着），于是用户看到"失败"、插件其实被启停了。宁可在预算内立刻回 409 并说明是
+# 谁占着。后台调用方（自启动对账、安装事务）不经过这里，行为不变。
+# Env: NEKO_PLUGIN_OPERATION_WAIT_BUDGET
+_OPERATION_WAIT_BUDGET_SECONDS = max(
+    1.0, float(os.getenv("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", "20") or 20)
+)
+
+
+def _busy_response() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "PLUGIN_OPERATION_BUSY",
+            "message": "另一个插件操作正在进行，请稍后重试",
+        },
+    )
 
 
 @router.post("/plugin/{plugin_id}/start")
 async def start_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        await ensure_plugin_messaging_started()
-        return await lifecycle_service.start_plugin(plugin_id, persist_user_intent=True)
+        with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
+            await ensure_plugin_messaging_started()
+            return await lifecycle_service.start_plugin(plugin_id, persist_user_intent=True)
+    except PluginOperationBusy:
+        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -51,6 +84,8 @@ async def start_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[
 async def refresh_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
         return await registry_service.refresh_plugin(plugin_id)
+    except PluginOperationBusy:
+        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -59,6 +94,8 @@ async def refresh_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dic
 async def stop_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
         return await lifecycle_service.stop_plugin(plugin_id, persist_user_intent=True)
+    except PluginOperationBusy:
+        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -67,6 +104,8 @@ async def stop_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[s
 async def delete_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
         return await lifecycle_service.delete_plugin(plugin_id)
+    except PluginOperationBusy:
+        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -76,6 +115,8 @@ async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
     try:
         # 用户按了刷新键，意思就是「再去看一眼」——从缓存回答等于没刷新。
         return await registry_service.refresh_registry(force=True)
+    except PluginOperationBusy:
+        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -84,6 +125,8 @@ async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
 async def reload_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
         return await lifecycle_service.reload_plugin(plugin_id)
+    except PluginOperationBusy:
+        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -98,5 +141,7 @@ async def reload_all_plugins_endpoint(_: str = require_admin) -> dict[str, objec
     """
     try:
         return await lifecycle_service.reload_all_plugins()
+    except PluginOperationBusy:
+        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

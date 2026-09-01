@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import math
 import re
+import os
 import time as time_module
 try:
     import tomllib
@@ -580,6 +581,18 @@ async def _start_host_with_timeout(
         raise
 
 
+# reload-all 停止阶段的墙钟预算。
+#
+# 每个插件的 stop 都要独立抢一次跨进程锁（见下面 reload_all_plugins 里的说明：
+# 这一段无法真并行），所以耗时随插件数线性增长，而前端只等 30s。超预算就停下，
+# 已经停掉的照常汇报，剩下的留在原地——比让整个请求超时、而操作又在后台继续
+# 落地要好。
+# Env: NEKO_PLUGIN_RELOAD_ALL_BUDGET
+_RELOAD_ALL_BUDGET_SECONDS = max(
+    1.0, float(os.getenv("NEKO_PLUGIN_RELOAD_ALL_BUDGET", "20") or 20)
+)
+
+
 class PluginLifecycleService:
     @serialized_plugin_operation
     async def start_plugin(
@@ -1147,8 +1160,34 @@ class PluginLifecycleService:
                 "message": "No running plugins to reload",
             }
 
-        stop_tasks = [self._safe_stop_for_reload(plugin_id) for plugin_id in running_plugin_ids]
-        stop_outcomes = await asyncio.gather(*stop_tasks)
+        # 顺序，不是 gather。
+        #
+        # 这里原本是 asyncio.gather，但它一点并发都买不到：每个
+        # _safe_stop_for_reload 内层的 stop_plugin 自己带
+        # @serialized_plugin_operation，而那把锁的重入是按 asyncio.Task 认的
+        # （_OPERATION_OWNER 存的是任务对象）。gather 给每个协程新建一个 Task，
+        # 子任务的 current_task 必然不等于持锁那个，于是重入判定失败，N 个 stop
+        # 严格排队。这个"按任务认"是刻意的——它防的正是无关任务蹭别人的锁——
+        # 所以不能靠改重入来让它真并行。
+        #
+        # 写成顺序循环是为了让代码说实话：它本来就是顺序的。同时顺带能在中途
+        # 检查预算，gather 做不到这件事。
+        stop_outcomes = []
+        skipped_over_budget: list[str] = []
+        stop_deadline = time_module.monotonic() + _RELOAD_ALL_BUDGET_SECONDS
+        for index, plugin_id in enumerate(running_plugin_ids):
+            if time_module.monotonic() > stop_deadline:
+                # 剩下的记进 skipped 再返回，不能让它们既不在成功里也不在失败里
+                # ——那样调用方看到的是一份"少了几个插件"的结果，而没有任何东西
+                # 说它们为什么不见了。
+                skipped_over_budget = list(running_plugin_ids[index:])
+                logger.warning(
+                    "reload_all stop phase over budget after {}s, {} plugin(s) skipped",
+                    _RELOAD_ALL_BUDGET_SECONDS,
+                    len(skipped_over_budget),
+                )
+                break
+            stop_outcomes.append(await self._safe_stop_for_reload(plugin_id))
 
         plugins_to_start: list[str] = []
         failed: list[dict[str, object]] = []
@@ -1157,6 +1196,17 @@ class PluginLifecycleService:
                 plugins_to_start.append(outcome.plugin_id)
                 continue
             failed.append({"plugin_id": outcome.plugin_id, "error": outcome.error or "Stop failed"})
+
+        for plugin_id in skipped_over_budget:
+            failed.append(
+                {
+                    "plugin_id": plugin_id,
+                    "error": (
+                        "skipped: reload exceeded its "
+                        f"{_RELOAD_ALL_BUDGET_SECONDS:g}s budget"
+                    ),
+                }
+            )
 
         reloaded: list[str] = []
         ordered_plugin_ids = await plugin_registry_service.order_plugin_ids(plugins_to_start)

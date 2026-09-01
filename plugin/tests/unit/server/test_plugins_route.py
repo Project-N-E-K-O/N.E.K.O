@@ -25,7 +25,10 @@ async def test_plugins_refresh_routes_delegate_to_registry_service(
     plugin_route_test_app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _refresh_registry() -> dict[str, object]:
+    seen_force: list[bool] = []
+
+    async def _refresh_registry(*, force: bool = False) -> dict[str, object]:
+        seen_force.append(force)
         return {"success": True, "added": ["demo"], "updated": [], "removed": []}
 
     async def _refresh_plugin(plugin_id: str) -> dict[str, object]:
@@ -39,6 +42,9 @@ async def test_plugins_refresh_routes_delegate_to_registry_service(
         all_response = await client.post("/plugins/refresh")
         assert all_response.status_code == 200
         assert all_response.json()["added"] == ["demo"]
+        # 刷新按钮必须绕过扫描缓存：用户按它的意思就是"再去看一眼"，从缓存
+        # 回答等于这个按钮什么都没做。
+        assert seen_force == [True], f"刷新路由没有强制重扫：force={seen_force}"
 
         one_response = await client.post("/plugin/demo/refresh")
         assert one_response.status_code == 200

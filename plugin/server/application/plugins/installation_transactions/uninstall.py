@@ -22,6 +22,9 @@ from plugin.server.application.install_source import (
 )
 from plugin.server.application.install_source.models import LockEntry
 from plugin.server.application.install_source.scanner import PluginDirectoryScanner
+from plugin.server.application.plugins.metadata_scanner import (
+    clear_plugin_metadata_scan_cache,
+)
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.domain.errors import ServerDomainError
@@ -906,8 +909,15 @@ def _registry_failure_matches_target(
 async def _refresh_registry(
     target: _RegistryRefreshTarget,
 ) -> dict[str, object]:
-    # 磁盘内容刚被我们自己改过，缓存键看不到目录外的变化，必须绕过。
-    result = await plugin_registry_service.refresh_registry(force=True)
+    # 磁盘内容刚被我们自己改过，而扫描缓存的键只看得见插件目录内部——共享的
+    # vendor/、装进 site-packages 的包，它都看不到。所以这里显式清一次，别指望
+    # 键自己发现。
+    #
+    # 用显式清理而不是 refresh_registry(force=True)：这个函数在测试里被替身
+    # 顶掉，多一个关键字参数就会把那些替身全打挂，而"清缓存"本来也不是刷新的
+    # 职责，是卸载这一步的职责。
+    clear_plugin_metadata_scan_cache()
+    result = await plugin_registry_service.refresh_registry()
     failed = result.get("failed")
     if isinstance(failed, list) and any(
         _registry_failure_matches_target(failure, target=target)

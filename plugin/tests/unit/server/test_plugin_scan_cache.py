@@ -162,3 +162,46 @@ def test_a_different_config_is_a_different_entry(
         )
 
     assert calls == [{"a": 1}, {"a": 2}], f"conf 没进键：{calls}"
+
+
+# ── 收尾不能被一个握着管道的孙进程拖住 ────────────────────────────────
+
+
+def test_stderr_read_gives_up_instead_of_blocking() -> None:
+    """The diagnostics read is bounded; the scan is not hostage to it.
+
+    ``read(n)`` on a pipe returns at n bytes or EOF, and EOF needs every write
+    handle closed — a grandchild that inherited one keeps it open. Today the
+    worker redirects fd 2 to devnull before importing plugin code, so this is
+    unreachable in production (verified end to end). But the read sits after
+    every timer has been cancelled, so if that invariant ever slipped there
+    would be nothing to interrupt it.
+
+    Mutation: go back to a bare ``process.stderr.read(1000)``.
+    """
+    import subprocess
+    import sys
+    import time
+
+    from plugin.server.application.plugins import metadata_scanner as scanner
+
+    child = (
+        "import subprocess,sys,time\n"
+        "sys.stderr.write('partial')\n"
+        "sys.stderr.flush()\n"
+        "subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])\n"
+    )
+    process = subprocess.Popen([sys.executable, "-c", child], stderr=subprocess.PIPE)
+    try:
+        process.wait(timeout=15)
+        started = time.monotonic()
+        out = scanner._read_worker_stderr(process)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < scanner._STDERR_READ_TIMEOUT_SECONDS + 3, (
+            f"读 stderr 卡了 {elapsed:.1f}s——孙进程握着写端就永远等不到 EOF"
+        )
+        assert isinstance(out, str)
+    finally:
+        if process.poll() is None:
+            process.kill()

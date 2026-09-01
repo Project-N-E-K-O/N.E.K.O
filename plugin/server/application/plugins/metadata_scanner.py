@@ -140,7 +140,52 @@ def _terminate_and_reap_worker(
             process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.wait()
+            try:
+                # 同理：已经 kill 过的进程通常立刻可收，但这一步无界等待没有
+                # 任何东西护着，收不掉就放手，别把关停卡在这儿。
+                process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                pass
+
+
+_STDERR_TAIL_BYTES = 1000
+_STDERR_READ_TIMEOUT_SECONDS = 2.0
+
+
+def _read_worker_stderr(process: subprocess.Popen[bytes]) -> str:
+    """Read whatever diagnostics the worker left, without trusting the pipe.
+
+    ``stream.read(n)`` on a pipe returns only at n bytes or EOF, and EOF needs
+    every write handle closed — including any a grandchild inherited. Today the
+    worker redirects fd 2 to devnull before it imports plugin code, in both the
+    ``-c`` bootstrap and the frozen ``--neko-plugin-metadata-worker`` path, so
+    plugin-spawned processes never hold this pipe and the read returns promptly
+    (verified against a plugin that spawns a 30 s child at import: 0.75 s).
+
+    That makes this read safe by an invariant maintained in two other places,
+    which is a thin thing for an unbounded blocking call to rest on — and it
+    sits after every timeout timer has been cancelled, so nothing would
+    interrupt it. Bounded here instead: a background thread, and after the
+    deadline we give up on the diagnostics rather than on the scan.
+    """
+    stream = process.stderr
+    if stream is None:
+        return ""
+
+    collected: list[bytes] = []
+
+    def _drain() -> None:
+        try:
+            collected.append(stream.read(_STDERR_TAIL_BYTES))
+        except Exception:  # noqa: BLE001 - diagnostics only
+            pass
+
+    reader = threading.Thread(target=_drain, daemon=True, name="plugin-scan-stderr")
+    reader.start()
+    reader.join(timeout=_STDERR_READ_TIMEOUT_SECONDS)
+    if reader.is_alive() or not collected:
+        return ""
+    return collected[0].decode("utf-8", errors="replace")
 
 
 def _read_protocol_output_blocking(stream: BinaryIO) -> tuple[bytes, bool]:
@@ -523,9 +568,7 @@ def _scan_plugin_metadata_uncached(
         )
 
     stdout = stdout_bytes.decode("utf-8", errors="replace")
-    stderr = ""
-    if process.stderr is not None:
-        stderr = process.stderr.read(1000).decode("utf-8", errors="replace")
+    stderr = _read_worker_stderr(process)
 
     payload: dict[str, object] | None = None
     for line in reversed(stdout.splitlines()):

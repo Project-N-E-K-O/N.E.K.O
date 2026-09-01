@@ -7,6 +7,9 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar, Token
+from typing import Iterator
+import time
+from contextlib import contextmanager
 import errno
 from functools import wraps
 import os
@@ -112,6 +115,31 @@ class _CrossLoopLock:
         self._schedule_wake(wake)
 
 
+class PluginOperationBusy(Exception):
+    """The cross-process plugin lock was held past the caller's deadline."""
+
+
+# 调用方愿意为抢锁等多久。默认 None = 无限等，也就是既有行为——后台的自启动
+# 对账、安装事务这些没人盯着的调用方不该因为"等太久"而失败。
+#
+# HTTP 路由会设一个截止期：那边有个人在等，而前端 30s 就放弃了。更糟的是放弃
+# 之后那次操作仍会落地（mutation 被 asyncio.shield 保着），于是用户看到"失败"
+# 而插件其实被启停了。宁可立刻告诉他"另一个插件操作正在进行"。
+_OPERATION_WAIT_DEADLINE: ContextVar[float | None] = ContextVar(
+    "plugin_operation_wait_deadline", default=None
+)
+
+
+@contextmanager
+def bounded_operation_wait(seconds: float) -> Iterator[None]:
+    """Give lock acquisition inside this block a deadline."""
+    token = _OPERATION_WAIT_DEADLINE.set(time.monotonic() + max(0.0, float(seconds)))
+    try:
+        yield
+    finally:
+        _OPERATION_WAIT_DEADLINE.reset(token)
+
+
 class _FileLockAcquireCancelled(Exception):
     pass
 
@@ -213,9 +241,14 @@ def _acquire_file_lock_sync(
             handle.write(b"\0")
             handle.flush()
             os.fsync(handle.fileno())
+        deadline = _OPERATION_WAIT_DEADLINE.get()
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 raise _FileLockAcquireCancelled
+            if deadline is not None and time.monotonic() >= deadline:
+                raise PluginOperationBusy(
+                    "another plugin operation is holding the lock"
+                )
             try:
                 _lock_file_once(handle)
                 with _FILE_LOCK_HANDLE_GUARD:
