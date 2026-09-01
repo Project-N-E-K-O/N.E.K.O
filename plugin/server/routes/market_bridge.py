@@ -727,9 +727,26 @@ async def market_status():
 # 这个才封。12s 的取法：健康时实测一轮 4.6s，留出两倍余量，同时远小于用户会
 # 愿意干等的时间。
 # Env: NEKO_MARKET_PROXY_PROBE_TOTAL_BUDGET
-_GITHUB_PROXY_PROBE_TOTAL_BUDGET = max(
-    1.0, float(os.getenv("NEKO_MARKET_PROXY_PROBE_TOTAL_BUDGET", "12") or 12)
-)
+def _env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
+    """Read a seconds-valued env override, falling back on anything unparseable.
+
+    These run at import time, so a typo like ``NEKO_..._BUDGET=20s`` would raise
+    ``ValueError`` and stop the server from starting at all — a misconfigured
+    timeout should degrade to the documented default, not take the process down.
+    """
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return max(minimum, float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "ignoring malformed {}={!r}; using {}", name, raw, default
+        )
+        return default
+
+
+_GITHUB_PROXY_PROBE_TOTAL_BUDGET = _env_seconds("NEKO_MARKET_PROXY_PROBE_TOTAL_BUDGET", 12.0)
 
 
 async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:

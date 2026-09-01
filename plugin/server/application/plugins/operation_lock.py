@@ -46,9 +46,7 @@ class _CrossLoopLock:
             waiter = _Waiter(loop)
             self._waiters.append(waiter)
 
-        try:
-            await waiter.future
-        except asyncio.CancelledError:
+        def _abandon_waiter() -> None:
             wake: _Waiter | None = None
             with self._state_lock:
                 if waiter.state == "waiting":
@@ -58,9 +56,30 @@ class _CrossLoopLock:
                     except ValueError:
                         pass
                 elif waiter.state == "granted":
+                    # 已经轮到我们了但我们不要了——必须把这一手交给下一个，
+                    # 否则锁就悬在这里没人释放。
                     waiter.state = "cancelled"
                     wake = self._handoff_locked()
             self._schedule_wake(wake)
+
+        # 同进程争用走的是这里，而且它排在文件锁**前面**——两个 HTTP 请求打到
+        # 同一个服务器就卡在这一步。只给文件锁加截止期等于管住了较罕见的那一半。
+        deadline = _OPERATION_WAIT_DEADLINE.get()
+        try:
+            if deadline is None:
+                await waiter.future
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                await asyncio.wait_for(asyncio.shield(waiter.future), remaining)
+        except asyncio.TimeoutError:
+            _abandon_waiter()
+            raise PluginOperationBusy(
+                "another plugin operation is holding the lock"
+            ) from None
+        except asyncio.CancelledError:
+            _abandon_waiter()
             raise
 
         with self._state_lock:

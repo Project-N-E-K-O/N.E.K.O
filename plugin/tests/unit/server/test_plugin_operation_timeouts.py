@@ -124,33 +124,46 @@ def test_without_a_deadline_it_still_queues(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_clearing_tools_for_a_plugin_with_none_skips_the_request(
+async def test_clearing_tools_still_asks_when_local_tracking_is_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """That await sits inside stop_plugin's lock.
+    """An empty local table does not mean the remote has nothing.
 
-    With main_server not listening, a loopback connection refusal costs about
-    2 s on Windows, so reload-all of eight plugins spends ~16 s of dead time in
-    the lock chain — for a request whose receiving end short-circuits on an
-    empty list anyway.
+    After a plugin-server restart ``_plugin_tools`` is empty while main_server
+    can still hold tools tagged with this plugin's source. Skipping the request
+    on an empty table — which an earlier version of this change did, to dodge
+    the connect cost — leaves ghost tools the model can still call. Local
+    bookkeeping is not authoritative for remote state.
 
-    Mutation: remove the ``if not owned`` early return.
+    The cost is handled by a shorter timeout instead, because this await sits
+    inside stop_plugin's cross-process lock.
+
+    Mutation: reinstate the ``if not owned: return`` early exit.
     """
     from plugin.server.messaging import llm_tool_registry as module
 
-    posted: list[str] = []
+    seen: list[object] = []
+
+    class _Resp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            return {"ok": True}
 
     class _Client:
-        async def post(self, url, **kwargs):  # pragma: no cover - must not run
-            posted.append(url)
-            raise AssertionError("posted /api/tools/clear for a plugin with no tools")
+        async def post(self, url, **kwargs):
+            seen.append(kwargs.get("timeout"))
+            return _Resp()
 
     monkeypatch.setattr(module, "_get_http_client", lambda: _Client())
 
-    result = await module.clear_plugin_tools("plugin-with-no-tools")
+    await module.clear_plugin_tools("plugin-with-no-local-record")
 
-    assert posted == []
-    assert result.get("cleared") == 0
+    assert len(seen) == 1, "本地表为空就不发了——重启后会留下幽灵工具"
+    timeout = seen[0]
+    assert timeout is not None, "用了默认超时——这一步在锁里面，连不上要等满 2s"
+    assert getattr(timeout, "connect", None) == 0.3
 
 
 # ── reload-all 的总预算 ────────────────────────────────────────────────
@@ -238,3 +251,66 @@ def test_a_domain_error_passes_through_the_wrapper_untouched() -> None:
 
     assert excinfo.value is original, "异常在穿过包装时被换掉或被改写了"
     assert excinfo.value.code == "PLUGIN_MANUAL_NOT_MANAGED"
+
+
+def test_the_same_process_lock_also_honours_the_deadline() -> None:
+    """The process lock is taken *before* the file lock, so bounding only the
+    file lock bounds the rarer half.
+
+    Two HTTP requests hitting the same server contend here, not on the file
+    lock — that is the ordinary case, and it queued unboundedly.
+
+    Mutation: drop the deadline branch from ``_CrossLoopLock.acquire``.
+    """
+    from plugin.server.application.plugins import operation_lock as module
+
+    async def _scenario() -> str:
+        lock = module._CrossLoopLock()
+        await lock.acquire()  # 先被别人占住
+        with module.bounded_operation_wait(0.15):
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=6.0)
+            except module.PluginOperationBusy:
+                return "busy"
+            except asyncio.TimeoutError:
+                return "queued-forever"
+        return "acquired"
+
+    assert asyncio.run(_scenario()) == "busy"
+
+
+def test_a_malformed_budget_env_var_does_not_stop_the_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """These parse at import time, so a typo would take the process down.
+
+    Mutation: go back to a bare ``float(os.getenv(...))``.
+    """
+    from plugin.server.application.plugins import registry_service as module
+
+    monkeypatch.setenv("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET", "20s")
+
+    assert module._env_seconds("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET", 20.0) == 20.0
+
+
+def test_clearing_one_plugin_leaves_the_others_cached() -> None:
+    """Refreshing one plugin must not make the other sixteen pay for a rescan.
+
+    Mutation: make the scoped clear fall through to clearing everything.
+    """
+    from pathlib import Path
+
+    from plugin.server.application.plugins import metadata_scanner as module
+
+    mine, theirs = Path("/a/plugin.toml"), Path("/b/plugin.toml")
+    module._SCAN_CACHE.clear()
+    module._SCAN_CACHE[("i", "m", "c", str(mine), (), "{}", "{}", ())] = "v"
+    module._SCAN_CACHE[("i", "m", "c", str(theirs), (), "{}", "{}", ())] = "v"
+    try:
+        module.clear_plugin_metadata_scan_cache(mine)
+
+        remaining = list(module._SCAN_CACHE)
+        assert len(remaining) == 1, "定向清理牵连了别的插件"
+        assert remaining[0][3] == str(theirs)
+    finally:
+        module._SCAN_CACHE.clear()

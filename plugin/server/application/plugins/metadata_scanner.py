@@ -54,9 +54,26 @@ _WORKER_BOOTSTRAP = (
 # 注意单项上限本身不足以封顶：17 个插件按 5 并发是 4 波，4×10s 仍然超前端预算。
 # 真正封顶的是 registry_service 那边的总预算，这里只负责让单个坏插件早点放手。
 # Env: NEKO_PLUGIN_METADATA_SCAN_TIMEOUT
-_DEFAULT_SCAN_TIMEOUT_SECONDS = max(
-    1.0, float(os.getenv("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", "10") or 10)
-)
+def _env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
+    """Read a seconds-valued env override, falling back on anything unparseable.
+
+    These run at import time, so a typo like ``NEKO_..._BUDGET=20s`` would raise
+    ``ValueError`` and stop the server from starting at all — a misconfigured
+    timeout should degrade to the documented default, not take the process down.
+    """
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return max(minimum, float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "ignoring malformed {}={!r}; using {}", name, raw, default
+        )
+        return default
+
+
+_DEFAULT_SCAN_TIMEOUT_SECONDS = _env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", 10.0)
 
 
 def _metadata_worker_command() -> list[str]:
@@ -127,6 +144,8 @@ def _terminate_worker_tree(
             try:
                 process.kill()
             except OSError:
+                # 进程在 poll() 和 kill() 之间自己退了，或者句柄已经无效——
+                # 目的（它不再运行）已经达成，没有可补救的。
                 pass
 
 
@@ -765,10 +784,20 @@ def _scan_cache_key(
     )
 
 
-def clear_plugin_metadata_scan_cache() -> None:
-    """Drop every cached scan. Used by install/upgrade/uninstall."""
+def clear_plugin_metadata_scan_cache(config_path: Path | None = None) -> None:
+    """Drop cached scans. Whole cache by default, or just one plugin's.
+
+    ``config_path`` exists for the single-plugin refresh: pressing refresh on
+    one plugin should re-read that plugin, not pay to rescan the other sixteen.
+    """
     with _SCAN_CACHE_LOCK:
-        _SCAN_CACHE.clear()
+        if config_path is None:
+            _SCAN_CACHE.clear()
+            return
+        target = str(config_path)
+        # 键的第 4 项是 str(config_path)——见 _scan_cache_key。
+        for key in [k for k in _SCAN_CACHE if len(k) > 3 and k[3] == target]:
+            _SCAN_CACHE.pop(key, None)
 
 
 def scan_plugin_metadata_isolated(

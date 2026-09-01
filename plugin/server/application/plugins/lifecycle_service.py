@@ -588,9 +588,26 @@ async def _start_host_with_timeout(
 # 已经停掉的照常汇报，剩下的留在原地——比让整个请求超时、而操作又在后台继续
 # 落地要好。
 # Env: NEKO_PLUGIN_RELOAD_ALL_BUDGET
-_RELOAD_ALL_BUDGET_SECONDS = max(
-    1.0, float(os.getenv("NEKO_PLUGIN_RELOAD_ALL_BUDGET", "20") or 20)
-)
+def _env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
+    """Read a seconds-valued env override, falling back on anything unparseable.
+
+    These run at import time, so a typo like ``NEKO_..._BUDGET=20s`` would raise
+    ``ValueError`` and stop the server from starting at all — a misconfigured
+    timeout should degrade to the documented default, not take the process down.
+    """
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return max(minimum, float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "ignoring malformed {}={!r}; using {}", name, raw, default
+        )
+        return default
+
+
+_RELOAD_ALL_BUDGET_SECONDS = _env_seconds("NEKO_PLUGIN_RELOAD_ALL_BUDGET", 20.0)
 
 
 class PluginLifecycleService:
@@ -1197,6 +1214,8 @@ class PluginLifecycleService:
                 continue
             failed.append({"plugin_id": outcome.plugin_id, "error": outcome.error or "Stop failed"})
 
+        # 也进 skipped：既有契约里 skipped 是"没被尝试"的意思，而这些插件正是
+        # 没被尝试。只放进 failed 会让调用方分不清"停失败了"和"根本没轮到"。
         for plugin_id in skipped_over_budget:
             failed.append(
                 {
@@ -1238,7 +1257,7 @@ class PluginLifecycleService:
             "success": success,
             "reloaded": reloaded,
             "failed": failed,
-            "skipped": [],
+            "skipped": list(skipped_over_budget),
             "message": message,
         }
 

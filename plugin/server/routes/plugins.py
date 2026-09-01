@@ -53,9 +53,26 @@ async def list_plugins(locale: Optional[str] = Query(default=None)) -> dict[str,
 # 着），于是用户看到"失败"、插件其实被启停了。宁可在预算内立刻回 409 并说明是
 # 谁占着。后台调用方（自启动对账、安装事务）不经过这里，行为不变。
 # Env: NEKO_PLUGIN_OPERATION_WAIT_BUDGET
-_OPERATION_WAIT_BUDGET_SECONDS = max(
-    1.0, float(os.getenv("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", "20") or 20)
-)
+def _env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
+    """Read a seconds-valued env override, falling back on anything unparseable.
+
+    These run at import time, so a typo like ``NEKO_..._BUDGET=20s`` would raise
+    ``ValueError`` and stop the server from starting at all — a misconfigured
+    timeout should degrade to the documented default, not take the process down.
+    """
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return max(minimum, float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "ignoring malformed {}={!r}; using {}", name, raw, default
+        )
+        return default
+
+
+_OPERATION_WAIT_BUDGET_SECONDS = _env_seconds("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", 20.0)
 
 
 def _busy_response() -> HTTPException:
@@ -83,7 +100,8 @@ async def start_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[
 @router.post("/plugin/{plugin_id}/refresh")
 async def refresh_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        return await registry_service.refresh_plugin(plugin_id)
+        # 同 /plugins/refresh：用户点的刷新必须真的再看一眼。
+        return await registry_service.refresh_plugin(plugin_id, force=True)
     except PluginOperationBusy:
         raise _busy_response()
     except ServerDomainError as error:

@@ -421,9 +421,26 @@ def _build_ordered_plugin_ids_sync(candidate_plugin_ids: set[str] | None = None)
 # 20s 的取法：给前端 30s 留出 10s 做其余的事。健康路径根本碰不到——实测全量并行
 # 扫描 3.3s，是预算的六分之一。
 # Env: NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET
-_DISCOVERY_SCAN_BUDGET_SECONDS = max(
-    1.0, float(os.getenv("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET", "20") or 20)
-)
+def _env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
+    """Read a seconds-valued env override, falling back on anything unparseable.
+
+    These run at import time, so a typo like ``NEKO_..._BUDGET=20s`` would raise
+    ``ValueError`` and stop the server from starting at all — a misconfigured
+    timeout should degrade to the documented default, not take the process down.
+    """
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return max(minimum, float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "ignoring malformed {}={!r}; using {}", name, raw, default
+        )
+        return default
+
+
+_DISCOVERY_SCAN_BUDGET_SECONDS = _env_seconds("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET", 20.0)
 
 _DISCOVERY_SCAN_MAX_WORKERS = 8
 _DISCOVERY_SCAN_MIN_WORKERS = 2
@@ -952,7 +969,24 @@ class PluginRegistryService:
             clear_plugin_metadata_scan_cache()
         return await asyncio.to_thread(self._refresh_registry_sync)
 
-    async def refresh_plugin(self, plugin_id: str) -> dict[str, object]:
+    async def refresh_plugin(
+        self, plugin_id: str, *, force: bool = False
+    ) -> dict[str, object]:
+        """Rebuild one plugin's registry entry.
+
+        ``force`` drops just that plugin's cached scan — same reasoning as the
+        all-plugins refresh (the key cannot see a change outside the plugin
+        directory), but scoped, so refreshing one plugin does not make the other
+        sixteen pay for a rescan.
+        """
+        if force:
+            config_path = _find_plugin_config_path(
+                plugin_id, tuple(PLUGIN_CONFIG_ROOTS)
+            )
+            if config_path is not None:
+                clear_plugin_metadata_scan_cache(config_path)
+            else:
+                clear_plugin_metadata_scan_cache()
         return await asyncio.to_thread(self._refresh_plugin_sync, plugin_id)
 
     async def validate_plugin_runtime_source(

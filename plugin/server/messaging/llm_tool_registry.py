@@ -277,6 +277,11 @@ async def unregister_remote_tool(
     return body if isinstance(body, dict) else {"ok": True}
 
 
+# 停止插件时清理远端工具的超时。比默认的 2.0s connect 短得多：这一步是尽力而为
+# 的收尾，而它在跨进程锁里面，慢一秒就是所有插件操作排队慢一秒。
+_CLEAR_TOOLS_TIMEOUT = httpx.Timeout(2.0, connect=0.3)
+
+
 async def clear_plugin_tools(plugin_id: str, *, role: Optional[str] = None) -> Dict[str, Any]:
     """Remove every LLM tool a plugin has registered on ``main_server``.
 
@@ -288,20 +293,19 @@ async def clear_plugin_tools(plugin_id: str, *, role: Optional[str] = None) -> D
     async with _lock:
         owned = list(_plugin_tools.pop(plugin_id, {}).keys())
 
-    if not owned:
-        # 这个插件一个工具都没注册过，没什么可清。之前不管有没有都发这一次
-        # POST，而它是在 stop_plugin 的跨进程锁**里面**等的：main_server 没在
-        # 监听时，本机 loopback 的拒连实测要约 2s（httpx 的 connect 超时是
-        # 2.0s），reload-all 八个插件就是锁链上十几秒的纯死时间。
-        #
-        # 接收端本来也在数量为 0 时短路，所以不发和发是同一个结果。
-        return {"ok": True, "cleared": 0}
-
     payload = {"source": _source_tag(plugin_id), "role": role}
     client = _get_http_client()
     url = f"{_main_server_base_url()}/api/tools/clear"
+    # 这次 await 在 stop_plugin 的跨进程锁里面。main_server 没在监听时，本机
+    # loopback 的拒连要吃满 connect 超时（默认 2.0s），reload-all 八个插件就是
+    # 锁链上十几秒纯死时间。
+    #
+    # 曾经想过「本地没记录就不发」，但那是错的：进程重启后 _plugin_tools 是空的，
+    # 而 main_server 那边可能还挂着这个插件注册的工具，跳过就会留下模型仍然能调
+    # 用的幽灵工具。本地记录不是远端状态的权威。所以照发，只是给这次尽力而为的
+    # 清理一个更短的超时。
     try:
-        resp = await client.post(url, json=payload)
+        resp = await client.post(url, json=payload, timeout=_CLEAR_TOOLS_TIMEOUT)
     except httpx.HTTPError as exc:
         logger.debug(
             "clear_plugin_tools HTTP error (best-effort): plugin_id={}, err={}",

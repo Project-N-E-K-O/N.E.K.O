@@ -31,7 +31,10 @@ async def test_plugins_refresh_routes_delegate_to_registry_service(
         seen_force.append(force)
         return {"success": True, "added": ["demo"], "updated": [], "removed": []}
 
-    async def _refresh_plugin(plugin_id: str) -> dict[str, object]:
+    seen_plugin_force: list[bool] = []
+
+    async def _refresh_plugin(plugin_id: str, *, force: bool = False) -> dict[str, object]:
+        seen_plugin_force.append(force)
         return {"success": True, "plugin_id": plugin_id, "status": "updated"}
 
     monkeypatch.setattr(route_module.registry_service, "refresh_registry", _refresh_registry)
@@ -49,6 +52,9 @@ async def test_plugins_refresh_routes_delegate_to_registry_service(
         one_response = await client.post("/plugin/demo/refresh")
         assert one_response.status_code == 200
         assert one_response.json()["plugin_id"] == "demo"
+        # 单插件刷新同样要真的重扫——否则这个按钮对一个 vendor 目录变了的插件
+        # 什么都不做，而全量刷新却会。
+        assert seen_plugin_force == [True], f"单插件刷新没强制重扫：{seen_plugin_force}"
 
 
 @pytest.mark.asyncio
