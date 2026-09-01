@@ -1333,7 +1333,17 @@ class PluginLifecycleService:
         for plugin_id in ordered_plugin_ids:
             # 启动这半边同样把等锁和启动本身都封在剩余预算里——和上面的 stop
             # 对称，否则预算只管住了两个阶段中的一个。
-            remaining = max(0.0, start_deadline - time_module.monotonic())
+            #
+            # 但等锁那段和步骤超时用同一个下界，不能压到 0：预算见底时
+            # bounded_operation_wait(0.0) 等于"一次都不等"，此刻只要有别的插件操作
+            # 握着进程锁，start_plugin 立刻抛 PluginOperationBusy，而这个插件是刚被
+            # 我们停掉的——它会就这么一直停着（CodeRabbit）。刚去掉超预算 break 就是
+            # 为了不让这种事发生，零等待等于把它从后门放回来。
+            #
+            # 停止侧不需要这个下界，而且那是刻意的：停止侧等不到锁，插件还好好跑着。
+            remaining = max(
+                _MIN_CLAMPED_STEP_TIMEOUT, start_deadline - time_module.monotonic()
+            )
             with bounded_operation_wait(remaining):
                 outcome = await self._safe_start_for_reload(
                     plugin_id, start_deadline=start_deadline

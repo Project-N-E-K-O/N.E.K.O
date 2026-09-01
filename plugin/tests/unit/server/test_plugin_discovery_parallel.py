@@ -25,6 +25,34 @@ from plugin.server.application.plugins import registry_service as module
 pytestmark = pytest.mark.plugin_unit
 
 
+@pytest.fixture(autouse=True)
+def _reset_publication_ordering():
+    """Publication ordering is module-global; give every test a clean board.
+
+    These are counters, so a test that leaves one high silently supersedes the
+    next test's refreshes — which is precisely how the interleaving guard here
+    started failing for a reason that had nothing to do with it. Resetting them
+    ad hoc inside each test only works until someone adds a counter.
+    """
+    names = (
+        "_REGISTRY_REFRESH_TICKET",
+        "_REGISTRY_PUBLISHED_TICKET",
+        "_REGISTRY_CACHE_BLIND_UNTIL",
+    )
+    saved = {name: getattr(module, name) for name in names}
+    published = dict(module._REGISTRY_PUBLISHED_PLUGIN_TICKET)
+    for name in names:
+        setattr(module, name, 0)
+    module._REGISTRY_PUBLISHED_PLUGIN_TICKET.clear()
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(module, name, value)
+        module._REGISTRY_PUBLISHED_PLUGIN_TICKET.clear()
+        module._REGISTRY_PUBLISHED_PLUGIN_TICKET.update(published)
+
+
 def _make_root(tmp_path: Path, names: list[str]) -> Path:
     root = tmp_path / "plugins"
     root.mkdir()
@@ -278,9 +306,6 @@ def test_an_older_refresh_does_not_publish_over_a_newer_one(
     """
     import threading
 
-    module._REGISTRY_REFRESH_TICKET = 0
-    module._REGISTRY_PUBLISHED_TICKET = 0
-
     slow_started = threading.Event()
     let_slow_finish = threading.Event()
     slow: threading.Thread | None = None
@@ -359,9 +384,6 @@ def test_two_refreshes_never_interleave_their_commits(
     import threading
     import time as _time
 
-    module._REGISTRY_REFRESH_TICKET = 0
-    module._REGISTRY_PUBLISHED_TICKET = 0
-
     order: list[str] = []
     order_guard = threading.Lock()
     discovering = {"A": threading.Event(), "B": threading.Event()}
@@ -425,6 +447,110 @@ def test_two_refreshes_never_interleave_their_commits(
     assert "".join(order) == "AAABBB", (
         f"两次刷新的提交交错了，旧的那份可以盖在新的上面：{''.join(order)}"
     )
+
+
+def test_a_forced_refresh_is_not_discarded_by_a_cached_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ticket says who started first, not who read a fresher board.
+
+    The cache splits those two apart: a forced refresh cold-scans for seconds
+    while an ordinary one started later can hit the cache, finish in
+    milliseconds and publish with a higher ticket. Ordering by ticket alone then
+    throws away the forced result — and the forced read is the *only* one that
+    can see a change outside the plugin directory, which is the entire reason
+    force exists. Worse, the caller sees `success=True` with empty
+    added/updated and cannot tell the upgrade was dropped (CodeRabbit).
+
+    So: forced never yields, and a forced publication also shuts out the
+    ordinary refreshes still in flight, whose data may have come from the cache
+    that force just invalidated.
+
+    Mutation: order by ticket alone, ignoring ``forced``.
+    """
+    import threading
+
+    applied: list[str] = []
+    forced_discovering = threading.Event()
+    let_forced_finish = threading.Event()
+    forced_thread: threading.Thread | None = None
+
+    def _discover(roots, *, force=False, force_targets=frozenset()):
+        tag = "forced" if force else "cached"
+        if threading.current_thread() is forced_thread:
+            forced_discovering.set()
+            assert let_forced_finish.wait(timeout=5)
+        return SimpleNamespace(
+            records=[SimpleNamespace(plugin_id=tag,
+                                     config_path=Path("/demo/plugin.toml"),
+                                     meta_payload={})],
+            failures=[],
+            config_paths=set(),
+            shadowed=[],
+        )
+
+    def _apply(record, *, existing_snapshot, preferred_runtime_plugin_id=None):
+        applied.append(record.plugin_id)
+        return record.plugin_id, {}
+
+    monkeypatch.setattr(module, "_discover_registry_snapshot_sync", _discover)
+    monkeypatch.setattr(module, "_apply_discovery_record_sync", _apply)
+    monkeypatch.setattr(module, "_prepare_plugin_import_roots", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_get_registered_plugin_snapshot_sync", dict)
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", list)
+    monkeypatch.setattr(module, "_find_existing_runtime_plugin_id_by_config_path", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_select_managed_fields", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_collect_missing_plugin_ids_sync", lambda *a, **k: set())
+    monkeypatch.setattr(module, "_remove_stale_plugin_metadata_sync", lambda *a, **k: ([], []))
+    monkeypatch.setattr(module, "_source_for_config_path", lambda *a, **k: "user")
+
+    service = module.PluginRegistryService()
+
+    # 升级触发的 force 刷新先领号（1），冷扫很慢。
+    forced_thread = threading.Thread(
+        target=lambda: service._refresh_registry_sync(force=True)
+    )
+    forced_thread.start()
+    assert forced_discovering.wait(timeout=5), "前提没成立：force 刷新没开始"
+
+    # 期间一次普通刷新领号（2），命中缓存、瞬间发布。
+    cached = service._refresh_registry_sync()
+    assert applied == ["cached"], f"前提没成立：普通刷新没先发布 {applied}"
+    assert not cached.get("superseded")
+
+    let_forced_finish.set()
+    forced_thread.join(timeout=5)
+
+    assert applied == ["cached", "forced"], (
+        f"force 的结果被一份缓存结果顶掉了，升级会静默丢失：{applied}"
+    )
+
+
+def test_a_forced_publication_shuts_out_refreshes_still_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half: an ordinary refresh already running when force publishes.
+
+    Its scans may have answered from the cache entries the forced pass has just
+    invalidated, so letting it publish afterwards puts the pre-upgrade metadata
+    straight back.
+
+    Mutation: drop the ``_REGISTRY_CACHE_BLIND_UNTIL`` barrier.
+    """
+    # 顺序是承重的：force 先领号（1），普通刷新**后**领号（2）——也就是它是在 force
+    # 扫描期间才开始的，那正是它可能读到 force 尚未作废的缓存条目的窗口。号更大，
+    # 所以光靠"号新者胜"拦不住它，必须靠这道屏障。
+    forced = module._take_registry_refresh_ticket()
+    ordinary = module._take_registry_refresh_ticket()
+    assert ordinary > forced, "前提没成立：普通刷新的号应该更大"
+
+    with module._registry_publication(forced, forced=True) as may_publish:
+        assert may_publish, "force 刷新自己都发布不了"
+
+    with module._registry_publication(ordinary, forced=False) as may_publish:
+        assert not may_publish, (
+            "force 发布之后，号更大但在途的普通刷新还能把可能来自旧缓存的结果写进去"
+        )
 
 
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(

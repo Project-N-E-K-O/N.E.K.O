@@ -490,6 +490,78 @@ async def test_a_late_stop_is_still_asked_to_shut_down_not_just_killed(
     )
 
 
+@pytest.mark.asyncio
+async def test_a_spent_budget_still_buys_a_real_wait_for_the_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero wait is not an attempt, it is a refusal wearing an attempt's clothes.
+
+    Removing the over-budget ``break`` only helps if what replaces it can
+    actually succeed. With a spent budget ``bounded_operation_wait(0.0)`` means
+    "do not wait at all", so any concurrent plugin operation — a user pressing
+    start, an uninstall, a source switch — makes ``start_plugin`` raise
+    ``PluginOperationBusy`` immediately, and a plugin we just stopped stays
+    stopped. That is the same outcome the ``break`` was removed to prevent, let
+    back in through the side door (CodeRabbit). The lock wait shares the step
+    floor.
+
+    Mutation: floor the lock wait at 0.0 again.
+    """
+    from plugin.server.application.plugins import lifecycle_service as module
+    from plugin.server.application.plugins.operation_lock import (
+        serialized_plugin_operation,
+    )
+    from plugin.server.application.plugins import operation_lock
+
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: ["p0"])
+    monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
+    # 预算小到"轮到启动时早就见底了"。
+    monkeypatch.setattr(module, "_RELOAD_ALL_BUDGET_SECONDS", 0.01)
+
+    async def _noop_refresh(*a, **k):
+        return {"success": True}
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _noop_refresh)
+
+    async def _ordered(ids):
+        return list(ids)
+
+    monkeypatch.setattr(module.plugin_registry_service, "order_plugin_ids", _ordered)
+
+    service = module.PluginLifecycleService()
+    started: list[str] = []
+
+    async def _stop(plugin_id: str, *, stop_deadline=None):
+        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    # 带真decorator：这条用例要的就是它去抢那把真锁。
+    @serialized_plugin_operation
+    async def _start(plugin_id: str, *, refresh_registry=True, start_deadline=None):
+        started.append(plugin_id)
+        return {"success": True}
+
+    monkeypatch.setattr(service, "_safe_stop_for_reload", _stop)
+    monkeypatch.setattr(service, "start_plugin", _start)
+
+    # 启动开始时锁被别人握着，0.3s 后放开——远小于下界，够等。
+    await operation_lock._PROCESS_LOCK.acquire()
+
+    async def _release_later():
+        await asyncio.sleep(0.30)
+        operation_lock._PROCESS_LOCK.release()
+
+    releaser = asyncio.create_task(_release_later())
+    try:
+        result = await service.reload_all_plugins()
+    finally:
+        await releaser
+
+    assert started == ["p0"], (
+        f"预算见底时等锁被压成零，插件被直接判 busy 而留在停止状态：{result.get('failed')}"
+    )
+    assert result["reloaded"] == ["p0"]
+
+
 def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -> None:
     """The two lock stages share a budget; they must not each spend a full one.
 

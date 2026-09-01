@@ -486,15 +486,26 @@ def _publication_key(config_path: Path) -> str:
     return str(_resolve_config_path(config_path))
 
 
-def _may_publish_record(ticket: int, config_path: Path) -> bool:
+# 一次 force 发布之后，号 <= 这个值的**普通**刷新一律作废。
+#
+# 号只表示"谁先开始"，不表示"谁看到的盘面更新"。加了缓存之后这两件事会分家：一次
+# force 刷新冷扫要 3.3s，期间一次普通刷新可能 0.14s 就命中缓存发布完，号还更大。
+# 而 force 存在的全部理由就是缓存看不见插件目录**之外**的变化（共享 vendor、
+# site-packages）——让那份缓存结果把 force 的结果顶掉，正好是反的（CodeRabbit）。
+_REGISTRY_CACHE_BLIND_UNTIL = 0
+
+
+def _may_publish_record(ticket: int, config_path: Path, *, forced: bool) -> bool:
     """Whether this refresh still owns the latest word on that one plugin.
 
     Caller holds ``_REGISTRY_PUBLISH_GUARD``.
     """
     key = _publication_key(config_path)
-    if ticket < _REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, 0):
+    published = _REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, 0)
+    # force 读的是盘，普通刷新可能读的是缓存，所以 force 不让位。
+    if not forced and ticket < published:
         return False
-    _REGISTRY_PUBLISHED_PLUGIN_TICKET[key] = ticket
+    _REGISTRY_PUBLISHED_PLUGIN_TICKET[key] = max(published, ticket)
     return True
 
 
@@ -514,16 +525,19 @@ class _registry_publication_of:
     plugin instead of the whole registry.
     """
 
-    __slots__ = ("_config_path", "_ticket", "_held")
+    __slots__ = ("_config_path", "_ticket", "_forced", "_held")
 
-    def __init__(self, config_path: Path, ticket: int) -> None:
+    def __init__(self, config_path: Path, ticket: int, *, forced: bool) -> None:
         self._config_path = config_path
         self._ticket = ticket
+        self._forced = forced
         self._held = False
 
     def __enter__(self) -> bool:
         _REGISTRY_PUBLISH_GUARD.acquire()
-        if not _may_publish_record(self._ticket, self._config_path):
+        if not _may_publish_record(
+            self._ticket, self._config_path, forced=self._forced
+        ):
             _REGISTRY_PUBLISH_GUARD.release()
             return False
         self._held = True
@@ -552,20 +566,31 @@ class _registry_publication:
     A plain ``__exit__`` never touches the exception.
     """
 
-    __slots__ = ("_ticket", "_held")
+    __slots__ = ("_ticket", "_forced", "_held")
 
-    def __init__(self, ticket: int) -> None:
+    def __init__(self, ticket: int, *, forced: bool) -> None:
         self._ticket = ticket
+        self._forced = forced
         self._held = False
 
     def __enter__(self) -> bool:
-        global _REGISTRY_PUBLISHED_TICKET
+        global _REGISTRY_PUBLISHED_TICKET, _REGISTRY_CACHE_BLIND_UNTIL
 
         _REGISTRY_PUBLISH_GUARD.acquire()
-        if self._ticket < _REGISTRY_PUBLISHED_TICKET:
+        # force 从不让位：它是唯一能看见目录外变化的那次读盘，被一份缓存结果顶掉
+        # 就意味着升级/换源静默丢失，而返回值还是 success=True、added/updated 全空，
+        # 调用方看不出任何异常（CodeRabbit）。
+        if not self._forced and (
+            self._ticket < _REGISTRY_PUBLISHED_TICKET
+            or self._ticket <= _REGISTRY_CACHE_BLIND_UNTIL
+        ):
             _REGISTRY_PUBLISH_GUARD.release()
             return False
-        _REGISTRY_PUBLISHED_TICKET = self._ticket
+        if self._forced:
+            # 此刻还在途的普通刷新，它们的数据可能来自这次 force 刚作废掉的缓存，
+            # 一律挡在门外。之后才领号的不受影响。
+            _REGISTRY_CACHE_BLIND_UNTIL = _REGISTRY_REFRESH_TICKET
+        _REGISTRY_PUBLISHED_TICKET = max(_REGISTRY_PUBLISHED_TICKET, self._ticket)
         self._held = True
         return True
 
@@ -1196,7 +1221,7 @@ class PluginRegistryService:
         # 认完就被调度出去，让后认号的那次把新快照发布完，然后自己醒过来把剩下
         # 的旧记录和删除接着写进去——注册表照样被旧的一份盖掉（codex）。锁从认号
         # 一直握到提交结束，发布之间才真的有序。
-        with _registry_publication(ticket) as may_publish:
+        with _registry_publication(ticket, forced=force) as may_publish:
             if not may_publish:
                 # 我们扫描期间已经有更晚开始的刷新把结果发布出去了。手上这份是照着更旧
                 # 的盘面读出来的，写进注册表就是把它盖回去。
@@ -1227,7 +1252,7 @@ class PluginRegistryService:
             ]
 
             for record in snapshot.records:
-                if not _may_publish_record(ticket, record.config_path):
+                if not _may_publish_record(ticket, record.config_path, forced=force):
                     # 这个插件在我们扫描期间被一次更晚的刷新更新过了。别的插件照常
                     # 发布——整轮作废是过度反应，那正是按插件分号要避免的。
                     unchanged.append(record.plugin_id)
@@ -1371,7 +1396,7 @@ class PluginRegistryService:
         # 否则一次慢的全量刷新醒过来照样能把这条刚更新的记录盖回旧的（codex）。
         # 但它只推**自己这一条**的号：单插件刷新是 start_plugin 的必经之路，让它去
         # 推全局号等于启动一个插件就能作废一次全量刷新。
-        with _registry_publication_of(config_path, ticket) as may_publish:
+        with _registry_publication_of(config_path, ticket, forced=force) as may_publish:
             if not may_publish:
                 logger.info(
                     "plugin refresh #{} for {} superseded before publishing",
