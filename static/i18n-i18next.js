@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Day 1 模型缩放与 Day 2 弧形菜单引导都新增了 key；递增版本让
-    // Electron、Docker 等长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-01-add-guide-main-merge';
+    // 合并 Day 1/Day 2 引导与 vLLM-Omni 克隆提示后新增了 key；递增版本让 Electron、
+    // Docker 等长期缓存重新拉取完整语言包，避免界面直接显示 voice.* key。
+    const LOCALE_VERSION = '2026-09-02-vllm-omni-clone-preflight';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

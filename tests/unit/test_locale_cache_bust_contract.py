@@ -130,6 +130,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-08-31-openfang-removal",
         "2026-09-01-day1-avatar-zoom-hint",
         "2026-09-01-day2-tool-wheel-rotation",
+        "2026-09-01-add-guide-main-merge",
+        "2026-09-01-vllm-omni-clone-preflight",
     }
 )
 
