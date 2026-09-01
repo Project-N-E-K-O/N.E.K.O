@@ -724,7 +724,9 @@ export default {
     resourceNotFound: '請求的資源不存在',
     internalServerError: '伺服器內部錯誤',
     serviceUnavailable: '服務不可用',
-    networkError: '網路錯誤，請檢查網路連線'
+    networkError: '網路錯誤，請檢查網路連線',
+    requestTimeout: '請求逾時，請稍後重試',
+    pluginLifecycleTimeout: '外掛啟動或重載逾時，請查看外掛日誌'
   },
   welcome: {
     about: {

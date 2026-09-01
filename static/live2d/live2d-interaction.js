@@ -3822,6 +3822,10 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     this._clickEffectAction = null;
     this._currentClickEffectId = null;
 
+    if (typeof this._cancelTouchSetExpressionRestore === 'function') {
+        this._cancelTouchSetExpressionRestore();
+    }
+
     // 清理页面卸载监听器（如果存在）
     if (this._unloadListener) {
         window.removeEventListener('beforeunload', this._unloadListener);
@@ -4382,6 +4386,26 @@ Live2DManager.prototype.setupHitAreaInteraction = function(model) {
     console.log(`[HitArea] HitArea 交互已设置 : ${window.live2dManager.modelName}`);
 };
 
+Live2DManager.prototype._cancelTouchSetExpressionRestore = function() {
+    this._touchSetExpressionRestoreGeneration = (this._touchSetExpressionRestoreGeneration || 0) + 1;
+    const restoreState = this._touchSetExpressionRestoreState;
+    if (restoreState?.timer) {
+        clearTimeout(restoreState.timer);
+    }
+    this._touchSetExpressionRestoreState = null;
+    return this._touchSetExpressionRestoreGeneration;
+};
+
+Live2DManager.prototype._isTouchSetExpressionRestoreCurrent = function() {
+    const restoreState = this._touchSetExpressionRestoreState;
+    return !!(
+        restoreState
+        && restoreState.generation === this._touchSetExpressionRestoreGeneration
+        && restoreState.model === this.currentModel
+        && restoreState.expressionGeneration === this._transientExpressionGeneration
+    );
+};
+
 /**
  * 根据 touchSet 配置播放 HitArea 对应的动画
  * @param {string} hitAreaId - HitArea ID
@@ -4601,7 +4625,10 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
             } else {
                 console.log(`[TouchSet] 尝试播放表情: ${faceInfo.File}`);
                 try {
-                    const expressionResult = await this.playExpression(randomExpressionName, faceInfo.File);
+                    const touchExpressionModel = this.currentModel;
+                    const expressionTask = this.playExpression(randomExpressionName, faceInfo.File);
+                    const touchExpressionGeneration = this._transientExpressionGeneration;
+                    const expressionResult = await expressionTask;
                     if (expressionResult !== false) {
                         triggerLog.expressions.push({
                             name: randomExpressionName,
@@ -4619,16 +4646,38 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
                         console.warn(`[TouchSet] 表情播放返回失败: ${randomExpressionName}`);
                     }
 
-                    clearTimeout(this.expressionTimer);
-                    const holdingTime = Number.isFinite(faceHoldingTime) && faceHoldingTime > 0 ? faceHoldingTime : 3000;
-                    this.expressionTimer = setTimeout(async () => {
-                        if (typeof this.clearExpression === 'function') {
-                            try {
-                                await this.clearExpression();
-                                console.log(`[TouchSet] 临时表情清除，准备恢复常驻状态`);
-                            } catch (_) {}
-                        }
-                    }, holdingTime);
+                    if (
+                        expressionResult !== false
+                        && this.currentModel === touchExpressionModel
+                        && this._transientExpressionGeneration === touchExpressionGeneration
+                    ) {
+                        const holdingTime = Number.isFinite(faceHoldingTime) && faceHoldingTime > 0 ? faceHoldingTime : 3000;
+                        const restoreGeneration = this._cancelTouchSetExpressionRestore();
+                        const restoreState = {
+                            generation: restoreGeneration,
+                            model: touchExpressionModel,
+                            expressionGeneration: touchExpressionGeneration,
+                            timer: null
+                        };
+                        this._touchSetExpressionRestoreState = restoreState;
+                        restoreState.timer = setTimeout(async () => {
+                            if (this._touchSetExpressionRestoreState !== restoreState) {
+                                return;
+                            }
+                            const shouldRestore = this._isTouchSetExpressionRestoreCurrent();
+                            this._touchSetExpressionRestoreState = null;
+                            if (!shouldRestore) {
+                                console.log('[TouchSet] 临时表情已被新的表情接管，跳过恢复');
+                                return;
+                            }
+                            if (typeof this.clearExpression === 'function') {
+                                try {
+                                    await this.clearExpression();
+                                    console.log(`[TouchSet] 临时表情清除，准备恢复常驻状态`);
+                                } catch (_) {}
+                            }
+                        }, holdingTime);
+                    }
                 } catch (e) {
                     triggerLog.failedExpressions.push({
                         name: randomExpressionName,

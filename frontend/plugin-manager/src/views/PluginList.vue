@@ -474,6 +474,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import type { AxiosError } from 'axios'
 import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
@@ -504,7 +505,7 @@ import { usePluginListContextActions, type ResolvedPluginListAction } from '@/co
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
-import { formatHttpError } from '@/utils/request'
+import { formatHttpError, isRequestTimeout } from '@/utils/request'
 import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { findDuplicatePluginDisplayNameIds } from '@/utils/pluginDisplay'
@@ -975,6 +976,9 @@ function resolveActionErrorMessage(error: any): string {
 }
 
 function shouldShowLocalError(error: any): boolean {
+  if (isRequestTimeout(error)) {
+    return false
+  }
   const status = error?.response?.status
   if (status === 401 || status === 403 || status === 404) {
     return true
@@ -1370,7 +1374,9 @@ async function handleReloadAll() {
     }
   } catch (error) {
     console.error('Failed to reload all plugins:', error)
-    ElMessage.error(t('messages.reloadFailed'))
+    if (!isRequestTimeout(error as AxiosError)) {
+      ElMessage.error(t('messages.reloadFailed'))
+    }
   } finally {
     reloadingAll.value = false
   }

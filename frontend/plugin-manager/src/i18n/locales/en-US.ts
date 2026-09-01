@@ -724,7 +724,9 @@ export default {
     resourceNotFound: 'Requested resource not found',
     internalServerError: 'Internal server error',
     serviceUnavailable: 'Service unavailable',
-    networkError: 'Network error. Please check your connection.'
+    networkError: 'Network error. Please check your connection.',
+    requestTimeout: 'The request timed out. Please try again.',
+    pluginLifecycleTimeout: 'Plugin startup or restart timed out. Please check the plugin logs.'
   },
   welcome: {
     about: {

@@ -128,6 +128,8 @@ class Live2DManager {
         this._transientExpressionGeneration = 0;
         this._transientExpressionTask = null;
         this._activeTransientExpression = false;
+        this._touchSetExpressionRestoreGeneration = 0;
+        this._touchSetExpressionRestoreState = null;
         this.isEmotionChanging = false;
         this.dragEnabled = false;
         this.isFocusing = false;
