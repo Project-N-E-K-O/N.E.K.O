@@ -1097,6 +1097,41 @@ def test_adding_a_symlink_invalidates_an_already_cached_tree(
     )
 
 
+def test_a_successful_force_on_fresh_files_does_not_strand_the_tombstone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tombstone must not outlive the scan that installed it.
+
+    A forced scan of files edited moments ago succeeds, but the settle window
+    says the result is not cacheable — so nothing replaced the tombstone. Every
+    later ordinary scan was then refused the write, because the entry sitting
+    there is marked forced, and the plugin lost caching *permanently* (codex).
+    "Edit a plugin, then press refresh" is about the most ordinary sequence
+    there is, which is what makes this worse than the sticky-cold cost I had
+    described for the failure path.
+
+    Mutation: leave the tombstone in place when a forced scan is unsettled.
+    """
+    config_path = _plugin_dir(tmp_path)
+    calls: list = []
+
+    # 文件的 mtime 从头到尾不动 —— 动它就等于换了一把键，墓碑压根不会参与，
+    # 这条守卫的第一版就是这么把自己废掉的（变异存活才发现）。改成拨安定窗口：
+    # 先把窗口调得极长，让这次 force"成功但不该进缓存"。
+    monkeypatch.setattr(module, "_CACHE_SETTLE_NS", 3600 * 1_000_000_000)
+    _scan(monkeypatch, config_path, calls, force=True)
+    assert len(calls) == 1
+
+    # 再把窗口调回正常：同一把键，现在算安定了，普通扫描应当能重新开始缓存。
+    monkeypatch.setattr(module, "_CACHE_SETTLE_NS", 2_000_000_000)
+    _scan(monkeypatch, config_path, calls)
+    _scan(monkeypatch, config_path, calls)
+
+    assert len(calls) == 2, (
+        "墓碑被落在那儿了——这个插件之后永远进不了缓存"
+    )
+
+
 def test_concurrent_scans_are_capped_across_the_whole_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

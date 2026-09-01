@@ -1121,4 +1121,19 @@ def scan_plugin_metadata_isolated(
             # 我们自己已经过了检查，不受影响。
             _make_room_for_locked(key)
             _SCAN_CACHE[key] = (result, force)
+    elif force:
+        with _SCAN_CACHE_LOCK:
+            # 这次 force 成功了，只是文件太新、按安定窗口不该进缓存。墓碑的使命到
+            # 此为止：留着它，后面每一次普通扫描都会被"不覆盖 force 的结果"挡住，
+            # 这个插件就**永远**不再进缓存了——而"改完插件顺手点一下刷新"恰好是最
+            # 常见的操作（codex）。
+            #
+            # 只清我们自己这一代的墓碑：代次或 epoch 变了说明又有别人接手了，那块
+            # 墓碑不归我们处理。
+            if (
+                _SCAN_GENERATION.get(key, 0) == generation
+                and _SCAN_EPOCH == epoch
+                and _SCAN_CACHE.get(key) == (None, True)
+            ):
+                _SCAN_CACHE.pop(key, None)
     return result
