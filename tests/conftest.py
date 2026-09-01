@@ -269,6 +269,28 @@ def _set_runtime_test_port(port_name: str, port_value: int) -> None:
 def _resolve_runtime_test_port(port_name: str) -> int:
     env_name = f"NEKO_{port_name}"
     raw_value = os.environ.get(env_name)
+    if raw_value and os.environ.get("PYTEST_XDIST_WORKER"):
+        # Under xdist the controller imports this conftest during collection,
+        # allocates the pair, and writes it into its own os.environ — which
+        # execnet then hands to every worker. Honouring the inherited value
+        # gives all N workers the SAME port, so two workers running a
+        # `mock_memory_server` test at the same time bind the same address.
+        # On Windows SO_REUSEADDR lets the second bind succeed instead of
+        # failing, so the collision is silent: the readiness probe is answered
+        # by whichever server got there first and the suite stays green while
+        # one worker talks to another worker's server.
+        #
+        # A worker therefore always allocates its own pair. Pinning a single
+        # port by env var has no coherent meaning across N workers anyway; the
+        # variable keeps working for single-process runs, which is what it was
+        # added for.
+        logger.debug(
+            "Ignoring inherited %s=%r in xdist worker %s; allocating a private port",
+            env_name,
+            raw_value,
+            os.environ.get("PYTEST_XDIST_WORKER"),
+        )
+        raw_value = None
     if raw_value:
         try:
             port_value = int(raw_value)

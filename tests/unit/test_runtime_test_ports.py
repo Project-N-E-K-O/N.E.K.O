@@ -102,3 +102,48 @@ def test_initialize_runtime_test_ports_raises_when_unique_port_cannot_be_found(
     assert project_conftest._RUNTIME_TEST_PORTS == {
         "MEMORY_SERVER_PORT": 43201,
     }
+
+
+# ── xdist worker 端口隔离（对偶：worker 忽略继承值 / 单进程仍尊重显式 pin） ──
+#
+# unit-tests.yml 用 `-n auto` 跑这套用例，而 xdist controller 在收集阶段就会
+# import tests/conftest.py，分配结果落进 controller 自己的 os.environ，execnet
+# 再把整份环境复制给每个 worker——于是所有 worker 解析出同一个端口，而本目录里
+# 十二个用到 mock_memory_server 的文件都会在这个端口上起 uvicorn。Windows 下
+# SO_REUSEADDR 让第二次 bind 成功而不是失败，所以冲突完全不报错：readiness 探针
+# 被先起来的那个服务应答，套件照绿，只是某个 worker 在跟别人的服务说话。
+#
+# 两条一起才说明规则是什么，缺一条都能被"永远忽略 env"或"永远尊重 env"蒙混过去。
+
+
+@pytest.mark.unit
+def test_xdist_worker_ignores_the_port_it_inherited(monkeypatch, isolated_runtime_test_ports):
+    monkeypatch.setenv("NEKO_MEMORY_SERVER_PORT", "13479")
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")
+
+    resolved = project_conftest._resolve_runtime_test_port("MEMORY_SERVER_PORT")
+
+    assert resolved != 13479, (
+        "xdist worker 复用了 controller 的端口，所有 worker 会 bind 同一个地址"
+    )
+    assert 1 <= resolved <= 65535
+
+
+@pytest.mark.unit
+def test_single_process_run_still_honours_an_explicit_pin(monkeypatch, isolated_runtime_test_ports):
+    monkeypatch.setenv("NEKO_MEMORY_SERVER_PORT", "13479")
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+
+    assert project_conftest._resolve_runtime_test_port("MEMORY_SERVER_PORT") == 13479
+
+
+@pytest.mark.unit
+def test_two_xdist_workers_resolve_different_ports(monkeypatch, isolated_runtime_test_ports):
+    monkeypatch.setenv("NEKO_MEMORY_SERVER_PORT", "13479")
+
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
+    first = project_conftest._resolve_runtime_test_port("MEMORY_SERVER_PORT")
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
+    second = project_conftest._resolve_runtime_test_port("MEMORY_SERVER_PORT")
+
+    assert first != second
