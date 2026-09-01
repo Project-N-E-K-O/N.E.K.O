@@ -609,6 +609,84 @@ def test_a_forced_scan_with_no_budget_left_still_drops_the_stale_entry(
     )
 
 
+def test_recycling_the_generation_table_does_not_reopen_the_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dropping the per-key stamps drops the evidence the check runs on.
+
+    ``_SCAN_GENERATION`` is bounded, and the overflow path clears it. That resets
+    every key to 0 — so an in-flight ordinary scan that recorded ``gen=0`` before
+    the clear reads 0 again at the write and sails through the very check that
+    exists to stop it. Clearing the table means "the per-key evidence is no
+    longer reliable", which is what the global epoch is for (CodeRabbit).
+
+    Mutation: clear the table without bumping the epoch.
+    """
+    import threading
+
+    stale = _plugin_dir(tmp_path, name="stale")
+    filler = _plugin_dir(tmp_path, name="filler")
+    overflow = _plugin_dir(tmp_path, name="overflow")
+    monkeypatch.setattr(module, "_SCAN_CACHE_MAX_ENTRIES", 1)
+
+    calls: list[str] = []
+    slow_inside = threading.Event()
+    let_slow_finish = threading.Event()
+    slow: threading.Thread | None = None
+
+    def _fake(**inner):
+        calls.append(inner["plugin_id"])
+        if threading.current_thread() is slow:
+            slow_inside.set()
+            let_slow_finish.wait(timeout=5)
+        return "v"
+
+    monkeypatch.setattr(module, "_scan_plugin_metadata_uncached", _fake)
+
+    def _run(config_path: Path, *, force: bool = False):
+        return module.scan_plugin_metadata_isolated(
+            plugin_id=config_path.parent.name,
+            module_path="entry",
+            class_name="C",
+            config_path=config_path,
+            conf={},
+            pdata={},
+            force=force,
+        )
+
+    stale_key = module._scan_cache_key(
+        plugin_id="stale",
+        module_path="entry",
+        class_name="C",
+        config_path=stale,
+        conf={},
+        pdata={},
+        python_requirement_paths=(),
+    )
+
+    # 一次普通扫描停在半路：它此刻记下的是 gen=0（表里还没有它的键）。
+    slow = threading.Thread(target=lambda: _run(stale))
+    slow.start()
+    assert slow_inside.wait(timeout=5), "前提没成立：慢扫描没进去"
+
+    # 两次强扫把代次表撑满并触发回收，把 stale 那把键的代次一起抹掉。
+    _run(filler, force=True)
+    _run(overflow, force=True)
+    assert stale_key not in module._SCAN_GENERATION, (
+        "前提没成立：代次表没有被回收"
+    )
+
+    let_slow_finish.set()
+    slow.join(timeout=5)
+    before = len(calls)
+
+    _run(stale)
+
+    assert len(calls) == before + 1, (
+        "回收代次表之后，清表前记下的在途结果又被放行写进了缓存"
+    )
+
+
 def test_concurrent_scans_are_capped_across_the_whole_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -799,12 +799,19 @@ def _bump_scan_epoch_locked() -> None:
 
 def _begin_scan(key: tuple, *, force: bool) -> tuple[int, int]:
     """Stamp a scan about to run, and drop what ``force`` says is untrustworthy."""
+    global _SCAN_EPOCH
+
     with _SCAN_CACHE_LOCK:
         generation = _SCAN_GENERATION.get(key, 0)
         if force:
             generation += 1
             if len(_SCAN_GENERATION) >= _SCAN_CACHE_MAX_ENTRIES:
+                # 丢掉按键代次，就是丢掉在途扫描的判据：一个在清表前记下 gen=0 的
+                # 陈旧扫描，清表之后再读还是 0，校验反而放它过去，恰好把这道闸自己
+                # 打开（CodeRabbit）。所以清表的同时用 epoch 把在途结果一起作废——
+                # 这跟显式清缓存是同一件事：按键判据不再可靠了。
                 _SCAN_GENERATION.clear()
+                _SCAN_EPOCH += 1
             _SCAN_GENERATION[key] = generation
             # force 的意思是"缓存里那个答案不可信"，所以现在就把它扔掉，而不是等
             # 着用新结果覆盖。这次扫描的结果万一没能写进去（被更晚的一次 force
