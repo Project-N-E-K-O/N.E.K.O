@@ -67,7 +67,12 @@ def _env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
     try:
         return max(minimum, float(raw))
     except (TypeError, ValueError):
-        logger.warning(
+        # 懒导入：这个模块会被每个扫描 worker 子进程导入，而它的模块级导入面
+        # 正是单次扫描 0.84s 里那 0.76s 的来源——为一条几乎不会走到的 warning
+        # 在模块级拉进日志栈，等于给每次扫描都加钱。
+        from plugin.logging_config import get_logger
+
+        get_logger("server.application.plugins.metadata_scanner").warning(
             "ignoring malformed {}={!r}; using {}", name, raw, default
         )
         return default
@@ -826,20 +831,6 @@ def scan_plugin_metadata_isolated(
     next refresh rather than sticking to the plugin until something on disk
     changes.
     """
-    if timeout <= 0:
-        # 预算已耗尽这条路不查缓存也不写缓存：它描述的是"现在没时间"，不是
-        # "这个插件是什么"。
-        return _scan_plugin_metadata_uncached(
-            plugin_id=plugin_id,
-            module_path=module_path,
-            class_name=class_name,
-            config_path=config_path,
-            conf=conf,
-            pdata=pdata,
-            python_requirement_paths=python_requirement_paths,
-            timeout=timeout,
-        )
-
     key = _scan_cache_key(
         plugin_id=plugin_id,
         module_path=module_path,
@@ -853,7 +844,25 @@ def scan_plugin_metadata_isolated(
         with _SCAN_CACHE_LOCK:
             hit = _SCAN_CACHE.get(key)
         if hit is not None:
+            # 先于预算判断：这个插件没变过，答案早就在手上，不花任何时间。反过来
+            # 做的话，一批改动过的插件把预算耗光之后，排在后面的健康插件会被标成
+            # 扫描失败——注册表里它的元数据被覆盖成 failed，还可能因此失去自启动
+            # 资格，而它其实什么都没发生（codex）。
             return hit
+
+    if timeout <= 0:
+        # 缓存里没有，预算也没了：这条路不写缓存——"现在没时间"描述的是此刻，
+        # 不是"这个插件是什么"。
+        return _scan_plugin_metadata_uncached(
+            plugin_id=plugin_id,
+            module_path=module_path,
+            class_name=class_name,
+            config_path=config_path,
+            conf=conf,
+            pdata=pdata,
+            python_requirement_paths=python_requirement_paths,
+            timeout=timeout,
+        )
 
     result = _scan_plugin_metadata_uncached(
         plugin_id=plugin_id,

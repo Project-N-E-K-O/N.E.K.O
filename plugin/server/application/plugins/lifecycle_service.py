@@ -1204,7 +1204,27 @@ class PluginLifecycleService:
                     len(skipped_over_budget),
                 )
                 break
-            stop_outcomes.append(await self._safe_stop_for_reload(plugin_id))
+            # 这一次 stop 也要受剩余预算约束：只在开始前检查的话，一个慢关停
+            # （或者调大了的 NEKO_PLUGIN_SHUTDOWN_TIMEOUT）就能让整个阶段冲破
+            # 对外承诺的墙钟上限（codex）。
+            remaining = stop_deadline - time_module.monotonic()
+            try:
+                stop_outcomes.append(
+                    await asyncio.wait_for(
+                        self._safe_stop_for_reload(plugin_id), timeout=remaining
+                    )
+                )
+            except asyncio.TimeoutError:
+                stop_outcomes.append(
+                    _ReloadOutcome(
+                        plugin_id=plugin_id,
+                        success=False,
+                        error=(
+                            "stop exceeded the remaining reload budget of "
+                            f"{max(0.0, remaining):.1f}s"
+                        ),
+                    )
+                )
 
         plugins_to_start: list[str] = []
         failed: list[dict[str, object]] = []

@@ -262,3 +262,64 @@ def test_pycache_churn_does_not_invalidate(
     _scan(monkeypatch, config_path, calls)
 
     assert len(calls) == 1, "__pycache__ 的变动把缓存冲掉了——等于没有缓存"
+
+
+def test_a_cached_plugin_is_served_even_with_no_budget_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unchanged plugin costs nothing, so the budget should not apply to it.
+
+    Otherwise a handful of changed or hung plugins exhausts the round budget and
+    every healthy plugin queued behind them is recorded as a scan failure — its
+    registry metadata overwritten with ``failed`` and, with it, its eligibility
+    for autostart, despite nothing about it having changed (codex).
+
+    Mutation: move the ``timeout <= 0`` rejection back above the cache lookup.
+    """
+    config_path = _plugin_dir(tmp_path)
+    calls: list = []
+
+    _scan(monkeypatch, config_path, calls)  # 先把缓存焐热
+    assert len(calls) == 1
+
+    result = module.scan_plugin_metadata_isolated(
+        plugin_id="demo",
+        module_path="entry",
+        class_name="C",
+        config_path=config_path,
+        conf={},
+        pdata={},
+        timeout=0.0,
+    )
+
+    assert result is not None
+    assert len(calls) == 1, "预算没了就拒绝，连手上已有的答案都不给"
+
+
+def test_no_budget_and_no_cache_still_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The budget must still stop work that would actually spawn a process."""
+    config_path = _plugin_dir(tmp_path)
+    spawned: list = []
+    # 不打桩 _scan_plugin_metadata_uncached —— 抛 ScanBudgetExhausted 的正是它
+    # 里面那道守卫。改成盯住 Popen：既验证抛错，也验证没有真的起进程。
+    monkeypatch.setattr(
+        module.subprocess,
+        "Popen",
+        lambda *a, **k: spawned.append(a),
+    )
+
+    with pytest.raises(module.PluginMetadataScanError) as excinfo:
+        module.scan_plugin_metadata_isolated(
+            plugin_id="never-scanned",
+            module_path="entry",
+            class_name="C",
+            config_path=config_path,
+            conf={},
+            pdata={},
+            timeout=0.0,
+        )
+
+    assert excinfo.value.error_type == "ScanBudgetExhausted"
+    assert spawned == [], "预算耗尽还起了子进程"
