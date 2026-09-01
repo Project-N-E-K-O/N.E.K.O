@@ -38,12 +38,12 @@ def _reset_publication_ordering():
         "_REGISTRY_REFRESH_TICKET",
         "_REGISTRY_PUBLISHED_TICKET",
         "_REGISTRY_CACHE_BLIND_UNTIL",
-        "_REGISTRY_PUBLISHED_WAS_FORCED",
+        "_REGISTRY_PUBLISHED_FORCED_TICKET",
     )
     saved = {name: getattr(module, name) for name in names}
     published = dict(module._REGISTRY_PUBLISHED_PLUGIN_TICKET)
     for name in names:
-        setattr(module, name, False if name.endswith("_WAS_FORCED") else 0)
+        setattr(module, name, 0)
     module._REGISTRY_PUBLISHED_PLUGIN_TICKET.clear()
     module._REGISTRY_PLUGIN_CACHE_BLIND_UNTIL.clear()
     try:
@@ -652,7 +652,6 @@ def test_forced_refreshes_are_still_ordered_among_themselves(
 
     # 而 force 压过缓存喂出来的普通结果这条不能被削掉。
     module._REGISTRY_PUBLISHED_TICKET = 0
-    module._REGISTRY_PUBLISHED_WAS_FORCED = False
     module._REGISTRY_CACHE_BLIND_UNTIL = 0
     stale_force = module._take_registry_refresh_ticket()
     cached = module._take_registry_refresh_ticket()
@@ -679,6 +678,21 @@ def test_forced_ordering_is_per_plugin_too(
     assert not module._may_publish_record(
         older, path, forced=True, plugin_id="demo"
     ), "更旧的 force 在按插件那一层把更新的 force 盖回去了"
+
+    # 反方向，而且是**唯一**能把「force 只跟 force 比号」和「force 跟所有人比号」
+    # 区分开的那一半：普通刷新的号更大，也不该挡住一次 force。少了它，把判据整个
+    # 换成 ticket < published 照样能过。
+    module._REGISTRY_PUBLISHED_PLUGIN_TICKET.clear()
+    module._REGISTRY_CACHE_BLIND_UNTIL = 0
+    force_ticket = module._take_registry_refresh_ticket()
+    later_ordinary = module._take_registry_refresh_ticket()
+
+    assert module._may_publish_record(
+        later_ordinary, path, forced=False, plugin_id="demo"
+    )
+    assert module._may_publish_record(
+        force_ticket, path, forced=True, plugin_id="demo"
+    ), "force 让位给了一份号更大、但可能来自缓存的普通结果"
 
 
 def test_the_blind_barrier_covers_single_plugin_publications_too(
@@ -927,6 +941,48 @@ def test_a_deferred_scan_keeps_a_previous_hard_failure(
         {"entries_preview": [{"id": "demo.hello"}]},
     )
     assert "runtime_load_state" not in healthy.meta_payload
+
+
+def test_an_ordinary_ticket_cannot_make_one_force_outrank_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three parties, which is the fewest that exposes this.
+
+    The rule was encoded as a boolean pinned to whichever ticket published last.
+    An older forced refresh landing after an ordinary one does not advance the
+    ticket (it is smaller) but did flip the flag — grafting "the last one was
+    forced" onto an *ordinary* refresh's number. A newer force then compared
+    itself against that number and lost: the fresher disk read yielded to the
+    staler one, on the authority of a third party's ticket (本轮对抗复审).
+
+    Every existing guard here is two-party, which is exactly why they all passed.
+
+    Mutation: store "was the last publication forced" as a flag again.
+    """
+    ordinary = module._take_registry_refresh_ticket()      # 3rd to publish? no: 1st
+    older_force = module._take_registry_refresh_ticket()
+    newer_force = module._take_registry_refresh_ticket()
+
+    # 让号的大小关系是 ordinary 最大：重新领，顺序反过来。
+    module._REGISTRY_REFRESH_TICKET = 0
+    module._REGISTRY_PUBLISHED_TICKET = 0
+    module._REGISTRY_PUBLISHED_FORCED_TICKET = 0
+    module._REGISTRY_CACHE_BLIND_UNTIL = 0
+    older_force = module._take_registry_refresh_ticket()    # 1
+    newer_force = module._take_registry_refresh_ticket()    # 2
+    ordinary = module._take_registry_refresh_ticket()       # 3
+
+    with module._registry_publication(ordinary, forced=False) as may_publish:
+        assert may_publish, "普通刷新自己都发布不了"
+
+    with module._registry_publication(older_force, forced=True) as may_publish:
+        assert may_publish, "force 让位给了一份可能来自缓存的普通结果"
+
+    with module._registry_publication(newer_force, forced=True) as may_publish:
+        assert may_publish, (
+            "更新的 force 被挡住了——挡它的是一次**普通**刷新的号，"
+            "只因为一次更旧的 force 把 force 标记嫁接到了那个号上"
+        )
 
 
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(
