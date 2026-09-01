@@ -134,10 +134,17 @@ _RUNTIME_TEST_PORT_SLOTS = ("MEMORY_SERVER_PORT", "MAIN_SERVER_PORT")
 # (49152-65535), so an unrelated process asking the OS for "any free port"
 # cannot be handed a slot this run has reserved.
 _XDIST_PORT_BAND_BASE = 21000
-# Width of one band: two ports per worker, room for 64 workers. Retry bands are
-# whole multiples of this, so every candidate a worker ever tries is still
-# derived from its own index and can never equal another worker's candidate.
-_XDIST_PORT_BAND_SPAN = 128
+# Highest worker index the deterministic scheme covers. A band is exactly this
+# many workers wide, so retry band N starts where band N-1's last worker ends
+# and no worker's candidate can alias another's -- at ANY index below the cap.
+#
+# The previous span (128, "room for 64 workers") aliased the moment a 64th
+# worker existed: gw64 attempt 0 landed on gw0 attempt 1. It went unnoticed
+# because the check I wrote iterated range(64) -- the implementation's own
+# assumption used as the test's bound, which can only ever agree with it
+# (CodeRabbit, #3022). Above the cap there is no safe slot, so the allocator
+# says so instead of aliasing.
+_XDIST_PORT_MAX_WORKERS = 256
 _XDIST_PORT_BAND_ATTEMPTS = 8
 
 # Map camelCase keys in api_keys.json to UPPER_SNAKE_CASE env vars expected by ConfigManager
@@ -306,18 +313,34 @@ def _xdist_band_port(port_name: str) -> int | None:
     if index is None or port_name not in _RUNTIME_TEST_PORT_SLOTS:
         return None
     offset = _RUNTIME_TEST_PORT_SLOTS.index(port_name)
-    for attempt in range(_XDIST_PORT_BAND_ATTEMPTS):
-        port = (
-            _XDIST_PORT_BAND_BASE
-            + attempt * _XDIST_PORT_BAND_SPAN
-            + index * len(_RUNTIME_TEST_PORT_SLOTS)
-            + offset
-        )
-        if port > 65535:
-            break
+    for port in _xdist_band_candidates(index, offset):
         if _port_is_bindable(port):
             return port
     return None
+
+
+def _xdist_band_candidates(index: int, offset: int) -> list[int]:
+    """Every port worker ``index`` may use for slot ``offset``, in order.
+
+    Exposed so the regression test can enumerate the real candidates instead of
+    re-deriving the arithmetic -- a test that recomputes the formula agrees with
+    the implementation by construction and cannot catch an aliasing bug in it.
+
+    Empty above ``_XDIST_PORT_MAX_WORKERS``: no slot exists that is guaranteed
+    not to belong to another worker, and handing back an aliased one would be
+    worse than falling through to the probe.
+    """
+    if index >= _XDIST_PORT_MAX_WORKERS:
+        return []
+    slots = len(_RUNTIME_TEST_PORT_SLOTS)
+    span = _XDIST_PORT_MAX_WORKERS * slots
+    ports = []
+    for attempt in range(_XDIST_PORT_BAND_ATTEMPTS):
+        port = _XDIST_PORT_BAND_BASE + attempt * span + index * slots + offset
+        if port > 65535:
+            break
+        ports.append(port)
+    return ports
 
 
 def _set_runtime_test_port(port_name: str, port_value: int) -> None:

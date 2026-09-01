@@ -152,33 +152,63 @@ def all_slots_bindable(monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("port_name", ["MEMORY_SERVER_PORT", "MAIN_SERVER_PORT"])
-def test_worker_bands_never_overlap_across_workers(
-    monkeypatch, isolated_runtime_test_ports, all_slots_bindable, port_name
-):
-    """The property that actually buys cross-process uniqueness.
+def test_no_worker_candidate_ever_aliases_another_workers():
+    """Exhaustive over the whole scheme, not a sample of it.
 
-    An earlier version set PYTEST_XDIST_WORKER twice in ONE process and asserted
-    the two results differed. That proves only that the inherited env value is
-    ignored -- it says nothing about two real workers, because both probes were
-    uncoordinated calls to the same OS ephemeral pool (Codex caught this too).
-    What makes two workers safe is that the slot is computed from the worker
-    index, so this pins the arithmetic instead.
+    Enumerates `_xdist_band_candidates` -- the real function -- rather than
+    recomputing the formula here. A test that re-derives the arithmetic agrees
+    with the implementation by construction, which is how the first version of
+    this scheme shipped with gw64 attempt 0 sitting on gw0 attempt 1: the span
+    allowed 64 workers and the check I wrote iterated range(64), so the two
+    assumptions matched each other and nothing else.
+
+    Every retry candidate counts, not just the first: the retries are exactly
+    where an occupied slot sends a worker, so an alias there is an alias that
+    only appears under load.
     """
+    seen: dict[int, tuple[int, int]] = {}
+    total = 0
+    for index in range(project_conftest._XDIST_PORT_MAX_WORKERS):
+        for offset in range(len(project_conftest._RUNTIME_TEST_PORT_SLOTS)):
+            for port in project_conftest._xdist_band_candidates(index, offset):
+                total += 1
+                owner = seen.get(port)
+                assert owner is None or owner[0] == index, (
+                    f"port {port} is a candidate for both gw{owner[0]} and gw{index}"
+                )
+                seen[port] = (index, offset)
+    assert total > 0
+    assert max(seen) < 49152, (
+        f"candidate {max(seen)} sits in the Windows ephemeral range, where bind(0) "
+        "could hand it to an unrelated process"
+    )
+
+
+@pytest.mark.unit
+def test_worker_above_the_cap_gets_no_slot_rather_than_an_aliased_one():
+    """The boundary the previous version silently crossed."""
+    cap = project_conftest._XDIST_PORT_MAX_WORKERS
+
+    assert project_conftest._xdist_band_candidates(cap - 1, 0) != []
+    assert project_conftest._xdist_band_candidates(cap, 0) == []
+    assert project_conftest._xdist_band_candidates(cap + 1, 0) == []
+
+
+@pytest.mark.unit
+def test_every_worker_gets_more_than_one_candidate_to_retry_into(
+    monkeypatch, isolated_runtime_test_ports
+):
+    """An occupied slot must have somewhere worker-unique left to go."""
+    assert len(project_conftest._xdist_band_candidates(0, 0)) > 1
+
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw5")
     monkeypatch.delenv("NEKO_MEMORY_SERVER_PORT", raising=False)
-    monkeypatch.delenv("NEKO_MAIN_SERVER_PORT", raising=False)
+    first, second = project_conftest._xdist_band_candidates(5, 0)[:2]
+    monkeypatch.setattr(
+        project_conftest, "_port_is_bindable", lambda port: port != first
+    )
 
-    seen = {}
-    for index in range(32):
-        monkeypatch.setenv("PYTEST_XDIST_WORKER", f"gw{index}")
-        port = project_conftest._xdist_band_port(port_name)
-        assert port is not None
-        assert port not in seen, (
-            f"gw{index} and gw{seen[port]} both map to {port}; two workers would bind the same address"
-        )
-        seen[port] = index
-
-    assert len(seen) == 32
+    assert project_conftest._xdist_band_port("MEMORY_SERVER_PORT") == second
 
 
 @pytest.mark.unit
