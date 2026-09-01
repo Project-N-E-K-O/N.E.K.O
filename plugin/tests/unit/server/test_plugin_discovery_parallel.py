@@ -45,6 +45,7 @@ def _reset_publication_ordering():
     for name in names:
         setattr(module, name, False if name.endswith("_WAS_FORCED") else 0)
     module._REGISTRY_PUBLISHED_PLUGIN_TICKET.clear()
+    module._REGISTRY_PLUGIN_CACHE_BLIND_UNTIL.clear()
     try:
         yield
     finally:
@@ -52,6 +53,7 @@ def _reset_publication_ordering():
             setattr(module, name, value)
         module._REGISTRY_PUBLISHED_PLUGIN_TICKET.clear()
         module._REGISTRY_PUBLISHED_PLUGIN_TICKET.update(published)
+        module._REGISTRY_PLUGIN_CACHE_BLIND_UNTIL.clear()
 
 
 def _make_root(tmp_path: Path, names: list[str]) -> Path:
@@ -707,6 +709,119 @@ def test_the_blind_barrier_covers_single_plugin_publications_too(
     assert module._may_publish_record(
         later, Path("/demo/plugin.toml"), forced=False, plugin_id="demo"
     ), "屏障把之后才开始的刷新也挡住了，那就永远刷不动了"
+
+
+def test_a_forced_single_plugin_refresh_raises_its_own_barrier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scoped force needs a scoped barrier — it cannot use the global one.
+
+    A forced refresh of one plugin must shut out ordinary refreshes that were
+    already reading that plugin's now-evicted cache entry. It must NOT raise the
+    global barrier, because single-plugin refresh is on the path of every
+    ``start_plugin``, and voiding a concurrent full refresh every time someone
+    starts a plugin would be worse than the bug (codex).
+
+    Mutation: raise the global barrier here, or raise none at all.
+    """
+    path = Path("/demo/plugin.toml")
+
+    forced = module._take_registry_refresh_ticket()
+    in_flight = module._take_registry_refresh_ticket()
+
+    assert module._may_publish_record(forced, path, forced=True, plugin_id="demo")
+
+    # 号更大，但它是在 force 扫描期间读的缓存 —— 对这个插件必须被挡住。
+    assert not module._may_publish_record(
+        in_flight, path, forced=False, plugin_id="demo"
+    ), "单插件 force 发布之后，在途的普通刷新把旧条目又贴了回去"
+
+    # 而**别的**插件不受影响：单插件 force 不该作废整轮全量刷新。
+    assert module._may_publish_record(
+        in_flight, Path("/other/plugin.toml"), forced=False, plugin_id="other"
+    ), "单插件 force 把无关插件的发布也挡住了，等于作废了整轮全量刷新"
+
+
+def test_stale_removal_respects_a_newer_single_plugin_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removal is the other way an older refresh can undo a newer one.
+
+    An older full refresh that scanned while the plugin still lived at its old
+    path has no record for it at all, so the per-record check never runs — and
+    the plugin lands in ``missing_ids`` and gets deleted, or its running
+    instance marked source-missing, right after a newer single-plugin refresh
+    published it from the replacement path (codex).
+
+    Mutation: drop the ``_may_remove_plugin`` filter.
+    """
+    older = module._take_registry_refresh_ticket()
+    newer = module._take_registry_refresh_ticket()
+
+    assert module._may_publish_record(
+        newer, Path("/user/demo/plugin.toml"), forced=False, plugin_id="demo"
+    )
+
+    assert not module._may_remove_plugin(older, "demo"), (
+        "更早的全量刷新把一个刚被更新刷新发布出来的插件当成消失了、删掉了"
+    )
+    # 没人发布过的插件照常可以被清理，否则删除逻辑就整个停摆了。
+    assert module._may_remove_plugin(older, "never-published")
+
+
+def test_the_refresh_loop_actually_applies_the_removal_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The predicate being right is not the same as it being called.
+
+    A guard on ``_may_remove_plugin`` alone survives deleting the filter from
+    ``_refresh_registry_sync`` — which is where the deletion actually happens.
+    So drive the real refresh: hold it inside discovery, publish the plugin from
+    a newer single-plugin refresh while it waits, then let it finish and assert
+    it asks to remove nothing.
+
+    Mutation: drop the filter from the record loop's removal step.
+    """
+    import threading
+
+    discovering = threading.Event()
+    let_finish = threading.Event()
+    removed: list[set] = []
+
+    def _discover(roots, *, force=False, force_targets=frozenset()):
+        discovering.set()
+        assert let_finish.wait(timeout=5)
+        # 这一轮完全没看见 demo —— 它已经搬到别的路径去了。
+        return SimpleNamespace(records=[], failures=[], config_paths=set(), shadowed=[])
+
+    def _remove(missing_ids, *, running_ids):
+        removed.append(set(missing_ids))
+        return [], []
+
+    monkeypatch.setattr(module, "_discover_registry_snapshot_sync", _discover)
+    monkeypatch.setattr(module, "_remove_stale_plugin_metadata_sync", _remove)
+    monkeypatch.setattr(module, "_collect_missing_plugin_ids_sync", lambda *a, **k: {"demo"})
+    monkeypatch.setattr(module, "_prepare_plugin_import_roots", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_get_registered_plugin_snapshot_sync", dict)
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", list)
+
+    service = module.PluginRegistryService()
+    worker = threading.Thread(target=service._refresh_registry_sync)
+    worker.start()
+    assert discovering.wait(timeout=5), "前提没成立：刷新没进 discovery"
+
+    # 它还在扫的时候，一次更晚的单插件刷新把 demo 从新路径发布了出来。
+    newer = module._take_registry_refresh_ticket()
+    assert module._may_publish_record(
+        newer, Path("/user/demo/plugin.toml"), forced=False, plugin_id="demo"
+    )
+
+    let_finish.set()
+    worker.join(timeout=10)
+
+    assert removed == [set()], (
+        f"更早的刷新把刚被发布出来的插件送进了删除名单：{removed}"
+    )
 
 
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(

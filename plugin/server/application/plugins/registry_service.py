@@ -524,6 +524,27 @@ def _keep_known_entries_on_deferred_scan(
 _REGISTRY_CACHE_BLIND_UNTIL = 0
 # 当前 _REGISTRY_PUBLISHED_TICKET 那次发布是不是 force。
 _REGISTRY_PUBLISHED_WAS_FORCED = False
+# 按插件的作废屏障：号 <= 这个值的**普通**发布，对这个插件而言可能读的是已经被
+# force 作废掉的缓存。
+#
+# 单插件的 force 刷新不能去推全局屏障——那等于点一下某个插件的刷新就把一次正在跑
+# 的全量刷新整个作废。但它确实需要**自己这一条**的屏障：否则一次普通全量刷新只要
+# 号更大，就能在它发布之后把这个插件的旧条目和工具 schema 又贴回去（codex）。
+_REGISTRY_PLUGIN_CACHE_BLIND_UNTIL: dict[str, int] = {}
+
+
+def _may_remove_plugin(ticket: int, plugin_id: str) -> bool:
+    """Whether this refresh may still delete that plugin's registry entry.
+
+    Caller holds ``_REGISTRY_PUBLISH_GUARD``.
+
+    删除走的是另一条判据，而且以前完全没有排序：一次更早的全量刷新扫的时候插件还在
+    旧路径上，之后一次单插件刷新把它从替换后的新路径发布了出来——旧刷新的记录里根本
+    没有这个插件，所以逐条那道检查压根不会跑到它，它就被当成"消失了"删掉，或者被标成
+    source_missing（codex）。按插件的号在这里也要认。
+    """
+    published, _ = _REGISTRY_PUBLISHED_PLUGIN_TICKET.get(f"id:{plugin_id}", (0, False))
+    return ticket >= published
 
 
 def _may_publish_record(
@@ -533,12 +554,19 @@ def _may_publish_record(
 
     Caller holds ``_REGISTRY_PUBLISH_GUARD``.
     """
-    if not forced and ticket <= _REGISTRY_CACHE_BLIND_UNTIL:
+    keys = _publication_keys(plugin_id, config_path)
+    if not forced:
+        blind_until = max(
+            [_REGISTRY_CACHE_BLIND_UNTIL]
+            + [_REGISTRY_PLUGIN_CACHE_BLIND_UNTIL.get(key, 0) for key in keys]
+        )
+    else:
+        blind_until = 0
+    if not forced and ticket <= blind_until:
         # 屏障对两条发布路径一视同仁。只让全量刷新那道门认它的话，一次在 force 扫描
         # 期间开始的**单插件**刷新照样能把可能来自旧缓存的结果写进去——而单插件刷新
         # 是 start_plugin 的必经之路，它比全量刷新常见得多（CodeRabbit）。
         return False
-    keys = _publication_keys(plugin_id, config_path)
     published, published_forced = 0, False
     for key in keys:
         seen_ticket, seen_forced = _REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, (0, False))
@@ -556,6 +584,9 @@ def _may_publish_record(
             _REGISTRY_PUBLISHED_PLUGIN_TICKET[key] = (ticket, forced)
         elif forced:
             _REGISTRY_PUBLISHED_PLUGIN_TICKET[key] = (seen_ticket, True)
+        if forced:
+            # 此刻还在途的普通刷新，对这个插件而言可能读的是我们刚作废掉的缓存。
+            _REGISTRY_PLUGIN_CACHE_BLIND_UNTIL[key] = _REGISTRY_REFRESH_TICKET
     return True
 
 
@@ -1395,6 +1426,11 @@ class PluginRegistryService:
                     )
 
             missing_ids = _collect_missing_plugin_ids_sync(existing_snapshot) - refreshed_ids
+            missing_ids = {
+                plugin_id
+                for plugin_id in missing_ids
+                if _may_remove_plugin(ticket, plugin_id)
+            }
             removed, removed_running = _remove_stale_plugin_metadata_sync(missing_ids, running_ids=running_ids)
             return {
                 "success": not failed,
