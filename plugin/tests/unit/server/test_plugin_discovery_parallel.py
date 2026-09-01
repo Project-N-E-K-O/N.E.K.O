@@ -55,7 +55,7 @@ def test_results_keep_submission_order_under_concurrency(
     names = [f"p{i:02d}" for i in range(8)]
     root = _make_root(tmp_path, names)
 
-    def _build(ctx, *, scan_timeout=None):
+    def _build(ctx, *, scan_timeout=None, force=False):
         # p00 finishes last; anything ordering by completion puts it at the end.
         delay = 0.25 if ctx.pid == "p00" else 0.01
         time.sleep(delay)
@@ -83,7 +83,7 @@ def test_concurrency_is_actually_used(
     names = [f"p{i:02d}" for i in range(8)]
     root = _make_root(tmp_path, names)
 
-    def _build(ctx, *, scan_timeout=None):
+    def _build(ctx, *, scan_timeout=None, force=False):
         time.sleep(0.2)
         return SimpleNamespace(plugin_id=ctx.pid, config_path=ctx.toml_path)
 
@@ -104,7 +104,7 @@ def test_one_bad_plugin_does_not_stop_the_others(
     names = ["good_a", "explodes", "good_b"]
     root = _make_root(tmp_path, names)
 
-    def _build(ctx, *, scan_timeout=None):
+    def _build(ctx, *, scan_timeout=None, force=False):
         if ctx.pid == "explodes":
             raise RuntimeError("module-level boom")
         return SimpleNamespace(plugin_id=ctx.pid, config_path=ctx.toml_path)
@@ -162,7 +162,7 @@ def test_the_time_budget_stops_spawning_more_workers(
     root = _make_root(tmp_path, names)
     seen: list[float] = []
 
-    def _build(ctx, *, scan_timeout=None):
+    def _build(ctx, *, scan_timeout=None, force=False):
         seen.append(scan_timeout)
         time.sleep(0.12)
         return SimpleNamespace(plugin_id=ctx.pid, config_path=ctx.toml_path)

@@ -8,7 +8,6 @@ anyway after the user was told it failed.
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
 
 import pytest
@@ -28,10 +27,10 @@ def test_bounded_wait_sets_and_clears_the_deadline() -> None:
     """
     from plugin.server.application.plugins import operation_lock as module
 
-    assert module._OPERATION_WAIT_DEADLINE.get() is None
+    assert module._OPERATION_WAIT_BUDGET.get() is None
     with module.bounded_operation_wait(5.0):
-        assert module._OPERATION_WAIT_DEADLINE.get() is not None
-    assert module._OPERATION_WAIT_DEADLINE.get() is None
+        assert module._OPERATION_WAIT_BUDGET.get() == 5.0
+    assert module._OPERATION_WAIT_BUDGET.get() is None
 
 
 @pytest.mark.asyncio
@@ -314,3 +313,29 @@ def test_clearing_one_plugin_leaves_the_others_cached() -> None:
         assert remaining[0][3] == str(theirs)
     finally:
         module._SCAN_CACHE.clear()
+
+
+def test_work_before_the_lock_does_not_eat_the_wait_budget() -> None:
+    """The budget is "how long to wait for the lock", not "how long the request may take".
+
+    ``reload_all_plugins`` runs a registry refresh *before* its first serialized
+    stop, and that refresh has its own budget of the same size. Storing an
+    absolute deadline at request entry meant the refresh could exhaust it, so
+    the first acquisition raised 409 with nobody holding the lock — and since
+    timed-out scans are not cached, every retry did the same (codex).
+
+    Mutation: store ``time.monotonic() + seconds`` at ``__enter__`` again.
+    """
+    from plugin.server.application.plugins import operation_lock as module
+
+    with module.bounded_operation_wait(0.20):
+        first = module._wait_deadline()
+        assert first is not None
+        # 模拟抢锁之前的慢活儿，长于整个预算
+        time.sleep(0.30)
+        second = module._wait_deadline()
+
+    assert second is not None
+    assert second > time.monotonic(), (
+        "抢锁之前的耗时把等锁预算吃光了——没人占锁也会立刻 409"
+    )

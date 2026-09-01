@@ -462,7 +462,7 @@ def _discovery_scan_workers(pending: int) -> int:
 
 
 def _build_discovery_record_safely(
-    item: tuple[Path, PluginContext, float],
+    item: tuple[Path, PluginContext, float, bool],
 ) -> tuple[PluginDiscoveryRecord | None, PluginDiscoveryFailure | None]:
     """Build one record, turning any failure into a value.
 
@@ -471,14 +471,16 @@ def _build_discovery_record_safely(
     builds its group ordering from first appearance), so results must come back
     in submission order, not completion order.
     """
-    config_path, ctx, deadline = item
+    config_path, ctx, deadline, force = item
     # 剩余预算决定这一项还能扫多久。已经透支时传 0 —— 扫描器看到非正的 timeout
     # 会直接抛 ScanBudgetExhausted，连子进程都不起。
     remaining = deadline - time.monotonic()
     scan_timeout = min(_DEFAULT_ITEM_SCAN_TIMEOUT, remaining) if remaining > 0 else 0.0
     try:
         return (
-            _build_discovery_record_from_context(ctx, scan_timeout=scan_timeout),
+            _build_discovery_record_from_context(
+                ctx, scan_timeout=scan_timeout, force=force
+            ),
             None,
         )
     except Exception as exc:  # noqa: BLE001 - one bad plugin must not stop discovery
@@ -495,7 +497,9 @@ def _build_discovery_record_safely(
         )
 
 
-def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscoverySnapshot:
+def _discover_registry_snapshot_sync(
+    roots: tuple[Path, ...], *, force: bool = False
+) -> PluginDiscoverySnapshot:
     processed_paths: set[Path] = set()
     pending: list[tuple[Path, PluginContext]] = []
     records: list[PluginDiscoveryRecord] = []
@@ -561,7 +565,7 @@ def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscovery
 
     if pending:
         deadline = time.monotonic() + _DISCOVERY_SCAN_BUDGET_SECONDS
-        pending = [(path, ctx, deadline) for path, ctx in pending]
+        pending = [(path, ctx, deadline, force) for path, ctx in pending]
         workers = _discovery_scan_workers(len(pending))
         if workers <= 1:
             built = [_build_discovery_record_safely(item) for item in pending]
@@ -591,6 +595,7 @@ def _build_discovery_payload(
     *,
     plugin_id: str,
     scan_timeout: float | None = None,
+    force: bool = False,
 ) -> dict[str, object]:
     plugin_type = str(ctx.pdata.get("type", "plugin") or "plugin")
     error_type: str | None = None
@@ -663,6 +668,7 @@ def _build_discovery_payload(
                             conf=ctx.conf,
                             pdata=ctx.pdata,
                             python_requirement_paths=ctx.python_requirement_paths,
+                            force=force,
                             **(
                                 {}
                                 if scan_timeout is None
@@ -726,9 +732,10 @@ def _build_discovery_record_from_context(
     ctx: PluginContext,
     *,
     scan_timeout: float | None = None,
+    force: bool = False,
 ) -> PluginDiscoveryRecord:
     payload = _build_discovery_payload(
-        ctx, plugin_id=ctx.pid, scan_timeout=scan_timeout
+        ctx, plugin_id=ctx.pid, scan_timeout=scan_timeout, force=force
     )
     return PluginDiscoveryRecord(
         plugin_id=ctx.pid,
@@ -965,9 +972,13 @@ class PluginRegistryService:
         uninstall, and the refresh button the user pressed — pressing it means
         "go look again", and answering from cache would make it a no-op.
         """
-        if force:
-            clear_plugin_metadata_scan_cache()
-        return await asyncio.to_thread(self._refresh_registry_sync)
+        # force 顺着扫描链传下去，而不是先清缓存再扫。
+        #
+        # "清了再扫"不是原子的：清掉之后、这个 worker 查之前，另一次并发的普通
+        # 扫描可以把旧条目填回来，或者在之后用旧结果覆盖掉这次的新结果。于是
+        # 一次显式刷新仍可能返回陈旧元数据——而 force 存在的全部理由正是探测
+        # 那些键看不见的外部变化（codex）。
+        return await asyncio.to_thread(self._refresh_registry_sync, force)
 
     async def refresh_plugin(
         self, plugin_id: str, *, force: bool = False
@@ -979,15 +990,9 @@ class PluginRegistryService:
         directory), but scoped, so refreshing one plugin does not make the other
         sixteen pay for a rescan.
         """
-        if force:
-            config_path = _find_plugin_config_path(
-                plugin_id, tuple(PLUGIN_CONFIG_ROOTS)
-            )
-            if config_path is not None:
-                clear_plugin_metadata_scan_cache(config_path)
-            else:
-                clear_plugin_metadata_scan_cache()
-        return await asyncio.to_thread(self._refresh_plugin_sync, plugin_id)
+        # 同 refresh_registry：force 顺着扫描链传下去，不靠"先清再扫"——那中间
+        # 有一段窗口，并发的普通扫描能把旧条目填回来。
+        return await asyncio.to_thread(self._refresh_plugin_sync, plugin_id, force)
 
     async def validate_plugin_runtime_source(
         self,
@@ -1007,7 +1012,7 @@ class PluginRegistryService:
     async def order_plugin_ids(self, plugin_ids: list[str]) -> list[str]:
         return await asyncio.to_thread(self._order_plugin_ids_sync, plugin_ids)
 
-    def _refresh_registry_sync(self) -> dict[str, object]:
+    def _refresh_registry_sync(self, force: bool = False) -> dict[str, object]:
         roots = tuple(PLUGIN_CONFIG_ROOTS)
         _prepare_plugin_import_roots(roots, logger)
 
@@ -1017,7 +1022,7 @@ class PluginRegistryService:
         updated: list[str] = []
         unchanged: list[str] = []
         refreshed_ids: set[str] = set()
-        snapshot = _discover_registry_snapshot_sync(roots)
+        snapshot = _discover_registry_snapshot_sync(roots, force=force)
         failed = [
             {
                 "plugin_id": item.plugin_id or "",
@@ -1099,7 +1104,9 @@ class PluginRegistryService:
             "scanned_count": len(snapshot.records) + len(snapshot.failures),
         }
 
-    def _refresh_plugin_sync(self, plugin_id: str) -> dict[str, object]:
+    def _refresh_plugin_sync(
+        self, plugin_id: str, force: bool = False
+    ) -> dict[str, object]:
         normalized_plugin_id = plugin_id.strip()
         if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
             raise ServerDomainError(
@@ -1123,7 +1130,7 @@ class PluginRegistryService:
             if ctx is not None:
                 record = _build_discovery_record_from_context(ctx)
         else:
-            discovery = _discover_registry_snapshot_sync(roots)
+            discovery = _discover_registry_snapshot_sync(roots, force=force)
             record = next(
                 (
                     item

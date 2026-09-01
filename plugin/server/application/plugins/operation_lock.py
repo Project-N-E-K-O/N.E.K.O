@@ -7,9 +7,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar, Token
-from typing import Iterator
 import time
-from contextlib import contextmanager
 import errno
 from functools import wraps
 import os
@@ -64,7 +62,7 @@ class _CrossLoopLock:
 
         # 同进程争用走的是这里，而且它排在文件锁**前面**——两个 HTTP 请求打到
         # 同一个服务器就卡在这一步。只给文件锁加截止期等于管住了较罕见的那一半。
-        deadline = _OPERATION_WAIT_DEADLINE.get()
+        deadline = _wait_deadline()
         try:
             if deadline is None:
                 await waiter.future
@@ -144,9 +142,22 @@ class PluginOperationBusy(Exception):
 # HTTP 路由会设一个截止期：那边有个人在等，而前端 30s 就放弃了。更糟的是放弃
 # 之后那次操作仍会落地（mutation 被 asyncio.shield 保着），于是用户看到"失败"
 # 而插件其实被启停了。宁可立刻告诉他"另一个插件操作正在进行"。
-_OPERATION_WAIT_DEADLINE: ContextVar[float | None] = ContextVar(
-    "plugin_operation_wait_deadline", default=None
+_OPERATION_WAIT_BUDGET: ContextVar[float | None] = ContextVar(
+    "plugin_operation_wait_budget", default=None
 )
+
+
+def _wait_deadline() -> float | None:
+    """Deadline for a lock wait starting now, or None when unbounded.
+
+    存的是**预算秒数**而不是绝对截止期，而且每次抢锁各自起算。原来存绝对截止期
+    是错的：reload-all 在抢第一把锁之前还要先跑一次注册表刷新，那一步本身可以吃
+    满自己的预算，于是锁还没开始等就已经过期，在完全没有争用的情况下也回 409
+    （codex）。预算要表达的是"用户愿意为**等锁**等多久"，不是"这个请求总共能花
+    多久"。
+    """
+    budget = _OPERATION_WAIT_BUDGET.get()
+    return None if budget is None else time.monotonic() + budget
 
 
 class bounded_operation_wait:
@@ -168,7 +179,7 @@ class bounded_operation_wait:
         self._token: Token[float | None] | None = None
 
     def __enter__(self) -> None:
-        self._token = _OPERATION_WAIT_DEADLINE.set(time.monotonic() + self._seconds)
+        self._token = _OPERATION_WAIT_BUDGET.set(self._seconds)
 
     def __exit__(
         self,
@@ -177,7 +188,7 @@ class bounded_operation_wait:
         tb: TracebackType | None,
     ) -> bool:
         if self._token is not None:
-            _OPERATION_WAIT_DEADLINE.reset(self._token)
+            _OPERATION_WAIT_BUDGET.reset(self._token)
             self._token = None
         return False
 
@@ -291,7 +302,7 @@ def _acquire_file_lock_sync(
         # 实测同一个 ContextVar，to_thread 里看得到、run_in_executor 里是 None
         # ——也就是说光设上下文变量的话，这个截止期永远到不了这里。
         if deadline is None:
-            deadline = _OPERATION_WAIT_DEADLINE.get()
+            deadline = _wait_deadline()
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 raise _FileLockAcquireCancelled
@@ -348,7 +359,7 @@ async def _acquire_file_lock_cancellation_safe() -> Any:
     loop = asyncio.get_running_loop()
     cancel_event = threading.Event()
     # 在这里读——这行还在调用方的上下文里；到了 executor 线程就读不到了。
-    deadline = _OPERATION_WAIT_DEADLINE.get()
+    deadline = _wait_deadline()
     operation = asyncio.ensure_future(
         loop.run_in_executor(
             _FILE_LOCK_EXECUTOR, _acquire_file_lock_sync, cancel_event, deadline

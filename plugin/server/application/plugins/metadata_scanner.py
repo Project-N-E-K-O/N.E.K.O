@@ -740,7 +740,12 @@ def install_isolated_plugin_metadata(
 _SCAN_CACHE: dict[tuple, IsolatedPluginMetadata] = {}
 _SCAN_CACHE_LOCK = threading.Lock()
 _SCAN_CACHE_MAX_ENTRIES = 256
-_SCAN_KEY_SUFFIXES = (".py", ".toml", ".json")
+# 指纹忽略的目录名。除此之外插件目录下的**所有**文件都进指纹。
+#
+# 原本只看 .py/.toml/.json，但插件的模块级代码常常从同目录的数据文件派生条目
+# （metadata.yaml、csv、模板……），只盯代码文件会在那些文件改了之后命中脏缓存，
+# 而注册的元数据和运行时行为对不上是最难查的一类不一致（codex）。
+_SCAN_KEY_IGNORED_DIRS = frozenset({"__pycache__", ".git", ".mypy_cache", ".ruff_cache"})
 
 
 def _plugin_source_fingerprint(config_path: Path) -> tuple:
@@ -749,7 +754,9 @@ def _plugin_source_fingerprint(config_path: Path) -> tuple:
     entries: list[tuple[str, int, int]] = []
     try:
         for path in sorted(root.rglob("*")):
-            if path.suffix not in _SCAN_KEY_SUFFIXES or not path.is_file():
+            if not path.is_file():
+                continue
+            if _SCAN_KEY_IGNORED_DIRS.intersection(path.relative_to(root).parts):
                 continue
             try:
                 st = path.stat()

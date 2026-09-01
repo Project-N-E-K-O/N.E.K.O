@@ -11,6 +11,7 @@ The interesting part is not the hit, it is when the cache must NOT answer.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,19 @@ def _clean_cache():
     module.clear_plugin_metadata_scan_cache()
     yield
     module.clear_plugin_metadata_scan_cache()
+
+
+def _rewrite(path: Path, text: str) -> None:
+    """Change a file's content *and* push its mtime forward.
+
+    Two same-length writes inside one clock tick leave both mtime and size
+    unchanged, so the fingerprint legitimately sees no change — a flake that
+    only shows up when the machine is busy. Bump the timestamp explicitly so
+    the test is about the fingerprint, not about timer resolution.
+    """
+    path.write_text(text, encoding="utf-8")
+    stamp = path.stat().st_mtime + 10
+    os.utime(path, (stamp, stamp))
 
 
 def _plugin_dir(tmp_path: Path, body: str = "x = 1\n") -> Path:
@@ -205,3 +219,46 @@ def test_stderr_read_gives_up_instead_of_blocking() -> None:
     finally:
         if process.poll() is None:
             process.kill()
+
+
+def test_the_fingerprint_covers_non_code_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plugins derive entries from data files at import time, not just code.
+
+    Keying on ``.py``/``.toml``/``.json`` alone serves a stale scan after a
+    ``metadata.yaml`` edit, and metadata that disagrees with runtime behaviour
+    is among the hardest inconsistencies to trace back to a cache (codex).
+
+    Mutation: restrict the fingerprint to code suffixes again.
+    """
+    config_path = _plugin_dir(tmp_path)
+    data = config_path.parent / "metadata.yaml"
+    data.write_text("entries: 1\n", encoding="utf-8")
+    calls: list = []
+
+    _scan(monkeypatch, config_path, calls)
+    data.write_text("entries: 2\n", encoding="utf-8")
+    _scan(monkeypatch, config_path, calls)
+
+    assert len(calls) == 2, "改了同目录的数据文件却拿到旧扫描结果"
+
+
+def test_pycache_churn_does_not_invalidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Widening the fingerprint must not make it fire on its own byproducts.
+
+    ``__pycache__`` is rewritten by the very scan we are caching, so counting it
+    would make every entry a one-shot.
+    """
+    config_path = _plugin_dir(tmp_path)
+    calls: list = []
+
+    _scan(monkeypatch, config_path, calls)
+    cache_dir = config_path.parent / "__pycache__"
+    cache_dir.mkdir()
+    (cache_dir / "entry.cpython-311.pyc").write_bytes(b"\x00\x01")
+    _scan(monkeypatch, config_path, calls)
+
+    assert len(calls) == 1, "__pycache__ 的变动把缓存冲掉了——等于没有缓存"
