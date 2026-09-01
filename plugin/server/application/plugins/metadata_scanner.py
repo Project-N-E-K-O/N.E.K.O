@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping
@@ -54,31 +55,9 @@ _WORKER_BOOTSTRAP = (
 # 注意单项上限本身不足以封顶：17 个插件按 5 并发是 4 波，4×10s 仍然超前端预算。
 # 真正封顶的是 registry_service 那边的总预算，这里只负责让单个坏插件早点放手。
 # Env: NEKO_PLUGIN_METADATA_SCAN_TIMEOUT
-def _env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
-    """Read a seconds-valued env override, falling back on anything unparseable.
+from plugin.server.application.plugins._env_budgets import env_seconds
 
-    These run at import time, so a typo like ``NEKO_..._BUDGET=20s`` would raise
-    ``ValueError`` and stop the server from starting at all — a misconfigured
-    timeout should degrade to the documented default, not take the process down.
-    """
-    raw = os.getenv(name)
-    if not raw:
-        return default
-    try:
-        return max(minimum, float(raw))
-    except (TypeError, ValueError):
-        # 懒导入：这个模块会被每个扫描 worker 子进程导入，而它的模块级导入面
-        # 正是单次扫描 0.84s 里那 0.76s 的来源——为一条几乎不会走到的 warning
-        # 在模块级拉进日志栈，等于给每次扫描都加钱。
-        from plugin.logging_config import get_logger
-
-        get_logger("server.application.plugins.metadata_scanner").warning(
-            "ignoring malformed {}={!r}; using {}", name, raw, default
-        )
-        return default
-
-
-_DEFAULT_SCAN_TIMEOUT_SECONDS = _env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", 10.0)
+_DEFAULT_SCAN_TIMEOUT_SECONDS = env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", 10.0)
 
 
 def _metadata_worker_command() -> list[str]:
@@ -752,11 +731,25 @@ _SCAN_CACHE_MAX_ENTRIES = 256
 # 而注册的元数据和运行时行为对不上是最难查的一类不一致（codex）。
 _SCAN_KEY_IGNORED_DIRS = frozenset({"__pycache__", ".git", ".mypy_cache", ".ruff_cache"})
 
+# 刚被动过的插件不写缓存，要"安定"这么久之后才写。
+#
+# (mtime_ns, size) 漏掉的唯一情形是"写入后极短时间内再次等大小改写"——两次落在
+# 同一个文件系统时间戳刻度里，指纹看不出变化。CodeRabbit 建议给每个文件加内容
+# 摘要，但实测读+哈希全部插件文件要 359ms（810 个文件 / 20.9MB），而仅 stat 是
+# 47ms；热缓存路径现在总共才 0.14s，加这一笔等于把最该快的那条路慢 3.5 倍。
+#
+# 换个方向从源头关掉这个窗口：只在所有被指纹的文件都已经"老"到不可能发生
+# 同刻度改写时才写缓存。刚改过的插件这一轮照常扫、只是不缓存，安定之后自然
+# 开始命中。代价是零额外 I/O。
+_CACHE_SETTLE_NS = 2_000_000_000
+_NEVER_SETTLED = -1
 
-def _plugin_source_fingerprint(config_path: Path) -> tuple:
-    """(相对路径, mtime_ns, size) 的排序元组，取自插件目录。"""
+
+def _plugin_source_fingerprint(config_path: Path) -> tuple[tuple, int]:
+    """``(指纹, 最新 mtime_ns)``，取自插件目录下的全部文件。"""
     root = config_path.parent
     entries: list[tuple[str, int, int]] = []
+    newest = 0
     try:
         for path in sorted(root.rglob("*")):
             if not path.is_file():
@@ -768,10 +761,11 @@ def _plugin_source_fingerprint(config_path: Path) -> tuple:
             except OSError:
                 continue
             entries.append((str(path.relative_to(root)), st.st_mtime_ns, st.st_size))
+            newest = max(newest, st.st_mtime_ns)
     except OSError:
         # 目录读不了就返回一个不可缓存的指纹，让这次扫描照常进行。
-        return (("<unreadable>", 0, 0),)
-    return tuple(entries)
+        return (("<unreadable>", 0, 0),), _NEVER_SETTLED
+    return tuple(entries), newest
 
 
 def _scan_cache_key(
@@ -792,7 +786,7 @@ def _scan_cache_key(
         tuple(sorted(str(p) for p in python_requirement_paths)),
         json.dumps(_json_safe(dict(conf)), sort_keys=True, ensure_ascii=False),
         json.dumps(_json_safe(dict(pdata)), sort_keys=True, ensure_ascii=False),
-        _plugin_source_fingerprint(config_path),
+        _plugin_source_fingerprint(config_path)[0],
     )
 
 
@@ -874,8 +868,14 @@ def scan_plugin_metadata_isolated(
         python_requirement_paths=python_requirement_paths,
         timeout=timeout,
     )
-    with _SCAN_CACHE_LOCK:
-        if len(_SCAN_CACHE) >= _SCAN_CACHE_MAX_ENTRIES:
-            _SCAN_CACHE.clear()
-        _SCAN_CACHE[key] = result
+    _, newest_mtime_ns = _plugin_source_fingerprint(config_path)
+    settled = (
+        newest_mtime_ns != _NEVER_SETTLED
+        and time.time_ns() - newest_mtime_ns > _CACHE_SETTLE_NS
+    )
+    if settled:
+        with _SCAN_CACHE_LOCK:
+            if len(_SCAN_CACHE) >= _SCAN_CACHE_MAX_ENTRIES:
+                _SCAN_CACHE.clear()
+            _SCAN_CACHE[key] = result
     return result

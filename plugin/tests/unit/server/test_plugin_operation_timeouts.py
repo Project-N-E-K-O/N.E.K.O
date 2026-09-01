@@ -278,18 +278,32 @@ def test_the_same_process_lock_also_honours_the_deadline() -> None:
     assert asyncio.run(_scenario()) == "busy"
 
 
-def test_a_malformed_budget_env_var_does_not_stop_the_server(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("20s", 12.0),      # 解析不了
+        ("inf", 12.0),      # 无穷大：max() 留不住它，而无限超时等于没有截止期
+        ("1e309", 12.0),    # 溢出成 inf
+        ("-5", 1.0),        # 负数：夹到下界，不是拒绝
+        ("30", 30.0),       # 正常值照常生效
+    ],
+)
+def test_unusable_budget_env_vars_fall_back_instead_of_breaking(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: float
 ) -> None:
-    """These parse at import time, so a typo would take the process down.
+    """These parse at import time, so anything they raise stops the server.
 
-    Mutation: go back to a bare ``float(os.getenv(...))``.
+    ``inf`` is the subtle one: it parses fine and survives ``max()``, and an
+    infinite timeout is worse than the default because it looks configured
+    while removing the deadline entirely (CodeRabbit).
+
+    Mutation: drop the ``math.isfinite`` check, or the try/except.
     """
-    from plugin.server.application.plugins import registry_service as module
+    from plugin.server.application.plugins._env_budgets import env_seconds
 
-    monkeypatch.setenv("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET", "20s")
+    monkeypatch.setenv("NEKO_TEST_BUDGET", raw)
 
-    assert module._env_seconds("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET", 20.0) == 20.0
+    assert env_seconds("NEKO_TEST_BUDGET", 12.0) == expected
 
 
 def test_clearing_one_plugin_leaves_the_others_cached() -> None:

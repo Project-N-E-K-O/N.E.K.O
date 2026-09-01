@@ -28,6 +28,20 @@ def _clean_cache():
     module.clear_plugin_metadata_scan_cache()
 
 
+def _age(path: Path, seconds_ago: float) -> None:
+    """Backdate a file so the cache's settle guard treats it as stable.
+
+    Nothing is cached while a plugin's files are younger than the settle window
+    — that is what closes the "same-size rewrite inside one timestamp tick"
+    hole. Tests write and scan within microseconds, so without backdating they
+    would only ever exercise the never-cached path.
+    """
+    import time as _time
+
+    stamp = _time.time() - seconds_ago
+    os.utime(path, (stamp, stamp))
+
+
 def _rewrite(path: Path, text: str) -> None:
     """Change a file's content *and* push its mtime forward.
 
@@ -37,8 +51,9 @@ def _rewrite(path: Path, text: str) -> None:
     the test is about the fingerprint, not about timer resolution.
     """
     path.write_text(text, encoding="utf-8")
-    stamp = path.stat().st_mtime + 10
-    os.utime(path, (stamp, stamp))
+    # 比原来的新，但仍然"安定"：两个条件都要满足，否则要么指纹不变、要么结果
+    # 不进缓存。
+    _age(path, 30)
 
 
 def _plugin_dir(tmp_path: Path, body: str = "x = 1\n") -> Path:
@@ -46,6 +61,8 @@ def _plugin_dir(tmp_path: Path, body: str = "x = 1\n") -> Path:
     root.mkdir()
     (root / "plugin.toml").write_text("[plugin]\n", encoding="utf-8")
     (root / "entry.py").write_text(body, encoding="utf-8")
+    for path in root.iterdir():
+        _age(path, 60)
     return root / "plugin.toml"
 
 
@@ -323,3 +340,28 @@ def test_no_budget_and_no_cache_still_refuses(
 
     assert excinfo.value.error_type == "ScanBudgetExhausted"
     assert spawned == [], "预算耗尽还起了子进程"
+
+
+def test_a_just_touched_plugin_is_not_cached_yet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one hole (mtime_ns, size) leaves is closed at write time, not read time.
+
+    Two same-size writes inside a single filesystem timestamp tick are
+    indistinguishable, so an entry captured that fast could already be stale.
+    Rather than hashing every file on every scan — measured at 359 ms against
+    47 ms for stat alone, on a hot path that currently costs 140 ms — nothing is
+    cached until the plugin's files have stopped moving.
+
+    Mutation: cache unconditionally again.
+    """
+    config_path = _plugin_dir(tmp_path)
+    # 把文件改成"刚刚才动过"
+    _age(config_path, 0)
+    _age(config_path.parent / "entry.py", 0)
+    calls: list = []
+
+    _scan(monkeypatch, config_path, calls)
+    _scan(monkeypatch, config_path, calls)
+
+    assert len(calls) == 2, "文件刚动过就进了缓存——同刻度等大小改写会被漏掉"

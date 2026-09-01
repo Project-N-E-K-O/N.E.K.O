@@ -421,26 +421,9 @@ def _build_ordered_plugin_ids_sync(candidate_plugin_ids: set[str] | None = None)
 # 20s 的取法：给前端 30s 留出 10s 做其余的事。健康路径根本碰不到——实测全量并行
 # 扫描 3.3s，是预算的六分之一。
 # Env: NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET
-def _env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
-    """Read a seconds-valued env override, falling back on anything unparseable.
+from plugin.server.application.plugins._env_budgets import env_seconds
 
-    These run at import time, so a typo like ``NEKO_..._BUDGET=20s`` would raise
-    ``ValueError`` and stop the server from starting at all — a misconfigured
-    timeout should degrade to the documented default, not take the process down.
-    """
-    raw = os.getenv(name)
-    if not raw:
-        return default
-    try:
-        return max(minimum, float(raw))
-    except (TypeError, ValueError):
-        logger.warning(
-            "ignoring malformed {}={!r}; using {}", name, raw, default
-        )
-        return default
-
-
-_DISCOVERY_SCAN_BUDGET_SECONDS = _env_seconds("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET", 20.0)
+_DISCOVERY_SCAN_BUDGET_SECONDS = env_seconds("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET", 20.0)
 
 _DISCOVERY_SCAN_MAX_WORKERS = 8
 _DISCOVERY_SCAN_MIN_WORKERS = 2

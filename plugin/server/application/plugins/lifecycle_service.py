@@ -588,26 +588,9 @@ async def _start_host_with_timeout(
 # 已经停掉的照常汇报，剩下的留在原地——比让整个请求超时、而操作又在后台继续
 # 落地要好。
 # Env: NEKO_PLUGIN_RELOAD_ALL_BUDGET
-def _env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
-    """Read a seconds-valued env override, falling back on anything unparseable.
+from plugin.server.application.plugins._env_budgets import env_seconds
 
-    These run at import time, so a typo like ``NEKO_..._BUDGET=20s`` would raise
-    ``ValueError`` and stop the server from starting at all — a misconfigured
-    timeout should degrade to the documented default, not take the process down.
-    """
-    raw = os.getenv(name)
-    if not raw:
-        return default
-    try:
-        return max(minimum, float(raw))
-    except (TypeError, ValueError):
-        logger.warning(
-            "ignoring malformed {}={!r}; using {}", name, raw, default
-        )
-        return default
-
-
-_RELOAD_ALL_BUDGET_SECONDS = _env_seconds("NEKO_PLUGIN_RELOAD_ALL_BUDGET", 20.0)
+_RELOAD_ALL_BUDGET_SECONDS = env_seconds("NEKO_PLUGIN_RELOAD_ALL_BUDGET", 20.0)
 
 
 class PluginLifecycleService:
@@ -1249,7 +1232,25 @@ class PluginLifecycleService:
 
         reloaded: list[str] = []
         ordered_plugin_ids = await plugin_registry_service.order_plugin_ids(plugins_to_start)
-        for plugin_id in ordered_plugin_ids:
+        for start_index, plugin_id in enumerate(ordered_plugin_ids):
+            if time_module.monotonic() > stop_deadline:
+                # 启动阶段同样受这个预算。start_plugin 通常比 stop 慢得多（读
+                # 配置、拉子进程、扫元数据），只管住停止阶段的话整轮 reload 照样
+                # 能冲破前端的 30s，用户还是看到"失败"而操作在后台继续落地
+                # （CodeRabbit）。
+                not_started = list(ordered_plugin_ids[start_index:])
+                skipped_over_budget.extend(not_started)
+                for skipped_id in not_started:
+                    failed.append(
+                        {
+                            "plugin_id": skipped_id,
+                            "error": (
+                                "skipped: reload exceeded its "
+                                f"{_RELOAD_ALL_BUDGET_SECONDS:g}s budget"
+                            ),
+                        }
+                    )
+                break
             outcome = await self._safe_start_for_reload(plugin_id)
             if outcome.success:
                 reloaded.append(outcome.plugin_id)
