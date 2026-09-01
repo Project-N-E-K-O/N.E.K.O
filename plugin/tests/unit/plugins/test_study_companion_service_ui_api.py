@@ -272,12 +272,69 @@ def test_dependency_status_reports_selected_ocr_chain_readiness(
     assert status["dxcam"] is dxcam
 
 
-def test_invalid_rapidocr_language_is_not_reported_as_installed() -> None:
+def test_invalid_rapidocr_language_uses_fallback_and_reports_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def _inspect_fallback(**kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        return {
+            "installed": True,
+            "can_install": False,
+            "can_download_models": False,
+            "detail": "installed",
+        }
+
+    monkeypatch.setattr(
+        shared_rapidocr_support,
+        "inspect_rapidocr_installation",
+        _inspect_fallback,
+    )
+    monkeypatch.setattr(
+        "plugin.plugins.study_companion.service._inspect_dxcam",
+        lambda: {"installed": True},
+    )
+
     status = build_dependency_status(StudyConfig(rapidocr_lang_type=" invalid "))
 
-    assert status["rapidocr"]["installed"] is False
-    assert status["rapidocr"]["detail"] == "invalid_language"
+    assert calls == [
+        {
+            "install_target_dir_raw": "",
+            "engine_type": "onnxruntime",
+            "lang_type": "ch",
+            "model_type": "mobile",
+            "ocr_version": "PP-OCRv4",
+            "plugin_id": "study_companion",
+        }
+    ]
+    assert status["rapidocr"]["installed"] is True
+    assert status["rapidocr"]["detail"] == "installed"
+    assert status["rapidocr"]["diagnostic"] == "rapidocr_language_invalid"
+    assert status["ocr_readiness"]["ready"] is True
     assert status["ocr_readiness"]["diagnostic"] == "rapidocr_language_invalid"
+
+
+def test_invalid_rapidocr_language_preserves_fallback_model_download(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        shared_rapidocr_support,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: {
+            "installed": False,
+            "can_install": False,
+            "can_download_models": True,
+            "detail": "missing_model_files",
+        },
+    )
+
+    status = build_dependency_status(StudyConfig(rapidocr_lang_type="invalid"))
+
+    assert status["rapidocr"]["can_download_models"] is True
+    assert status["rapidocr"]["detail"] == "missing_model_files"
+    assert status["missing_installable"] == ["rapidocr_models"]
+    assert status["ocr_readiness"]["diagnostic"] == "rapidocr_models_missing"
 
 
 def test_legacy_tesseract_config_values_remain_serializable_for_rollback() -> None:

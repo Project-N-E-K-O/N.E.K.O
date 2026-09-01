@@ -125,6 +125,11 @@ def _build_ocr_readiness(
         diagnostic = "unsupported_capture_backend"
     elif not capture_ready:
         diagnostic = "capture_dependency_missing"
+    elif (
+        str(rapidocr.get("diagnostic") or "").strip()
+        == "rapidocr_language_invalid"
+    ):
+        diagnostic = "rapidocr_language_invalid"
     else:
         diagnostic = "ready"
 
@@ -142,22 +147,11 @@ def _inspect_rapidocr(config: StudyConfig) -> dict[str, Any]:
     invalid_diagnostic = str(
         getattr(config, "_rapidocr_lang_type_diagnostic", "") or ""
     ).strip()
-    if invalid_diagnostic:
-        return {
-            "install_supported": True,
-            "installed": False,
-            "can_install": False,
-            "can_download_models": False,
-            "detail": "invalid_language",
-            "diagnostic": invalid_diagnostic,
-            "lang_type": config.rapidocr_lang_type,
-            "runtime_error": "",
-        }
     from plugin.plugins._shared.rapidocr.rapidocr_support import (
         inspect_rapidocr_installation,
     )
 
-    return inspect_rapidocr_installation(
+    status = inspect_rapidocr_installation(
         install_target_dir_raw=config.rapidocr_install_target_dir,
         engine_type=config.rapidocr_engine_type,
         lang_type=config.rapidocr_lang_type,
@@ -165,6 +159,11 @@ def _inspect_rapidocr(config: StudyConfig) -> dict[str, Any]:
         ocr_version=config.rapidocr_ocr_version,
         plugin_id="study_companion",
     )
+    if invalid_diagnostic:
+        status = dict(status)
+        status["diagnostic"] = invalid_diagnostic
+    return status
+
 
 def _inspect_dxcam() -> dict[str, Any]:
     supported = sys.platform == "win32"

@@ -1168,6 +1168,61 @@ def test_study_companion_static_dependency_ui_contract() -> None:
     assert ".dependency-progress[hidden]" in style_css
 
 
+def test_invalid_rapidocr_language_is_shown_as_a_ready_warning() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+
+    main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    start = main_js.index("function buildDiagnosis(data = {})")
+    end = main_js.index("\nfunction renderDiagnosis", start)
+    script = r"""
+const DEPENDENCY_KEYS = Object.freeze(['rapidocr', 'dxcam']);
+const dependencyReady = (item) => item?.installed === true;
+const countFromSummary = (summary, keys) => {
+  for (const key of keys) {
+    const value = Number(summary?.[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return 0;
+};
+const t = (key, _fallback) => key;
+const tf = (key, _fallback, _values) => key;
+eval(process.env.BUILD_DIAGNOSIS_SOURCE);
+
+const diagnosis = buildDiagnosis({
+  dependencies: {
+    rapidocr: { installed: true },
+    dxcam: { installed: true },
+    ocr_readiness: {
+      ready: true,
+      diagnostic: 'rapidocr_language_invalid',
+    },
+  },
+  knowledge_summary: { topic_count: 4 },
+});
+console.log(JSON.stringify(diagnosis));
+"""
+    completed = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "BUILD_DIAGNOSIS_SOURCE": main_js[start:end],
+        },
+        timeout=10,
+    )
+    diagnosis = json.loads(completed.stdout)
+
+    assert diagnosis == {
+        "severity": "warning",
+        "title": "ui.diagnosis.warning.title",
+        "body": "ui.diagnosis.ocr.rapidocr_language_invalid.body",
+    }
+
+
 def test_reviewed_settings_scope_and_dialog_contracts_are_isolated() -> None:
     main = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
     model_runtime = (STATIC_DIR / "model-runtime.js").read_text(encoding="utf-8")

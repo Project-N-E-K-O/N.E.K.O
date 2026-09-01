@@ -809,6 +809,7 @@ function buildDiagnosis(data = {}) {
   const dependenciesReady = readiness.ready === true || (!Object.keys(readiness).length && hasDependencyStatus && dependencyValues.every(dependencyReady));
   const topicCount = countFromSummary(data.knowledge_summary || {}, ['topic_count', 'topics', 'node_count', 'nodes']);
   const hasKnowledge = topicCount > 0 || (Array.isArray(data.mastery_overview) && data.mastery_overview.length > 0);
+  const ocrIssue = readiness.diagnostic && !['ready', 'ocr_disabled'].includes(readiness.diagnostic) ? t(`ui.diagnosis.ocr.${readiness.diagnostic}.body`, 'The selected OCR path is unavailable.') : '';
   if (errorBody || data.status === 'error' || llmError) {
     return {
       severity: 'error',
@@ -816,6 +817,16 @@ function buildDiagnosis(data = {}) {
       body: errorBody || t('ui.diagnosis.error.body', 'Study companion reported an error.'),
     };
   }
+  if (readiness.diagnostic === 'ocr_disabled') {
+    return hasKnowledge
+      ? { severity: 'ok', title: t('ui.diagnosis.text_ready.title', 'Text study is ready'), body: t('ui.diagnosis.text_ready.body', 'Knowledge topics are loaded. OCR is currently disabled.') }
+      : { severity: 'warning', title: t('ui.diagnosis.knowledge_empty.title', 'Knowledge topics are not loaded'), body: t('ui.settings.knowledge.empty_summary', 'Knowledge map has no loaded topics yet.') };
+  }
+  if (ocrIssue && !hasKnowledge) {
+    const issues = `${ocrIssue} ${t('ui.diagnosis.knowledge_empty.body', 'The knowledge map has no loaded topics yet.')}`;
+    return { severity: 'warning', title: t('ui.diagnosis.multiple_issues.title', 'Study setup needs attention'), body: tf('ui.diagnosis.multiple_issues.body', 'Resolve these items: {issues}', { issues }) };
+  }
+  if (ocrIssue) return { severity: 'warning', title: t(readiness.ready ? 'ui.diagnosis.warning.title' : 'ui.diagnosis.ocr_unavailable.title'), body: ocrIssue };
   if (dependenciesReady && hasKnowledge) {
     return {
       severity: 'ok',
@@ -823,18 +834,6 @@ function buildDiagnosis(data = {}) {
       body: tf('ui.diagnosis.ok.body', '{count} knowledge topics loaded and OCR dependencies are ready.', { count: topicCount }),
     };
   }
-  if (readiness.diagnostic === 'ocr_disabled') {
-    return hasKnowledge
-      ? { severity: 'ok', title: t('ui.diagnosis.text_ready.title', 'Text study is ready'), body: t('ui.diagnosis.text_ready.body', 'Knowledge topics are loaded. OCR is currently disabled.') }
-      : { severity: 'warning', title: t('ui.diagnosis.knowledge_empty.title', 'Knowledge topics are not loaded'), body: t('ui.settings.knowledge.empty_summary', 'Knowledge map has no loaded topics yet.') };
-  }
-  const ocrIssue = readiness.diagnostic && !['ready', 'ocr_disabled'].includes(readiness.diagnostic)
-    ? t(`ui.diagnosis.ocr.${readiness.diagnostic}.body`, 'The selected OCR path is unavailable.') : '';
-  if (ocrIssue && !hasKnowledge) {
-    const issues = `${ocrIssue} ${t('ui.diagnosis.knowledge_empty.body', 'The knowledge map has no loaded topics yet.')}`;
-    return { severity: 'warning', title: t('ui.diagnosis.multiple_issues.title', 'Study setup needs attention'), body: tf('ui.diagnosis.multiple_issues.body', 'Resolve these items: {issues}', { issues }) };
-  }
-  if (ocrIssue) return { severity: 'warning', title: t('ui.diagnosis.ocr_unavailable.title', 'The selected OCR backend is unavailable'), body: ocrIssue };
   if (!hasKnowledge && readiness.ready === true) return { severity: 'warning', title: t('ui.diagnosis.knowledge_empty.title', 'Knowledge topics are not loaded'), body: t('ui.diagnosis.knowledge_empty.body', 'OCR is ready, but the knowledge map has no loaded topics yet.') };
   if (hasDependencyStatus || data.status === 'ready') {
     return {
