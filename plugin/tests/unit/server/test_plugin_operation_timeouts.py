@@ -708,6 +708,50 @@ async def test_every_stopped_plugin_gets_a_start_attempt_even_over_budget(
     assert result["reloaded"] == plugin_ids
 
 
+def test_the_file_lock_stage_is_only_entered_under_the_process_lock() -> None:
+    """This is what keeps the single-worker executor from swallowing deadlines.
+
+    ``_FILE_LOCK_EXECUTOR`` has one worker, so if two callers could submit to it
+    at once, the second would sit in the executor *queue* — where no deadline is
+    consulted, because the check lives inside the worker function — and sail
+    past the front end's timeout (Greptile).
+
+    They cannot, and the reason is ordering: ``__aenter__`` takes the in-process
+    ``_PROCESS_LOCK`` first and only then reaches the file lock, so at most one
+    task is ever in that executor. A second caller waits on ``_CrossLoopLock``,
+    which *is* deadline-aware and refuses with ``PluginOperationBusy``.
+
+    That invariant is load-bearing and invisible, so pin it: move the file lock
+    outside the process lock, or acquire it anywhere else, and this fails.
+
+    Mutation: acquire the file lock before ``_PROCESS_LOCK`` in ``__aenter__``.
+    """
+    from plugin.server.application.plugins import operation_lock as module
+
+    held_when_entered: list[bool] = []
+    real = module._acquire_file_lock_cancellation_safe
+
+    async def _record(deadline=None):
+        with module._PROCESS_LOCK._state_lock:
+            held_when_entered.append(module._PROCESS_LOCK._held)
+        return await real(deadline)
+
+    async def _scenario() -> None:
+        module._acquire_file_lock_cancellation_safe = _record
+        try:
+            async with module.plugin_operation_lock.hold():
+                pass
+        finally:
+            module._acquire_file_lock_cancellation_safe = real
+
+    asyncio.run(_scenario())
+
+    assert held_when_entered == [True], (
+        "进文件锁那一层时进程锁没被握着——单 worker 的 executor 会开始排队，"
+        f"而排队期间没有任何东西看截止期：{held_when_entered}"
+    )
+
+
 def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -> None:
     """The two lock stages share a budget; they must not each spend a full one.
 
