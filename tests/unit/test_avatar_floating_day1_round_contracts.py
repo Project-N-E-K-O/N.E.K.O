@@ -47,6 +47,7 @@ EXPECTED_DAY2_SCENES = [
     "day2_tool_toggle_intro",
     "day2_avatar_tools",
     "day2_avatar_tools_props",
+    "day2_tool_wheel_rotation",
     "day2_galgame_entry",
     "day2_galgame_choices",
     "day2_wrap",
@@ -196,7 +197,15 @@ def test_day2_round_targets_compact_tool_flow_after_day_swap():
         1,
     )[0]
     avatar_tools_props_block = round_block.split("id: 'day2_avatar_tools_props'", 1)[1].split(
+        "id: 'day2_tool_wheel_rotation'",
+        1,
+    )[0]
+    tool_wheel_rotation_block = round_block.split("id: 'day2_tool_wheel_rotation'", 1)[1].split(
         "id: 'day2_galgame_entry'",
+        1,
+    )[0]
+    galgame_entry_block = round_block.split("id: 'day2_galgame_entry'", 1)[1].split(
+        "id: 'day2_galgame_choices'",
         1,
     )[0]
 
@@ -220,11 +229,32 @@ def test_day2_round_targets_compact_tool_flow_after_day_swap():
     assert "target: 'chat-avatar-tools'" in avatar_tools_props_block
     assert "cursorAction: 'click'" in avatar_tools_props_block
     assert "operation: 'show-avatar-tools-then-hide-after-narration'" in avatar_tools_props_block
+    assert "textKey: 'tutorial.avatarFloating.day2.toolWheelRotation'" in tool_wheel_rotation_block
+    assert "voiceKey: 'avatar_floating_day2_tool_wheel_rotation'" in tool_wheel_rotation_block
+    assert "persistent: 'chat-tool-toggle'" in tool_wheel_rotation_block
+    assert "target: 'chat-galgame'" in tool_wheel_rotation_block
+    assert "cursorAction: 'move'" in tool_wheel_rotation_block
+    assert "operation: 'rotate-galgame-tool-into-center'" in tool_wheel_rotation_block
+    assert "target: 'chat-galgame'" in galgame_entry_block
+    assert "cursorAction: 'hold'" in galgame_entry_block
+    assert "cursorHoldFreezePoint: true" in galgame_entry_block
+    assert "operation: 'rotate-galgame-tool-into-center'" not in galgame_entry_block
     assert "target: 'chat-tool-toggle'" in round_block
     assert "target: 'chat-avatar-tools'" in round_block
     assert "target: 'chat-galgame'" in round_block
     assert "day2_chat_tools" not in round_block
     assert "day2_galgame_games" not in round_block
+
+
+def test_day2_tool_wheel_rotation_voice_key_has_localized_audio_files():
+    source = DAY2_GUIDE_PATH.read_text(encoding="utf-8")
+    audio_file = "day2-tool-wheel-rotation.mp3"
+
+    assert f"avatar_floating_day2_tool_wheel_rotation: zhAudio('{audio_file}')" in source
+    for locale in ["zh", "ja", "ko", "en", "ru"]:
+        assert (
+            ROOT / "static" / "assets" / "tutorial" / "guide-audio" / locale / audio_file
+        ).is_file()
 
 
 def test_day3_round_keeps_intro_text_and_moves_personalization_after_day_swap():
