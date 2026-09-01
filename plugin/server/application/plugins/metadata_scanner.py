@@ -906,7 +906,16 @@ def _plugin_source_fingerprint(config_path: Path) -> tuple[tuple, int]:
     # 插件根目录本身就可能是软链。scandir 会跟着它进去，里面一个软链都看不到，
     # 于是整棵树照常进缓存——而把根重新指向另一份代码，键一点都不会变
     # （CodeRabbit）。所以先问根自己。
-    saw_symlink = os.path.islink(root)
+    # 软链要进指纹本身，不能只影响"安不安定"。
+    #
+    # 只把 newest 设成 _NEVER_SETTLED 的话，指纹跟一棵没有软链的树**一模一样**：
+    # 如果这棵树在软链被加进来之前就已经缓存过，键没变，读取侧直接命中那条旧记录
+    # 就返回了，根本走不到"不可缓存"那条路，陈旧的条目可以一直留着（codex）。
+    # 给每条软链放一个哨兵条目，加一条链必然让键变化，旧条目自然失效。
+    symlinks: list[tuple[str, int, int]] = []
+    if os.path.islink(root):
+        symlinks.append(("<symlink>:.", 0, 0))
+    saw_symlink = bool(symlinks)
 
     # 用 scandir 手写下降，而不是 os.walk + Path.stat。
     #
@@ -939,6 +948,9 @@ def _plugin_source_fingerprint(config_path: Path) -> tuple[tuple, int]:
                 # 只是慢，不会错。
                 if entry.is_symlink():
                     saw_symlink = True
+                    symlinks.append(
+                        ("<symlink>:" + os.path.relpath(entry.path, root), 0, 0)
+                    )
                     continue
                 if entry.is_dir(follow_symlinks=False):
                     if entry.name not in _SCAN_KEY_IGNORED_DIRS:
@@ -953,6 +965,7 @@ def _plugin_source_fingerprint(config_path: Path) -> tuple[tuple, int]:
             newest = max(newest, st.st_mtime_ns)
 
     # 排序放在最后：这样指纹不依赖下降顺序，栈序换了也不会平白让缓存失效。
+    entries.extend(symlinks)
     entries.sort()
     if unreadable:
         return (("<unreadable>", 0, 0),), _NEVER_SETTLED

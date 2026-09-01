@@ -1064,6 +1064,39 @@ def test_failing_forced_scans_cannot_grow_the_cache_without_bound(
     )
 
 
+def test_adding_a_symlink_invalidates_an_already_cached_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Marking the result non-settled is useless once the entry already exists.
+
+    The symlink rule only decided whether a *new* result could be cached. The
+    fingerprint itself was byte-identical to a tree without the link, so a
+    plugin cached before the link appeared kept being served from that warm
+    entry and never reached the non-cacheable path at all (codex).
+
+    Mutation: keep the symlink out of the fingerprint tuple.
+    """
+    config_path = _plugin_dir(tmp_path)
+    calls: list = []
+
+    _scan(monkeypatch, config_path, calls)          # 先把这棵树缓存好
+    _scan(monkeypatch, config_path, calls)
+    assert calls == ["demo"], "前提没成立：第一次没进缓存"
+
+    target = tmp_path / "shared"
+    target.mkdir()
+    try:
+        os.symlink(target, config_path.parent / "lib", target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform gate
+        pytest.skip(f"这台机器不允许建目录软链：{exc}")
+
+    _scan(monkeypatch, config_path, calls)
+
+    assert len(calls) == 2, (
+        "加了一条软链之后，键没变，还在端着加链之前那条缓存"
+    )
+
+
 def test_concurrent_scans_are_capped_across_the_whole_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
