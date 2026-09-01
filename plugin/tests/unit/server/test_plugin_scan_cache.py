@@ -1024,6 +1024,46 @@ def test_a_failed_forced_scan_still_keeps_the_key_cold(
     )
 
 
+def test_failing_forced_scans_cannot_grow_the_cache_without_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tombstone is an entry, and its key carries the whole file listing.
+
+    The capacity check lived on the successful-write path only, so the
+    tombstones a failing forced scan leaves behind bypassed it entirely. Run
+    that against a series of distinct source fingerprints and the cache grows
+    past its cap forever (CodeRabbit) — which matters here because each key
+    embeds every file's path, mtime and size.
+
+    Mutation: write the tombstone without making room first.
+    """
+    monkeypatch.setattr(module, "_SCAN_CACHE_MAX_ENTRIES", 3)
+    module._SCAN_CACHE.clear()
+
+    def _boom(**inner):
+        raise module.PluginMetadataScanError("TimeoutExpired", "hung")
+
+    monkeypatch.setattr(module, "_scan_plugin_metadata_uncached", _boom)
+
+    for index in range(12):
+        # 每个插件一个目录 —— 也就是一份不同的源指纹，一把不同的键。
+        config_path = _plugin_dir(tmp_path, name=f"p{index}")
+        with pytest.raises(module.PluginMetadataScanError):
+            module.scan_plugin_metadata_isolated(
+                plugin_id=f"p{index}",
+                module_path="entry",
+                class_name="C",
+                config_path=config_path,
+                conf={},
+                pdata={},
+                force=True,
+            )
+
+    assert len(module._SCAN_CACHE) <= module._SCAN_CACHE_MAX_ENTRIES, (
+        f"失败的 force 扫描留下的墓碑绕过了容量上限：{len(module._SCAN_CACHE)} 条"
+    )
+
+
 def test_concurrent_scans_are_capped_across_the_whole_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

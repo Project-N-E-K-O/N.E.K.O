@@ -805,6 +805,20 @@ def _bump_scan_epoch_locked() -> None:
     _SCAN_EPOCH += 1
 
 
+def _make_room_for_locked(key: tuple) -> None:
+    """Enforce the cache cap before adding a new key. Caller holds the lock.
+
+    容量检查必须跟"写进 _SCAN_CACHE"这件事绑在一起，而不是只挂在成功那条路上：
+    墓碑也是条目，而且键里带着整份文件清单。连着几次 force 扫描失败、每次都是新的
+    源指纹，缓存就会一路涨过上限（CodeRabbit）。
+    """
+    if key in _SCAN_CACHE or len(_SCAN_CACHE) < _SCAN_CACHE_MAX_ENTRIES:
+        return
+    _SCAN_CACHE.clear()
+    # 清表会把别人赖以判断的那条 force 记录一起扔掉，所以在途结果一并作废。
+    _bump_scan_epoch_locked()
+
+
 def _begin_scan(key: tuple, *, force: bool) -> tuple[int, int]:
     """Stamp a scan about to run, and drop what ``force`` says is untrustworthy."""
     global _SCAN_EPOCH
@@ -832,6 +846,7 @@ def _begin_scan(key: tuple, *, force: bool) -> tuple[int, int]:
             #     扫描也不能把它读到的（可能是变更前依赖的）结果填进这个坑
             #     （codex）。
             # 不用再引一张在途表，就是复用已有的 (结果, 是不是 force) 这个形状。
+            _make_room_for_locked(key)
             _SCAN_CACHE[key] = (None, True)
         return generation, _SCAN_EPOCH
 
@@ -1087,12 +1102,10 @@ def scan_plugin_metadata_isolated(
                 # 这一格里躺着的是 force 扫出来的结果。我们是普通扫描，代次虽然对得
                 # 上，但两个子进程读外部依赖的先后无法保证——不覆盖它。
                 return result
-            if len(_SCAN_CACHE) >= _SCAN_CACHE_MAX_ENTRIES:
-                # 清表会把别人赖以判断的那条 force 记录一起扔掉：一个共享同一代次
-                # 的普通扫描随后就看不到"这里躺着 force 的结果"，于是把自己读到的
-                # 更旧的依赖写进来（codex）。和代次表溢出同一个处理——顺手把在途的
-                # 结果一起作废。我们自己已经过了检查，不受影响。
-                _SCAN_CACHE.clear()
-                _bump_scan_epoch_locked()
+            # 清表会把别人赖以判断的那条 force 记录一起扔掉：一个共享同一代次的
+            # 普通扫描随后就看不到"这里躺着 force 的结果"，于是把自己读到的更旧的
+            # 依赖写进来（codex）。所以 _make_room_for_locked 里连带作废在途结果。
+            # 我们自己已经过了检查，不受影响。
+            _make_room_for_locked(key)
             _SCAN_CACHE[key] = (result, force)
     return result
