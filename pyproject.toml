@@ -183,6 +183,12 @@ dev = [
     # seed 跑（确定性），另有 .github/workflows/random-order-tests.yml 定时用
     # 随机 seed 单独跑、单独报，不挡任何人的 PR。
     "pytest-randomly>=4.1.0",
+    # tests/unit 是 24000+ 条用例的单进程串行跑，Windows CI 上要 19 分钟，逼近
+    # 25 分钟的 job 上限。用 `-n auto --dist loadfile` 按文件分发到多个 worker：
+    # 文件内顺序不变（loadfile 保证整个文件在同一个 worker 上按序跑），所以
+    # pytest.ini 里钉死 seed 的确定性和 tests/unit/conftest.py 的进程级全局清理
+    # 都还成立；跨文件的顺序依赖本来就是 random-order-tests.yml 在抓的东西。
+    "pytest-xdist>=3.8.0",
     "ruff>=0.15.4",
 ]
 # galgame_plugin native deps. NOT installed by default `uv sync` — keeps dev

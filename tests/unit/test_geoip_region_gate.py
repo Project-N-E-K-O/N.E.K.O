@@ -36,6 +36,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 # ConfigManager / core_config，混用 import 与 from-import 会被静态检查判为风格问题。
 import utils.config_manager as config_manager_pkg  # noqa: E402
 
+from tests.repo_ast_cache import parse_source_file
+
 ConfigManager = config_manager_pkg.ConfigManager
 core_config_mod = config_manager_pkg.core_config
 
@@ -933,7 +935,7 @@ def test_every_plugin_offline_client_settles_the_region():
 
     problems = []
     for path in files:
-        tree = ast.parse(path.read_text(encoding='utf-8'))
+        tree = parse_source_file(path)
         for func in ast.walk(tree):
             if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue

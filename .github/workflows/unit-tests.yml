@@ -37,7 +37,10 @@ jobs:
     # platform. It is also where the command-line length limit that silently
     # broke the cat-mind harness lives, so the guard against it stays honest.
     runs-on: windows-latest
-    timeout-minutes: 25
+    # Was 25 with the run itself at ~19. Parallelised the run lands around 6;
+    # 15 leaves room for a slow runner without letting a genuine hang sit for
+    # the better part of half an hour.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
@@ -89,7 +92,17 @@ jobs:
         # assertion that reads the built bundle skips. build-desktop.yml
         # rebuilds and verifies that artifact on every run, which is the right
         # place for it — a stale local bundle would only produce a false green.
-        run: uv run pytest tests/unit -q
+        #
+        # `-n auto --dist loadfile`: 24000+ tests in one process took 19 minutes
+        # here, against a 25-minute job ceiling — close enough that a slow runner
+        # turned the gate red for reasons that had nothing to do with the PR.
+        # loadfile (not the default `load`) keeps every test of a file together
+        # on one worker in declaration order, so the seed pinned in pytest.ini
+        # still reproduces and the process-global cleanup in
+        # tests/unit/conftest.py still sees the same within-file sequence.
+        # Cross-file order dependencies are what random-order-tests.yml hunts;
+        # they were never something this job's fixed order guaranteed.
+        run: uv run pytest tests/unit -q -n auto --dist loadfile
 
   plugin-manager-vitest:
     name: Plugin manager vitest
