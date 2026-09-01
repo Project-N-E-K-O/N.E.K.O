@@ -1705,6 +1705,9 @@
         "vllmRefTextPlaceholder": "예: 앞으로 저보다 더 잘할 수 있기를 바랍니다",
         "vllmRefTextRequired": "참조 오디오 전사를 입력하세요(vLLM-Omni 클론 필수)",
         "vllmRefTextTooLong": "참조 오디오 전사가 너무 깁니다. 100자 이내로 입력하세요",
+        "vllmCloneCustomApiDisabledWarning": "현재 활성 TTS 설정은 \"{{provider}}\"이지만 커스텀 API가 꺼져 있습니다. 참조 음성은 로컬에 저장되었습니다. 이 음성을 미리 듣거나 사용하려면 API 설정에서 커스텀 API를 켜고 TTS를 vLLM-Omni로 전환하세요.",
+        "vllmCloneInactiveProviderWarning": "현재 활성 TTS 설정은 \"{{provider}}\"이며 vLLM-Omni가 아닙니다. 참조 음성은 로컬에 저장되었습니다. 이 음성을 미리 듣거나 사용하려면 API 설정에서 TTS를 vLLM-Omni로 전환하세요.",
+        "vllmCloneConfigurationUnavailableWarning": "현재 활성 TTS 설정을 읽을 수 없습니다. 참조 음성은 로컬에 저장되었습니다. 이 음성을 미리 듣거나 사용하려면 API 설정에서 vLLM-Omni를 구성하세요.",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",

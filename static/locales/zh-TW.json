@@ -1705,6 +1705,9 @@
         "vllmRefTextPlaceholder": "例如：希望你以後能夠做的比我還好呦",
         "vllmRefTextRequired": "請填寫參考音頻原文（vLLM-Omni 克隆必填）",
         "vllmRefTextTooLong": "vLLM-Omni 參考音頻原文過長，請控制在 100 字以內",
+        "vllmCloneCustomApiDisabledWarning": "目前實際 TTS 設定為「{{provider}}」，但自訂 API 已關閉。參考音訊已儲存至本機；請在 API 設置中啟用自訂 API，並將 TTS 切換為 vLLM-Omni 後再試聽或使用此音色。",
+        "vllmCloneInactiveProviderWarning": "目前實際 TTS 設定為「{{provider}}」，不是 vLLM-Omni。參考音訊已儲存至本機；請在 API 設置中將 TTS 切換為 vLLM-Omni 後再試聽或使用此音色。",
+        "vllmCloneConfigurationUnavailableWarning": "無法讀取目前的 TTS 設定。參考音訊已儲存至本機；請在 API 設置中配置 vLLM-Omni 後再試聽或使用此音色。",
         "providerLabel": "語音克隆服務商",
         "provider": {
             "cosyvoice": "阿里百煉 CosyVoice",

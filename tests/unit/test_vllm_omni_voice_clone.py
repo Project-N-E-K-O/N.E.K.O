@@ -248,12 +248,16 @@ def _vllm_clone_meta(sample: bytes, **extra):
 class _CMBase:
     """A config_manager stand-in for dispatch tests."""
 
-    def __init__(self, voices, raw_json=None):
+    def __init__(self, voices, raw_json=None, core_config=None):
         self._voices = voices
         self._raw = raw_json or {}
+        self._core_config = {
+            "assistApi": "qwen", "TTS_PROVIDER": "", "GPTSOVITS_ENABLED": False,
+        }
+        self._core_config.update(core_config or {})
 
     def get_core_config(self):
-        return {"assistApi": "qwen", "TTS_PROVIDER": "", "GPTSOVITS_ENABLED": False}
+        return dict(self._core_config)
 
     def get_model_api_config(self, model_type):
         return {"is_custom": False}
@@ -312,6 +316,33 @@ def test_get_tts_worker_vllm_omni_clone_uses_stored_base_url(monkeypatch):
     )
     assert provider_key == "vllm_omni"
     assert worker.keywords["base_url"] == "ws://10.0.1.92:8091/v1"
+
+
+@pytest.mark.unit
+def test_get_tts_worker_vllm_omni_clone_uses_current_vllm_url_over_legacy_snapshot(monkeypatch):
+    """Switching to vLLM-Omni must repair clones saved while TTS followed another API."""
+    sample = (np.arange(64, dtype=np.int16)).tobytes()
+    cm = _CMBase(
+        {
+            "vllm-omni-clone-s": _vllm_clone_meta(
+                sample, vllm_omni_base_url="https://www.lanlan.tech/text/v1"
+            ),
+        },
+        raw_json={
+            "enableCustomApi": True,
+            "ttsModelProvider": "vllm_omni",
+            "ttsModelUrl": "ws://127.0.0.1:8091/v1",
+        },
+        core_config={"ENABLE_CUSTOM_API": True, "ttsModelProvider": "vllm_omni"},
+    )
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+
+    worker, _, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen", has_custom_voice=True, voice_id="vllm-omni-clone-s",
+    )
+
+    assert provider_key == "vllm_omni"
+    assert worker.keywords["base_url"] == "ws://127.0.0.1:8091/v1"
 
 
 # ── registry: vllm_omni advertises both preset + clone capabilities ───────────

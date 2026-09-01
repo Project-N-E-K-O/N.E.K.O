@@ -1705,6 +1705,9 @@
         "vllmRefTextPlaceholder": "ex. Espero que no futuro você possa fazer ainda melhor do que eu",
         "vllmRefTextRequired": "Insira a transcrição do áudio de referência (obrigatório para clone vLLM-Omni)",
         "vllmRefTextTooLong": "A transcrição do áudio de referência é muito longa; mantenha-a com até 100 caracteres",
+        "vllmCloneCustomApiDisabledWarning": "A configuração ativa de TTS é \"{{provider}}\", mas a API personalizada está desativada. A amostra foi salva localmente; ative a API personalizada e altere o TTS para vLLM-Omni antes de pré-visualizar ou usar esta voz.",
+        "vllmCloneInactiveProviderWarning": "A configuração ativa de TTS é \"{{provider}}\", não vLLM-Omni. A amostra foi salva localmente; altere o TTS para vLLM-Omni antes de pré-visualizar ou usar esta voz.",
+        "vllmCloneConfigurationUnavailableWarning": "Não foi possível ler a configuração ativa de TTS. A amostra foi salva localmente; configure o vLLM-Omni nas configurações de API antes de pré-visualizar ou usar esta voz.",
         "providerLabel": "Provedor de clone de voz",
         "provider": {
             "cosyvoice": "Alibaba Bailian CosyVoice",

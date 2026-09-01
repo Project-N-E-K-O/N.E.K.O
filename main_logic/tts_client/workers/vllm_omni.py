@@ -700,10 +700,21 @@ def _vllm_omni_clone_resolve(ctx):
         raw = cm.load_json_config('core_config.json', {})
     except Exception:
         raw = {}
-    # base_url：优先用 voice_meta 存的 vllm_omni_base_url（对偶 mimo_base_url），缺省回落
-    # 当前 core_config 配置的端点，再缺省走默认。
+    # 已启用 vLLM-Omni 时，当前配置就是唯一的运行端点：这样旧克隆里意外留存的
+    # follow_assist URL 不会覆盖用户后来切换到的 vLLM 服务。未启用时才保留历史快照
+    # 作为兼容回退；这不会阻止本地保存，只会让未配置的克隆在运行时按原有方式失败。
+    raw_vllm_omni_selected = (
+        _as_bool(raw.get('enableCustomApi'), False)
+        and str(raw.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+    )
+    current_vllm_url = (
+        str(raw.get('ttsModelUrl') or '').strip()
+        if raw_vllm_omni_selected
+        else ''
+    )
     vllm_url = (
-        str(vm.get('vllm_omni_base_url') or '').strip()
+        current_vllm_url
+        or str(vm.get('vllm_omni_base_url') or '').strip()
         or (raw.get('ttsModelUrl') or '').strip()
         or VLLM_OMNI_DEFAULT_BASE_URL
     )
