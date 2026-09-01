@@ -578,6 +578,12 @@ def _may_publish_record(
         # 让位的条件：要么我们是普通刷新（对手可能读的是盘，我们可能读的是缓存），
         # 要么对手也是 force 而且比我们新（两边都读盘，新的说了算）。
         return False
+    _record_publication(ticket, keys, forced=forced)
+    return True
+
+
+def _record_publication(ticket: int, keys, *, forced: bool) -> None:
+    """Stamp these identities as published by ``ticket``. Caller holds the guard."""
     for key in keys:
         seen_ticket, seen_forced = _REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, (0, False))
         if ticket >= seen_ticket:
@@ -587,7 +593,20 @@ def _may_publish_record(
         if forced:
             # 此刻还在途的普通刷新，对这个插件而言可能读的是我们刚作废掉的缓存。
             _REGISTRY_PLUGIN_CACHE_BLIND_UNTIL[key] = _REGISTRY_REFRESH_TICKET
-    return True
+
+
+def _claim_resolved_runtime_id(ticket: int, resolved_id: str, *, forced: bool) -> None:
+    """Also claim the id the record was actually registered under.
+
+    ``_resolve_plugin_id_conflict(enable_rename=True)`` can register a record
+    under a different runtime id than ``record.plugin_id``. Removal ordering
+    looks plugins up by the id in ``state.plugins`` — the resolved one — so
+    without this the rename leaves the claim on a key nobody consults, and an
+    older refresh is free to delete the plugin that was just published
+    (CodeRabbit).
+    """
+    if resolved_id:
+        _record_publication(ticket, (f"id:{resolved_id}",), forced=forced)
 
 
 def _take_registry_refresh_ticket() -> int:
@@ -1392,6 +1411,7 @@ class PluginRegistryService:
                         existing_snapshot=existing_snapshot,
                         preferred_runtime_plugin_id=previous_runtime_plugin_id,
                     )
+                    _claim_resolved_runtime_id(ticket, resolved_id, forced=force)
                     if record.meta_payload.get("shadowed_builtin_path"):
                         _remove_config_path_aliases_sync(record.config_path, keep_plugin_id=resolved_id)
                     refreshed_ids.add(resolved_id)
@@ -1550,6 +1570,7 @@ class PluginRegistryService:
                 existing_snapshot=existing_snapshot,
                 preferred_runtime_plugin_id=previous_runtime_plugin_id,
             )
+            _claim_resolved_runtime_id(ticket, resolved_id, forced=force)
             if record.meta_payload.get("shadowed_builtin_path"):
                 _remove_config_path_aliases_sync(config_path, keep_plugin_id=resolved_id)
             current_managed = _select_managed_fields(payload)

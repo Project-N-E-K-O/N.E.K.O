@@ -824,6 +824,60 @@ def test_the_refresh_loop_actually_applies_the_removal_filter(
     )
 
 
+def test_a_renamed_runtime_id_is_protected_from_stale_removal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The claim has to be on the id the plugin is actually registered under.
+
+    ``_resolve_plugin_id_conflict(enable_rename=True)`` can register a record
+    under a different runtime id than ``record.plugin_id``. Removal ordering
+    looks plugins up by the id in ``state.plugins`` — the resolved one — so a
+    claim left only on the pre-resolution id sits on a key nobody consults, and
+    an older refresh deletes the plugin that was just published (CodeRabbit).
+
+    Driven through the real refresh rather than the helper, because the previous
+    version of this guard asserted on the predicate and survived deleting the
+    call site.
+
+    Mutation: drop the `_claim_resolved_runtime_id` call.
+    """
+    import threading
+
+    published = threading.Event()
+
+    def _discover(roots, *, force=False, force_targets=frozenset()):
+        return SimpleNamespace(
+            records=[SimpleNamespace(plugin_id="demo",
+                                     config_path=Path("/demo/plugin.toml"),
+                                     meta_payload={})],
+            failures=[], config_paths=set(), shadowed=[],
+        )
+
+    def _apply(record, *, existing_snapshot, preferred_runtime_plugin_id=None):
+        # 冲突改名：注册进去的运行时 id 和记录上的 id 不是一个。
+        published.set()
+        return "demo_1", {}
+
+    monkeypatch.setattr(module, "_discover_registry_snapshot_sync", _discover)
+    monkeypatch.setattr(module, "_apply_discovery_record_sync", _apply)
+    monkeypatch.setattr(module, "_prepare_plugin_import_roots", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_get_registered_plugin_snapshot_sync", dict)
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", list)
+    monkeypatch.setattr(module, "_find_existing_runtime_plugin_id_by_config_path", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_select_managed_fields", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_collect_missing_plugin_ids_sync", lambda *a, **k: set())
+    monkeypatch.setattr(module, "_remove_stale_plugin_metadata_sync", lambda *a, **k: ([], []))
+    monkeypatch.setattr(module, "_source_for_config_path", lambda *a, **k: "user")
+
+    older = module._take_registry_refresh_ticket()
+    module.PluginRegistryService()._refresh_registry_sync()
+    assert published.is_set(), "前提没成立：记录没被发布"
+
+    assert not module._may_remove_plugin(older, "demo_1"), (
+        "改名之后的运行时 id 没有被认领，更早的刷新可以把刚发布的插件删掉"
+    )
+
+
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
