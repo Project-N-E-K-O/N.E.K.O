@@ -183,6 +183,7 @@ describe('PluginActions runtime mutations', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     elementPlusMocks.ElMessage.success.mockClear()
+    elementPlusMocks.ElMessage.error.mockClear()
     elementPlusMocks.ElMessageBox.confirm.mockClear()
   })
 
@@ -226,6 +227,48 @@ describe('PluginActions runtime mutations', () => {
       expect(mutationSpy).toHaveBeenCalledWith('demo')
       expect(refreshHostedPanels).toHaveBeenCalledTimes(1)
       expect(elementPlusMocks.ElMessage.success).toHaveBeenCalledWith(successKey)
+
+      app.unmount()
+      container.remove()
+    },
+  )
+
+  it.each(['start', 'reload'] as const)(
+    'does not add a duplicate fallback toast when %s already failed in the request interceptor',
+    async (action) => {
+      const pinia = createPinia()
+      setActivePinia(pinia)
+      const store = usePluginStore()
+      store.plugins = [{
+        id: 'demo',
+        name: 'Demo',
+        description: 'Demo',
+        version: '1.0.0',
+        status: action === 'reload' ? 'running' : 'stopped',
+      }]
+      vi.spyOn(store, action).mockRejectedValue({
+        code: 'ECONNABORTED',
+        request: {},
+        message: 'timeout exceeded',
+      })
+
+      const container = document.createElement('div')
+      document.body.appendChild(container)
+      const app = createApp(PluginActions, { pluginId: 'demo' })
+      app.use(pinia)
+      stubButtons(app)
+      app.mount(container)
+      await nextTick()
+
+      const label = action === 'reload' ? 'plugins.reload' : 'plugins.start'
+      const button = Array.from(container.querySelectorAll('button'))
+        .find((candidate) => candidate.textContent?.trim() === label)
+      expect(button).toBeTruthy()
+      button!.dispatchEvent(new Event('click'))
+      await flushPromises()
+
+      expect(store[action]).toHaveBeenCalledWith('demo')
+      expect(elementPlusMocks.ElMessage.error).not.toHaveBeenCalled()
 
       app.unmount()
       container.remove()

@@ -161,6 +161,9 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._activeMotionParamIds = null;
     this._actionMotionRequestPendingModel = null;
     this._simpleMotionActive = false;
+    if (typeof this._cancelTouchSetExpressionRestore === 'function') {
+        this._cancelTouchSetExpressionRestore();
+    }
     this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
     this._transientExpressionTask = null;
     this._activeTransientExpression = false;

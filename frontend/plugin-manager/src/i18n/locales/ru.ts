@@ -724,7 +724,9 @@ export default {
     resourceNotFound: 'Запрошенный ресурс не найден',
     internalServerError: 'Внутренняя ошибка сервера',
     serviceUnavailable: 'Сервис недоступен',
-    networkError: 'Ошибка сети. Проверьте подключение.'
+    networkError: 'Ошибка сети. Проверьте подключение.',
+    requestTimeout: 'Время ожидания запроса истекло. Повторите попытку.',
+    pluginLifecycleTimeout: 'Время запуска или перезапуска плагина истекло. Проверьте журналы плагина.'
   },
   welcome: {
     about: {

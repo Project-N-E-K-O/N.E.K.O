@@ -1499,12 +1499,22 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
     const isIdleEmotion = typeof emotion === 'string' && emotion.toLowerCase() === 'idle';
     const willApplyNewExpression = !!targetExpressionFile;
     const shouldPreserveExistingExpression = isIdleEmotion && !willApplyNewExpression;
+    const touchSetOwnsCurrentExpression = typeof this._isTouchSetExpressionRestoreCurrent === 'function'
+        && this._isTouchSetExpressionRestoreCurrent();
+    const shouldReplaceTouchSetExpression = touchSetOwnsCurrentExpression && !shouldPreserveExistingExpression;
+    if (shouldReplaceTouchSetExpression && typeof this._cancelTouchSetExpressionRestore === 'function') {
+        this._cancelTouchSetExpressionRestore();
+    }
     const emotionModel = this.currentModel;
     const shouldAttemptMotion = typeof this.hasActiveActionMotion !== 'function'
         || !this.hasActiveActionMotion(emotionModel);
     
-    // 相同表情保持不变，只尝试触发新的动作；动作槽忙时 playMotion 会直接拒绝。
-    if (this.currentEmotion === emotion && this.currentExpressionFile === targetExpressionFile) {
+    // 相同表情通常保持不变；若当前由 TouchSet 临时表情占用，则必须重放正常情感表情以接管表情槽。
+    if (
+        !shouldReplaceTouchSetExpression
+        && this.currentEmotion === emotion
+        && this.currentExpressionFile === targetExpressionFile
+    ) {
         this.isEmotionChanging = true;
         try {
             // 相同情绪且相同表情，保留原有的50%概率随机播放动作机制

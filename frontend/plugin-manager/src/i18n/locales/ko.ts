@@ -724,7 +724,9 @@ export default {
     resourceNotFound: '요청한 리소스를 찾을 수 없습니다',
     internalServerError: '서버 내부 오류',
     serviceUnavailable: '서비스를 사용할 수 없습니다',
-    networkError: '네트워크 오류. 연결을 확인하세요.'
+    networkError: '네트워크 오류. 연결을 확인하세요.',
+    requestTimeout: '요청 시간이 초과되었습니다. 다시 시도하세요.',
+    pluginLifecycleTimeout: '플러그인 시작 또는 재시작 시간이 초과되었습니다. 플러그인 로그를 확인하세요.'
   },
   welcome: {
     about: {

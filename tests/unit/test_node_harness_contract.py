@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.repo_ast_cache import parse_source_file
+
 TESTS_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = TESTS_ROOT.parent
 # The launcher itself is the one place allowed to call subprocess.run on node.
@@ -106,7 +108,7 @@ def test_node_harnesses_go_through_the_shared_launcher():
         if path in EXEMPT:
             continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_source_file(path)
         except SyntaxError:  # pragma: no cover - a broken test file fails elsewhere
             continue
         scanned += 1

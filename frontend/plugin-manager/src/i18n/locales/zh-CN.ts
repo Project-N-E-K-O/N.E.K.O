@@ -724,7 +724,9 @@ export default {
     resourceNotFound: '请求的资源不存在',
     internalServerError: '服务器内部错误',
     serviceUnavailable: '服务不可用',
-    networkError: '网络错误，请检查网络连接'
+    networkError: '网络错误，请检查网络连接',
+    requestTimeout: '请求超时，请稍后重试',
+    pluginLifecycleTimeout: '插件启动或重载超时，请查看插件日志'
   },
   welcome: {
     about: {

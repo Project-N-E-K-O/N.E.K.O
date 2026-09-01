@@ -57,6 +57,7 @@ released. ``AsrRuntimeMixin._fail_closed_voice_route`` owns that order for
 the fail-closed route exits.
 """
 
+import hashlib
 import json
 from typing import Optional
 from fastapi import WebSocketDisconnect
@@ -235,6 +236,132 @@ class NotifyMixin:
             )
 
         return prompt
+
+    async def _inject_pending_user_directives(self) -> None:
+        """Carry freshly recorded ban-topic directives into the NEXT session.
+
+        ``_build_initial_prompt`` reads the directive store once per session,
+        and for a hot swap that read happens during background warm-up
+        (``lifecycle._background_prepare_pending_session``) — a full user turn
+        before the swap actually lands, because the final swap waits for the
+        next turn-end (``turn.py`` step 4). A directive recorded inside that
+        gap misses the very session it was about to configure: the new session
+        starts with a fresh ``_conversation_history`` (the user's original
+        words are gone with the old one) and a system prompt that predates the
+        directive, so nothing carries it for up to another archive cycle.
+
+        Writing it into the next-session cache closes exactly that gap. It is
+        deliberately NOT injected into the live session — see the ``lifetime``
+        comment below.
+
+        Called from both user-utterance entry points (text and voice), right
+        after the plugin-bus publish that drives the recording sink.
+        """
+        # 分层：``memory``（L3）不能向上 import ``main_logic``（L4），所以
+        # sink 只负责落盘 + 置一个待办标记，真正的注入在这里（L4）完成。
+        # 与 app/runtime_bindings.py 挂 sink 是同一个理由的两半。
+        try:
+            from memory.user_directives import get_user_directives_manager
+            manager = get_user_directives_manager()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] manager unavailable: %s", exc)
+            return
+        # 与 _build_initial_prompt 的读取 key 对齐（sink 在 lanlan 为空 /
+        # "default" 时落到 "default" bucket）。
+        key = self.lanlan_name or "default"
+        try:
+            if not manager.take_pending_injection(key):
+                return
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] pending flag read failed: %s", exc)
+            return
+        try:
+            _lang = normalize_language_code(self.user_language, format='short')
+            # ⚠️ 渲染的是**全量活跃列表**，不是本轮新抽到的那几个 term——与
+            # _build_initial_prompt 注入的是同一段文本。只注入增量的话，模型
+            # 在本会话里看到的禁令集合会取决于"哪几条恰好是这一轮说的"，跟
+            # 会话重建后看到的集合不一致。
+            active_terms = manager.get_active_terms(key)
+            block = manager.render_prompt_block(key, _lang)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] mid-session render failed: %s", exc)
+            return
+        block = block.strip()
+        if not block:
+            return
+        # ⚠️ lifetime='next_session'：**只**写 next-session 缓存，不进当前会话。
+        # 两条路径（文字 / 语音）在这里收敛到同一个值，不按会话类型分叉。
+        #
+        # 当前会话不需要它。``_conversation_history`` 在会话生命周期内是
+        # append-only（唯一会砍它的是复读恢复，见 omni_offline_client/
+        # _streaming.py 那处 reset），所以用户那句"别再提 X"的原话一直待在
+        # 上下文里，模型每一轮都看得见；而会话开头 ``_build_initial_prompt``
+        # 已经注入过**全量**活跃列表，本轮的真实增量只有刚抽到的那一条 ——
+        # 恰恰是模型从原话里已经知道的那条。跨会话才是真缺口（新会话不继承
+        # 旧 history），而那正是这份缓存管的事。
+        #
+        # 而写进当前会话是有代价的：``append_context`` 把 role='system' 渲染成
+        # ``HumanMessage("system: ...")``，**以用户消息的形态**落进 history。
+        # 别的 source（游戏结果 / 主动搭话素材）带的是模型不知道的新信息，这条
+        # 带的却是模型刚看过的用户原话的复述 —— 模型很容易顺着回一句"好的我
+        # 不会再提了"，而用户这一轮真正想聊的往往是后半句。
+        #
+        # 语音（realtime）侧本来就收不了：``append_context`` 对没有
+        # ``_conversation_history`` 的会话回落到 ``prime_context``，而 Gemini
+        # 那条路会 ``send_client_content(turn_complete=True)`` 另开一个 user
+        # turn 并置 ``_skip_until_next_response`` —— 本轮所有
+        # output_transcription 与 audio delta 被整段吞掉，用户刚说完禁令句、
+        # 角色一个音都不发，恰好坏在这功能最该起作用的那一刻。
+        lifetime = "next_session"
+        try:
+            # request_id 让 append_context 的去重生效：用户**重复说**同一条指令
+            # （E 那半按 hit_count 递增 TTL，整个设计就预期他会重复）同样会置待
+            # 注入标记。不给 id 的话每次都原样再追加一份到 next-session 缓存，
+            # 下个会话开头就会连着看到同一段禁令块好几遍。
+            #
+            # ⚠️ 去重窗口是 **120 秒**（`_CONTEXT_APPEND_DEDUP_TTL_SECONDS`，
+            # append_context 的既有契约），不是永久 —— 别把这里读成"同一组 term
+            # 一辈子只注入一次"（codex 指出我原先的注释就是这么写的，过强了）。
+            # 而这个窗口恰好是对的：用户连着说两遍属于同一次表态，去噪；隔了半小时
+            # 再说一遍，往往说明模型期间又踩了雷，那时**重新注入一次强化**才是想要
+            # 的行为。所以这里不自己另造一层永久去重。
+            #
+            # ⚠️ 指纹取的是**规范化后的 term 集合**，不是渲染出来的块。块里的
+            # term 按 ``last_seen_at`` 降序排，于是「重复说较旧的那一条」会把它
+            # 顶到最前 —— 集合没变、字节变了 → 新 id → 又追加一份完整拷贝。而
+            # 那恰恰是延长 TTL 的常规路径，等于去重在最该生效的场景下被绕过
+            # （codex P2）。排序 + casefold 之后，只有集合真的变了才拿到新 id。
+            # ⚠️ 用 JSON 数组序列化，**不能**拿分隔符 join：``_normalize_term``
+            # 只做 strip + 长度校验，term 里什么字符都可能有。拿 " | " 拼的话
+            # ``["aa | bb", "cc"]`` 与 ``["aa", "bb | cc"]`` 得到同一个指纹 →
+            # 同一个 request_id → 新的禁令集合被 append_context 当成重复跳过、
+            # 本会话不生效（coderabbit）。JSON 自带引号与转义，天然无歧义。
+            fingerprint = json.dumps(
+                sorted(t.casefold() for t in active_terms if t),
+                ensure_ascii=False,
+            )
+            request_id = (
+                f"user_directives:{key}:"
+                f"{hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:16]}"
+            )
+            # timing='when_ready'：会话还没建好时排队，不丢。
+            result = await self.append_context(
+                source="user_directives",
+                role="system",
+                text=block,
+                audience="model",
+                timing="when_ready",
+                lifetime=lifetime,
+                request_id=request_id,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] mid-session inject failed: %s", exc)
+            return
+        if getattr(result, "appended", False):
+            logger.info(
+                "[%s] user directives injected (lifetime=%s targets=%s)",
+                self.lanlan_name, lifetime, getattr(result, "targets", ()),
+            )
 
     def _is_agent_enabled(self):
         try:
