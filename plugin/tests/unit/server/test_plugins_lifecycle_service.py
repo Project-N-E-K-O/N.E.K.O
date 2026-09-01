@@ -1384,23 +1384,33 @@ async def test_start_plugin_clamps_its_startup_timeout_to_the_caller_budget(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _RecordingHost)
-        monkeypatch.setattr(
-            module,
-            "scan_plugin_metadata_isolated",
-            _metadata_scan_for(_FakeAdapterPlugin),
-        )
+        inner_scan = _metadata_scan_for(_FakeAdapterPlugin)
+        scan_timeouts: list[object] = []
+
+        def _recording_scan(**kwargs):
+            scan_timeouts.append(kwargs.get("timeout"))
+            kwargs.pop("timeout", None)
+            return inner_scan(**kwargs)
+
+        monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _recording_scan)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         response = await module.PluginLifecycleService().start_plugin(
             "clamped_adapter",
             refresh_registry=False,
-            max_startup_timeout=2.5,
+            start_deadline=time.monotonic() + 2.5,
         )
 
         assert response["success"] is True
         assert _RecordingHost.instances
-        assert _RecordingHost.instances[0].startup_timeout == 2.5, (
-            "剩余预算没有压到真正启动 host 的那一步"
+        assert _RecordingHost.instances[0].startup_timeout == pytest.approx(2.5, abs=0.5), (
+            f"剩余预算没有压到真正启动 host 的那一步：{_RecordingHost.instances[0].startup_timeout}"
+        )
+        # 扫描排在 host 之后，而它自己的上限是 10s——不一起钳住的话，预算只管住了
+        # 这一次启动里的一步。
+        assert scan_timeouts, "前提没成立：没有走到元数据扫描"
+        assert scan_timeouts[0] == pytest.approx(2.5, abs=0.6), (
+            f"元数据扫描没有按剩余预算收窄：{scan_timeouts}"
         )
     finally:
         with module.state.acquire_plugins_write_lock():

@@ -138,6 +138,33 @@ def test_worker_budget_is_clamped(
     assert module._discovery_scan_workers(pending) == expected
 
 
+def test_the_worker_pool_never_exceeds_the_global_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pool wider than the semaphore is not throughput, it is scan failures.
+
+    The surplus threads can only queue on ``_SCAN_SLOTS``, and waiting for a slot
+    spends the plugin's own scan budget — so a pool of 2 against a gate of 1
+    turns one plugin per wave into a spurious scan failure. Both the lower bound
+    and the operator override have to be capped by the gate, or the comment
+    claiming the two constants cannot disagree is simply false (CodeRabbit).
+
+    Mutation: drop the final cap, so ``_DISCOVERY_SCAN_MIN_WORKERS`` or the
+    override can push the pool past the gate.
+    """
+    monkeypatch.setattr(module.os, "cpu_count", lambda: 64)
+
+    # 下界方向：全局闸调到 1，下界 2 不许把它顶穿。
+    monkeypatch.setattr(module, "_DISCOVERY_SCAN_MAX_WORKERS", 1)
+    monkeypatch.delenv("NEKO_PLUGIN_DISCOVERY_SCAN_WORKERS", raising=False)
+    assert module._discovery_scan_workers(10) == 1, "下界顶穿了全局闸"
+
+    # 覆盖方向：显式调大 worker 数也不许超过闸——要更多就去调闸本身。
+    monkeypatch.setattr(module, "_DISCOVERY_SCAN_MAX_WORKERS", 8)
+    monkeypatch.setenv("NEKO_PLUGIN_DISCOVERY_SCAN_WORKERS", "32")
+    assert module._discovery_scan_workers(50) == 8, "env 覆盖顶穿了全局闸"
+
+
 def test_the_env_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     """An operator on a constrained box must be able to force it down to one."""
     monkeypatch.setattr(module.os, "cpu_count", lambda: 64)

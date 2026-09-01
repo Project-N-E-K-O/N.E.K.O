@@ -433,12 +433,24 @@ _DISCOVERY_SCAN_MIN_WORKERS = 2
 
 
 def _discovery_scan_workers(pending: int) -> int:
-    """How many metadata scans to run at once for ``pending`` plugins."""
+    """How many metadata scans to run at once for ``pending`` plugins.
+
+    Everything here is capped by the global gate last, including the operator
+    override and the lower bound. A pool wider than the gate buys nothing: the
+    surplus threads only queue on ``_SCAN_SLOTS``, and waiting for a slot spends
+    the plugin's own scan budget, so the extra width turns into scan failures
+    rather than throughput. Raising the ceiling is what
+    ``NEKO_PLUGIN_METADATA_SCAN_CONCURRENCY`` is for (CodeRabbit).
+    """
     override = env_int("NEKO_PLUGIN_DISCOVERY_SCAN_WORKERS", 0, minimum=0)
     if override > 0:
-        return max(1, min(override, pending))
-    cpu = os.cpu_count() or 4
-    budget = max(_DISCOVERY_SCAN_MIN_WORKERS, min(_DISCOVERY_SCAN_MAX_WORKERS, cpu // 4))
+        budget = override
+    else:
+        cpu = os.cpu_count() or 4
+        # 先托底再封顶：反过来写的话，把全局闸调到 1 时下界仍然会顶出 2 个线程，
+        # 多出来那个只能堵在信号量上白烧自己的扫描预算。
+        budget = max(_DISCOVERY_SCAN_MIN_WORKERS, cpu // 4)
+    budget = min(budget, _DISCOVERY_SCAN_MAX_WORKERS)
     return max(1, min(budget, pending))
 
 

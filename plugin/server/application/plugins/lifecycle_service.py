@@ -49,6 +49,7 @@ from plugin.server.application.plugins.installation_transactions import (
     uninstall_plugin,
 )
 from plugin.server.application.plugins.metadata_scanner import (
+    _DEFAULT_SCAN_TIMEOUT_SECONDS as _DEFAULT_METADATA_SCAN_TIMEOUT,
     install_isolated_plugin_metadata,
     scan_plugin_metadata_isolated,
 )
@@ -89,10 +90,22 @@ _MIN_CLAMPED_STARTUP_TIMEOUT = 1.0
 
 
 def _clamp_startup_timeout(configured: float, budget: float | None) -> float:
-    """Fit one plugin's startup timeout inside what is left of a round budget."""
+    """Fit one step of a start inside what is left of a round budget."""
     if budget is None:
         return configured
     return max(_MIN_CLAMPED_STARTUP_TIMEOUT, min(configured, budget))
+
+
+def _remaining_start_budget(deadline: float | None) -> float | None:
+    """Seconds left before ``deadline``, or ``None`` when the start is unbounded.
+
+    A start is several sequential expensive steps, not one. Handing the whole
+    call a single duration bounds only the step it is applied to and lets every
+    other step run past the round's wall clock; recomputing against an absolute
+    deadline is what makes the budget cover the call rather than one line of it
+    (CodeRabbit).
+    """
+    return None if deadline is None else deadline - time_module.monotonic()
 plugin_registry_service = PluginRegistryService()
 def _persist_user_runtime_intent(
     plugin_id: str,
@@ -618,7 +631,7 @@ class PluginLifecycleService:
         *,
         refresh_registry: bool = True,
         persist_user_intent: bool = False,
-        max_startup_timeout: float | None = None,
+        start_deadline: float | None = None,
     ) -> dict[str, object]:
         start_time = time_module.perf_counter()
         original_plugin_id = plugin_id
@@ -905,17 +918,17 @@ class PluginLifecycleService:
                         error_type="DependencyCheckFailed",
                     )
 
-            if max_startup_timeout is not None and startup_timeout_value is not None:
-                # reload-all 把本轮剩下的预算压进来。只在启动**开始前**检查截止期
-                # 是不够的：一个在截止期前一瞬开始的启动，之后仍会一路等到它自己
-                # 的 startup timeout，于是整轮 reload 照样冲破对外承诺的墙钟，前端
-                # 早已放弃而插件状态还在被改（codex / CodeRabbit / Greptile）。
+            if start_deadline is not None and startup_timeout_value is not None:
+                # reload-all 把本轮的截止期压进来。只在启动**开始前**检查一次是不
+                # 够的：一个在截止期前一瞬开始的启动，之后仍会一路等到它自己的
+                # startup timeout，于是整轮 reload 照样冲破对外承诺的墙钟，前端早已
+                # 放弃而插件状态还在被改（codex / CodeRabbit / Greptile）。
                 #
                 # 压进去而不是套 asyncio.wait_for：start_plugin 带
                 # @serialized_plugin_operation，那个包装器拿到锁之后会屏蔽取消，
                 # 外面套超时只会把一次真实结果报成超时（见 stop 那边的说明）。
                 startup_timeout_value = _clamp_startup_timeout(
-                    startup_timeout_value, max_startup_timeout
+                    startup_timeout_value, _remaining_start_budget(start_deadline)
                 )
             startup_result = await _start_host_with_timeout(
                 plugin_id=current_plugin_id,
@@ -944,6 +957,15 @@ class PluginLifecycleService:
                     )
 
             module_path, class_name = entry.split(":", 1)
+            # 元数据扫描排在 host 起来**之后**，而它自己的上限是 10s：只钳住 host
+            # 启动的话，一次冷扫描就能把整轮 reload 的墙钟顶穿，而那正是这个预算
+            # 要管的事（CodeRabbit）。所以这一步也按剩余预算收窄。
+            #
+            # 正常一轮 reload 走到这里是命中缓存的（注册表刚刷过、指纹没变），代价
+            # 接近零；钳位只在冷扫描那条病态路径上真的生效。
+            scan_timeout = _clamp_startup_timeout(
+                _DEFAULT_METADATA_SCAN_TIMEOUT, _remaining_start_budget(start_deadline)
+            )
             isolated_metadata = await asyncio.to_thread(
                 scan_plugin_metadata_isolated,
                 plugin_id=current_plugin_id,
@@ -953,6 +975,7 @@ class PluginLifecycleService:
                 conf=conf,
                 pdata=pdata,
                 python_requirement_paths=python_requirement_paths,
+                timeout=scan_timeout,
             )
             await asyncio.to_thread(
                 install_isolated_plugin_metadata,
@@ -1298,7 +1321,7 @@ class PluginLifecycleService:
             remaining = max(0.0, start_deadline - time_module.monotonic())
             with bounded_operation_wait(remaining):
                 outcome = await self._safe_start_for_reload(
-                    plugin_id, max_startup_timeout=remaining
+                    plugin_id, start_deadline=start_deadline
                 )
             if outcome.success:
                 reloaded.append(outcome.plugin_id)
@@ -1405,13 +1428,13 @@ class PluginLifecycleService:
             return _ReloadOutcome(plugin_id=plugin_id, success=False, error=error.message)
 
     async def _safe_start_for_reload(
-        self, plugin_id: str, *, max_startup_timeout: float | None = None
+        self, plugin_id: str, *, start_deadline: float | None = None
     ) -> _ReloadOutcome:
         try:
             await self.start_plugin(
                 plugin_id,
                 refresh_registry=False,
-                max_startup_timeout=max_startup_timeout,
+                start_deadline=start_deadline,
             )
             return _ReloadOutcome(plugin_id=plugin_id, success=True)
         except PluginOperationBusy as error:

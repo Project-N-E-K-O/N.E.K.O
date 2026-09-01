@@ -260,7 +260,7 @@ async def test_a_slow_but_successful_stop_is_not_reported_as_a_timeout(
 
     started: list[str] = []
 
-    async def _start(plugin_id: str, *, max_startup_timeout=None):
+    async def _start(plugin_id: str, *, start_deadline=None):
         started.append(plugin_id)
         return module._ReloadOutcome(plugin_id=plugin_id, success=True)
 
@@ -319,7 +319,7 @@ async def test_a_stopped_plugin_is_always_started_again(
         await asyncio.sleep(0.20)
         return module._ReloadOutcome(plugin_id=plugin_id, success=True)
 
-    async def _start(plugin_id: str, *, max_startup_timeout=None):
+    async def _start(plugin_id: str, *, start_deadline=None):
         started.append(plugin_id)
         return module._ReloadOutcome(plugin_id=plugin_id, success=True)
 
@@ -372,8 +372,11 @@ async def test_a_start_that_begins_late_gets_a_shortened_startup_timeout(
 
     seen: list[float | None] = []
 
-    async def _start(plugin_id: str, *, refresh_registry=True, max_startup_timeout=None):
-        seen.append(max_startup_timeout)
+    async def _start(plugin_id: str, *, refresh_registry=True, start_deadline=None):
+        # 记的是"这一刻还剩多少"，不是原始参数：传的是绝对截止期，所以第二个插件
+        # 看到的剩余量必须比第一个小。记参数本身的话，"每个插件各起一份新预算"
+        # 这个退化是看不出来的。
+        seen.append(None if start_deadline is None else start_deadline - time.monotonic())
         await asyncio.sleep(0.30)
         return {"success": True}
 
@@ -496,6 +499,17 @@ def test_an_expired_budget_still_takes_an_uncontended_lock(
     try:
         assert attempts == [1], "预算过期就拒绝了，可锁根本没人占"
     finally:
+        # 拿锁成功时 handle 会被登记进 _ACTIVE_FILE_LOCK_HANDLE 和
+        # _OPEN_FILE_LOCK_HANDLES，只 close 就会把一个已关闭的 handle 留在全局里
+        # 给后面的用例踩（CodeRabbit）。
+        #
+        # 但也不能直接调 _release_file_lock_sync：这个用例把 _lock_file_once 打成了
+        # 空操作，文件区间其实从没被锁过，走那条路会在 msvcrt 解锁那步抛
+        # PermissionError。所以只做登记那两步，再关。
+        with module._FILE_LOCK_HANDLE_GUARD:
+            if module._ACTIVE_FILE_LOCK_HANDLE is handle:
+                module._ACTIVE_FILE_LOCK_HANDLE = None
+            module._OPEN_FILE_LOCK_HANDLES.discard(handle)
         handle.close()
 
 
