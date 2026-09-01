@@ -821,11 +821,18 @@ def _begin_scan(key: tuple, *, force: bool) -> tuple[int, int]:
                 _SCAN_GENERATION.clear()
                 _SCAN_EPOCH += 1
             _SCAN_GENERATION[key] = generation
-            # force 的意思是"缓存里那个答案不可信"，所以现在就把它扔掉，而不是等
-            # 着用新结果覆盖。这次扫描的结果万一没能写进去（被更晚的一次 force
-            # 顶掉），旧条目还留着的话，后面一次普通读取会把它端出来，这次 force
-            # 就白做了（codex）。
-            _SCAN_CACHE.pop(key, None)
+            # force 的意思是"缓存里那个答案不可信"，所以现在就把它作废，而不是
+            # 等着用新结果覆盖。旧条目留着的话，后面一次普通读取会把它端出来，这次
+            # force 就白做了（codex）。
+            #
+            # 作废的方式是留一块墓碑 (None, True)，不是 pop：
+            #   * 读取侧把 None 当未命中，所以普通扫描照常真扫，行为跟删掉一样；
+            #   * 写入侧那条「普通扫描不覆盖 force 的结果」现成的判据，因此对这块
+            #     墓碑也生效——force 万一超时或抛错、一条结果都没写成，同代次的普通
+            #     扫描也不能把它读到的（可能是变更前依赖的）结果填进这个坑
+            #     （codex）。
+            # 不用再引一张在途表，就是复用已有的 (结果, 是不是 force) 这个形状。
+            _SCAN_CACHE[key] = (None, True)
         return generation, _SCAN_EPOCH
 
 
@@ -1025,7 +1032,7 @@ def scan_plugin_metadata_isolated(
     if not force:
         with _SCAN_CACHE_LOCK:
             hit = _SCAN_CACHE.get(key)
-        if hit is not None:
+        if hit is not None and hit[0] is not None:
             result_only, _ = hit
             # 先于预算判断：这个插件没变过，答案早就在手上，不花任何时间。反过来
             # 做的话，一批改动过的插件把预算耗光之后，排在后面的健康插件会被标成

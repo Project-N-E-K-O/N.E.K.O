@@ -958,6 +958,72 @@ def test_capacity_eviction_invalidates_in_flight_scans(
     )
 
 
+def test_a_failed_forced_scan_still_keeps_the_key_cold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A force that never lands must not leave the slot open to a stale write.
+
+    The "an ordinary scan never overwrites a forced result" rule only fired when
+    a forced result existed. If the forced scan times out or raises, nothing is
+    written — and an ordinary scan sharing that generation happily fills the
+    evicted key with what it read, which may predate the very change force was
+    invalidating for (codex).
+
+    So the eviction leaves a tombstone rather than a hole: reads treat it as a
+    miss, and the existing write-side check refuses ordinary writes over it. No
+    in-flight table, no cleanup path — the same ``(result, forced)`` shape.
+
+    Mutation: pop the key instead of writing a tombstone.
+    """
+    import threading
+
+    config_path = _plugin_dir(tmp_path)
+    forced_inside = threading.Event()
+    let_forced_fail = threading.Event()
+    forced_thread: threading.Thread | None = None
+
+    def _fake(**inner):
+        if threading.current_thread() is forced_thread:
+            forced_inside.set()
+            let_forced_fail.wait(timeout=5)
+            raise module.PluginMetadataScanError("TimeoutExpired", "hung")
+        return "ORDINARY"
+
+    monkeypatch.setattr(module, "_scan_plugin_metadata_uncached", _fake)
+
+    def _run(*, force: bool = False):
+        return module.scan_plugin_metadata_isolated(
+            plugin_id="demo",
+            module_path="entry",
+            class_name="C",
+            config_path=config_path,
+            conf={},
+            pdata={},
+            force=force,
+        )
+
+    def _forced():
+        try:
+            _run(force=True)
+        except module.PluginMetadataScanError:
+            pass
+
+    forced_thread = threading.Thread(target=_forced)
+    forced_thread.start()
+    assert forced_inside.wait(timeout=5), "前提没成立：force 扫描没开始"
+
+    # 普通扫描在 force 之后开始，所以捕获同一个代次。
+    assert _run() == "ORDINARY"
+    let_forced_fail.set()
+    forced_thread.join(timeout=5)
+
+    calls: list = []
+    _scan(monkeypatch, config_path, calls)
+    assert calls == ["demo"], (
+        "force 失败之后，普通扫描把可能读自变更前依赖的结果填进了那个坑"
+    )
+
+
 def test_concurrent_scans_are_capped_across_the_whole_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
