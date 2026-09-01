@@ -878,6 +878,57 @@ def test_a_renamed_runtime_id_is_protected_from_stale_removal(
     )
 
 
+def test_a_deferred_scan_keeps_a_previous_hard_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not scanning cannot clear a verdict a completed scan reached.
+
+    A plugin marked ``runtime_load_state="failed"`` by a genuine import failure
+    would have that marker stripped by any later slot-starved or over-budget
+    refresh — the transient branch pops the state, and carrying only
+    ``entries_preview`` forward let the rest go. The plugin then becomes
+    autostart-eligible again without a single successful rescan and stalls
+    startup all over again (codex).
+
+    Mutation: carry only ``entries_preview`` forward.
+    """
+    def _record(payload: dict) -> module.PluginDiscoveryRecord:
+        return module.PluginDiscoveryRecord(
+            plugin_id="demo",
+            original_plugin_id="demo",
+            config_path=tmp_path / "demo" / "plugin.toml",
+            entry_point="mod:Cls",
+            plugin_type="plugin",
+            enabled=True,
+            auto_start=True,
+            meta_payload=payload,
+        )
+
+    previous = {
+        "entries_preview": [{"id": "demo.hello"}],
+        "runtime_load_state": "failed",
+        "runtime_load_error_type": "SyntaxError",
+        "runtime_load_error_message": "bad code",
+        "runtime_load_error_phase": "import_module",
+    }
+
+    kept = module._keep_known_entries_on_deferred_scan(
+        _record({"runtime_scan_deferred": True, "entries_preview": []}), previous
+    )
+
+    assert kept.meta_payload["runtime_load_state"] == "failed", (
+        "一次根本没跑的扫描把上一次判定的硬失败清掉了，插件会重新获得自启动资格"
+    )
+    assert kept.meta_payload["runtime_load_error_type"] == "SyntaxError"
+
+    # 上一次是好的，就不该凭空造出一个 failed 来。
+    healthy = module._keep_known_entries_on_deferred_scan(
+        _record({"runtime_scan_deferred": True, "entries_preview": []}),
+        {"entries_preview": [{"id": "demo.hello"}]},
+    )
+    assert "runtime_load_state" not in healthy.meta_payload
+
+
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -499,20 +499,39 @@ def _publication_keys(plugin_id: str | None, config_path: Path) -> tuple[str, ..
     return tuple(keys)
 
 
+# 一次没扫成的刷新要原样带过去的字段。
+#
+# entries_preview：不扫等于没学到新东西，抹掉它会让插件在 /plugins 里少半张脸。
+# runtime_load_state / runtime_load_error_*：上一次**扫成功了**并且判定这个插件坏掉
+#   的结论，同样不该被一次根本没跑的扫描清掉——清掉它，插件就在没有任何一次成功
+#   重扫的情况下重新获得自启动资格，开机时再卡一次（codex）。
+_DEFERRED_SCAN_CARRY_FORWARD = (
+    "entries_preview",
+    "runtime_load_state",
+    "runtime_load_error_type",
+    "runtime_load_error_message",
+    "runtime_load_error_phase",
+)
+
+
 def _keep_known_entries_on_deferred_scan(
     record: PluginDiscoveryRecord,
     previous: object,
 ) -> PluginDiscoveryRecord:
-    """Carry the last good ``entries_preview`` through a scan that never ran."""
+    """Carry the last completed scan's verdict through a scan that never ran."""
     payload = record.meta_payload
     if not payload.get("runtime_scan_deferred"):
         return record
     if not isinstance(previous, dict):
         return record
-    kept = previous.get("entries_preview")
-    if not kept:
+    carried = {
+        field: previous[field]
+        for field in _DEFERRED_SCAN_CARRY_FORWARD
+        if previous.get(field)
+    }
+    if not carried:
         return record
-    return replace(record, meta_payload={**payload, "entries_preview": kept})
+    return replace(record, meta_payload={**payload, **carried})
 
 
 # 一次 force 发布之后，号 <= 这个值的**普通**刷新一律作废。
@@ -555,14 +574,10 @@ def _may_publish_record(
     Caller holds ``_REGISTRY_PUBLISH_GUARD``.
     """
     keys = _publication_keys(plugin_id, config_path)
-    if not forced:
-        blind_until = max(
-            [_REGISTRY_CACHE_BLIND_UNTIL]
-            + [_REGISTRY_PLUGIN_CACHE_BLIND_UNTIL.get(key, 0) for key in keys]
-        )
-    else:
-        blind_until = 0
-    if not forced and ticket <= blind_until:
+    if not forced and ticket <= max(
+        [_REGISTRY_CACHE_BLIND_UNTIL]
+        + [_REGISTRY_PLUGIN_CACHE_BLIND_UNTIL.get(key, 0) for key in keys]
+    ):
         # 屏障对两条发布路径一视同仁。只让全量刷新那道门认它的话，一次在 force 扫描
         # 期间开始的**单插件**刷新照样能把可能来自旧缓存的结果写进去——而单插件刷新
         # 是 start_plugin 的必经之路，它比全量刷新常见得多（CodeRabbit）。

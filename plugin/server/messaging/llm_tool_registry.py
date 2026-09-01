@@ -282,7 +282,9 @@ async def unregister_remote_tool(
 _CLEAR_TOOLS_TIMEOUT = httpx.Timeout(2.0, connect=0.3)
 
 
-async def clear_plugin_tools(plugin_id: str, *, role: Optional[str] = None) -> Dict[str, Any]:
+async def clear_plugin_tools(
+    plugin_id: str, *, role: Optional[str] = None, timeout: float | None = None
+) -> Dict[str, Any]:
     """Remove every LLM tool a plugin has registered on ``main_server``.
 
     Called from the plugin shutdown path so a stopped plugin doesn't
@@ -305,7 +307,17 @@ async def clear_plugin_tools(plugin_id: str, *, role: Optional[str] = None) -> D
     # 用的幽灵工具。本地记录不是远端状态的权威。所以照发，只是给这次尽力而为的
     # 清理一个更短的超时。
     try:
-        resp = await client.post(url, json=payload, timeout=_CLEAR_TOOLS_TIMEOUT)
+        # 调用方给了预算就用它：这一步跑在插件停止的关键路径上、操作锁还握着，
+        # 一个独立的超时会让关停在整轮预算之外再多花一截（codex）。
+        resp = await client.post(
+            url,
+            json=payload,
+            timeout=(
+                _CLEAR_TOOLS_TIMEOUT
+                if timeout is None
+                else httpx.Timeout(timeout, connect=min(0.3, timeout))
+            ),
+        )
     except httpx.HTTPError as exc:
         logger.debug(
             "clear_plugin_tools HTTP error (best-effort): plugin_id={}, err={}",

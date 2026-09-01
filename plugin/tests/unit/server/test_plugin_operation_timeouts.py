@@ -752,6 +752,53 @@ def test_the_file_lock_stage_is_only_entered_under_the_process_lock() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_the_tool_cleanup_request_honours_the_caller_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parameter that is accepted and ignored is worse than no parameter.
+
+    The tool cleanup runs on the stop path with the operation lock held. Its own
+    two-second timeout is independent of the round budget, so a stalled
+    ``main_server`` lets a stop spend that long past ``stop_deadline`` while
+    holding the lock (codex). Passing a budget in must actually reach the
+    request — the first version of this change added the keyword argument and
+    left the body using the module constant, and every test still passed.
+
+    Mutation: ignore ``timeout`` and always use ``_CLEAR_TOOLS_TIMEOUT``.
+    """
+    from plugin.server.messaging import llm_tool_registry as module
+
+    seen: list = []
+
+    class _Resp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = "{}"
+
+        def json(self):
+            return {"success": True}
+
+    class _Client:
+        async def post(self, url, json=None, timeout=None):
+            seen.append(timeout)
+            return _Resp()
+
+    monkeypatch.setattr(module, "_get_http_client", lambda: _Client())
+
+    await module.clear_plugin_tools("demo", timeout=0.25)
+
+    assert seen, "前提没成立：根本没发出请求"
+    handed = seen[0]
+    total = getattr(handed, "read", None) or getattr(handed, "pool", None)
+    assert total == pytest.approx(0.25), (
+        f"预算没有传到真正发请求那一步，还是用的模块常量：{handed}"
+    )
+    assert getattr(handed, "connect", None) == pytest.approx(0.25), (
+        "connect 超时没有跟着收窄，会比整段预算还长"
+    )
+
+
 def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -> None:
     """The two lock stages share a budget; they must not each spend a full one.
 

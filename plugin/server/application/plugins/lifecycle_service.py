@@ -87,6 +87,8 @@ _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 # 而不是"抓紧试一次"——而走到启动阶段的插件都是我们刚亲手停掉的，判它失败就是
 # 把它留在停止状态。
 _MIN_CLAMPED_STEP_TIMEOUT = 1.0
+# 清理远端工具表这一步在没有预算约束时愿意花的时间（它自己内部还有更细的超时）。
+_CLEAR_TOOLS_BUDGET_SECONDS = 2.0
 
 
 def _clamp_step_timeout(configured: float, budget: float | None) -> float:
@@ -1144,7 +1146,20 @@ class PluginLifecycleService:
             # model could still pick them only to hit a 404 on
             # dispatch.
             try:
-                await clear_plugin_llm_tools(plugin_id)
+                # 这一步也在锁里，也在停止阶段的预算里。它自己那个 2s 超时是
+                # 独立的，所以一次卡住的 main_server 能让关停在预算之外再多花
+                # 两秒，而锁一直握着（codex）。按剩余预算收窄。
+                await clear_plugin_llm_tools(
+                    plugin_id,
+                    timeout=(
+                        None
+                        if stop_deadline is None
+                        else _clamp_step_timeout(
+                            _CLEAR_TOOLS_BUDGET_SECONDS,
+                            _remaining_step_budget(stop_deadline),
+                        )
+                    ),
+                )
             except Exception as exc:
                 logger.debug(
                     "clear_plugin_llm_tools failed (best-effort): plugin_id={}, err_type={}, err={}",

@@ -736,7 +736,11 @@ def install_isolated_plugin_metadata(
 # ⚠️ 目录外的依赖（共享的 vendor/、site-packages）变化抓不到。所以凡是"内容可能
 # 在我们背后变了"的路径——安装、升级、卸载、以及用户手点的刷新——必须传
 # force=True 绕过，不能指望键自己发现。
-_SCAN_CACHE: dict[tuple, IsolatedPluginMetadata] = {}
+# 值是 (结果, 这份结果是不是 force 扫出来的)。第二项承重：一次在 force 扫描期间
+# 开始的普通扫描会捕获同一个代次，所以代次比较放它过去；但两个子进程 import
+# 外部依赖的先后是不确定的，普通那次完全可能读到更旧的依赖却最后落地
+# （codex）。force 的结果不接受普通扫描覆盖。
+_SCAN_CACHE: dict[tuple, tuple[IsolatedPluginMetadata, bool]] = {}
 _SCAN_CACHE_LOCK = threading.Lock()
 _SCAN_CACHE_MAX_ENTRIES = 256
 # 指纹忽略的目录名。除此之外插件目录下的**所有**文件都进指纹。
@@ -970,11 +974,12 @@ def scan_plugin_metadata_isolated(
         with _SCAN_CACHE_LOCK:
             hit = _SCAN_CACHE.get(key)
         if hit is not None:
+            result_only, _ = hit
             # 先于预算判断：这个插件没变过，答案早就在手上，不花任何时间。反过来
             # 做的话，一批改动过的插件把预算耗光之后，排在后面的健康插件会被标成
             # 扫描失败——注册表里它的元数据被覆盖成 failed，还可能因此失去自启动
             # 资格，而它其实什么都没发生（codex）。
-            return hit
+            return result_only
 
     # 盖章要排在预算判断**前面**。放在后面的话，一次预算已经见底的 force 会在下面
     # 那条 return 上直接走掉，它宣布不可信的那条旧条目原封不动留在缓存里，下一次
@@ -1018,7 +1023,12 @@ def scan_plugin_metadata_isolated(
                 # 手上这份是照着旧内容读出来的，写回去就是拿陈旧结果盖掉更新的
                 # 那份。
                 return result
+            existing = _SCAN_CACHE.get(key)
+            if existing is not None and existing[1] and not force:
+                # 这一格里躺着的是 force 扫出来的结果。我们是普通扫描，代次虽然对得
+                # 上，但两个子进程读外部依赖的先后无法保证——不覆盖它。
+                return result
             if len(_SCAN_CACHE) >= _SCAN_CACHE_MAX_ENTRIES:
                 _SCAN_CACHE.clear()
-            _SCAN_CACHE[key] = result
+            _SCAN_CACHE[key] = (result, force)
     return result

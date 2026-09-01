@@ -687,6 +687,77 @@ def test_recycling_the_generation_table_does_not_reopen_the_gate(
     )
 
 
+def test_an_ordinary_scan_does_not_overwrite_a_forced_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same generation does not mean same freshness.
+
+    The ordering here is the whole test. The ordinary scan must start *after*
+    the forced one has bumped the generation — otherwise the generation check
+    stops it first and this guard proves nothing (the first version made that
+    mistake and the mutation survived). Starting after, it captures the same
+    generation and sails through that check; what has to stop it is the fact
+    that the entry it would overwrite came from a forced scan. The two
+    subprocesses import external dependencies in an unspecified order, so the
+    later-starting ordinary scan can still have read the older dependency
+    (codex).
+
+    Mutation: drop the forced-entry check before the cache write.
+    """
+    import threading
+
+    config_path = _plugin_dir(tmp_path)
+    forced_inside = threading.Event()
+    ordinary_inside = threading.Event()
+    let_forced_finish = threading.Event()
+    let_ordinary_finish = threading.Event()
+    forced_thread: threading.Thread | None = None
+    ordinary_thread: threading.Thread | None = None
+
+    def _fake(**inner):
+        current = threading.current_thread()
+        if current is forced_thread:
+            forced_inside.set()
+            let_forced_finish.wait(timeout=5)
+            return "FORCED"
+        ordinary_inside.set()
+        let_ordinary_finish.wait(timeout=5)
+        return "ORDINARY"
+
+    monkeypatch.setattr(module, "_scan_plugin_metadata_uncached", _fake)
+
+    def _run(*, force: bool = False):
+        return module.scan_plugin_metadata_isolated(
+            plugin_id="demo",
+            module_path="entry",
+            class_name="C",
+            config_path=config_path,
+            conf={},
+            pdata={},
+            force=force,
+        )
+
+    # 1. force 先开工：它把代次推上去，并把旧条目删掉。
+    forced_thread = threading.Thread(target=lambda: _run(force=True))
+    forced_thread.start()
+    assert forced_inside.wait(timeout=5), "前提没成立：force 扫描没开始"
+
+    # 2. 普通扫描在这之后才开始，所以它捕获的是**同一个**代次。
+    ordinary_thread = threading.Thread(target=_run)
+    ordinary_thread.start()
+    assert ordinary_inside.wait(timeout=5), "前提没成立：普通扫描没开始"
+
+    # 3. force 先落地，普通的后落地。
+    let_forced_finish.set()
+    forced_thread.join(timeout=5)
+    let_ordinary_finish.set()
+    ordinary_thread.join(timeout=5)
+
+    assert _run() == "FORCED", (
+        "普通扫描把 force 的结果盖掉了——代次相同，但它读到的依赖可能更旧"
+    )
+
+
 def test_concurrent_scans_are_capped_across_the_whole_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
