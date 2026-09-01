@@ -35,7 +35,7 @@ class _CrossLoopLock:
         self._held = False
         self._waiters: deque[_Waiter] = deque()
 
-    async def acquire(self) -> None:
+    async def acquire(self, deadline: float | None = None) -> None:
         loop = asyncio.get_running_loop()
         with self._state_lock:
             if not self._held:
@@ -62,7 +62,12 @@ class _CrossLoopLock:
 
         # 同进程争用走的是这里，而且它排在文件锁**前面**——两个 HTTP 请求打到
         # 同一个服务器就卡在这一步。只给文件锁加截止期等于管住了较罕见的那一半。
-        deadline = _wait_deadline()
+        #
+        # 截止期由调用方算好一次、两层锁共用。各算各的话，同时存在同进程和跨进程
+        # 争用时预算会被花两遍：先在这里等满一份，再在文件锁那边重新起算一份，
+        # 名义上 20s 的请求可以在前端 30s 早已放弃之后才真的改状态（codex）。
+        if deadline is None:
+            deadline = _wait_deadline()
         try:
             if deadline is None:
                 await waiter.future
@@ -306,10 +311,6 @@ def _acquire_file_lock_sync(
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 raise _FileLockAcquireCancelled
-            if deadline is not None and time.monotonic() >= deadline:
-                raise PluginOperationBusy(
-                    "another plugin operation is holding the lock"
-                )
             try:
                 _lock_file_once(handle)
                 with _FILE_LOCK_HANDLE_GUARD:
@@ -318,6 +319,14 @@ def _acquire_file_lock_sync(
             except OSError as exc:
                 if not _is_file_lock_contention(exc):
                     raise
+                # 过期判定放在**争用之后**：预算表达的是"愿意等多久"，等零秒也是
+                # 一个合法答案。放在尝试之前的话，一个已经花光预算但完全没人争用
+                # 的调用方会拿到 409，而那把锁当时就是空的。_CrossLoopLock 那边
+                # 同样先走无争用的快路径，两边对称。
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise PluginOperationBusy(
+                        "another plugin operation is holding the lock"
+                    ) from exc
                 if contention_event is not None:
                     contention_event.set()
                 if cancel_event is not None:
@@ -355,11 +364,12 @@ def _release_file_lock_sync(handle: Any) -> None:
             _OPEN_FILE_LOCK_HANDLES.discard(handle)
 
 
-async def _acquire_file_lock_cancellation_safe() -> Any:
+async def _acquire_file_lock_cancellation_safe(deadline: float | None = None) -> Any:
     loop = asyncio.get_running_loop()
     cancel_event = threading.Event()
     # 在这里读——这行还在调用方的上下文里；到了 executor 线程就读不到了。
-    deadline = _wait_deadline()
+    if deadline is None:
+        deadline = _wait_deadline()
     operation = asyncio.ensure_future(
         loop.run_in_executor(
             _FILE_LOCK_EXECUTOR, _acquire_file_lock_sync, cancel_event, deadline
@@ -411,10 +421,12 @@ class _HeldPluginOperationLock:
             self._depth_token = _OPERATION_DEPTH.set(depth + 1)
             return
 
-        await _PROCESS_LOCK.acquire()
+        # 一次逻辑加锁只算一个截止期，两层锁共用（见 _CrossLoopLock.acquire）。
+        deadline = _wait_deadline()
+        await _PROCESS_LOCK.acquire(deadline)
         self._acquired = True
         try:
-            self._file_lock_handle = await _acquire_file_lock_cancellation_safe()
+            self._file_lock_handle = await _acquire_file_lock_cancellation_safe(deadline)
             await asyncio.to_thread(_reload_install_source_manager_sync)
         except BaseException:
             if self._file_lock_handle is not None:

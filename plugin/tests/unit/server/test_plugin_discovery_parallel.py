@@ -180,6 +180,61 @@ def test_the_time_budget_stops_spawning_more_workers(
     )
 
 
+def test_a_single_plugin_refresh_forces_only_that_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refreshing one plugin must not make the other sixteen skip their cache.
+
+    ``POST /plugin/{id}/refresh`` used to hand ``force=True`` to the whole
+    discovery run, so every plugin bypassed its cache: unrelated slow plugins
+    ate the scan budget before the requested one was reached — marking a
+    perfectly healthy target as scan-failed — and even the happy path paid for
+    a full cold rescan of the registry (codex / CodeRabbit).
+
+    Mutation: propagate the caller's ``force`` to every record again.
+    """
+    names = ["p00", "p01", "p02"]
+    root = _make_root(tmp_path, names)
+    forced: dict[str, bool] = {}
+
+    def _build(ctx, *, scan_timeout=None, force=False):
+        forced[ctx.pid] = force
+        return SimpleNamespace(plugin_id=ctx.pid, config_path=ctx.toml_path)
+
+    _install_stubs(monkeypatch, root, _build)
+
+    module._discover_registry_snapshot_sync(
+        (root,), force_targets=frozenset({"p01"})
+    )
+
+    assert forced == {"p00": False, "p01": True, "p02": False}, (
+        f"force 的作用范围不对：{forced}"
+    )
+
+
+def test_a_full_refresh_still_forces_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half: narrowing the scope must not break the whole-registry force.
+
+    Install, upgrade and uninstall all go through ``refresh_registry(force=True)``
+    and depend on nothing being served from cache.
+    """
+    names = ["p00", "p01"]
+    root = _make_root(tmp_path, names)
+    forced: dict[str, bool] = {}
+
+    def _build(ctx, *, scan_timeout=None, force=False):
+        forced[ctx.pid] = force
+        return SimpleNamespace(plugin_id=ctx.pid, config_path=ctx.toml_path)
+
+    _install_stubs(monkeypatch, root, _build)
+
+    module._discover_registry_snapshot_sync((root,), force=True)
+
+    assert forced == {"p00": True, "p01": True}, f"全量 force 被收窄了：{forced}"
+
+
 def test_a_non_positive_timeout_never_starts_a_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

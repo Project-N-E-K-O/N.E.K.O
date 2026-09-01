@@ -199,7 +199,7 @@ async def test_reload_all_stops_at_its_budget_and_says_which_were_skipped(
     service = module.PluginLifecycleService()
     stopped: list[str] = []
 
-    async def _slow_stop(plugin_id: str):
+    async def _slow_stop(plugin_id: str, *, shutdown_timeout=None):
         stopped.append(plugin_id)
         await asyncio.sleep(0.12)
         return module._ReloadOutcome(plugin_id=plugin_id, success=False, error="x")
@@ -217,6 +217,285 @@ async def test_reload_all_stops_at_its_budget_and_says_which_were_skipped(
         entry["error"] for entry in result["failed"] if "budget" in str(entry["error"])
     ]
     assert skipped_reasons, "跳过的原因没写进结果，调用方无从知道为什么少了几个"
+
+
+@pytest.mark.asyncio
+async def test_a_slow_but_successful_stop_is_not_reported_as_a_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``asyncio.wait_for`` cannot bound a ``@serialized_plugin_operation``.
+
+    Once that wrapper holds the lock it swallows cancellation and waits for the
+    inner call to finish before re-raising, so the outer ``wait_for`` blocks for
+    the whole shutdown anyway and *then* reports a stop that actually succeeded
+    as a timeout. The plugin drops out of the restart list and is left stopped
+    rather than reloaded — a reload that quietly turns into a stop (codex).
+
+    The budget is threaded into the operation instead. This stub carries the
+    real decorator, because the bug lives in the decorator's behaviour.
+
+    Mutation: wrap the stop in ``asyncio.wait_for(..., timeout=remaining)``.
+    """
+    from plugin.server.application.plugins import lifecycle_service as module
+    from plugin.server.application.plugins.operation_lock import (
+        serialized_plugin_operation,
+    )
+
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: ["p0"])
+    monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
+    monkeypatch.setattr(module, "_RELOAD_ALL_BUDGET_SECONDS", 0.20)
+
+    async def _noop_refresh(*a, **k):
+        return {"success": True}
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _noop_refresh)
+
+    service = module.PluginLifecycleService()
+
+    @serialized_plugin_operation
+    async def _slow_success(plugin_id: str, *, shutdown_timeout=None):
+        # 比剩余预算长，但确实成功了。
+        await asyncio.sleep(0.45)
+        return {"success": True}
+
+    started: list[str] = []
+
+    async def _start(plugin_id: str, *, max_startup_timeout=None):
+        started.append(plugin_id)
+        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    monkeypatch.setattr(service, "stop_plugin", _slow_success)
+    monkeypatch.setattr(service, "_safe_start_for_reload", _start)
+
+    async def _ordered(ids):
+        return list(ids)
+
+    monkeypatch.setattr(module.plugin_registry_service, "order_plugin_ids", _ordered)
+
+    result = await service.reload_all_plugins()
+
+    assert started == ["p0"], (
+        f"停成功了却没重启——被当成超时丢掉了：failed={result.get('failed')}"
+    )
+    assert result["reloaded"] == ["p0"]
+    assert not result["failed"], f"成功的停止被记成失败：{result['failed']}"
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_plugin_is_always_started_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stopping a plugin creates an obligation to start it.
+
+    The two phases must not share one deadline: a slow stop phase would then
+    leave nothing for the starts, and every plugin already taken down would be
+    reported as "over budget" and left stopped. That turns a reload into a
+    silent mass stop — far worse than a reload that answers late, since the
+    operation itself succeeded and only the response was slow.
+
+    Mutation: reuse ``stop_deadline`` in the start loop.
+    """
+    from plugin.server.application.plugins import lifecycle_service as module
+
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: ["p0", "p1"])
+    monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
+    monkeypatch.setattr(module, "_RELOAD_ALL_BUDGET_SECONDS", 0.30)
+
+    async def _noop_refresh(*a, **k):
+        return {"success": True}
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _noop_refresh)
+
+    async def _ordered(ids):
+        return list(ids)
+
+    monkeypatch.setattr(module.plugin_registry_service, "order_plugin_ids", _ordered)
+
+    service = module.PluginLifecycleService()
+    started: list[str] = []
+
+    async def _stop(plugin_id: str, *, shutdown_timeout=None):
+        # 停止阶段把预算花光——但两个都停成功了。
+        await asyncio.sleep(0.20)
+        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    async def _start(plugin_id: str, *, max_startup_timeout=None):
+        started.append(plugin_id)
+        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    monkeypatch.setattr(service, "_safe_stop_for_reload", _stop)
+    monkeypatch.setattr(service, "_safe_start_for_reload", _start)
+
+    result = await service.reload_all_plugins()
+
+    assert started == ["p0", "p1"], (
+        f"停掉了却没重新启动，reload 变成了 stop：failed={result.get('failed')}"
+    )
+    assert result["reloaded"] == ["p0", "p1"]
+
+
+@pytest.mark.asyncio
+async def test_a_start_that_begins_late_gets_a_shortened_startup_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Checking the deadline before a start does not bound the start itself.
+
+    A plugin whose start begins a moment before the deadline still waits out its
+    own startup timeout — ten seconds by default — so reload-all overruns its
+    advertised wall clock and keeps mutating plugin state long after the front
+    end gave up (codex / CodeRabbit / Greptile). The remaining budget is pushed
+    down into the start instead, with a floor so a nearly-spent budget still
+    buys a real attempt rather than an instant failure.
+
+    Mutation: drop the clamp, or drop its lower bound.
+    """
+    from plugin.server.application.plugins import lifecycle_service as module
+
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: ["p0", "p1"])
+    monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
+    monkeypatch.setattr(module, "_RELOAD_ALL_BUDGET_SECONDS", 0.40)
+
+    async def _noop_refresh(*a, **k):
+        return {"success": True}
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _noop_refresh)
+
+    async def _ordered(ids):
+        return list(ids)
+
+    monkeypatch.setattr(module.plugin_registry_service, "order_plugin_ids", _ordered)
+
+    service = module.PluginLifecycleService()
+
+    async def _stop(plugin_id: str, *, shutdown_timeout=None):
+        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    seen: list[float | None] = []
+
+    async def _start(plugin_id: str, *, refresh_registry=True, max_startup_timeout=None):
+        seen.append(max_startup_timeout)
+        await asyncio.sleep(0.30)
+        return {"success": True}
+
+    monkeypatch.setattr(service, "_safe_stop_for_reload", _stop)
+    monkeypatch.setattr(service, "start_plugin", _start)
+
+    await service.reload_all_plugins()
+
+    assert len(seen) == 2, f"两个插件都该被尝试启动：{seen}"
+    assert seen[0] is not None and seen[0] <= 0.40, (
+        f"第一个启动拿到的上限比整轮预算还大：{seen[0]}"
+    )
+    assert seen[1] is not None and seen[1] < seen[0], (
+        f"第二个启动没有拿到**剩余**预算，而是又一份完整的：{seen}"
+    )
+
+
+def test_the_startup_clamp_never_widens_and_never_reaches_zero() -> None:
+    """Both directions of the clamp, on the function production actually calls.
+
+    A spent budget must still buy a short attempt: every plugin reaching the
+    start phase was just stopped by us, so refusing to try leaves it down — the
+    opposite of a reload. And a plugin that declared a *shorter* timeout of its
+    own must not have it widened by a generous budget.
+
+    Mutation: drop the lower bound, or drop the ``min``.
+    """
+    from plugin.server.application.plugins import lifecycle_service as module
+
+    assert module._clamp_startup_timeout(10.0, 0.0) > 0, (
+        "预算见底时算出了 0，等于直接判启动失败"
+    )
+    assert module._clamp_startup_timeout(10.0, 3.0) == 3.0, "剩余预算没有压住启动上限"
+    assert module._clamp_startup_timeout(2.0, 30.0) == 2.0, "插件自己更短的超时被放宽了"
+    assert module._clamp_startup_timeout(10.0, None) == 10.0, "没有预算时不该改动配置值"
+
+
+def test_one_deadline_covers_both_lock_layers() -> None:
+    """The two lock stages share a budget; they must not each spend a full one.
+
+    ``_CrossLoopLock`` runs first and the file lock second. With each stage
+    calling ``_wait_deadline()`` for itself, a request waiting out most of its
+    budget behind a same-process operation then starts a *fresh* full budget on
+    the file lock, so a nominally 20 s request can still mutate state well past
+    the front end's 30 s (codex).
+
+    Mutation: have ``__aenter__`` pass ``None`` to either stage.
+    """
+    from plugin.server.application.plugins import operation_lock as module
+
+    budget = 0.60
+    process_lock_held_for = 0.40
+
+    async def _scenario() -> tuple[str, float]:
+        # 文件锁永远争用：预算怎么分配，全看跨进程那一层还剩多少。
+        def _always_contended(handle):
+            raise OSError(module.errno.EACCES, "held")
+
+        module._lock_file_once_original = module._lock_file_once
+        module._lock_file_once = _always_contended
+        module._FILE_LOCK_RETRY_INTERVAL_SECONDS_original = (
+            module._FILE_LOCK_RETRY_INTERVAL_SECONDS
+        )
+        module._FILE_LOCK_RETRY_INTERVAL_SECONDS = 0.01
+        held = module._HeldPluginOperationLock()
+        try:
+            await module._PROCESS_LOCK.acquire()
+
+            async def _release_later():
+                await asyncio.sleep(process_lock_held_for)
+                module._PROCESS_LOCK.release()
+
+            releaser = asyncio.create_task(_release_later())
+            started = time.monotonic()
+            with module.bounded_operation_wait(budget):
+                try:
+                    await held.__aenter__()
+                except module.PluginOperationBusy:
+                    return "busy", time.monotonic() - started
+                finally:
+                    await releaser
+            return "acquired", time.monotonic() - started
+        finally:
+            module._lock_file_once = module._lock_file_once_original
+            module._FILE_LOCK_RETRY_INTERVAL_SECONDS = (
+                module._FILE_LOCK_RETRY_INTERVAL_SECONDS_original
+            )
+
+    outcome, elapsed = asyncio.run(_scenario())
+
+    assert outcome == "busy"
+    assert elapsed < budget + 0.30, (
+        f"两层锁各花了一份预算：等了 {elapsed:.2f}s，预算只有 {budget}s"
+    )
+
+
+def test_an_expired_budget_still_takes_an_uncontended_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"Wait zero seconds" is a legitimate answer, and it is not a refusal.
+
+    reload-all hands each stop whatever is left of the round budget, so the
+    last one routinely gets ~0 s. Checking the deadline *before* trying meant a
+    caller with nothing left was refused while the lock sat there free — a 409
+    with no contention anywhere.
+
+    Mutation: move the deadline check back above ``_lock_file_once``.
+    """
+    from plugin.server.application.plugins import operation_lock as module
+
+    attempts: list[int] = []
+
+    def _free(handle):
+        attempts.append(1)
+
+    monkeypatch.setattr(module, "_lock_file_once", _free)
+
+    handle = module._acquire_file_lock_sync(None, time.monotonic() - 5.0)
+    try:
+        assert attempts == [1], "预算过期就拒绝了，可锁根本没人占"
+    finally:
+        handle.close()
 
 
 def test_a_domain_error_passes_through_the_wrapper_untouched() -> None:

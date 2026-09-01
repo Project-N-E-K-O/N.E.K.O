@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import os
 
-__all__ = ["env_seconds"]
+__all__ = ["env_int", "env_seconds"]
 
 
 def env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
@@ -43,7 +43,25 @@ def env_seconds(name: str, default: float, *, minimum: float = 1.0) -> float:
     return max(minimum, value)
 
 
-def _warn(name: str, raw: str, default: float) -> None:
+def env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    """Read a count-valued override, falling back on anything unusable.
+
+    Same contract as :func:`env_seconds`, for the overrides that count things
+    (workers, concurrent interpreters) rather than measure time. Kept beside it
+    so the two never drift into disagreeing about what a bad value means.
+    """
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        _warn(name, raw, default)
+        return default
+    return max(minimum, value)
+
+
+def _warn(name: str, raw: str, default: float | int) -> None:
     # 懒导入：metadata_scanner 会被每个扫描 worker 子进程导入，而它的模块级导入
     # 面正是单次扫描里最贵的一段。为一条几乎走不到的 warning 在模块级拉进日志栈，
     # 等于给每次扫描都加钱。

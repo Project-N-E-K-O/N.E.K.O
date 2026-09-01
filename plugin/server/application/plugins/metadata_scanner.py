@@ -55,9 +55,22 @@ _WORKER_BOOTSTRAP = (
 # 注意单项上限本身不足以封顶：17 个插件按 5 并发是 4 波，4×10s 仍然超前端预算。
 # 真正封顶的是 registry_service 那边的总预算，这里只负责让单个坏插件早点放手。
 # Env: NEKO_PLUGIN_METADATA_SCAN_TIMEOUT
-from plugin.server.application.plugins._env_budgets import env_seconds
+from plugin.server.application.plugins._env_budgets import env_int, env_seconds
 
 _DEFAULT_SCAN_TIMEOUT_SECONDS = env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", 10.0)
+
+# 同时最多允许多少个元数据解释器活着。
+#
+# 每轮 discovery 各建各的线程池，池的 max_workers 只管住"这一次刷新"。刷新路由
+# 之间没有串行化，force 又绕过缓存，于是连点几下刷新、失败重试、或几个调用方撞
+# 在一起，就能同时拉起 请求数 x workers 个解释器；单个实测常驻约 66 MB，几次重叠
+# 足以把内存吃干、把插件服务器带走（codex）。
+#
+# 闸设在真正起进程的这一层，而不是线程池那一层：除了 discovery 之外，单插件刷新
+# 和生命周期路径也会各自扫描，池上的上限管不到它们。
+# Env: NEKO_PLUGIN_METADATA_SCAN_CONCURRENCY
+MAX_CONCURRENT_METADATA_SCANS = env_int("NEKO_PLUGIN_METADATA_SCAN_CONCURRENCY", 8)
+_SCAN_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_METADATA_SCANS)
 
 
 def _metadata_worker_command() -> list[str]:
@@ -741,28 +754,94 @@ _SCAN_KEY_IGNORED_DIRS = frozenset({"__pycache__", ".git", ".mypy_cache", ".ruff
 # 换个方向从源头关掉这个窗口：只在所有被指纹的文件都已经"老"到不可能发生
 # 同刻度改写时才写缓存。刚改过的插件这一轮照常扫、只是不缓存，安定之后自然
 # 开始命中。代价是零额外 I/O。
+#
+# 2s 不是随手取的，它必须 >= 文件系统时间戳粒度 G。设写入缓存的时刻为 T、被指纹
+# 文件的 mtime 为 M，安定条件是 M <= T - S。之后一次改写发生在 T' > T，它落在
+# 刻度 floor(T'/G)；要让指纹看不出变化就得 floor(T'/G) == floor(M/G)，也就是
+# T' < M + G <= T - S + G。与 T' > T 联立得到 G > S。所以只要 S >= G，"同刻度
+# 等大小改写"这个窗口在**写入**那一刻就不存在，缓存里也就不会先躺进一条已经过时
+# 的条目（CodeRabbit 追问的正是这一条）。NTFS 的 G 是 100ns，FAT/exFAT 最粗，
+# 是 2s——所以下界取 2s。
 _CACHE_SETTLE_NS = 2_000_000_000
 _NEVER_SETTLED = -1
 
+# 缓存写入的"代"。force 扫描和显式清缓存都会 +1。
+#
+# 普通扫描和 force 扫描算出来的键完全一样——键只看插件目录，而 force 存在的意义
+# 正是目录外的变化（共享 vendor、site-packages）。于是一次开始得早、结束得晚的
+# 普通扫描能把 force 刚写进去的新结果盖回旧的，之后每次普通读取都拿到那份陈旧
+# 元数据，恰好废掉 force 的语义（CodeRabbit）。扫描开始时记下当时的代，写缓存前
+# 再比一次，不一样就放弃写入。
+#
+# 故意做成全局计数而不是按键：代价只是"这一轮不进缓存"，下一轮照样命中；换来的
+# 是没有需要回收的按键状态，也不会漏掉"清缓存"这条同样会让在途结果作废的路径。
+_SCAN_EPOCH = 0
+
+
+def _bump_scan_epoch_locked() -> None:
+    """Invalidate every scan currently in flight. Caller holds the cache lock."""
+    global _SCAN_EPOCH
+
+    _SCAN_EPOCH += 1
+
+
+def _scan_with_slot(**kwargs: Any) -> IsolatedPluginMetadata:
+    """Run one uncached scan while holding a global interpreter slot.
+
+    Waiting for a slot spends the caller's own timeout, so a saturated server
+    degrades the way an over-budget discovery already does — the plugin is
+    recorded as scan-failed and retried on the next refresh — instead of
+    queueing more interpreters than the machine can hold.
+    """
+    timeout = float(kwargs.get("timeout", _DEFAULT_SCAN_TIMEOUT_SECONDS))
+    if timeout <= 0:
+        # 预算已经没了：不占槽位，让扫描器自己抛 ScanBudgetExhausted。
+        return _scan_plugin_metadata_uncached(**kwargs)
+    started = time.monotonic()
+    if not _SCAN_SLOTS.acquire(timeout=timeout):
+        raise PluginMetadataScanError(
+            "ScanBudgetExhausted",
+            "Plugin metadata scan skipped: no scan slot became free in time",
+        )
+    try:
+        kwargs["timeout"] = timeout - (time.monotonic() - started)
+        return _scan_plugin_metadata_uncached(**kwargs)
+    finally:
+        _SCAN_SLOTS.release()
+
 
 def _plugin_source_fingerprint(config_path: Path) -> tuple[tuple, int]:
-    """``(指纹, 最新 mtime_ns)``，取自插件目录下的全部文件。"""
+    """``(指纹, 最新 mtime_ns)``，取自插件目录下的全部文件。
+
+    自顶向下走，并且**在下降之前**就把忽略目录剪掉。``rglob("*")`` 做不到这件
+    事：它会先把 ``.git`` 底下每一个后代都枚举出来、对每一个调用 ``is_file()``，
+    然后才轮到那句忽略判断。开发机上的插件目录带一个大 object database 时，每一
+    次"命中缓存"都要先花上几秒走一遍明确说了不看的文件，而这段时间不在 discovery
+    的扫描预算里（codex）。
+    """
     root = config_path.parent
     entries: list[tuple[str, int, int]] = []
     newest = 0
-    try:
-        for path in sorted(root.rglob("*")):
-            if not path.is_file():
-                continue
-            if _SCAN_KEY_IGNORED_DIRS.intersection(path.relative_to(root).parts):
-                continue
+    unreadable = False
+
+    def _note_error(_exc: OSError) -> None:
+        nonlocal unreadable
+        unreadable = True
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_note_error):
+        # 原地改 dirnames 才有剪枝效果——os.walk 拿它决定接下来下降到哪里。
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in _SCAN_KEY_IGNORED_DIRS
+        )
+        for name in sorted(filenames):
+            path = Path(dirpath) / name
             try:
                 st = path.stat()
             except OSError:
                 continue
-            entries.append((str(path.relative_to(root)), st.st_mtime_ns, st.st_size))
+            entries.append((os.path.relpath(path, root), st.st_mtime_ns, st.st_size))
             newest = max(newest, st.st_mtime_ns)
-    except OSError:
+    if unreadable:
         # 目录读不了就返回一个不可缓存的指纹，让这次扫描照常进行。
         return (("<unreadable>", 0, 0),), _NEVER_SETTLED
     return tuple(entries), newest
@@ -797,6 +876,9 @@ def clear_plugin_metadata_scan_cache(config_path: Path | None = None) -> None:
     one plugin should re-read that plugin, not pay to rescan the other sixteen.
     """
     with _SCAN_CACHE_LOCK:
+        # 同时作废在途的扫描：它们是在清缓存**之前**读的盘，写回去等于把刚被
+        # 明确宣布过时的内容又放回缓存。
+        _bump_scan_epoch_locked()
         if config_path is None:
             _SCAN_CACHE.clear()
             return
@@ -847,7 +929,7 @@ def scan_plugin_metadata_isolated(
     if timeout <= 0:
         # 缓存里没有，预算也没了：这条路不写缓存——"现在没时间"描述的是此刻，
         # 不是"这个插件是什么"。
-        return _scan_plugin_metadata_uncached(
+        return _scan_with_slot(
             plugin_id=plugin_id,
             module_path=module_path,
             class_name=class_name,
@@ -858,7 +940,12 @@ def scan_plugin_metadata_isolated(
             timeout=timeout,
         )
 
-    result = _scan_plugin_metadata_uncached(
+    with _SCAN_CACHE_LOCK:
+        if force:
+            _bump_scan_epoch_locked()
+        epoch = _SCAN_EPOCH
+
+    result = _scan_with_slot(
         plugin_id=plugin_id,
         module_path=module_path,
         class_name=class_name,
@@ -875,6 +962,10 @@ def scan_plugin_metadata_isolated(
     )
     if settled:
         with _SCAN_CACHE_LOCK:
+            if _SCAN_EPOCH != epoch:
+                # 这一轮开始之后有人 force 扫过、或者把缓存清了。手上这份是照着
+                # 旧内容读出来的，写回去就是拿陈旧结果盖掉更新的那份。
+                return result
             if len(_SCAN_CACHE) >= _SCAN_CACHE_MAX_ENTRIES:
                 _SCAN_CACHE.clear()
             _SCAN_CACHE[key] = result

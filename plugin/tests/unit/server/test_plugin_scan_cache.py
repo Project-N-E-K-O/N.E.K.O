@@ -110,11 +110,15 @@ def test_touching_a_neighbouring_module_invalidates_it(
     Mutation: narrow the fingerprint to the config file only.
     """
     config_path = _plugin_dir(tmp_path)
-    (config_path.parent / "helper.py").write_text("y = 1\n", encoding="utf-8")
+    helper = config_path.parent / "helper.py"
+    helper.write_text("y = 1\n", encoding="utf-8")
+    # 新建的文件默认是"刚动过"，安定守卫会让第一次扫描根本不进缓存——那样这个
+    # 用例就永远是 2 次调用，无论指纹覆盖到哪里，等于什么也没测。
+    _age(helper, 60)
     calls: list = []
 
     _scan(monkeypatch, config_path, calls)
-    (config_path.parent / "helper.py").write_text("y = 2\n", encoding="utf-8")
+    _rewrite(helper, "y = 2\n")
     _scan(monkeypatch, config_path, calls)
 
     assert len(calls) == 2, "改了同目录别的模块，却拿到了旧扫描结果"
@@ -252,10 +256,11 @@ def test_the_fingerprint_covers_non_code_files(
     config_path = _plugin_dir(tmp_path)
     data = config_path.parent / "metadata.yaml"
     data.write_text("entries: 1\n", encoding="utf-8")
+    _age(data, 60)  # 见上一个用例：不放老的话第一次扫描根本不进缓存
     calls: list = []
 
     _scan(monkeypatch, config_path, calls)
-    data.write_text("entries: 2\n", encoding="utf-8")
+    _rewrite(data, "entries: 2\n")
     _scan(monkeypatch, config_path, calls)
 
     assert len(calls) == 2, "改了同目录的数据文件却拿到旧扫描结果"
@@ -340,6 +345,162 @@ def test_no_budget_and_no_cache_still_refuses(
 
     assert excinfo.value.error_type == "ScanBudgetExhausted"
     assert spawned == [], "预算耗尽还起了子进程"
+
+
+def test_ignored_directories_are_never_descended_into(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pruning has to happen before the walk descends, not after it returns.
+
+    ``rglob("*")`` enumerates every descendant of ``.git`` and calls
+    ``is_file()`` on each before the ignore check ever runs, so a development
+    checkout with a real object database makes every nominal *cache hit* walk
+    thousands of files it was explicitly told to skip — and that time is spent
+    outside the discovery scan budget (codex).
+
+    Mutation: go back to ``sorted(root.rglob("*"))`` with the check inside.
+    """
+    import os as os_module
+
+    config_path = _plugin_dir(tmp_path)
+    junk = config_path.parent / ".git" / "objects" / "ab"
+    junk.mkdir(parents=True)
+    for i in range(5):
+        (junk / f"{i:040x}").write_bytes(b"junk")
+
+    real_scandir = os_module.scandir
+    scanned: list[str] = []
+
+    def _recording_scandir(path=".", *args, **kwargs):
+        scanned.append(str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os_module, "scandir", _recording_scandir)
+    module._plugin_source_fingerprint(config_path)
+    monkeypatch.undo()
+
+    inside_git = [entry for entry in scanned if ".git" in entry]
+    assert not inside_git, f"下降进了明确忽略的目录：{inside_git}"
+    assert scanned, "前提没成立：一次目录读取都没发生"
+
+
+def test_a_stale_normal_scan_does_not_overwrite_a_forced_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow ordinary scan must not put back what a forced scan just replaced.
+
+    Both scans compute the *same* key — the key only sees the plugin directory,
+    and force exists precisely for changes outside it (shared vendor dirs,
+    site-packages). So an ordinary scan that started before the forced one and
+    finished after it writes its pre-change reading over the fresh result, and
+    every ordinary read afterwards serves that stale metadata, which is exactly
+    the semantics force is there to provide (CodeRabbit).
+
+    Mutation: drop the epoch comparison before the cache write.
+    """
+    import threading
+
+    config_path = _plugin_dir(tmp_path)
+    slow_started = threading.Event()
+    force_done = threading.Event()
+    holder: dict = {}
+    worker: threading.Thread
+
+    # 两次扫描的键完全一样（conf/pdata/指纹都相同），靠线程身份区分谁是慢的那次。
+    def _fake(**inner):
+        if threading.current_thread() is worker:
+            slow_started.set()
+            force_done.wait(timeout=5)
+            return "OLD"
+        return "NEW"
+
+    monkeypatch.setattr(module, "_scan_plugin_metadata_uncached", _fake)
+
+    def _run(*, force: bool = False):
+        return module.scan_plugin_metadata_isolated(
+            plugin_id="demo",
+            module_path="entry",
+            class_name="C",
+            config_path=config_path,
+            conf={},
+            pdata={},
+            force=force,
+        )
+
+    def _slow_normal():
+        holder["result"] = _run()
+
+    worker = threading.Thread(target=_slow_normal)
+    worker.start()
+    assert slow_started.wait(timeout=5), "前提没成立：慢扫描没开始"
+
+    assert _run(force=True) == "NEW"
+    force_done.set()
+    worker.join(timeout=5)
+    assert holder["result"] == "OLD", "前提没成立：慢扫描没拿到旧结果"
+
+    assert _run() == "NEW", "慢扫描把 force 刚写进去的新结果盖回了旧的"
+
+
+def test_concurrent_scans_are_capped_across_the_whole_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pool's ``max_workers`` bounds one refresh, not the server.
+
+    Refresh routes are not serialized against each other and forced refreshes
+    skip the cache, so repeated clicks, retries or several callers at once can
+    launch ``requests x workers`` metadata interpreters. At the measured ~66 MB
+    resident each, a few overlapping refreshes exhaust memory and take the
+    plugin server down despite the advertised per-refresh cap (codex).
+
+    Mutation: drop the semaphore from ``_scan_with_slot``.
+    """
+    import threading
+    import time
+
+    monkeypatch.setattr(module, "_SCAN_SLOTS", threading.BoundedSemaphore(2))
+    config_path = _plugin_dir(tmp_path)
+    live = 0
+    peak = 0
+    guard = threading.Lock()
+    release = threading.Event()
+
+    def _fake(**inner):
+        nonlocal live, peak
+        with guard:
+            live += 1
+            peak = max(peak, live)
+        release.wait(timeout=5)
+        with guard:
+            live -= 1
+        return "v"
+
+    monkeypatch.setattr(module, "_scan_plugin_metadata_uncached", _fake)
+
+    def _one(index: int):
+        module.scan_plugin_metadata_isolated(
+            plugin_id=f"demo{index}",
+            module_path="entry",
+            class_name="C",
+            config_path=config_path,
+            conf={},
+            pdata={},
+            timeout=4.0,
+        )
+
+    threads = [threading.Thread(target=_one, args=(i,)) for i in range(6)]
+    for thread in threads:
+        thread.start()
+    # 给它们足够时间全部挤进来——闸没了的话六个会同时在里面。
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and peak < 3:
+        time.sleep(0.02)
+    release.set()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert peak <= 2, f"同时有 {peak} 个扫描在跑，全局闸没管住"
+    assert peak > 0, "前提没成立：一个都没跑起来"
 
 
 def test_a_just_touched_plugin_is_not_cached_yet(

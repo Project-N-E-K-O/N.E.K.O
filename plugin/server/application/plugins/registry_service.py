@@ -30,6 +30,7 @@ from plugin.core.registry import (
 from plugin.server.application.plugins.metadata_scanner import (
     _DEFAULT_SCAN_TIMEOUT_SECONDS as _DEFAULT_ITEM_SCAN_TIMEOUT,
     clear_plugin_metadata_scan_cache,
+    MAX_CONCURRENT_METADATA_SCANS,
     PluginMetadataScanError,
     scan_plugin_metadata_isolated,
 )
@@ -421,24 +422,21 @@ def _build_ordered_plugin_ids_sync(candidate_plugin_ids: set[str] | None = None)
 # 20s 的取法：给前端 30s 留出 10s 做其余的事。健康路径根本碰不到——实测全量并行
 # 扫描 3.3s，是预算的六分之一。
 # Env: NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET
-from plugin.server.application.plugins._env_budgets import env_seconds
+from plugin.server.application.plugins._env_budgets import env_int, env_seconds
 
 _DISCOVERY_SCAN_BUDGET_SECONDS = env_seconds("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET", 20.0)
 
-_DISCOVERY_SCAN_MAX_WORKERS = 8
+# 这一轮的上限，不是整个服务器的上限——池是每轮各建各的。真正封顶并发解释器
+# 数量的是 metadata_scanner 里的全局闸，所以这里的天花板取它，两处不会各说各话。
+_DISCOVERY_SCAN_MAX_WORKERS = MAX_CONCURRENT_METADATA_SCANS
 _DISCOVERY_SCAN_MIN_WORKERS = 2
 
 
 def _discovery_scan_workers(pending: int) -> int:
     """How many metadata scans to run at once for ``pending`` plugins."""
-    override = os.getenv("NEKO_PLUGIN_DISCOVERY_SCAN_WORKERS")
-    if override:
-        try:
-            forced = int(override)
-        except ValueError:
-            forced = 0
-        if forced > 0:
-            return max(1, min(forced, pending))
+    override = env_int("NEKO_PLUGIN_DISCOVERY_SCAN_WORKERS", 0, minimum=0)
+    if override > 0:
+        return max(1, min(override, pending))
     cpu = os.cpu_count() or 4
     budget = max(_DISCOVERY_SCAN_MIN_WORKERS, min(_DISCOVERY_SCAN_MAX_WORKERS, cpu // 4))
     return max(1, min(budget, pending))
@@ -480,8 +478,22 @@ def _build_discovery_record_safely(
         )
 
 
+def _is_forced_target(
+    config_path: Path, ctx: PluginContext, force_targets: frozenset[str]
+) -> bool:
+    """Whether this one record was singled out for a forced rescan."""
+    if not force_targets:
+        return False
+    if str(_resolve_config_path(config_path)) in force_targets:
+        return True
+    return bool(ctx.pid) and ctx.pid in force_targets
+
+
 def _discover_registry_snapshot_sync(
-    roots: tuple[Path, ...], *, force: bool = False
+    roots: tuple[Path, ...],
+    *,
+    force: bool = False,
+    force_targets: frozenset[str] = frozenset(),
 ) -> PluginDiscoverySnapshot:
     processed_paths: set[Path] = set()
     pending: list[tuple[Path, PluginContext]] = []
@@ -548,7 +560,10 @@ def _discover_registry_snapshot_sync(
 
     if pending:
         deadline = time.monotonic() + _DISCOVERY_SCAN_BUDGET_SECONDS
-        pending = [(path, ctx, deadline, force) for path, ctx in pending]
+        pending = [
+            (path, ctx, deadline, force or _is_forced_target(path, ctx, force_targets))
+            for path, ctx in pending
+        ]
         workers = _discovery_scan_workers(len(pending))
         if workers <= 1:
             built = [_build_discovery_record_safely(item) for item in pending]
@@ -1111,9 +1126,21 @@ class PluginRegistryService:
         ):
             ctx = _parse_single_plugin_config(existing_config_path, set(), logger)
             if ctx is not None:
-                record = _build_discovery_record_from_context(ctx)
+                record = _build_discovery_record_from_context(ctx, force=force)
         else:
-            discovery = _discover_registry_snapshot_sync(roots, force=force)
+            # force 只落在被点的那个插件上。整轮 discovery 都跟着 force 的话，
+            # 刷新一个插件会让其余十几个全部绕过缓存重扫：不相关的慢插件先把
+            # 扫描预算吃掉，本来健康的目标插件反而被记成扫描失败；就算一切顺利，
+            # 也白付了一次冷启动全量扫描的钱（codex / CodeRabbit）。
+            force_targets: frozenset[str] = frozenset()
+            if force:
+                targets = {normalized_plugin_id}
+                if existing_config_path is not None:
+                    targets.add(str(_resolve_config_path(existing_config_path)))
+                force_targets = frozenset(targets)
+            discovery = _discover_registry_snapshot_sync(
+                roots, force_targets=force_targets
+            )
             record = next(
                 (
                     item
