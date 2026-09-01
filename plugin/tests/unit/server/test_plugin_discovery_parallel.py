@@ -1050,6 +1050,46 @@ def test_a_disk_transaction_supersedes_an_older_forced_scan(
     )
 
 
+def test_a_discarded_forced_refresh_does_not_block_the_transaction_that_discarded_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Being discarded must leave no trace in the ordering state.
+
+    The transaction check first sat inside the `with` body, so a forced refresh
+    that was about to be thrown away had *already* raised the cache-blind
+    barrier to the newest ticket on the way in. The transaction's own closing
+    refresh then hit that barrier and was refused — so the uninstall or upgrade
+    never reached `state.plugins` at all (CodeRabbit). Strictly worse than the
+    race it was added to fix.
+
+    Mutation: check `_disk_transaction_superseded` in the `with` body again.
+    """
+    from plugin.server.application.plugins import metadata_scanner
+
+    forced_ticket = module._take_registry_refresh_ticket()
+    clears_at_start = metadata_scanner.scan_cache_clear_count()
+
+    # 事务落地：改了盘并作废缓存。
+    metadata_scanner.clear_plugin_metadata_scan_cache()
+    transaction_ticket = module._take_registry_refresh_ticket()
+    transaction_clears = metadata_scanner.scan_cache_clear_count()
+
+    # 那次 force 现在才想发布，必须被丢弃……
+    with module._registry_publication(
+        forced_ticket, forced=True, clears_at_start=clears_at_start
+    ) as may_publish:
+        assert not may_publish, "改盘之后，更早开始的 force 扫描还被放行了"
+
+    # ……而且不能留下任何痕迹：事务自己那次收尾刷新必须能发布。
+    with module._registry_publication(
+        transaction_ticket, forced=False, clears_at_start=transaction_clears
+    ) as may_publish:
+        assert may_publish, (
+            "被丢弃的 force 刷新把屏障抬上去了，事务自己的收尾刷新反被挡住——"
+            "卸载/升级的结果根本落不进注册表"
+        )
+
+
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

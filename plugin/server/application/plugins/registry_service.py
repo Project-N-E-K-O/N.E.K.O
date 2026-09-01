@@ -649,7 +649,14 @@ class _registry_publication_of:
     plugin instead of the whole registry.
     """
 
-    __slots__ = ("_config_path", "_plugin_id", "_ticket", "_forced", "_held")
+    __slots__ = (
+        "_config_path",
+        "_plugin_id",
+        "_ticket",
+        "_forced",
+        "_clears_at_start",
+        "_held",
+    )
 
     def __init__(
         self,
@@ -658,15 +665,23 @@ class _registry_publication_of:
         *,
         forced: bool,
         plugin_id: str | None = None,
+        clears_at_start: int | None = None,
     ) -> None:
         self._config_path = config_path
         self._plugin_id = plugin_id
         self._ticket = ticket
         self._forced = forced
+        self._clears_at_start = clears_at_start
         self._held = False
 
     def __enter__(self) -> bool:
         _REGISTRY_PUBLISH_GUARD.acquire()
+        # 同上：先对账，再动 _REGISTRY_PUBLISHED_PLUGIN_TICKET 和按插件的屏障。
+        if self._clears_at_start is not None and _disk_transaction_superseded(
+            self._clears_at_start
+        ):
+            _REGISTRY_PUBLISH_GUARD.release()
+            return False
         if not _may_publish_record(
             self._ticket,
             self._config_path,
@@ -716,11 +731,14 @@ class _registry_publication:
     A plain ``__exit__`` never touches the exception.
     """
 
-    __slots__ = ("_ticket", "_forced", "_held")
+    __slots__ = ("_ticket", "_forced", "_clears_at_start", "_held")
 
-    def __init__(self, ticket: int, *, forced: bool) -> None:
+    def __init__(
+        self, ticket: int, *, forced: bool, clears_at_start: int | None = None
+    ) -> None:
         self._ticket = ticket
         self._forced = forced
+        self._clears_at_start = clears_at_start
         self._held = False
 
     def __enter__(self) -> bool:
@@ -728,6 +746,15 @@ class _registry_publication:
         global _REGISTRY_PUBLISHED_FORCED_TICKET
 
         _REGISTRY_PUBLISH_GUARD.acquire()
+        # 事务对账要排在**动任何排序状态之前**。放在 with 体里判断的话，一次注定
+        # 要被丢弃的 force 刷新照样已经把缓存盲区屏障抬到了最新号——紧接着事务自己
+        # 那次收尾的普通刷新就被这道屏障挡掉，改盘的结果根本落不进 state.plugins
+        # （CodeRabbit）。这比它原本要修的问题更糟。
+        if self._clears_at_start is not None and _disk_transaction_superseded(
+            self._clears_at_start
+        ):
+            _REGISTRY_PUBLISH_GUARD.release()
+            return False
         # force 不让位于**缓存喂出来的**结果：它是唯一能看见目录外变化的那次读盘，
         # 被一份缓存结果顶掉就意味着升级/换源静默丢失，而返回值还是 success=True、
         # added/updated 全空，调用方看不出任何异常（CodeRabbit）。
@@ -1391,8 +1418,10 @@ class PluginRegistryService:
         # 认完就被调度出去，让后认号的那次把新快照发布完，然后自己醒过来把剩下
         # 的旧记录和删除接着写进去——注册表照样被旧的一份盖掉（codex）。锁从认号
         # 一直握到提交结束，发布之间才真的有序。
-        with _registry_publication(ticket, forced=force) as may_publish:
-            if not may_publish or _disk_transaction_superseded(clears_at_start):
+        with _registry_publication(
+            ticket, forced=force, clears_at_start=clears_at_start
+        ) as may_publish:
+            if not may_publish:
                 # 我们扫描期间已经有更晚开始的刷新把结果发布出去了。手上这份是照着更旧
                 # 的盘面读出来的，写进注册表就是把它盖回去。
                 logger.info(
@@ -1578,9 +1607,13 @@ class PluginRegistryService:
         # 但它只推**自己这一条**的号：单插件刷新是 start_plugin 的必经之路，让它去
         # 推全局号等于启动一个插件就能作废一次全量刷新。
         with _registry_publication_of(
-            config_path, ticket, forced=force, plugin_id=record.plugin_id
+            config_path,
+            ticket,
+            forced=force,
+            plugin_id=record.plugin_id,
+            clears_at_start=clears_at_start,
         ) as may_publish:
-            if not may_publish or _disk_transaction_superseded(clears_at_start):
+            if not may_publish:
                 logger.info(
                     "plugin refresh #{} for {} superseded before publishing",
                     ticket,
