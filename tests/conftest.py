@@ -134,6 +134,11 @@ _RUNTIME_TEST_PORT_SLOTS = ("MEMORY_SERVER_PORT", "MAIN_SERVER_PORT")
 # (49152-65535), so an unrelated process asking the OS for "any free port"
 # cannot be handed a slot this run has reserved.
 _XDIST_PORT_BAND_BASE = 21000
+# Width of one band: two ports per worker, room for 64 workers. Retry bands are
+# whole multiples of this, so every candidate a worker ever tries is still
+# derived from its own index and can never equal another worker's candidate.
+_XDIST_PORT_BAND_SPAN = 128
+_XDIST_PORT_BAND_ATTEMPTS = 8
 
 # Map camelCase keys in api_keys.json to UPPER_SNAKE_CASE env vars expected by ConfigManager
 KEY_MAPPING = {
@@ -287,18 +292,32 @@ def _xdist_band_port(port_name: str) -> int | None:
     to another worker's server.
 
     Deriving the port from the worker index removes the window instead of making
-    it narrower: two workers cannot compute the same slot. Returns None when the
-    slot is unusable (a stale process on it, a band collision with unrelated
-    software) so the caller can fall back to probing.
+    it narrower: two workers cannot compute the same slot.
+
+    An occupied slot retries in the next band rather than giving up immediately,
+    because the fallback path is the uncoordinated probe this function exists to
+    avoid -- sending two workers there at once re-creates exactly the collision
+    it prevents (Codex, #3022). Every retry is still a multiple of the band span
+    plus this worker's own index, so no attempt by one worker can ever land on
+    an attempt by another. None means all bands were occupied, which leaves the
+    caller no better option than probing.
     """
     index = _xdist_worker_index()
     if index is None or port_name not in _RUNTIME_TEST_PORT_SLOTS:
         return None
     offset = _RUNTIME_TEST_PORT_SLOTS.index(port_name)
-    port = _XDIST_PORT_BAND_BASE + index * len(_RUNTIME_TEST_PORT_SLOTS) + offset
-    if port > 65535 or not _port_is_bindable(port):
-        return None
-    return port
+    for attempt in range(_XDIST_PORT_BAND_ATTEMPTS):
+        port = (
+            _XDIST_PORT_BAND_BASE
+            + attempt * _XDIST_PORT_BAND_SPAN
+            + index * len(_RUNTIME_TEST_PORT_SLOTS)
+            + offset
+        )
+        if port > 65535:
+            break
+        if _port_is_bindable(port):
+            return port
+    return None
 
 
 def _set_runtime_test_port(port_name: str, port_value: int) -> None:

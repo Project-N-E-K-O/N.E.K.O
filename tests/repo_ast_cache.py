@@ -60,3 +60,18 @@ def _read(path_str: str) -> str:
 def read_source_file(path: Path | str) -> str:
     """Return ``path``'s text, reading it at most once per process."""
     return _read(str(Path(path).resolve()))
+
+
+def clear() -> None:
+    """Drop everything cached so far.
+
+    Holding every parsed tree for the whole session costs 737 MB of RSS in a
+    process that has scanned this repo -- measured, not estimated. Four xdist
+    workers each doing that on a 4-vCPU CI runner is memory the run cannot
+    spare, and it buys nothing after the module that did the scanning has
+    finished (Codex, #3022). tests/unit/conftest.py calls this at module
+    teardown, which keeps the win where it actually came from -- one module
+    running several whole-repo guards -- without accumulating across modules.
+    """
+    _parse.cache_clear()
+    _read.cache_clear()
