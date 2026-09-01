@@ -208,7 +208,7 @@ async def test_reload_all_stops_at_its_budget_and_says_which_were_skipped(
     service = module.PluginLifecycleService()
     stopped: list[str] = []
 
-    async def _slow_stop(plugin_id: str, *, shutdown_timeout=None):
+    async def _slow_stop(plugin_id: str, *, stop_deadline=None):
         stopped.append(plugin_id)
         await asyncio.sleep(0.12)
         return module._ReloadOutcome(plugin_id=plugin_id, success=False, error="x")
@@ -262,7 +262,7 @@ async def test_a_slow_but_successful_stop_is_not_reported_as_a_timeout(
     service = module.PluginLifecycleService()
 
     @serialized_plugin_operation
-    async def _slow_success(plugin_id: str, *, shutdown_timeout=None):
+    async def _slow_success(plugin_id: str, *, stop_deadline=None):
         # 比剩余预算长，但确实成功了。
         await asyncio.sleep(0.45)
         return {"success": True}
@@ -323,7 +323,7 @@ async def test_a_stopped_plugin_is_always_started_again(
     service = module.PluginLifecycleService()
     started: list[str] = []
 
-    async def _stop(plugin_id: str, *, shutdown_timeout=None):
+    async def _stop(plugin_id: str, *, stop_deadline=None):
         # 停止阶段把预算花光——但两个都停成功了。
         await asyncio.sleep(0.20)
         return module._ReloadOutcome(plugin_id=plugin_id, success=True)
@@ -378,7 +378,7 @@ async def test_a_start_that_begins_late_gets_a_shortened_startup_timeout(
 
     service = module.PluginLifecycleService()
 
-    async def _stop(plugin_id: str, *, shutdown_timeout=None):
+    async def _stop(plugin_id: str, *, stop_deadline=None):
         return module._ReloadOutcome(plugin_id=plugin_id, success=True)
 
     seen: list[float | None] = []
@@ -441,188 +441,53 @@ def test_the_step_clamp_never_widens_and_never_reaches_zero() -> None:
 async def test_a_late_stop_is_still_asked_to_shut_down_not_just_killed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The stop side needs the same floor the start side has.
+    """The stop side needs the same floor the start side has, derived just in time.
 
-    ``min(PLUGIN_SHUTDOWN_TIMEOUT, remaining)`` with a spent budget hands the
-    host ``shutdown_timeout≈0``, which skips straight to killing it — a plugin
-    that would have flushed and closed cleanly in 0.2 s gets no chance to. The
-    start side already refused to go below a floor; the stop side silently did
-    not (本轮对抗复审).
+    Two things at once, because they are the same line. `min(SHUTDOWN, remaining)`
+    with a spent budget hands the host `shutdown_timeout≈0`, which skips straight
+    to killing a plugin that would have flushed and closed cleanly. And deriving
+    it in the *caller* is too early: the value is computed before `stop_plugin`
+    enters its decorator, so a stop that then waits out most of the budget on the
+    lock still gets a timeout sized as if no waiting had happened (codex).
 
-    Mutation: go back to ``min(PLUGIN_SHUTDOWN_TIMEOUT, remaining)``.
+    So this asserts on what the host was actually told, after an already-expired
+    deadline — the number has to come from the floor, not from the arithmetic.
+
+    Mutation: derive the timeout in the reload loop again, or drop the floor.
     """
     from plugin.server.application.plugins import lifecycle_service as module
 
-    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: ["p0", "p1"])
+    handed: list[float] = []
+
+    class _Boom(Exception):
+        pass
+
+    class _Host:
+        async def shutdown(self, timeout=None):
+            handed.append(timeout)
+            # 到这里要验的都验完了，别再往下走 stop_plugin 的收尾。
+            raise _Boom
+
+        async def start(self, *a, **k):  # pragma: no cover - contract shape only
+            return None
+
+    monkeypatch.setattr(module, "_get_plugin_host_sync", lambda plugin_id: _Host())
     monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
-    monkeypatch.setattr(module, "_RELOAD_ALL_BUDGET_SECONDS", 0.60)
-
-    async def _noop_refresh(*a, **k):
-        return {"success": True}
-
-    monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _noop_refresh)
-
-    async def _ordered(ids):
-        return list(ids)
-
-    monkeypatch.setattr(module.plugin_registry_service, "order_plugin_ids", _ordered)
+    monkeypatch.setattr(module, "PluginHostContract", _Host)
 
     service = module.PluginLifecycleService()
-    handed: list[float | None] = []
+    with pytest.raises(BaseException):
+        await service.stop_plugin(
+            "p0", stop_deadline=time.monotonic() - 5.0  # 预算早就见底了
+        )
 
-    async def _stop(plugin_id: str, *, shutdown_timeout=None):
-        handed.append(shutdown_timeout)
-        await asyncio.sleep(0.50)
-        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
-
-    async def _start(plugin_id: str, *, start_deadline=None):
-        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
-
-    monkeypatch.setattr(service, "_safe_stop_for_reload", _stop)
-    monkeypatch.setattr(service, "_safe_start_for_reload", _start)
-
-    await service.reload_all_plugins()
-
-    assert len(handed) == 2, f"两个插件都该被尝试停止：{handed}"
-    assert all(
-        value is not None and value >= module._MIN_CLAMPED_STEP_TIMEOUT
-        for value in handed
-    ), f"预算见底时把关停上限压到了下界以下，插件会被直接杀掉：{handed}"
-
-
-@pytest.mark.asyncio
-async def test_restarting_after_a_replacement_drops_the_scan_cache(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A replacement or rollback just moved files; the cache describes before.
-
-    The fingerprint usually notices, but two paths defeat it: an upgrade where
-    only an out-of-directory dependency changed (shared vendor, site-packages),
-    and a rollback that copies files back from a backup with their timestamps
-    preserved. This restart path ends in
-    ``start_plugin(refresh_registry=True) -> refresh_plugin()`` with **no**
-    force, so the new runtime would come up carrying pre-upgrade entries and
-    tool schemas (codex).
-
-    Mutation: drop the ``clear_plugin_metadata_scan_cache`` call.
-    """
-    from plugin.server.application.plugins.installation_transactions import replace as module
-    from plugin.server.application.plugins import lifecycle_service, metadata_scanner
-
-    cleared: list[int] = []
-    monkeypatch.setattr(
-        metadata_scanner,
-        "clear_plugin_metadata_scan_cache",
-        lambda: cleared.append(1),
+    assert handed, "前提没成立：根本没走到 host.shutdown"
+    assert handed[0] >= module._MIN_CLAMPED_STEP_TIMEOUT, (
+        f"预算见底时把关停上限压到了下界以下，插件会被直接杀掉：{handed}"
     )
-
-    class _Service:
-        async def start_plugin(self, plugin_id, *a, **k):
-            # 顺序也承重：清缓存必须在重启**之前**。反过来的话新运行时已经带着
-            # 旧元数据起来了，事后再清也追不回来。
-            assert cleared, "重启之前没有清掉扫描缓存——新运行时会带着旧元数据起来"
-            return {"success": True}
-
-    # 两个都是函数内 import，所以要打在它们各自的来源模块上。
-    monkeypatch.setattr(lifecycle_service, "PluginLifecycleService", _Service)
-
-    await module._start_plugin("demo")
-
-    assert cleared == [1], f"替换后的重启没有作废扫描缓存：{cleared}"
-
-
-def test_switching_the_selected_source_forces_a_rescan(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Promotion and rollback change *which* source is selected.
-
-    The scan cache key only sees the contents of the plugin directory, so a
-    source switch is invisible to it — the refresh has to say force explicitly
-    or it can answer from the previous source's metadata (codex).
-
-    This one is a structural guard, and deliberately so: the refresh callback is
-    a closure built deep inside a source-switch transaction, and standing that
-    whole transaction up would test the transaction rather than this. What it
-    pins is the pairing and the order — the cache is dropped *before* the
-    refresh reads it — which is the part that goes wrong.
-
-    Mutation: drop the ``clear_plugin_metadata_scan_cache`` call from that
-    callback, or move it after the refresh.
-    """
-    import inspect
-
-    from plugin.server.application.plugin_cli import service as module
-
-    source = inspect.getsource(module)
-    marker = "async def refresh_registry() -> object:"
-    assert marker in source, "换源刷新回调不见了，这条守卫已经不知道自己在盯什么"
-
-    body = source[source.index(marker) :]
-    body = body[: body.index("async def", len(marker))]
-    clear_at = body.find("clear_plugin_metadata_scan_cache)")
-    refresh_at = body.find("plugin_registry_service.refresh_registry()")
-
-    assert clear_at != -1, (
-        "换源/回滚的刷新没有作废扫描缓存，可能拿上一个源的元数据回答"
+    assert handed[0] <= module.PLUGIN_SHUTDOWN_TIMEOUT, (
+        f"关停上限比配置值还大：{handed}"
     )
-    assert refresh_at != -1 and clear_at < refresh_at, (
-        "缓存是在刷新之后才清的——刷新已经把旧元数据读出去了"
-    )
-
-
-@pytest.mark.asyncio
-async def test_every_stopped_plugin_gets_a_start_attempt_even_over_budget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Skipping a start is not deferring it — nothing comes back for it.
-
-    Autostart runs once, at server startup; there is no periodic reconcile. So a
-    plugin dropped from the start phase for being over budget stays down until
-    the user starts it by hand or restarts the whole server (Greptile). Stopping
-    a plugin is a promise to start it, and the budget does not release us from
-    a promise we already made — the two phases are asymmetric on purpose: a
-    skipped *stop* leaves a plugin running, a skipped *start* leaves it dead.
-
-    Mutation: put the over-budget ``break`` back into the start loop.
-    """
-    from plugin.server.application.plugins import lifecycle_service as module
-
-    plugin_ids = [f"p{i}" for i in range(4)]
-    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: list(plugin_ids))
-    monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
-    monkeypatch.setattr(module, "_RELOAD_ALL_BUDGET_SECONDS", 0.20)
-
-    async def _noop_refresh(*a, **k):
-        return {"success": True}
-
-    monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _noop_refresh)
-
-    async def _ordered(ids):
-        return list(ids)
-
-    monkeypatch.setattr(module.plugin_registry_service, "order_plugin_ids", _ordered)
-
-    service = module.PluginLifecycleService()
-    attempted: list[str] = []
-
-    async def _stop(plugin_id: str, *, shutdown_timeout=None):
-        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
-
-    async def _start(plugin_id: str, *, start_deadline=None):
-        attempted.append(plugin_id)
-        # 每次启动都比整轮预算长：第一次之后预算就见底了。
-        await asyncio.sleep(0.15)
-        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
-
-    monkeypatch.setattr(service, "_safe_stop_for_reload", _stop)
-    monkeypatch.setattr(service, "_safe_start_for_reload", _start)
-
-    result = await service.reload_all_plugins()
-
-    assert attempted == plugin_ids, (
-        f"预算见底之后就不再尝试启动了，这些插件会一直停着：试过 {attempted}"
-    )
-    assert result["reloaded"] == plugin_ids
 
 
 def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -> None:

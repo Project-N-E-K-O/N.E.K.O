@@ -1096,7 +1096,7 @@ class PluginLifecycleService:
         plugin_id: str,
         *,
         persist_user_intent: bool = False,
-        shutdown_timeout: float | None = None,
+        stop_deadline: float | None = None,
     ) -> dict[str, object]:
         host_obj = await asyncio.to_thread(_get_plugin_host_sync, plugin_id)
         if host_obj is None:
@@ -1119,11 +1119,18 @@ class PluginLifecycleService:
 
         try:
             _emit_lifecycle_event(event_type="plugin_stop_requested", plugin_id=plugin_id)
+            # 剩余预算在这里算，不在调用方那边算。这个函数体是在
+            # @serialized_plugin_operation 拿到锁**之后**才跑的，所以此刻的"还剩
+            # 多少"才是真的；在外面算的话，一次等了 19s 锁的关停照样会拿到按 20s
+            # 算出来的上限，停止阶段就此冲破对外承诺的墙钟（codex）。和启动侧收
+            # start_deadline 是同一个形状。
             await host_obj.shutdown(
                 timeout=(
                     PLUGIN_SHUTDOWN_TIMEOUT
-                    if shutdown_timeout is None
-                    else shutdown_timeout
+                    if stop_deadline is None
+                    else _clamp_step_timeout(
+                        PLUGIN_SHUTDOWN_TIMEOUT, _remaining_step_budget(stop_deadline)
+                    )
                 )
             )
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
@@ -1276,11 +1283,7 @@ class PluginLifecycleService:
             with bounded_operation_wait(remaining):
                 stop_outcomes.append(
                     await self._safe_stop_for_reload(
-                        plugin_id,
-                        shutdown_timeout=_clamp_step_timeout(
-                            PLUGIN_SHUTDOWN_TIMEOUT,
-                            _remaining_step_budget(stop_deadline),
-                        ),
+                        plugin_id, stop_deadline=stop_deadline
                     )
                 )
 
@@ -1427,10 +1430,10 @@ class PluginLifecycleService:
         return cleaned_profiles
 
     async def _safe_stop_for_reload(
-        self, plugin_id: str, *, shutdown_timeout: float | None = None
+        self, plugin_id: str, *, stop_deadline: float | None = None
     ) -> _ReloadOutcome:
         try:
-            await self.stop_plugin(plugin_id, shutdown_timeout=shutdown_timeout)
+            await self.stop_plugin(plugin_id, stop_deadline=stop_deadline)
             return _ReloadOutcome(plugin_id=plugin_id, success=True)
         except PluginOperationBusy as error:
             return _ReloadOutcome(plugin_id=plugin_id, success=False, error=str(error))

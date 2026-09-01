@@ -71,6 +71,8 @@ _DEFAULT_SCAN_TIMEOUT_SECONDS = env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT",
 # Env: NEKO_PLUGIN_METADATA_SCAN_CONCURRENCY
 MAX_CONCURRENT_METADATA_SCANS = env_int("NEKO_PLUGIN_METADATA_SCAN_CONCURRENCY", 8)
 _SCAN_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_METADATA_SCANS)
+# 等槽位等到这个数以内，就当这个插件基本拿满了自己的扫描窗口。
+_SLOT_WAIT_IS_NEGLIGIBLE = 0.05
 
 
 def _metadata_worker_command() -> list[str]:
@@ -840,8 +842,22 @@ def _scan_with_slot(**kwargs: Any) -> IsolatedPluginMetadata:
             "Plugin metadata scan skipped: no scan slot became free in time",
         )
     try:
-        kwargs["timeout"] = timeout - (time.monotonic() - started)
-        return _scan_plugin_metadata_uncached(**kwargs)
+        waited = time.monotonic() - started
+        kwargs["timeout"] = timeout - waited
+        try:
+            return _scan_plugin_metadata_uncached(**kwargs)
+        except PluginMetadataScanError as exc:
+            if exc.error_type != "TimeoutExpired" or waited <= _SLOT_WAIT_IS_NEGLIGIBLE:
+                raise
+            # 等槽位吃掉了这个插件本该拥有的扫描时间，它是在被削短的窗口里超时的。
+            # 报成 TimeoutExpired 的话，上游会当成"这个插件自己的导入卡住了"，把一个
+            # 健康插件标成 failed 并取消它的自启动资格——而真正的原因是服务器当时
+            # 忙（codex）。改报预算类失败，语义才对得上。
+            raise PluginMetadataScanError(
+                "ScanBudgetExhausted",
+                "Plugin metadata scan timed out after waiting "
+                f"{waited:.1f}s for a scan slot",
+            ) from exc
     finally:
         _SCAN_SLOTS.release()
 

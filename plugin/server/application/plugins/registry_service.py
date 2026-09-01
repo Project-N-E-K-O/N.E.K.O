@@ -471,6 +471,31 @@ def _scan_failure_is_transient(error_type: str | None, scan_timeout: float | Non
 _REGISTRY_PUBLISH_GUARD = threading.Lock()
 _REGISTRY_REFRESH_TICKET = 0
 _REGISTRY_PUBLISHED_TICKET = 0
+# 每个插件各自最后一次被发布时的号。
+#
+# 全量刷新和单插件刷新都会往 state.plugins 里写，但它们不能共用那个全局号：单插件
+# 刷新是 start_plugin(refresh_registry=True) 的必经之路，也就是每次启动插件都会发生
+# 一次；让它去推全局号，等于随便启动一个插件就能把一次正在跑的全量刷新整个作废掉。
+#
+# 所以顺序按**每个插件**判：全量刷新逐条比，单插件刷新只比自己那一条。谁的号新谁
+# 说了算，互不牵连（codex）。
+_REGISTRY_PUBLISHED_PLUGIN_TICKET: dict[str, int] = {}
+
+
+def _publication_key(config_path: Path) -> str:
+    return str(_resolve_config_path(config_path))
+
+
+def _may_publish_record(ticket: int, config_path: Path) -> bool:
+    """Whether this refresh still owns the latest word on that one plugin.
+
+    Caller holds ``_REGISTRY_PUBLISH_GUARD``.
+    """
+    key = _publication_key(config_path)
+    if ticket < _REGISTRY_PUBLISHED_PLUGIN_TICKET.get(key, 0):
+        return False
+    _REGISTRY_PUBLISHED_PLUGIN_TICKET[key] = ticket
+    return True
 
 
 def _take_registry_refresh_ticket() -> int:
@@ -479,6 +504,36 @@ def _take_registry_refresh_ticket() -> int:
     with _REGISTRY_PUBLISH_GUARD:
         _REGISTRY_REFRESH_TICKET += 1
         return _REGISTRY_REFRESH_TICKET
+
+
+class _registry_publication_of:
+    """Hold publication order for one plugin, through its commit.
+
+    Same shape and the same class-not-``@contextmanager`` reason as
+    :class:`_registry_publication`; it just scopes the ordering to a single
+    plugin instead of the whole registry.
+    """
+
+    __slots__ = ("_config_path", "_ticket", "_held")
+
+    def __init__(self, config_path: Path, ticket: int) -> None:
+        self._config_path = config_path
+        self._ticket = ticket
+        self._held = False
+
+    def __enter__(self) -> bool:
+        _REGISTRY_PUBLISH_GUARD.acquire()
+        if not _may_publish_record(self._ticket, self._config_path):
+            _REGISTRY_PUBLISH_GUARD.release()
+            return False
+        self._held = True
+        return True
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if self._held:
+            self._held = False
+            _REGISTRY_PUBLISH_GUARD.release()
+        return False
 
 
 class _registry_publication:
@@ -1172,6 +1227,12 @@ class PluginRegistryService:
             ]
 
             for record in snapshot.records:
+                if not _may_publish_record(ticket, record.config_path):
+                    # 这个插件在我们扫描期间被一次更晚的刷新更新过了。别的插件照常
+                    # 发布——整轮作废是过度反应，那正是按插件分号要避免的。
+                    unchanged.append(record.plugin_id)
+                    refreshed_ids.add(record.plugin_id)
+                    continue
                 try:
                     previous_runtime_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
                         record.config_path,
@@ -1246,6 +1307,7 @@ class PluginRegistryService:
     def _refresh_plugin_sync(
         self, plugin_id: str, force: bool = False
     ) -> dict[str, object]:
+        ticket = _take_registry_refresh_ticket()
         normalized_plugin_id = plugin_id.strip()
         if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
             raise ServerDomainError(
@@ -1305,33 +1367,52 @@ class PluginRegistryService:
                 details={"plugin_id": normalized_plugin_id},
             )
 
-        previous_runtime_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
-            config_path,
-            existing_snapshot,
-        )
-        if record.meta_payload.get("shadowed_builtin_path"):
-            previous_runtime_plugin_id = record.plugin_id
-        previous_plugin_id = previous_runtime_plugin_id or normalized_plugin_id
-        previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
-        resolved_id, payload = _apply_discovery_record_sync(
-            record,
-            existing_snapshot=existing_snapshot,
-            preferred_runtime_plugin_id=previous_runtime_plugin_id,
-        )
-        if record.meta_payload.get("shadowed_builtin_path"):
-            _remove_config_path_aliases_sync(config_path, keep_plugin_id=resolved_id)
-        current_managed = _select_managed_fields(payload)
-        status = "added"
-        if previous_plugin_id in existing_snapshot:
-            status = "unchanged" if previous_managed == current_managed else "updated"
+        # 单插件刷新写的也是 state.plugins，所以它必须和全量刷新排在同一个顺序里，
+        # 否则一次慢的全量刷新醒过来照样能把这条刚更新的记录盖回旧的（codex）。
+        # 但它只推**自己这一条**的号：单插件刷新是 start_plugin 的必经之路，让它去
+        # 推全局号等于启动一个插件就能作废一次全量刷新。
+        with _registry_publication_of(config_path, ticket) as may_publish:
+            if not may_publish:
+                logger.info(
+                    "plugin refresh #{} for {} superseded before publishing",
+                    ticket,
+                    normalized_plugin_id,
+                )
+                return {
+                    "success": True,
+                    "plugin_id": normalized_plugin_id,
+                    "original_plugin_id": normalized_plugin_id,
+                    "status": "unchanged",
+                    "config_path": str(config_path),
+                    "superseded": True,
+                }
+            previous_runtime_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
+                config_path,
+                existing_snapshot,
+            )
+            if record.meta_payload.get("shadowed_builtin_path"):
+                previous_runtime_plugin_id = record.plugin_id
+            previous_plugin_id = previous_runtime_plugin_id or normalized_plugin_id
+            previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
+            resolved_id, payload = _apply_discovery_record_sync(
+                record,
+                existing_snapshot=existing_snapshot,
+                preferred_runtime_plugin_id=previous_runtime_plugin_id,
+            )
+            if record.meta_payload.get("shadowed_builtin_path"):
+                _remove_config_path_aliases_sync(config_path, keep_plugin_id=resolved_id)
+            current_managed = _select_managed_fields(payload)
+            status = "added"
+            if previous_plugin_id in existing_snapshot:
+                status = "unchanged" if previous_managed == current_managed else "updated"
 
-        return {
-            "success": True,
-            "plugin_id": resolved_id,
-            "original_plugin_id": normalized_plugin_id,
-            "status": status,
-            "config_path": str(config_path),
-        }
+            return {
+                "success": True,
+                "plugin_id": resolved_id,
+                "original_plugin_id": normalized_plugin_id,
+                "status": status,
+                "config_path": str(config_path),
+            }
 
     def _order_plugin_ids_sync(self, plugin_ids: list[str]) -> list[str]:
         return _build_ordered_plugin_ids_sync({plugin_id for plugin_id in plugin_ids if isinstance(plugin_id, str)})
