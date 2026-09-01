@@ -570,6 +570,61 @@ def test_switching_the_selected_source_forces_a_rescan(
     )
 
 
+@pytest.mark.asyncio
+async def test_every_stopped_plugin_gets_a_start_attempt_even_over_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skipping a start is not deferring it — nothing comes back for it.
+
+    Autostart runs once, at server startup; there is no periodic reconcile. So a
+    plugin dropped from the start phase for being over budget stays down until
+    the user starts it by hand or restarts the whole server (Greptile). Stopping
+    a plugin is a promise to start it, and the budget does not release us from
+    a promise we already made — the two phases are asymmetric on purpose: a
+    skipped *stop* leaves a plugin running, a skipped *start* leaves it dead.
+
+    Mutation: put the over-budget ``break`` back into the start loop.
+    """
+    from plugin.server.application.plugins import lifecycle_service as module
+
+    plugin_ids = [f"p{i}" for i in range(4)]
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: list(plugin_ids))
+    monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
+    monkeypatch.setattr(module, "_RELOAD_ALL_BUDGET_SECONDS", 0.20)
+
+    async def _noop_refresh(*a, **k):
+        return {"success": True}
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _noop_refresh)
+
+    async def _ordered(ids):
+        return list(ids)
+
+    monkeypatch.setattr(module.plugin_registry_service, "order_plugin_ids", _ordered)
+
+    service = module.PluginLifecycleService()
+    attempted: list[str] = []
+
+    async def _stop(plugin_id: str, *, shutdown_timeout=None):
+        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    async def _start(plugin_id: str, *, start_deadline=None):
+        attempted.append(plugin_id)
+        # 每次启动都比整轮预算长：第一次之后预算就见底了。
+        await asyncio.sleep(0.15)
+        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    monkeypatch.setattr(service, "_safe_stop_for_reload", _stop)
+    monkeypatch.setattr(service, "_safe_start_for_reload", _start)
+
+    result = await service.reload_all_plugins()
+
+    assert attempted == plugin_ids, (
+        f"预算见底之后就不再尝试启动了，这些插件会一直停着：试过 {attempted}"
+    )
+    assert result["reloaded"] == plugin_ids
+
+
 def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -> None:
     """The two lock stages share a budget; they must not each spend a full one.
 

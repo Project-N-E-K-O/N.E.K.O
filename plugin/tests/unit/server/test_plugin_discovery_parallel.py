@@ -430,6 +430,65 @@ def test_a_real_load_failure_still_marks_the_plugin_failed(
     assert payload.get("runtime_load_state") == "failed", "真正坏掉的插件没有被标记"
 
 
+def test_a_plugin_that_used_its_whole_item_timeout_stays_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timeout is only "transient" if the budget squeezed it.
+
+    ``TimeoutExpired`` reads two ways. Given a slice of a nearly-spent round
+    budget it means the round ran out; given the *full* item timeout it means
+    this plugin's own import hangs. Calling the second one transient puts a
+    known-hung plugin back into the autostart set, so server startup stalls on
+    it for another startup timeout — the eligibility guard defeating itself
+    (codex).
+
+    Mutation: treat every ``TimeoutExpired`` as transient, or every one as fatal.
+    """
+    from plugin.server.application.plugins import metadata_scanner
+
+    def _ctx(pid: str):
+        return SimpleNamespace(
+            pid=pid,
+            toml_path=tmp_path / pid / "plugin.toml",
+            entry="mod:Cls",
+            enabled=True,
+            auto_start=True,
+            conf={},
+            pdata={},
+            dependencies=[],
+            python_requirements=[],
+            python_requirement_paths=(),
+            sdk_supported_str="",
+            sdk_recommended_str="",
+            sdk_untested_str="",
+            sdk_conflicts_list=[],
+        )
+
+    def _timed_out(**kwargs):
+        raise metadata_scanner.PluginMetadataScanError("TimeoutExpired", "hung")
+
+    monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _timed_out)
+    monkeypatch.setattr(
+        module, "describe_plugin_entry_directory_mismatch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(module, "_check_plugin_dependency", lambda *a, **k: (True, None))
+
+    hung = module._build_discovery_payload(
+        _ctx("hung"), plugin_id="hung", scan_timeout=module._DEFAULT_ITEM_SCAN_TIMEOUT
+    )
+    squeezed = module._build_discovery_payload(
+        _ctx("squeezed"), plugin_id="squeezed", scan_timeout=0.2
+    )
+
+    assert hung.get("runtime_load_state") == "failed", (
+        "拿满了单项上限还超时，说明是这个插件自己卡住——放它进自启动会让服务器"
+        "启动时再卡一次"
+    )
+    assert squeezed.get("runtime_load_state") != "failed", (
+        "只是被剩余预算挤到 0.2s 而超时，不该因此取消自启动资格"
+    )
+
+
 def test_a_non_positive_timeout_never_starts_a_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

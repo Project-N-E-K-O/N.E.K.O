@@ -431,9 +431,31 @@ _DISCOVERY_SCAN_BUDGET_SECONDS = env_seconds("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET"
 # 数量的是 metadata_scanner 里的全局闸，所以这里的天花板取它，两处不会各说各话。
 _DISCOVERY_SCAN_MAX_WORKERS = MAX_CONCURRENT_METADATA_SCANS
 
-# 这些扫描失败说的是"这一刻没扫成"，不是"这个插件坏了"，所以不该让插件掉进
-# runtime_load_state="failed"——那个状态会把它从自启动名单里除名。
-_TRANSIENT_SCAN_ERROR_TYPES = frozenset({"ScanBudgetExhausted", "TimeoutExpired"})
+# "这一刻没扫成"和"这个插件坏了"要分开：只有前者不该让插件掉进
+# runtime_load_state="failed"，因为那个状态会把它从自启动名单里除名。
+#
+# ScanBudgetExhausted 永远属于前者：它的意思是"整轮的时间在轮到你之前就用完了"，
+# 跟这个插件本身无关。
+#
+# TimeoutExpired 两种都可能，得看它当时拿到了多少时间：
+#   * 拿到的是被剩余预算压缩过的一小段 —— 还是预算问题；
+#   * 拿满了整个单项上限还没扫完 —— 那就是这个插件自己的导入卡住了，必须留在
+#     failed。放它进自启动名单只会让服务器启动时再卡一次它的启动超时，正好把这
+#     道资格闸自己废掉（codex）。
+_ALWAYS_TRANSIENT_SCAN_ERROR_TYPES = frozenset({"ScanBudgetExhausted"})
+_BUDGET_SENSITIVE_SCAN_ERROR_TYPES = frozenset({"TimeoutExpired"})
+
+
+def _scan_failure_is_transient(error_type: str | None, scan_timeout: float | None) -> bool:
+    """Whether this scan failure describes the moment rather than the plugin."""
+    if not error_type:
+        return False
+    if error_type in _ALWAYS_TRANSIENT_SCAN_ERROR_TYPES:
+        return True
+    if error_type not in _BUDGET_SENSITIVE_SCAN_ERROR_TYPES:
+        return False
+    # 只有"没拿满单项上限"才算被预算挤的。拿满了还超时 = 插件自己卡住。
+    return scan_timeout is not None and scan_timeout < _DEFAULT_ITEM_SCAN_TIMEOUT
 
 # 全量刷新的发布序号。
 #
@@ -770,7 +792,7 @@ def _build_discovery_payload(
     #
     # 超时/预算耗尽这类**瞬时**失败照常记录错误字段供诊断，但不进 failed 状态：
     # 下一次刷新会重试它们。
-    if error_type in _TRANSIENT_SCAN_ERROR_TYPES:
+    if _scan_failure_is_transient(error_type, scan_timeout):
         payload.pop("runtime_load_state", None)
         payload["runtime_load_error_type"] = error_type
         payload["runtime_load_error_message"] = error_message or ""

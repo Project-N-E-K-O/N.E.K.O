@@ -1316,22 +1316,18 @@ class PluginLifecycleService:
         # 剩下的额度吃光，于是 reload 悄悄变成 stop——插件全下线了，而调用方看到
         # 的只是一行 "over budget"。宁可整轮多花一份预算，也不能把用户的插件留在
         # 停止状态。
+        #
+        # 而且这个循环**不会**因为预算耗尽而中途退出——这一点和停止阶段刻意不对称。
+        # 停止阶段跳过一个插件是安全的：没轮到的插件还好好跑着。启动阶段跳过一个
+        # 插件，等于把一个我们刚亲手停掉的插件永久留在停止状态：自启动只在服务器
+        # 启动时跑一次，没有任何周期性对账会把它捡回来，用户只能手动启动或者重启
+        # 整个服务器（Greptile）。所以每个被停掉的插件都必须拿到一次启动尝试；
+        # 预算见底之后它们各自拿下界那么长，够不够是另一回事，但"根本没试"不行。
+        #
+        # 代价说清楚：启动阶段的墙钟上限因此是 预算 + 剩余插件数 x 下界，而不是
+        # 一个硬预算。健康路径根本碰不到——实测启动很快，预算压根用不完。
         start_deadline = time_module.monotonic() + _RELOAD_ALL_BUDGET_SECONDS
-        for start_index, plugin_id in enumerate(ordered_plugin_ids):
-            if time_module.monotonic() > start_deadline:
-                not_started = list(ordered_plugin_ids[start_index:])
-                skipped_over_budget.extend(not_started)
-                for skipped_id in not_started:
-                    failed.append(
-                        {
-                            "plugin_id": skipped_id,
-                            "error": (
-                                "skipped: reload exceeded its "
-                                f"{_RELOAD_ALL_BUDGET_SECONDS:g}s budget"
-                            ),
-                        }
-                    )
-                break
+        for plugin_id in ordered_plugin_ids:
             # 启动这半边同样把等锁和启动本身都封在剩余预算里——和上面的 stop
             # 对称，否则预算只管住了两个阶段中的一个。
             remaining = max(0.0, start_deadline - time_module.monotonic())
