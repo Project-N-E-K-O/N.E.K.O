@@ -328,8 +328,13 @@ async def test_a_stopped_plugin_is_always_started_again(
         await asyncio.sleep(0.20)
         return module._ReloadOutcome(plugin_id=plugin_id, success=True)
 
+    budgets: list[float | None] = []
+
     async def _start(plugin_id: str, *, start_deadline=None):
         started.append(plugin_id)
+        budgets.append(
+            None if start_deadline is None else start_deadline - time.monotonic()
+        )
         return module._ReloadOutcome(plugin_id=plugin_id, success=True)
 
     monkeypatch.setattr(service, "_safe_stop_for_reload", _stop)
@@ -341,6 +346,12 @@ async def test_a_stopped_plugin_is_always_started_again(
         f"停掉了却没重新启动，reload 变成了 stop：failed={result.get('failed')}"
     )
     assert result["reloaded"] == ["p0", "p1"]
+    # 停止阶段（两次各 0.20s）已经超出 0.30s 的预算。启动阶段如果沿用同一个截止期，
+    # 这里拿到的就是负数——插件确实还会被尝试启动（那道守卫在另一条用例里），但每次
+    # 都只剩下界那点时间，慢一点的插件就起不来了。启动阶段有自己的预算，这个数才是正的。
+    assert budgets[0] is not None and budgets[0] > 0, (
+        f"启动阶段沿用了停止阶段的截止期，一上来预算就是负的：{budgets}"
+    )
 
 
 @pytest.mark.asyncio
@@ -560,6 +571,141 @@ async def test_a_spent_budget_still_buys_a_real_wait_for_the_lock(
         f"预算见底时等锁被压成零，插件被直接判 busy 而留在停止状态：{result.get('failed')}"
     )
     assert result["reloaded"] == ["p0"]
+
+
+@pytest.mark.asyncio
+async def test_restarting_after_a_replacement_drops_the_scan_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement or rollback just moved files; the cache describes before.
+
+    The fingerprint usually notices, but two paths defeat it: an upgrade where
+    only an out-of-directory dependency changed (shared vendor, site-packages),
+    and a rollback that copies files back from a backup with their timestamps
+    preserved. This restart path ends in
+    ``start_plugin(refresh_registry=True) -> refresh_plugin()`` with **no**
+    force, so the new runtime would come up carrying pre-upgrade entries and
+    tool schemas (codex).
+
+    Mutation: drop the ``clear_plugin_metadata_scan_cache`` call.
+    """
+    from plugin.server.application.plugins.installation_transactions import replace as module
+    from plugin.server.application.plugins import lifecycle_service, metadata_scanner
+
+    cleared: list[int] = []
+    monkeypatch.setattr(
+        metadata_scanner,
+        "clear_plugin_metadata_scan_cache",
+        lambda: cleared.append(1),
+    )
+
+    class _Service:
+        async def start_plugin(self, plugin_id, *a, **k):
+            # 顺序也承重：清缓存必须在重启**之前**。反过来的话新运行时已经带着
+            # 旧元数据起来了，事后再清也追不回来。
+            assert cleared, "重启之前没有清掉扫描缓存——新运行时会带着旧元数据起来"
+            return {"success": True}
+
+    # 两个都是函数内 import，所以要打在它们各自的来源模块上。
+    monkeypatch.setattr(lifecycle_service, "PluginLifecycleService", _Service)
+
+    await module._start_plugin("demo")
+
+    assert cleared == [1], f"替换后的重启没有作废扫描缓存：{cleared}"
+
+
+def test_switching_the_selected_source_forces_a_rescan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Promotion and rollback change *which* source is selected.
+
+    The scan cache key only sees the contents of the plugin directory, so a
+    source switch is invisible to it — the refresh has to say force explicitly
+    or it can answer from the previous source's metadata (codex).
+
+    This one is a structural guard, and deliberately so: the refresh callback is
+    a closure built deep inside a source-switch transaction, and standing that
+    whole transaction up would test the transaction rather than this. What it
+    pins is the pairing and the order — the cache is dropped *before* the
+    refresh reads it — which is the part that goes wrong.
+
+    Mutation: drop the ``clear_plugin_metadata_scan_cache`` call from that
+    callback, or move it after the refresh.
+    """
+    import inspect
+
+    from plugin.server.application.plugin_cli import service as module
+
+    source = inspect.getsource(module)
+    marker = "async def refresh_registry() -> object:"
+    assert marker in source, "换源刷新回调不见了，这条守卫已经不知道自己在盯什么"
+
+    body = source[source.index(marker) :]
+    body = body[: body.index("async def", len(marker))]
+    clear_at = body.find("clear_plugin_metadata_scan_cache)")
+    refresh_at = body.find("plugin_registry_service.refresh_registry()")
+
+    assert clear_at != -1, (
+        "换源/回滚的刷新没有作废扫描缓存，可能拿上一个源的元数据回答"
+    )
+    assert refresh_at != -1 and clear_at < refresh_at, (
+        "缓存是在刷新之后才清的——刷新已经把旧元数据读出去了"
+    )
+
+
+@pytest.mark.asyncio
+async def test_every_stopped_plugin_gets_a_start_attempt_even_over_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skipping a start is not deferring it — nothing comes back for it.
+
+    Autostart runs once, at server startup; there is no periodic reconcile. So a
+    plugin dropped from the start phase for being over budget stays down until
+    the user starts it by hand or restarts the whole server (Greptile). Stopping
+    a plugin is a promise to start it, and the budget does not release us from
+    a promise we already made — the two phases are asymmetric on purpose: a
+    skipped *stop* leaves a plugin running, a skipped *start* leaves it dead.
+
+    Mutation: put the over-budget ``break`` back into the start loop.
+    """
+    from plugin.server.application.plugins import lifecycle_service as module
+
+    plugin_ids = [f"p{i}" for i in range(4)]
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: list(plugin_ids))
+    monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
+    monkeypatch.setattr(module, "_RELOAD_ALL_BUDGET_SECONDS", 0.20)
+
+    async def _noop_refresh(*a, **k):
+        return {"success": True}
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _noop_refresh)
+
+    async def _ordered(ids):
+        return list(ids)
+
+    monkeypatch.setattr(module.plugin_registry_service, "order_plugin_ids", _ordered)
+
+    service = module.PluginLifecycleService()
+    attempted: list[str] = []
+
+    async def _stop(plugin_id: str, *, stop_deadline=None):
+        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    async def _start(plugin_id: str, *, start_deadline=None):
+        attempted.append(plugin_id)
+        # 每次启动都比整轮预算长：第一次之后预算就见底了。
+        await asyncio.sleep(0.15)
+        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    monkeypatch.setattr(service, "_safe_stop_for_reload", _stop)
+    monkeypatch.setattr(service, "_safe_start_for_reload", _start)
+
+    result = await service.reload_all_plugins()
+
+    assert attempted == plugin_ids, (
+        f"预算见底之后就不再尝试启动了，这些插件会一直停着：试过 {attempted}"
+    )
+    assert result["reloaded"] == plugin_ids
 
 
 def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -> None:
