@@ -481,15 +481,44 @@ def _take_registry_refresh_ticket() -> int:
         return _REGISTRY_REFRESH_TICKET
 
 
-def _claim_registry_publish(ticket: int) -> bool:
-    """Whether this refresh may still write its snapshot into ``state.plugins``."""
-    global _REGISTRY_PUBLISHED_TICKET
+class _registry_publication:
+    """Claim publication order and hold it for the whole commit.
 
-    with _REGISTRY_PUBLISH_GUARD:
-        if ticket < _REGISTRY_PUBLISHED_TICKET:
+    Checking the ticket on the way in and then letting go is not enough: the
+    refresh that claimed first can be descheduled, let a newer one publish, and
+    then wake up and write its remaining stale records and removals on top. The
+    claim and the mutations have to happen under one continuous hold (codex).
+
+    A class rather than ``@contextmanager``, for the reason
+    ``bounded_operation_wait`` is one too: ``_GeneratorContextManager.__exit__``
+    assigns ``exc.__traceback__`` before throwing back into the generator, and
+    ``ServerDomainError`` refuses attribute assignment — so a domain error
+    raised inside the commit would surface as ``TypeError: super(type, obj)``.
+    A plain ``__exit__`` never touches the exception.
+    """
+
+    __slots__ = ("_ticket", "_held")
+
+    def __init__(self, ticket: int) -> None:
+        self._ticket = ticket
+        self._held = False
+
+    def __enter__(self) -> bool:
+        global _REGISTRY_PUBLISHED_TICKET
+
+        _REGISTRY_PUBLISH_GUARD.acquire()
+        if self._ticket < _REGISTRY_PUBLISHED_TICKET:
+            _REGISTRY_PUBLISH_GUARD.release()
             return False
-        _REGISTRY_PUBLISHED_TICKET = ticket
+        _REGISTRY_PUBLISHED_TICKET = self._ticket
+        self._held = True
         return True
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if self._held:
+            self._held = False
+            _REGISTRY_PUBLISH_GUARD.release()
+        return False
 _DISCOVERY_SCAN_MIN_WORKERS = 2
 
 
@@ -1108,106 +1137,111 @@ class PluginRegistryService:
         unchanged: list[str] = []
         refreshed_ids: set[str] = set()
         snapshot = _discover_registry_snapshot_sync(roots, force=force)
-        if not _claim_registry_publish(ticket):
-            # 我们扫描期间已经有更晚开始的刷新把结果发布出去了。手上这份是照着更旧
-            # 的盘面读出来的，写进注册表就是把它盖回去。
-            logger.info(
-                "registry refresh #{} superseded before publishing; discarding {} record(s)",
-                ticket,
-                len(snapshot.records),
-            )
-            return {
-                "success": True,
-                "added": [],
-                "updated": [],
-                "removed": [],
-                "removed_running": [],
-                "unchanged": [record.plugin_id for record in snapshot.records],
-                "failed": [],
-                "shadowed": [],
-                "scanned_count": len(snapshot.records) + len(snapshot.failures),
-                "superseded": True,
-            }
-        failed = [
-            {
-                "plugin_id": item.plugin_id or "",
-                "config_path": str(item.config_path),
-                "error": item.error,
-            }
-            for item in snapshot.failures
-        ]
-
-        for record in snapshot.records:
-            try:
-                previous_runtime_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
-                    record.config_path,
-                    existing_snapshot,
+        # 发布整段互斥，不是在门口点个卯。只在进入前认号的话，先认号的那次可以
+        # 认完就被调度出去，让后认号的那次把新快照发布完，然后自己醒过来把剩下
+        # 的旧记录和删除接着写进去——注册表照样被旧的一份盖掉（codex）。锁从认号
+        # 一直握到提交结束，发布之间才真的有序。
+        with _registry_publication(ticket) as may_publish:
+            if not may_publish:
+                # 我们扫描期间已经有更晚开始的刷新把结果发布出去了。手上这份是照着更旧
+                # 的盘面读出来的，写进注册表就是把它盖回去。
+                logger.info(
+                    "registry refresh #{} superseded before publishing; discarding {} record(s)",
+                    ticket,
+                    len(snapshot.records),
                 )
-                if record.meta_payload.get("shadowed_builtin_path"):
-                    # A valid user override always owns the declared ID. Clean
-                    # up aliases left by the legacy conflict renamer instead of
-                    # perpetuating ``study_companion_1``.
-                    previous_runtime_plugin_id = record.plugin_id
-                previous_plugin_id = previous_runtime_plugin_id or record.plugin_id
-                previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
-                resolved_id, payload = _apply_discovery_record_sync(
-                    record,
-                    existing_snapshot=existing_snapshot,
-                    preferred_runtime_plugin_id=previous_runtime_plugin_id,
-                )
-                if record.meta_payload.get("shadowed_builtin_path"):
-                    _remove_config_path_aliases_sync(record.config_path, keep_plugin_id=resolved_id)
-                refreshed_ids.add(resolved_id)
-                current_managed = _select_managed_fields(payload)
-                if resolved_id not in existing_snapshot:
-                    added.append(resolved_id)
-                elif previous_managed == current_managed:
-                    unchanged.append(resolved_id)
-                else:
-                    updated.append(resolved_id)
-            except ServerDomainError as exc:
-                failed.append(
-                    {
-                        "plugin_id": record.plugin_id,
-                        "config_path": str(record.config_path),
-                        "error": exc.message,
-                    }
-                )
-            except Exception as exc:
-                logger.warning(
-                    "refresh_registry failed for plugin {}: err_type={}, err={}",
-                    record.plugin_id,
-                    type(exc).__name__,
-                    str(exc),
-                )
-                failed.append(
-                    {
-                        "plugin_id": record.plugin_id,
-                        "config_path": str(record.config_path),
-                        "error": str(exc),
-                    }
-                )
-
-        missing_ids = _collect_missing_plugin_ids_sync(existing_snapshot) - refreshed_ids
-        removed, removed_running = _remove_stale_plugin_metadata_sync(missing_ids, running_ids=running_ids)
-        return {
-            "success": not failed,
-            "added": added,
-            "updated": updated,
-            "removed": removed,
-            "removed_running": removed_running,
-            "unchanged": unchanged,
-            "failed": failed,
-            "shadowed": [
-                {
-                    "plugin_id": record.plugin_id,
-                    "config_path": str(record.config_path),
-                    "source": _source_for_config_path(record.config_path),
+                return {
+                    "success": True,
+                    "added": [],
+                    "updated": [],
+                    "removed": [],
+                    "removed_running": [],
+                    "unchanged": [record.plugin_id for record in snapshot.records],
+                    "failed": [],
+                    "shadowed": [],
+                    "scanned_count": len(snapshot.records) + len(snapshot.failures),
+                    "superseded": True,
                 }
-                for record in snapshot.shadowed
-            ],
-            "scanned_count": len(snapshot.records) + len(snapshot.failures),
-        }
+            failed = [
+                {
+                    "plugin_id": item.plugin_id or "",
+                    "config_path": str(item.config_path),
+                    "error": item.error,
+                }
+                for item in snapshot.failures
+            ]
+
+            for record in snapshot.records:
+                try:
+                    previous_runtime_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
+                        record.config_path,
+                        existing_snapshot,
+                    )
+                    if record.meta_payload.get("shadowed_builtin_path"):
+                        # A valid user override always owns the declared ID. Clean
+                        # up aliases left by the legacy conflict renamer instead of
+                        # perpetuating ``study_companion_1``.
+                        previous_runtime_plugin_id = record.plugin_id
+                    previous_plugin_id = previous_runtime_plugin_id or record.plugin_id
+                    previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
+                    resolved_id, payload = _apply_discovery_record_sync(
+                        record,
+                        existing_snapshot=existing_snapshot,
+                        preferred_runtime_plugin_id=previous_runtime_plugin_id,
+                    )
+                    if record.meta_payload.get("shadowed_builtin_path"):
+                        _remove_config_path_aliases_sync(record.config_path, keep_plugin_id=resolved_id)
+                    refreshed_ids.add(resolved_id)
+                    current_managed = _select_managed_fields(payload)
+                    if resolved_id not in existing_snapshot:
+                        added.append(resolved_id)
+                    elif previous_managed == current_managed:
+                        unchanged.append(resolved_id)
+                    else:
+                        updated.append(resolved_id)
+                except ServerDomainError as exc:
+                    failed.append(
+                        {
+                            "plugin_id": record.plugin_id,
+                            "config_path": str(record.config_path),
+                            "error": exc.message,
+                        }
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "refresh_registry failed for plugin {}: err_type={}, err={}",
+                        record.plugin_id,
+                        type(exc).__name__,
+                        str(exc),
+                    )
+                    failed.append(
+                        {
+                            "plugin_id": record.plugin_id,
+                            "config_path": str(record.config_path),
+                            "error": str(exc),
+                        }
+                    )
+
+            missing_ids = _collect_missing_plugin_ids_sync(existing_snapshot) - refreshed_ids
+            removed, removed_running = _remove_stale_plugin_metadata_sync(missing_ids, running_ids=running_ids)
+            return {
+                "success": not failed,
+                "added": added,
+                "updated": updated,
+                "removed": removed,
+                "removed_running": removed_running,
+                "unchanged": unchanged,
+                "failed": failed,
+                "shadowed": [
+                    {
+                        "plugin_id": record.plugin_id,
+                        "config_path": str(record.config_path),
+                        "source": _source_for_config_path(record.config_path),
+                    }
+                    for record in snapshot.shadowed
+                ],
+                "scanned_count": len(snapshot.records) + len(snapshot.failures),
+            }
 
     def _refresh_plugin_sync(
         self, plugin_id: str, force: bool = False

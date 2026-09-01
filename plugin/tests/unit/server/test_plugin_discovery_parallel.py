@@ -335,6 +335,98 @@ def test_an_older_refresh_does_not_publish_over_a_newer_one(
     )
 
 
+def test_two_refreshes_never_interleave_their_commits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Checking the ticket on the way in is not the same as holding the order.
+
+    The first version of this guard only staged "older finishes entirely after
+    newer published", which a preflight counter does catch. It misses the real
+    shape: the older refresh claims, gets descheduled, the newer one publishes,
+    and then the older wakes up and writes its remaining stale records and
+    removals on top (codex). Claim and mutations have to sit under one
+    continuous hold so two commits can never interleave.
+
+    The interleaving is staged deterministically on purpose. Letting the two
+    threads race made this a coin flip: whenever the *newer* ticket reached
+    publication first the older was correctly rejected, no interleaving
+    happened, and the mutation survived. Here the older one is forced to publish
+    first and the newer one is released while it is mid-commit — the only
+    ordering that can actually expose the bug.
+
+    Mutation: release the guard between the claim and the record loop.
+    """
+    import threading
+    import time as _time
+
+    module._REGISTRY_REFRESH_TICKET = 0
+    module._REGISTRY_PUBLISHED_TICKET = 0
+
+    order: list[str] = []
+    order_guard = threading.Lock()
+    discovering = {"A": threading.Event(), "B": threading.Event()}
+    may_publish = {"A": threading.Event(), "B": threading.Event()}
+    older_committing = threading.Event()
+
+    def _discover(roots, *, force=False, force_targets=frozenset()):
+        tag = threading.current_thread().name
+        discovering[tag].set()
+        assert may_publish[tag].wait(timeout=5), f"{tag} 一直没被放行"
+        return SimpleNamespace(
+            records=[
+                SimpleNamespace(plugin_id=f"{tag}{i}",
+                                config_path=Path(f"/{tag}/{i}/plugin.toml"),
+                                meta_payload={})
+                for i in range(3)
+            ],
+            failures=[],
+            config_paths=set(),
+            shadowed=[],
+        )
+
+    def _apply(record, *, existing_snapshot, preferred_runtime_plugin_id=None):
+        with order_guard:
+            order.append(record.plugin_id[0])
+        if record.plugin_id == "A0":
+            older_committing.set()
+        # 拉长提交窗口：没有互斥的话，两边一定会交错。
+        _time.sleep(0.02)
+        return record.plugin_id, {}
+
+    monkeypatch.setattr(module, "_discover_registry_snapshot_sync", _discover)
+    monkeypatch.setattr(module, "_apply_discovery_record_sync", _apply)
+    monkeypatch.setattr(module, "_prepare_plugin_import_roots", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_get_registered_plugin_snapshot_sync", dict)
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", list)
+    monkeypatch.setattr(module, "_find_existing_runtime_plugin_id_by_config_path", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_select_managed_fields", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_collect_missing_plugin_ids_sync", lambda *a, **k: set())
+    monkeypatch.setattr(module, "_remove_stale_plugin_metadata_sync", lambda *a, **k: ([], []))
+    monkeypatch.setattr(module, "_source_for_config_path", lambda *a, **k: "user")
+
+    service = module.PluginRegistryService()
+    older = threading.Thread(target=service._refresh_registry_sync, name="A")
+    newer = threading.Thread(target=service._refresh_registry_sync, name="B")
+
+    # A 先领号（1），B 后领号（2）——号是在 discovery 之前领的。
+    older.start()
+    assert discovering["A"].wait(timeout=5), "前提没成立：A 没进 discovery"
+    newer.start()
+    assert discovering["B"].wait(timeout=5), "前提没成立：B 没进 discovery"
+
+    # 让**旧**的那次先进入发布，并在它提交到一半时放 B 进来。
+    may_publish["A"].set()
+    assert older_committing.wait(timeout=5), "前提没成立：A 没开始提交"
+    may_publish["B"].set()
+
+    older.join(timeout=10)
+    newer.join(timeout=10)
+
+    assert "".join(order) == "AAABBB", (
+        f"两次刷新的提交交错了，旧的那份可以盖在新的上面：{''.join(order)}"
+    )
+
+
 def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
