@@ -534,6 +534,51 @@ async def test_study_companion_install_routes_map_to_study_entries(
 
 
 @pytest.mark.asyncio
+async def test_legacy_study_tesseract_status_routes_remain_read_only_after_restart(
+    plugin_ui_async_client: AsyncClient,
+    galgame_install_runtime_root: Path,
+) -> None:
+    install_task_module.update_install_task_state(
+        "run-legacy-tesseract",
+        kind="tesseract",
+        plugin_id="study_companion",
+        run_id="run-legacy-tesseract",
+        status="completed",
+        phase="completed",
+        message="Tesseract installation completed",
+        progress=1.0,
+    )
+
+    latest_response = await plugin_ui_async_client.get(
+        "/plugin/study_companion/ui-api/tesseract/install/latest"
+    )
+    task_response = await plugin_ui_async_client.get(
+        "/plugin/study_companion/ui-api/tesseract/install/run-legacy-tesseract"
+    )
+    async with plugin_ui_async_client.stream(
+        "GET",
+        "/plugin/study_companion/ui-api/tesseract/install/run-legacy-tesseract/stream",
+    ) as stream_response:
+        stream_body = ""
+        async for line in stream_response.aiter_lines():
+            if line.startswith("data: "):
+                stream_body = line[len("data: "):]
+                break
+    start_response = await plugin_ui_async_client.post(
+        "/plugin/study_companion/ui-api/tesseract/install",
+        json={"force": True},
+    )
+
+    assert latest_response.status_code == 200
+    assert latest_response.json()["task_id"] == "run-legacy-tesseract"
+    assert task_response.status_code == 200
+    assert task_response.json()["status"] == "completed"
+    assert stream_response.status_code == 200
+    assert json.loads(stream_body)["task_id"] == "run-legacy-tesseract"
+    assert start_response.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_legacy_study_tesseract_route_recovers_after_old_plugin_registration(
     plugin_ui_async_client: AsyncClient,
     galgame_plugin_dir: Path,

@@ -58,6 +58,7 @@ _INSTALL_KIND_LABELS = {
     "rapidocr_models": "RapidOCR Models",
     "tesseract": "Tesseract",
 }
+_LEGACY_READ_ONLY_INSTALL_KINDS = {("study_companion", "tesseract")}
 
 
 async def _run_blocking(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -146,7 +147,12 @@ def _normalize_ui_locale(locale: str) -> str:
     return "zh-CN"
 
 
-def _get_install_kind_spec(kind: str, *, plugin_id: str) -> dict[str, Any]:
+def _get_install_kind_spec(
+    kind: str,
+    *,
+    plugin_id: str,
+    allow_legacy_read: bool = False,
+) -> dict[str, Any]:
     registration = _get_plugin_registration(plugin_id)
     normalized = str(kind or "").strip().lower()
     # rapidocr + dxcam used to live here as runtime-pip-install entries; both
@@ -156,6 +162,8 @@ def _get_install_kind_spec(kind: str, *, plugin_id: str) -> dict[str, Any]:
     spec = registration.install_kinds.get(normalized)
     if spec is None:
         label = _INSTALL_KIND_LABELS.get(normalized, normalized or str(kind))
+        if allow_legacy_read and (registration.plugin_id, normalized) in _LEGACY_READ_ONLY_INSTALL_KINDS:
+            return {"kind": normalized, "label": label}
         raise HTTPException(
             status_code=404,
             detail=f"{label} install is not supported by {registration.plugin_id}",
@@ -532,7 +540,7 @@ async def _start_install_task(
 
 async def _latest_install_task_payload(*, plugin_id: str, kind: str) -> JSONResponse:
     _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
+    spec = _get_install_kind_spec(kind, plugin_id=plugin_id, allow_legacy_read=True)
     payload = await _run_blocking(
         load_latest_install_task_state,
         kind=spec["kind"],
@@ -554,7 +562,7 @@ async def _latest_install_task_payload(*, plugin_id: str, kind: str) -> JSONResp
 
 async def _get_install_task_payload(*, plugin_id: str, kind: str, task_id: str) -> JSONResponse:
     _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
+    spec = _get_install_kind_spec(kind, plugin_id=plugin_id, allow_legacy_read=True)
     return JSONResponse(
         await _run_blocking(
             _resolve_install_task_payload,
@@ -574,7 +582,7 @@ async def _install_stream_response(
     request: Request,
 ) -> StreamingResponse:
     _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
+    spec = _get_install_kind_spec(kind, plugin_id=plugin_id, allow_legacy_read=True)
     await _run_blocking(
         _resolve_install_task_payload,
         task_id,

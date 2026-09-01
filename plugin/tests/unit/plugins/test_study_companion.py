@@ -6345,6 +6345,17 @@ await waitFor(
   () => document.getElementById('settingsConfigStatus').textContent.includes('Saved'),
   'settings saved status',
 );
+const settingsUpdateIndex = runEntries.findIndex((entry) => entry.entry_id === 'study_update_settings_config');
+await waitFor(
+  () => runEntries.some((entry, index) => index > settingsUpdateIndex && entry.entry_id === 'study_status'),
+  'language dependency status refresh',
+);
+const languageStatusRefreshIndex = runEntries.findIndex(
+  (entry, index) => index > settingsUpdateIndex && entry.entry_id === 'study_status',
+);
+if (settingsUpdateIndex < 0 || languageStatusRefreshIndex < 0) {
+  throw new Error(`language save did not refresh dependency status: ${JSON.stringify(runEntries)}`);
+}
 if (!parentMessages.some((message) => message?.type === 'neko-plugin-context-invalidated')) {
   throw new Error(`settings save did not invalidate hosted context: ${JSON.stringify(parentMessages)}`);
 }

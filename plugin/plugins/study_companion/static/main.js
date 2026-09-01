@@ -1781,31 +1781,30 @@ function collectSettingsConfig() {
   return next;
 }
 
-async function saveSettingsConfig(statusTarget = settingsConfigStatus) {
+async function saveSettingsConfig(target = settingsConfigStatus) {
   if (!settingsConfig) await loadSettingsConfig(true);
   if (!settingsConfig) {
-    setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings', statusTarget);
+    setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings', target);
     return;
   }
-  const previous = [cloneConfig(settingsConfig), cloneConfig(settingsCommunicationStatus)];
-  const next = collectSettingsConfig();
+  const old = [cloneConfig(settingsConfig), cloneConfig(settingsCommunicationStatus)];
+  const cfg = collectSettingsConfig();
   if (settingsLearningStage) setLearningProfileStage(settingsLearningStage.value);
   syncSettingsSavingControls(true);
-  setSettingsConfigStatus('ui.status.config_saving', 'Saving settings...', statusTarget);
+  setSettingsConfigStatus('ui.status.config_saving', 'Saving settings...', target);
   try {
-    const payload = await callPlugin('study_update_settings_config', { config: next });
-    settingsConfig = cloneConfig(getConfigRoot(payload) || next);
+    const payload = await callPlugin('study_update_settings_config', { config: cfg });
+    settingsConfig = cloneConfig(getConfigRoot(payload) || cfg);
     settingsCommunicationStatus = cloneConfig(payload.communication_status || {});
     applySettingsConfig(settingsConfig);
-    setSettingsConfigStatus('ui.status.config_saved', 'Saved', statusTarget);
+    setSettingsConfigStatus('ui.status.config_saved', 'Saved', target);
     window.parent.postMessage({type: 'neko-plugin-context-invalidated'}, window.location.origin);
-    if (surfaceDrawer?.dataset.open === 'true' && surfaceDrawer.dataset.surfaceId === 'note-exporter') {
-      openSurfaceDrawer('note-exporter');
-    }
+    if (surfaceDrawer?.dataset.open === 'true' && surfaceDrawer.dataset.surfaceId === 'note-exporter') openSurfaceDrawer('note-exporter');
+    await refreshStatus().catch(setStatus);
   } catch (error) {
-    [settingsConfig, settingsCommunicationStatus] = previous;
+    [settingsConfig, settingsCommunicationStatus] = old;
     applySettingsConfig(settingsConfig);
-    setSettingsConfigStatus('ui.status.config_save_failed', 'Could not save settings', statusTarget);
+    setSettingsConfigStatus('ui.status.config_save_failed', 'Could not save settings', target);
   } finally {
     syncSettingsSavingControls();
   }
