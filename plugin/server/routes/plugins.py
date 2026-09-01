@@ -31,8 +31,6 @@ registry_service = PluginRegistryService()
 async def plugin_status(plugin_id: Optional[str] = Query(default=None)) -> dict[str, object]:
     try:
         return await query_service.get_plugin_status(plugin_id)
-    except PluginOperationBusy:
-        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -40,8 +38,6 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)) -> dict[
 async def list_plugins(locale: Optional[str] = Query(default=None)) -> dict[str, object]:
     try:
         return await query_service.list_plugins(locale=locale)
-    except PluginOperationBusy:
-        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -58,12 +54,18 @@ _OPERATION_WAIT_BUDGET_SECONDS = env_seconds("NEKO_PLUGIN_OPERATION_WAIT_BUDGET"
 
 
 def _busy_response() -> HTTPException:
+    """Shape this 409 like every other error this router emits.
+
+    It went out as a dict ``detail`` with a hard-coded Simplified-Chinese string
+    and no ``X-Error-Code`` header, while every other failure here goes through
+    ``raise_http_from_domain`` — string detail, header set, message in English
+    like the rest of the domain errors. A client keying on the header simply did
+    not see this one (本轮对抗复审).
+    """
     return HTTPException(
         status_code=409,
-        detail={
-            "code": "PLUGIN_OPERATION_BUSY",
-            "message": "另一个插件操作正在进行，请稍后重试",
-        },
+        detail="Another plugin operation is in progress; please retry shortly",
+        headers={"X-Error-Code": "PLUGIN_OPERATION_BUSY"},
     )
 
 
@@ -84,8 +86,6 @@ async def refresh_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dic
     try:
         # 同 /plugins/refresh：用户点的刷新必须真的再看一眼。
         return await registry_service.refresh_plugin(plugin_id, force=True)
-    except PluginOperationBusy:
-        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -117,8 +117,6 @@ async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
     try:
         # 用户按了刷新键，意思就是「再去看一眼」——从缓存回答等于没刷新。
         return await registry_service.refresh_registry(force=True)
-    except PluginOperationBusy:
-        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 

@@ -86,18 +86,27 @@ _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 # 没有下界的话，预算见底时算出来的是 0 或负数，那等于"直接判这个插件启动失败"
 # 而不是"抓紧试一次"——而走到启动阶段的插件都是我们刚亲手停掉的，判它失败就是
 # 把它留在停止状态。
-_MIN_CLAMPED_STARTUP_TIMEOUT = 1.0
+_MIN_CLAMPED_STEP_TIMEOUT = 1.0
 
 
-def _clamp_startup_timeout(configured: float, budget: float | None) -> float:
-    """Fit one step of a start inside what is left of a round budget."""
+def _clamp_step_timeout(configured: float, budget: float | None) -> float:
+    """Fit one step of a stop or a start inside what is left of a round budget.
+
+    Never *widens*: a plugin that declared a 0.5 s timeout of its own keeps it
+    however generous the budget is, and however low the floor is. The floor
+    raises a squeezed budget, it does not raise the configured value.
+
+    One helper for both phases on purpose. The stop side had no floor at all,
+    so a spent budget handed ``shutdown_timeout≈0`` down and every remaining
+    plugin was killed outright instead of being asked to shut down.
+    """
     if budget is None:
         return configured
-    return max(_MIN_CLAMPED_STARTUP_TIMEOUT, min(configured, budget))
+    return min(configured, max(_MIN_CLAMPED_STEP_TIMEOUT, budget))
 
 
-def _remaining_start_budget(deadline: float | None) -> float | None:
-    """Seconds left before ``deadline``, or ``None`` when the start is unbounded.
+def _remaining_step_budget(deadline: float | None) -> float | None:
+    """Seconds left before ``deadline``, or ``None`` when the step is unbounded.
 
     A start is several sequential expensive steps, not one. Handing the whole
     call a single duration bounds only the step it is applied to and lets every
@@ -927,8 +936,8 @@ class PluginLifecycleService:
                 # 压进去而不是套 asyncio.wait_for：start_plugin 带
                 # @serialized_plugin_operation，那个包装器拿到锁之后会屏蔽取消，
                 # 外面套超时只会把一次真实结果报成超时（见 stop 那边的说明）。
-                startup_timeout_value = _clamp_startup_timeout(
-                    startup_timeout_value, _remaining_start_budget(start_deadline)
+                startup_timeout_value = _clamp_step_timeout(
+                    startup_timeout_value, _remaining_step_budget(start_deadline)
                 )
             startup_result = await _start_host_with_timeout(
                 plugin_id=current_plugin_id,
@@ -963,8 +972,8 @@ class PluginLifecycleService:
             #
             # 正常一轮 reload 走到这里是命中缓存的（注册表刚刷过、指纹没变），代价
             # 接近零；钳位只在冷扫描那条病态路径上真的生效。
-            scan_timeout = _clamp_startup_timeout(
-                _DEFAULT_METADATA_SCAN_TIMEOUT, _remaining_start_budget(start_deadline)
+            scan_timeout = _clamp_step_timeout(
+                _DEFAULT_METADATA_SCAN_TIMEOUT, _remaining_step_budget(start_deadline)
             )
             isolated_metadata = await asyncio.to_thread(
                 scan_plugin_metadata_isolated,
@@ -1259,12 +1268,19 @@ class PluginLifecycleService:
             # 把预算送进去，而不是套在外面：等锁那段由 bounded_operation_wait
             # 管，真正关停那段由 shutdown_timeout 管，两段都在预算内结束，返回的
             # 也是真实结果。
+            # 等锁和关停各自按"此刻还剩多少"算，不能共用一个快照。共用的话，一次
+            # 等满 remaining 的抢锁之后，关停又拿到一份完整的 remaining，一轮就能
+            # 花掉两倍预算——这跟两层锁各起一份截止期是同一个错误，只是换了个地方
+            # （本轮对抗复审）。
             remaining = max(0.0, stop_deadline - time_module.monotonic())
             with bounded_operation_wait(remaining):
                 stop_outcomes.append(
                     await self._safe_stop_for_reload(
                         plugin_id,
-                        shutdown_timeout=min(PLUGIN_SHUTDOWN_TIMEOUT, remaining),
+                        shutdown_timeout=_clamp_step_timeout(
+                            PLUGIN_SHUTDOWN_TIMEOUT,
+                            _remaining_step_budget(stop_deadline),
+                        ),
                     )
                 )
 

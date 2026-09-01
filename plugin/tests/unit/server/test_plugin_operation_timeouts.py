@@ -115,8 +115,17 @@ def test_without_a_deadline_it_still_queues(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(module, "_FILE_LOCK_RETRY_INTERVAL_SECONDS", 0.01)
 
     handle = module._acquire_file_lock_sync()
-    assert len(attempts) == 3, "无截止期时应该一直重试到拿到锁"
-    handle.close()
+    try:
+        assert len(attempts) == 3, "无截止期时应该一直重试到拿到锁"
+    finally:
+        # 和过期预算那条用例同一个理由：_lock_file_once 被打成了空操作，文件区间
+        # 从没被真的锁过，所以不能走 _release_file_lock_sync；但 handle 已经登记进
+        # 模块全局了，只 close 会留一个已关闭的 handle 给后面的用例踩。
+        with module._FILE_LOCK_HANDLE_GUARD:
+            if module._ACTIVE_FILE_LOCK_HANDLE is handle:
+                module._ACTIVE_FILE_LOCK_HANDLE = None
+            module._OPEN_FILE_LOCK_HANDLES.discard(handle)
+        handle.close()
 
 
 # ── 没有工具就不该发那次 HTTP ──────────────────────────────────────────
@@ -353,7 +362,9 @@ async def test_a_start_that_begins_late_gets_a_shortened_startup_timeout(
 
     monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: ["p0", "p1"])
     monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
-    monkeypatch.setattr(module, "_RELOAD_ALL_BUDGET_SECONDS", 0.40)
+    # 预算和睡眠都放大，给被负载拖慢的 CI 留出余量：判据是"第二个看到的剩余量
+    # 明显更小"，不是某个精确的秒数。
+    monkeypatch.setattr(module, "_RELOAD_ALL_BUDGET_SECONDS", 1.20)
 
     async def _noop_refresh(*a, **k):
         return {"success": True}
@@ -377,7 +388,7 @@ async def test_a_start_that_begins_late_gets_a_shortened_startup_timeout(
         # 看到的剩余量必须比第一个小。记参数本身的话，"每个插件各起一份新预算"
         # 这个退化是看不出来的。
         seen.append(None if start_deadline is None else start_deadline - time.monotonic())
-        await asyncio.sleep(0.30)
+        await asyncio.sleep(0.45)
         return {"success": True}
 
     monkeypatch.setattr(service, "_safe_stop_for_reload", _stop)
@@ -386,32 +397,97 @@ async def test_a_start_that_begins_late_gets_a_shortened_startup_timeout(
     await service.reload_all_plugins()
 
     assert len(seen) == 2, f"两个插件都该被尝试启动：{seen}"
-    assert seen[0] is not None and seen[0] <= 0.40, (
+    # 留一点余量：seen 记的是 deadline - monotonic()，紧挨着设截止期那一刻算出来
+    # 的值可以是 1.2000000000116415，浮点上并不 <= 1.20。这条只是个粗上界，真正
+    # 承重的是下面那个"差值必须显著"的断言。
+    assert seen[0] is not None and seen[0] <= 1.25, (
         f"第一个启动拿到的上限比整轮预算还大：{seen[0]}"
     )
-    assert seen[1] is not None and seen[1] < seen[0], (
+    # 要求一个**真实的**间隔，而不是 seen[1] < seen[0]。后者在变异下是掷硬币：
+    # 每个插件各起一份新预算的话，两个数都约等于整轮预算，谁大谁小由微秒级抖动
+    # 决定，变异有一半概率活下来（本轮对抗复审）。第一次启动睡了 0.45s，所以真
+    # 实差值应当接近 0.45s。
+    assert seen[1] is not None and seen[1] < seen[0] - 0.20, (
         f"第二个启动没有拿到**剩余**预算，而是又一份完整的：{seen}"
     )
 
 
-def test_the_startup_clamp_never_widens_and_never_reaches_zero() -> None:
-    """Both directions of the clamp, on the function production actually calls.
+def test_the_step_clamp_never_widens_and_never_reaches_zero() -> None:
+    """Every direction of the clamp, on the function production actually calls.
 
     A spent budget must still buy a short attempt: every plugin reaching the
     start phase was just stopped by us, so refusing to try leaves it down — the
     opposite of a reload. And a plugin that declared a *shorter* timeout of its
-    own must not have it widened by a generous budget.
+    own must not have it widened, by a generous budget **or by the floor**. The
+    sub-second case is the one the first version of this test missed: with the
+    floor applied outside the ``min`` a plugin asking for 0.5 s was handed 1.0 s
+    (本轮对抗复审).
 
-    Mutation: drop the lower bound, or drop the ``min``.
+    Mutation: drop the lower bound, drop the outer ``min``, or put the floor
+    back on the outside.
     """
     from plugin.server.application.plugins import lifecycle_service as module
 
-    assert module._clamp_startup_timeout(10.0, 0.0) > 0, (
-        "预算见底时算出了 0，等于直接判启动失败"
+    assert module._clamp_step_timeout(10.0, 0.0) > 0, (
+        "预算见底时算出了 0，等于直接判失败"
     )
-    assert module._clamp_startup_timeout(10.0, 3.0) == 3.0, "剩余预算没有压住启动上限"
-    assert module._clamp_startup_timeout(2.0, 30.0) == 2.0, "插件自己更短的超时被放宽了"
-    assert module._clamp_startup_timeout(10.0, None) == 10.0, "没有预算时不该改动配置值"
+    assert module._clamp_step_timeout(10.0, 3.0) == 3.0, "剩余预算没有压住上限"
+    assert module._clamp_step_timeout(2.0, 30.0) == 2.0, "自己更短的超时被预算放宽了"
+    assert module._clamp_step_timeout(0.5, 0.0) == 0.5, "自己更短的超时被下界放宽了"
+    assert module._clamp_step_timeout(10.0, None) == 10.0, "没有预算时不该改动配置值"
+
+
+@pytest.mark.asyncio
+async def test_a_late_stop_is_still_asked_to_shut_down_not_just_killed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stop side needs the same floor the start side has.
+
+    ``min(PLUGIN_SHUTDOWN_TIMEOUT, remaining)`` with a spent budget hands the
+    host ``shutdown_timeout≈0``, which skips straight to killing it — a plugin
+    that would have flushed and closed cleanly in 0.2 s gets no chance to. The
+    start side already refused to go below a floor; the stop side silently did
+    not (本轮对抗复审).
+
+    Mutation: go back to ``min(PLUGIN_SHUTDOWN_TIMEOUT, remaining)``.
+    """
+    from plugin.server.application.plugins import lifecycle_service as module
+
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: ["p0", "p1"])
+    monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
+    monkeypatch.setattr(module, "_RELOAD_ALL_BUDGET_SECONDS", 0.60)
+
+    async def _noop_refresh(*a, **k):
+        return {"success": True}
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _noop_refresh)
+
+    async def _ordered(ids):
+        return list(ids)
+
+    monkeypatch.setattr(module.plugin_registry_service, "order_plugin_ids", _ordered)
+
+    service = module.PluginLifecycleService()
+    handed: list[float | None] = []
+
+    async def _stop(plugin_id: str, *, shutdown_timeout=None):
+        handed.append(shutdown_timeout)
+        await asyncio.sleep(0.50)
+        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    async def _start(plugin_id: str, *, start_deadline=None):
+        return module._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    monkeypatch.setattr(service, "_safe_stop_for_reload", _stop)
+    monkeypatch.setattr(service, "_safe_start_for_reload", _start)
+
+    await service.reload_all_plugins()
+
+    assert len(handed) == 2, f"两个插件都该被尝试停止：{handed}"
+    assert all(
+        value is not None and value >= module._MIN_CLAMPED_STEP_TIMEOUT
+        for value in handed
+    ), f"预算见底时把关停上限压到了下界以下，插件会被直接杀掉：{handed}"
 
 
 def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -431,7 +507,10 @@ def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -
     process_lock_held_for = 0.40
 
     # 文件锁永远争用：预算怎么分配，全看跨进程那一层还剩多少。
+    reached_file_lock: list[int] = []
+
     def _always_contended(handle):
+        reached_file_lock.append(1)
         raise OSError(module.errno.EACCES, "held")
 
     monkeypatch.setattr(module, "_lock_file_once", _always_contended)
@@ -469,6 +548,9 @@ def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -
     outcome, elapsed = asyncio.run(_scenario())
 
     assert outcome == "busy"
+    # 前提：真的走到了第二层。如果预算在跨进程那一层就耗光，这个用例会以 busy
+    # 通过，却根本没检验"两层共用一个截止期"——那正是它存在的理由（本轮对抗复审）。
+    assert reached_file_lock, "没走到文件锁那一层，这一轮什么也没验证"
     assert elapsed < budget + 0.30, (
         f"两层锁各花了一份预算：等了 {elapsed:.2f}s，预算只有 {budget}s"
     )
@@ -600,27 +682,11 @@ def test_unusable_budget_env_vars_fall_back_instead_of_breaking(
     assert env_seconds("NEKO_TEST_BUDGET", 12.0) == expected
 
 
-def test_clearing_one_plugin_leaves_the_others_cached() -> None:
-    """Refreshing one plugin must not make the other sixteen pay for a rescan.
-
-    Mutation: make the scoped clear fall through to clearing everything.
-    """
-    from pathlib import Path
-
-    from plugin.server.application.plugins import metadata_scanner as module
-
-    mine, theirs = Path("/a/plugin.toml"), Path("/b/plugin.toml")
-    module._SCAN_CACHE.clear()
-    module._SCAN_CACHE[("i", "m", "c", str(mine), (), "{}", "{}", ())] = "v"
-    module._SCAN_CACHE[("i", "m", "c", str(theirs), (), "{}", "{}", ())] = "v"
-    try:
-        module.clear_plugin_metadata_scan_cache(mine)
-
-        remaining = list(module._SCAN_CACHE)
-        assert len(remaining) == 1, "定向清理牵连了别的插件"
-        assert remaining[0][3] == str(theirs)
-    finally:
-        module._SCAN_CACHE.clear()
+# 这里原本有一条 test_clearing_one_plugin_leaves_the_others_cached，钉的是
+# clear_plugin_metadata_scan_cache 的 config_path 分支。那个分支从来没有生产调用方
+# ——单插件刷新走的是 force，而 force 自己就会把那把键从缓存里删掉——所以这条守卫
+# 让一段没人执行的代码看起来是被覆盖的。而且它是照着键的下标顺序手搓元组的：改
+# 键的排布只会让测试跟着改，证明不了任何事。分支删了，守卫跟着删。
 
 
 def test_work_before_the_lock_does_not_eat_the_wait_budget() -> None:

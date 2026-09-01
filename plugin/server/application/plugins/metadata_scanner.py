@@ -905,23 +905,21 @@ def _scan_cache_key(
     )
 
 
-def clear_plugin_metadata_scan_cache(config_path: Path | None = None) -> None:
-    """Drop cached scans. Whole cache by default, or just one plugin's.
+def clear_plugin_metadata_scan_cache() -> None:
+    """Drop every cached scan, and invalidate the ones still in flight.
 
-    ``config_path`` exists for the single-plugin refresh: pressing refresh on
-    one plugin should re-read that plugin, not pay to rescan the other sixteen.
+    There used to be a ``config_path`` parameter here for the single-plugin
+    refresh. It never got a production caller: that refresh is expressed as
+    ``force``, and a forced scan already evicts its own key in
+    :func:`_begin_scan`. A scoped branch nothing takes is not a spare tyre, it
+    is untested code that a guard test made look covered — and its path
+    matching was unnormalized, so it would not have matched reliably anyway.
     """
     with _SCAN_CACHE_LOCK:
         # 同时作废在途的扫描：它们是在清缓存**之前**读的盘，写回去等于把刚被
         # 明确宣布过时的内容又放回缓存。
         _bump_scan_epoch_locked()
-        if config_path is None:
-            _SCAN_CACHE.clear()
-            return
-        target = str(config_path)
-        # 键的第 4 项是 str(config_path)——见 _scan_cache_key。
-        for key in [k for k in _SCAN_CACHE if len(k) > 3 and k[3] == target]:
-            _SCAN_CACHE.pop(key, None)
+        _SCAN_CACHE.clear()
 
 
 def scan_plugin_metadata_isolated(

@@ -429,6 +429,10 @@ _DISCOVERY_SCAN_BUDGET_SECONDS = env_seconds("NEKO_PLUGIN_DISCOVERY_SCAN_BUDGET"
 # 这一轮的上限，不是整个服务器的上限——池是每轮各建各的。真正封顶并发解释器
 # 数量的是 metadata_scanner 里的全局闸，所以这里的天花板取它，两处不会各说各话。
 _DISCOVERY_SCAN_MAX_WORKERS = MAX_CONCURRENT_METADATA_SCANS
+
+# 这些扫描失败说的是"这一刻没扫成"，不是"这个插件坏了"，所以不该让插件掉进
+# runtime_load_state="failed"——那个状态会把它从自启动名单里除名。
+_TRANSIENT_SCAN_ERROR_TYPES = frozenset({"ScanBudgetExhausted", "TimeoutExpired"})
 _DISCOVERY_SCAN_MIN_WORKERS = 2
 
 
@@ -723,7 +727,20 @@ def _build_discovery_payload(
         if isinstance(adapter_conf, dict):
             payload["adapter_mode"] = str(adapter_conf.get("mode", "hybrid") or "hybrid")
 
-    if error_type and error_message and error_phase:
+    # "现在没时间"描述的是此刻，不是"这个插件是什么"——这句话我为缓存写过一次，
+    # 却漏了注册表这一半。runtime_load_state="failed" 不只是个显示状态：
+    # _get_autostart_plugin_ids_sync 会把 failed 的插件整个排除在自启动之外。于是
+    # 一次冷启动扫描超预算（本 PR 之前根本没有预算，所以这是新引入的），会让排在
+    # 后面那几个插件从此开机不再自启，而它们什么毛病都没有。
+    #
+    # 超时/预算耗尽这类**瞬时**失败照常记录错误字段供诊断，但不进 failed 状态：
+    # 下一次刷新会重试它们。
+    if error_type in _TRANSIENT_SCAN_ERROR_TYPES:
+        payload.pop("runtime_load_state", None)
+        payload["runtime_load_error_type"] = error_type
+        payload["runtime_load_error_message"] = error_message or ""
+        payload["runtime_load_error_phase"] = error_phase or "metadata_scan"
+    elif error_type and error_message and error_phase:
         payload["runtime_load_state"] = "failed"
         payload["runtime_load_error_type"] = error_type
         payload["runtime_load_error_message"] = error_message

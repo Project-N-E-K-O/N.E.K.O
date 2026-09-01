@@ -262,6 +262,101 @@ def test_a_full_refresh_still_forces_everything(
     assert forced == {"p00": True, "p01": True}, f"全量 force 被收窄了：{forced}"
 
 
+def test_a_scan_that_ran_out_of_budget_does_not_disqualify_autostart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """"No time right now" is not "this plugin is broken".
+
+    ``runtime_load_state="failed"`` is not merely a display state:
+    ``_get_autostart_plugin_ids_sync`` drops those plugins from the autostart
+    set entirely. Before this PR discovery had no budget at all, so a slow cold
+    start could not produce that state — with one, the tail of a slow first scan
+    would silently stop auto-starting on boot, with nothing wrong with it. The
+    error detail is still recorded for diagnosis; only the disqualifying state
+    is withheld, and the next refresh retries.
+
+    Mutation: let a transient scan error fall into the ``failed`` branch.
+    """
+    from plugin.server.application.plugins import metadata_scanner
+
+    ctx = SimpleNamespace(
+        pid="slowpoke",
+        toml_path=tmp_path / "slowpoke" / "plugin.toml",
+        entry="mod:Cls",
+        enabled=True,
+        auto_start=True,
+        conf={},
+        pdata={},
+        dependencies=[],
+        python_requirements=[],
+        python_requirement_paths=(),
+        sdk_supported_str="",
+        sdk_recommended_str="",
+        sdk_untested_str="",
+        sdk_conflicts_list=[],
+    )
+
+    def _blew_the_budget(**kwargs):
+        raise metadata_scanner.PluginMetadataScanError(
+            "ScanBudgetExhausted", "discovery time budget exhausted"
+        )
+
+    monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _blew_the_budget)
+    monkeypatch.setattr(
+        module, "describe_plugin_entry_directory_mismatch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(module, "_check_plugin_dependency", lambda *a, **k: (True, None))
+
+    payload = module._build_discovery_payload(ctx, plugin_id="slowpoke")
+
+    assert payload.get("runtime_load_state") != "failed", (
+        "扫描超预算把插件标成 failed —— 它会因此被排除在自启动之外"
+    )
+    assert payload.get("runtime_load_error_type") == "ScanBudgetExhausted", (
+        "错误细节也丢了，出问题时无从诊断"
+    )
+
+
+def test_a_real_load_failure_still_marks_the_plugin_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half: a genuinely broken plugin must still be marked.
+
+    Otherwise the fix above would quietly disable the failure state altogether.
+    """
+    from plugin.server.application.plugins import metadata_scanner
+
+    ctx = SimpleNamespace(
+        pid="broken",
+        toml_path=tmp_path / "broken" / "plugin.toml",
+        entry="mod:Cls",
+        enabled=True,
+        auto_start=True,
+        conf={},
+        pdata={},
+        dependencies=[],
+        python_requirements=[],
+        python_requirement_paths=(),
+        sdk_supported_str="",
+        sdk_recommended_str="",
+        sdk_untested_str="",
+        sdk_conflicts_list=[],
+    )
+
+    def _really_broken(**kwargs):
+        raise metadata_scanner.PluginMetadataScanError("SyntaxError", "bad code")
+
+    monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _really_broken)
+    monkeypatch.setattr(
+        module, "describe_plugin_entry_directory_mismatch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(module, "_check_plugin_dependency", lambda *a, **k: (True, None))
+
+    payload = module._build_discovery_payload(ctx, plugin_id="broken")
+
+    assert payload.get("runtime_load_state") == "failed", "真正坏掉的插件没有被标记"
+
+
 def test_a_non_positive_timeout_never_starts_a_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
