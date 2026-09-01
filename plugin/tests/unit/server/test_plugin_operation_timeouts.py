@@ -900,8 +900,10 @@ async def test_a_spent_stop_budget_still_attempts_the_cleanup_on_a_short_leash(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["returns_not_ok", "raises"])
 async def test_a_failed_tool_cleanup_is_reported_not_swallowed(
     monkeypatch: pytest.MonkeyPatch,
+    failure: str,
 ) -> None:
     """A cleanup that did not land must leave a trace naming the plugin.
 
@@ -912,13 +914,24 @@ async def test_a_failed_tool_cleanup_is_reported_not_swallowed(
     else reconciles the remote registry, so that trace is the only way a ghost
     tool is ever attributable.
 
-    Mutation: drop the warning, or go back to discarding the returned dict.
+    两条失败路都要盯，而且要盯出同一句话：返回 ``{"ok": false}``，和**抛出**。
+    抛出那条隐蔽得多——``clear_plugin_tools`` 内部只挡 ``httpx.HTTPError`` 和
+    ``asyncio.TimeoutError``，一个 content-type 声明是 JSON、正文却坏掉的响应会让
+    ``resp.json()`` 抛 ``ValueError`` 冒到调用方的 ``except Exception``，第一版修复
+    只堵了返回值那条（CodeRabbit）。后果完全一样，所以日志级别和措辞也必须一样，
+    否则运维要 grep 两个不同的句子才找得全。
+
+    Mutation: drop either warning, or go back to discarding the returned dict.
     """
     from plugin.server.application.plugins import lifecycle_service as module
 
     warnings: list = []
 
     async def _clear(plugin_id, *, timeout=None):
+        if failure == "raises":
+            # httpx 在 content-type 说是 JSON、正文却不是时抛的就是 ValueError
+            # 的子类，而 clear_plugin_tools 不挡它。
+            raise ValueError("malformed JSON body")
         return {"ok": False, "error": "timeout", "owned_count": 3}
 
     class _Host:

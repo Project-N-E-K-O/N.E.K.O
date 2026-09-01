@@ -1216,8 +1216,16 @@ class PluginLifecycleService:
                         cleanup_result.get("error") or cleanup_result.get("status_code"),
                     )
             except Exception as exc:
-                logger.debug(
-                    "clear_plugin_llm_tools failed (best-effort): plugin_id={}, err_type={}, err={}",
+                # 和上面 ok=False 那条同一句话、同一个级别：两条路的后果一模一样
+                # ——工具可能还挂在 main_server 上，而没有任何东西会重试。
+                #
+                # 抛出这条尤其隐蔽：clear_plugin_tools 内部只挡 httpx.HTTPError 和
+                # asyncio.TimeoutError，一个 content-type 声明是 JSON、正文却坏掉的
+                # 响应会让 resp.json() 抛 ValueError 一路冒到这里（CodeRabbit）。留在
+                # debug 的话，这条路上的幽灵工具照样无从追查。
+                logger.warning(
+                    "plugin stopped but its LLM tools may still be advertised: "
+                    "plugin_id={}, err_type={}, err={}",
                     plugin_id,
                     type(exc).__name__,
                     str(exc),
