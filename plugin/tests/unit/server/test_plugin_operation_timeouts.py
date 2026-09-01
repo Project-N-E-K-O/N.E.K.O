@@ -837,17 +837,28 @@ async def test_the_tool_cleanup_is_bounded_as_a_whole_not_per_phase(
 
 
 @pytest.mark.asyncio
-async def test_a_spent_stop_budget_skips_the_cleanup_instead_of_buying_a_second(
+async def test_a_spent_stop_budget_still_attempts_the_cleanup_on_a_short_leash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The start-attempt floor has no business on a best-effort remote call.
+    """Two ways to get this wrong, and this pins both.
 
-    ``_clamp_step_timeout``'s one-second floor exists because a plugin we
-    stopped must get a real start attempt. Reusing it here meant an exhausted
-    stop budget still bought a second of lock time per plugin for a cleanup that
-    is explicitly best-effort (CodeRabbit).
+    Too generous: ``_clamp_step_timeout``'s one-second floor exists because a
+    plugin we stopped must get a real start attempt. Reusing it here meant an
+    exhausted stop budget still bought a second of lock time per plugin for a
+    cleanup that is explicitly best-effort (CodeRabbit).
 
-    Mutation: clamp with ``_clamp_step_timeout`` again.
+    Too stingy: the version that fixed that skipped the cleanup outright once the
+    budget was spent — and this is the only place in the tree that clears the
+    remote tool registration, with no reconciliation and no retry behind it. The
+    host is already gone, so the skipped tools stay advertised to the model,
+    which then picks one and gets "plugin not running" forever (Greptile).
+
+    So: always attempt, on a leash far shorter than the start-attempt floor. The
+    POST clears by source and is idempotent, so a failure is no worse than the
+    skip was.
+
+    Mutations: clamp with ``_clamp_step_timeout`` again; or skip when the budget
+    is spent.
     """
     from plugin.server.application.plugins import lifecycle_service as module
 
@@ -876,9 +887,69 @@ async def test_a_spent_stop_budget_skips_the_cleanup_instead_of_buying_a_second(
     with contextlib.suppress(Exception):
         await service.stop_plugin("p0", stop_deadline=time.monotonic() - 5.0)
 
-    assert handed == [], (
-        f"预算见底还是发起了清理，每个插件都会在锁上多压一秒：{handed}"
+    assert handed, (
+        "预算见底就跳过了清理——host 已经摘掉，而远端工具表还在向模型公布，"
+        "没有任何东西会重试"
     )
+    assert handed[0] == module._MIN_TOOL_CLEANUP_TIMEOUT, (
+        f"预算见底时给的不是那一小段下界：{handed}"
+    )
+    assert handed[0] < module._MIN_CLAMPED_STEP_TIMEOUT, (
+        f"又把「启动尝试」的下界套回到这次尽力而为的远端调用上了：{handed}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_tool_cleanup_is_reported_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cleanup that did not land must leave a trace naming the plugin.
+
+    ``clear_plugin_tools`` is deliberately quiet inside itself — a noisy failure
+    there would mask the real shutdown reason — and it returns its verdict as a
+    value. The stop path used to discard that value, so a stop that left the
+    model holding an uncallable tool looked exactly like a clean stop. Nothing
+    else reconciles the remote registry, so that trace is the only way a ghost
+    tool is ever attributable.
+
+    Mutation: drop the warning, or go back to discarding the returned dict.
+    """
+    from plugin.server.application.plugins import lifecycle_service as module
+
+    warnings: list = []
+
+    async def _clear(plugin_id, *, timeout=None):
+        return {"ok": False, "error": "timeout", "owned_count": 3}
+
+    class _Host:
+        async def shutdown(self, timeout=None):
+            return None
+
+        async def start(self, *a, **k):  # pragma: no cover - contract shape only
+            return None
+
+    monkeypatch.setattr(module, "clear_plugin_llm_tools", _clear)
+    monkeypatch.setattr(module, "_get_plugin_host_sync", lambda plugin_id: _Host())
+    monkeypatch.setattr(module, "PluginHostContract", _Host)
+    monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
+    class _RecordingLogger:
+        # 换掉整个 logger，而不是 patch 它的 warning：PluginLoggerAdapter 的方法是
+        # 只读属性，setattr 会直接抛。
+        def warning(self, msg, *a, **k):
+            warnings.append((msg, a))
+
+        def __getattr__(self, _name):
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(module, "logger", _RecordingLogger())
+
+    service = module.PluginLifecycleService()
+    with contextlib.suppress(Exception):
+        await service.stop_plugin("p0")
+
+    hits = [w for w in warnings if "tools may still be advertised" in w[0]]
+    assert hits, f"清理失败没有留下任何可追查的痕迹：{warnings}"
+    assert "p0" in hits[0][1], f"痕迹里没有插件 id，出现幽灵工具时无从归因：{hits[0]}"
 
 
 @pytest.mark.asyncio

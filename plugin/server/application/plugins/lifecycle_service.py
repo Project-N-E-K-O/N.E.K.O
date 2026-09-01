@@ -89,6 +89,10 @@ _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 _MIN_CLAMPED_STEP_TIMEOUT = 1.0
 # 清理远端工具表这一步在没有预算约束时愿意花的时间（它自己内部还有更细的超时）。
 _CLEAR_TOOLS_BUDGET_SECONDS = 2.0
+# 预算见底时仍然留给它的一小段时间。不是"启动尝试"那种下界（那是 1.0s），
+# 只是让这次幂等的远端清除**发得出去**——跳过的代价是永久的幽灵工具，而这
+# 一小段的代价只在 main_server 真的卡住时才付。
+_MIN_TOOL_CLEANUP_TIMEOUT = 0.25
 
 
 def _resolve_python_requirements(
@@ -1179,22 +1183,37 @@ class PluginLifecycleService:
                 # 但**不能**用 _clamp_step_timeout：那个下界是给"启动"用的，因为
                 # 一个被我们停掉的插件必须拿到一次真正的尝试。这里是尽力而为的
                 # 远端清理，预算见底还硬给它 1s，就是每个插件都在锁上多压一秒
-                # （CodeRabbit）。见底就跳过，并且留一行日志——不然之后出现幽灵
-                # 工具会完全无从追查。
+                # （CodeRabbit）。
+                #
+                # 也**不能**在预算见底时干脆跳过——我上一版就是那么写的，是错的。
+                # 全仓只有这一处清理远端工具注册，没有任何对账或重试兜底：跳过之后
+                # host 已经摘掉，而 main_server 那边的工具还在向模型公布，模型选中
+                # 它只会拿到"插件没在跑"，并且永远不会自愈（Greptile）。
+                #
+                # 所以给一个很小的下界，让它至少发得出去。这比跳过**严格更好**：
+                # 失败了也不过回到跳过的状态（这个 POST 是按 source 整体清除、幂等，
+                # 重发无害），成功了就少一批幽灵工具。而正常情况下这是一次本机
+                # POST、毫秒级返回，下界根本不会生效。
                 cleanup_budget = _remaining_step_budget(stop_deadline)
-                if cleanup_budget is not None and cleanup_budget <= 0:
-                    logger.debug(
-                        "skipping best-effort tool cleanup, stop budget spent: plugin_id={}",
+                cleanup_result = await clear_plugin_llm_tools(
+                    plugin_id,
+                    timeout=(
+                        None
+                        if cleanup_budget is None
+                        else min(
+                            _CLEAR_TOOLS_BUDGET_SECONDS,
+                            max(_MIN_TOOL_CLEANUP_TIMEOUT, cleanup_budget),
+                        )
+                    ),
+                )
+                if isinstance(cleanup_result, dict) and not cleanup_result.get("ok"):
+                    # 提到 warning。清理本身是尽力而为，但"没清掉"的后果是模型看得见
+                    # 一个调不通的工具、而没有任何东西会重试；debug 级别等于没留痕。
+                    logger.warning(
+                        "plugin stopped but its LLM tools may still be advertised: "
+                        "plugin_id={}, reason={}",
                         plugin_id,
-                    )
-                else:
-                    await clear_plugin_llm_tools(
-                        plugin_id,
-                        timeout=(
-                            None
-                            if cleanup_budget is None
-                            else min(_CLEAR_TOOLS_BUDGET_SECONDS, cleanup_budget)
-                        ),
+                        cleanup_result.get("error") or cleanup_result.get("status_code"),
                     )
             except Exception as exc:
                 logger.debug(
