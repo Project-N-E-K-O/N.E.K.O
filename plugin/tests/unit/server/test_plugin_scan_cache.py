@@ -1002,11 +1002,21 @@ def test_a_failed_forced_scan_still_keeps_the_key_cold(
             force=force,
         )
 
+    forced_outcome: list[str] = []
+
     def _forced():
+        # 这一趟 force 是**故意**失败的：上面的 _fake 认出 force 线程就抛
+        # TimeoutExpired。接住只是让线程正常收尾。
+        #
+        # 但不能默默吞掉——换成另一种 PluginMetadataScanError（比如槽位耗尽）时，
+        # 用例的前提"force 是在扫描里超时的"已经不成立了，而吞掉之后它照样绿。
+        # 记下来，join 之后断言。
         try:
             _run(force=True)
-        except module.PluginMetadataScanError:
-            pass
+        except module.PluginMetadataScanError as exc:
+            forced_outcome.append(exc.error_type)
+        else:
+            forced_outcome.append("<returned>")
 
     forced_thread = threading.Thread(target=_forced)
     forced_thread.start()
@@ -1016,6 +1026,9 @@ def test_a_failed_forced_scan_still_keeps_the_key_cold(
     assert _run() == "ORDINARY"
     let_forced_fail.set()
     forced_thread.join(timeout=5)
+    assert forced_outcome == ["TimeoutExpired"], (
+        f"前提没成立：force 这趟不是在扫描里超时的，而是 {forced_outcome}"
+    )
 
     calls: list = []
     _scan(monkeypatch, config_path, calls)
