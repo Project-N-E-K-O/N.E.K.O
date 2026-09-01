@@ -799,6 +799,86 @@ async def test_the_tool_cleanup_request_honours_the_caller_budget(
     )
 
 
+@pytest.mark.asyncio
+async def test_the_tool_cleanup_is_bounded_as_a_whole_not_per_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``httpx.Timeout`` bounds phases, not the call.
+
+    A response that keeps dribbling bytes never trips connect/read/write
+    individually, so the whole request can run far past the budget while the
+    operation lock is held (CodeRabbit demonstrated this against a real chunked
+    server). The per-phase limits stay; an outer ``asyncio.wait_for`` is what
+    makes the number a total.
+
+    Mutation: drop the ``asyncio.wait_for`` wrapper.
+    """
+    import time as _time
+
+    from plugin.server.messaging import llm_tool_registry as module
+
+    class _Client:
+        async def post(self, url, json=None, timeout=None):
+            # 每个阶段都不超时，就是一直不结束。
+            await asyncio.sleep(5)
+            raise AssertionError("should have been cut off")
+
+    monkeypatch.setattr(module, "_get_http_client", lambda: _Client())
+
+    started = _time.monotonic()
+    result = await module.clear_plugin_tools("demo", timeout=0.2)
+    elapsed = _time.monotonic() - started
+
+    assert elapsed < 2.0, f"整通调用没有被总时长兜住，花了 {elapsed:.1f}s"
+    assert result["ok"] is False and result.get("error") == "timeout", (
+        f"超时没有按尽力而为处理：{result}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_spent_stop_budget_skips_the_cleanup_instead_of_buying_a_second(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The start-attempt floor has no business on a best-effort remote call.
+
+    ``_clamp_step_timeout``'s one-second floor exists because a plugin we
+    stopped must get a real start attempt. Reusing it here meant an exhausted
+    stop budget still bought a second of lock time per plugin for a cleanup that
+    is explicitly best-effort (CodeRabbit).
+
+    Mutation: clamp with ``_clamp_step_timeout`` again.
+    """
+    from plugin.server.application.plugins import lifecycle_service as module
+
+    handed: list = []
+
+    async def _clear(plugin_id, *, timeout=None):
+        handed.append(timeout)
+        return {"ok": True}
+
+    class _Host:
+        async def shutdown(self, timeout=None):
+            return None
+
+        async def start(self, *a, **k):  # pragma: no cover - contract shape only
+            return None
+
+    monkeypatch.setattr(module, "clear_plugin_llm_tools", _clear)
+    monkeypatch.setattr(module, "_get_plugin_host_sync", lambda plugin_id: _Host())
+    monkeypatch.setattr(module, "PluginHostContract", _Host)
+    monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kw: None)
+
+    service = module.PluginLifecycleService()
+    try:
+        await service.stop_plugin("p0", stop_deadline=time.monotonic() - 5.0)
+    except BaseException:
+        pass
+
+    assert handed == [], (
+        f"预算见底还是发起了清理，每个插件都会在锁上多压一秒：{handed}"
+    )
+
+
 def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -> None:
     """The two lock stages share a budget; they must not each spend a full one.
 

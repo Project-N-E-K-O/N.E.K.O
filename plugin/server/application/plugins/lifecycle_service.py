@@ -1149,17 +1149,27 @@ class PluginLifecycleService:
                 # 这一步也在锁里，也在停止阶段的预算里。它自己那个 2s 超时是
                 # 独立的，所以一次卡住的 main_server 能让关停在预算之外再多花
                 # 两秒，而锁一直握着（codex）。按剩余预算收窄。
-                await clear_plugin_llm_tools(
-                    plugin_id,
-                    timeout=(
-                        None
-                        if stop_deadline is None
-                        else _clamp_step_timeout(
-                            _CLEAR_TOOLS_BUDGET_SECONDS,
-                            _remaining_step_budget(stop_deadline),
-                        )
-                    ),
-                )
+                #
+                # 但**不能**用 _clamp_step_timeout：那个下界是给"启动"用的，因为
+                # 一个被我们停掉的插件必须拿到一次真正的尝试。这里是尽力而为的
+                # 远端清理，预算见底还硬给它 1s，就是每个插件都在锁上多压一秒
+                # （CodeRabbit）。见底就跳过，并且留一行日志——不然之后出现幽灵
+                # 工具会完全无从追查。
+                cleanup_budget = _remaining_step_budget(stop_deadline)
+                if cleanup_budget is not None and cleanup_budget <= 0:
+                    logger.debug(
+                        "skipping best-effort tool cleanup, stop budget spent: plugin_id={}",
+                        plugin_id,
+                    )
+                else:
+                    await clear_plugin_llm_tools(
+                        plugin_id,
+                        timeout=(
+                            None
+                            if cleanup_budget is None
+                            else min(_CLEAR_TOOLS_BUDGET_SECONDS, cleanup_budget)
+                        ),
+                    )
             except Exception as exc:
                 logger.debug(
                     "clear_plugin_llm_tools failed (best-effort): plugin_id={}, err_type={}, err={}",

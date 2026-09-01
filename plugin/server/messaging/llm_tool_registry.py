@@ -309,7 +309,12 @@ async def clear_plugin_tools(
     try:
         # 调用方给了预算就用它：这一步跑在插件停止的关键路径上、操作锁还握着，
         # 一个独立的超时会让关停在整轮预算之外再多花一截（codex）。
-        resp = await client.post(
+        #
+        # httpx.Timeout 是**分阶段**的（connect/read/write/pool），不是总时长：一个
+        # 一直挤牙膏的 chunked 响应可以让每个阶段都不超时，而整通调用远超预算
+        # （CodeRabbit 用一个真实的分块服务端验过）。所以既保留分阶段上限，又在
+        # 外面套一层 asyncio.wait_for 来兜总时长。
+        request = client.post(
             url,
             json=payload,
             timeout=(
@@ -318,6 +323,13 @@ async def clear_plugin_tools(
                 else httpx.Timeout(timeout, connect=min(0.3, timeout))
             ),
         )
+        resp = await (request if timeout is None else asyncio.wait_for(request, timeout))
+    except asyncio.TimeoutError:
+        logger.debug(
+            "clear_plugin_tools exceeded its budget (best-effort): plugin_id={}, timeout={}",
+            plugin_id, timeout,
+        )
+        return {"ok": False, "removed": 0, "error": "timeout", "owned_count": len(owned)}
     except httpx.HTTPError as exc:
         logger.debug(
             "clear_plugin_tools HTTP error (best-effort): plugin_id={}, err={}",
