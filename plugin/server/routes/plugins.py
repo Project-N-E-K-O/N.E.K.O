@@ -93,7 +93,8 @@ async def refresh_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dic
 @router.post("/plugin/{plugin_id}/stop")
 async def stop_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        return await lifecycle_service.stop_plugin(plugin_id, persist_user_intent=True)
+        with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
+            return await lifecycle_service.stop_plugin(plugin_id, persist_user_intent=True)
     except PluginOperationBusy:
         raise _busy_response()
     except ServerDomainError as error:
@@ -103,7 +104,8 @@ async def stop_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[s
 @router.delete("/plugin/{plugin_id}")
 async def delete_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        return await lifecycle_service.delete_plugin(plugin_id)
+        with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
+            return await lifecycle_service.delete_plugin(plugin_id)
     except PluginOperationBusy:
         raise _busy_response()
     except ServerDomainError as error:
@@ -124,7 +126,8 @@ async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
 @router.post("/plugin/{plugin_id}/reload")
 async def reload_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        return await lifecycle_service.reload_plugin(plugin_id)
+        with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
+            return await lifecycle_service.reload_plugin(plugin_id)
     except PluginOperationBusy:
         raise _busy_response()
     except ServerDomainError as error:
@@ -140,7 +143,8 @@ async def reload_all_plugins_endpoint(_: str = require_admin) -> dict[str, objec
     用于前端全局重载按钮。
     """
     try:
-        return await lifecycle_service.reload_all_plugins()
+        with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
+            return await lifecycle_service.reload_all_plugins()
     except PluginOperationBusy:
         raise _busy_response()
     except ServerDomainError as error:

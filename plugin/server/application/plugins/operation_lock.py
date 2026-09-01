@@ -130,14 +130,37 @@ _OPERATION_WAIT_DEADLINE: ContextVar[float | None] = ContextVar(
 )
 
 
-@contextmanager
-def bounded_operation_wait(seconds: float) -> Iterator[None]:
-    """Give lock acquisition inside this block a deadline."""
-    token = _OPERATION_WAIT_DEADLINE.set(time.monotonic() + max(0.0, float(seconds)))
-    try:
-        yield
-    finally:
-        _OPERATION_WAIT_DEADLINE.reset(token)
+class bounded_operation_wait:
+    """Give lock acquisition inside this block a deadline.
+
+    A class, not ``@contextmanager``, and that is load-bearing:
+    ``_GeneratorContextManager.__exit__`` assigns ``exc.__traceback__`` before
+    throwing back into the generator, and ``ServerDomainError`` refuses
+    attribute assignment — so wrapping an endpoint that raises one in a
+    generator-based manager turns a clean 409 into
+    ``TypeError: super(type, obj)``. A plain ``__exit__`` never touches the
+    exception, so anything raised inside propagates untouched.
+    """
+
+    __slots__ = ("_seconds", "_token")
+
+    def __init__(self, seconds: float) -> None:
+        self._seconds = max(0.0, float(seconds))
+        self._token: Token[float | None] | None = None
+
+    def __enter__(self) -> None:
+        self._token = _OPERATION_WAIT_DEADLINE.set(time.monotonic() + self._seconds)
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
+        if self._token is not None:
+            _OPERATION_WAIT_DEADLINE.reset(self._token)
+            self._token = None
+        return False
 
 
 class _FileLockAcquireCancelled(Exception):
@@ -226,6 +249,7 @@ def _lock_file_once(handle: Any) -> None:
 
 def _acquire_file_lock_sync(
     cancel_event: threading.Event | None = None,
+    deadline: float | None = None,
     contention_event: Any | None = None,
 ) -> Any:
     global _ACTIVE_FILE_LOCK_HANDLE
@@ -241,7 +265,14 @@ def _acquire_file_lock_sync(
             handle.write(b"\0")
             handle.flush()
             os.fsync(handle.fileno())
-        deadline = _OPERATION_WAIT_DEADLINE.get()
+        # 截止期显式传入，只有没传时才回落到上下文变量。
+        #
+        # 不能只靠上下文变量：这个函数是通过 loop.run_in_executor 跑的，而
+        # run_in_executor **不传播 contextvars**（asyncio.to_thread 才传播）。
+        # 实测同一个 ContextVar，to_thread 里看得到、run_in_executor 里是 None
+        # ——也就是说光设上下文变量的话，这个截止期永远到不了这里。
+        if deadline is None:
+            deadline = _OPERATION_WAIT_DEADLINE.get()
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 raise _FileLockAcquireCancelled
@@ -297,8 +328,12 @@ def _release_file_lock_sync(handle: Any) -> None:
 async def _acquire_file_lock_cancellation_safe() -> Any:
     loop = asyncio.get_running_loop()
     cancel_event = threading.Event()
+    # 在这里读——这行还在调用方的上下文里；到了 executor 线程就读不到了。
+    deadline = _OPERATION_WAIT_DEADLINE.get()
     operation = asyncio.ensure_future(
-        loop.run_in_executor(_FILE_LOCK_EXECUTOR, _acquire_file_lock_sync, cancel_event)
+        loop.run_in_executor(
+            _FILE_LOCK_EXECUTOR, _acquire_file_lock_sync, cancel_event, deadline
+        )
     )
     cancellation: asyncio.CancelledError | None = None
     while True:

@@ -34,13 +34,21 @@ def test_bounded_wait_sets_and_clears_the_deadline() -> None:
     assert module._OPERATION_WAIT_DEADLINE.get() is None
 
 
-def test_an_expired_deadline_refuses_instead_of_queueing(
+@pytest.mark.asyncio
+async def test_an_expired_deadline_refuses_instead_of_queueing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Mutation: drop the deadline check from the acquire loop.
+    """Through the real async path, executor hop included.
 
-    Simulated by making the lock permanently contended, so the loop can only
-    exit through the deadline.
+    That hop is the whole point: the acquire runs via
+    ``loop.run_in_executor``, which — unlike ``asyncio.to_thread`` — does NOT
+    propagate contextvars. Setting the deadline in the request context and
+    reading it inside the worker gets ``None``, so the budget silently does
+    nothing. The first version of this test set the deadline *inside* the
+    worker thread and passed while production was dead (Greptile caught it).
+
+    Mutation: read the deadline from the ContextVar inside
+    ``_acquire_file_lock_sync`` instead of taking it as an argument.
     """
     from plugin.server.application.plugins import operation_lock as module
 
@@ -51,26 +59,41 @@ def test_an_expired_deadline_refuses_instead_of_queueing(
     monkeypatch.setattr(module, "_is_file_lock_contention", lambda exc: True)
     monkeypatch.setattr(module, "_FILE_LOCK_RETRY_INTERVAL_SECONDS", 0.01)
 
-    # 在线程里跑并 join：少了截止期这一句就是无限等，直接调用会把整个测试
-    # 会话挂死，而挂死的测试不算失败——它只是永远不出结果。
-    outcome: dict[str, object] = {}
+    started = time.monotonic()
+    with module.bounded_operation_wait(0.15):
+        with pytest.raises(module.PluginOperationBusy):
+            await asyncio.wait_for(
+                module._acquire_file_lock_cancellation_safe(), timeout=8.0
+            )
+    elapsed = time.monotonic() - started
 
-    def _attempt() -> None:
-        with module.bounded_operation_wait(0.15):
-            try:
-                module._acquire_file_lock_sync().close()
-                outcome["raised"] = None
-            except module.PluginOperationBusy:
-                outcome["raised"] = "busy"
-            except Exception as exc:  # noqa: BLE001
-                outcome["raised"] = type(exc).__name__
+    assert elapsed < 5.0, f"截止期没穿过 executor，等了 {elapsed:.1f}s"
 
-    worker = threading.Thread(target=_attempt, daemon=True)
-    worker.start()
-    worker.join(timeout=5.0)
 
-    assert not worker.is_alive(), "截止期没生效——抢锁在无限等"
-    assert outcome.get("raised") == "busy", f"没有以 PluginOperationBusy 结束：{outcome}"
+def test_run_in_executor_really_does_drop_contextvars() -> None:
+    """Pins the reason the deadline is passed as an argument, not inherited.
+
+    If a later refactor swaps the executor for ``asyncio.to_thread`` this stops
+    being true, and whoever reads it should know the argument is then optional
+    rather than load-bearing.
+    """
+    import contextvars
+
+    probe: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+        "probe", default=None
+    )
+
+    async def _check() -> tuple[object, object]:
+        probe.set("SET")
+        loop = asyncio.get_event_loop()
+        via_executor = await loop.run_in_executor(None, probe.get)
+        via_to_thread = await asyncio.to_thread(probe.get)
+        return via_executor, via_to_thread
+
+    via_executor, via_to_thread = asyncio.run(_check())
+
+    assert via_executor is None, "run_in_executor 开始传播上下文了——注释要更新"
+    assert via_to_thread == "SET"
 
 
 def test_without_a_deadline_it_still_queues(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -182,3 +205,36 @@ async def test_reload_all_stops_at_its_budget_and_says_which_were_skipped(
         entry["error"] for entry in result["failed"] if "budget" in str(entry["error"])
     ]
     assert skipped_reasons, "跳过的原因没写进结果，调用方无从知道为什么少了几个"
+
+
+def test_a_domain_error_passes_through_the_wrapper_untouched() -> None:
+    """The wrapper must not touch exceptions travelling through it.
+
+    ``@contextmanager``'s ``__exit__`` assigns ``exc.__traceback__`` before
+    throwing back into the generator, and ``ServerDomainError`` refuses
+    attribute assignment — so a generator-based wrapper turned every domain
+    error raised inside a wrapped endpoint into
+    ``TypeError: super(type, obj): obj must be an instance or subtype of type``,
+    losing the real 409 and its error code. Caught by a route test, not by the
+    unit tests here, because it only happens when a *real* domain error
+    propagates.
+
+    Mutation: reimplement ``bounded_operation_wait`` with ``@contextmanager``.
+    """
+    from plugin.server.application.plugins.operation_lock import (
+        bounded_operation_wait,
+    )
+    from plugin.server.domain.errors import ServerDomainError
+
+    original = ServerDomainError(
+        code="PLUGIN_MANUAL_NOT_MANAGED",
+        message="manual plugin is not managed",
+        status_code=409,
+    )
+
+    with pytest.raises(ServerDomainError) as excinfo:
+        with bounded_operation_wait(5.0):
+            raise original
+
+    assert excinfo.value is original, "异常在穿过包装时被换掉或被改写了"
+    assert excinfo.value.code == "PLUGIN_MANUAL_NOT_MANAGED"
