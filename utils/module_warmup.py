@@ -64,10 +64,29 @@ MAIN_SERVER_WARMUP: tuple[str, ...] = (
     "pyncm_async",
     "bs4",
     "bilibili_api",
+    # 21 条封禁话题模板的 compile（其中 4 条各约 51 KB 正则源码），实测
+    # 294-298 ms。原来在 config/prompts/prompts_directives 模块级做，坐在
+    # memory_server 的 eager 导入链上、也就是端口 bind 之前。改惰性之后在
+    # 这里预热，首次指令抽取不用等。
+    "config.prompts.prompts_directives:DIRECTIVE_PATTERNS",
 )
 
 _warmup_lock = threading.Lock()
 _warmup_started = False
+
+
+def _warm_one(name: str) -> None:
+    """Warm one entry: ``"module"``, or ``"module:attribute"``.
+
+    带属性的形式是给**惰性求值**的重家伙准备的（比如一批正则的 compile）。那种
+    模块通常早就在 ``sys.modules`` 里了——它是被别的东西顺路 import 进来的，只是
+    真正贵的那部分被推迟到了首次取值。对它们光 ``import_module`` 会直接命中缓存
+    返回，一行代码都不执行，预热等于没做。所以属性要真的取一次。
+    """
+    module_name, _, attr = name.partition(":")
+    module = importlib.import_module(module_name)
+    if attr:
+        getattr(module, attr)
 
 
 def start_background_warmup(modules, *, label: str = "server") -> bool:
@@ -94,7 +113,7 @@ def start_background_warmup(modules, *, label: str = "server") -> bool:
         for name in module_list:
             start = time.monotonic()
             try:
-                importlib.import_module(name)
+                _warm_one(name)
                 loaded += 1
                 logger.debug(
                     "[warmup:%s] %s (%.0f ms)",
