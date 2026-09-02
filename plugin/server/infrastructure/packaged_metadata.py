@@ -89,6 +89,11 @@ class PackagedPluginMetadata:
     """Validated contents of one plugin's ``plugin.meta.json``."""
 
     entries: list[dict[str, object]] = field(default_factory=list)
+    # 注册进 state.event_handlers 的那份元数据，以及 entry_id -> 方法名。
+    # 启动一个插件本来要为这两样再 import 它一次——插件进程自己已经 import 过，
+    # 那一次纯属重复（codex）。带上之后 start_plugin 只剩宿主进程那一次导入。
+    handlers: dict[str, dict[str, object]] = field(default_factory=dict)
+    entry_methods: dict[str, str] = field(default_factory=dict)
     sdk_version: str = ""
     source_sha256: str = ""
 
@@ -185,6 +190,26 @@ def _coerce_entries(raw: object) -> list[dict[str, object]]:
     return [dict(item) for item in raw if isinstance(item, Mapping)]
 
 
+def _coerce_handlers(raw: object) -> dict[str, dict[str, object]]:
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        str(key): dict(value)
+        for key, value in raw.items()
+        if isinstance(key, str) and isinstance(value, Mapping)
+    }
+
+
+def _coerce_entry_methods(raw: object) -> dict[str, str]:
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in raw.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+
+
 def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
     """Load and validate ``plugin.meta.json``, or ``None`` if unusable.
 
@@ -271,6 +296,8 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
 
     return PackagedPluginMetadata(
         entries=_coerce_entries(raw.get("entries")),
+        handlers=_coerce_handlers(raw.get("handlers")),
+        entry_methods=_coerce_entry_methods(raw.get("entry_methods")),
         sdk_version=packaged_sdk,
         source_sha256=packaged_sha,
     )

@@ -984,16 +984,18 @@ class PluginRegistryService:
         roots = tuple(PLUGIN_CONFIG_ROOTS)
         _prepare_plugin_import_roots(roots, logger)
 
-        existing_snapshot = _get_registered_plugin_snapshot_sync()
-        running_ids = _list_running_plugin_ids_sync()
         added: list[str] = []
         updated: list[str] = []
         unchanged: list[str] = []
         refreshed_ids: set[str] = set()
-        snapshot = _discover_registry_snapshot_sync(roots)
-        # 读盘和发布都在锁里。发布之间必须有序，而读盘本身现在也只有毫秒级，没有
-        # 理由把它挪到锁外面去换并发。
+        # 读盘、读现有快照、发布，全都在锁里。只把发布圈进来是不够的：两次重叠的
+        # 刷新可以各自在锁外读到同一份旧快照，然后先后进锁，后进的那次拿着过时的
+        # existing_snapshot 做增删对账，把前一次刚写进去的记录当成"多出来的"删掉
+        # （codex）。读盘现在只有毫秒级，圈进锁里不需要付什么代价。
         with _REGISTRY_REFRESH_LOCK:
+            existing_snapshot = _get_registered_plugin_snapshot_sync()
+            running_ids = _list_running_plugin_ids_sync()
+            snapshot = _discover_registry_snapshot_sync(roots)
             failed = [
                 {
                     "plugin_id": item.plugin_id or "",

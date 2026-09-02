@@ -223,7 +223,7 @@ def test_a_plugin_the_user_never_started_is_not_autostarted(
     monkeypatch.setattr(
         module,
         "_build_ordered_plugin_ids_sync",
-        lambda candidates: sorted(candidates),
+        sorted,
     )
     monkeypatch.setattr(
         module.state,
@@ -329,3 +329,83 @@ def test_a_freshly_installed_plugin_waits_for_the_user(
         assert autostart_approvals.is_autostart_approved("just_installed")
     finally:
         autostart_approvals._reset_cache_for_testing()
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_lock_covers_reading_disk_not_just_publishing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading and publishing must happen under the same lock acquisition.
+
+    Locking only the publish step is not enough: two overlapping refreshes can
+    each read the same stale ``existing_snapshot`` outside the lock, then enter
+    it one after the other, and the second one reconciles additions and
+    removals against a registry that the first has already changed — deleting
+    records it should have kept (codex).
+
+    Behavioural rather than structural: discovery itself asserts the lock is
+    held while it runs, so moving either read back outside fails here.
+
+    Mutation: hoist ``_discover_registry_snapshot_sync`` or
+    ``_get_registered_plugin_snapshot_sync`` above the ``with`` statement.
+    """
+    held: list[bool] = []
+
+    def _discover(roots):
+        held.append(module._REGISTRY_REFRESH_LOCK._is_owned())
+        return module.PluginDiscoverySnapshot(
+            records=[], failures=[], config_paths=set(), shadowed=[]
+        )
+
+    def _snapshot():
+        held.append(module._REGISTRY_REFRESH_LOCK._is_owned())
+        return {}
+
+    monkeypatch.setattr(module, "_discover_registry_snapshot_sync", _discover)
+    monkeypatch.setattr(module, "_get_registered_plugin_snapshot_sync", _snapshot)
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: set())
+    monkeypatch.setattr(module, "_collect_missing_plugin_ids_sync", lambda snapshot: set())
+    monkeypatch.setattr(
+        module, "_remove_stale_plugin_metadata_sync", lambda ids, running_ids: ([], [])
+    )
+
+    await module.PluginRegistryService().refresh_registry()
+
+    assert held and all(held), (
+        f"读盘发生在锁外，两次重叠刷新会拿着过时快照互相覆盖：{held}"
+    )
+
+
+def test_a_packaged_plugin_does_not_need_a_second_import_to_start(
+    tmp_path: Path,
+) -> None:
+    """``start_plugin`` reuses packaged handlers instead of re-importing.
+
+    The plugin process imports the plugin; the metadata worker used to import
+    it a second time for a result the package already carries. Packages built
+    before this field existed have no ``handlers`` and must still fall back to
+    the worker, or their entries would silently vanish.
+
+    Mutation: return the packaged object even when ``handlers`` is empty — the
+    "no handlers" case below then wrongly reports metadata.
+    """
+    from plugin.server.application.plugins import lifecycle_service
+
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    assert (
+        lifecycle_service._read_packaged_isolated_metadata(plugin_dir / "plugin.toml")
+        is None
+    ), "没有 handlers 的旧包必须回落到扫描，否则它的入口会凭空消失"
+
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    payload["handlers"] = {"demo.go": {"event_type": "plugin_entry", "id": "go"}}
+    payload["entry_methods"] = {"go": "go"}
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    recovered = lifecycle_service._read_packaged_isolated_metadata(
+        plugin_dir / "plugin.toml"
+    )
+    assert recovered is not None
+    assert recovered.entry_methods == {"go": "go"}
+    assert list(recovered.handlers) == ["demo.go"]

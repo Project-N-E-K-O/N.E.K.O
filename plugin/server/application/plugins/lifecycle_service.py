@@ -50,9 +50,11 @@ from plugin.server.application.plugins.installation_transactions import (
 )
 from plugin.server.application.plugins.metadata_scanner import (
     _DEFAULT_SCAN_TIMEOUT_SECONDS as _DEFAULT_METADATA_SCAN_TIMEOUT,
+    IsolatedPluginMetadata,
     install_isolated_plugin_metadata,
     scan_plugin_metadata_isolated,
 )
+from plugin.server.infrastructure.packaged_metadata import read_packaged_metadata
 from plugin.server.application.install_source import (
     InstallSourceError,
     get_install_source_manager,
@@ -124,6 +126,28 @@ def _resolve_python_requirements(
 
 
 _MIN_CLAMPED_STOP_TIMEOUT = 1.0
+
+
+def _read_packaged_isolated_metadata(config_path: Path) -> IsolatedPluginMetadata | None:
+    """Reuse the packaging-time metadata instead of importing the plugin again.
+
+    Starting a plugin already imports it once — inside the plugin process. The
+    metadata worker was a *second* import of the same code, for a result the
+    package already carries (codex). When the package has valid metadata, read
+    it; otherwise fall back to the worker so a hand-dropped or dev-mode plugin
+    still gets its entries.
+
+    Returns ``None`` when there is nothing usable, which is also what a package
+    built before this field existed produces — those keep scanning.
+    """
+    packaged = read_packaged_metadata(Path(config_path).parent)
+    if packaged is None or not packaged.handlers:
+        return None
+    return IsolatedPluginMetadata(
+        entries_preview=list(packaged.entries),
+        handlers=dict(packaged.handlers),
+        entry_methods=dict(packaged.entry_methods),
+    )
 
 
 def _clamp_step_timeout(
@@ -1035,16 +1059,20 @@ class PluginLifecycleService:
                 floor=_MIN_CLAMPED_START_TIMEOUT,
             )
             isolated_metadata = await asyncio.to_thread(
-                scan_plugin_metadata_isolated,
-                plugin_id=current_plugin_id,
-                module_path=module_path,
-                class_name=class_name,
-                config_path=config_path,
-                conf=conf,
-                pdata=pdata,
-                python_requirement_paths=python_requirement_paths,
-                timeout=scan_timeout,
+                _read_packaged_isolated_metadata, config_path
             )
+            if isolated_metadata is None:
+                isolated_metadata = await asyncio.to_thread(
+                    scan_plugin_metadata_isolated,
+                    plugin_id=current_plugin_id,
+                    module_path=module_path,
+                    class_name=class_name,
+                    config_path=config_path,
+                    conf=conf,
+                    pdata=pdata,
+                    python_requirement_paths=python_requirement_paths,
+                    timeout=scan_timeout,
+                )
             await asyncio.to_thread(
                 install_isolated_plugin_metadata,
                 current_plugin_id,

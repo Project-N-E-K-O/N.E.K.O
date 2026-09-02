@@ -760,6 +760,1018 @@
       "timeout": null
     }
   ],
+  "entry_methods": {
+    "create_schedule_task": "create_schedule_task",
+    "delete_music_item": "delete_music_item",
+    "delete_schedule_task": "delete_schedule_task",
+    "get_push_settings": "get_push_settings",
+    "list_music_items": "list_music_items",
+    "list_schedule_tasks": "list_schedule_tasks",
+    "push_music_url": "push_music_url",
+    "report_playback_state": "report_playback_state",
+    "run": "run",
+    "run_schedule_task_now": "run_schedule_task_now",
+    "set_push_settings": "set_push_settings",
+    "skip_current_track": "skip_current_track",
+    "stop_schedule_task": "stop_schedule_task",
+    "toggle_schedule_task": "toggle_schedule_task",
+    "update_schedule_task": "update_schedule_task",
+    "upload_music_file": "upload_music_file"
+  },
+  "handlers": {
+    "music_pusher.create_schedule_task": {
+      "auto_start": false,
+      "description": "创建一个定时音频队列任务。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "create_schedule_task",
+      "input_schema": {
+        "properties": {
+          "duration_mode": {
+            "default": "auto_sum",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "type": "string"
+          },
+          "queue_item_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "queue_items": {
+            "default": [],
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "target_lanlan": {
+            "default": "",
+            "type": "string"
+          },
+          "trigger_at": {
+            "description": "ISO 时间字符串",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trigger_at"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "创建定时任务"
+    },
+    "music_pusher.delete_music_item": {
+      "auto_start": false,
+      "description": "从素材池删除一个音乐项，不影响已创建任务中的快照。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "delete_music_item",
+      "input_schema": {
+        "properties": {
+          "item_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "删除音乐素材"
+    },
+    "music_pusher.delete_schedule_task": {
+      "auto_start": false,
+      "description": "删除待执行或已完成任务。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "delete_schedule_task",
+      "input_schema": {
+        "properties": {
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "删除定时任务"
+    },
+    "music_pusher.get_push_settings": {
+      "auto_start": false,
+      "description": "获取当前推歌时是否附带提示词的开关状态。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "get_push_settings",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "获取推送设置"
+    },
+    "music_pusher.list_music_items": {
+      "auto_start": false,
+      "description": "获取插件音乐素材池。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "list_music_items",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "列出音乐素材"
+    },
+    "music_pusher.list_schedule_tasks": {
+      "auto_start": false,
+      "description": "获取任务列表和当前执行进度。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "list_schedule_tasks",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "列出定时任务"
+    },
+    "music_pusher.push_music_url": {
+      "auto_start": false,
+      "description": "推送可播放音乐链接到主对话模型。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "push_music_url",
+      "input_schema": {
+        "properties": {
+          "artist": {
+            "default": "",
+            "type": "string"
+          },
+          "attach_prompt_on_push": {
+            "type": "boolean"
+          },
+          "duration_sec": {
+            "type": "number"
+          },
+          "item_id": {
+            "default": "",
+            "type": "string"
+          },
+          "lyric_text": {
+            "default": "",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "推送音乐链接"
+    },
+    "music_pusher.report_playback_state": {
+      "auto_start": false,
+      "description": "前端播放器上报实时进度，以便可视化与任务状态联动。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "report_playback_state",
+      "input_schema": {
+        "properties": {
+          "duration_sec": {
+            "default": 0,
+            "type": "number"
+          },
+          "position_sec": {
+            "default": 0,
+            "type": "number"
+          },
+          "status": {
+            "default": "idle",
+            "type": "string"
+          },
+          "track_title": {
+            "default": "",
+            "type": "string"
+          },
+          "track_url": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "上报播放状态"
+    },
+    "music_pusher.run": {
+      "auto_start": false,
+      "description": "通用入口：优先按 url 推歌；未提供 url 时从素材池选择音乐推送。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "run",
+      "input_schema": {
+        "properties": {
+          "artist": {
+            "default": "",
+            "type": "string"
+          },
+          "attach_prompt_on_push": {
+            "type": "boolean"
+          },
+          "duration_sec": {
+            "type": "number"
+          },
+          "item_id": {
+            "default": "",
+            "type": "string"
+          },
+          "lyric_text": {
+            "default": "",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "type": "string"
+          },
+          "url": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "通用推歌入口"
+    },
+    "music_pusher.run_schedule_task_now": {
+      "auto_start": false,
+      "description": "将任务触发时间改为当前并立即尝试执行。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "run_schedule_task_now",
+      "input_schema": {
+        "properties": {
+          "target_lanlan": {
+            "default": "",
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "立即执行任务"
+    },
+    "music_pusher.set_push_settings": {
+      "auto_start": false,
+      "description": "设置推歌时是否附带提示词与歌词提示内容。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "set_push_settings",
+      "input_schema": {
+        "properties": {
+          "attach_prompt_on_push": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attach_prompt_on_push"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "设置推送开关"
+    },
+    "music_pusher.skip_current_track": {
+      "auto_start": false,
+      "description": "在运行任务中切换上一首或下一首。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "skip_current_track",
+      "input_schema": {
+        "properties": {
+          "direction": {
+            "default": "next",
+            "enum": [
+              "prev",
+              "next"
+            ],
+            "type": "string"
+          },
+          "task_id": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "切换当前曲目"
+    },
+    "music_pusher.stop_schedule_task": {
+      "auto_start": false,
+      "description": "停止当前运行中的任务，支持指定 task_id。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "stop_schedule_task",
+      "input_schema": {
+        "properties": {
+          "task_id": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "停止执行任务"
+    },
+    "music_pusher.toggle_schedule_task": {
+      "auto_start": false,
+      "description": "任务运行/停止切换：运行中则停止，未运行则立即执行。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "toggle_schedule_task",
+      "input_schema": {
+        "properties": {
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "切换运行或停止"
+    },
+    "music_pusher.update_schedule_task": {
+      "auto_start": false,
+      "description": "修改时间与队列，支持重排。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "update_schedule_task",
+      "input_schema": {
+        "properties": {
+          "duration_mode": {
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "type": "string"
+          },
+          "queue_item_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "queue_items": {
+            "default": [],
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "target_lanlan": {
+            "default": "",
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "trigger_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "更新定时任务"
+    },
+    "music_pusher.upload_music_file": {
+      "auto_start": false,
+      "description": "上传本地音乐文件(Base64)，生成可播放链接并自动推送。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "upload_music_file",
+      "input_schema": {
+        "properties": {
+          "artist": {
+            "default": "",
+            "type": "string"
+          },
+          "attach_prompt_on_push": {
+            "type": "boolean"
+          },
+          "audio_base64": {
+            "type": "string"
+          },
+          "auto_push": {
+            "default": true,
+            "type": "boolean"
+          },
+          "duration_sec": {
+            "type": "number"
+          },
+          "filename": {
+            "default": "track.mp3",
+            "type": "string"
+          },
+          "lyric_base64": {
+            "default": "",
+            "type": "string"
+          },
+          "lyric_filename": {
+            "default": "",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "audio_base64",
+          "filename"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "上传音乐并自动推送"
+    },
+    "music_pusher:lifecycle:shutdown": {
+      "auto_start": false,
+      "description": "",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "lifecycle",
+      "id": "shutdown",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "lifecycle",
+      "metadata": {},
+      "name": "shutdown"
+    },
+    "music_pusher:lifecycle:startup": {
+      "auto_start": false,
+      "description": "",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "lifecycle",
+      "id": "startup",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "lifecycle",
+      "metadata": {},
+      "name": "startup"
+    },
+    "music_pusher:plugin_entry:create_schedule_task": {
+      "auto_start": false,
+      "description": "创建一个定时音频队列任务。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "create_schedule_task",
+      "input_schema": {
+        "properties": {
+          "duration_mode": {
+            "default": "auto_sum",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "type": "string"
+          },
+          "queue_item_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "queue_items": {
+            "default": [],
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "target_lanlan": {
+            "default": "",
+            "type": "string"
+          },
+          "trigger_at": {
+            "description": "ISO 时间字符串",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trigger_at"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "创建定时任务"
+    },
+    "music_pusher:plugin_entry:delete_music_item": {
+      "auto_start": false,
+      "description": "从素材池删除一个音乐项，不影响已创建任务中的快照。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "delete_music_item",
+      "input_schema": {
+        "properties": {
+          "item_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "删除音乐素材"
+    },
+    "music_pusher:plugin_entry:delete_schedule_task": {
+      "auto_start": false,
+      "description": "删除待执行或已完成任务。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "delete_schedule_task",
+      "input_schema": {
+        "properties": {
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "删除定时任务"
+    },
+    "music_pusher:plugin_entry:get_push_settings": {
+      "auto_start": false,
+      "description": "获取当前推歌时是否附带提示词的开关状态。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "get_push_settings",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "获取推送设置"
+    },
+    "music_pusher:plugin_entry:list_music_items": {
+      "auto_start": false,
+      "description": "获取插件音乐素材池。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "list_music_items",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "列出音乐素材"
+    },
+    "music_pusher:plugin_entry:list_schedule_tasks": {
+      "auto_start": false,
+      "description": "获取任务列表和当前执行进度。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "list_schedule_tasks",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "列出定时任务"
+    },
+    "music_pusher:plugin_entry:push_music_url": {
+      "auto_start": false,
+      "description": "推送可播放音乐链接到主对话模型。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "push_music_url",
+      "input_schema": {
+        "properties": {
+          "artist": {
+            "default": "",
+            "type": "string"
+          },
+          "attach_prompt_on_push": {
+            "type": "boolean"
+          },
+          "duration_sec": {
+            "type": "number"
+          },
+          "item_id": {
+            "default": "",
+            "type": "string"
+          },
+          "lyric_text": {
+            "default": "",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "推送音乐链接"
+    },
+    "music_pusher:plugin_entry:report_playback_state": {
+      "auto_start": false,
+      "description": "前端播放器上报实时进度，以便可视化与任务状态联动。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "report_playback_state",
+      "input_schema": {
+        "properties": {
+          "duration_sec": {
+            "default": 0,
+            "type": "number"
+          },
+          "position_sec": {
+            "default": 0,
+            "type": "number"
+          },
+          "status": {
+            "default": "idle",
+            "type": "string"
+          },
+          "track_title": {
+            "default": "",
+            "type": "string"
+          },
+          "track_url": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "上报播放状态"
+    },
+    "music_pusher:plugin_entry:run": {
+      "auto_start": false,
+      "description": "通用入口：优先按 url 推歌；未提供 url 时从素材池选择音乐推送。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "run",
+      "input_schema": {
+        "properties": {
+          "artist": {
+            "default": "",
+            "type": "string"
+          },
+          "attach_prompt_on_push": {
+            "type": "boolean"
+          },
+          "duration_sec": {
+            "type": "number"
+          },
+          "item_id": {
+            "default": "",
+            "type": "string"
+          },
+          "lyric_text": {
+            "default": "",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "type": "string"
+          },
+          "url": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "通用推歌入口"
+    },
+    "music_pusher:plugin_entry:run_schedule_task_now": {
+      "auto_start": false,
+      "description": "将任务触发时间改为当前并立即尝试执行。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "run_schedule_task_now",
+      "input_schema": {
+        "properties": {
+          "target_lanlan": {
+            "default": "",
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "立即执行任务"
+    },
+    "music_pusher:plugin_entry:set_push_settings": {
+      "auto_start": false,
+      "description": "设置推歌时是否附带提示词与歌词提示内容。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "set_push_settings",
+      "input_schema": {
+        "properties": {
+          "attach_prompt_on_push": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attach_prompt_on_push"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "设置推送开关"
+    },
+    "music_pusher:plugin_entry:skip_current_track": {
+      "auto_start": false,
+      "description": "在运行任务中切换上一首或下一首。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "skip_current_track",
+      "input_schema": {
+        "properties": {
+          "direction": {
+            "default": "next",
+            "enum": [
+              "prev",
+              "next"
+            ],
+            "type": "string"
+          },
+          "task_id": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "切换当前曲目"
+    },
+    "music_pusher:plugin_entry:stop_schedule_task": {
+      "auto_start": false,
+      "description": "停止当前运行中的任务，支持指定 task_id。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "stop_schedule_task",
+      "input_schema": {
+        "properties": {
+          "task_id": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "停止执行任务"
+    },
+    "music_pusher:plugin_entry:toggle_schedule_task": {
+      "auto_start": false,
+      "description": "任务运行/停止切换：运行中则停止，未运行则立即执行。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "toggle_schedule_task",
+      "input_schema": {
+        "properties": {
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "切换运行或停止"
+    },
+    "music_pusher:plugin_entry:update_schedule_task": {
+      "auto_start": false,
+      "description": "修改时间与队列，支持重排。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "update_schedule_task",
+      "input_schema": {
+        "properties": {
+          "duration_mode": {
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "type": "string"
+          },
+          "queue_item_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "queue_items": {
+            "default": [],
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "target_lanlan": {
+            "default": "",
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "trigger_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "更新定时任务"
+    },
+    "music_pusher:plugin_entry:upload_music_file": {
+      "auto_start": false,
+      "description": "上传本地音乐文件(Base64)，生成可播放链接并自动推送。",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "upload_music_file",
+      "input_schema": {
+        "properties": {
+          "artist": {
+            "default": "",
+            "type": "string"
+          },
+          "attach_prompt_on_push": {
+            "type": "boolean"
+          },
+          "audio_base64": {
+            "type": "string"
+          },
+          "auto_push": {
+            "default": true,
+            "type": "boolean"
+          },
+          "duration_sec": {
+            "type": "number"
+          },
+          "filename": {
+            "default": "track.mp3",
+            "type": "string"
+          },
+          "lyric_base64": {
+            "default": "",
+            "type": "string"
+          },
+          "lyric_filename": {
+            "default": "",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "audio_base64",
+          "filename"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": "上传音乐并自动推送"
+    }
+  },
   "schema_version": 1,
   "sdk_version": "0.1.0",
   "source_sha256": "539e48b093718f94484ecf0c9aaf96103f6db98816a81f16e0ce8380b26b71de"

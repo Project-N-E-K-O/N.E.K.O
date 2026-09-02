@@ -52,7 +52,9 @@ def _load_logger() -> Any:
     return get_logger("neko_plugin_cli.metadata_probe")
 
 
-def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
+def derive_plugin_metadata(
+    plugin_dir: Path, *, hash_dir: Path | None = None
+) -> dict[str, object]:
     """Import ``plugin_dir``'s entry class and return its packaged metadata.
 
     Raises :class:`MetadataProbeError` with the underlying reason when the
@@ -107,8 +109,15 @@ def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
     return {
         "schema_version": PACKAGED_METADATA_SCHEMA_VERSION,
         "sdk_version": SDK_VERSION,
-        "source_sha256": compute_source_sha256(plugin_dir),
+        # 摘要算在真正打进包里的那棵树上，不是作者的源目录。构建规则
+        # （tool.neko.build 的 exclude/exclude_dirs/exclude_files）可以把 .py /
+        # .toml / .json 排除在包外，而用户机器上哈希的是装出来的那份——两边算的
+        # 树不一样，一旦走到内容校验就会条条判成"源码变了"，把好好的 schema 换成
+        # 占位（greptile）。
+        "source_sha256": compute_source_sha256(hash_dir or plugin_dir),
         "entries": list(isolated.entries_preview),
+        "handlers": dict(isolated.handlers),
+        "entry_methods": dict(isolated.entry_methods),
     }
 
 
@@ -133,7 +142,7 @@ def write_packaged_metadata(
     parameter form, not a broken plugin.
     """
     try:
-        payload = derive_plugin_metadata(source_dir)
+        payload = derive_plugin_metadata(source_dir, hash_dir=Path(target_dir))
     except MetadataProbeError as exc:
         print(
             f"[WARN] {Path(source_dir).name}: could not derive plugin metadata "

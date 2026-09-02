@@ -2832,6 +2832,213 @@
       "timeout": null
     }
   ],
+  "entry_methods": {
+    "get_config": "get_config_entry",
+    "update_config": "update_config_entry"
+  },
+  "handlers": {
+    "lifekit.get_config": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "entries.getConfig.description",
+        "default": "获取生活助手当前配置。"
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "get_config",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": {
+        "$i18n": "entries.getConfig.name",
+        "default": "获取配置"
+      }
+    },
+    "lifekit.update_config": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "entries.updateConfig.description",
+        "default": "更新生活助手配置字段。"
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "update_config",
+      "input_schema": {
+        "properties": {
+          "amap_key": {
+            "type": "string"
+          },
+          "baidu_map_key": {
+            "type": "string"
+          },
+          "cache_ttl_seconds": {
+            "type": "integer"
+          },
+          "confirmation_token": {
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Explicit confirmation / 明确确认 / 明示的な確認",
+            "type": "boolean"
+          },
+          "default_city": {
+            "type": "string"
+          },
+          "enable_geoip": {
+            "type": "boolean"
+          },
+          "force_locale": {
+            "type": "boolean"
+          },
+          "forecast_days": {
+            "type": "integer"
+          },
+          "locale": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": {
+        "$i18n": "entries.updateConfig.name",
+        "default": "更新配置"
+      }
+    },
+    "lifekit:lifecycle:config_change": {
+      "auto_start": false,
+      "description": "",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "lifecycle",
+      "id": "config_change",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "lifecycle",
+      "metadata": {},
+      "name": "config_change"
+    },
+    "lifekit:lifecycle:shutdown": {
+      "auto_start": false,
+      "description": "",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "lifecycle",
+      "id": "shutdown",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "lifecycle",
+      "metadata": {},
+      "name": "shutdown"
+    },
+    "lifekit:lifecycle:startup": {
+      "auto_start": false,
+      "description": "",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "lifecycle",
+      "id": "startup",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "lifecycle",
+      "metadata": {},
+      "name": "startup"
+    },
+    "lifekit:plugin_entry:get_config": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "entries.getConfig.description",
+        "default": "获取生活助手当前配置。"
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "get_config",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": {
+        "$i18n": "entries.getConfig.name",
+        "default": "获取配置"
+      }
+    },
+    "lifekit:plugin_entry:update_config": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "entries.updateConfig.description",
+        "default": "更新生活助手配置字段。"
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "id": "update_config",
+      "input_schema": {
+        "properties": {
+          "amap_key": {
+            "type": "string"
+          },
+          "baidu_map_key": {
+            "type": "string"
+          },
+          "cache_ttl_seconds": {
+            "type": "integer"
+          },
+          "confirmation_token": {
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "description": "Explicit confirmation / 明确确认 / 明示的な確認",
+            "type": "boolean"
+          },
+          "default_city": {
+            "type": "string"
+          },
+          "enable_geoip": {
+            "type": "boolean"
+          },
+          "force_locale": {
+            "type": "boolean"
+          },
+          "forecast_days": {
+            "type": "integer"
+          },
+          "locale": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "action",
+      "metadata": {},
+      "name": {
+        "$i18n": "entries.updateConfig.name",
+        "default": "更新配置"
+      }
+    }
+  },
   "schema_version": 1,
   "sdk_version": "0.1.0",
   "source_sha256": "c1ca0f0ab42657d7ca190c118762261d6d65b502a4fa5dbfa9b90e8dd6d7be9e"

@@ -358,6 +358,11 @@ class PluginCliService:
                 forced_directory_name=forced_directory_name,
                 _allow_external_profiles_root=_allow_external_profiles_root,
             )
+            # 挂在 install() 的成功出口上，不是挂在某一条来源登记路径上。
+            # 上传安装（upload_and_install）自己登记来源、不走
+            # _record_requested_install_source，把钩子放在那里等于对上传来的
+            # 插件完全不生效——而那正是最需要这道闸的一条路（greptile）。
+            await asyncio.to_thread(_mark_new_install_awaiting_autostart, result)
             return await self._record_requested_install_source(
                 install_result=result,
                 package=package,
@@ -595,6 +600,9 @@ class PluginCliService:
                 details=details,
             ) from exc
 
+        await asyncio.to_thread(
+            _mark_new_install_awaiting_autostart, result.install_result
+        )
         response = {
             **result.install_result,
             # Compatibility response for the existing Package Manager UI.
@@ -921,7 +929,6 @@ class PluginCliService:
                 **install_result,
                 "install_source_warning": f"install_source_prepare_failed: {exc}",
             }
-        await asyncio.to_thread(_mark_new_install_awaiting_autostart, install_result)
         warning = await self._record_install_source_best_effort(
             install_result=install_result,
             package_filename=package_path.name,
@@ -2524,6 +2531,31 @@ class PluginCliService:
         )
 
 
+def _installed_manifest_plugin_id(target_dir: object) -> str:
+    """Read ``[plugin].id`` out of an installed plugin's manifest.
+
+    Returns "" when it cannot be read. Every caller here fails open — an
+    unreadable manifest means the plugin autostarts the way it did before this
+    gate existed, which is the safe direction.
+    """
+    if not target_dir:
+        return ""
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+        import tomli as tomllib  # type: ignore[no-redef]
+    config_path = Path(str(target_dir)) / "plugin.toml"
+    try:
+        with open(config_path, "rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, ValueError):
+        return ""
+    plugin_table = data.get("plugin")
+    if not isinstance(plugin_table, dict):
+        return ""
+    return str(plugin_table.get("id") or "").strip()
+
+
 def _mark_new_install_awaiting_autostart(install_result: dict) -> None:
     """Withhold autostart from a plugin the user has installed but never run.
 
@@ -2541,10 +2573,16 @@ def _mark_new_install_awaiting_autostart(install_result: dict) -> None:
     for item in installed:
         if not isinstance(item, dict):
             continue
-        plugin_id = str(item.get("plugin_id") or "").strip()
+        target_dir = item.get("target_dir")
+        # 注册表按 manifest 里声明的 id 记插件，而安装结果只带目录名
+        # （InstalledPlugin.target_plugin_id 就是 target_dir.name）。仓库允许目录名
+        # 和 plugin.id 不一致，登记错 id 等于这道闸对该插件完全不生效
+        # （coderabbit）。所以直接去读装出来的那份 manifest。
+        plugin_id = _installed_manifest_plugin_id(target_dir)
         if not plugin_id:
-            target_dir = item.get("target_dir")
-            plugin_id = Path(str(target_dir)).name if target_dir else ""
+            plugin_id = str(item.get("target_plugin_id") or "").strip()
+        if not plugin_id and target_dir:
+            plugin_id = Path(str(target_dir)).name
         if not plugin_id:
             continue
         try:
