@@ -607,6 +607,11 @@ function getVllmOmniCloneConfigurationWarning(cfg) {
     const providerLabel = getConfiguredTtsProviderLabel(configuredProvider);
     const customApiEnabled = isVoiceCloneConfigFlagEnabled(cfg.enableCustomApi);
 
+    if (isVoiceCloneConfigFlagEnabled(cfg.disableTts)) {
+        return window.t
+            ? window.t('voice.vllmCloneTtsDisabledWarning', { provider: providerLabel })
+            : `The current TTS setting is "${providerLabel}", but TTS is globally disabled. The sample will still be saved locally; enable TTS and configure vLLM-Omni before previewing or using this voice.`;
+    }
     if (!customApiEnabled) {
         return window.t
             ? window.t('voice.vllmCloneCustomApiDisabledWarning', { provider: providerLabel })
