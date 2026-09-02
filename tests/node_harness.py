@@ -99,8 +99,13 @@ _SPAWN_SLACK_SECONDS = 5.0
 # Distinctive exit code so a watchdog kill is never mistaken for an assertion
 # failure or an uncaught exception, both of which leave node with 1.
 _WATCHDOG_EXIT_CODE = 87
-# A leading string-literal statement, i.e. a directive such as 'use strict'.
-_DIRECTIVE = re.compile(r"""^(['\"])use [a-z]+\1\s*;?$""")
+# A directive such as 'use strict'.  Not anchored to a whole line: a directive
+# may carry a trailing comment or share its line with the next statement, and
+# matching only the line-sized form would put the prologue in front of it --
+# which silently demotes it from a directive to a string expression.
+_DIRECTIVE = re.compile(r"""([\'\"])use [a-z]+\1[ \t]*(?:;|$)""")
+# A node hashbang is only honoured at the very start of the source.
+_HASHBANG = "#!"
 
 # Registered before the script runs, on the script's own first line so no line
 # number moves.  It has to be here rather than in the appended block because a
@@ -111,7 +116,7 @@ _DIRECTIVE = re.compile(r"""^(['\"])use [a-z]+\1\s*;?$""")
 # Written on one line, with no ``//`` comments, because both of those would
 # swallow the caller's own first line.
 _WATCHDOG_PROLOGUE = (
-    ";(function(){var g=globalThis;var d=__MILLIS__;"
+    ";(function(){var g=Function('return this')();var d=__MILLIS__;"
     "g.process.on('exit',function(){"
     "var e=Math.round((g.process.uptime?g.process.uptime():0)*1000);"
     "if(e>d){try{require('node:fs').writeSync(2,"
@@ -127,8 +132,11 @@ _WATCHDOG_TEMPLATE = r"""
   // for the whole module (temporal dead zone included, so merely reading it
   // throws), and a harness that has done `global.window = global` overwrites the
   // real thing when it sets `window.setTimeout`.  The module export is behind
-  // both.  Everything else goes through globalThis for the same reason.
-  var g = globalThis;
+  // both.  The global itself comes from Function('return this')() rather than
+  // the name globalThis, because a harness declaring `const globalThis` puts
+  // that name in the temporal dead zone for the whole module -- the prologue
+  // runs before the declaration, so merely reading it would throw.
+  var g = Function('return this')();
   var timer;
   try {
     timer = require('node:timers').setTimeout;
@@ -306,27 +314,48 @@ def _splice_prologue(script: str, prologue: str) -> str:
     """Put ``prologue`` before the script's first statement, on its line.
 
     Two constraints pull against each other.  It has to run before the script
-    can exit, and it must not renumber the script's own lines, so it goes at the
-    front of the first line that carries code rather than on a line of its own.
+    can exit, and it must not renumber the script's own lines, so it goes inside
+    the first line that carries code rather than on a line of its own.
 
-    It must also land *after* a directive prologue: one harness opens with
-    ``'use strict';``, and a statement in front of it silently demotes that from
-    a directive to an ordinary string expression, taking strict mode with it.
+    Two things must stay in front of it.  A hashbang counts only at the very
+    start of the source, so a prologue before it is a syntax error.  A directive
+    prologue (``'use strict';``) stops being a directive the moment any
+    statement precedes it -- silently, taking strict mode with it -- and it may
+    carry a trailing comment or share its line with the next statement, so the
+    insertion point is a column, not a line.
     """
     assert "\n" not in prologue, (
-        "the prologue shares a line with the first statement of the script, "
-        "so a newline in it would move every line below and truncate that "
-        "statement"
+        "the prologue shares a line with the first statement of the script, so a "
+        "newline in it would move every line below and truncate that statement"
     )
     lines = script.split("\n")
-    index = 0
-    while index < len(lines) and not lines[index].strip():
-        index += 1
-    while index < len(lines) and _DIRECTIVE.match(lines[index].strip()):
-        index += 1
-    if index >= len(lines):  # nothing but blanks and directives
+
+    def _next_code_line(index: int) -> int:
+        while index < len(lines) and not lines[index].strip():
+            index += 1
+        return index
+
+    index = _next_code_line(0)
+    if index < len(lines) and lines[index].lstrip().startswith(_HASHBANG):
+        index = _next_code_line(index + 1)
+    if index >= len(lines):
         return script + "\n" + prologue
-    lines[index] = prologue + lines[index]
+
+    column = len(lines[index]) - len(lines[index].lstrip())
+    while True:
+        directive = _DIRECTIVE.match(lines[index], column)
+        if not directive:
+            break
+        column = directive.end()
+        if lines[index][column:].strip():
+            break  # a statement follows on the same line; go in front of it
+        following = _next_code_line(index + 1)
+        if following >= len(lines):
+            return script + "\n" + prologue
+        index = following
+        column = len(lines[index]) - len(lines[index].lstrip())
+
+    lines[index] = lines[index][:column] + prologue + lines[index][column:]
     return "\n".join(lines)
 
 

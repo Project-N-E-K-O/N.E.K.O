@@ -174,6 +174,20 @@ def test_shared_launcher_pins_utf8(runner):
     assert '"encoding"] = "utf-8"' in helper_body, "_utf8 必须强制 encoding，而不是 setdefault"
 
 
+def _as_text(blob) -> str:
+    """Decode what a stalled attempt emitted, whichever platform produced it.
+
+    ``subprocess.run`` re-runs ``communicate()`` after killing the child only on
+    Windows, so only there do ``TimeoutExpired.stdout``/``.stderr`` come back
+    decoded. On POSIX they are whatever ``_check_timeout`` joined together --
+    raw bytes -- and a test comparing against ``str`` is green on the CI runner
+    and red on any developer's machine.
+    """
+    if isinstance(blob, bytes):
+        return blob.decode("utf-8", "replace")
+    return blob
+
+
 def _node_or_skip() -> str:
     node_path = shutil.which("node")
     if not node_path:
@@ -241,6 +255,72 @@ def test_a_healthy_harness_is_untouched_by_the_watchdog(runner):
 
 
 @pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+@pytest.mark.parametrize(
+    "opening",
+    [
+        pytest.param("'use strict'; // 说明\n", id="directive-with-trailing-comment"),
+        pytest.param("'use strict'; let first = 1;\n", id="directive-sharing-its-line"),
+        pytest.param('"use strict"\n', id="double-quoted-no-semicolon"),
+    ],
+)
+def test_use_strict_survives_in_its_less_tidy_forms(runner, opening):
+    """A directive is a statement, not a line, so the splice point is a column.
+
+    Anchoring the match to a whole line covers only the tidiest spelling; the
+    other three put the prologue in front of the directive and take strict mode
+    with it, silently and greenly.
+    """
+    node_path = _node_or_skip()
+
+    script = opening + "undeclaredOnPurpose = 1;\nprocess.stdout.write('ok');\n"
+    result = runner(node_path, script, capture_output=True, check=False, timeout=6)
+
+    assert result.returncode != 0, (
+        f"这种写法下 'use strict' 被挤掉了：rc={result.returncode} "
+        f"stdout={result.stdout!r}"
+    )
+    assert "ReferenceError" in result.stderr, result.stderr[:400]
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_leading_hashbang_still_parses(runner):
+    """Node honours ``#!`` only at the very start of the source."""
+    node_path = _node_or_skip()
+
+    script = "#!/usr/bin/env node\nprocess.stdout.write('ok');\n"
+    result = runner(node_path, script, capture_output=True, check=False, timeout=6)
+
+    assert result.returncode == 0, (
+        f"prologue 挤到 hashbang 前面会直接语法错误：stderr={result.stderr[:300]!r}"
+    )
+    assert result.stdout == "ok"
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_harness_that_shadows_globalThis_still_runs(runner):
+    """``const globalThis`` puts that name in the TDZ for the whole module.
+
+    The prologue runs before the declaration initialises, so reading the bare
+    name would throw before the harness reached its first statement. The global
+    is fetched through ``Function('return this')()`` instead, which does not
+    participate in the caller's lexical scope.
+    """
+    node_path = _node_or_skip()
+
+    script = (
+        "process.stdout.write('ok');\n"
+        "const globalThis = { fake: true };\n"
+        "void globalThis;\n"
+    )
+    result = runner(node_path, script, capture_output=True, check=False, timeout=6)
+
+    assert result.returncode == 0, (
+        f"被影子化的 globalThis 不该把 prologue 打挂：stderr={result.stderr[:300]!r}"
+    )
+    assert result.stdout == "ok"
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
 def test_a_leading_use_strict_survives_the_prologue(runner):
     """The guard must go after a directive, never in front of it.
 
@@ -276,8 +356,13 @@ def test_the_prologue_does_not_renumber_the_scripts_own_lines(runner):
     result = runner(node_path, script, capture_output=True, check=False, timeout=6)
 
     assert result.returncode != 0
-    assert ":3" in result.stderr, (
+    # <file>:<line>:<column>, so a bare ":3" also matches a column of 3 on the
+    # wrong line. Mutation confirmed it: "prologue given its own line" survived.
+    assert re.search(r":3:\d+", result.stderr), (
         f"抛错行号应仍是脚本自己的第 3 行：{result.stderr[:400]!r}"
+    )
+    assert not re.search(r":4:\d+", result.stderr), (
+        f"行号被 prologue 挤下去了一行：{result.stderr[:400]!r}"
     )
 
 
@@ -600,7 +685,7 @@ def test_a_synchronously_blocked_script_is_reported_not_retried():
     assert len(error.attempts) == 1, (
         f"卡住但吐了东西的脚本证明它跑起来了，重试没有意义：{error.attempts}"
     )
-    assert error.attempts[0].stdout == "started", (
+    assert _as_text(error.attempts[0].stdout) == "started", (
         "同步卡死之前写出去的东西必须还能拿到——这是区分它和「node 没跑起来」的唯一证据"
     )
     assert "blocked the event loop synchronously" in str(error), (
