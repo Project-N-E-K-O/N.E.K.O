@@ -50,6 +50,7 @@ from plugin.server.application.plugins.installation_transactions import (
 )
 from plugin.server.application.plugins.metadata_scanner import (
     _DEFAULT_SCAN_TIMEOUT_SECONDS as _DEFAULT_METADATA_SCAN_TIMEOUT,
+    _handler_key_belongs_to_plugin,
     IsolatedPluginMetadata,
     install_isolated_plugin_metadata,
     scan_plugin_metadata_isolated,
@@ -128,7 +129,9 @@ def _resolve_python_requirements(
 _MIN_CLAMPED_STOP_TIMEOUT = 1.0
 
 
-def _read_packaged_isolated_metadata(config_path: Path) -> IsolatedPluginMetadata | None:
+def _read_packaged_isolated_metadata(
+    config_path: Path, plugin_id: str
+) -> IsolatedPluginMetadata | None:
     """Reuse the packaging-time metadata instead of importing the plugin again.
 
     Starting a plugin already imports it once — inside the plugin process. The
@@ -137,11 +140,28 @@ def _read_packaged_isolated_metadata(config_path: Path) -> IsolatedPluginMetadat
     it; otherwise fall back to the worker so a hand-dropped or dev-mode plugin
     still gets its entries.
 
+    ⚠️ Handler keys embed the plugin id (``"<pid>.<entry>"``), and the id a
+    plugin runs under is not always the one its manifest declares — an id
+    conflict renames it. ``install_isolated_plugin_metadata`` drops every key
+    that does not belong to the runtime id, so handing it packaged keys minted
+    under a different id registers *nothing*: the plugin starts, reports
+    success, and exposes no entries at all (coderabbit). Fall back to the
+    worker in that case, since it mints keys under the id we pass it.
+
     Returns ``None`` when there is nothing usable, which is also what a package
-    built before this field existed produces — those keep scanning.
+    built before these fields existed produces — those keep scanning.
     """
     packaged = read_packaged_metadata(Path(config_path).parent)
     if packaged is None or not packaged.handlers:
+        return None
+    if not all(
+        _handler_key_belongs_to_plugin(key, plugin_id) for key in packaged.handlers
+    ):
+        logger.info(
+            "packaged handler keys were minted under a different plugin id; "
+            "rescanning so they match the runtime id: plugin_id={}",
+            plugin_id,
+        )
         return None
     return IsolatedPluginMetadata(
         entries_preview=list(packaged.entries),
@@ -1059,7 +1079,7 @@ class PluginLifecycleService:
                 floor=_MIN_CLAMPED_START_TIMEOUT,
             )
             isolated_metadata = await asyncio.to_thread(
-                _read_packaged_isolated_metadata, config_path
+                _read_packaged_isolated_metadata, config_path, current_plugin_id
             )
             if isolated_metadata is None:
                 isolated_metadata = await asyncio.to_thread(

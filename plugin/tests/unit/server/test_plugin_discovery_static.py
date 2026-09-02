@@ -393,7 +393,9 @@ def test_a_packaged_plugin_does_not_need_a_second_import_to_start(
 
     plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
     assert (
-        lifecycle_service._read_packaged_isolated_metadata(plugin_dir / "plugin.toml")
+        lifecycle_service._read_packaged_isolated_metadata(
+            plugin_dir / "plugin.toml", "demo"
+        )
         is None
     ), "没有 handlers 的旧包必须回落到扫描，否则它的入口会凭空消失"
 
@@ -404,8 +406,39 @@ def test_a_packaged_plugin_does_not_need_a_second_import_to_start(
     meta_path.write_text(json.dumps(payload), encoding="utf-8")
 
     recovered = lifecycle_service._read_packaged_isolated_metadata(
-        plugin_dir / "plugin.toml"
+        plugin_dir / "plugin.toml", "demo"
     )
     assert recovered is not None
     assert recovered.entry_methods == {"go": "go"}
     assert list(recovered.handlers) == ["demo.go"]
+
+
+def test_packaged_handlers_minted_under_another_id_are_not_reused(
+    tmp_path: Path,
+) -> None:
+    """A conflict-renamed plugin must rescan, not register nothing.
+
+    Handler keys embed the plugin id, and an id conflict renames a plugin at
+    registration time (``demo`` becomes ``demo_1``).
+    ``install_isolated_plugin_metadata`` silently drops every key that does not
+    belong to the runtime id, so reusing packaged keys minted under the
+    manifest id would register zero handlers — the plugin starts, reports
+    success, and exposes no entries at all (coderabbit).
+
+    Mutation: drop the ownership check and return the packaged object anyway.
+    """
+    from plugin.server.application.plugins import lifecycle_service
+
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    payload["handlers"] = {"demo.go": {"event_type": "plugin_entry", "id": "go"}}
+    payload["entry_methods"] = {"go": "go"}
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert (
+        lifecycle_service._read_packaged_isolated_metadata(
+            plugin_dir / "plugin.toml", "demo_1"
+        )
+        is None
+    ), "改名后的插件复用了按原 id 铸的 handler key，会一个 handler 都注册不上"
