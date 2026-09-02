@@ -108,6 +108,8 @@ def _iter_source_files(plugin_dir: Path) -> tuple[list[tuple[str, os.stat_result
     # 软链不跟进去，但要留痕：跟进去可能撞上 site-packages 那种巨树或者成环，而
     # 只是跳过的话，把软链重指到另一份代码不会引起任何可见变化。留痕的做法是让
     # 调用方直接把整棵树判成"不可信"。
+    # saw_symlink 是"这棵树不可信"的旗子，软链只是最常见的那个来源：读不了的目录、
+    # 以及 FIFO/socket/设备节点这类非普通文件也会把它立起来。
     files: list[tuple[str, os.stat_result]] = []
     saw_symlink = os.path.islink(str(plugin_dir))
     stack = [str(plugin_dir)]
@@ -130,6 +132,13 @@ def _iter_source_files(plugin_dir: Path) -> tuple[list[tuple[str, os.stat_result
                     continue
                 if entry.name == PACKAGED_METADATA_FILENAME:
                     # 生成物不参与它自己的新鲜度判定。
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    # ⚠️ 只收普通文件。FIFO、socket、设备节点都能通过 stat()，而摘要
+                    # 那一步是 read_bytes()——没有写端的 FIFO 上它会永久阻塞，而刷新
+                    # 现在整段握着 _REGISTRY_REFRESH_LOCK，一个命名管道就能把整个插件
+                    # 注册表焊死（coderabbit）。和软链同样处理：留痕，让整棵树不可信。
+                    saw_symlink = True
                     continue
                 stat_result = entry.stat(follow_symlinks=False)
             except OSError:

@@ -561,3 +561,73 @@ def test_a_failed_clear_keeps_the_plugin_pending(
         )
     finally:
         autostart_approvals._reset_cache_for_testing()
+
+
+class _FakeFifoEntry:
+    """A directory entry shaped like a FIFO: not a dir, not a symlink, not a file."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.name = Path(path).name
+
+    def is_symlink(self) -> bool:
+        return False
+
+    def is_dir(self, follow_symlinks: bool = True) -> bool:
+        return False
+
+    def is_file(self, follow_symlinks: bool = True) -> bool:
+        return False
+
+    def stat(self, follow_symlinks: bool = True):
+        raise AssertionError("stat() reached a non-regular entry")
+
+
+def test_a_named_pipe_never_reaches_the_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hashing must not read anything that can block.
+
+    ``entry.stat()`` succeeds on a FIFO, socket or device node, so without an
+    explicit regular-file check they land in the file list and the digest step
+    calls ``Path.read_bytes()`` on them. A FIFO with no writer blocks there
+    forever — and registry refresh now holds ``_REGISTRY_REFRESH_LOCK`` across
+    the whole operation, so one named pipe in a plugin directory would wedge the
+    entire plugin registry (coderabbit).
+
+    Driven through a fake dir entry rather than ``os.mkfifo`` so the guard also
+    runs on Windows, where there is no mkfifo.
+
+    Mutation: drop the ``entry.is_file(follow_symlinks=False)`` check — the fake
+    entry's ``stat()`` then raises and this fails.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    fifo_path = str(plugin_dir / "control.pipe")
+
+    real_scandir = os.scandir
+
+    class _Scan:
+        def __init__(self, path):
+            self._path = path
+
+        def __enter__(self):
+            entries = list(real_scandir(self._path))
+            if Path(self._path).resolve() == plugin_dir.resolve():
+                entries.append(_FakeFifoEntry(fifo_path))
+            return iter(entries)
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        packaged_metadata.os, "scandir", lambda path: _Scan(path)
+    )
+
+    files, untrustworthy = packaged_metadata._iter_source_files(plugin_dir)
+
+    assert fifo_path not in [str(plugin_dir / rel) for rel, _ in files], (
+        "命名管道进了摘要列表，read_bytes() 会在没有写端时永久阻塞"
+    )
+    assert untrustworthy, (
+        "非普通文件没有把这棵树标成不可信——摘要覆盖不到它，就不该拿包里的元数据当真"
+    )
