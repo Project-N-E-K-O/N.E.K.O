@@ -491,16 +491,21 @@ def test_the_spawn_ceiling_sits_above_the_script_deadline(monkeypatch):
 
     def _fake_run(argv, **kwargs):
         seen["timeout"] = kwargs.get("timeout")
-        seen["script"] = kwargs.get("input") or Path(argv[1]).read_text(encoding="utf-8")
+        seen["argv"] = argv
+        seen["env"] = kwargs.get("env") or {}
+        seen["script"] = kwargs.get("input") or Path(argv[-1]).read_text(encoding="utf-8")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(node_harness.subprocess, "run", _fake_run)
     run_node_script("node", "process.stdout.write('ok');", timeout=12)
 
     assert seen["timeout"] == 12 + node_harness._SPAWN_SLACK_SECONDS
-    assert "var deadlineMs = 12000;" in seen["script"], (
-        f"watchdog 必须按调用方的 timeout 武装，而不是别的值：{seen['script'][-600:]!r}"
+    assert seen["env"][node_harness._DEADLINE_ENV] == "12000", (
+        f"watchdog 必须按调用方的 timeout 武装，而不是别的值：{seen['env'].get(node_harness._DEADLINE_ENV)!r}"
     )
+    assert "--require" in seen["argv"], seen["argv"]
+    # The script itself must reach node exactly as the caller wrote it.
+    assert seen["script"] == "process.stdout.write('ok');", seen["script"]
 
 
 def test_a_caller_without_a_timeout_still_gets_a_finite_script_deadline(monkeypatch):
@@ -509,7 +514,7 @@ def test_a_caller_without_a_timeout_still_gets_a_finite_script_deadline(monkeypa
 
     def _fake_run(argv, **kwargs):
         seen["timeout"] = kwargs.get("timeout")
-        seen["script"] = Path(argv[1]).read_text(encoding="utf-8")
+        seen["env"] = kwargs.get("env") or {}
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(node_harness.subprocess, "run", _fake_run)
@@ -519,7 +524,7 @@ def test_a_caller_without_a_timeout_still_gets_a_finite_script_deadline(monkeypa
         node_harness._DEFAULT_WATCHDOG_SECONDS + node_harness._SPAWN_SLACK_SECONDS
     ), "没给 timeout 的调用方以前连外层 ceiling 都没有，同步卡死能一路跑到 job cap"
     millis = int(node_harness._DEFAULT_WATCHDOG_SECONDS * 1000)
-    assert f"var deadlineMs = {millis};" in seen["script"]
+    assert seen["env"][node_harness._DEADLINE_ENV] == str(millis)
 
 
 def test_a_spawn_that_stalls_once_is_retried():
@@ -548,7 +553,7 @@ def test_a_spawn_that_stalls_once_is_retried():
 
     assert result is ok
     assert len(calls) == 2, "第一次 spawn 卡死后必须再试一次"
-    assert calls[0][1] != calls[1][1], "重试要用新的临时脚本，别继承上一次被 kill 时的残留"
+    assert calls[0][-1] != calls[1][-1], "重试要用新的临时脚本，别继承上一次被 kill 时的残留"
 
 
 def test_a_spawn_that_keeps_stalling_reports_both_attempts():
@@ -853,3 +858,51 @@ def test_the_wrapped_error_keeps_a_stalled_attempt_output_where_callers_look():
     assert excinfo.value.stdout == "partial-out"
     assert excinfo.value.output == "partial-out"
     assert excinfo.value.stderr == "partial-err"
+
+
+def test_the_guard_never_edits_the_script_it_is_guarding():
+    """The script reaches node byte-for-byte as the caller wrote it.
+
+    Every splicing bug this launcher has had -- a demoted ``'use strict'``, a
+    broken hashbang, renumbered stack frames, a guard reading an identifier the
+    harness had shadowed -- came from injecting text into the caller's source.
+    The guard is a preloaded module now, so the source is not touched at all.
+    """
+    seen = {}
+    awkward = (
+        "#!/usr/bin/env node\n"
+        "'use strict'; // 说明\n"
+        "const setTimeout = (cb) => cb();\n"
+        "const globalThis = {};\n"
+        "process.stdout.write('ok');\n"
+    )
+
+    def _fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["script"] = Path(argv[-1]).read_text(encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        run_node_script("node", awkward, timeout=5)
+    finally:
+        node_harness.subprocess.run = original
+
+    assert seen["script"] == awkward, "脚本被改写了，注入式护栏的所有坑就都回来了"
+    assert seen["argv"][1] == "--require", seen["argv"]
+    assert seen["argv"][2].endswith(".neko-harness-guard.js"), seen["argv"]
+
+
+def test_one_preload_file_serves_the_whole_process():
+    """The deadline rides in the environment, so the file never varies.
+
+    Writing one per invocation would put a fresh, never-before-seen ``.js`` into
+    the temp directory on every single harness call -- more of exactly the file
+    churn this launcher is trying to stop paying for.
+    """
+    first = node_harness._preload_path()
+    second = node_harness._preload_path()
+
+    assert first == second
+    assert Path(first).read_text(encoding="utf-8") == node_harness._PRELOAD_SOURCE

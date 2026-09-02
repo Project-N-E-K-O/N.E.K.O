@@ -51,23 +51,32 @@ The node process never got going
     picks can help and no assertion is being tested; retrying is the only
     sensible answer.
 
-They are told apart by giving the script its own deadline *inside* node.  The
-appended watchdog fires only if something is still holding the event loop open,
-prints what that something is, and exits non-zero -- so the first case fails
-deterministically, with the leaked handle named, and is never retried.  The
-subprocess ceiling then sits a few seconds above that deadline, so a
-surviving ``TimeoutExpired`` means the watchdog never got to run.
+They are told apart by giving the script its own deadline inside node, carried
+by a module preloaded with ``node --require``.  It arms two things.  A timer,
+``unref()``-ed so it is never itself the reason node stays up, fires only while
+something else still holds the event loop open, prints what that something is,
+and exits 87 -- so a harness that leaked a handle fails deterministically, with
+the leak named, and is never retried.  An ``exit`` hook re-checks the budget on
+the way out, covering the script that merely ran long and then ended and the one
+that calls ``process.exit()`` itself; every way out of node passes through it,
+and an ``exitCode`` assigned there overrides even ``process.exit(0)``.  The
+subprocess ceiling sits a few seconds above the deadline, so a surviving
+``TimeoutExpired`` means node never got as far as the preload.
 
-The deadline needs two enforcers, because ``unref()`` cuts both ways.  A script
-still holding the loop open is caught by the timer.  A script that merely ran
-long and then ended sails straight past it -- node exits before an unref'd timer
-on an otherwise empty loop -- and so does one that calls ``process.exit()`` in
-its own top level, which never reaches appended code at all.  Both are caught by
-an ``exit`` hook that re-checks the budget: every way out of node passes through
-it, and an ``exitCode`` assigned there overrides even an explicit
-``process.exit(0)``.  Without that half, moving the caller's timeout off
-``subprocess.run`` and into the script would have quietly stopped the timeout
-from meaning anything for every script that overruns and then terminates.
+The guard is a preload rather than text spliced into the script, because a
+harness script is not a safe place to stand.  Injected code resolves its names
+in the caller's module scope, and these harnesses routinely install fake clocks
+and browser shims: ``const setTimeout = cb => cb()`` shadows the bare name for
+the whole module (temporal dead zone included, so merely reading it throws),
+``global.window = global`` turns ``window.setTimeout = fake`` into an overwrite
+of the real one, and the same goes for ``globalThis``, ``Function``, ``process``
+and every other identifier a guard might reach for.  Splicing also has to dodge
+the script's own text: a hashbang counts only at the very start of the source, a
+``'use strict'`` directive stops being a directive the moment any statement
+precedes it, and anything taking a line of its own renumbers every stack frame
+below.  A preloaded module has none of these problems -- it runs before the
+script, in a scope the script cannot reach, and leaves the script byte-for-byte
+as the caller wrote it.
 
 One in-script hang escapes the watchdog: a synchronous block.  ``while (true)
 {}`` never yields, and a timer cannot interrupt the thread it is queued on --
@@ -81,10 +90,11 @@ picking a side -- as does the case of a caller that never captured output at
 all, where the silence is nobody watching rather than nothing said.
 """
 
+import atexit
 import os
-import re
 import subprocess
 import tempfile
+import threading
 
 
 # Script deadline for callers that pass no ``timeout`` of their own.  Their
@@ -99,100 +109,7 @@ _SPAWN_SLACK_SECONDS = 5.0
 # Distinctive exit code so a watchdog kill is never mistaken for an assertion
 # failure or an uncaught exception, both of which leave node with 1.
 _WATCHDOG_EXIT_CODE = 87
-# A directive such as 'use strict'.  Not anchored to a whole line: a directive
-# may carry a trailing comment or share its line with the next statement, and
-# matching only the line-sized form would put the prologue in front of it --
-# which silently demotes it from a directive to a string expression.
-_DIRECTIVE = re.compile(r"""([\'\"])use [a-z]+\1[ \t]*(?:;|$)""")
-# A node hashbang is only honoured at the very start of the source.
-_HASHBANG = "#!"
 
-# Registered before the script runs, on the script's own first line so no line
-# number moves.  It has to be here rather than in the appended block because a
-# script that calls ``process.exit()`` in its top level never reaches appended
-# code at all -- measured: an 800ms busy loop then ``process.exit(0)`` under a
-# 0.2s timeout came back 0.  Every way out of node passes through 'exit', and an
-# ``exitCode`` assigned in that handler overrides even an explicit exit(0).
-# Written on one line, with no ``//`` comments, because both of those would
-# swallow the caller's own first line.
-_WATCHDOG_PROLOGUE = (
-    ";(function(){var g=Function('return this')();var d=__MILLIS__;"
-    "g.process.on('exit',function(){"
-    "var e=Math.round((g.process.uptime?g.process.uptime():0)*1000);"
-    "if(e>d){try{require('node:fs').writeSync(2,"
-    "'\\n[node_harness] the script was still running __SECONDS__s after node started.\\n'"
-    ");}catch(err){}g.process.exitCode=__EXIT_CODE__;}});})();"
-)
-
-_WATCHDOG_TEMPLATE = r"""
-;(function () {
-  // The timer comes from node:timers, not from a name in scope.  Harness
-  // scripts routinely install a fake clock, and they reach the watchdog through
-  // two different doors: `const setTimeout = (cb) => cb()` shadows the bare name
-  // for the whole module (temporal dead zone included, so merely reading it
-  // throws), and a harness that has done `global.window = global` overwrites the
-  // real thing when it sets `window.setTimeout`.  The module export is behind
-  // both.  The global itself comes from Function('return this')() rather than
-  // the name globalThis, because a harness declaring `const globalThis` puts
-  // that name in the temporal dead zone for the whole module -- the prologue
-  // runs before the declaration, so merely reading it would throw.
-  var g = Function('return this')();
-  var timer;
-  try {
-    timer = require('node:timers').setTimeout;
-  } catch (err) {
-    timer = g.setTimeout;
-  }
-
-  var deadlineMs = __MILLIS__;
-
-  function elapsed() {
-    return Math.round((g.process.uptime ? g.process.uptime() : 0) * 1000);
-  }
-
-  function diagnose(prefix) {
-    var held;
-    try {
-      held = typeof g.process.getActiveResourcesInfo === 'function'
-        ? g.JSON.stringify(g.process.getActiveResourcesInfo())
-        : '<getActiveResourcesInfo unavailable on this node>';
-    } catch (err) {
-      held = '<unavailable: ' + err + '>';
-    }
-    var message = '\n[node_harness] ' + prefix + ' __SECONDS__s after node '
-      + 'started.\n'
-      + '[node_harness] event loop is held by: ' + held + '\n'
-      + '[node_harness] a harness that never settles has usually left a timer '
-      + 'armed (clearInterval/clearTimeout) or is awaiting a promise that '
-      + 'nothing resolves.\n';
-    try {
-      // writeSync, because process.exit() does not flush a pending async pipe
-      // write and stderr to a pipe is async on Windows -- the diagnosis is the
-      // whole point, so it must not be the part that gets dropped.
-      require('node:fs').writeSync(2, message);
-    } catch (err) {
-      g.process.stderr.write(message);
-    }
-  }
-
-  // Charge node startup and the script's synchronous top level against the
-  // budget, because the outer ceiling is charged for them too.  Arming for the
-  // full deadline would put the watchdog at (startup + top level + deadline)
-  // while the ceiling sits at (deadline + slack): any top level heavier than
-  // the slack and the ceiling wins, losing the diagnosis.
-  var budget = deadlineMs - elapsed();
-  if (budget < 1) budget = 1;
-
-  var deadline = timer(function () {
-    diagnose('the script still had pending work');
-    g.process.exit(__EXIT_CODE__);
-  }, budget);
-  // unref() so the watchdog cannot itself be the reason node stays up: with no
-  // other handle open node exits first, and the exit hook above is what holds
-  // the deadline on that path.
-  if (deadline && typeof deadline.unref === 'function') deadline.unref();
-})();
-"""
 
 
 def _excerpt(blob, limit: int = 400) -> str:
@@ -300,75 +217,106 @@ def _budgeted(kwargs: dict) -> tuple[dict, float]:
     return merged, watchdog
 
 
-def _fill(template: str, seconds: float) -> str:
-    """Bind one watchdog template to this call's deadline."""
-    return (
-        template
-        .replace("__SECONDS__", f"{seconds:g}")
-        .replace("__MILLIS__", str(int(seconds * 1000)))
-        .replace("__EXIT_CODE__", str(_WATCHDOG_EXIT_CODE))
-    )
+# How the preload receives this call's deadline.  An environment variable rather
+# than a substitution into the source keeps the preload file identical for every
+# call, so it can be written once per process instead of once per invocation.
+_DEADLINE_ENV = "NEKO_NODE_HARNESS_DEADLINE_MS"
+
+_PRELOAD_SOURCE = r"""
+// Preloaded with `node --require`, so this runs before the harness script, in
+// its own module scope, out of reach of anything the harness declares or
+// overwrites.  Nothing here is resolved in the caller's scope.
+const timers = require('node:timers');
+const fs = require('node:fs');
+
+const deadlineMs = Number(process.env.NEKO_NODE_HARNESS_DEADLINE_MS || 0);
+const EXIT_CODE = 87;
+
+function diagnose(prefix) {
+  let held;
+  try {
+    held = typeof process.getActiveResourcesInfo === 'function'
+      ? JSON.stringify(process.getActiveResourcesInfo())
+      : '<getActiveResourcesInfo unavailable on this node>';
+  } catch (err) {
+    held = '<unavailable: ' + err + '>';
+  }
+  // writeSync, because process.exit() does not flush a pending async pipe write
+  // and stderr to a pipe is async on Windows -- the diagnosis is the whole
+  // point, so it must not be the part that gets dropped.
+  fs.writeSync(
+    2,
+    '\n[node_harness] ' + prefix + ' ' + (deadlineMs / 1000) + 's after node '
+    + 'started.\n'
+    + '[node_harness] event loop is held by: ' + held + '\n'
+    + '[node_harness] a harness that never settles has usually left a timer '
+    + 'armed (clearInterval/clearTimeout) or is awaiting a promise that '
+    + 'nothing resolves.\n'
+  );
+}
+
+if (deadlineMs > 0) {
+  // Covers every way out of node: the loop draining, an explicit process.exit()
+  // in the script, an uncaught throw.  An exitCode assigned in an 'exit'
+  // listener overrides even process.exit(0).
+  process.on('exit', function () {
+    if (Math.round(process.uptime() * 1000) > deadlineMs) {
+      diagnose('the script was still running');
+      process.exitCode = EXIT_CODE;
+    }
+  });
+
+  // ...and this covers the script that never exits at all.  unref() so the
+  // watchdog is never itself the reason node stays up: with nothing else
+  // holding the loop, node exits first and the hook above does the checking.
+  const deadline = timers.setTimeout(function () {
+    diagnose('the script still had pending work');
+    process.exit(EXIT_CODE);
+  }, deadlineMs);
+  if (deadline && typeof deadline.unref === 'function') deadline.unref();
+}
+"""
+
+_preload_guard = threading.Lock()
+_preload_file: str | None = None
 
 
-def _splice_prologue(script: str, prologue: str) -> str:
-    """Put ``prologue`` before the script's first statement, on its line.
+def _drop_preload() -> None:
+    """Remove the preload file at interpreter exit; losing it is not an error."""
+    global _preload_file
+    if _preload_file:
+        try:
+            os.unlink(_preload_file)
+        except OSError:
+            pass
+        _preload_file = None
 
-    Two constraints pull against each other.  It has to run before the script
-    can exit, and it must not renumber the script's own lines, so it goes inside
-    the first line that carries code rather than on a line of its own.
 
-    Two things must stay in front of it.  A hashbang counts only at the very
-    start of the source, so a prologue before it is a syntax error.  A directive
-    prologue (``'use strict';``) stops being a directive the moment any
-    statement precedes it -- silently, taking strict mode with it -- and it may
-    carry a trailing comment or share its line with the next statement, so the
-    insertion point is a column, not a line.
+def _preload_path() -> str:
+    """Path to this process's preload module, written on first use.
+
+    The contents never vary -- the deadline arrives by environment variable --
+    so one file serves every call in the process rather than one per invocation.
+    Under ``pytest -n auto`` each worker is its own process and gets its own.
     """
-    assert "\n" not in prologue, (
-        "the prologue shares a line with the first statement of the script, so a "
-        "newline in it would move every line below and truncate that statement"
-    )
-    lines = script.split("\n")
-
-    def _next_code_line(index: int) -> int:
-        while index < len(lines) and not lines[index].strip():
-            index += 1
-        return index
-
-    index = _next_code_line(0)
-    if index < len(lines) and lines[index].lstrip().startswith(_HASHBANG):
-        index = _next_code_line(index + 1)
-    if index >= len(lines):
-        return script + "\n" + prologue
-
-    column = len(lines[index]) - len(lines[index].lstrip())
-    while True:
-        directive = _DIRECTIVE.match(lines[index], column)
-        if not directive:
-            break
-        column = directive.end()
-        if lines[index][column:].strip():
-            break  # a statement follows on the same line; go in front of it
-        following = _next_code_line(index + 1)
-        if following >= len(lines):
-            return script + "\n" + prologue
-        index = following
-        column = len(lines[index]) - len(lines[index].lstrip())
-
-    lines[index] = lines[index][:column] + prologue + lines[index][column:]
-    return "\n".join(lines)
+    global _preload_file
+    with _preload_guard:
+        if _preload_file is None or not os.path.exists(_preload_file):
+            with tempfile.NamedTemporaryFile(
+                "w", suffix=".neko-harness-guard.js", delete=False, encoding="utf-8"
+            ) as handle:
+                handle.write(_PRELOAD_SOURCE)
+            _preload_file = handle.name
+            atexit.register(_drop_preload)
+        return _preload_file
 
 
-def _with_watchdog(script: str, seconds: float) -> str:
-    """Wrap ``script`` in the two halves that make its deadline real.
-
-    The timer goes at the end, where the event loop has taken over and a leaked
-    handle starts to matter, and where it can stay off the caller's line
-    numbering.  The exit hook goes at the front, because the paths it covers end
-    the process before appended code exists.
-    """
-    guarded = _splice_prologue(script, _fill(_WATCHDOG_PROLOGUE, seconds))
-    return guarded + "\n" + _fill(_WATCHDOG_TEMPLATE, seconds)
+def _guarded(merged: dict, deadline_seconds: float) -> tuple[list[str], dict]:
+    """The ``--require`` argument and the environment carrying the deadline."""
+    base = merged.get("env")
+    environment = dict(os.environ if base is None else base)
+    environment[_DEADLINE_ENV] = str(int(deadline_seconds * 1000))
+    return ["--require", _preload_path()], dict(merged, env=environment)
 
 
 def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):
@@ -398,17 +346,17 @@ def run_node_script(node_path: str, script: str, **kwargs) -> subprocess.Complet
     Use this when the script is large or grows with the behaviour it simulates.
     Extra keyword arguments go straight to ``subprocess.run``.
     """
-    merged, watchdog_seconds = _budgeted(_utf8(kwargs))
-    guarded = _with_watchdog(script, watchdog_seconds)
+    merged, deadline_seconds = _budgeted(_utf8(kwargs))
+    preload, merged = _guarded(merged, deadline_seconds)
     staged: list[str] = []
 
     def _attempt():
         with tempfile.NamedTemporaryFile(
             "w", suffix=".js", delete=False, encoding="utf-8"
         ) as handle:
-            handle.write(guarded)
+            handle.write(script)
             staged.append(handle.name)
-        return [node_path, staged[-1]], merged
+        return [node_path, *preload, staged[-1]], merged
 
     try:
         return _run_retrying_spawn_stalls(_attempt, [node_path, "<temp script>"])
@@ -430,9 +378,9 @@ def run_node_stdin(node_path: str, script: str, **kwargs) -> subprocess.Complete
     stdin form; stdin has no length ceiling, so only the encoding pin matters
     here. Extra keyword arguments go straight to ``subprocess.run``.
     """
-    merged, watchdog_seconds = _budgeted(_utf8(kwargs))
-    guarded = _with_watchdog(script, watchdog_seconds)
+    merged, deadline_seconds = _budgeted(_utf8(kwargs))
+    preload, merged = _guarded(merged, deadline_seconds)
     return _run_retrying_spawn_stalls(
-        lambda: ([node_path, "-"], dict(merged, input=guarded)),
+        lambda: ([node_path, *preload, "-"], dict(merged, input=script)),
         [node_path, "-"],
     )
