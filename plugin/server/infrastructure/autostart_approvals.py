@@ -52,26 +52,36 @@ PENDING_FILENAME = "plugin_autostart_pending.json"
 
 _lock = threading.Lock()
 _cache: set[str] | None = None
+# 上一次读盘是不是失败了。读侧照常 fail-open（读不出来=照常自启），但写侧不行：
+# 拿一个"空集"当基线保存下去，会把盘上其它插件的待批准记录一起抹掉，它们从此
+# 无声地获得自启资格（codex）。
+_load_failed = False
 
 
 def _load_locked() -> set[str]:
-    global _cache
-    if _cache is not None:
+    global _cache, _load_failed
+    if _cache is not None and not _load_failed:
         return _cache
+    # 上一次读失败留下的空集只能用来回答"能不能自启"，不能当成后续操作的基线，
+    # 所以每次都再试一次读，直到读成功为止（codex）。
     try:
         from utils.config_manager import get_config_manager
 
         raw = get_config_manager().load_json_config(PENDING_FILENAME)
     except FileNotFoundError:
+        _load_failed = False
         _cache = set()
         return _cache
     except Exception as exc:
         # 读不出来就当作没有待批准记录。这个方向的错误是"新装插件照常自启"，
         # 也就是这个功能出现之前的行为；反方向是"用户的插件集体不启动"。
+        # ⚠️ 但要留痕：这个空集只能用来回答"能不能自启"，不能当成写盘的基线。
         logger.error("failed to load {}: {}", PENDING_FILENAME, exc)
+        _load_failed = True
         _cache = set()
         return _cache
 
+    _load_failed = False
     pending: set[str] = set()
     if isinstance(raw, dict):
         items = raw.get("pending")
@@ -83,6 +93,16 @@ def _load_locked() -> set[str]:
 
 def _save_locked(pending: set[str]) -> bool:
     """Persist the pending set. Returns whether it actually reached disk."""
+    if _load_failed:
+        # 读还是失败的，那手上这个集合就不是盘面的全集。保存是整文件替换，
+        # 用它落盘会把盘上其它插件的待批准记录一起抹掉，它们从此无声地获得
+        # 自启资格（codex）。读侧继续 fail-open，写侧到此为止。
+        logger.error(
+            "refusing to persist {}: the store could not be read, and saving now "
+            "would drop the records already on disk",
+            PENDING_FILENAME,
+        )
+        return False
     try:
         from utils.config_manager import get_config_manager
 
@@ -167,6 +187,7 @@ def is_autostart_approved(plugin_id: str) -> bool:
 
 
 def _reset_cache_for_testing() -> None:
-    global _cache
+    global _cache, _load_failed
     with _lock:
         _cache = None
+        _load_failed = False

@@ -1786,3 +1786,133 @@ def test_the_gate_move_reads_the_live_registry_not_the_round_snapshot(
     assert not registry_service._declared_id_taken_by_another_plugin("demo", mine), (
         "插件自己重新注册被当成和自己抢 id"
     )
+
+
+def test_a_failed_load_refuses_to_persist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A write must never use the empty set a failed read cached.
+
+    Saving replaces the whole file. Basing it on the empty set left by a
+    transient read failure drops every id already on disk, and those plugins —
+    installed, never started — silently become autostart-eligible at the next
+    boot (codex). Reads stay fail-open; writes do not.
+
+    Mutation: drop the ``_reload_after_failure_locked`` guard from ``_save_locked``.
+    """
+    from plugin.server.infrastructure import autostart_approvals
+
+    store: dict[str, object] = {"plugin_autostart_pending.json": {"pending": ["old"]}}
+    readable = {"value": False}
+
+    class _FlakyConfigManager:
+        def load_json_config(self, name):
+            if not readable["value"]:
+                raise OSError("transient read failure")
+            return store[name]
+
+        def save_json_config(self, name, payload):
+            store[name] = payload
+
+    import utils.config_manager as config_manager_module
+
+    monkeypatch.setattr(
+        config_manager_module, "get_config_manager", _FlakyConfigManager
+    )
+    autostart_approvals._reset_cache_for_testing()
+    try:
+        assert autostart_approvals.is_autostart_approved("anything"), (
+            "读侧应当照常 fail-open"
+        )
+        assert not autostart_approvals.mark_autostart_pending("brand_new"), (
+            "读盘失败之后仍然写了盘：那次写是整文件替换，会把盘上已有的记录全抹掉"
+        )
+        assert store["plugin_autostart_pending.json"] == {"pending": ["old"]}, (
+            f"盘上的记录被覆盖了：{store}"
+        )
+
+        readable["value"] = True
+        assert autostart_approvals.mark_autostart_pending("brand_new"), (
+            "读盘恢复之后应该能正常写入"
+        )
+        assert set(store["plugin_autostart_pending.json"]["pending"]) == {
+            "old",
+            "brand_new",
+        }, f"重读之后没有把已有记录保留下来：{store}"
+    finally:
+        autostart_approvals._reset_cache_for_testing()
+
+
+def test_a_refused_override_gate_cleans_its_staging(tmp_path: Path) -> None:
+    """Refusing to promote must not leave the extracted package behind.
+
+    ``_stage_builtin_override_sync`` has already unpacked and renamed the whole
+    package by then, and the cleanup lives in a ``finally`` further down that the
+    raise never reaches — so every approval-store failure leaks a full copy, and
+    retries pile them up (codex).
+
+    Mutation: raise without cleaning up.
+    """
+    import inspect
+
+    source = inspect.getsource(cli_service.PluginCliService.install_builtin_override)
+    gate_at = source.find("if not await asyncio.to_thread(mark_autostart_pending")
+    cleanup_at = source.find("self._cleanup_builtin_override_staging_sync, staged", gate_at)
+    raise_at = source.find("PLUGIN_AUTOSTART_GATE_UNAVAILABLE", gate_at)
+    assert -1 not in (gate_at, cleanup_at, raise_at), (
+        "登记被拒的那条路没有清理暂存目录：解开的整包会留在盘上"
+    )
+    assert cleanup_at < raise_at, "清理写在 raise 之后就永远执行不到"
+
+
+def test_a_probe_that_rewrites_the_tree_yields_no_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Handlers are derived before the import's side effects; the hash is taken after.
+
+    A plugin whose module-level code writes a runtime file (initialising state,
+    generating a cache) is probed in one shape and fingerprinted in another, so
+    the installed tree verifies while importing it registers different entries
+    (codex).
+
+    Mutation: skip the before/after digest comparison.
+    """
+    from plugin.neko_plugin_cli.core import metadata_probe
+
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.toml").write_text("id = 'demo'" + chr(10), encoding="utf-8")
+    (plugin_dir / "main.py").write_text("VALUE = 1" + chr(10), encoding="utf-8")
+
+    class _Ctx:
+        pid = "demo"
+        entry = "main:Plugin"
+        conf: dict = {}
+        pdata: dict = {}
+        python_requirement_paths: list = []
+
+    class _Isolated:
+        entries_preview: list = []
+        handlers: dict = {}
+        entry_methods: dict = {}
+
+    monkeypatch.setattr(
+        "plugin.core.registry._parse_single_plugin_config",
+        lambda *_a, **_k: _Ctx(),
+    )
+
+    def _scan_with_side_effect(**_kwargs):
+        # 模块级代码在 import 时初始化了一个状态文件。
+        (plugin_dir / "state.json").write_text("{}", encoding="utf-8")
+        return _Isolated()
+
+    monkeypatch.setattr(
+        "plugin.server.application.plugins.metadata_scanner"
+        ".scan_plugin_metadata_isolated",
+        _scan_with_side_effect,
+    )
+
+    with pytest.raises(metadata_probe.MetadataProbeError) as excinfo:
+        metadata_probe.derive_plugin_metadata(plugin_dir)
+    assert "changed the staged tree" in str(excinfo.value), (
+        "import 期改动了暂存树却照常出元数据：装出来的树能过校验，"
+        "import 它却会注册出别的入口"
+    )

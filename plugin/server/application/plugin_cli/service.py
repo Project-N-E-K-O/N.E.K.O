@@ -905,7 +905,13 @@ class PluginCliService:
         if not await asyncio.to_thread(mark_autostart_pending, plan.plugin_id):
             # 登记没落盘就不能往下走。切换会把第三方代码提升成有效源并可能启动它，
             # 而没有待批准记录的话它下次开机就自启——用户从没批准过（coderabbit）。
-            # 这一步排在切换之前，所以拒绝是干净的：什么都还没动。
+            # 这一步排在切换之前，所以拒绝是干净的：什么都还没动——除了暂存目录，
+            # _stage_builtin_override_sync 已经把整个包解开并改名放进去了。清理挂在
+            # 下面那个 try 的 finally 上，而这里 raise 在它之前，于是每次登记失败都
+            # 留下一份完整的孤儿包，反复重试会越堆越大（codex）。
+            await asyncio.to_thread(
+                self._cleanup_builtin_override_staging_sync, staged
+            )
             raise ServerDomainError(
                 code="PLUGIN_AUTOSTART_GATE_UNAVAILABLE",
                 message=(

@@ -104,6 +104,12 @@ def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
         )
     module_path, class_name = entry.split(":", 1)
 
+    # 探测之前先记下这棵树的样子。插件的模块级代码完全可能在 import 时写文件
+    # （初始化状态文件、生成缓存），而 handler 是在那之前推出来的、指纹是在那之后
+    # 算的：装出来的树能通过校验，import 它却会注册出和 plugin.meta.json 不一样的
+    # 入口（codex）。
+    digest_before_probe = compute_source_sha256(plugin_dir)
+
     try:
         isolated = scan_plugin_metadata_isolated(
             plugin_id=ctx.pid,
@@ -128,6 +134,11 @@ def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
         raise MetadataProbeError(
             "staged tree contains directories that cannot survive packaging "
             f"({empty_dirs[:3]}); packaging without metadata so the host rescans"
+        )
+    if compute_source_sha256(plugin_dir) != digest_before_probe:
+        raise MetadataProbeError(
+            "importing the plugin changed the staged tree; packaging without "
+            "metadata so the host rescans"
         )
     renamed = unicode_renamed_source_files(plugin_dir)
     if renamed:
