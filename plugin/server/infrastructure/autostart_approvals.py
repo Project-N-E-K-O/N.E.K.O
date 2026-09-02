@@ -32,6 +32,12 @@ Entries are added when a plugin is newly installed and removed the first time
 the user starts or enables it — and only once that start has been durably
 recorded. Clearing before the runtime preference lands would grant autostart on
 the strength of an intent that never persisted.
+
+The in-memory set never claims more than what is on disk: a failed write rolls
+its mutation back. Letting the two diverge is what turns a full disk into either
+a plugin autostarting without approval (a lost ``mark``) or one that has to be
+started by hand after every restart (a lost ``clear``), in both cases with
+nothing to retry it.
 """
 
 from __future__ import annotations
@@ -75,7 +81,8 @@ def _load_locked() -> set[str]:
     return _cache
 
 
-def _save_locked(pending: set[str]) -> None:
+def _save_locked(pending: set[str]) -> bool:
+    """Persist the pending set. Returns whether it actually reached disk."""
     try:
         from utils.config_manager import get_config_manager
 
@@ -84,6 +91,8 @@ def _save_locked(pending: set[str]) -> None:
         )
     except Exception as exc:
         logger.error("failed to persist {}: {}", PENDING_FILENAME, exc)
+        return False
+    return True
 
 
 def mark_autostart_pending(plugin_id: str) -> None:
@@ -96,7 +105,18 @@ def mark_autostart_pending(plugin_id: str) -> None:
         if normalized in pending:
             return
         pending.add(normalized)
-        _save_locked(pending)
+        if not _save_locked(pending):
+            # 写盘失败就把内存改回去。留着的话，本进程以为这个插件被拦住了，而盘上
+            # 根本没有这条记录——重启之后它未经批准就自启，而且没有任何东西会重试
+            # （greptile 指出的是相反那半，这半更要紧）。回滚之后内存和盘面一致：
+            # 这个插件这一轮就是没被拦住，日志里留着原因。
+            pending.discard(normalized)
+            logger.error(
+                "plugin {} could not be recorded as awaiting approval; it will "
+                "autostart as before",
+                normalized,
+            )
+            return
         logger.info(
             "plugin {} installed; it will not autostart until the user starts it",
             normalized,
@@ -113,7 +133,16 @@ def clear_autostart_pending(plugin_id: str) -> None:
         if normalized not in pending:
             return
         pending.discard(normalized)
-        _save_locked(pending)
+        if not _save_locked(pending):
+            # 同上，反方向：内存说已批准而盘上还留着待批准记录的话，调用方会把这次
+            # 批准当成已完成，重启后旧文件又把它拦下来，而没有人知道为什么
+            # （greptile）。回滚，让下一次启动重试这次写入。
+            pending.add(normalized)
+            logger.error(
+                "plugin {} was started by the user but the approval could not be "
+                "persisted; it stays pending until the next successful start",
+                normalized,
+            )
 
 
 def is_autostart_approved(plugin_id: str) -> bool:

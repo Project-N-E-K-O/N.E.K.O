@@ -498,3 +498,66 @@ def test_the_freshness_fingerprint_watches_every_file(tmp_path: Path) -> None:
     assert before != after, (
         "加了一个数据文件而指纹没变，从它派生条目的插件会一直用旧 schema"
     )
+
+
+def _store_that_fails_to_write(monkeypatch: pytest.MonkeyPatch, seed: list[str]) -> None:
+    """A config manager that reads fine but cannot write."""
+    state = {"pending": list(seed)}
+
+    class _ReadOnlyConfigManager:
+        def load_json_config(self, name):
+            return dict(state)
+
+        def save_json_config(self, name, payload):
+            raise OSError("no space left on device")
+
+    import utils.config_manager as config_manager_module
+
+    monkeypatch.setattr(
+        config_manager_module, "get_config_manager", _ReadOnlyConfigManager
+    )
+    autostart_approvals._reset_cache_for_testing()
+
+
+def test_a_failed_mark_does_not_pretend_the_plugin_is_gated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In-memory state must not claim more than what reached disk.
+
+    If the pending record cannot be written, this process would believe the
+    plugin is held back while the file says nothing — and after a restart it
+    autostarts, unapproved, with nothing left to retry the write. Rolling the
+    mutation back keeps memory and disk telling the same story: this plugin was
+    not gated, and the log says why.
+
+    Mutation: ignore ``_save_locked``'s return value in ``mark_autostart_pending``.
+    """
+    _store_that_fails_to_write(monkeypatch, [])
+    try:
+        autostart_approvals.mark_autostart_pending("newcomer")
+        assert autostart_approvals.is_autostart_approved("newcomer"), (
+            "写盘失败却在内存里当成已拦下：重启后它会未经批准自启，而没人重试"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()
+
+
+def test_a_failed_clear_keeps_the_plugin_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mirror direction: a lost approval must be retried, not assumed.
+
+    Mutation: ignore ``_save_locked``'s return value in
+    ``clear_autostart_pending``.
+    """
+    _store_that_fails_to_write(monkeypatch, ["waiting"])
+    try:
+        assert not autostart_approvals.is_autostart_approved("waiting"), (
+            "前提没成立：这个插件本来就该是待批准的"
+        )
+        autostart_approvals.clear_autostart_pending("waiting")
+        assert not autostart_approvals.is_autostart_approved("waiting"), (
+            "批准没写成却在内存里当成已完成：重启后旧文件又把它拦下来，没人知道为什么"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()
