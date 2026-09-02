@@ -123,15 +123,21 @@ def mark_autostart_pending(plugin_id: str) -> None:
         )
 
 
-def clear_autostart_pending(plugin_id: str) -> None:
-    """Record that the user started or enabled ``plugin_id`` themselves."""
+def clear_autostart_pending(plugin_id: str) -> bool:
+    """Record that the user started or enabled ``plugin_id`` themselves.
+
+    Returns whether the approval is now durable. A caller must not report the
+    start as fully persisted on ``False``: the plugin stays pending, so it gets
+    held back from autostart again after a restart, and swallowing that leaves
+    the user with no explanation for why.
+    """
     normalized = str(plugin_id or "").strip()
     if not normalized:
-        return
+        return True
     with _lock:
         pending = _load_locked()
         if normalized not in pending:
-            return
+            return True
         pending.discard(normalized)
         if not _save_locked(pending):
             # 同上，反方向：内存说已批准而盘上还留着待批准记录的话，调用方会把这次
@@ -143,6 +149,8 @@ def clear_autostart_pending(plugin_id: str) -> None:
                 "persisted; it stays pending until the next successful start",
                 normalized,
             )
+            return False
+        return True
 
 
 def is_autostart_approved(plugin_id: str) -> bool:

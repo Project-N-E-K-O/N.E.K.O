@@ -186,7 +186,7 @@ def test_a_builtin_override_install_is_gated_too() -> None:
     import inspect
 
     source = inspect.getsource(cli_service.PluginCliService.install_builtin_override)
-    assert "_mark_new_install_awaiting_autostart" in source, (
+    assert "mark_autostart_pending" in source, (
         "覆盖安装没有登记待批准：一次覆盖就能让未经启动的第三方代码在下次开机自动执行"
     )
 
@@ -351,9 +351,12 @@ def test_renaming_clears_the_pending_record_under_the_old_id(
     from plugin.server.application.plugins import lifecycle_service
 
     cleared: list[str] = []
-    monkeypatch.setattr(
-        lifecycle_service, "clear_autostart_pending", cleared.append
-    )
+
+    def _clear(plugin_id: str) -> bool:
+        cleared.append(plugin_id)
+        return True
+
+    monkeypatch.setattr(lifecycle_service, "clear_autostart_pending", _clear)
     monkeypatch.setattr(
         lifecycle_service, "migrate_runtime_override", lambda *a, **k: None
     )
@@ -450,7 +453,12 @@ def test_approval_is_not_granted_when_the_preference_fails_to_persist(
     )
 
     cleared: list[str] = []
-    monkeypatch.setattr(lifecycle_service, "clear_autostart_pending", cleared.append)
+
+    def _clear(plugin_id: str) -> bool:
+        cleared.append(plugin_id)
+        return True
+
+    monkeypatch.setattr(lifecycle_service, "clear_autostart_pending", _clear)
 
     def _boom(*_args, **_kwargs):
         raise RuntimeOverridePersistenceError("disk said no")
@@ -463,4 +471,65 @@ def test_approval_is_not_granted_when_the_preference_fails_to_persist(
 
     assert cleared == [], (
         "偏好没写成却已经把批准位清了，重启后这个插件会凭 manifest 默认值自启"
+    )
+
+
+def test_an_unpersisted_approval_is_reported_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A start whose approval did not reach disk must not look fully persisted.
+
+    The runtime preference half can succeed while the approval file cannot be
+    written. The plugin then stays pending, so the autostart filter holds it
+    back again after a restart — and if this returned quietly the response would
+    still say ``preference_persisted=true``, leaving the user with no
+    explanation (greptile). It goes out through the same channel as a failed
+    preference write, which callers downgrade to ``partial_success`` rather than
+    failing the start.
+
+    Mutation: ignore ``clear_autostart_pending``'s return value.
+    """
+    from plugin.server.application.plugins import lifecycle_service
+    from plugin.server.domain.errors import ServerDomainError
+
+    monkeypatch.setattr(
+        lifecycle_service, "clear_autostart_pending", lambda plugin_id: False
+    )
+    monkeypatch.setattr(lifecycle_service, "set_runtime_override", lambda *a, **k: None)
+    monkeypatch.setattr(
+        lifecycle_service, "migrate_runtime_override", lambda *a, **k: None
+    )
+
+    with pytest.raises(ServerDomainError) as excinfo:
+        lifecycle_service._persist_user_runtime_intent("stuck", True)
+
+    assert excinfo.value.code == "PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED", (
+        f"批准没落地却没有上报，调用方会把这次启动当成完全持久化：{excinfo.value.code}"
+    )
+
+
+def test_the_override_gate_is_written_before_the_source_switch() -> None:
+    """Third-party code must not be promoted and started before it is gated.
+
+    ``switch_builtin_source`` commits the new install-source lock, refreshes the
+    registry and can start the replacement while the builtin is running. A
+    pending record written only after it returns leaves a window where the
+    process can die with the new code already promoted — and it then inherits
+    the builtin's autostart eligibility (greptile and coderabbit, independently).
+
+    Mutation: move the mark back below the ``switch_builtin_source`` call.
+    """
+    import inspect
+
+    source = inspect.getsource(cli_service.PluginCliService.install_builtin_override)
+    mark_at = source.find("mark_autostart_pending")
+    switch_at = source.find("switched = await switch_builtin_source(")
+    assert -1 not in (mark_at, switch_at), "前提没成立：两个调用点都要在"
+    assert mark_at < switch_at, (
+        "待批准登记排在源切换之后，中间那段窗口里第三方代码已经被提升甚至启动了"
+    )
+    # 失败要还原：切换回滚到内置插件之后，这条记录会把一个用户本来就在自启的内置
+    # 插件拦下来。
+    assert "clear_autostart_pending, plan.plugin_id" in source, (
+        "切换失败后没有还原批准状态，一次失败的覆盖安装会误伤内置插件的自启动"
     )

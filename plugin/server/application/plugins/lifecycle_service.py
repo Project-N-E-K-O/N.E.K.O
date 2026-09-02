@@ -269,12 +269,28 @@ def _persist_user_runtime_intent(
         # 冲突：那条原则说的是**读**不出记录时别把用户现有的自启动关掉；这里是**写**，
         # 而待批准记录只存在于新装插件上——它们本来就没自启过，写失败时不批准，
         # 回到的正是安装前的状态。
-        clear_autostart_pending(plugin_id)
+        persisted = clear_autostart_pending(plugin_id)
         # 改名前的那些 id 一起清。安装时按 manifest 声明的 id 记待批准，而插件可能
         # 因为 id 冲突以另一个运行时 id 注册；只清运行时 id 的话，等冲突消失、它又
         # 用回声明 id 时，那条残留记录会继续挡着它自启（coderabbit）。
         for previous_plugin_id in previous_plugin_ids:
-            clear_autostart_pending(previous_plugin_id)
+            persisted = clear_autostart_pending(previous_plugin_id) and persisted
+        if not persisted:
+            # 批准没落地就不能报成"偏好已保存"。运行时偏好那一半确实写成了，但插件
+            # 仍然留在待批准集合里，重启后自启动筛选会再一次静默把它拦下来，而用户
+            # 手上没有任何线索（greptile）。走和偏好写失败同一条上报通道：调用方把它
+            # 降级成 partial_success，而不是让这次启动失败。
+            raise ServerDomainError(
+                code="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
+                message="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
+                status_code=500,
+                details={
+                    "plugin_id": plugin_id,
+                    "error_type": "AutostartApprovalPersistenceError",
+                    "runtime_state_changed": runtime_state_changed,
+                },
+                log_level="error",
+            )
 
 
 def _mark_preference_persistence_failure(

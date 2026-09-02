@@ -31,6 +31,11 @@ from plugin.server.application.install_source import (
     classify_plugin_path,
     get_install_source_manager,
 )
+from plugin.server.infrastructure.autostart_approvals import (
+    clear_autostart_pending,
+    is_autostart_approved,
+    mark_autostart_pending,
+)
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugin_cli.install_plan import (
     REPLACEMENT_ACTIONS,
@@ -767,6 +772,17 @@ class PluginCliService:
                 config_path=target_dir / "plugin.toml",
             )
 
+        # 登记必须排在切换**之前**。switch_builtin_source 在返回前就完成了提升、
+        # 注册并可能启动第三方替换代码；登记放在它返回之后的话，进程若在这中间退出，
+        # 那份代码已经跑过，而且下次开机会继承原插件的自启动资格
+        # （greptile / coderabbit 各自独立指到这一处）。
+        #
+        # 代价是失败路径要还原：切换回滚到内置插件之后，这条待批准记录会把一个用户
+        # 本来就在自启的内置插件拦下来。所以先记下原状态，失败时原样放回去。
+        override_was_approved = await asyncio.to_thread(
+            is_autostart_approved, plan.plugin_id
+        )
+        await asyncio.to_thread(mark_autostart_pending, plan.plugin_id)
         try:
             switched = await switch_builtin_source(
                 SourceSwitchRequest(
@@ -788,6 +804,10 @@ class PluginCliService:
                 stop=source_switch.stop_plugin_for_source_switch,
                 start=source_switch.start_plugin_for_source_switch,
             )
+        except BaseException:
+            if override_was_approved:
+                await asyncio.to_thread(clear_autostart_pending, plan.plugin_id)
+            raise
         finally:
             await asyncio.to_thread(self._cleanup_builtin_override_staging_sync, staged)
 
@@ -812,11 +832,6 @@ class PluginCliService:
                 "install_source_warning": "; ".join(lock_warnings) if lock_warnings else None,
             }
         )
-        # 覆盖安装同样是"装上了但用户没启动过"。这个 id 之前确实存在——它是内置
-        # 插件——但现在跑的是用户上传的第三方代码，而那个 id 早就带着自启动资格。
-        # 不登记的话，一次覆盖安装就能让未经启动的第三方代码在下次开机自动执行
-        # （greptile）。安装和运行是两件事，换掉代码之后这句话依然成立。
-        await asyncio.to_thread(_mark_new_install_awaiting_autostart, staged_result)
         return staged_result
 
     async def _install_market_builtin_replacement(
