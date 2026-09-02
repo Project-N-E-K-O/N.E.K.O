@@ -9,7 +9,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Mapping
 
 from plugin.core.dependency import _topological_sort_plugins
 from plugin.core.entry_points import describe_plugin_entry_directory_mismatch
@@ -1087,46 +1087,51 @@ class PluginRegistryService:
                 details={"plugin_id": plugin_id},
             )
 
-        roots = tuple(PLUGIN_CONFIG_ROOTS)
-        existing_snapshot = _get_registered_plugin_snapshot_sync()
-        _prepare_plugin_import_roots(roots, logger)
-        existing_config_path = _resolve_meta_config_path(existing_snapshot.get(normalized_plugin_id))
-        record: PluginDiscoveryRecord | None = None
-        if (
-            existing_config_path is not None
-            and existing_config_path.exists()
-            and not _config_path_belongs_to_roots(existing_config_path, roots)
-        ):
-            ctx = _parse_single_plugin_config(existing_config_path, set(), logger)
-            if ctx is not None:
-                record = _build_discovery_record_from_context(ctx)
-        else:
-            discovery = _discover_registry_snapshot_sync(roots)
-            record = next(
-                (
-                    item
-                    for item in discovery.records
-                    if existing_config_path is not None
-                    and _resolve_config_path(item.config_path) == existing_config_path
-                ),
-                None,
-            )
-            if record is None:
+        # 读盘、读现有快照、发布，全都在一次持锁里完成。单插件刷新原本只把发布
+        # 圈进锁里，existing_snapshot 在锁外就读走了——它决定 previous_runtime_
+        # plugin_id、previous_managed，以及要不要走 source_replacement。中间只要
+        # 有一次全量刷新发布完成，这份快照就已经过时（coderabbit / codex）。而
+        # start_plugin 调 refresh_plugin、reload_all_plugins 调 refresh_registry，
+        # 两条路同时发生并不罕见。
+        with _REGISTRY_REFRESH_LOCK:
+            roots = tuple(PLUGIN_CONFIG_ROOTS)
+            existing_snapshot = _get_registered_plugin_snapshot_sync()
+            _prepare_plugin_import_roots(roots, logger)
+            existing_config_path = _resolve_meta_config_path(existing_snapshot.get(normalized_plugin_id))
+            record: PluginDiscoveryRecord | None = None
+            if (
+                existing_config_path is not None
+                and existing_config_path.exists()
+                and not _config_path_belongs_to_roots(existing_config_path, roots)
+            ):
+                ctx = _parse_single_plugin_config(existing_config_path, set(), logger)
+                if ctx is not None:
+                    record = _build_discovery_record_from_context(ctx)
+            else:
+                discovery = _discover_registry_snapshot_sync(roots)
                 record = next(
-                    (item for item in discovery.records if item.plugin_id == normalized_plugin_id),
+                    (
+                        item
+                        for item in discovery.records
+                        if existing_config_path is not None
+                        and _resolve_config_path(item.config_path) == existing_config_path
+                    ),
                     None,
                 )
-        config_path = record.config_path if record is not None else None
-        if config_path is None:
-            raise ServerDomainError(
-                code="PLUGIN_CONFIG_NOT_FOUND",
-                message=f"Plugin '{normalized_plugin_id}' configuration not found",
-                status_code=404,
-                details={"plugin_id": normalized_plugin_id},
-            )
+                if record is None:
+                    record = next(
+                        (item for item in discovery.records if item.plugin_id == normalized_plugin_id),
+                        None,
+                    )
+            config_path = record.config_path if record is not None else None
+            if config_path is None:
+                raise ServerDomainError(
+                    code="PLUGIN_CONFIG_NOT_FOUND",
+                    message=f"Plugin '{normalized_plugin_id}' configuration not found",
+                    status_code=404,
+                    details={"plugin_id": normalized_plugin_id},
+                )
 
-        # 单插件刷新写的也是 state.plugins，所以它和全量刷新共用同一把锁。
-        with _REGISTRY_REFRESH_LOCK:
             previous_runtime_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
                 config_path,
                 existing_snapshot,

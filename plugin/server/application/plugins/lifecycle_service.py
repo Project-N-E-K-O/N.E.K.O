@@ -212,6 +212,11 @@ def _persist_user_runtime_intent(
     if enabled:
         # 这条路只有用户自己启用/启动插件才会走到，正是"它从此可以自启"的那一刻。
         clear_autostart_pending(plugin_id)
+        # 改名前的那些 id 一起清。安装时按 manifest 声明的 id 记待批准，而插件可能
+        # 因为 id 冲突以另一个运行时 id 注册；只清运行时 id 的话，等冲突消失、它又
+        # 用回声明 id 时，那条残留记录会继续挡着它自启（coderabbit）。
+        for previous_plugin_id in previous_plugin_ids:
+            clear_autostart_pending(previous_plugin_id)
     try:
         auto_start = enabled if PLUGIN_SYNC_AUTO_START_ON_TOGGLE else None
         if previous_plugin_ids:
@@ -1040,6 +1045,40 @@ class PluginLifecycleService:
                     _remaining_step_budget(start_deadline),
                     floor=_MIN_CLAMPED_START_TIMEOUT,
                 )
+            # 元数据在 host 起来**之前**取。取法有两种：包里带了就直接读，没有才
+            # 起一次隔离 worker 去 import。
+            #
+            # ⚠️ 顺序是承重的。放在 host 起来之后的话，那次 import 和插件进程自己
+            # 那次是并发的：模块级代码里拿文件锁、绑端口、起单例的插件会在第二次
+            # import 上失败，于是生命周期清理把一个健康的 host 杀掉、把这次启动报成
+            # 失败；没有直接冲突的插件也会把 import 期副作用执行两遍（codex）。
+            # 本 PR 之前这条路是安全的，因为扫描发生在 refresh_plugin 里、早于
+            # host 启动——刷新不再扫描之后，得在这里把那个顺序还回来。
+            #
+            # 上限按剩余预算收窄：扫描自己的上限是 10s，只钳住 host 启动的话，一次
+            # 冷扫描就能把整轮 reload 的墙钟顶穿（CodeRabbit）。
+            module_path, class_name = entry.split(":", 1)
+            scan_timeout = _clamp_step_timeout(
+                _DEFAULT_METADATA_SCAN_TIMEOUT,
+                _remaining_step_budget(start_deadline),
+                floor=_MIN_CLAMPED_START_TIMEOUT,
+            )
+            isolated_metadata = await asyncio.to_thread(
+                _read_packaged_isolated_metadata, config_path, current_plugin_id
+            )
+            if isolated_metadata is None:
+                isolated_metadata = await asyncio.to_thread(
+                    scan_plugin_metadata_isolated,
+                    plugin_id=current_plugin_id,
+                    module_path=module_path,
+                    class_name=class_name,
+                    config_path=config_path,
+                    conf=conf,
+                    pdata=pdata,
+                    python_requirement_paths=python_requirement_paths,
+                    timeout=scan_timeout,
+                )
+
             startup_result = await _start_host_with_timeout(
                 plugin_id=current_plugin_id,
                 host_obj=host_obj,
@@ -1066,33 +1105,6 @@ class PluginLifecycleService:
                         error_type="ProcessDiedImmediately",
                     )
 
-            module_path, class_name = entry.split(":", 1)
-            # 元数据扫描排在 host 起来**之后**，而它自己的上限是 10s：只钳住 host
-            # 启动的话，一次冷扫描就能把整轮 reload 的墙钟顶穿，而那正是这个预算
-            # 要管的事（CodeRabbit）。所以这一步也按剩余预算收窄。
-            #
-            # 正常一轮 reload 走到这里是命中缓存的（注册表刚刷过、指纹没变），代价
-            # 接近零；钳位只在冷扫描那条病态路径上真的生效。
-            scan_timeout = _clamp_step_timeout(
-                _DEFAULT_METADATA_SCAN_TIMEOUT,
-                _remaining_step_budget(start_deadline),
-                floor=_MIN_CLAMPED_START_TIMEOUT,
-            )
-            isolated_metadata = await asyncio.to_thread(
-                _read_packaged_isolated_metadata, config_path, current_plugin_id
-            )
-            if isolated_metadata is None:
-                isolated_metadata = await asyncio.to_thread(
-                    scan_plugin_metadata_isolated,
-                    plugin_id=current_plugin_id,
-                    module_path=module_path,
-                    class_name=class_name,
-                    config_path=config_path,
-                    conf=conf,
-                    pdata=pdata,
-                    python_requirement_paths=python_requirement_paths,
-                    timeout=scan_timeout,
-                )
             await asyncio.to_thread(
                 install_isolated_plugin_metadata,
                 current_plugin_id,
@@ -1361,7 +1373,10 @@ class PluginLifecycleService:
                 if error.status_code != 404:
                     raise
 
-        result = await self.start_plugin(plugin_id)
+        # reload 是用户按的按钮，而前端在插件停着的时候也给这个按钮。用它把一个
+        # 待批准的插件启动起来，和用 start 启动是同一件事，批准位一样要清掉——否则
+        # 那个插件永远启动得起来、却永远不自启（codex）。
+        result = await self.start_plugin(plugin_id, persist_user_intent=True)
         _emit_lifecycle_event(event_type="plugin_reloaded", plugin_id=plugin_id)
         return result
 

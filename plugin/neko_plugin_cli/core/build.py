@@ -25,6 +25,20 @@ _SCHEMA_VERSION = "1.0"
 _SAFE_PACKAGE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
+def _record_staged_file(staged_files: list[Path], path: Path | None) -> None:
+    """Append ``path`` unless that file is already staged.
+
+    ``PayloadBuildResult`` only sorts its file list, it does not de-duplicate,
+    so a path staged twice is counted twice.
+    """
+    if path is None:
+        return
+    resolved = path.resolve()
+    if any(existing.resolve() == resolved for existing in staged_files):
+        return
+    staged_files.append(path)
+
+
 def _validate_package_id(package_id: str, *, label: str = "package_id") -> str:
     value = package_id.strip()
     if not value:
@@ -223,8 +237,10 @@ class PluginBuilder:
             source_dir=source.plugin_dir,
             target_dir=plugin_payload_dir,
         )
-        if staged_metadata is not None:
-            staged_files.append(staged_metadata)
+        # 仓库里的插件目录已经带着 plugin.meta.json，copy_plugin_runtime_files 会
+        # 把它复制过去并记进 staged_files；这里覆盖的是同一个路径，再 append 一次就
+        # 会让 staged_file_count 多算、--keep-staging 重复列出同一个文件（coderabbit）。
+        _record_staged_file(staged_files, staged_metadata)
         profile_files = write_default_profile(source, paths.profiles_dir)
         write_dependency_manifest([source], paths.payload_dir)
         validate_payload_dependency_layout(paths.payload_dir, [source.plugin_id])
@@ -263,8 +279,7 @@ class PluginBuilder:
                 source_dir=source.plugin_dir,
                 target_dir=plugin_payload_dir,
             )
-            if staged_metadata is not None:
-                staged_files.append(staged_metadata)
+            _record_staged_file(staged_files, staged_metadata)
 
         profile_files = write_bundle_profile(sources, paths.profiles_dir)
         write_dependency_manifest(sources, paths.payload_dir)

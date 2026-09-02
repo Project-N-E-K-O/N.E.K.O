@@ -259,7 +259,7 @@ def _isolated_store(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     import utils.config_manager as config_manager_module
 
     monkeypatch.setattr(
-        config_manager_module, "get_config_manager", lambda: _FakeConfigManager()
+        config_manager_module, "get_config_manager", _FakeConfigManager
     )
     autostart_approvals._reset_cache_for_testing()
     return store
@@ -301,7 +301,7 @@ def test_an_unreadable_store_still_allows_autostart(
     import utils.config_manager as config_manager_module
 
     monkeypatch.setattr(
-        config_manager_module, "get_config_manager", lambda: _BrokenConfigManager()
+        config_manager_module, "get_config_manager", _BrokenConfigManager
     )
     autostart_approvals._reset_cache_for_testing()
     try:
