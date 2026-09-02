@@ -1354,3 +1354,36 @@ async def test_a_rollback_that_lost_the_code_writes_no_record(
         )
     finally:
         autostart_approvals._reset_cache_for_testing()
+
+
+def test_a_deleted_stale_metadata_leaves_the_staged_list(tmp_path: Path) -> None:
+    """The staged-file list must describe the staging tree as it ends up.
+
+    ``copy_plugin_runtime_files`` lists the ``plugin.meta.json`` it copied in
+    from the source tree; when the probe fails that copy is deleted. A listed
+    path that no longer exists makes ``BuildResult._validate_layout`` raise
+    ``FileNotFoundError`` under ``keep_staging=True`` — after the archive has
+    already been written (codex).
+
+    Mutation: keep using ``_record_staged_file`` on the failure path.
+    """
+    from plugin.neko_plugin_cli.core.build import _settle_staged_metadata
+
+    staged_dir = tmp_path / "staged"
+    staged_dir.mkdir()
+    copied = staged_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    other = staged_dir / "main.py"
+    other.write_text("VALUE = 1", encoding="utf-8")
+    staged_files = [other, copied]
+
+    _settle_staged_metadata(staged_files, staged_dir, None)
+    assert staged_files == [other], (
+        f"删掉的 plugin.meta.json 还留在清单里，--keep-staging 的布局校验会炸：{staged_files}"
+    )
+
+    written = copied
+    written.write_text("{}", encoding="utf-8")
+    _settle_staged_metadata(staged_files, staged_dir, written)
+    assert staged_files == [other, written], (
+        f"成功写出的元数据没有被记进清单：{staged_files}"
+    )

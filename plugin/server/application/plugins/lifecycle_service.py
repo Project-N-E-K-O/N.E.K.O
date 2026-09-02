@@ -156,8 +156,15 @@ def _read_packaged_isolated_metadata(
     success, and exposes no entries at all (coderabbit). Fall back to the
     worker in that case, since it mints keys under the id we pass it.
 
-    Returns ``None`` when there is nothing usable, which is also what a package
-    built before these fields existed produces — those keep scanning.
+    An empty ``handlers`` mapping is an answer, not a gap: a background-only
+    plugin registers no entries, and schema v3 always writes the key. Treating
+    empty as "no metadata" sent exactly those plugins back through the worker —
+    one import for the scan, one for the host, so any module-level side effect
+    (writing state, sending a notification, launching a helper) happened twice
+    (codex). There is no older package to protect: the version gate above only
+    accepts v3, and v1/v2 were never released.
+
+    Returns ``None`` when there is no usable metadata at all.
     """
     if config_declares_entries(conf, pdata):
         # 打包期读的是作者那份 plugin.toml，看不到用户的运行时配置/激活 profile。
@@ -165,7 +172,7 @@ def _read_packaged_isolated_metadata(
         # 那一套了（codex）。这种插件回落到真扫一次。
         return None
     packaged = read_packaged_metadata(Path(config_path).parent)
-    if packaged is None or not packaged.handlers:
+    if packaged is None:
         return None
     if not packaged.built_in_this_environment:
         # 这一份是别的机器上 import 出来的结果。插件完全可以按 sys.platform 或

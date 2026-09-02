@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -390,23 +391,16 @@ def test_a_packaged_plugin_does_not_need_a_second_import_to_start(
     """``start_plugin`` reuses packaged handlers instead of re-importing.
 
     The plugin process imports the plugin; the metadata worker used to import
-    it a second time for a result the package already carries. Packages built
-    before this field existed have no ``handlers`` and must still fall back to
-    the worker, or their entries would silently vanish.
+    it a second time for a result the package already carries.
 
-    Mutation: return the packaged object even when ``handlers`` is empty — the
-    "no handlers" case below then wrongly reports metadata.
+    The emptiness of ``handlers`` is deliberately not what decides this — see
+    ``test_a_packaged_plugin_with_no_entries_still_skips_the_scan``.
+
+    Mutation: ignore ``packaged.handlers`` and return an empty mapping.
     """
     from plugin.server.application.plugins import lifecycle_service
 
     plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
-    assert (
-        lifecycle_service._read_packaged_isolated_metadata(
-            plugin_dir / "plugin.toml", "demo"
-        )
-        is None
-    ), "没有 handlers 的旧包必须回落到扫描，否则它的入口会凭空消失"
-
     meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
     payload = json.loads(meta_path.read_text(encoding="utf-8"))
     payload["handlers"] = {"demo.go": {"event_type": "plugin_entry", "id": "go"}}
@@ -1104,3 +1098,100 @@ def test_a_v3_package_without_a_byte_total_is_refused(tmp_path: Path) -> None:
         assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
             f"source_bytes={bad!r} 被放过了，尺寸比对静默失效，判定退回只看 mtime"
         )
+
+
+def test_a_bundled_node_modules_makes_the_tree_untrustworthy(tmp_path: Path) -> None:
+    """What ships must be fingerprinted, or the metadata must not be trusted.
+
+    ``node_modules`` is not excluded by any packaging rule, so it goes into the
+    package — while the fingerprint walk skips it. A plugin that reads a bundled
+    JS file or package manifest while registering entries could then change that
+    file with no visible effect (codex). Walking a whole npm tree on every
+    refresh is the cost this module exists to avoid, so the third option is
+    taken: say so, and let the plugin fall back to the manifest.
+
+    Mutation: put ``node_modules`` back in ``SOURCE_IGNORED_DIRS``.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None, (
+        "前提没成立：这棵树本来就不该被信任"
+    )
+
+    bundled = plugin_dir / "node_modules" / "left-pad"
+    bundled.mkdir(parents=True)
+    (bundled / "index.js").write_text("module.exports = 1;\n", encoding="utf-8")
+
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+        "捆进包里的 node_modules 不进指纹却照样发布元数据：改了里面的文件，"
+        "宿主一点都看不见"
+    )
+
+
+def test_dev_only_directories_stay_out_of_the_fingerprint(tmp_path: Path) -> None:
+    """Pruning must stay cheap for what packaging never ships.
+
+    Mutation: drop ``__pycache__`` from ``SOURCE_IGNORED_DIRS`` — every plugin
+    would then be re-fingerprinted whenever Python rewrote a .pyc.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    cache = plugin_dir / "__pycache__"
+    cache.mkdir()
+    (cache / "main.cpython-311.pyc").write_bytes(bytes([0, 1]))
+
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None, (
+        "开发产物把元数据判废了：这些目录根本不会进包"
+    )
+
+
+def test_deeply_nested_metadata_falls_back_instead_of_failing(
+    tmp_path: Path,
+) -> None:
+    """A third-party file must not be able to break discovery.
+
+    ``json.loads`` raises ``RecursionError`` — not a ``ValueError`` — on a deep
+    enough document, and it fits well under the size cap. Uncaught, discovery
+    records the whole plugin as failed instead of taking the documented manifest
+    fallback (codex).
+
+    Mutation: catch only ``(OSError, ValueError)``.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    depth = sys.getrecursionlimit() * 3
+    meta_path.write_text("[" * depth + "]" * depth, encoding="utf-8")
+
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+        "嵌套过深的第三方 plugin.meta.json 把整个插件搞成了失败，而不是回落 manifest"
+    )
+
+
+def test_a_packaged_plugin_with_no_entries_still_skips_the_scan(
+    tmp_path: Path,
+) -> None:
+    """An empty handler set is an answer, not a missing answer.
+
+    A background-only plugin registers nothing. Treating its empty ``handlers``
+    as "no metadata" sent it back through the worker, so starting it imported
+    the module twice — once for the scan, once for the host — and any
+    module-level side effect happened twice (codex). Schema v3 always writes the
+    key, and v1/v2 were never released, so there is no older package to protect.
+
+    Mutation: fall back when ``handlers`` is empty.
+    """
+    from plugin.server.application.plugins import lifecycle_service
+
+    plugin_dir = _write_plugin(tmp_path, entries=[])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    payload["handlers"] = {}
+    payload["entry_methods"] = {}
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    recovered = lifecycle_service._read_packaged_isolated_metadata(
+        plugin_dir / "plugin.toml", "demo"
+    )
+    assert recovered is not None, (
+        "没有入口的插件被当成没有元数据：启动它会把模块 import 两遍，"
+        "模块级副作用跟着做两遍"
+    )
+    assert recovered.handlers == {}

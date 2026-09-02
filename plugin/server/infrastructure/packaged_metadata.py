@@ -86,9 +86,23 @@ TEXT_SUFFIXES_FOR_HASHING = frozenset(
      ".csv", ".xml", ".html", ".css", ".js", ".ts", ".sql"}
 )
 
+# 开发产物，打包规则本来就不会把它们放进包里，所以不进指纹也不影响"元数据和
+# 包内容一致"这个契约。
 SOURCE_IGNORED_DIRS = frozenset(
-    {"__pycache__", ".git", ".mypy_cache", ".ruff_cache", "node_modules", ".venv"}
+    {"__pycache__", ".git", ".mypy_cache", ".ruff_cache", ".venv"}
 )
+
+# 会进包、但大到不该每次刷新都遍历的目录。
+#
+# node_modules 没有被任何一套打包规则默认排除，所以它是**跟着包一起发出去的**。
+# 既跳过它又照常发布元数据，等于契约上开了个洞：插件在注册入口时读了 bundle 里
+# 的某个 JS 或 package.json，改了它这边一点都看不见，宿主继续端着旧 schema
+# （codex）。反过来把它算进指纹，每次刷新都要在持锁状态下 stat 一整棵 npm 树，
+# 那正是这套机制要省掉的开销。
+#
+# 所以两头都不选：看见它就把整棵树判成不可信，这个插件回落到 manifest + 按需
+# 扫描——也就是本 PR 之前的原样，而且只影响真的捆了 node_modules 的插件。
+SOURCE_UNFINGERPRINTABLE_DIRS = frozenset({"node_modules"})
 
 # 未知参数结构时给的占位。
 #
@@ -205,6 +219,9 @@ def _iter_source_files(
                     saw_symlink = True
                     continue
                 if entry.is_dir(follow_symlinks=False):
+                    if entry.name in SOURCE_UNFINGERPRINTABLE_DIRS:
+                        saw_symlink = True
+                        continue
                     if entry.name not in SOURCE_IGNORED_DIRS:
                         stack.append(entry.path)
                         # 目录自己的 mtime 也要看。删掉一个文件不会让任何**幸存**
@@ -392,7 +409,10 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
 
     try:
         raw: Any = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
+        # RecursionError 不是 ValueError：一份嵌套够深的 JSON 能在体积限制之内把
+        # json.loads 打爆，而这份文件来自第三方包。漏掉它，发现流程会把整个插件
+        # 记成失败，而不是走本该走的 manifest 回落（codex）。
         logger.warning(
             "packaged plugin metadata unreadable, falling back to manifest: path={}, err_type={}, err={}",
             meta_path,
