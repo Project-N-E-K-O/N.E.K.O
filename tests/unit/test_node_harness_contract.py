@@ -31,6 +31,7 @@ exactly what a new harness file would slip past.
 """
 
 import ast
+import os
 import re
 import shutil
 import subprocess
@@ -961,6 +962,41 @@ def test_a_zero_timeout_still_fails_fast_and_still_arms_the_guard(monkeypatch):
     )
 
 
+def test_a_script_that_never_compiles_is_left_to_the_ceiling_to_retry():
+    """If the script never started, the guard must stay out of the way.
+
+    A ``--require`` preload is loaded before node reads the main script, so a
+    stall in reading or compiling it sits inside the preload's lifetime. Marking
+    that 87 would be a clean, deterministic exit -- and therefore *not* retried,
+    which is exactly backwards for the pre-script stall this launcher exists to
+    recover from. The deadline only starts once ``_compile`` has fired.
+    """
+    node_path = _node_or_skip()
+
+    # NODE_OPTIONS carries a second preload that throws while loading, so node
+    # dies before the main script is ever compiled -- the closest reproducible
+    # stand-in for "the script never started".
+    exploding = Path(node_harness._preload_path()).with_name("neko-explode.js")
+    exploding.write_text("throw new Error('boom');\n", encoding="utf-8")
+    try:
+        result = run_node_script(
+            node_path,
+            "process.stdout.write('never');\n",
+            capture_output=True,
+            check=False,
+            timeout=5,
+            env={**os.environ, "NODE_OPTIONS": f"--require {exploding}"},
+        )
+    finally:
+        exploding.unlink(missing_ok=True)
+
+    assert result.returncode != node_harness._WATCHDOG_EXIT_CODE, (
+        "脚本根本没被编译过，不该被判成「脚本超时」——那是不可重试的确定性失败，"
+        f"而这正是要留给外层 ceiling 重试的情况：rc={result.returncode}"
+    )
+    assert result.stdout == ""
+
+
 def test_the_script_budget_is_counted_from_the_preload_not_process_start():
     """Bootstrap time belongs to the spawn stall, not to the script.
 
@@ -971,11 +1007,65 @@ def test_the_script_budget_is_counted_from_the_preload_not_process_start():
     """
     preload = node_harness._PRELOAD_SOURCE
 
-    assert "const startedAt = millisNow();" in preload
-    assert "millisNow() - startedAt > deadlineMs" in preload
+    assert "let startedAt = null;" in preload
+    assert "startedAt = millisNow();" in preload
+    assert "startedAt !== null && millisNow() - startedAt > deadlineMs" in preload
+    assert "Module.prototype._compile" in preload, (
+        "预算要从「node 编译脚本」那一刻起算，靠的就是这个钩子"
+    )
     assert "uptime()" not in preload, (
         "uptime() 从进程启动算起，会把 node 自己的 bootstrap 记到脚本头上"
     )
+
+
+def test_the_child_keeps_the_environment_it_would_have_inherited(monkeypatch):
+    """The deadline is *added* to the environment, not substituted for it.
+
+    Found by mutation: replacing the inherited environment with a bare dict
+    survived every test. A harness that reads an env var -- or anything relying
+    on PATH, NODE_OPTIONS, or the locale -- would start failing for reasons with
+    no connection to what it tests.
+    """
+    monkeypatch.setenv("NEKO_HARNESS_ENV_WITNESS", "kept")
+    seen = {}
+
+    def _fake_run(argv, **kwargs):
+        seen["env"] = kwargs.get("env") or {}
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(node_harness.subprocess, "run", _fake_run)
+    run_node_script("node", "process.stdout.write('ok');", timeout=5)
+
+    assert seen["env"].get("NEKO_HARNESS_ENV_WITNESS") == "kept", (
+        "继承来的环境被整个换掉了，调用方依赖的 env 会莫名其妙消失"
+    )
+    assert seen["env"][node_harness._DEADLINE_ENV] == "5000"
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_harness_that_stubs_fs_writesync_still_gets_the_diagnosis(runner):
+    """``require('node:fs')`` hands the script the preload's own module object.
+
+    Found by mutation: reading ``fs.writeSync`` at report time instead of
+    binding it up front survived, because the surviving tests only checked the
+    exit code -- which comes from a different snapshot. The diagnosis is the
+    part that tells the next person what leaked, so it is the part worth
+    pinning.
+    """
+    node_path = _node_or_skip()
+
+    script = (
+        "require('node:fs').writeSync = () => {};\n"
+        "setInterval(function () {}, 1000);\n"
+        "process.stdout.write('started');\n"
+    )
+    result = runner(node_path, script, capture_output=True, check=False, timeout=2)
+
+    assert result.returncode == node_harness._WATCHDOG_EXIT_CODE
+    assert "[node_harness]" in result.stderr, (
+        f"被打桩的 fs.writeSync 把诊断吞掉了：stderr={result.stderr!r}"
+    )
+    assert "still had pending work" in result.stderr
 
 
 def test_the_guard_never_edits_the_script_it_is_guarding():

@@ -61,10 +61,13 @@ the way out, covering the script that merely ran long and then ended and the one
 that calls ``process.exit()`` itself; every way out of node passes through it,
 and an ``exitCode`` assigned there overrides even ``process.exit(0)``.  The
 subprocess ceiling sits a few seconds above the deadline, so a surviving
-``TimeoutExpired`` means node never got as far as the preload.  The script's
-budget is counted from the preload, not from process start: everything before it
-is bootstrap, which is the stall the ceiling is there to catch and retry, and
-charging it to the script would report a slow *spawn* as a script timeout.
+``TimeoutExpired`` means node never got that far.  The script's budget starts
+when node compiles the harness script -- not at process start, and not when the
+preload runs, since a ``--require`` module is loaded before node reads the main
+script at all.  Bootstrap, reading the temp file and draining ``node -`` stdin
+are therefore outside it: they are the stall the ceiling is there to catch and
+retry, and charging them to the script would report a slow *spawn* as a script
+timeout, instead of retrying it.
 
 The guard is a preload rather than text spliced into the script, because a
 harness script is not a safe place to stand.  Injected code resolves its names
@@ -233,6 +236,7 @@ _PRELOAD_SOURCE = r"""
 // its own module scope, out of reach of anything the harness declares.
 const timers = require('node:timers');
 const fs = require('node:fs');
+const Module = require('node:module');
 
 // Snapshot every moving part before the script gets a turn.  A preload is out
 // of reach of the caller's *lexical* scope, but not of shared objects: these
@@ -263,15 +267,25 @@ const activeResources = typeof nativeProcess.getActiveResourcesInfo === 'functio
 const deadlineMs = Number(nativeProcess.env.NEKO_NODE_HARNESS_DEADLINE_MS || 0);
 const EXIT_CODE = __EXIT_CODE__;
 
-// The budget starts here, not at process start.  Everything before this point
-// is node bootstrap -- exactly the pre-script stall the outer ceiling exists to
-// catch and retry -- so charging it to the script would report a healthy script
-// as a harness timeout on precisely the slow spawn this launcher was written
-// for, and would do it *instead of* retrying.
-const startedAt = millisNow();
+// The budget starts when node compiles the harness script, not when this
+// preload runs and not at process start.  A `--require` module is loaded before
+// node reads and compiles the main script, so everything up to that point --
+// bootstrap, reading the temp file, draining `node -` stdin -- is pre-script
+// work.  That is precisely the stall the outer ceiling exists to catch and
+// retry; charging it to the script would report a slow *spawn* as a script
+// timeout, and would do it *instead of* retrying, which is the one outcome this
+// launcher was written to avoid.
+//
+// `Module.prototype._compile` is the marker: it fires for a file main module
+// and for `node -` alike (`[stdin]-wrapper`), before the script's first
+// statement runs.  The patch removes itself on the first call, so only the main
+// module is measured and anything the script requires later is untouched.
+let startedAt = null;
 
 function overdue() {
-  return millisNow() - startedAt > deadlineMs;
+  // Never started == never the script's fault.  Staying quiet here leaves the
+  // outer ceiling to time out, which is what gets the attempt retried.
+  return startedAt !== null && millisNow() - startedAt > deadlineMs;
 }
 
 function diagnose(prefix) {
@@ -312,14 +326,24 @@ if (deadlineMs > 0) {
     }
   });
 
-  // ...and this covers the script that never exits at all.  unref() so the
-  // watchdog is never itself the reason node stays up: with nothing else
-  // holding the loop, node exits first and the hook above does the checking.
-  const deadline = armTimer(function () {
-    diagnose('the script still had pending work');
-    exitNow(EXIT_CODE);
-  }, deadlineMs);
-  if (deadline && typeof deadline.unref === 'function') deadline.unref();
+  const originalCompile = Module.prototype._compile;
+  Module.prototype._compile = function (content, filename) {
+    if (startedAt === null) {
+      startedAt = millisNow();
+      Module.prototype._compile = originalCompile;
+
+      // ...and this covers the script that never exits at all.  unref() so the
+      // watchdog is never itself the reason node stays up: with nothing else
+      // holding the loop, node exits first and the hook above does the
+      // checking.
+      const deadline = armTimer(function () {
+        diagnose('the script still had pending work');
+        exitNow(EXIT_CODE);
+      }, deadlineMs);
+      if (deadline && typeof deadline.unref === 'function') deadline.unref();
+    }
+    return originalCompile.call(this, content, filename);
+  };
 }
 """
 
