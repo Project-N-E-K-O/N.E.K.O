@@ -340,3 +340,32 @@ def test_the_startup_gate_does_not_fire_inside_type_checking() -> None:
         "    pass\n"
     )
     assert len(_check(in_the_test)) == 1, "if 判断表达式里的访问被漏掉了"
+
+
+@pytest.mark.unit
+def test_the_startup_gate_catches_a_wildcard_import_of_the_lazy_module() -> None:
+    """Adding ``__all__`` handed the rule a doorway it had to be taught about.
+
+    Declaring ``__all__`` is what put the lazy name back into ``from ... import *``
+    -- which also means a wildcard import now ``getattr``s it and compiles the
+    regexes on the pre-bind path. The rule looked up the literal alias name
+    ``"*"`` in ``BANNED_SYMBOLS``, which never matches, so the fix for one finding
+    opened a bypass for the guard added for another (codex).
+
+    Mutation: drop the ``"*"`` branch.
+    """
+    wildcard = "from config.prompts.prompts_directives import *\n"
+    violations = _check(wildcard)
+    assert len(violations) == 1, f"通配导入绕过了闸门：{violations}"
+    assert "DIRECTIVE_PATTERNS" in violations[0][2]
+
+    # 函数体内的通配导入是语法错误，所以没有对应的放行用例；换一个方向：别的模块
+    # 的通配导入不该命中。
+    other = "from some.other.module import *\n"
+    assert _check(other) == [], "任何通配导入都被打红了"
+
+    # 逃生阀对通配这条同样要管用。
+    escaped = (
+        "from config.prompts.prompts_directives import *  # noqa: STARTUP_LAZY_IMPORT\n"
+    )
+    assert _check(escaped) == [], "noqa 对通配规则失效"

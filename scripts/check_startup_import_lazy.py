@@ -347,6 +347,24 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
                 # 拿它去比绝对的 (模块, 符号) 对会误判——`from ...a.b import X`
                 # 解析出来的根本是另一个模块（CodeRabbit）。
                 for alias in stmt.names:
+                    if alias.name == "*":
+                        # 通配导入会把 __all__ 里每个名字都 getattr 一遍，惰性访问器
+                        # 照常触发。而 __all__ 恰恰是为了让惰性名字重新出现在通配面里
+                        # 才加的，等于亲手给这条规则开了个口子——按字面名 "*" 去查表
+                        # 永远查不中（codex）。当成"把这个模块的每个被禁符号都导了"。
+                        for (module, symbol), star_home in BANNED_SYMBOLS.items():
+                            if module != stmt.module:
+                                continue
+                            symbols.append(
+                                (
+                                    f"{module}.{symbol}",
+                                    star_home,
+                                    f"from {stmt.module} import *",
+                                    stmt.lineno,
+                                    stmt.col_offset,
+                                )
+                            )
+                        continue
                     home = BANNED_SYMBOLS.get((stmt.module, alias.name))
                     if home is not None:
                         symbols.append(
