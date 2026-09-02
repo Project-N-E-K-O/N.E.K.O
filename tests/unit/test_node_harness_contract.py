@@ -240,6 +240,40 @@ def test_a_healthy_harness_is_untouched_by_the_watchdog(runner):
     assert result.stderr == ""
 
 
+def test_a_heavy_synchronous_top_level_does_not_push_the_watchdog_past_the_ceiling(
+    monkeypatch,
+):
+    """The deadline is measured from node start, not from when the watchdog arms.
+
+    The watchdog is appended, so it arms only after the script's synchronous top
+    level finishes - but the outer ceiling has been running since the spawn. Arm
+    for the full deadline and the two clocks drift apart by exactly that top
+    level; any top level heavier than the slack and the ceiling fires first,
+    taking the diagnosis with it.
+
+    Driven with a shrunken slack so the case costs ~2s instead of ~9s.
+    """
+    node_path = _node_or_skip()
+    monkeypatch.setattr(node_harness, "_SPAWN_SLACK_SECONDS", 1.0)
+
+    # 2s of synchronous top level - twice the slack - and then a leaked timer.
+    script = (
+        "var until = Date.now() + 2000;\n"
+        "while (Date.now() < until) {}\n"
+        "setInterval(function () {}, 1000);\n"
+        "process.stdout.write('started');\n"
+    )
+    result = run_node_script(
+        node_path, script, capture_output=True, check=False, timeout=2
+    )
+
+    assert result.returncode == node_harness._WATCHDOG_EXIT_CODE, (
+        "同步 top-level 吃掉的时间必须算进 deadline，否则 watchdog 会被外层 ceiling "
+        f"抢先杀掉、诊断全丢：rc={result.returncode} stderr={result.stderr!r}"
+    )
+    assert "[node_harness]" in result.stderr
+
+
 def test_the_spawn_ceiling_sits_above_the_script_deadline(monkeypatch):
     """The caller's timeout is the script's budget; the spawn gets slack on top.
 
@@ -261,8 +295,8 @@ def test_the_spawn_ceiling_sits_above_the_script_deadline(monkeypatch):
     run_node_script("node", "process.stdout.write('ok');", timeout=12)
 
     assert seen["timeout"] == 12 + node_harness._SPAWN_SLACK_SECONDS
-    assert "}, 12000);" in seen["script"], (
-        f"watchdog 必须按调用方的 timeout 武装，而不是别的值：{seen['script'][-400:]!r}"
+    assert "var budget = 12000 - spent;" in seen["script"], (
+        f"watchdog 必须按调用方的 timeout 武装，而不是别的值：{seen['script'][-600:]!r}"
     )
 
 
@@ -282,7 +316,7 @@ def test_a_caller_without_a_timeout_still_gets_a_finite_script_deadline(monkeypa
         node_harness._DEFAULT_WATCHDOG_SECONDS + node_harness._SPAWN_SLACK_SECONDS
     ), "没给 timeout 的调用方以前连外层 ceiling 都没有，同步卡死能一路跑到 job cap"
     millis = int(node_harness._DEFAULT_WATCHDOG_SECONDS * 1000)
-    assert f"}}, {millis});" in seen["script"]
+    assert f"var budget = {millis} - spent;" in seen["script"]
 
 
 def test_a_spawn_that_stalls_once_is_retried():
@@ -505,7 +539,94 @@ def test_a_stall_that_only_wrote_to_stderr_is_not_retried():
     assert len(calls) == 1, "只往 stderr 写的脚本同样证明它跑起来了，不该重试"
 
 
-def test_the_wrapped_error_keeps_the_last_attempt_output_where_callers_look():
+def test_a_caller_that_captures_nothing_is_told_its_silence_proves_nothing():
+    """Eight call sites do not capture, so their stalls can never show output.
+
+    ``communicate()`` returns None rather than "" when there was no pipe, which
+    is indistinguishable from an empty capture unless the error says so. Without
+    that line the message would tell the reader the script probably never ran,
+    on a run where nothing was ever in a position to observe it.
+    """
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            # No capture_output: exactly what test_pngtuber_static_contracts.py
+            # and friends do.
+            run_node_script("node", "process.stdout.write('ok');", timeout=1)
+    finally:
+        node_harness.subprocess.run = original
+
+    assert len(calls) == 2, "看不见输出时无从判断，重试仍是对的默认"
+    message = str(excinfo.value)
+    assert "unobserved rather than empty" in message, (
+        f"没抓输出的调用方必须被告知这份「安静」什么也证明不了：{message}"
+    )
+    assert "probably never" not in message, (
+        f"没有管道可看的时候不能下「脚本没跑起来」的结论：{message}"
+    )
+
+
+def test_a_capturing_caller_is_not_given_the_unobserved_note():
+    """The dual: a real empty capture is evidence, and must not be hedged away."""
+
+    def _fake_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"), output="", stderr="")
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            run_node_script(
+                "node", "process.stdout.write('ok');", capture_output=True, timeout=1
+            )
+    finally:
+        node_harness.subprocess.run = original
+
+    assert "unobserved rather than empty" not in str(excinfo.value)
+
+
+def test_the_wrapped_error_reports_the_second_attempt_not_the_first():
+    """With two attempts, ``.stdout`` must be the retry's, not the first try's.
+
+    Reachable and distinguishing: attempt 1 stalls silently (so it earns the
+    retry), attempt 2 stalls with output. Picking ``attempts[0]`` would hand the
+    caller the empty one and hide the only evidence in the run.
+    """
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"), output="", stderr="")
+        raise subprocess.TimeoutExpired(
+            argv, kwargs.get("timeout"), output="second-out", stderr="second-err"
+        )
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            run_node_script(
+                "node", "process.stdout.write('ok');", capture_output=True, timeout=1
+            )
+    finally:
+        node_harness.subprocess.run = original
+
+    assert len(calls) == 2
+    assert excinfo.value.stdout == "second-out"
+    assert excinfo.value.stderr == "second-err"
+    # Both are still listed; only the exception's own fields follow the last one.
+    assert str(excinfo.value).count("attempt ") == 2
+
+
+def test_the_wrapped_error_keeps_a_stalled_attempt_output_where_callers_look():
     """``except TimeoutExpired`` reading ``.stdout`` must not regress to None.
 
     ``subprocess.run`` fills those in after killing the child; wrapping the

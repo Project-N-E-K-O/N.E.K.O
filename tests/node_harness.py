@@ -64,9 +64,10 @@ no amount of retrying will make that script finish.  What separates it from a
 genuine spawn stall is evidence: measured on Windows, whatever the script wrote
 before it blocked still reaches the parent, while a node that never reached the
 script emits nothing at all.  So a stalled attempt that produced output is
-reported straight away, and only a completely silent one is retried.  A
-synchronous block that also printed nothing stays ambiguous, and the error says
-so rather than picking a side.
+reported straight away, and only a silent one is retried.  A synchronous block
+that also printed nothing stays ambiguous, and the error says so rather than
+picking a side -- as does the case of a caller that never captured output at
+all, where the silence is nobody watching rather than nothing said.
 """
 
 import os
@@ -103,6 +104,16 @@ _WATCHDOG_TEMPLATE = r"""
   } catch (err) {
     timer = g.setTimeout;
   }
+  // Charge node startup and the script's synchronous top level against the
+  // budget, because the outer ceiling is charged for them too.  Arming for the
+  // full deadline here would put the watchdog at (startup + top level +
+  // deadline) while the ceiling sits at (deadline + slack): any top level
+  // heavier than the slack and the ceiling wins, losing the diagnosis. Nothing
+  // can fire during a synchronous top level, but the moment it ends the budget
+  // is already spent and the watchdog should say so.
+  var spent = Math.round((g.process.uptime ? g.process.uptime() : 0) * 1000);
+  var budget = __MILLIS__ - spent;
+  if (!(budget > 1)) budget = 1;
   var deadline = timer(function () {
     var held;
     try {
@@ -112,8 +123,8 @@ _WATCHDOG_TEMPLATE = r"""
     } catch (err) {
       held = '<unavailable: ' + err + '>';
     }
-    var message = '\n[node_harness] the script still had pending work after '
-      + '__SECONDS__s.\n'
+    var message = '\n[node_harness] the script still had pending work '
+      + '__SECONDS__s after node started.\n'
       + '[node_harness] event loop is held by: ' + held + '\n'
       + '[node_harness] a harness that never settles has usually left a timer '
       + 'armed (clearInterval/clearTimeout) or is awaiting a promise that '
@@ -127,7 +138,7 @@ _WATCHDOG_TEMPLATE = r"""
       g.process.stderr.write(message);
     }
     g.process.exit(__EXIT_CODE__);
-  }, __MILLIS__);
+  }, budget);
   // unref() so the watchdog cannot itself be the reason node stays up: with no
   // other handle open node exits first and the watchdog never fires, which is
   // exactly the healthy case.
@@ -175,10 +186,16 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
             "fired. Either node never reached the script (process creation, "
             "reading it off disk, V8 bootstrap), or the script blocked the "
             "event loop synchronously -- a timer cannot interrupt that. Each "
-            "attempt's output below is the evidence: anything at all means the "
-            "script did run, and nothing at all means it probably never did."
+            "attempt's output below is the evidence, where there was a pipe "
+            "to collect it: anything at all means the script did run."
         )
         lines = [super().__str__(), "", diagnosis]
+        if not any(_observed_output(attempt) for attempt in self.attempts):
+            lines.append(
+                "  note: this caller does not capture output, so the silence "
+                "below is unobserved rather than empty -- pass "
+                "capture_output=True to tell the two apart."
+            )
         for index, attempt in enumerate(self.attempts, 1):
             lines.append(
                 f"  attempt {index}: stdout={_excerpt(attempt.stdout)} "
@@ -196,6 +213,18 @@ def _emitted_anything(exc: subprocess.TimeoutExpired) -> bool:
     not, which is why silence is what gets the retry.
     """
     return bool(exc.stdout) or bool(exc.stderr)
+
+
+def _observed_output(exc: subprocess.TimeoutExpired) -> bool:
+    """Was there a pipe to observe in the first place?
+
+    A caller that does not capture leaves the child on the inherited handles,
+    and ``communicate()`` then hands back ``None`` rather than ``""``.  Those
+    two look identical to :func:`_emitted_anything` and mean opposite things --
+    "the script printed nothing" versus "nobody was watching" -- so the
+    distinction has to survive as far as the error message.
+    """
+    return exc.stdout is not None or exc.stderr is not None
 
 
 def _utf8(kwargs: dict) -> dict:
