@@ -712,12 +712,17 @@ def _vllm_omni_clone_resolve(ctx):
         if raw_vllm_omni_selected
         else ''
     )
-    vllm_url = (
-        current_vllm_url
-        or str(vm.get('vllm_omni_base_url') or '').strip()
-        or (raw.get('ttsModelUrl') or '').strip()
-        or VLLM_OMNI_DEFAULT_BASE_URL
-    )
+    # An explicitly selected vLLM-Omni provider owns the endpoint choice. Its
+    # blank URL is the supported localhost default, not a signal to reuse a
+    # stale clone snapshot captured while TTS followed another provider.
+    if raw_vllm_omni_selected:
+        vllm_url = current_vllm_url or VLLM_OMNI_DEFAULT_BASE_URL
+    else:
+        vllm_url = (
+            str(vm.get('vllm_omni_base_url') or '').strip()
+            or (raw.get('ttsModelUrl') or '').strip()
+            or VLLM_OMNI_DEFAULT_BASE_URL
+        )
     vllm_model = (raw.get('ttsModelId') or '').strip() or VLLM_OMNI_DEFAULT_MODEL
     clone_ref_text = str(vm.get('clone_ref_text') or '').strip()
     if not clone_ref_text:

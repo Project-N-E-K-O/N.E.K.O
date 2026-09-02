@@ -1790,12 +1790,14 @@ function setFormDisabled(disabled) {
     const refLanguage = document.getElementById('refLanguage');
     const prefix = document.getElementById('prefix');
     const voiceProvider = document.getElementById('voiceProvider');
+    const vllmRefText = document.getElementById('vllmRefText');
     if (audioFile) audioFile.disabled = disabled;
     if (directLinkUrl) directLinkUrl.disabled = disabled;
     if (voiceDesignPrompt) voiceDesignPrompt.disabled = disabled;
     if (refLanguage) refLanguage.disabled = disabled;
     if (prefix) prefix.disabled = disabled;
     if (voiceProvider) voiceProvider.disabled = disabled;
+    if (vllmRefText) vllmRefText.disabled = disabled;
     // 禁用所有按钮
     const buttons = document.querySelectorAll('button');
     if (buttons && buttons.length > 0) {

@@ -101,6 +101,13 @@ def test_vllm_clone_configuration_warning_names_active_tts_provider(mock_page: P
         assert "自定义 API 已关闭" in warning
         assert configured_warning == ""
         assert legacy_enabled_warning == ""
+        assert mock_page.evaluate(
+            """() => {
+                setFormDisabled(true);
+                return document.getElementById('vllmRefText').disabled;
+            }"""
+        ) is True
+        mock_page.evaluate("() => setFormDisabled(false)")
     finally:
         mock_page.unroute("**/api/config/steam_language")
         mock_page.unroute("**/api/config/api_providers")

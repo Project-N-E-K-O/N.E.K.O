@@ -372,7 +372,10 @@ async def voice_clone(
     base_url = _local_voice_clone_tts_base_url(tts_config, core_config)
     is_local_tts = _is_local_voice_clone_tts_config(tts_config, core_config)
 
-    if is_local_tts:
+    # vLLM-Omni uses an inline reference sample and has no /speakers/register
+    # endpoint. Even when another active TTS provider is a local WS service,
+    # its generic registration route must not consume a vLLM-Omni clone.
+    if is_local_tts and provider != 'vllm_omni':
         # ==================== 本地 TTS 注册流程 ====================
         # MD5 + ref_language 去重：检查是否已有相同音频 + 相同语言注册过的音色
         existing = _config_manager.find_voice_by_audio_md5('__LOCAL_TTS__', audio_md5, ref_language)
