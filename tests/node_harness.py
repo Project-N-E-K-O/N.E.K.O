@@ -282,7 +282,7 @@ def _with_watchdog(script: str, seconds: float) -> str:
     watchdog = (
         _WATCHDOG_TEMPLATE
         .replace("__SECONDS__", f"{seconds:g}")
-        .replace("__MILLIS__", "9000")  # MUTANT
+        .replace("__MILLIS__", str(int(seconds * 1000)))
         .replace("__EXIT_CODE__", str(_WATCHDOG_EXIT_CODE))
     )
     return script + "\n" + watchdog
