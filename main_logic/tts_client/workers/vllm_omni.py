@@ -708,7 +708,7 @@ def _vllm_omni_clone_resolve(ctx):
         and str(raw.get('ttsModelProvider') or '').strip() == 'vllm_omni'
     )
     current_vllm_url = (
-        str(raw.get('ttsModelUrl') or '').strip()
+        str(raw.get('ttsModelUrl') or raw.get('TTS_MODEL_URL') or '').strip()
         if raw_vllm_omni_selected
         else ''
     )

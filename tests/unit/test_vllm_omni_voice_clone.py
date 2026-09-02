@@ -375,6 +375,34 @@ def test_get_tts_worker_vllm_omni_clone_uses_default_over_legacy_snapshot_when_s
 
 
 @pytest.mark.unit
+def test_get_tts_worker_vllm_omni_clone_uses_selected_tts_model_url_alias(monkeypatch):
+    """The legacy TTS_MODEL_URL alias remains an active vLLM endpoint."""
+    sample = (np.arange(64, dtype=np.int16)).tobytes()
+    cm = _CMBase(
+        {
+            "vllm-omni-clone-s": _vllm_clone_meta(
+                sample, vllm_omni_base_url="https://www.lanlan.tech/text/v1"
+            ),
+        },
+        raw_json={
+            "enableCustomApi": True,
+            "ttsModelProvider": "vllm_omni",
+            "ttsModelUrl": "",
+            "TTS_MODEL_URL": "ws://127.0.0.1:8099/v1",
+        },
+        core_config={"ENABLE_CUSTOM_API": True, "ttsModelProvider": "vllm_omni"},
+    )
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+
+    worker, _, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen", has_custom_voice=True, voice_id="vllm-omni-clone-s",
+    )
+
+    assert provider_key == "vllm_omni"
+    assert worker.keywords["base_url"] == "ws://127.0.0.1:8099/v1"
+
+
+@pytest.mark.unit
 async def test_vllm_omni_clone_bypasses_active_local_tts_registration(monkeypatch):
     """A selected vLLM inline clone must never call another local provider's register API."""
     from main_routers.characters_router import voice_cloning as voice_cloning_router
