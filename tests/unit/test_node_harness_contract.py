@@ -725,83 +725,37 @@ def test_a_silent_stall_is_still_retried():
     assert len(calls) == 2
 
 
-def test_a_stall_that_only_wrote_to_stderr_is_not_retried():
-    """Evidence is evidence whichever stream it came out of.
+def test_output_from_a_pre_main_preload_does_not_count_as_started():
+    """Output proves nothing about the harness, in either direction.
 
-    A harness that reports through ``console.error`` leaves its trace on stderr
-    alone; counting only stdout would send that straight back into a pointless
-    retry. Found by mutation - nothing else in this file covered it.
+    An inherited ``NODE_OPTIONS=--require`` module runs before the guard and
+    before the script; if it prints and then stalls, the old output fallback
+    read that as "the harness ran" and suppressed the retry -- for an attempt
+    where the harness was never reached at all.
     """
     calls = []
+    ok = subprocess.CompletedProcess(["node"], 0, "ok", "")
 
     def _fake_run(argv, **kwargs):
         calls.append(argv)
-        raise subprocess.TimeoutExpired(
-            argv, kwargs.get("timeout"), output="", stderr="started"
-        )
-
-    original = node_harness.subprocess.run
-    node_harness.subprocess.run = _fake_run
-    try:
-        with pytest.raises(subprocess.TimeoutExpired):
-            run_node_script("node", "process.stdout.write('ok');", timeout=1)
-    finally:
-        node_harness.subprocess.run = original
-
-    assert len(calls) == 1, "只往 stderr 写的脚本同样证明它跑起来了，不该重试"
-
-
-def test_a_caller_that_captures_nothing_is_told_its_silence_proves_nothing():
-    """Eight call sites do not capture, so their stalls can never show output.
-
-    ``communicate()`` returns None rather than "" when there was no pipe, which
-    is indistinguishable from an empty capture unless the error says so. Without
-    that line the message would tell the reader the script probably never ran,
-    on a run where nothing was ever in a position to observe it.
-    """
-    calls = []
-
-    def _fake_run(argv, **kwargs):
-        calls.append(argv)
-        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
-
-    original = node_harness.subprocess.run
-    node_harness.subprocess.run = _fake_run
-    try:
-        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
-            # No capture_output: exactly what test_pngtuber_static_contracts.py
-            # and friends do.
-            run_node_script("node", "process.stdout.write('ok');", timeout=1)
-    finally:
-        node_harness.subprocess.run = original
-
-    assert len(calls) == 2, "看不见输出时无从判断，重试仍是对的默认"
-    message = str(excinfo.value)
-    assert "unobserved rather than empty" in message, (
-        f"没抓输出的调用方必须被告知这份「安静」什么也证明不了：{message}"
-    )
-    assert "probably never" not in message, (
-        f"没有管道可看的时候不能下「脚本没跑起来」的结论：{message}"
-    )
-
-
-def test_a_capturing_caller_is_not_given_the_unobserved_note():
-    """The dual: a real empty capture is evidence, and must not be hedged away."""
-
-    def _fake_run(argv, **kwargs):
-        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"), output="", stderr="")
-
-    original = node_harness.subprocess.run
-    node_harness.subprocess.run = _fake_run
-    try:
-        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
-            run_node_script(
-                "node", "process.stdout.write('ok');", capture_output=True, timeout=1
+        if len(calls) == 1:
+            # Output, but no marker: exactly what a chatty pre-main preload
+            # leaves behind.
+            raise subprocess.TimeoutExpired(
+                argv, kwargs.get("timeout"), output="from a preload", stderr="noise"
             )
+        return ok
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        assert run_node_script("node", "process.stdout.write('ok');", timeout=3) is ok
     finally:
         node_harness.subprocess.run = original
 
-    assert "unobserved rather than empty" not in str(excinfo.value)
+    assert len(calls) == 2, (
+        "预载在主脚本之前吐的东西不能算「脚本跑过了」——那次尝试该重试"
+    )
 
 
 def test_the_wrapped_error_reports_the_second_attempt_not_the_first():
@@ -835,7 +789,10 @@ def test_the_wrapped_error_reports_the_second_attempt_not_the_first():
     assert excinfo.value.stdout == "second-out"
     assert excinfo.value.stderr == "second-err"
     # Both are still listed; only the exception's own fields follow the last one.
-    assert str(excinfo.value).count("attempt ") == 2
+    # Count the per-attempt lines, not the word: the diagnosis prose says
+    # "the attempt was repeated" and would inflate a bare substring count.
+    listed = [l for l in str(excinfo.value).splitlines() if l.startswith("  attempt ")]
+    assert len(listed) == 2, listed
 
 
 def test_the_wrapped_error_keeps_a_stalled_attempt_output_where_callers_look():
@@ -1281,7 +1238,7 @@ def test_the_guard_never_edits_the_script_it_is_guarding():
 
     assert seen["script"] == awkward, "脚本被改写了，注入式护栏的所有坑就都回来了"
     assert seen["argv"][1] == "--require", seen["argv"]
-    assert seen["argv"][2].endswith(".neko-harness-guard.js"), seen["argv"]
+    assert seen["argv"][2].endswith(".neko-harness-guard.cjs"), seen["argv"]
 
 
 def test_one_preload_file_serves_the_whole_process():

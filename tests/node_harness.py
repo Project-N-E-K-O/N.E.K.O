@@ -97,12 +97,13 @@ One in-script hang escapes the watchdog: a synchronous block.  ``while (true)
 no amount of retrying will make that script finish.  What separates it from a
 genuine spawn stall is evidence: measured on Windows, whatever the script wrote
 before it blocked still reaches the parent, while a node that never reached the
-script emits nothing at all.  Which of the two happened is not inferred from output -- a caller
-that does not capture cannot show any, so silence would mean both things at
-once.  The preload drops a marker file the moment node compiles the script, so
-the launcher knows as a fact whether anything was under test: an attempt that
-never got that far is repeated, and one that did is reported as it stands,
-because a second run would block in exactly the same place.
+script emits nothing at all.  Which of the two happened is never inferred from output.  Output
+answers a different question in both directions: a caller that does not capture
+can never show any, and an inherited ``NODE_OPTIONS`` preload that prints before
+stalling shows some without the harness being reached at all.  The preload drops
+a marker file the moment node compiles the script, and that file is the whole
+signal: an attempt that never got that far is repeated, and one that did is
+reported as it stands, because a second run would stall in the same place.
 """
 
 import atexit
@@ -178,41 +179,12 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
                 "under test, so the attempt was repeated."
             )
         lines = [super().__str__(), "", diagnosis]
-        if not any(_observed_output(attempt) for attempt in self.attempts):
-            lines.append(
-                "  note: this caller does not capture output, so the silence "
-                "below is unobserved rather than empty -- pass "
-                "capture_output=True to tell the two apart."
-            )
         for index, attempt in enumerate(self.attempts, 1):
             lines.append(
                 f"  attempt {index}: stdout={_excerpt(attempt.stdout)} "
                 f"stderr={_excerpt(attempt.stderr)}"
             )
         return "\n".join(lines)
-
-
-def _emitted_anything(exc: subprocess.TimeoutExpired) -> bool:
-    """Did this stalled attempt prove the script ran?
-
-    ``subprocess.run`` kills the child on timeout and then collects whatever it
-    had already written, so this is real evidence rather than a guess.  It is
-    one-directional: output means the script ran, silence does not prove it did
-    not, which is why silence is what gets the retry.
-    """
-    return bool(exc.stdout) or bool(exc.stderr)
-
-
-def _observed_output(exc: subprocess.TimeoutExpired) -> bool:
-    """Was there a pipe to observe in the first place?
-
-    A caller that does not capture leaves the child on the inherited handles,
-    and ``communicate()`` then hands back ``None`` rather than ``""``.  Those
-    two look identical to :func:`_emitted_anything` and mean opposite things --
-    "the script printed nothing" versus "nobody was watching" -- so the
-    distinction has to survive as far as the error message.
-    """
-    return exc.stdout is not None or exc.stderr is not None
 
 
 def _utf8(kwargs: dict) -> dict:
@@ -444,12 +416,18 @@ def _preload_path() -> str:
     The contents never vary -- the deadline arrives by environment variable --
     so one file serves every call in the process rather than one per invocation.
     Under ``pytest -n auto`` each worker is its own process and gets its own.
+
+    ``.cjs``, not ``.js``: the guard is CommonJS, and a ``.js`` file inherits
+    its module type from the nearest ``package.json``.  Should the system temp
+    directory ever sit inside a package declaring ``"type": "module"``, every
+    call would die on the guard's first ``require``.  The suffix pins the type
+    regardless of where the file lands.
     """
     global _preload_file
     with _preload_guard:
         if _preload_file is None or not os.path.exists(_preload_file):
             with tempfile.NamedTemporaryFile(
-                "w", suffix=".neko-harness-guard.js", delete=False, encoding="utf-8"
+                "w", suffix=".neko-harness-guard.cjs", delete=False, encoding="utf-8"
             ) as handle:
                 handle.write(_rendered_preload())
             _preload_file = handle.name
@@ -465,14 +443,16 @@ def _new_marker() -> str:
     return path
 
 
-def _script_started(marker: str, exc: subprocess.TimeoutExpired) -> bool:
-    """Did this attempt get as far as running the harness script?
+def _script_started(marker: str) -> bool:
+    """Did this attempt get as far as the harness script?
 
-    The marker is the direct answer.  Output is kept as a fallback for the case
-    where the marker could not be written at all: it is one-directional, but
-    anything on either stream still proves the script ran.
+    The marker and nothing else.  Output used to serve as a fallback, and it was
+    wrong in both directions: a caller that does not capture can never show any,
+    and an inherited ``NODE_OPTIONS`` preload that prints before stalling would
+    show some without the harness ever being reached.  The marker is written by
+    the guard itself, at the one moment that actually answers the question.
     """
-    return os.path.exists(marker) or _emitted_anything(exc)
+    return os.path.exists(marker)
 
 
 def _guarded(merged: dict, deadline_seconds: float, marker: str) -> tuple[list[str], dict]:
@@ -500,7 +480,7 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):
             return subprocess.run(argv, **run_kwargs)
         except subprocess.TimeoutExpired as exc:
             attempts.append(exc)
-            started = _script_started(marker, exc)
+            started = _script_started(marker)
             if attempt == 2 or started:
                 raise NodeHarnessSpawnTimeout(
                     cmd_for_error, exc.timeout, attempts, started=started
