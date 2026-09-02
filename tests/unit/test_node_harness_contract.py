@@ -1033,9 +1033,13 @@ def test_the_exit_code_has_exactly_one_definition():
     ``_WATCHDOG_EXIT_CODE`` unreferenced in the module and two places to change.
     """
     rendered = node_harness._rendered_preload()
+    declaration = f"const EXIT_CODE = {node_harness._WATCHDOG_EXIT_CODE};"
 
-    assert f"const EXIT_CODE = {node_harness._WATCHDOG_EXIT_CODE};" in rendered
-    assert "__EXIT_CODE__" not in rendered
+    # count == 1, not `in`: _rendered_preload() replaces every placeholder, so a
+    # duplicated one would emit two declarations and `in` would still pass.
+    assert rendered.count(declaration) == 1, rendered.count(declaration)
+    assert node_harness._PRELOAD_SOURCE.count('__EXIT_CODE__') == 1
+    assert '__EXIT_CODE__' not in rendered
     assert "= 87;" not in node_harness._PRELOAD_SOURCE, (
         "预载不该再自带一个 87 的字面量，否则和 Python 常量会各改各的"
     )
