@@ -278,7 +278,9 @@ def test_a_caller_without_a_timeout_still_gets_a_finite_script_deadline(monkeypa
     monkeypatch.setattr(node_harness.subprocess, "run", _fake_run)
     run_node_script("node", "process.stdout.write('ok');")
 
-    assert seen["timeout"] is None, "没给 timeout 的调用方不该被凭空加上一个外层 ceiling"
+    assert seen["timeout"] == (
+        node_harness._DEFAULT_WATCHDOG_SECONDS + node_harness._SPAWN_SLACK_SECONDS
+    ), "没给 timeout 的调用方以前连外层 ceiling 都没有，同步卡死能一路跑到 job cap"
     millis = int(node_harness._DEFAULT_WATCHDOG_SECONDS * 1000)
     assert f"}}, {millis});" in seen["script"]
 
@@ -313,14 +315,17 @@ def test_a_spawn_that_stalls_once_is_retried():
 
 
 def test_a_spawn_that_keeps_stalling_reports_both_attempts():
-    """The dual: retrying must not become a way to hide a reproducible stall."""
+    """The dual: retrying must not become a way to hide a reproducible stall.
+
+    A stall only earns a retry when it was completely silent, so a two-attempt
+    run is by construction two silent attempts - and the error has to say that
+    twice over rather than collapsing it into one line.
+    """
     calls = []
 
     def _fake_run(argv, **kwargs):
         calls.append(argv)
-        raise subprocess.TimeoutExpired(
-            argv, kwargs.get("timeout"), output=f"partial-{len(calls)}", stderr=""
-        )
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"), output="", stderr="")
 
     original = node_harness.subprocess.run
     node_harness.subprocess.run = _fake_run
@@ -333,8 +338,11 @@ def test_a_spawn_that_keeps_stalling_reports_both_attempts():
     assert len(calls) == 2, "重试次数必须有界"
     assert isinstance(excinfo.value, NodeHarnessSpawnTimeout)
     message = str(excinfo.value)
-    assert "partial-1" in message and "partial-2" in message, (
-        f"两次尝试各自吐了什么必须跟着错误一起报出来：{message}"
+    assert "attempt 1:" in message and "attempt 2:" in message, (
+        f"两次尝试都得各自列出来：{message}"
+    )
+    assert message.count("stdout=") == 2 and message.count("stderr=") == 2, (
+        f"每次尝试各自吐了什么必须跟着错误一起报出来：{message}"
     )
 
 
@@ -348,6 +356,44 @@ _SHADOWS_THE_TIMERS = (
     "setTimeout(function () {});\n"
     "process.stdout.write('ok');\n"
 )
+
+
+# The other door to the same problem: a harness that aliases window onto the
+# global object (four files do) turns `window.setTimeout = fake` into an
+# overwrite of the real global, which a `globalThis.setTimeout` watchdog would
+# happily pick up.
+_OVERWRITES_THE_GLOBAL_TIMER = (
+    "globalThis.window = globalThis;\n"
+    "window.setTimeout = (callback) => { callback(); return 0; };\n"
+    "window.setInterval = (callback) => { callback(); return 0; };\n"
+    "setTimeout(function () {});\n"
+    "process.stdout.write('ok');\n"
+)
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_harness_that_overwrites_the_global_timer_still_runs_clean(runner):
+    """`global.window = global` makes `window.setTimeout = fake` a real overwrite.
+
+    Reading the timer off ``globalThis`` survives a module-scope ``const``
+    shadow but not this, so the watchdog takes it from ``node:timers`` instead -
+    behind both doors.
+    """
+    node_path = _node_or_skip()
+
+    result = runner(
+        node_path,
+        _OVERWRITES_THE_GLOBAL_TIMER,
+        capture_output=True,
+        check=False,
+        timeout=6,
+    )
+
+    assert result.returncode == 0, (
+        f"被改写掉的全局 setTimeout 不能牵动 watchdog：stderr={result.stderr!r}"
+    )
+    assert result.stdout == "ok"
+    assert result.stderr == ""
 
 
 @pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
@@ -370,3 +416,116 @@ def test_a_harness_that_shadows_the_timers_still_runs_clean(runner):
     )
     assert result.stdout == "ok"
     assert result.stderr == ""
+
+
+# A script the watchdog cannot save: a synchronous block never yields, so the
+# timer it is queued behind can never run. What separates it from a node that
+# never started is that anything written first still reaches the parent.
+_BLOCKS_THE_EVENT_LOOP = (
+    "process.stdout.write('started');\n"
+    "while (true) {}\n"
+)
+
+
+def test_a_synchronously_blocked_script_is_reported_not_retried():
+    """The one in-script hang the watchdog cannot catch must still not be retried.
+
+    ``while (true) {}`` never yields, so the watchdog's own timer never runs and
+    the stall reaches the outer ceiling looking exactly like a spawn stall. It
+    is not one, and a second spawn cannot help. Measured on Windows: what the
+    script wrote before blocking still arrives, so the output is the tell.
+    """
+    node_path = _node_or_skip()
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        # 1s, so the run costs one ceiling (1 + slack) rather than two.
+        run_node_script(
+            node_path, _BLOCKS_THE_EVENT_LOOP, capture_output=True, timeout=1
+        )
+
+    error = excinfo.value
+    assert isinstance(error, NodeHarnessSpawnTimeout)
+    assert len(error.attempts) == 1, (
+        f"卡住但吐了东西的脚本证明它跑起来了，重试没有意义：{error.attempts}"
+    )
+    assert error.attempts[0].stdout == "started", (
+        "同步卡死之前写出去的东西必须还能拿到——这是区分它和「node 没跑起来」的唯一证据"
+    )
+    assert "blocked the event loop synchronously" in str(error), (
+        f"报错不能一口咬定是 node 没跑起来：{error}"
+    )
+
+
+def test_a_silent_stall_is_still_retried():
+    """The dual: with no output there is nothing to conclude, so retry stands."""
+    calls = []
+    ok = subprocess.CompletedProcess(["node"], 0, "ok", "")
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(
+                argv, kwargs.get("timeout"), output="", stderr=""
+            )
+        return ok
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        assert run_node_script("node", "process.stdout.write('ok');", timeout=3) is ok
+    finally:
+        node_harness.subprocess.run = original
+
+    assert len(calls) == 2
+
+
+def test_a_stall_that_only_wrote_to_stderr_is_not_retried():
+    """Evidence is evidence whichever stream it came out of.
+
+    A harness that reports through ``console.error`` leaves its trace on stderr
+    alone; counting only stdout would send that straight back into a pointless
+    retry. Found by mutation - nothing else in this file covered it.
+    """
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        raise subprocess.TimeoutExpired(
+            argv, kwargs.get("timeout"), output="", stderr="started"
+        )
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_node_script("node", "process.stdout.write('ok');", timeout=1)
+    finally:
+        node_harness.subprocess.run = original
+
+    assert len(calls) == 1, "只往 stderr 写的脚本同样证明它跑起来了，不该重试"
+
+
+def test_the_wrapped_error_keeps_the_last_attempt_output_where_callers_look():
+    """``except TimeoutExpired`` reading ``.stdout`` must not regress to None.
+
+    ``subprocess.run`` fills those in after killing the child; wrapping the
+    error in a subclass and forgetting to pass them through would quietly take
+    that away from every caller.
+    """
+
+    def _fake_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(
+            argv, kwargs.get("timeout"), output="partial-out", stderr="partial-err"
+        )
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            run_node_script("node", "process.stdout.write('ok');", timeout=1)
+    finally:
+        node_harness.subprocess.run = original
+
+    assert excinfo.value.stdout == "partial-out"
+    assert excinfo.value.output == "partial-out"
+    assert excinfo.value.stderr == "partial-err"

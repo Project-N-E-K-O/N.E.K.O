@@ -55,10 +55,18 @@ They are told apart by giving the script its own deadline *inside* node.  The
 appended watchdog fires only if something is still holding the event loop open,
 prints what that something is, and exits non-zero -- so the first case fails
 deterministically, with the leaked handle named, and is never retried.  The
-subprocess ceiling then sits a few seconds above that deadline, which means a
-surviving ``TimeoutExpired`` can only be the second case: node never reached
-the watchdog.  That one is retried once, and if the retry stalls too, both
-attempts' output travels with the error instead of being thrown away.
+subprocess ceiling then sits a few seconds above that deadline, so a
+surviving ``TimeoutExpired`` means the watchdog never got to run.
+
+One in-script hang escapes the watchdog: a synchronous block.  ``while (true)
+{}`` never yields, and a timer cannot interrupt the thread it is queued on --
+no amount of retrying will make that script finish.  What separates it from a
+genuine spawn stall is evidence: measured on Windows, whatever the script wrote
+before it blocked still reaches the parent, while a node that never reached the
+script emits nothing at all.  So a stalled attempt that produced output is
+reported straight away, and only a completely silent one is retried.  A
+synchronous block that also printed nothing stays ambiguous, and the error says
+so rather than picking a side.
 """
 
 import os
@@ -81,14 +89,21 @@ _WATCHDOG_EXIT_CODE = 87
 
 _WATCHDOG_TEMPLATE = r"""
 ;(function () {
-  // Everything goes through globalThis on purpose.  Harness scripts routinely
-  // shadow the timer globals at module scope to drive a fake clock
-  // (`const setTimeout = (cb) => cb()`), and an appended watchdog calling the
-  // bare name would get handed that fake -- fired instantly, in one case.  A
-  // `const` shadow is worse still: it puts the bare name in the temporal dead
-  // zone for the whole module, so merely reading it throws.
+  // The timer comes from node:timers, not from a name in scope.  Harness
+  // scripts routinely install a fake clock, and they reach the watchdog through
+  // two different doors: `const setTimeout = (cb) => cb()` shadows the bare name
+  // for the whole module (temporal dead zone included, so merely reading it
+  // throws), and a harness that has done `global.window = global` overwrites the
+  // real thing when it sets `window.setTimeout`.  The module export is behind
+  // both.  Everything else goes through globalThis for the same reason.
   var g = globalThis;
-  var deadline = g.setTimeout(function () {
+  var timer;
+  try {
+    timer = require('node:timers').setTimeout;
+  } catch (err) {
+    timer = g.setTimeout;
+  }
+  var deadline = timer(function () {
     var held;
     try {
       held = typeof g.process.getActiveResourcesInfo === 'function'
@@ -133,31 +148,54 @@ def _excerpt(blob, limit: int = 400) -> str:
 
 
 class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
-    """Both spawn attempts hit the ceiling without node exiting.
+    """The run hit the ceiling without node exiting.
 
     Subclasses ``TimeoutExpired`` so existing ``except`` clauses keep working,
-    and carries what each attempt managed to emit.  Empty output on both means
-    node never reached the first line of the script.
+    and carries what each attempt managed to emit.  One attempt means the stall
+    came with output and was not worth repeating; two means both were silent.
     """
 
     def __init__(self, cmd, timeout, attempts):
-        super().__init__(cmd, timeout)
+        # Carry the last attempt's output on the exception the way
+        # ``subprocess.run`` would have: a caller that catches
+        # ``TimeoutExpired`` and reads ``.stdout``/``.stderr`` (or ``.output``)
+        # must not get None just because the launcher wrapped the error.
+        last = attempts[-1] if attempts else None
+        super().__init__(
+            cmd,
+            timeout,
+            output=getattr(last, "stdout", None),
+            stderr=getattr(last, "stderr", None),
+        )
         self.attempts = list(attempts)
 
     def __str__(self) -> str:
-        lines = [
-            super().__str__(),
-            "",
-            "Both attempts stalled before node exited, and the in-script "
-            "watchdog never fired -- so the script itself was not the thing "
-            "that hung; the node process never got far enough to arm it.",
-        ]
+        diagnosis = (
+            "Stalled before node exited, and the in-script watchdog never "
+            "fired. Either node never reached the script (process creation, "
+            "reading it off disk, V8 bootstrap), or the script blocked the "
+            "event loop synchronously -- a timer cannot interrupt that. Each "
+            "attempt's output below is the evidence: anything at all means the "
+            "script did run, and nothing at all means it probably never did."
+        )
+        lines = [super().__str__(), "", diagnosis]
         for index, attempt in enumerate(self.attempts, 1):
             lines.append(
                 f"  attempt {index}: stdout={_excerpt(attempt.stdout)} "
                 f"stderr={_excerpt(attempt.stderr)}"
             )
         return "\n".join(lines)
+
+
+def _emitted_anything(exc: subprocess.TimeoutExpired) -> bool:
+    """Did this stalled attempt prove the script ran?
+
+    ``subprocess.run`` kills the child on timeout and then collects whatever it
+    had already written, so this is real evidence rather than a guess.  It is
+    one-directional: output means the script ran, silence does not prove it did
+    not, which is why silence is what gets the retry.
+    """
+    return bool(exc.stdout) or bool(exc.stderr)
 
 
 def _utf8(kwargs: dict) -> dict:
@@ -174,13 +212,13 @@ def _budgeted(kwargs: dict) -> tuple[dict, float]:
     The caller's ``timeout`` stays the budget the *script* gets; the ceiling
     handed to ``subprocess.run`` is raised by the slack, so a script that
     overruns is killed from inside node with a diagnosis rather than from
-    outside with none.
+    outside with none.  A caller that passes no timeout gets the default
+    deadline and a ceiling to match: it used to get neither, which left a
+    synchronously blocked script running until the job cap.
     """
     merged = dict(kwargs)
     timeout = merged.get("timeout")
-    if timeout is None:
-        return merged, _DEFAULT_WATCHDOG_SECONDS
-    watchdog = float(timeout)
+    watchdog = _DEFAULT_WATCHDOG_SECONDS if timeout is None else float(timeout)
     merged["timeout"] = watchdog + _SPAWN_SLACK_SECONDS
     return merged, watchdog
 
@@ -216,7 +254,7 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):
             return subprocess.run(argv, **run_kwargs)
         except subprocess.TimeoutExpired as exc:
             attempts.append(exc)
-            if attempt == 2:
+            if attempt == 2 or _emitted_anything(exc):
                 raise NodeHarnessSpawnTimeout(
                     cmd_for_error, exc.timeout, attempts
                 ) from exc
@@ -245,11 +283,12 @@ def run_node_script(node_path: str, script: str, **kwargs) -> subprocess.Complet
         return _run_retrying_spawn_stalls(_attempt, [node_path, "<temp script>"])
     finally:
         for path in staged:
-            # Best effort: a killed node on Windows can still hold the file for
-            # a moment, and losing a temp file must not mask the real error.
             try:
                 os.unlink(path)
             except OSError:
+                # Best effort on purpose: a killed node on Windows can still
+                # hold the file for a moment, and a leaked temp file must not
+                # replace the real error with a cleanup one.
                 pass
 
 
