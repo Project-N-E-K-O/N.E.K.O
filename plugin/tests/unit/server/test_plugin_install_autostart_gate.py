@@ -666,3 +666,84 @@ async def test_a_lost_install_gate_is_reported_in_the_result(
     assert "stuck" in str(result.get("autostart_gate_warning", "")), (
         f"登记失败没有出现在安装结果里，调用方会以为这个插件被拦住了：{result}"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_plain_install_is_refused_when_the_gate_cannot_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gate before promoting, so a lost write can still be refused.
+
+    Marking after ``_install_sync`` meant a failed write could only be reported
+    as a warning — the plugin was already on disk, and the next startup reads a
+    missing pending record as approval (coderabbit / greptile). The plan carries
+    the manifest plugin id before anything is promoted, so the gate can go
+    first.
+
+    Mutation: move the mark back below ``_install_sync``.
+    """
+    from plugin.server.domain.errors import ServerDomainError
+
+    monkeypatch.setattr(cli_service, "get_install_source_manager", lambda: None)
+    monkeypatch.setattr(cli_service, "is_autostart_approved", lambda plugin_id: True)
+    monkeypatch.setattr(cli_service, "mark_autostart_pending", lambda plugin_id: False)
+
+    installed: list[str] = []
+    service = cli_service.PluginCliService()
+
+    async def _plan_install(**_kwargs):
+        return {"action": "install", "plugin_id": "newcomer"}
+
+    def _install_sync(**_kwargs):
+        installed.append("ran")
+        return {"installed_plugins": [{"target_plugin_id": "newcomer"}]}
+
+    monkeypatch.setattr(service, "plan_install", _plan_install)
+    monkeypatch.setattr(service, "_install_sync", _install_sync)
+
+    with pytest.raises(ServerDomainError) as excinfo:
+        await service.install(package="whatever.neko-plugin")
+
+    assert excinfo.value.code == "PLUGIN_AUTOSTART_GATE_UNAVAILABLE"
+    assert installed == [], (
+        "闸门写不进盘却已经把插件提升上去了，拒绝就不再干净"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_install_restores_the_previous_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed install must not leave a pending record behind.
+
+    The gate now runs before promotion, so an install that then fails would
+    otherwise strand a record that ambushes whatever later takes that id.
+
+    Mutation: drop the ``clear_autostart_pending`` call from the except branch.
+    """
+    monkeypatch.setattr(cli_service, "get_install_source_manager", lambda: None)
+    monkeypatch.setattr(cli_service, "is_autostart_approved", lambda plugin_id: True)
+    monkeypatch.setattr(cli_service, "mark_autostart_pending", lambda plugin_id: True)
+
+    restored: list[str] = []
+    monkeypatch.setattr(
+        cli_service, "clear_autostart_pending", lambda plugin_id: restored.append(plugin_id)
+    )
+
+    service = cli_service.PluginCliService()
+
+    async def _plan_install(**_kwargs):
+        return {"action": "install", "plugin_id": "doomed"}
+
+    def _install_sync(**_kwargs):
+        raise RuntimeError("install blew up")
+
+    monkeypatch.setattr(service, "plan_install", _plan_install)
+    monkeypatch.setattr(service, "_install_sync", _install_sync)
+
+    with pytest.raises(RuntimeError):
+        await service.install(package="whatever.neko-plugin")
+
+    assert restored == ["doomed"], (
+        f"安装失败后没有还原批准状态，这条记录会误伤将来占用同一个 id 的插件：{restored}"
+    )

@@ -353,24 +353,52 @@ class PluginCliService:
                 details=plan_dict,
             )
         if action == "install":
-            result = await asyncio.to_thread(
-                self._install_sync,
-                package=package,
-                plugins_root=plugins_root,
-                profiles_root=profiles_root,
-                on_conflict=on_conflict,
-                use_staging=use_staging,
-                forced_directory_name=forced_directory_name,
-                _allow_external_profiles_root=_allow_external_profiles_root,
-            )
+            # 登记排在提升之前，和覆盖安装那条路同一个形状。装完再登记的话，写盘
+            # 失败时插件已经在盘上了，只能报个 warning——而下次启动会把"没有待批准
+            # 记录"当成已批准，第三方代码就在用户首次启动之前跑起来了（coderabbit
+            # / greptile）。plan_dict 的 plugin_id 读自包内 manifest，提升之前就有。
+            gate_plugin_id = str(plan_dict.get("plugin_id") or "").strip()
+            gate_was_approved = True
+            if gate_plugin_id:
+                gate_was_approved = await asyncio.to_thread(
+                    is_autostart_approved, gate_plugin_id
+                )
+                if not await asyncio.to_thread(mark_autostart_pending, gate_plugin_id):
+                    raise ServerDomainError(
+                        code="PLUGIN_AUTOSTART_GATE_UNAVAILABLE",
+                        message=(
+                            "cannot record the plugin as awaiting approval; "
+                            "refusing to install code that would autostart "
+                            "unapproved"
+                        ),
+                        status_code=500,
+                        details={"plugin_id": gate_plugin_id},
+                    )
+            try:
+                result = await asyncio.to_thread(
+                    self._install_sync,
+                    package=package,
+                    plugins_root=plugins_root,
+                    profiles_root=profiles_root,
+                    on_conflict=on_conflict,
+                    use_staging=use_staging,
+                    forced_directory_name=forced_directory_name,
+                    _allow_external_profiles_root=_allow_external_profiles_root,
+                )
+            except BaseException:
+                # 安装没成，把批准状态原样放回去——否则一次失败的安装会给这个 id
+                # 留下一条待批准记录，将来同 id 的插件会被它误伤。
+                if gate_plugin_id and gate_was_approved:
+                    await asyncio.to_thread(clear_autostart_pending, gate_plugin_id)
+                raise
             # 挂在 install() 的成功出口上，不是挂在某一条来源登记路径上。
             # 上传安装（upload_and_install）自己登记来源、不走
             # _record_requested_install_source，把钩子放在那里等于对上传来的
             # 插件完全不生效——而那正是最需要这道闸的一条路（greptile）。
             #
-            # 这里的插件已经落盘了，不像覆盖路径那样还能拒绝。所以登记失败时不
-            # 假装无事发生：把它挂进结果里，让调用方看得见"这个插件没被拦住"
-            # （greptile）。
+            # 再按安装结果里的 manifest id 登记一次。上面用的是 plan 的 id，而
+            # 目录名和 [plugin].id 允许不一致；两次都是幂等的。这一次已经在盘上了，
+            # 拒绝不了，所以失败时挂 warning 而不是抛。
             unrecorded = await asyncio.to_thread(
                 _mark_new_install_awaiting_autostart, result
             )
@@ -833,7 +861,19 @@ class PluginCliService:
             # 直接跑起来（greptile）。所以看盘不看意图：目录还在就保持拦截。
             override_removed = not await asyncio.to_thread(target_dir.exists)
             if override_was_approved and override_removed:
-                await asyncio.to_thread(clear_autostart_pending, plan.plugin_id)
+                if not await asyncio.to_thread(
+                    clear_autostart_pending, plan.plugin_id
+                ):
+                    # 只能记一笔。这里已经在处理另一个异常，改抛"批准还原失败"会
+                    # 把真正的失败原因换掉，而那才是用户要看的东西（greptile 建议
+                    # 传播，我不采纳这一半）。后果有界且不涉安全：恢复出来的内置
+                    # 插件这一轮不自启，用户手动启动一次就会重试这次写入。
+                    logger.error(
+                        "override rollback could not restore the autostart "
+                        "approval for plugin_id={}; the restored builtin will not "
+                        "autostart until it is started once by hand",
+                        plan.plugin_id,
+                    )
             raise
         finally:
             await asyncio.to_thread(self._cleanup_builtin_override_staging_sync, staged)
