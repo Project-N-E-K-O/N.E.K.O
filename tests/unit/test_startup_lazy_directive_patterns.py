@@ -132,3 +132,55 @@ def test_warmup_touches_the_attribute_not_just_the_import(
     touched.clear()
     module_warmup._warm_one("neko_fake_warm_target")
     assert touched == [], f"无属性条目不该访问任何属性，却碰了 {touched}"
+
+
+def _check(source: str):
+    """Run the startup-chain gate over one snippet of source."""
+    import ast
+
+    from scripts.check_startup_import_lazy import check_source
+
+    return check_source(Path("app/fake_module.py"), source, ast.parse(source))
+
+
+@pytest.mark.unit
+def test_the_startup_gate_catches_a_module_scope_import_of_the_lazy_symbol() -> None:
+    """The gate knew module names; this symbol needed it to know names too.
+
+    ``check_startup_import_lazy`` bans heavy *modules* from the startup import
+    chain. This change created the same class of regression in a shape the gate
+    could not see: a cheap module exporting one name whose *evaluation* costs
+    294 ms. Importing that name at module scope puts the cost straight back
+    before the port binds, and nothing would have gone red.
+
+    Banning the whole module is not an option -- both production importers of
+    ``config.prompts.prompts_directives`` legitimately pull other, cheap names
+    from it, so a module-level ban would fail main immediately.
+
+    Mutation: drop the ``BANNED_SYMBOLS`` lookup, or make it a prefix match.
+    """
+    offending = "from config.prompts.prompts_directives import DIRECTIVE_PATTERNS\n"
+    violations = _check(offending)
+    assert len(violations) == 1, f"gate missed the module-scope import: {violations}"
+    assert "DIRECTIVE_PATTERNS" in violations[0][2]
+
+    # 同一个模块里的其它名字必须放行——生产的两处 importer 就是这么用的，规则一宽
+    # 就会立刻把 main 打红。
+    innocent = "from config.prompts.prompts_directives import extract_directives\n"
+    assert _check(innocent) == [], "规则太宽，合法的轻量导入被打红了"
+
+    # 函数体内的导入正是被认可的惰性写法。
+    lazy = (
+        "def f():\n"
+        "    from config.prompts.prompts_directives import DIRECTIVE_PATTERNS\n"
+        "    return DIRECTIVE_PATTERNS\n"
+    )
+    assert _check(lazy) == [], "函数内导入被误判——那是这条规则要引导人去写的形式"
+
+    # 逃生阀照旧生效。
+    escaped = (
+        "from config.prompts.prompts_directives import (  # noqa: STARTUP_LAZY_IMPORT\n"
+        "    DIRECTIVE_PATTERNS,\n"
+        ")\n"
+    )
+    assert _check(escaped) == [], "noqa 逃生阀对符号规则失效了"

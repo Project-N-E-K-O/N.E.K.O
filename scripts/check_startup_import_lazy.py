@@ -137,6 +137,22 @@ BANNED_MODULES: dict[str, str] = {
 }
 
 
+# (module, symbol) -> where its sanctioned lazy home is.
+#
+# BANNED_MODULES 只认模块名，看不见符号。但同一类回归也可以由一个**符号**造成：
+# 一个模块本身很轻，却导出一个求值时才昂贵的惰性名字，任何人在模块作用域取它就
+# 把代价搬回了启动链——而 import 那个模块仍然是合法且必要的（同一个文件里还有别的
+# 轻量名字要用），所以整模块封禁会把 main 打红，只能按符号封。
+BANNED_SYMBOLS: dict[tuple[str, str], str] = {
+    # 21 条封禁话题模板的 compile，实测 294-298 ms。模块 __getattr__ 里惰性求值，
+    # 预热在 utils/module_warmup.py 的表里。模块作用域取这个名字 = 回到 bind 之前。
+    ("config.prompts.prompts_directives", "DIRECTIVE_PATTERNS"): (
+        "evaluated on first access via the module __getattr__; warmed in "
+        "utils/module_warmup.py"
+    ),
+}
+
+
 def _banned_key(module_name: str | None) -> str | None:
     if not module_name:
         return None
@@ -207,6 +223,7 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
     suppressed = _noqa_lines(source)
     for stmt in _iter_module_scope_stmts(tree.body):
         found: list[tuple[str, str]] = []  # (banned key, import text)
+        symbols: list[tuple[str, str, str]] = []  # (qualified name, home, import text)
         if isinstance(stmt, ast.Import):
             for alias in stmt.names:
                 key = _banned_key(alias.name)
@@ -225,10 +242,40 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
                     alias_key = _banned_key(f"{stmt.module}.{alias.name}")
                     if alias_key is not None:
                         found.append((alias_key, f"from {stmt.module} import {alias.name}"))
+            if stmt.module:
+                # 精确 (模块, 符号) 对，不做前缀匹配：同一个模块里的其它名字都是
+                # 合法导入，宽一点就会把 main 打红。
+                for alias in stmt.names:
+                    home = BANNED_SYMBOLS.get((stmt.module, alias.name))
+                    if home is not None:
+                        symbols.append(
+                            (
+                                f"{stmt.module}.{alias.name}",
+                                home,
+                                f"from {stmt.module} import {alias.name}",
+                            )
+                        )
         # noqa on any line of a multiline import suppresses the statement.
         end_lineno = getattr(stmt, "end_lineno", None) or stmt.lineno
+        stmt_suppressed = any(
+            ln in suppressed for ln in range(stmt.lineno, end_lineno + 1)
+        )
+        for qualified, home, text in symbols:
+            if stmt_suppressed:
+                continue
+            violations.append(
+                (
+                    stmt.lineno,
+                    stmt.col_offset + 1,
+                    f"`{text}` at module scope forces `{qualified}` to be "
+                    f"evaluated at import time, which puts its cost back on the "
+                    f"startup chain before any port binds. Import the module and "
+                    f"read the name inside the function that needs it, or call "
+                    f"the accessor that wraps it. Sanctioned home: {home}.",
+                )
+            )
         for key, text in found:
-            if any(ln in suppressed for ln in range(stmt.lineno, end_lineno + 1)):
+            if stmt_suppressed:
                 continue
             violations.append(
                 (
