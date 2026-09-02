@@ -164,10 +164,12 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
     def __str__(self) -> str:
         if self.started:
             diagnosis = (
-                "The script ran and then stalled without the watchdog firing, "
-                "which a timer cannot interrupt: it blocked the event loop "
-                "synchronously. Not retried -- a second run would block the "
-                "same way."
+                "node reached the harness script and then stalled without "
+                "the watchdog firing. Either the script's top level blocked "
+                "the event loop or compiling it did -- a timer cannot "
+                "interrupt either, and from out here they look the same. Not "
+                "retried: a second run stalls the same way, and repeating a "
+                "script that may already have run is the worse mistake."
             )
         else:
             diagnosis = (
@@ -371,9 +373,18 @@ if (deadlineMs > 0) {
       startedAt = millisNow();
       Module.prototype._compile = originalCompile;
 
-      // Tell the launcher the script really started.  Best effort: if this
-      // cannot be written the launcher falls back to judging by output, which
-      // is where it was before.
+      // Tell the launcher node reached the script.  This is written before
+      // `originalCompile` rather than after, and the difference matters:
+      // `_compile` both compiles the module *and* runs it, so "after" would
+      // mean "after the whole top level", and a script that blocks the event
+      // loop would never mark at all -- it would look like a spawn stall and
+      // be retried, which is the one thing that must not happen to a script
+      // that may already have had effects.  The cost is that a stall in
+      // compilation itself also counts as reached; the error message says so
+      // rather than claiming to know which it was.
+      //
+      // Best effort: if this cannot be written the launcher falls back to
+      // judging by output, which is where it was before.
       try {
         const marker = nativeProcess.env.NEKO_NODE_HARNESS_STARTED_MARKER;
         if (marker) writeFileSync(marker, '1');

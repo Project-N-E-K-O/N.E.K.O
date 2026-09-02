@@ -694,8 +694,11 @@ def test_a_synchronously_blocked_script_is_reported_not_retried():
     assert _as_text(error.attempts[0].stdout) == "started", (
         "同步卡死之前写出去的东西必须还能拿到——这是区分它和「node 没跑起来」的唯一证据"
     )
-    assert "blocked the event loop synchronously" in str(error), (
+    assert "reached the harness script" in str(error), (
         f"报错不能一口咬定是 node 没跑起来：{error}"
+    )
+    assert "blocked the event loop or compiling it did" in str(error), (
+        f"也不能反过来断言一定是同步阻塞——标记只证明到过脚本：{error}"
     )
 
 
@@ -1097,7 +1100,41 @@ def test_a_stall_after_the_script_started_is_not_retried_even_with_no_output():
         f"顺带把它已经做过的事再做一遍：{len(calls)} 次"
     )
     assert excinfo.value.started is True
-    assert "blocked the event loop synchronously" in str(excinfo.value)
+    message = str(excinfo.value)
+    # The marker is written before the module is compiled *and run*, so a stall
+    # in compilation reaches here too. The message must not claim to know which.
+    assert "blocked the event loop or compiling it did" in message, message
+    assert "reached the harness script" in message
+
+
+def test_a_started_stall_does_not_claim_to_know_which_kind_it_was():
+    """The marker proves node reached the script, and nothing finer.
+
+    It is written before ``_compile``, which compiles *and* runs the module --
+    deliberately, because writing it after would leave a synchronously blocked
+    script unmarked and get it retried. The price is that a stall in
+    compilation lands here too, so the message offers both readings instead of
+    asserting the one it cannot distinguish.
+    """
+    def _fake_run(argv, **kwargs):
+        Path(kwargs["env"][node_harness._MARKER_ENV]).write_text("1", encoding="utf-8")
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"), output="", stderr="")
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            run_node_script(
+                "node", "process.stdout.write('ok');", capture_output=True, timeout=1
+            )
+    finally:
+        node_harness.subprocess.run = original
+
+    message = str(excinfo.value)
+    assert "compiling it did" in message
+    assert "blocked the event loop synchronously." not in message, (
+        f"这句话断言了我们分辨不出来的事：{message}"
+    )
 
 
 def test_the_error_says_which_of_the_two_stalls_it_was():
