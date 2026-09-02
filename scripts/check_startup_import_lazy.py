@@ -317,10 +317,11 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
     reported_symbols: set[tuple[int, int, str]] = set()
     for stmt in _iter_module_scope_stmts(tree.body):
         found: list[tuple[str, str]] = []  # (banned key, import text)
-        # (qualified name, home, text, lineno, col) —— 位置取**读取点自身**，不是
+        # (qualified name, home, text, lineno, col, whole_stmt) —— 位置取**读取点
+        # 自身**，不是
         # 外层语句：一个嵌在模块作用域 if/try/class 里的读取，会被外层容器和内层
         # 语句各走一遍，按语句定位就会报两条。
-        symbols: list[tuple[str, str, str, int, int]] = []
+        symbols: list[tuple[str, str, str, int, int, bool]] = []
         if isinstance(stmt, ast.Import):
             for alias in stmt.names:
                 key = _banned_key(alias.name)
@@ -362,6 +363,7 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
                                     f"from {stmt.module} import *",
                                     stmt.lineno,
                                     stmt.col_offset,
+                                    True,
                                 )
                             )
                         continue
@@ -374,6 +376,7 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
                                 f"from {stmt.module} import {alias.name}",
                                 stmt.lineno,
                                 stmt.col_offset,
+                                True,
                             )
                         )
         # 属性读法：`import ... as d` + 模块作用域的 `d.DIRECTIVE_PATTERNS`。
@@ -387,14 +390,21 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
                 continue
             hit = _banned_symbol_read(dotted, aliases)
             if hit is not None:
-                symbols.append((hit[0], hit[1], dotted, node.lineno, node.col_offset))
+                symbols.append(
+                    (hit[0], hit[1], dotted, node.lineno, node.col_offset, False)
+                )
         # noqa on any line of a multiline import suppresses the statement.
         end_lineno = getattr(stmt, "end_lineno", None) or stmt.lineno
         stmt_suppressed = any(
             ln in suppressed for ln in range(stmt.lineno, end_lineno + 1)
         )
-        for qualified, home, text, lineno, col in symbols:
-            if stmt_suppressed or lineno in suppressed:
+        for qualified, home, text, lineno, col, whole_stmt in symbols:
+            # 整条语句的 noqa 范围只给 import 语句用——多行 import 上 noqa 写在哪一行
+            # 都该算数。属性读取不能用它：一个 FunctionDef 的范围**覆盖整个函数体**，
+            # 于是函数体里随便一句 noqa 就能压掉装饰器/默认参数里的 import 期读取；
+            # if 语句同理，体里的 noqa 会压掉判断表达式里的读取（CodeRabbit）。
+            # 那些只认读取点自己那一行。
+            if lineno in suppressed or (whole_stmt and stmt_suppressed):
                 continue
             if (lineno, col, qualified) in reported_symbols:
                 continue

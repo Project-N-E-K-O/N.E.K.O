@@ -369,3 +369,48 @@ def test_the_startup_gate_catches_a_wildcard_import_of_the_lazy_module() -> None
         "from config.prompts.prompts_directives import *  # noqa: STARTUP_LAZY_IMPORT\n"
     )
     assert _check(escaped) == [], "noqa 对通配规则失效"
+
+
+@pytest.mark.unit
+def test_a_nested_noqa_cannot_suppress_an_import_time_read() -> None:
+    """The statement line range is the wrong scope for an expression read.
+
+    A ``FunctionDef``'s range covers the whole body, so a ``noqa`` anywhere
+    inside it was suppressing reads in the decorator and default arguments --
+    which do run at import time. An ``if`` had the same problem: a ``noqa`` in
+    the body suppressed a read in the test expression (CodeRabbit).
+
+    The full-statement range is still right for imports, where a ``noqa`` on any
+    line of a multi-line import should count.
+
+    Mutation: go back to one shared suppression scope for both kinds.
+    """
+    decorated = (
+        "import config.prompts.prompts_directives as d\n"
+        "@deco(d.DIRECTIVE_PATTERNS)\n"
+        "def f():\n"
+        "    x = 1  # noqa: STARTUP_LAZY_IMPORT\n"
+    )
+    assert len(_check(decorated)) == 1, "函数体里的 noqa 压掉了装饰器里的 import 期读取"
+
+    in_if_test = (
+        "import config.prompts.prompts_directives as d\n"
+        "if d.DIRECTIVE_PATTERNS:\n"
+        "    pass  # noqa: STARTUP_LAZY_IMPORT\n"
+    )
+    assert len(_check(in_if_test)) == 1, "if 体里的 noqa 压掉了判断表达式里的读取"
+
+    # 写在读取那一行的 noqa 必须照常生效——否则这条规则就没有逃生阀了。
+    on_the_line = (
+        "import config.prompts.prompts_directives as d\n"
+        "P = d.DIRECTIVE_PATTERNS  # noqa: STARTUP_LAZY_IMPORT\n"
+    )
+    assert _check(on_the_line) == [], "读取点自己那行的 noqa 失效了"
+
+    # 多行 import 仍然整条语句范围生效。
+    multiline = (
+        "from config.prompts.prompts_directives import (  # noqa: STARTUP_LAZY_IMPORT\n"
+        "    DIRECTIVE_PATTERNS,\n"
+        ")\n"
+    )
+    assert _check(multiline) == [], "多行 import 的 noqa 范围被收窄了"
