@@ -1038,39 +1038,6 @@ async def test_install_rollback_releases_an_id_it_left_clean(
         autostart_approvals._reset_cache_for_testing()
 
 
-def test_uninstall_rollback_restores_the_pending_record() -> None:
-    """A rolled-back uninstall must put the gate back with the files.
-
-    The clear happens before the last pre-commit steps, and
-    ``_rollback_precommit`` restores the plugin's files and preferences without
-    knowing the approval record was touched. A plugin the user had never
-    started comes back approved and autostarts at the next boot (codex).
-
-    Restoring is conditional on the directory actually being back: if the code
-    really is gone, a re-marked record would ambush whatever later takes the id
-    — the very thing clearing it was for.
-
-    Mutation: drop the ``mark_autostart_pending`` call from the except branch.
-    """
-    import inspect
-
-    from plugin.server.application.plugins.installation_transactions import uninstall
-
-    source = inspect.getsource(uninstall.uninstall_plugin)
-    clear_at = source.find("clear_autostart_pending, plugin_id")
-    except_at = source.find("except BaseException as exc:")
-    restore_at = source.find("mark_autostart_pending, plugin_id")
-    assert -1 not in (clear_at, except_at, restore_at), (
-        "卸载回滚没有把待批准记录放回去：一次失败的卸载会把没批准过的插件变成已批准"
-    )
-    assert clear_at < except_at < restore_at, (
-        "还原必须发生在回滚分支里，写在主路径上等于把刚清掉的记录又加回去"
-    )
-    assert "if autostart_was_pending and await asyncio.to_thread(plugin_dir.exists)" in source, (
-        "还原没有看盘：代码真没了却补一条记录，将来占用这个 id 的插件会被它误伤"
-    )
-
-
 def test_a_failed_probe_removes_metadata_copied_from_the_source_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1182,3 +1149,208 @@ def test_a_lost_pending_restore_shows_up_in_the_uninstall_result() -> None:
     assert "exc.details.update(gate_details)" in source, (
         "直接透传的 UninstallPluginError 没有带上补偿失败，那条路占了卸载失败的大头"
     )
+
+
+async def _drive_failed_uninstall(
+    monkeypatch: pytest.MonkeyPatch,
+    plugin_dir: Path,
+    plugin_id: str,
+    *,
+    seed_pending: bool,
+    code_survives_the_failure: bool = True,
+) -> tuple[dict, Exception]:
+    """Run ``uninstall_plugin`` into its pre-commit rollback branch.
+
+    Everything before the commit is stubbed; the parts under test — clearing the
+    pending record, and putting it back when the rollback restores the plugin —
+    are the real code.
+    """
+    from plugin.server.application.plugins.installation_transactions import uninstall
+
+    store: dict[str, object] = {}
+
+    class _FakeConfigManager:
+        def load_json_config(self, name):
+            if name not in store:
+                raise FileNotFoundError(name)
+            return store[name]
+
+        def save_json_config(self, name, payload):
+            store[name] = payload
+
+    import utils.config_manager as config_manager_module
+
+    from plugin.server.infrastructure import autostart_approvals
+
+    monkeypatch.setattr(
+        config_manager_module, "get_config_manager", _FakeConfigManager
+    )
+    autostart_approvals._reset_cache_for_testing()
+    if seed_pending:
+        # 卸载之前这个插件从没被用户启动过。
+        assert autostart_approvals.mark_autostart_pending(plugin_id)
+
+    class _Manager:
+        def load(self):
+            return None
+
+        def mark_removed(self, *, directory_path):
+            return None
+
+        def restore_entry_for_rollback(self, entry):
+            return None
+
+    config_path = plugin_dir / "plugin.toml"
+
+    def _noop(*_args, **_kwargs):
+        return None
+
+    async def _anoop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(uninstall, "ensure_plugin_exec_state_roots_separated", _noop)
+    monkeypatch.setattr(
+        uninstall, "_get_plugin_meta_sync", lambda _pid: {"id": plugin_id}
+    )
+    monkeypatch.setattr(
+        uninstall, "_resolve_plugin_config_path_sync", lambda _pid, _meta: config_path
+    )
+    monkeypatch.setattr(uninstall, "_path_within_plugin_roots_sync", lambda _p: True)
+    monkeypatch.setattr(uninstall, "get_install_source_manager", _Manager)
+    monkeypatch.setattr(uninstall, "require_uninstall_ownership", _noop)
+    monkeypatch.setattr(uninstall, "_registry_refresh_target", _noop)
+    monkeypatch.setattr(uninstall, "_plugin_is_running_sync", lambda _pid: False)
+    monkeypatch.setattr(uninstall, "_snapshot_runtime_preference", _noop)
+    monkeypatch.setattr(uninstall, "_stage_orphaned_package_profile_sync", _noop)
+    monkeypatch.setattr(uninstall, "_stage_plugin_code_sync", _noop)
+    monkeypatch.setattr(uninstall, "_remove_runtime_metadata_sync", _noop)
+    monkeypatch.setattr(uninstall, "_refresh_registry", _anoop)
+    monkeypatch.setattr(uninstall, "clear_runtime_override", _noop)
+
+    def _commit_fails(_staged):
+        if not code_survives_the_failure:
+            # 半途提交：代码已经删掉了，收尾才炸。回滚拿不回任何东西。
+            import shutil
+
+            shutil.rmtree(plugin_dir, ignore_errors=True)
+        raise RuntimeError("commit blew up after the approval record was cleared")
+
+    monkeypatch.setattr(uninstall, "_commit_staged_plugin_code_sync", _commit_fails)
+
+    async def _rollback(**_kwargs):
+        # 真实回滚会把文件放回去；这里文件根本没被删掉，等价于恢复成功。
+        return uninstall._RollbackOutcome(
+            filesystem_rollback="restored",
+            runtime_restart="not_needed",
+            preference_restored=True,
+        )
+
+    monkeypatch.setattr(uninstall, "_rollback_precommit", _rollback)
+
+    with pytest.raises(uninstall.UninstallPluginError) as excinfo:
+        await uninstall.uninstall_plugin(plugin_id)
+    return store, excinfo.value
+
+
+@pytest.mark.asyncio
+async def test_a_rolled_back_uninstall_puts_the_pending_record_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Behavioural: the plugin comes back, so its gate comes back with it.
+
+    The record is cleared partway through the pre-commit steps. When a later
+    step fails, ``_rollback_precommit`` restores the plugin's files and
+    preferences and knows nothing about the approval record — a plugin the user
+    had never started would come back approved and autostart at the next boot
+    (codex).
+
+    This replaces a source-text guard that only pinned the order of a few
+    strings; renaming a variable broke it and a real inversion could slip past
+    it (coderabbit).
+
+    Mutation: drop the ``mark_autostart_pending`` call from the except branch.
+    """
+    from plugin.server.infrastructure import autostart_approvals
+
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.toml").write_text(
+        "\n".join(["[plugin]", 'id = "demo"', ""]), encoding="utf-8"
+    )
+    try:
+        await _drive_failed_uninstall(
+            monkeypatch, plugin_dir, "demo", seed_pending=True
+        )
+        assert not autostart_approvals.is_autostart_approved("demo"), (
+            "回滚把插件放回来了，批准位却没跟着回来：一个用户从没启动过的插件"
+            "在一次失败的卸载之后变成了已批准"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()
+
+
+@pytest.mark.asyncio
+async def test_a_rolled_back_uninstall_leaves_a_started_plugin_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The restore is conditional on the record having been there.
+
+    A plugin the user had already started carries no pending record. Writing one
+    during a rollback would take away an autostart the user had earned.
+
+    Mutation: re-mark unconditionally, ignoring ``autostart_was_pending``.
+    """
+    from plugin.server.infrastructure import autostart_approvals
+
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.toml").write_text(
+        "\n".join(["[plugin]", 'id = "demo"', ""]), encoding="utf-8"
+    )
+    try:
+        await _drive_failed_uninstall(
+            monkeypatch, plugin_dir, "demo", seed_pending=False
+        )
+        assert autostart_approvals.is_autostart_approved("demo"), (
+            "用户早就启动过的插件在一次失败的卸载之后被拦下来了"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()
+
+
+@pytest.mark.asyncio
+async def test_a_rollback_that_lost_the_code_writes_no_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When the code really is gone, the gate must not be re-armed.
+
+    A pending record outlives the code it was written for: whatever later takes
+    that plugin id inherits it and has to be started by hand once, for a plugin
+    the user never installed under that id. Same judgement as everywhere else in
+    this gate — look at the disk, not at what we intended.
+
+    Mutation: re-mark on ``autostart_was_pending`` alone, without checking that
+    the directory came back.
+    """
+    from plugin.server.infrastructure import autostart_approvals
+
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.toml").write_text(
+        "\n".join(["[plugin]", 'id = "demo"', ""]), encoding="utf-8"
+    )
+    try:
+        await _drive_failed_uninstall(
+            monkeypatch,
+            plugin_dir,
+            "demo",
+            seed_pending=True,
+            code_survives_the_failure=False,
+        )
+        assert not plugin_dir.exists(), "前提没成立：这个用例要的是代码真的没了"
+        assert autostart_approvals.is_autostart_approved("demo"), (
+            "代码已经不在盘上了还补了一条待批准记录：将来占用这个 id 的插件"
+            "会被它误伤，第一次得手动启动"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()
