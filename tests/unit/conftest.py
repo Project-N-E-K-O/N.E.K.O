@@ -34,6 +34,27 @@ def _needs_icebreaker_route_reset(request) -> bool:
     return module_name.startswith("test_icebreaker_") or request.node.get_closest_marker("icebreaker_route") is not None
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _release_repo_ast_cache():
+    """Drop the shared repo AST cache when a test module finishes.
+
+    tests/repo_ast_cache.py exists because several structural guards each walk
+    and re-parse every .py file in the repo; parsing the tree once costs about
+    5s, and test_root_state_write_lock.py alone was paying it five times.
+
+    Holding those trees is not free: a process that has scanned this repo carries
+    737 MB of RSS for them (measured). Under `-n auto` on a 4-vCPU runner, four
+    workers each retaining that for the rest of the session is memory the job
+    cannot spare. The saving comes from guards *within one module* sharing a
+    parse, so releasing at module teardown keeps all of it and lets the peak fall
+    back between modules instead of accumulating.
+    """
+    yield
+    from tests import repo_ast_cache
+
+    repo_ast_cache.clear()
+
+
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
     shared_state = sys.modules.get("main_routers.shared_state")

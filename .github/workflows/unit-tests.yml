@@ -37,6 +37,11 @@ jobs:
     # platform. It is also where the command-line length limit that silently
     # broke the cat-mind harness lives, so the guard against it stays honest.
     runs-on: windows-latest
+    # Measured on this runner, not extrapolated from a dev box: the
+    # parallelised run takes 14m32s (4m33s of it before the first test, while
+    # each worker imports the app and collects all 24621 tests), against 19m11s
+    # serial. A 15-minute cap killed it one second before the summary printed.
+    # 25 stays until the shard-per-job change lands.
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
@@ -89,7 +94,22 @@ jobs:
         # assertion that reads the built bundle skips. build-desktop.yml
         # rebuilds and verifies that artifact on every run, which is the right
         # place for it — a stale local bundle would only produce a false green.
-        run: uv run pytest tests/unit -q
+        #
+        # `-n auto --dist loadfile`: 24000+ tests in one process took 19m11s
+        # here, against a 25-minute job ceiling — close enough that a slow runner
+        # turned the gate red for reasons that had nothing to do with the PR.
+        # Parallel brings that to 14m32s. Less than the 3.6x a 20-core dev box
+        # shows, because this runner has 4 vCPUs and every worker pays a full
+        # app import plus a full collection before its first test: 4m33s of the
+        # 14m32s is startup that the serial run did once. Sharding across jobs
+        # is what actually fixes that; this is the part that needs no new job.
+        # loadfile (not the default `load`) keeps every test of a file together
+        # on one worker in declaration order, so the seed pinned in pytest.ini
+        # still reproduces and the process-global cleanup in
+        # tests/unit/conftest.py still sees the same within-file sequence.
+        # Cross-file order dependencies are what random-order-tests.yml hunts;
+        # they were never something this job's fixed order guaranteed.
+        run: uv run pytest tests/unit -q -n auto --dist loadfile
 
   plugin-manager-vitest:
     name: Plugin manager vitest
