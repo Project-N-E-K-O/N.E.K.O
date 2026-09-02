@@ -782,7 +782,19 @@ class PluginCliService:
         override_was_approved = await asyncio.to_thread(
             is_autostart_approved, plan.plugin_id
         )
-        await asyncio.to_thread(mark_autostart_pending, plan.plugin_id)
+        if not await asyncio.to_thread(mark_autostart_pending, plan.plugin_id):
+            # 登记没落盘就不能往下走。切换会把第三方代码提升成有效源并可能启动它，
+            # 而没有待批准记录的话它下次开机就自启——用户从没批准过（coderabbit）。
+            # 这一步排在切换之前，所以拒绝是干净的：什么都还没动。
+            raise ServerDomainError(
+                code="PLUGIN_AUTOSTART_GATE_UNAVAILABLE",
+                message=(
+                    "cannot record the override as awaiting approval; refusing to "
+                    "promote third-party code that would autostart unapproved"
+                ),
+                status_code=500,
+                details={"plugin_id": plan.plugin_id},
+            )
         try:
             switched = await switch_builtin_source(
                 SourceSwitchRequest(

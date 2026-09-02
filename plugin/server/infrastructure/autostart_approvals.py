@@ -95,15 +95,21 @@ def _save_locked(pending: set[str]) -> bool:
     return True
 
 
-def mark_autostart_pending(plugin_id: str) -> None:
-    """Record that ``plugin_id`` was installed but never started by the user."""
+def mark_autostart_pending(plugin_id: str) -> bool:
+    """Record that ``plugin_id`` was installed but never started by the user.
+
+    Returns whether the record is durable. A caller that promotes or starts new
+    code must treat ``False`` as a reason not to proceed: without the record the
+    code is autostart-eligible at the next boot despite never having been
+    started.
+    """
     normalized = str(plugin_id or "").strip()
     if not normalized:
-        return
+        return True
     with _lock:
         pending = _load_locked()
         if normalized in pending:
-            return
+            return True
         pending.add(normalized)
         if not _save_locked(pending):
             # 写盘失败就把内存改回去。留着的话，本进程以为这个插件被拦住了，而盘上
@@ -116,11 +122,12 @@ def mark_autostart_pending(plugin_id: str) -> None:
                 "autostart as before",
                 normalized,
             )
-            return
+            return False
         logger.info(
             "plugin {} installed; it will not autostart until the user starts it",
             normalized,
         )
+        return True
 
 
 def clear_autostart_pending(plugin_id: str) -> bool:

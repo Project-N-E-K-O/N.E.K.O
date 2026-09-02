@@ -710,3 +710,45 @@ def test_deleting_a_source_file_invalidates_the_metadata(tmp_path: Path) -> None
     assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
         "删掉一个源文件之后元数据仍被当成新鲜的，宿主会继续用删除前推出来的 schema"
     )
+
+
+def test_mark_reports_whether_the_gate_is_durable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Callers that promote new code need to know the gate actually landed.
+
+    ``install_builtin_override`` marks before promoting the third-party source.
+    If that write is lost, the promotion would go ahead with no pending record
+    and the new code autostarts unapproved at the next boot, so the mark has to
+    report failure rather than only logging it (coderabbit).
+
+    Mutation: return ``None``/``True`` unconditionally from
+    ``mark_autostart_pending``.
+    """
+    _store_that_fails_to_write(monkeypatch, [])
+    try:
+        assert autostart_approvals.mark_autostart_pending("newcomer") is False
+    finally:
+        autostart_approvals._reset_cache_for_testing()
+
+    store: dict[str, object] = {}
+
+    class _WorkingConfigManager:
+        def load_json_config(self, name):
+            if name not in store:
+                raise FileNotFoundError(name)
+            return store[name]
+
+        def save_json_config(self, name, payload):
+            store[name] = payload
+
+    import utils.config_manager as config_manager_module
+
+    monkeypatch.setattr(
+        config_manager_module, "get_config_manager", _WorkingConfigManager
+    )
+    autostart_approvals._reset_cache_for_testing()
+    try:
+        assert autostart_approvals.mark_autostart_pending("newcomer") is True
+    finally:
+        autostart_approvals._reset_cache_for_testing()

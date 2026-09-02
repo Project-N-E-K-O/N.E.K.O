@@ -576,3 +576,30 @@ def test_a_failed_rollback_keeps_the_override_gated() -> None:
     assert "if override_was_approved and override_removed:" in source, (
         "恢复批准的条件没有把「覆盖真的没留在盘上」算进去"
     )
+
+
+def test_the_override_refuses_to_promote_without_a_durable_gate() -> None:
+    """A lost gate write must stop the promotion, not just get logged.
+
+    The mark now precedes ``switch_builtin_source``, so refusing is clean —
+    nothing has been promoted yet. Proceeding would put third-party code in
+    place as the effective source with no pending record, and it would autostart
+    unapproved at the next boot (coderabbit).
+
+    The ordering half of this stays a source check: driving the real transaction
+    would need the whole market-override stack. The durability half is covered
+    behaviourally by ``test_mark_reports_whether_the_gate_is_durable``.
+
+    Mutation: ignore ``mark_autostart_pending``'s return value.
+    """
+    import inspect
+
+    source = inspect.getsource(cli_service.PluginCliService.install_builtin_override)
+    assert "if not await asyncio.to_thread(mark_autostart_pending" in source, (
+        "登记写盘失败时仍然继续切换：第三方代码会成为有效源却没有待批准记录"
+    )
+    refuse_at = source.find("PLUGIN_AUTOSTART_GATE_UNAVAILABLE")
+    switch_at = source.find("switched = await switch_builtin_source(")
+    assert -1 not in (refuse_at, switch_at) and refuse_at < switch_at, (
+        "拒绝发生在切换之后就不干净了——那时第三方源已经被提升"
+    )
