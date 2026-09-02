@@ -240,6 +240,34 @@ def test_a_healthy_harness_is_untouched_by_the_watchdog(runner):
     assert result.stderr == ""
 
 
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_script_that_merely_runs_long_still_fails_its_deadline(runner):
+    """A script that overruns and then finishes must not pass.
+
+    Moving the caller's timeout off ``subprocess.run`` and into the script put
+    this at risk: the watchdog is unref'd, so on an otherwise empty loop node
+    exits 0 before an overdue timer can fire, and a 1.5s script under a 0.5s
+    timeout came back green (measured) where it used to be killed at 0.5s. The
+    overdue case is therefore decided synchronously when the watchdog arms.
+    """
+    node_path = _node_or_skip()
+
+    script = (
+        "var until = Date.now() + 1500;\n"
+        "while (Date.now() < until) {}\n"
+        "process.stdout.write('done');\n"
+    )
+    result = runner(node_path, script, capture_output=True, check=False, timeout=0.5)
+
+    assert result.returncode == node_harness._WATCHDOG_EXIT_CODE, (
+        "跑超了预算再结束的脚本必须红，否则调用方的 timeout 什么也不保证："
+        f"rc={result.returncode} stdout={result.stdout!r}"
+    )
+    assert "still running" in result.stderr, (
+        f"诊断要说清是「跑太久」而不是「卡住不动」：{result.stderr!r}"
+    )
+
+
 def test_a_heavy_synchronous_top_level_does_not_push_the_watchdog_past_the_ceiling(
     monkeypatch,
 ):

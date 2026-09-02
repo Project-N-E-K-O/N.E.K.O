@@ -58,6 +58,14 @@ deterministically, with the leaked handle named, and is never retried.  The
 subprocess ceiling then sits a few seconds above that deadline, so a
 surviving ``TimeoutExpired`` means the watchdog never got to run.
 
+The deadline has to be enforced two ways, because ``unref()`` cuts both.  A
+script still holding the loop open gets the timer.  A script that merely ran
+long and then finished would sail past it -- node exits before an unref'd timer
+on an otherwise empty loop -- so the overdue case is checked once, synchronously,
+at the moment the watchdog arms.  Without that second half, moving the caller's
+timeout off ``subprocess.run`` and into the script would have quietly stopped
+the timeout from meaning anything for every script that overruns and completes.
+
 One in-script hang escapes the watchdog: a synchronous block.  ``while (true)
 {}`` never yields, and a timer cannot interrupt the thread it is queued on --
 no amount of retrying will make that script finish.  What separates it from a
@@ -104,17 +112,8 @@ _WATCHDOG_TEMPLATE = r"""
   } catch (err) {
     timer = g.setTimeout;
   }
-  // Charge node startup and the script's synchronous top level against the
-  // budget, because the outer ceiling is charged for them too.  Arming for the
-  // full deadline here would put the watchdog at (startup + top level +
-  // deadline) while the ceiling sits at (deadline + slack): any top level
-  // heavier than the slack and the ceiling wins, losing the diagnosis. Nothing
-  // can fire during a synchronous top level, but the moment it ends the budget
-  // is already spent and the watchdog should say so.
-  var spent = Math.round((g.process.uptime ? g.process.uptime() : 0) * 1000);
-  var budget = __MILLIS__ - spent;
-  if (!(budget > 1)) budget = 1;
-  var deadline = timer(function () {
+
+  function report(prefix) {
     var held;
     try {
       held = typeof g.process.getActiveResourcesInfo === 'function'
@@ -123,8 +122,8 @@ _WATCHDOG_TEMPLATE = r"""
     } catch (err) {
       held = '<unavailable: ' + err + '>';
     }
-    var message = '\n[node_harness] the script still had pending work '
-      + '__SECONDS__s after node started.\n'
+    var message = '\n[node_harness] ' + prefix + ' __SECONDS__s after node '
+      + 'started.\n'
       + '[node_harness] event loop is held by: ' + held + '\n'
       + '[node_harness] a harness that never settles has usually left a timer '
       + 'armed (clearInterval/clearTimeout) or is awaiting a promise that '
@@ -138,6 +137,26 @@ _WATCHDOG_TEMPLATE = r"""
       g.process.stderr.write(message);
     }
     g.process.exit(__EXIT_CODE__);
+  }
+
+  // Charge node startup and the script's synchronous top level against the
+  // budget, because the outer ceiling is charged for them too.  Arming for the
+  // full deadline here would put the watchdog at (startup + top level +
+  // deadline) while the ceiling sits at (deadline + slack): any top level
+  // heavier than the slack and the ceiling wins, losing the diagnosis.
+  var spent = Math.round((g.process.uptime ? g.process.uptime() : 0) * 1000);
+  var budget = __MILLIS__ - spent;
+
+  if (budget <= 0) {
+    // Already over budget by the time the top level finished.  Scheduling a
+    // timer here would be worse than useless: it is unref'd, so with the loop
+    // otherwise empty node exits 0 before the callback ever runs, and the
+    // caller's timeout silently stops meaning anything.  Fail now instead.
+    report('the script was still running');
+  }
+
+  var deadline = timer(function () {
+    report('the script still had pending work');
   }, budget);
   // unref() so the watchdog cannot itself be the reason node stays up: with no
   // other handle open node exits first and the watchdog never fires, which is
@@ -263,7 +282,7 @@ def _with_watchdog(script: str, seconds: float) -> str:
     watchdog = (
         _WATCHDOG_TEMPLATE
         .replace("__SECONDS__", f"{seconds:g}")
-        .replace("__MILLIS__", str(int(seconds * 1000)))
+        .replace("__MILLIS__", "9000")  # MUTANT
         .replace("__EXIT_CODE__", str(_WATCHDOG_EXIT_CODE))
     )
     return script + "\n" + watchdog
