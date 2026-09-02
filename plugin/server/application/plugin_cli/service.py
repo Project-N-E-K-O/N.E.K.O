@@ -406,7 +406,23 @@ class PluginCliService:
             except BaseException:
                 # 安装没成，把批准状态原样放回去——否则一次失败的安装会给这些 id
                 # 留下待批准记录，将来同 id 的插件会被它误伤。
+                gate_root = await asyncio.to_thread(
+                    self._autostart_gate_root, plugins_root
+                )
                 for gate_plugin_id in gate_restore:
+                    # 只为真的没留在盘上的那些还原。_install_via_staging_sync 用
+                    # rmtree(ignore_errors=True) 收尾，占用/权限/坏盘都可能留下一份
+                    # 可执行的残骸；无条件还原批准等于放它下次开机自己跑起来
+                    # （codex）。和覆盖回滚同一条判据：看盘不看意图。
+                    if await asyncio.to_thread(
+                        _plugin_directory_exists, gate_root, gate_plugin_id
+                    ):
+                        logger.error(
+                            "install rollback left a directory for plugin_id={}; "
+                            "keeping it gated so leftover code cannot autostart",
+                            gate_plugin_id,
+                        )
+                        continue
                     if not await asyncio.to_thread(
                         clear_autostart_pending, gate_plugin_id
                     ):
@@ -1736,6 +1752,22 @@ class PluginCliService:
     def _path_policy() -> PluginCliPathPolicy:
         return PluginCliPathPolicy.from_settings()
 
+    def _autostart_gate_root(self, plugins_root: str | None) -> Path:
+        """The directory the install rollback checks for leftovers."""
+        policy = self._path_policy()
+        if not plugins_root:
+            return policy.user_plugins_root
+        try:
+            return _require_within(
+                Path(plugins_root).expanduser().resolve(),
+                policy.user_plugins_root,
+                field="plugins_root",
+            )
+        except Exception:
+            # 越界的 root 本来就装不进去。回落到真正的用户插件根去找残骸，
+            # 而不是放弃检查。
+            return policy.user_plugins_root
+
     def _resolver(self) -> PluginSourceResolver:
         return PluginSourceResolver(self._path_policy())
 
@@ -2644,6 +2676,54 @@ class PluginCliService:
             status_code=status_code,
             details={"action": action, "error_type": type(exc).__name__},
         )
+
+
+def _plugin_directory_exists(plugins_root: Path, plugin_id: str) -> bool:
+    """Whether any directory under ``plugins_root`` still holds ``plugin_id``.
+
+    Used by the install rollback to decide whether restoring the plugin's
+    autostart approval is safe. Staging cleanup runs with
+    ``ignore_errors=True``, so a failed install can leave a runnable copy
+    behind; handing that copy its approval back lets it start itself at the
+    next boot without the user ever having run it.
+
+    Fails closed, unlike the manifest reader: every uncertainty here — an
+    unlistable root, an unreadable manifest next to a same-named directory —
+    returns ``True`` and keeps the id gated. The cost of a false positive is
+    one manual start; the cost of a false negative is third-party code running
+    unapproved.
+    """
+    wanted = str(plugin_id or "").strip()
+    if not wanted:
+        return False
+    try:
+        entries = list(plugins_root.iterdir())
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        logger.error(
+            "cannot list {} to check for install remnants of {}: {}",
+            plugins_root,
+            wanted,
+            exc,
+        )
+        return True
+    for entry in entries:
+        try:
+            if not entry.is_dir():
+                continue
+        except OSError:
+            continue
+        if entry.name.startswith("."):
+            # 暂存目录（.neko_staging_*）不是安装产物，注册表也不扫它们。
+            continue
+        manifest_id = _installed_manifest_plugin_id(entry)
+        if manifest_id == wanted:
+            return True
+        if not manifest_id and entry.name == wanted:
+            # manifest 读不出来的同名目录：说不清它是不是这个插件，按在算。
+            return True
+    return False
 
 
 def _installed_manifest_plugin_id(target_dir: object) -> str:

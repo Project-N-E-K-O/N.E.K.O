@@ -36,10 +36,11 @@ from typing import Any
 
 from plugin._types.version import SDK_VERSION
 from plugin.server.infrastructure.packaged_metadata import (
+    build_environment,
     PACKAGED_METADATA_FILENAME,
     PACKAGED_METADATA_SCHEMA_VERSION,
     compute_source_sha256,
-    source_file_names,
+    source_stat_summary,
 )
 
 
@@ -107,6 +108,7 @@ def derive_plugin_metadata(
             f"importing the plugin failed ({exc.error_type}): {exc}"
         ) from exc
 
+    stat_summary = source_stat_summary(hash_dir or plugin_dir)
     return {
         "schema_version": PACKAGED_METADATA_SCHEMA_VERSION,
         "sdk_version": SDK_VERSION,
@@ -117,7 +119,9 @@ def derive_plugin_metadata(
         # 占位（greptile）。
         "source_sha256": compute_source_sha256(hash_dir or plugin_dir),
         # 文件清单让"少了一个文件"这件事不依赖时间戳，也不依赖解包顺序。
-        "source_files": source_file_names(hash_dir or plugin_dir)[0],
+        "source_files": stat_summary.names,
+        "source_bytes": stat_summary.total_bytes,
+        "build_env": build_environment(),
         "entries": list(isolated.entries_preview),
         "handlers": dict(isolated.handlers),
         "entry_methods": dict(isolated.entry_methods),
@@ -147,6 +151,22 @@ def write_packaged_metadata(
     try:
         payload = derive_plugin_metadata(source_dir, hash_dir=Path(target_dir))
     except MetadataProbeError as exc:
+        stale = Path(target_dir) / PACKAGED_METADATA_FILENAME
+        if stale.exists():
+            # 源树里本来就有一份（内置插件的就在仓库里），打包管线会先把它抄进
+            # target_dir。这次没能重新生成却把那份旧的留在包里，等于拿上一次的
+            # handler 和 schema 冒充这次的——而它的 source_sha 完全可能还对得上，
+            # 宿主于是照单全收，本该走的 manifest 回落根本不会发生（codex）。
+            try:
+                stale.unlink()
+            except OSError as unlink_exc:
+                print(
+                    f"[WARN] {Path(source_dir).name}: could not remove the stale "
+                    f"{PACKAGED_METADATA_FILENAME} copied into the package "
+                    f"({unlink_exc}); it may advertise metadata from an earlier "
+                    "build.",
+                    file=sys.stderr,
+                )
         print(
             f"[WARN] {Path(source_dir).name}: could not derive plugin metadata "
             f"({exc}); packaging without {PACKAGED_METADATA_FILENAME}. Entry "

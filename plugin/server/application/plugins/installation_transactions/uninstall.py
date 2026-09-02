@@ -25,7 +25,11 @@ from plugin.server.application.install_source.scanner import PluginDirectoryScan
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.autostart_approvals import clear_autostart_pending
+from plugin.server.infrastructure.autostart_approvals import (
+    clear_autostart_pending,
+    is_autostart_approved,
+    mark_autostart_pending,
+)
 from plugin.server.infrastructure.runtime_overrides import (
     RuntimeOverride,
     clear_runtime_override,
@@ -1114,6 +1118,7 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     staged_code: _StagedPluginCode | None = None
     source_update_attempted = False
     preference_update_attempted = False
+    autostart_was_pending = False
     try:
         stage = "stop"
         if was_running:
@@ -1143,6 +1148,14 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         # 卸载之后那条待批准记录一定是过时的：它是为被卸掉的那份代码记的。
         # 留着的话，恢复出来的内置插件（用户原本就在自启）会被它继续拦下来；
         # 插件被整个移除时，它也会挂在这个 id 上等着误伤将来的重装（codex）。
+        #
+        # 但清之前要记下原状态：这一步之后还有预提交步骤会失败，而
+        # _rollback_precommit 会把插件文件和偏好都恢复回去，却不知道批准位被动过。
+        # 一个从没被启动过的新插件在那种回滚之后会变成"已批准"，下次开机直接自启
+        # （codex）。所以下面的 except 分支要把它放回去。
+        autostart_was_pending = not await asyncio.to_thread(
+            is_autostart_approved, plugin_id
+        )
         if not await asyncio.to_thread(clear_autostart_pending, plugin_id):
             # 清不掉就不能报成功。盘上那条旧记录会继续拦住恢复出来的内置插件，
             # 而且同 id 的重装还会继承它（coderabbit）。抛出去交给既有的预提交
@@ -1181,6 +1194,19 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             stop_attempted=stop_attempted,
             registry_target=registry_target,
         )
+        if autostart_was_pending and await asyncio.to_thread(plugin_dir.exists):
+            # 回滚把插件文件放回去了，那条待批准记录也得跟着回去。少了它，一个
+            # 用户从没启动过的插件在一次失败的卸载之后变成"已批准"，下次开机自己
+            # 跑起来（codex）。和别处同一条判据：看盘不看意图——代码真的没了就
+            # 别补记录，否则将来占用这个 id 的插件会被它误伤。
+            if not await asyncio.to_thread(mark_autostart_pending, plugin_id):
+                # 只能记一笔：这里正在处理另一个异常，改抛会把真正的失败原因换掉。
+                logger.error(
+                    "uninstall rollback restored plugin {} but could not restore "
+                    "its pending-approval record; it may autostart without having "
+                    "been started by the user",
+                    plugin_id,
+                )
         if not isinstance(exc, Exception) or isinstance(exc, UninstallPluginError):
             raise
         if isinstance(exc, ServerDomainError):

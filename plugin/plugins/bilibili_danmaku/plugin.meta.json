@@ -1,4 +1,9 @@
 {
+  "build_env": {
+    "arch": "AMD64",
+    "os": "win32",
+    "python": "3.11"
+  },
   "entries": [
     {
       "auto_start": false,
@@ -4980,8 +4985,9 @@
       "name": "push_danmaku"
     }
   },
-  "schema_version": 2,
+  "schema_version": 3,
   "sdk_version": "0.1.0",
+  "source_bytes": 914051,
   "source_files": [
     "README.md",
     "__init__.py",

@@ -37,7 +37,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import stat
+import sys
+import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -53,7 +57,7 @@ PACKAGED_METADATA_FILENAME = "plugin.meta.json"
 # schema 变了就该换号，否则一份没有 source_files 的元数据仍会被当成合法的第 1 版
 # 接受，增删源文件时那道确定性的判据整个静默失效（coderabbit）。旧包因此回落到
 # manifest 声明的 entries，重新打包即可恢复。
-PACKAGED_METADATA_SCHEMA_VERSION = 2
+PACKAGED_METADATA_SCHEMA_VERSION = 3
 
 # 解析之前先封顶。这份文件来自第三方包，而 json.loads 会把整份内容读进内存再建对象；
 # 一个几百 MB 的 plugin.meta.json 足以在刷新注册表时把进程撑爆，而刷新现在整段持锁
@@ -117,6 +121,59 @@ class PackagedPluginMetadata:
     entry_methods: dict[str, str] = field(default_factory=dict)
     sdk_version: str = ""
     source_sha256: str = ""
+    # 打包机和这台机器是不是同一套 (os, python, arch)。
+    built_in_this_environment: bool = False
+
+
+def _stamp_metadata_verified(meta_path: Path, newest_source_ns: int) -> None:
+    """Record that ``meta_path`` was just proven to match its sources.
+
+    The mtime comparison is only a fast path, and archive extraction leaves it
+    permanently false: whichever file lands last is newer than the metadata, so
+    every refresh re-hashes the whole tree — under the registry lock, for every
+    installed plugin (codex). Moving the metadata's timestamp past the sources
+    turns that into a one-off cost the first time each package is read.
+
+    Only ever called right after the content hash matched, so the timestamp
+    asserts something that was true a moment ago rather than assuming it. A
+    later edit still makes a source newer and sends the next read down the slow
+    path.
+
+    Best-effort by design: a read-only install just keeps paying the hash.
+    """
+    try:
+        stamp_ns = max(newest_source_ns, time.time_ns())
+        os.utime(meta_path, ns=(meta_path.stat().st_atime_ns, stamp_ns))
+    except OSError as exc:
+        logger.debug(
+            "could not refresh the packaged metadata timestamp, its sources will "
+            "be re-hashed on every refresh: path={}, err={}",
+            meta_path,
+            str(exc),
+        )
+
+
+def build_environment() -> dict[str, str]:
+    """The parts of the environment that can change what a plugin registers.
+
+    A plugin is free to register different entries under different operating
+    systems or Python versions — an optional import that only resolves on
+    Windows, an entry gated on ``sys.version_info``. Packaged metadata is one
+    machine's answer, so anything that treats it as *the* set of callable
+    entries has to know whether it was produced here (codex).
+    """
+    return {
+        "os": sys.platform,
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "arch": platform.machine(),
+    }
+
+
+def _environment_matches(raw: object) -> bool:
+    if not isinstance(raw, Mapping):
+        return False
+    current = build_environment()
+    return all(str(raw.get(key) or "") == value for key, value in current.items())
 
 
 def _iter_source_files(
@@ -170,17 +227,72 @@ def _iter_source_files(
             except OSError:
                 saw_symlink = True
                 continue
+            rel_path = os.path.relpath(entry.path, str(plugin_dir)).replace(
+                os.sep, "/"
+            )
+            # 记录用 NFC 拼写，读盘用文件系统给的那个。打包器写进包里的档案名已经
+            # 是 NFC（normalize_relative_posix），而 macOS 交出来的常常是分解形式：
+            # 不归一化的话，同一个文件名在两边算出两份清单和两份摘要，元数据条条
+            # 被判过时（codex）。反过来，用归一化后的名字去 open() 在保留原拼写的
+            # 文件系统上会直接找不到文件，所以两个拼写都要留着。
             files.append(
-                (os.path.relpath(entry.path, str(plugin_dir)).replace(os.sep, "/"), stat_result)
+                (unicodedata.normalize("NFC", rel_path), rel_path, stat_result)
             )
     files.sort(key=lambda item: item[0])
     return files, saw_symlink, dirs
 
 
+@dataclass(frozen=True)
+class SourceStatSummary:
+    """Everything the cheap freshness checks need, from one stat walk.
+
+    The names, the newest timestamp and the total size used to cost a separate
+    descent each. They come from the same ``scandir`` walk, and the refresh path
+    holds the registry lock while it runs them.
+    """
+
+    names: list[str] = field(default_factory=list)
+    newest_mtime_ns: int = 0
+    total_bytes: int = 0
+    untrustworthy: bool = False
+
+
+def source_stat_summary(plugin_dir: Path) -> SourceStatSummary:
+    """Names, newest mtime and total size of the files the fingerprint covers.
+
+    Sizes sit next to the timestamps because timestamps alone miss a source
+    replaced without advancing its mtime — a restore that preserves metadata,
+    an edit inside one tick of a coarse filesystem clock (codex). Sizes catch
+    the overwhelming majority of those. What neither catches is a same-size,
+    same-mtime rewrite; the only thing that would is hashing every plugin's
+    whole tree on every refresh, which is the cost this file exists to avoid.
+
+    Directory mtimes count too: deleting a source file leaves every surviving
+    file untouched, so a file-only check cannot see that the tree lost a piece.
+    """
+    files, untrustworthy, dirs = _iter_source_files(plugin_dir)
+    newest = 0
+    total = 0
+    for _key, _real, stat_result in files:
+        newest = max(newest, stat_result.st_mtime_ns)
+        total += stat_result.st_size
+    for dir_path in dirs:
+        try:
+            newest = max(newest, os.stat(dir_path).st_mtime_ns)
+        except OSError:
+            untrustworthy = True
+    return SourceStatSummary(
+        names=[key for key, _real, _stat in files],
+        newest_mtime_ns=newest,
+        total_bytes=total,
+        untrustworthy=untrustworthy,
+    )
+
+
 def source_file_names(plugin_dir: Path) -> tuple[list[str], bool]:
     """Sorted relative paths of the files the fingerprint covers."""
-    files, untrustworthy, _dirs = _iter_source_files(plugin_dir)
-    return [rel_path for rel_path, _stat in files], untrustworthy
+    summary = source_stat_summary(plugin_dir)
+    return summary.names, summary.untrustworthy
 
 
 def compute_source_sha256(plugin_dir: Path) -> str:
@@ -195,41 +307,23 @@ def compute_source_sha256(plugin_dir: Path) -> str:
     digest = hashlib.sha256()
     if saw_symlink:
         digest.update(b"<symlink-or-unreadable>\0")
-    for rel_path, _stat_result in files:
-        digest.update(rel_path.encode("utf-8"))
+    for key, real_rel, _stat_result in files:
+        digest.update(key.encode("utf-8"))
         digest.update(b"\0")
         try:
             # 行尾归一化之后再摘要。这个仓库用 .gitattributes 把文本钉成 LF，但哈希
             # 不该依赖那份配置：作者在 Windows 上打的包一旦带着 CRLF 算出来的摘要，
             # 到 Linux 用户机器上就会条条判成"源码变了"，全部退化成占位。
-            raw = (plugin_dir / rel_path).read_bytes()
-            if Path(rel_path).suffix.lower() in TEXT_SUFFIXES_FOR_HASHING:
+            raw = (plugin_dir / real_rel).read_bytes()
+            if Path(real_rel).suffix.lower() in TEXT_SUFFIXES_FOR_HASHING:
                 raw = raw.replace(_CRLF, _LF).replace(_CR, _LF)
             digest.update(raw)
         except OSError as exc:
             raise PackagedMetadataError(
-                f"cannot read plugin source file for hashing: {rel_path}: {exc}"
+                f"cannot read plugin source file for hashing: {real_rel}: {exc}"
             ) from exc
         digest.update(b"\0")
     return digest.hexdigest()
-
-
-def newest_source_mtime_ns(plugin_dir: Path) -> tuple[int, bool]:
-    """``(newest mtime, tree is untrustworthy)`` over the plugin's sources.
-
-    Directory mtimes count too: deleting a source file leaves every surviving
-    file untouched, so a file-only check cannot see that the tree lost a piece.
-    """
-    files, saw_symlink, dirs = _iter_source_files(plugin_dir)
-    newest = 0
-    for _rel_path, stat_result in files:
-        newest = max(newest, stat_result.st_mtime_ns)
-    for dir_path in dirs:
-        try:
-            newest = max(newest, os.stat(dir_path).st_mtime_ns)
-        except OSError:
-            saw_symlink = True
-    return newest, saw_symlink
 
 
 def _major_of(version: str) -> str:
@@ -335,8 +429,9 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
         )
         return None
 
-    newest_source_ns, untrustworthy = newest_source_mtime_ns(plugin_dir)
-    if untrustworthy:
+    summary = source_stat_summary(plugin_dir)
+    newest_source_ns = summary.newest_mtime_ns
+    if summary.untrustworthy:
         logger.info(
             "plugin tree contains symlinks or unreadable entries; packaged metadata "
             "cannot be trusted to match the sources: path={}",
@@ -363,8 +458,7 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
             meta_path,
         )
         return None
-    current_names, _untrustworthy = source_file_names(plugin_dir)
-    if sorted(packaged_names) != sorted(current_names):
+    if sorted(packaged_names) != sorted(summary.names):
         logger.info(
             "plugin source file set differs from the packaged one; rebuild "
             "with 'neko-plugin build' to refresh its metadata: path={}",
@@ -372,7 +466,13 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
         )
         return None
 
-    if newest_source_ns > meta_stat.st_mtime_ns:
+    packaged_bytes = raw.get("source_bytes")
+    size_changed = (
+        isinstance(packaged_bytes, int)
+        and not isinstance(packaged_bytes, bool)
+        and packaged_bytes != summary.total_bytes
+    )
+    if newest_source_ns > meta_stat.st_mtime_ns or size_changed:
         # 时间戳只是快路径，不是判据。git 不保留 mtime，所以一份全新 clone 里源码
         # 和生成物的时间戳关系是任意的——只看 mtime 的话，内置插件会在每台新机器上
         # 集体退化成占位。所以时间戳说"可能过时"时再真算一次内容哈希来定夺；这条
@@ -393,8 +493,14 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
                 plugin_dir,
             )
             return None
+        # 哈希刚刚证明这棵树就是打包时那棵，把这个结论盖在 meta.json 的时间戳上。
+        # 不盖的话，解包顺序留下的"源码比生成物新"会一直成立，于是**每一次**刷新
+        # 都要在持锁状态下重算整棵树的哈希（codex）。盖完之后源码再变照样会变新，
+        # 慢路径该走还是走。
+        _stamp_metadata_verified(meta_path, newest_source_ns)
 
     return PackagedPluginMetadata(
+        built_in_this_environment=_environment_matches(raw.get("build_env")),
         entries=_coerce_entries(raw.get("entries")),
         handlers=_coerce_handlers(raw.get("handlers")),
         entry_methods=_coerce_entry_methods(raw.get("entry_methods")),

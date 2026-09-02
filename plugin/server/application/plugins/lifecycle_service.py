@@ -40,7 +40,10 @@ from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
     serialized_plugin_operation,
 )
-from plugin.server.application.plugins.registry_service import PluginRegistryService
+from plugin.server.application.plugins.registry_service import (
+    PluginRegistryService,
+    config_declares_entries,
+)
 from plugin.server.application.plugins.installation_transactions import (
     UninstallOwnershipError,
     UninstallPluginError,
@@ -130,14 +133,6 @@ def _resolve_python_requirements(
 _MIN_CLAMPED_STOP_TIMEOUT = 1.0
 
 
-def _config_declares_entries(conf: object, pdata: object) -> bool:
-    """Whether the effective config carries its own ``entries`` table."""
-    for table in (conf, pdata):
-        if isinstance(table, Mapping) and table.get("entries"):
-            return True
-    return False
-
-
 def _read_packaged_isolated_metadata(
     config_path: Path,
     plugin_id: str,
@@ -164,13 +159,26 @@ def _read_packaged_isolated_metadata(
     Returns ``None`` when there is nothing usable, which is also what a package
     built before these fields existed produces — those keep scanning.
     """
-    if _config_declares_entries(conf, pdata):
+    if config_declares_entries(conf, pdata):
         # 打包期读的是作者那份 plugin.toml，看不到用户的运行时配置/激活 profile。
         # 一旦生效配置自带 entries 表，包里那份 handler 就不是这台机器上该注册的
         # 那一套了（codex）。这种插件回落到真扫一次。
         return None
     packaged = read_packaged_metadata(Path(config_path).parent)
     if packaged is None or not packaged.handlers:
+        return None
+    if not packaged.built_in_this_environment:
+        # 这一份是别的机器上 import 出来的结果。插件完全可以按 sys.platform 或
+        # Python 版本条件注册入口，那样的话包里那套 handler 描述的是打包机的能力
+        # 集，不是这台机器的（codex）。展示用的 entries 可以将就，但注册进
+        # state.event_handlers 的这份是权威能力集——它错了，模型会去调一个这台机器
+        # 上根本不存在的入口。回落到真扫一次，代价就是本 PR 之前的原样。
+        logger.info(
+            "packaged metadata was produced in a different environment; "
+            "rescanning so the registered entries match this machine: "
+            "plugin_id={}",
+            plugin_id,
+        )
         return None
     if not all(
         _handler_key_belongs_to_plugin(key, plugin_id) for key in packaged.handlers

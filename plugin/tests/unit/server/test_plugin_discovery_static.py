@@ -130,7 +130,8 @@ def test_a_known_but_empty_schema_is_left_alone() -> None:
 
 
 def _write_plugin(tmp_path: Path, *, entries: list[dict], sdk_version: str | None = None,
-                  source_sha: str | None = None) -> Path:
+                  source_sha: str | None = None,
+                  build_env: dict | None = None) -> Path:
     plugin_dir = tmp_path / "demo"
     plugin_dir.mkdir()
     (plugin_dir / "plugin.toml").write_text("id = 'demo'\n", encoding="utf-8")
@@ -144,6 +145,12 @@ def _write_plugin(tmp_path: Path, *, entries: list[dict], sdk_version: str | Non
             else packaged_metadata.compute_source_sha256(plugin_dir)
         ),
         "source_files": packaged_metadata.source_file_names(plugin_dir)[0],
+        "source_bytes": packaged_metadata.source_stat_summary(plugin_dir).total_bytes,
+        "build_env": (
+            build_env
+            if build_env is not None
+            else packaged_metadata.build_environment()
+        ),
         "entries": entries,
     }
     (plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME).write_text(
@@ -626,7 +633,7 @@ def test_a_named_pipe_never_reaches_the_digest(
 
     files, untrustworthy, _dirs = packaged_metadata._iter_source_files(plugin_dir)
 
-    assert fifo_path not in [str(plugin_dir / rel) for rel, _ in files], (
+    assert fifo_path not in [str(plugin_dir / real) for _key, real, _s in files], (
         "命名管道进了摘要列表，read_bytes() 会在没有写端时永久阻塞"
     )
     assert untrustworthy, (
@@ -718,7 +725,7 @@ def test_deleting_a_source_file_invalidates_the_metadata(tmp_path: Path) -> None
     # 那条恰恰是不可靠的那条（本机过、CI 挂）。这里要单独证明清单校验有效。
     future = time.time() + 3600
     os.utime(meta_path, (future, future))
-    assert packaged_metadata.newest_source_mtime_ns(plugin_dir)[0] <= (
+    assert packaged_metadata.source_stat_summary(plugin_dir).newest_mtime_ns <= (
         meta_path.stat().st_mtime_ns
     ), "前提没成立：mtime 快路径还在生效，这条守卫测不到清单校验"
 
@@ -862,4 +869,212 @@ def test_a_malformed_file_list_is_refused(tmp_path: Path) -> None:
     meta_path.write_text(json.dumps(payload), encoding="utf-8")
     assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None, (
         "前提没成立：合法清单本来就该通过"
+    )
+
+
+def test_packaged_handlers_from_another_machine_are_not_reused(
+    tmp_path: Path,
+) -> None:
+    """The registered entry set must describe *this* machine.
+
+    A plugin may register different entries under a different OS or Python
+    version — an optional import that only resolves on Windows, an entry gated
+    on ``sys.version_info``. The packaged handlers are one build machine's
+    answer, and they are what lands in ``state.event_handlers``: get them wrong
+    and the model calls an entry the running plugin does not have (codex). The
+    display-side entries are allowed to be that snapshot; the callable set is
+    not.
+
+    Mutation: reuse the packaged handlers without checking ``build_env``.
+    """
+    from plugin.server.application.plugins import lifecycle_service
+
+    foreign = dict(packaged_metadata.build_environment())
+    foreign["os"] = "some-other-os"
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}], build_env=foreign)
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    payload["handlers"] = {"demo.go": {"event_type": "plugin_entry", "id": "go"}}
+    payload["entry_methods"] = {"go": "go"}
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert (
+        lifecycle_service._read_packaged_isolated_metadata(
+            plugin_dir / "plugin.toml", "demo"
+        )
+        is None
+    ), "复用了别的环境上导出的 handler：条件注册的插件会注册出这台机器上不存在的入口"
+
+    payload["build_env"] = packaged_metadata.build_environment()
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    assert (
+        lifecycle_service._read_packaged_isolated_metadata(
+            plugin_dir / "plugin.toml", "demo"
+        )
+        is not None
+    ), "前提没成立：同环境的包本来就该复用"
+
+
+def test_a_missing_build_env_is_not_treated_as_a_match(tmp_path: Path) -> None:
+    """A package that never recorded its environment cannot claim to match.
+
+    Mutation: treat an absent ``build_env`` as the current one.
+    """
+    from plugin.server.application.plugins import lifecycle_service
+
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    payload.pop("build_env")
+    payload["handlers"] = {"demo.go": {"event_type": "plugin_entry", "id": "go"}}
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert (
+        lifecycle_service._read_packaged_isolated_metadata(
+            plugin_dir / "plugin.toml", "demo"
+        )
+        is None
+    ), "没有记录打包环境的包被当成同环境，等于这道检查从来没跑过"
+
+
+def test_a_verified_read_stops_the_next_one_from_re_hashing(tmp_path: Path) -> None:
+    """Confirming the hash once must restore the cheap path.
+
+    Extraction writes the files in archive order, so whichever source lands
+    after ``plugin.meta.json`` is permanently newer than it. Without stamping
+    the metadata, that state never resolves: every refresh re-hashes the whole
+    tree of every installed plugin, and it does it while holding the registry
+    lock (codex).
+
+    Mutation: drop the ``_stamp_metadata_verified`` call after the hash matches.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    future = time.time() + 60
+    os.utime(plugin_dir / "main.py", (future, future))
+
+    hashed: list[Path] = []
+    real_hash = packaged_metadata.compute_source_sha256
+
+    def _counting(path: Path) -> str:
+        hashed.append(path)
+        return real_hash(path)
+
+    original = packaged_metadata.compute_source_sha256
+    packaged_metadata.compute_source_sha256 = _counting
+    try:
+        assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None
+        assert len(hashed) == 1, "前提没成立：第一次读本来就该走内容哈希"
+        assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None
+        assert len(hashed) == 1, (
+            "每次刷新都在持锁状态下重算整棵树的哈希：解包顺序留下的时间戳关系"
+            "一直成立，慢路径再也回不去"
+        )
+    finally:
+        packaged_metadata.compute_source_sha256 = original
+
+
+def test_stamping_does_not_hide_a_later_edit(tmp_path: Path) -> None:
+    """The stamp asserts what was true at that moment, not from then on.
+
+    Mutation: stamp with a far-future timestamp instead of the sources' own.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    future = time.time() + 60
+    os.utime(plugin_dir / "main.py", (future, future))
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None
+
+    (plugin_dir / "main.py").write_text("VALUE = 3\n", encoding="utf-8")
+    later = time.time() + 3600
+    os.utime(plugin_dir / "main.py", (later, later))
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+        "盖过时间戳之后源码再改也不再被发现，作者改完签名看不到任何变化"
+    )
+
+
+def test_a_same_mtime_rewrite_is_caught_by_size(tmp_path: Path) -> None:
+    """Content can change without the timestamp moving.
+
+    A metadata-preserving restore, or an edit inside one tick of a coarse
+    filesystem clock, leaves the path set identical and the mtime no newer, so
+    the timestamp fast path would keep serving the packaged handlers forever
+    (codex). Sizes come from the stat walk that already runs.
+
+    Mutation: drop ``source_bytes`` from the freshness check.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    stamp = meta_path.stat()
+    source = plugin_dir / "main.py"
+    before = source.stat()
+
+    source.write_text("VALUE = 1 + 1 + 1\n", encoding="utf-8")
+    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+    os.utime(plugin_dir, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+    summary = packaged_metadata.source_stat_summary(plugin_dir)
+    assert summary.newest_mtime_ns <= meta_path.stat().st_mtime_ns, (
+        "前提没成立：改完之后时间戳还是变新了，这个用例就没有在测尺寸那条路"
+    )
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+        "源码换了内容但时间戳没动，宿主继续端着上一版的 schema"
+    )
+
+
+def test_the_fingerprint_uses_one_spelling_for_a_decomposed_name(
+    tmp_path: Path,
+) -> None:
+    """NFC and NFD spellings of one filename must fingerprint the same.
+
+    The package exporter writes archive names in NFC. A macOS filesystem hands
+    back the decomposed form, so recording the raw spelling makes the extracted
+    tree's file list and digest disagree with the packaged ones on every read —
+    the plugin permanently loses its static schemas (codex).
+
+    Mutation: record ``rel_path`` instead of its NFC form.
+    """
+    import unicodedata
+
+    decomposed = unicodedata.normalize("NFD", "café.py")
+    composed = unicodedata.normalize("NFC", "café.py")
+    assert decomposed != composed, "前提没成立：这两种拼写在字节上是一样的"
+
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.toml").write_text("id = 'demo'\n", encoding="utf-8")
+    try:
+        (plugin_dir / decomposed).write_text("VALUE = 1\n", encoding="utf-8")
+    except OSError:
+        pytest.skip("this filesystem cannot hold a decomposed filename")
+
+    names, _untrustworthy = packaged_metadata.source_file_names(plugin_dir)
+    assert composed in names, f"记录的是分解形式，和包里的档案名对不上：{names}"
+    # 摘要必须真的能读到文件——归一化后的名字在保留原拼写的文件系统上打不开。
+    assert packaged_metadata.compute_source_sha256(plugin_dir)
+
+
+def test_a_config_declared_entry_table_wins_over_the_package(
+    tmp_path: Path,
+) -> None:
+    """Discovery previews must describe the plugin *this* machine would run.
+
+    Packaging reads the author's ``plugin.toml`` and never sees the user's
+    runtime config or activated profile. When those declare their own entries,
+    publishing the packaged list shows a stopped plugin with the wrong entry ids
+    and schemas until it is started (codex). The start path already made this
+    call; the discovery path had no equivalent.
+
+    Mutation: drop the ``config_declares_entries`` check from
+    ``_packaged_entries_preview``.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "packaged_only"}])
+
+    class _Ctx:
+        toml_path = plugin_dir / "plugin.toml"
+        conf: dict = {}
+        pdata: dict = {"entries": {"from_config": {"description": "x"}}}
+
+    preview = module._packaged_entries_preview(_Ctx(), "demo")
+    ids = [entry.get("id") for entry in preview]
+    assert "packaged_only" not in ids, (
+        f"生效配置自己声明了 entries，发现侧却还在端打包机那份：{ids}"
     )

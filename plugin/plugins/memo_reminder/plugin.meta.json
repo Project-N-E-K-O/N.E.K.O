@@ -1,4 +1,9 @@
 {
+  "build_env": {
+    "arch": "AMD64",
+    "os": "win32",
+    "python": "3.11"
+  },
   "entries": [
     {
       "auto_start": false,
@@ -451,8 +456,9 @@
       "name": "查看提醒列表"
     }
   },
-  "schema_version": 2,
+  "schema_version": 3,
   "sdk_version": "0.1.0",
+  "source_bytes": 30092,
   "source_files": [
     "__init__.py",
     "i18n/en.json",

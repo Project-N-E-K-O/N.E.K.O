@@ -542,6 +542,23 @@ def _normalize_entry_input_schema(entry: Mapping[str, object]) -> dict[str, obje
     return result
 
 
+def config_declares_entries(conf: object, pdata: object) -> bool:
+    """Whether the effective config carries its own ``entries`` table.
+
+    Packaging reads the author's ``plugin.toml``; it cannot see the user's
+    runtime configuration or the profile they activated. When those declare
+    entries of their own, the packaged list describes a different plugin than
+    the one this machine would run (codex).
+
+    Lives here rather than in the lifecycle service because both the discovery
+    preview and the start path need it, and the import only goes one way.
+    """
+    for table in (conf, pdata):
+        if isinstance(table, Mapping) and table.get("entries"):
+            return True
+    return False
+
+
 def _packaged_entries_preview(
     ctx: PluginContext, plugin_id: str
 ) -> list[dict[str, object]]:
@@ -552,7 +569,11 @@ def _packaged_entries_preview(
     that says "unknown" rather than "none".
     """
     packaged = read_packaged_metadata(ctx.toml_path.parent)
-    if packaged is not None and packaged.entries:
+    if (
+        packaged is not None
+        and packaged.entries
+        and not config_declares_entries(ctx.conf, ctx.pdata)
+    ):
         return [_normalize_entry_input_schema(entry) for entry in packaged.entries]
     # 没有打包期元数据时，manifest 里静态声明的 entries 仍是一条完整通路——它只是
     # 拿不到从处理函数签名推出来的那部分 input_schema。这条通路一直都在：禁用的

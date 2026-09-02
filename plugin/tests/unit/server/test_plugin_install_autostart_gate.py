@@ -858,3 +858,223 @@ async def test_every_plugin_in_a_bundle_is_gated_before_promotion(
     assert "some_bundle_package" not in marked, (
         "登记的是包 id，而注册表按每个插件自己的 manifest id 查批准状态"
     )
+
+
+def test_a_leftover_install_directory_is_found_by_its_manifest_id(
+    tmp_path: Path,
+) -> None:
+    """The rollback probe answers "is this plugin's code still here".
+
+    Staging cleanup runs with ``ignore_errors=True``, so a failed install can
+    leave a runnable copy behind — and the directory name is not the answer,
+    because a conflict rename gives the same plugin a different one.
+
+    Mutation: compare directory names instead of manifest ids.
+    """
+    root = tmp_path / "plugins"
+    root.mkdir()
+    assert not cli_service._plugin_directory_exists(root, "demo")
+
+    leftover = root / "demo_2"
+    leftover.mkdir()
+    (leftover / "plugin.toml").write_text(
+        '[plugin]\nid = "demo"\n', encoding="utf-8"
+    )
+    assert cli_service._plugin_directory_exists(root, "demo"), (
+        "改名过的残骸没被认出来，安装失败之后它会拿回批准位并在下次开机自己跑起来"
+    )
+
+
+def test_the_remnant_probe_fails_closed(tmp_path: Path) -> None:
+    """Every uncertainty keeps the id gated.
+
+    A false positive costs one manual start. A false negative hands third-party
+    code its autostart approval back.
+
+    Mutation: return ``False`` from the unreadable-manifest branch.
+    """
+    root = tmp_path / "plugins"
+    root.mkdir()
+    nameless = root / "demo"
+    nameless.mkdir()
+    assert cli_service._plugin_directory_exists(root, "demo"), (
+        "manifest 读不出来的同名目录被当成不存在"
+    )
+    assert not cli_service._plugin_directory_exists(root / "gone", "demo"), (
+        "根目录不存在时反而报有残骸，等于任何一次失败安装都永久拦住这个 id"
+    )
+    staging = root / ".neko_staging_x"
+    staging.mkdir()
+    (staging / "plugin.toml").write_text(
+        '[plugin]\nid = "other"\n', encoding="utf-8"
+    )
+    assert not cli_service._plugin_directory_exists(root, "other"), (
+        "暂存目录被当成安装产物：注册表根本不扫它们"
+    )
+
+
+async def _drive_failed_install(
+    monkeypatch: pytest.MonkeyPatch, gate_root: Path, plugin_id: str
+) -> dict:
+    """Run ``install()`` through its rollback branch and return the store."""
+    store: dict[str, object] = {}
+
+    class _FakeConfigManager:
+        def load_json_config(self, name):
+            if name not in store:
+                raise FileNotFoundError(name)
+            return store[name]
+
+        def save_json_config(self, name, payload):
+            store[name] = payload
+
+    import utils.config_manager as config_manager_module
+
+    from plugin.server.infrastructure import autostart_approvals
+
+    monkeypatch.setattr(
+        config_manager_module, "get_config_manager", _FakeConfigManager
+    )
+    autostart_approvals._reset_cache_for_testing()
+    monkeypatch.setattr(cli_service, "get_install_source_manager", lambda: None)
+
+    service = cli_service.PluginCliService()
+
+    async def _plan_install(**_kwargs):
+        return {"action": "install", "plugin_id": plugin_id}
+
+    def _boom(**_kwargs):
+        raise RuntimeError("install blew up after writing files")
+
+    monkeypatch.setattr(service, "plan_install", _plan_install)
+    monkeypatch.setattr(service, "_install_sync", _boom)
+    monkeypatch.setattr(service, "_autostart_gate_root", lambda _root: gate_root)
+
+    with pytest.raises(RuntimeError):
+        await service.install(package="whatever.neko-plugin")
+    return store
+
+
+@pytest.mark.asyncio
+async def test_install_rollback_keeps_remnants_gated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed install that left code behind keeps its gate.
+
+    ``_install_via_staging_sync`` cleans up with ``ignore_errors=True``, so the
+    directory can survive the failure. Clearing the pending record for every id
+    the attempt touched hands that leftover copy its autostart approval back
+    (codex) — the same judgement the override rollback already makes: look at
+    disk, not at intent.
+
+    Mutation: clear the pending record unconditionally in the except branch.
+    """
+    from plugin.server.infrastructure import autostart_approvals
+
+    root = tmp_path / "plugins"
+    root.mkdir()
+    leftover = root / "demo"
+    leftover.mkdir()
+    (leftover / "plugin.toml").write_text(
+        "\n".join(["[plugin]", 'id = "demo"', ""]), encoding="utf-8"
+    )
+    try:
+        await _drive_failed_install(monkeypatch, root, "demo")
+        assert not autostart_approvals.is_autostart_approved("demo"), (
+            "安装失败留下了可运行的目录，批准位却被还原了：这份第三方代码会在"
+            "下次开机自己跑起来"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()
+
+
+@pytest.mark.asyncio
+async def test_install_rollback_releases_an_id_it_left_clean(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The other direction: nothing on disk means nothing to gate.
+
+    A pending record left behind by a failed install ambushes whatever later
+    takes that id — the user has to start it once by hand for no reason.
+
+    Mutation: keep the record whether or not the directory survived.
+    """
+    from plugin.server.infrastructure import autostart_approvals
+
+    root = tmp_path / "plugins"
+    root.mkdir()
+    try:
+        await _drive_failed_install(monkeypatch, root, "demo")
+        assert autostart_approvals.is_autostart_approved("demo"), (
+            "安装失败什么也没留下，批准位却没还原：将来占用这个 id 的插件会被误伤"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()
+
+
+def test_uninstall_rollback_restores_the_pending_record() -> None:
+    """A rolled-back uninstall must put the gate back with the files.
+
+    The clear happens before the last pre-commit steps, and
+    ``_rollback_precommit`` restores the plugin's files and preferences without
+    knowing the approval record was touched. A plugin the user had never
+    started comes back approved and autostarts at the next boot (codex).
+
+    Restoring is conditional on the directory actually being back: if the code
+    really is gone, a re-marked record would ambush whatever later takes the id
+    — the very thing clearing it was for.
+
+    Mutation: drop the ``mark_autostart_pending`` call from the except branch.
+    """
+    import inspect
+
+    from plugin.server.application.plugins.installation_transactions import uninstall
+
+    source = inspect.getsource(uninstall.uninstall_plugin)
+    clear_at = source.find("clear_autostart_pending, plugin_id")
+    except_at = source.find("except BaseException as exc:")
+    restore_at = source.find("mark_autostart_pending, plugin_id")
+    assert -1 not in (clear_at, except_at, restore_at), (
+        "卸载回滚没有把待批准记录放回去：一次失败的卸载会把没批准过的插件变成已批准"
+    )
+    assert clear_at < except_at < restore_at, (
+        "还原必须发生在回滚分支里，写在主路径上等于把刚清掉的记录又加回去"
+    )
+    assert "if autostart_was_pending and await asyncio.to_thread(plugin_dir.exists)" in source, (
+        "还原没有看盘：代码真没了却补一条记录，将来占用这个 id 的插件会被它误伤"
+    )
+
+
+def test_a_failed_probe_removes_metadata_copied_from_the_source_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A build that could not derive metadata must not ship the old file.
+
+    Plugin trees can already contain ``plugin.meta.json`` — every builtin one in
+    this repo does — and the build pipelines copy the source tree into the
+    staging directory before this runs. Leaving that copy in place when the
+    probe fails ships the previous build's handlers and schemas as if they were
+    this build's, with a source hash that can still match, so the host trusts
+    them instead of falling back to the manifest (codex).
+
+    Mutation: return without unlinking the staged copy.
+    """
+    from plugin.neko_plugin_cli.core import metadata_probe
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "plugin.toml").write_text("id = 'demo'\n", encoding="utf-8")
+    target = tmp_path / "staged"
+    target.mkdir()
+    stale = target / packaged_metadata.PACKAGED_METADATA_FILENAME
+    stale.write_text('{"schema_version": 1}', encoding="utf-8")
+
+    def _boom(*_args, **_kwargs):
+        raise metadata_probe.MetadataProbeError("optional dependency missing")
+
+    monkeypatch.setattr(metadata_probe, "derive_plugin_metadata", _boom)
+
+    assert write_packaged_metadata(source_dir=source, target_dir=target) is None
+    assert not stale.exists(), (
+        "探测失败却把源树里那份旧 plugin.meta.json 留在包里，宿主会当成这次打包的结果"
+    )
