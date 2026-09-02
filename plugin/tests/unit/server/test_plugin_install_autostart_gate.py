@@ -120,12 +120,19 @@ def _installed(tmp_path: Path, directory_name: str, manifest_id: str) -> dict:
     return {"target_plugin_id": directory_name, "target_dir": str(target)}
 
 
-def test_an_already_registered_plugin_is_not_re_gated(
+def test_the_gate_does_not_consult_the_registry_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Upgrading a plugin must not take away autostart it already had.
+    """"Is this plugin new?" is the install plan's answer, not the registry's.
 
-    Mutation: drop the ``already_known`` check.
+    A refresh that overlaps the install can register the freshly written
+    directory before the gate runs; if the gate asked ``state.plugins`` it would
+    see the plugin as pre-existing and skip it, so a race would silently grant
+    autostart to a plugin the user never started (greptile). A stale registry
+    produces the mirror error (codex). Upgrades are excluded at the call site
+    instead — the replace exit does not call this at all.
+
+    Mutation: re-add an ``already_known`` check against ``state.plugins``.
     """
     calls: list[str] = []
     monkeypatch.setattr(
@@ -134,18 +141,34 @@ def test_an_already_registered_plugin_is_not_re_gated(
     )
     from plugin.core.state import state
 
-    monkeypatch.setattr(state, "plugins", {"veteran": {"id": "veteran"}}, raising=False)
-
-    cli_service._mark_new_install_awaiting_autostart(
-        {
-            "installed_plugins": [
-                _installed(tmp_path, "veteran", "veteran"),
-                _installed(tmp_path, "rookie", "rookie"),
-            ]
-        }
+    # 并发刷新已经把它登记进注册表了——这不该让它逃过批准闸。
+    monkeypatch.setattr(
+        state, "plugins", {"already_seen": {"id": "already_seen"}}, raising=False
     )
 
-    assert calls == ["rookie"], f"升级把老插件的自启动资格也收走了：{calls}"
+    cli_service._mark_new_install_awaiting_autostart(
+        {"installed_plugins": [_installed(tmp_path, "already_seen", "already_seen")]}
+    )
+
+    assert calls == ["already_seen"], (
+        f"并发刷新抢先登记之后，这个插件就绕过了批准闸：{calls}"
+    )
+
+
+def test_an_upgrade_never_reaches_the_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The replace exit must not re-gate a plugin the user already runs.
+
+    Mutation: call ``_mark_new_install_awaiting_autostart`` from the replace
+    exit as well.
+    """
+    import inspect
+
+    source = inspect.getsource(cli_service.PluginCliService.install)
+    marks = source.count("_mark_new_install_awaiting_autostart")
+    assert marks == 1, (
+        f"install() 里登记待批准的调用点有 {marks} 个；升级路径也登记的话，"
+        "用户早就在用的插件会因为一次升级失去自启动资格"
+    )
 
 
 def test_the_gate_records_the_manifest_id_not_the_directory_name(

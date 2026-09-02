@@ -600,9 +600,8 @@ class PluginCliService:
                 details=details,
             ) from exc
 
-        await asyncio.to_thread(
-            _mark_new_install_awaiting_autostart, result.install_result
-        )
+        # 这条出口是替换/升级/接管，按定义不是全新安装，不登记待批准——升级把一个
+        # 用户早就在用的插件的自启动资格收走，是把回归包装成安全特性。
         response = {
             **result.install_result,
             # Compatibility response for the existing Package Manager UI.
@@ -2558,12 +2557,17 @@ def _installed_manifest_plugin_id(target_dir: object) -> str:
 def _mark_new_install_awaiting_autostart(install_result: dict) -> None:
     """Withhold autostart from a plugin the user has installed but never run.
 
-    Only genuinely new plugins are recorded. An upgrade or reinstall is still
-    in the registry at this point, and its owner has already started it at some
-    point in the past — taking its autostart away because it was upgraded would
-    be a regression dressed up as a safety feature.
+    Call this only from the fresh-install path. "Is this plugin new?" is decided
+    by the install plan, which computes it before touching disk: ``install_plan``
+    only says ``"install"`` when nothing is installed under that id, and says
+    ``reinstall`` or ``blocked`` otherwise.
+
+    It deliberately does *not* consult ``state.plugins``. That snapshot answers a
+    different question — "has a refresh seen this yet" — and a refresh that
+    overlaps the install can register the freshly written directory before this
+    runs, at which point the plugin looks pre-existing and skips the gate
+    entirely (greptile); a stale registry produces the mirror error (codex).
     """
-    from plugin.core.state import state
     from plugin.server.infrastructure.autostart_approvals import mark_autostart_pending
 
     installed = install_result.get("installed_plugins")
@@ -2583,13 +2587,6 @@ def _mark_new_install_awaiting_autostart(install_result: dict) -> None:
         if not plugin_id and target_dir:
             plugin_id = Path(str(target_dir)).name
         if not plugin_id:
-            continue
-        try:
-            with state.acquire_plugins_read_lock():
-                already_known = plugin_id in state.plugins
-        except Exception:
-            already_known = False
-        if already_known:
             continue
         mark_autostart_pending(plugin_id)
 
