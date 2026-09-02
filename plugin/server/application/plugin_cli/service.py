@@ -357,13 +357,31 @@ class PluginCliService:
             # 失败时插件已经在盘上了，只能报个 warning——而下次启动会把"没有待批准
             # 记录"当成已批准，第三方代码就在用户首次启动之前跑起来了（coderabbit
             # / greptile）。plan_dict 的 plugin_id 读自包内 manifest，提升之前就有。
-            gate_plugin_id = str(plan_dict.get("plugin_id") or "").strip()
-            gate_was_approved = True
-            if gate_plugin_id:
-                gate_was_approved = await asyncio.to_thread(
-                    is_autostart_approved, gate_plugin_id
-                )
+            # bundle 的 plan.plugin_id 是**包** id，而注册表按包内每个插件自己的
+            # manifest id 记批准状态——只登记包 id 等于对整组一个都没拦住
+            # （coderabbit）。所以 bundle 用 bundle_plugin_ids，单插件用 plugin_id。
+            bundle_ids = [
+                str(item or "").strip()
+                for item in (plan_dict.get("bundle_plugin_ids") or ())
+                if str(item or "").strip()
+            ]
+            gate_plugin_ids = bundle_ids or [
+                pid for pid in (str(plan_dict.get("plugin_id") or "").strip(),) if pid
+            ]
+            gate_restore: list[str] = []
+            for gate_plugin_id in gate_plugin_ids:
+                if await asyncio.to_thread(is_autostart_approved, gate_plugin_id):
+                    gate_restore.append(gate_plugin_id)
                 if not await asyncio.to_thread(mark_autostart_pending, gate_plugin_id):
+                    # 拒绝之前先把这一轮已经登记的还原掉，别留半截状态。
+                    for done in gate_restore:
+                        if not await asyncio.to_thread(clear_autostart_pending, done):
+                            logger.error(
+                                "could not restore the autostart approval for "
+                                "plugin_id={} while refusing the install; it must "
+                                "be started once by hand",
+                                done,
+                            )
                     raise ServerDomainError(
                         code="PLUGIN_AUTOSTART_GATE_UNAVAILABLE",
                         message=(
@@ -386,9 +404,9 @@ class PluginCliService:
                     _allow_external_profiles_root=_allow_external_profiles_root,
                 )
             except BaseException:
-                # 安装没成，把批准状态原样放回去——否则一次失败的安装会给这个 id
-                # 留下一条待批准记录，将来同 id 的插件会被它误伤。
-                if gate_plugin_id and gate_was_approved:
+                # 安装没成，把批准状态原样放回去——否则一次失败的安装会给这些 id
+                # 留下待批准记录，将来同 id 的插件会被它误伤。
+                for gate_plugin_id in gate_restore:
                     if not await asyncio.to_thread(
                         clear_autostart_pending, gate_plugin_id
                     ):

@@ -796,3 +796,65 @@ def test_every_approval_write_checks_whether_it_persisted() -> None:
         "这些调用点把批准写入的成败扔掉了，闸门会在磁盘出问题时静默失效："
         f"{offenders}"
     )
+
+
+@pytest.mark.asyncio
+async def test_every_plugin_in_a_bundle_is_gated_before_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bundle's plan id is the package id, not any plugin's manifest id.
+
+    ``build_install_plan`` sets ``plugin_id`` to the package id for bundles,
+    while the registry looks approval up per contained plugin. Gating only the
+    package id therefore gates nobody, and a crash between promotion and the
+    post-install mark leaves every bundled plugin autostart-eligible
+    (coderabbit).
+
+    Mutation: gate ``plan_dict["plugin_id"]`` instead of ``bundle_plugin_ids``.
+    """
+    monkeypatch.setattr(cli_service, "get_install_source_manager", lambda: None)
+    monkeypatch.setattr(cli_service, "is_autostart_approved", lambda plugin_id: True)
+
+    marked: list[str] = []
+
+    def _mark(plugin_id: str) -> bool:
+        marked.append(plugin_id)
+        return True
+
+    monkeypatch.setattr(cli_service, "mark_autostart_pending", _mark)
+    monkeypatch.setattr(
+        cli_service, "_mark_new_install_awaiting_autostart", lambda result: []
+    )
+
+    service = cli_service.PluginCliService()
+
+    async def _plan_install(**_kwargs):
+        return {
+            "action": "install",
+            "package_type": "bundle",
+            "plugin_id": "some_bundle_package",
+            "bundle_plugin_ids": ["alpha", "beta"],
+        }
+
+    marked_before_install: list[list[str]] = []
+
+    def _install_sync(**_kwargs):
+        marked_before_install.append(list(marked))
+        return {"installed_plugins": []}
+
+    monkeypatch.setattr(service, "plan_install", _plan_install)
+    monkeypatch.setattr(service, "_install_sync", _install_sync)
+
+    async def _record(*, install_result, package, source):
+        return install_result
+
+    monkeypatch.setattr(service, "_record_requested_install_source", _record)
+
+    await service.install(package="bundle.neko-bundle")
+
+    assert marked_before_install and set(marked_before_install[0]) == {"alpha", "beta"}, (
+        f"提升之前没有把 bundle 里每个插件都拦住：{marked_before_install}"
+    )
+    assert "some_bundle_package" not in marked, (
+        "登记的是包 id，而注册表按每个插件自己的 manifest id 查批准状态"
+    )
