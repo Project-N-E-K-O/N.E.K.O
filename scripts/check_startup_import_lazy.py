@@ -218,9 +218,88 @@ def _noqa_lines(source: str) -> set[int]:
     return lines
 
 
+def _iter_eager_nodes(node: ast.AST) -> Iterator[ast.AST]:
+    """Walk one module-scope statement without entering deferred bodies.
+
+    ``ast.walk`` descends into nested function bodies, and a read in there is
+    precisely the sanctioned lazy form this rule exists to steer people toward —
+    flagging it would make the guard fight its own advice. Decorators, default
+    arguments and annotations do run at import time, so those stay in the walk.
+    """
+    stack: list[ast.AST] = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            stack.extend(current.decorator_list)
+            stack.extend(ast.iter_child_nodes(current.args))
+            if current.returns is not None:
+                stack.append(current.returns)
+            continue
+        if isinstance(current, ast.Lambda):
+            stack.extend(ast.iter_child_nodes(current.args))
+            continue
+        stack.extend(ast.iter_child_nodes(current))
+
+
+def _module_alias_map(body: list[ast.stmt]) -> dict[str, str]:
+    """Names bound at module scope -> the module path each one stands for.
+
+    Needed because the expensive read can be spelled through an alias:
+    ``import config.prompts.prompts_directives as directives`` followed by
+    ``directives.DIRECTIVE_PATTERNS``. Only module-scope bindings count; a name
+    rebound inside a function cannot put anything on the import chain.
+    """
+    aliases: dict[str, str] = {}
+    for stmt in _iter_module_scope_stmts(body):
+        if isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+                else:
+                    # ``import a.b.c`` binds only ``a``; the rest is spelled out
+                    # again at the use site, so the head maps to itself.
+                    head = alias.name.split(".")[0]
+                    aliases.setdefault(head, head)
+        elif isinstance(stmt, ast.ImportFrom) and stmt.module and stmt.level == 0:
+            for alias in stmt.names:
+                aliases[alias.asname or alias.name] = f"{stmt.module}.{alias.name}"
+    return aliases
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    """``a.b.c`` as a string, or None when the root is not a bare name."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _banned_symbol_read(dotted: str, aliases: dict[str, str]) -> tuple[str, str] | None:
+    """Resolve ``directives.DIRECTIVE_PATTERNS`` to a BANNED_SYMBOLS hit."""
+    parts = dotted.split(".")
+    if len(parts) < 2:
+        return None
+    head, middle, symbol = parts[0], parts[1:-1], parts[-1]
+    target = aliases.get(head)
+    if target is None:
+        # 头名字不是本模块 import 进来的，解析不出模块路径——不猜。
+        return None
+    module = ".".join([target, *middle])
+    home = BANNED_SYMBOLS.get((module, symbol))
+    if home is None:
+        return None
+    return module + "." + symbol, home
+
+
 def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, int, str]]:
     violations: list[tuple[int, int, str]] = []
     suppressed = _noqa_lines(source)
+    aliases = _module_alias_map(tree.body)
     for stmt in _iter_module_scope_stmts(tree.body):
         found: list[tuple[str, str]] = []  # (banned key, import text)
         symbols: list[tuple[str, str, str]] = []  # (qualified name, home, import text)
@@ -242,9 +321,13 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
                     alias_key = _banned_key(f"{stmt.module}.{alias.name}")
                     if alias_key is not None:
                         found.append((alias_key, f"from {stmt.module} import {alias.name}"))
-            if stmt.module:
+            if stmt.module and stmt.level == 0:
                 # 精确 (模块, 符号) 对，不做前缀匹配：同一个模块里的其它名字都是
                 # 合法导入，宽一点就会把 main 打红。
+                #
+                # level == 0 一起卡住：相对导入的 stmt.module 是**相对**路径，
+                # 拿它去比绝对的 (模块, 符号) 对会误判——`from ...a.b import X`
+                # 解析出来的根本是另一个模块（CodeRabbit）。
                 for alias in stmt.names:
                     home = BANNED_SYMBOLS.get((stmt.module, alias.name))
                     if home is not None:
@@ -255,14 +338,28 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
                                 f"from {stmt.module} import {alias.name}",
                             )
                         )
+        # 属性读法：`import ... as d` + 模块作用域的 `d.DIRECTIVE_PATTERNS`。
+        # 只认 from-import 的话，这条等价写法可以完全绕过闸门，而它触发的是同一个
+        # __getattr__、付的是同一份代价（CodeRabbit）。只看 Load，不看赋值目标。
+        for node in _iter_eager_nodes(stmt):
+            if not isinstance(node, ast.Attribute) or not isinstance(node.ctx, ast.Load):
+                continue
+            dotted = _dotted_name(node)
+            if dotted is None:
+                continue
+            hit = _banned_symbol_read(dotted, aliases)
+            if hit is not None:
+                symbols.append((hit[0], hit[1], dotted))
         # noqa on any line of a multiline import suppresses the statement.
         end_lineno = getattr(stmt, "end_lineno", None) or stmt.lineno
         stmt_suppressed = any(
             ln in suppressed for ln in range(stmt.lineno, end_lineno + 1)
         )
+        seen_symbols: set[str] = set()
         for qualified, home, text in symbols:
-            if stmt_suppressed:
+            if stmt_suppressed or qualified in seen_symbols:
                 continue
+            seen_symbols.add(qualified)
             violations.append(
                 (
                     stmt.lineno,

@@ -184,3 +184,64 @@ def test_the_startup_gate_catches_a_module_scope_import_of_the_lazy_symbol() -> 
         ")\n"
     )
     assert _check(escaped) == [], "noqa 逃生阀对符号规则失效了"
+
+
+@pytest.mark.unit
+def test_the_startup_gate_is_not_bypassed_by_an_aliased_attribute_read() -> None:
+    """A from-import ban that only sees from-imports is a ban with a doorway.
+
+    ``import ... as d`` followed by a module-scope ``d.DIRECTIVE_PATTERNS`` runs
+    the same module ``__getattr__`` and pays the same 294 ms, but it is an
+    ``ast.Attribute`` read rather than an import alias, so the first version of
+    this rule never saw it (CodeRabbit). A guard whose bypass can be named in one
+    line does not guard anything.
+
+    Mutation: drop the ``ast.Attribute`` walk, or stop resolving aliases.
+    """
+    aliased = (
+        "import config.prompts.prompts_directives as directives\n"
+        "PATTERNS = directives.DIRECTIVE_PATTERNS\n"
+    )
+    violations = _check(aliased)
+    assert len(violations) == 1, f"别名属性读法绕过了闸门：{violations}"
+    assert "DIRECTIVE_PATTERNS" in violations[0][2]
+
+    # 不带 as 的写法：`import a.b.c` 只绑定 `a`，使用点把全路径又拼了一遍。
+    spelled_out = (
+        "import config.prompts.prompts_directives\n"
+        "PATTERNS = config.prompts.prompts_directives.DIRECTIVE_PATTERNS\n"
+    )
+    assert len(_check(spelled_out)) == 1, "全路径属性读法没被认出来"
+
+    # 函数体内读它正是被引导的写法，必须放行。
+    lazy = (
+        "import config.prompts.prompts_directives as directives\n"
+        "def f():\n"
+        "    return directives.DIRECTIVE_PATTERNS\n"
+    )
+    assert _check(lazy) == [], "函数内属性读被误判"
+
+    # 同名符号挂在别的模块上，不该命中——规则是 (模块, 符号) 对，不是符号名。
+    lookalike = (
+        "import some.other.module as d\n"
+        "PATTERNS = d.DIRECTIVE_PATTERNS\n"
+    )
+    assert _check(lookalike) == [], "只按符号名匹配了，模块没参与判断"
+
+
+@pytest.mark.unit
+def test_the_startup_gate_does_not_fire_on_a_relative_import() -> None:
+    """A relative import's ``stmt.module`` is a relative path, not an absolute one.
+
+    ``from ...config.prompts.prompts_directives import X`` parses with
+    ``module == "config.prompts.prompts_directives"`` and ``level == 3``, but it
+    resolves to an entirely different module. Matching it against the absolute
+    ``BANNED_SYMBOLS`` key would be a false positive on a shared gate that every
+    PR runs (CodeRabbit).
+
+    Mutation: drop the ``stmt.level == 0`` condition.
+    """
+    relative = (
+        "from ...config.prompts.prompts_directives import DIRECTIVE_PATTERNS\n"
+    )
+    assert _check(relative) == [], "相对导入被当成绝对路径匹配了——共享闸门上的误报"
