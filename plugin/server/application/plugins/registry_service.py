@@ -282,6 +282,31 @@ def _find_existing_runtime_plugin_id_by_config_path(
     return None
 
 
+def _declared_id_taken_by_another_plugin(
+    declared_plugin_id: str, config_path: Path
+) -> bool:
+    """Whether some *other* plugin is live under ``declared_plugin_id`` right now.
+
+    Reads the registry rather than the refresh's opening snapshot. That snapshot
+    is taken once per round and never updated, so two plugins declaring the same
+    id and first seen in the same round both looked unclaimed — the second one's
+    gate move would then take the first one's record and hand a never-started
+    plugin its autostart back (coderabbit).
+
+    "Other" is by config path: a plugin re-registering under its own id is not
+    competing with itself.
+    """
+    if not declared_plugin_id:
+        return False
+    resolved = _resolve_config_path(config_path)
+    with state.acquire_plugins_read_lock():
+        meta = state.plugins.get(declared_plugin_id)
+        if not isinstance(meta, dict):
+            return False
+        owner = _resolve_meta_config_path(meta)
+    return owner is not None and owner != resolved
+
+
 def _collect_plugin_contexts_from_roots_sync(
     roots: tuple[Path, ...],
 ) -> tuple[list[PluginContext], dict[str, PluginContext]]:
@@ -830,7 +855,9 @@ def _apply_discovery_record_sync(
     _move_autostart_gate_to_runtime_id(
         record.plugin_id,
         runtime_plugin_id,
-        declared_id_is_taken=record.plugin_id in existing_snapshot,
+        declared_id_is_taken=_declared_id_taken_by_another_plugin(
+            record.plugin_id, record.config_path
+        ),
     )
 
     plugin_meta = _build_plugin_meta(

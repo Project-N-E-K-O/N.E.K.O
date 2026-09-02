@@ -1539,6 +1539,10 @@ def test_the_gate_move_runs_before_registration() -> None:
     assert resolve_at < move_at < meta_at, (
         "搬迁必须在运行时 id 定下来之后、登记进注册表之前"
     )
+    assert "declared_id_is_taken=_declared_id_taken_by_another_plugin(" in source, (
+        "「声明 id 是不是别人的」用的不是实时注册表——刷新开始时的快照看不见"
+        "同一轮里先注册的那个同 id 插件，搬迁会把它的待批准记录抢走"
+    )
 
 
 def test_packaging_parses_the_manifest_without_local_overlays(
@@ -1740,3 +1744,45 @@ def test_the_gate_move_does_not_steal_an_incumbent_record(
         )
     finally:
         autostart_approvals._reset_cache_for_testing()
+
+
+def test_the_gate_move_reads_the_live_registry_not_the_round_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two same-id plugins first seen in one refresh must not share a verdict.
+
+    ``existing_snapshot`` is taken once at the start of a refresh and never
+    updated, so both plugins looked unclaimed and the second one's gate move
+    took the first one's pending record (coderabbit). The question is about now,
+    so it is asked of the registry.
+
+    Mutation: answer from a snapshot dict instead of ``state.plugins``.
+    """
+    from plugin.core.state import state
+    from plugin.server.application.plugins import registry_service
+
+    mine = tmp_path / "a" / "plugin.toml"
+    theirs = tmp_path / "b" / "plugin.toml"
+    for path in (mine, theirs):
+        path.parent.mkdir(parents=True)
+        path.write_text("id = 'demo'" + chr(10), encoding="utf-8")
+
+    monkeypatch.setattr(state, "plugins", {}, raising=False)
+    assert not registry_service._declared_id_taken_by_another_plugin("demo", mine), (
+        "注册表里根本没有 demo，却说这个 id 被占了"
+    )
+
+    # 同一轮里先注册的那个——快照里没有它，注册表里有。
+    monkeypatch.setattr(
+        state, "plugins", {"demo": {"config_path": str(theirs)}}, raising=False
+    )
+    assert registry_service._declared_id_taken_by_another_plugin("demo", mine), (
+        "同一轮里先注册的同 id 插件没被看见：搬迁会把它的待批准记录抢走"
+    )
+
+    monkeypatch.setattr(
+        state, "plugins", {"demo": {"config_path": str(mine)}}, raising=False
+    )
+    assert not registry_service._declared_id_taken_by_another_plugin("demo", mine), (
+        "插件自己重新注册被当成和自己抢 id"
+    )
