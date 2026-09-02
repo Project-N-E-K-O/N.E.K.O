@@ -404,3 +404,43 @@ def test_the_packaged_metadata_file_is_staged_only_once(tmp_path: Path) -> None:
     another.write_text("", encoding="utf-8")
     build_module._record_staged_file(staged, another)
     assert staged == [already, another], "新文件反而没被记上"
+
+
+def test_approval_is_not_granted_when_the_preference_fails_to_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A start that could not be recorded must not grant autostart.
+
+    If the runtime override write fails, the call raises and is reported as
+    ``partial_success`` — but that machine now has no user override, so after a
+    restart the registry falls back to the manifest defaults, where both
+    ``enabled`` and ``auto_start`` are true. Clearing the pending record first
+    would hand out a permanent autostart approval on the strength of an intent
+    that never landed (greptile).
+
+    Failing closed here costs nothing a user had: pending records only exist for
+    freshly installed plugins, which never autostarted in the first place.
+
+    Mutation: move the ``clear_autostart_pending`` calls back above the ``try``.
+    """
+    from plugin.server.application.plugins import lifecycle_service
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.infrastructure.runtime_overrides import (
+        RuntimeOverridePersistenceError,
+    )
+
+    cleared: list[str] = []
+    monkeypatch.setattr(lifecycle_service, "clear_autostart_pending", cleared.append)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeOverridePersistenceError("disk said no")
+
+    monkeypatch.setattr(lifecycle_service, "set_runtime_override", _boom)
+    monkeypatch.setattr(lifecycle_service, "migrate_runtime_override", _boom)
+
+    with pytest.raises(ServerDomainError):
+        lifecycle_service._persist_user_runtime_intent("brand_new", True)
+
+    assert cleared == [], (
+        "偏好没写成却已经把批准位清了，重启后这个插件会凭 manifest 默认值自启"
+    )

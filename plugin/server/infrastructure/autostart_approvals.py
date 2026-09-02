@@ -29,7 +29,9 @@ the failure mode of every bug in this file is a plugin autostarting the way it
 always did.
 
 Entries are added when a plugin is newly installed and removed the first time
-the user starts or enables it.
+the user starts or enables it — and only once that start has been durably
+recorded. Clearing before the runtime preference lands would grant autostart on
+the strength of an intent that never persisted.
 """
 
 from __future__ import annotations

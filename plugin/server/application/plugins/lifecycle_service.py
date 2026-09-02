@@ -227,14 +227,6 @@ def _persist_user_runtime_intent(
     previous_plugin_ids: tuple[str, ...] = (),
     runtime_state_changed: bool = False,
 ) -> None:
-    if enabled:
-        # 这条路只有用户自己启用/启动插件才会走到，正是"它从此可以自启"的那一刻。
-        clear_autostart_pending(plugin_id)
-        # 改名前的那些 id 一起清。安装时按 manifest 声明的 id 记待批准，而插件可能
-        # 因为 id 冲突以另一个运行时 id 注册；只清运行时 id 的话，等冲突消失、它又
-        # 用回声明 id 时，那条残留记录会继续挡着它自启（coderabbit）。
-        for previous_plugin_id in previous_plugin_ids:
-            clear_autostart_pending(previous_plugin_id)
     try:
         auto_start = enabled if PLUGIN_SYNC_AUTO_START_ON_TOGGLE else None
         if previous_plugin_ids:
@@ -266,6 +258,23 @@ def _persist_user_runtime_intent(
             },
             log_level="error",
         ) from exc
+
+    if enabled:
+        # 清在偏好写盘**之后**。写盘失败会抛上去、只被报成 partial_success，而这台
+        # 机器上就没有用户 override 了——重启后注册表回落到 manifest 默认值
+        # （enabled/auto_start 都是 true）。先清的话，等于凭一个没落地的意图永久发出
+        # 了自启动批准（greptile）。
+        #
+        # 这是 autostart_approvals 那条"一切失败都朝着照常自启"原则的例外，而且不
+        # 冲突：那条原则说的是**读**不出记录时别把用户现有的自启动关掉；这里是**写**，
+        # 而待批准记录只存在于新装插件上——它们本来就没自启过，写失败时不批准，
+        # 回到的正是安装前的状态。
+        clear_autostart_pending(plugin_id)
+        # 改名前的那些 id 一起清。安装时按 manifest 声明的 id 记待批准，而插件可能
+        # 因为 id 冲突以另一个运行时 id 注册；只清运行时 id 的话，等冲突消失、它又
+        # 用回声明 id 时，那条残留记录会继续挡着它自启（coderabbit）。
+        for previous_plugin_id in previous_plugin_ids:
+            clear_autostart_pending(previous_plugin_id)
 
 
 def _mark_preference_persistence_failure(
