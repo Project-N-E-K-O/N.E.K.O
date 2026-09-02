@@ -1131,7 +1131,9 @@ def test_a_started_stall_does_not_claim_to_know_which_kind_it_was():
         node_harness.subprocess.run = original
 
     message = str(excinfo.value)
-    assert "compiling it did" in message
+    # The whole phrase: asserting only the tail would still pass on a message
+    # that offered compilation alone, which is the opposite of what this pins.
+    assert "blocked the event loop or compiling it did" in message, message
     assert "blocked the event loop synchronously." not in message, (
         f"这句话断言了我们分辨不出来的事：{message}"
     )
