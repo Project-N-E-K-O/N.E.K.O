@@ -239,6 +239,19 @@ def _iter_eager_nodes(node: ast.AST) -> Iterator[ast.AST]:
         if isinstance(current, ast.Lambda):
             stack.extend(ast.iter_child_nodes(current.args))
             continue
+        if isinstance(current, ast.If) and _is_type_checking_if(current):
+            # 和 _iter_module_scope_stmts 保持一致：TYPE_CHECKING 的 body 不在运行时
+            # 执行，else 分支执行。外层迭代器把这个 If **节点本身**照常 yield 出来
+            # （它先 yield 再决定要不要下降），所以这里不跳的话，走查会一头扎进那段
+            # 不执行的代码，把零代价的写法报成启动期访问——共享闸门上的误报
+            # （codex）。
+            #
+            # test 不用走：_is_type_checking_if 只认裸 `TYPE_CHECKING` 或
+            # `typing.TYPE_CHECKING`，两者都不可能含被禁读取，所以走它是构造上
+            # 不可达的死代码。普通 if 的 test 会执行、也确实可能藏读取，那条路
+            # 不走这个分支，照常整棵走。
+            stack.extend(current.orelse)
+            continue
         stack.extend(ast.iter_child_nodes(current))
 
 
@@ -300,9 +313,14 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
     violations: list[tuple[int, int, str]] = []
     suppressed = _noqa_lines(source)
     aliases = _module_alias_map(tree.body)
+    # 全文件去重：同一个读取点会被外层容器和内层语句各遍历一次。
+    reported_symbols: set[tuple[int, int, str]] = set()
     for stmt in _iter_module_scope_stmts(tree.body):
         found: list[tuple[str, str]] = []  # (banned key, import text)
-        symbols: list[tuple[str, str, str]] = []  # (qualified name, home, import text)
+        # (qualified name, home, text, lineno, col) —— 位置取**读取点自身**，不是
+        # 外层语句：一个嵌在模块作用域 if/try/class 里的读取，会被外层容器和内层
+        # 语句各走一遍，按语句定位就会报两条。
+        symbols: list[tuple[str, str, str, int, int]] = []
         if isinstance(stmt, ast.Import):
             for alias in stmt.names:
                 key = _banned_key(alias.name)
@@ -336,6 +354,8 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
                                 f"{stmt.module}.{alias.name}",
                                 home,
                                 f"from {stmt.module} import {alias.name}",
+                                stmt.lineno,
+                                stmt.col_offset,
                             )
                         )
         # 属性读法：`import ... as d` + 模块作用域的 `d.DIRECTIVE_PATTERNS`。
@@ -349,21 +369,22 @@ def check_source(path: Path, source: str, tree: ast.Module) -> list[tuple[int, i
                 continue
             hit = _banned_symbol_read(dotted, aliases)
             if hit is not None:
-                symbols.append((hit[0], hit[1], dotted))
+                symbols.append((hit[0], hit[1], dotted, node.lineno, node.col_offset))
         # noqa on any line of a multiline import suppresses the statement.
         end_lineno = getattr(stmt, "end_lineno", None) or stmt.lineno
         stmt_suppressed = any(
             ln in suppressed for ln in range(stmt.lineno, end_lineno + 1)
         )
-        seen_symbols: set[str] = set()
-        for qualified, home, text in symbols:
-            if stmt_suppressed or qualified in seen_symbols:
+        for qualified, home, text, lineno, col in symbols:
+            if stmt_suppressed or lineno in suppressed:
                 continue
-            seen_symbols.add(qualified)
+            if (lineno, col, qualified) in reported_symbols:
+                continue
+            reported_symbols.add((lineno, col, qualified))
             violations.append(
                 (
-                    stmt.lineno,
-                    stmt.col_offset + 1,
+                    lineno,
+                    col + 1,
                     f"`{text}` at module scope forces `{qualified}` to be "
                     f"evaluated at import time, which puts its cost back on the "
                     f"startup chain before any port binds. Import the module and "

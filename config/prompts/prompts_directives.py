@@ -2921,3 +2921,16 @@ def scan_negative_keywords(message: str, lang: str = "zh") -> bool:
         if kw.lower() in lower:
             return True
     return False
+
+
+# `from ... import *` 不经过 __getattr__。没有 __all__ 时 Python 直接枚举模块全局量，
+# 于是 DIRECTIVE_PATTERNS 改成惰性之后会从通配导入里**静默消失**，下游再用就是
+# NameError（codex）。声明 __all__ 把它显式列回去：有 __all__ 时 import * 逐名
+# getattr，惰性访问器照常触发。
+#
+# 其余名字按"此刻实际存在的公开全局量"原样算出来，而不是手写一张清单——这个模块
+# 没有 __all__ 时的历史行为就是"所有不以下划线开头的模块级名字"，手写会顺手收窄
+# 通配面，而收窄了谁也不会发现。必须留在文件末尾，globals() 才是全的。
+__all__ = sorted(
+    {name for name in globals() if not name.startswith("_")} | {"DIRECTIVE_PATTERNS"}
+)

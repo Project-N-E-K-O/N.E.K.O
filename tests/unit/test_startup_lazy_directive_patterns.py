@@ -245,3 +245,98 @@ def test_the_startup_gate_does_not_fire_on_a_relative_import() -> None:
         "from ...config.prompts.prompts_directives import DIRECTIVE_PATTERNS\n"
     )
     assert _check(relative) == [], "相对导入被当成绝对路径匹配了——共享闸门上的误报"
+
+
+@pytest.mark.unit
+def test_the_lazy_symbol_still_survives_a_wildcard_import() -> None:
+    """``import *`` does not consult ``__getattr__``, so the name needs ``__all__``.
+
+    With no ``__all__``, Python builds a wildcard import by enumerating module
+    globals. ``DIRECTIVE_PATTERNS`` used to be a global; once it became lazy it
+    silently vanished from ``from ... import *``, and a downstream consumer would
+    get a ``NameError`` at the point of use rather than at import (codex).
+
+    Declaring ``__all__`` fixes it because Python then iterates that list and
+    ``getattr``s each name, which does reach ``__getattr__``. The list is computed
+    from the module's actual public globals rather than hand-written, so declaring
+    it cannot quietly narrow the wildcard surface that already existed.
+
+    Run in a subprocess: a wildcard import here would compile the patterns and
+    fill the cache for the rest of the session, which is exactly what the
+    laziness guard above needs to observe as empty.
+
+    Mutation: delete the ``__all__`` block.
+    """
+    probe = (
+        "import config.prompts.prompts_directives as D;"
+        "print('LAZY=%s' % (D._DIRECTIVE_PATTERNS_CACHE is None));"
+        "ns = {};"
+        "exec('from config.prompts.prompts_directives import *', ns);"
+        "print('WILDCARD=%s' % ('DIRECTIVE_PATTERNS' in ns));"
+        "print('SIBLING=%s' % ('extract_directives' in ns));"
+        "print('SAME=%s' % (ns.get('DIRECTIVE_PATTERNS') is D.DIRECTIVE_PATTERNS))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=300,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    out = result.stdout
+
+    # 声明 __all__ 不能把惰性弄没了——它只是一张名字表，不该触发求值。
+    assert "LAZY=True" in out, "加了 __all__ 之后 import 期就编译了"
+    assert "WILDCARD=True" in out, (
+        "通配导入里没有 DIRECTIVE_PATTERNS——下游 `import *` 的消费者会在用到时才 NameError"
+    )
+    assert "SIBLING=True" in out, "声明 __all__ 顺手把通配面收窄了"
+    assert "SAME=True" in out, "通配拿到的不是同一个对象"
+
+
+@pytest.mark.unit
+def test_the_startup_gate_does_not_fire_inside_type_checking() -> None:
+    """A read under ``if TYPE_CHECKING:`` costs nothing at runtime.
+
+    ``_iter_module_scope_stmts`` already excludes that branch — but it yields the
+    ``If`` node itself before deciding not to descend, so an unconditional child
+    walk lands right back inside the body it just excluded (codex). On a gate
+    every PR runs, that is a false positive on code with no runtime cost, which
+    is worse than a miss.
+
+    Mutation: drop the ``TYPE_CHECKING`` skip in ``_iter_eager_nodes``.
+    """
+    type_checking_only = (
+        "from typing import TYPE_CHECKING\n"
+        "import config.prompts.prompts_directives as d\n"
+        "if TYPE_CHECKING:\n"
+        "    P = d.DIRECTIVE_PATTERNS\n"
+    )
+    assert _check(type_checking_only) == [], "TYPE_CHECKING 分支被当成运行时访问了"
+
+    # 但真会执行的模块作用域分支必须照抓——别把豁免开得比 TYPE_CHECKING 还宽。
+    really_runs = (
+        "import config.prompts.prompts_directives as d\n"
+        "if True:\n"
+        "    P = d.DIRECTIVE_PATTERNS\n"
+    )
+    assert len(_check(really_runs)) == 1, "会执行的 if 分支里的访问被漏掉了"
+
+    # TYPE_CHECKING 的 else 分支是会执行的，同样要抓。
+    else_branch = (
+        "from typing import TYPE_CHECKING\n"
+        "import config.prompts.prompts_directives as d\n"
+        "if TYPE_CHECKING:\n"
+        "    pass\n"
+        "else:\n"
+        "    P = d.DIRECTIVE_PATTERNS\n"
+    )
+    assert len(_check(else_branch)) == 1, "TYPE_CHECKING 的 else 分支被一起豁免了"
+
+    # if 的判断表达式一定执行，而且它是唯一只能从 If 节点本身看到的位置——body 里的
+    # 语句外层迭代器会单独 yield 一遍，test 不会。跳过 If 时把 test 一起丢掉，这里就
+    # 漏了。
+    in_the_test = (
+        "import config.prompts.prompts_directives as d\n"
+        "if d.DIRECTIVE_PATTERNS:\n"
+        "    pass\n"
+    )
+    assert len(_check(in_the_test)) == 1, "if 判断表达式里的访问被漏掉了"
