@@ -1143,7 +1143,19 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         # 卸载之后那条待批准记录一定是过时的：它是为被卸掉的那份代码记的。
         # 留着的话，恢复出来的内置插件（用户原本就在自启）会被它继续拦下来；
         # 插件被整个移除时，它也会挂在这个 id 上等着误伤将来的重装（codex）。
-        await asyncio.to_thread(clear_autostart_pending, plugin_id)
+        if not await asyncio.to_thread(clear_autostart_pending, plugin_id):
+            # 清不掉就不能报成功。盘上那条旧记录会继续拦住恢复出来的内置插件，
+            # 而且同 id 的重装还会继承它（coderabbit）。抛出去交给既有的预提交
+            # 回滚，把卸载恢复回去，比留下一个说不清的状态好。
+            raise UninstallPluginError(
+                code="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
+                message=(
+                    "uninstall could not clear the plugin's autostart approval "
+                    "record; refusing to commit"
+                ),
+                status_code=500,
+                stage=stage,
+            )
         preference_action: PreferenceAction = (
             "preserved" if restored_builtin else "cleared"
         )

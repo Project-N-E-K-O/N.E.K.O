@@ -603,3 +603,26 @@ def test_the_override_refuses_to_promote_without_a_durable_gate() -> None:
     assert -1 not in (refuse_at, switch_at) and refuse_at < switch_at, (
         "拒绝发生在切换之后就不干净了——那时第三方源已经被提升"
     )
+
+
+def test_uninstall_fails_when_the_approval_record_cannot_be_cleared() -> None:
+    """A stale record outlives the code it was written for.
+
+    If the clear does not reach disk, the restored builtin keeps being held back
+    from autostart on every subsequent start, and a later reinstall under the
+    same id inherits the record too. Committing the uninstall and reporting
+    success hides that (coderabbit); raising hands it to the existing
+    pre-commit rollback instead.
+
+    Mutation: ignore ``clear_autostart_pending``'s return value in the uninstall
+    transaction.
+    """
+    import inspect
+
+    from plugin.server.application.plugins.installation_transactions import uninstall
+
+    source = inspect.getsource(uninstall.uninstall_plugin)
+    assert "if not await asyncio.to_thread(clear_autostart_pending" in source, (
+        "卸载忽略了批准清除的失败，会带着一条过时记录报成功"
+    )
+    assert "PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED" in source

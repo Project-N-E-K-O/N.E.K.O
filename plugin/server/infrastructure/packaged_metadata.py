@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -263,6 +264,16 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
     try:
         meta_stat = meta_path.stat()
     except OSError:
+        return None
+    if not stat.S_ISREG(meta_stat.st_mode):
+        # ⚠️ 元数据文件自己也可能不是普通文件。前面那道"只收普通文件"的闸设在遍历
+        # 里，而 plugin.meta.json 恰恰被排除在遍历之外（生成物不参与自己的新鲜度
+        # 判定），所以它一直没被检查过。stat() 在 FIFO 上照样成功，而下面的
+        # read_text() 会在没有写端时永久阻塞——刷新整段持锁（coderabbit）。
+        logger.warning(
+            "packaged plugin metadata is not a regular file, ignoring it: path={}",
+            meta_path,
+        )
         return None
 
     if meta_stat.st_size > MAX_PACKAGED_METADATA_BYTES:

@@ -752,3 +752,39 @@ def test_mark_reports_whether_the_gate_is_durable(
         assert autostart_approvals.mark_autostart_pending("newcomer") is True
     finally:
         autostart_approvals._reset_cache_for_testing()
+
+
+def test_a_non_regular_metadata_file_is_never_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``plugin.meta.json`` itself can be a named pipe.
+
+    The regular-file check added for the source walk deliberately skips this
+    file — a generated artefact does not take part in its own freshness check —
+    so nothing was checking the metadata file itself. ``stat()`` succeeds on a
+    FIFO and ``read_text()`` then blocks forever with no writer, while registry
+    refresh holds the lock (coderabbit).
+
+    Mutation: drop the ``stat.S_ISREG`` check.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    real_stat = Path.stat
+
+    class _FifoStat:
+        st_mode = 0o010600  # S_IFIFO
+        st_size = 128
+        st_mtime_ns = 1
+
+    def _fake_stat(self, *args, **kwargs):
+        if Path(self) == meta_path:
+            return _FifoStat()
+        return real_stat(self, *args, **kwargs)
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("read_text() reached a non-regular metadata file")
+
+    monkeypatch.setattr(Path, "stat", _fake_stat)
+    monkeypatch.setattr(Path, "read_text", _boom)
+
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is None
