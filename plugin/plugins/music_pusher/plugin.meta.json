@@ -1772,7 +1772,7 @@
       "name": "上传音乐并自动推送"
     }
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "sdk_version": "0.1.0",
   "source_files": [
     "__init__.py",

@@ -802,3 +802,30 @@ def test_a_non_regular_metadata_file_is_never_read(
     monkeypatch.setattr(Path, "read_text", _boom)
 
     assert packaged_metadata.read_packaged_metadata(plugin_dir) is None
+
+
+def test_metadata_without_a_file_list_is_refused(tmp_path: Path) -> None:
+    """A missing ``source_files`` must fail the read, not skip the check.
+
+    Treating it as optional at the same ``schema_version`` means a package that
+    simply omits the field keeps the old, timing-dependent behaviour: add or
+    remove a source file without moving any surviving mtime past the metadata
+    and the stale schema is accepted (coderabbit). The field is required, so the
+    schema version carries it.
+
+    Mutation: make the ``source_files`` check conditional on the field being
+    present.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None, (
+        "前提没成立：带清单的元数据本来就该可用"
+    )
+
+    payload.pop("source_files")
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+        "没有文件清单的元数据仍被接受，那道确定性判据就整个静默失效了"
+    )

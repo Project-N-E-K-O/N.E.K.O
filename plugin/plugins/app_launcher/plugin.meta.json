@@ -1460,7 +1460,7 @@
       }
     }
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "sdk_version": "0.1.0",
   "source_files": [
     "README.md",

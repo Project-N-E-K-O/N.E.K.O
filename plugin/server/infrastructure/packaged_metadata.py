@@ -49,7 +49,11 @@ logger = get_logger("server.infrastructure.packaged_metadata")
 
 
 PACKAGED_METADATA_FILENAME = "plugin.meta.json"
-PACKAGED_METADATA_SCHEMA_VERSION = 1
+# 2：加入了必需的 source_files。留在 1 而对缺字段的元数据"跳过检查"是错的——
+# schema 变了就该换号，否则一份没有 source_files 的元数据仍会被当成合法的第 1 版
+# 接受，增删源文件时那道确定性的判据整个静默失效（coderabbit）。旧包因此回落到
+# manifest 声明的 entries，重新打包即可恢复。
+PACKAGED_METADATA_SCHEMA_VERSION = 2
 
 # 解析之前先封顶。这份文件来自第三方包，而 json.loads 会把整份内容读进内存再建对象；
 # 一个几百 MB 的 plugin.meta.json 足以在刷新注册表时把进程撑爆，而刷新现在整段持锁
@@ -347,15 +351,21 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
     # mtime，同一个时间戳刻度内就不成立（本机过、CI 挂，就是这条）。清单还顺带让
     # 判定不依赖解包顺序（codex）。
     packaged_names = raw.get("source_files")
-    if isinstance(packaged_names, list):
-        current_names, _untrustworthy = source_file_names(plugin_dir)
-        if sorted(str(item) for item in packaged_names) != sorted(current_names):
-            logger.info(
-                "plugin source file set differs from the packaged one; rebuild "
-                "with 'neko-plugin build' to refresh its metadata: path={}",
-                plugin_dir,
-            )
-            return None
+    if not isinstance(packaged_names, list):
+        logger.warning(
+            "packaged plugin metadata has no source file list, falling back to "
+            "manifest: path={}",
+            meta_path,
+        )
+        return None
+    current_names, _untrustworthy = source_file_names(plugin_dir)
+    if sorted(str(item) for item in packaged_names) != sorted(current_names):
+        logger.info(
+            "plugin source file set differs from the packaged one; rebuild "
+            "with 'neko-plugin build' to refresh its metadata: path={}",
+            plugin_dir,
+        )
+        return None
 
     if newest_source_ns > meta_stat.st_mtime_ns:
         # 时间戳只是快路径，不是判据。git 不保留 mtime，所以一份全新 clone 里源码
