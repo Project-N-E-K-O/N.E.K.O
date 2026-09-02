@@ -217,5 +217,24 @@
   },
   "schema_version": 1,
   "sdk_version": "0.1.0",
+  "source_files": [
+    "README.md",
+    "__init__.py",
+    "client.py",
+    "i18n/en.json",
+    "i18n/es.json",
+    "i18n/ja.json",
+    "i18n/ko.json",
+    "i18n/pt.json",
+    "i18n/ru.json",
+    "i18n/zh-CN.json",
+    "i18n/zh-TW.json",
+    "plugin.toml",
+    "prompts.py",
+    "service.py",
+    "smoke_local.py",
+    "smoke_overwrite.py",
+    "surfaces/quickstart.tsx"
+  ],
   "source_sha256": "3c16ed1c51c6627467e7b9ccbda4afc24dff9e1be0c484d5ed2ad2daa42c4084"
 }

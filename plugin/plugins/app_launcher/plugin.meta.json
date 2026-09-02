@@ -1462,5 +1462,19 @@
   },
   "schema_version": 1,
   "sdk_version": "0.1.0",
+  "source_files": [
+    "README.md",
+    "__init__.py",
+    "i18n/en.json",
+    "i18n/es.json",
+    "i18n/ja.json",
+    "i18n/ko.json",
+    "i18n/pt.json",
+    "i18n/ru.json",
+    "i18n/zh-CN.json",
+    "i18n/zh-TW.json",
+    "plugin.toml",
+    "static/index.html"
+  ],
   "source_sha256": "3deaf14022b2893fe67e7c2c7d6805b44830115989568c831ed1abcf6e4e0469"
 }

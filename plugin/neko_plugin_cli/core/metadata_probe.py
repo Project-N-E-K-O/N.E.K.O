@@ -39,6 +39,7 @@ from plugin.server.infrastructure.packaged_metadata import (
     PACKAGED_METADATA_FILENAME,
     PACKAGED_METADATA_SCHEMA_VERSION,
     compute_source_sha256,
+    source_file_names,
 )
 
 
@@ -115,6 +116,8 @@ def derive_plugin_metadata(
         # 树不一样，一旦走到内容校验就会条条判成"源码变了"，把好好的 schema 换成
         # 占位（greptile）。
         "source_sha256": compute_source_sha256(hash_dir or plugin_dir),
+        # 文件清单让"少了一个文件"这件事不依赖时间戳，也不依赖解包顺序。
+        "source_files": source_file_names(hash_dir or plugin_dir)[0],
         "entries": list(isolated.entries_preview),
         "handlers": dict(isolated.handlers),
         "entry_methods": dict(isolated.entry_methods),

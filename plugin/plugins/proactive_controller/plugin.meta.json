@@ -386,5 +386,17 @@
   },
   "schema_version": 1,
   "sdk_version": "0.1.0",
+  "source_files": [
+    "__init__.py",
+    "i18n/en.json",
+    "i18n/es.json",
+    "i18n/ja.json",
+    "i18n/ko.json",
+    "i18n/pt.json",
+    "i18n/ru.json",
+    "i18n/zh-CN.json",
+    "i18n/zh-TW.json",
+    "plugin.toml"
+  ],
   "source_sha256": "396138da6957adcb824f6205a6f9ab0efa206ef94aa6dd24b573edcf2ebf5571"
 }

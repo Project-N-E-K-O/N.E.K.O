@@ -173,6 +173,12 @@ def _iter_source_files(
     return files, saw_symlink, dirs
 
 
+def source_file_names(plugin_dir: Path) -> tuple[list[str], bool]:
+    """Sorted relative paths of the files the fingerprint covers."""
+    files, untrustworthy, _dirs = _iter_source_files(plugin_dir)
+    return [rel_path for rel_path, _stat in files], untrustworthy
+
+
 def compute_source_sha256(plugin_dir: Path) -> str:
     """Content digest of a plugin's source files, stable across packaging.
 
@@ -335,6 +341,22 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
         return None
 
     packaged_sha = str(raw.get("source_sha256") or "")
+
+    # 先比文件清单，再比时间戳。清单是确定性的：增删文件一定改变它，而"删掉一个
+    # 文件"在时间戳上只体现为父目录 mtime 变新——那要求它严格大于 meta.json 的
+    # mtime，同一个时间戳刻度内就不成立（本机过、CI 挂，就是这条）。清单还顺带让
+    # 判定不依赖解包顺序（codex）。
+    packaged_names = raw.get("source_files")
+    if isinstance(packaged_names, list):
+        current_names, _untrustworthy = source_file_names(plugin_dir)
+        if sorted(str(item) for item in packaged_names) != sorted(current_names):
+            logger.info(
+                "plugin source file set differs from the packaged one; rebuild "
+                "with 'neko-plugin build' to refresh its metadata: path={}",
+                plugin_dir,
+            )
+            return None
+
     if newest_source_ns > meta_stat.st_mtime_ns:
         # 时间戳只是快路径，不是判据。git 不保留 mtime，所以一份全新 clone 里源码
         # 和生成物的时间戳关系是任意的——只看 mtime 的话，内置插件会在每台新机器上

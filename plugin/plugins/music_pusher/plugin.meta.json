@@ -1774,5 +1774,13 @@
   },
   "schema_version": 1,
   "sdk_version": "0.1.0",
+  "source_files": [
+    "__init__.py",
+    "plugin.toml",
+    "static/index.html",
+    "static/vendor/README.md",
+    "static/vendor/postprocessing-6.35.6.min.js",
+    "static/vendor/three-0.161.0.module.min.js"
+  ],
   "source_sha256": "7786e5bdf7fa84c37c2c98bf80837d23e6bad40cfa066f22f98ede5fcc01cc57"
 }

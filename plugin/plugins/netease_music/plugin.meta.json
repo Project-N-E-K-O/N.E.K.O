@@ -388,5 +388,23 @@
   },
   "schema_version": 1,
   "sdk_version": "0.1.0",
+  "source_files": [
+    "README.md",
+    "__init__.py",
+    "credential_ui.py",
+    "credentials.py",
+    "i18n/en.json",
+    "i18n/es.json",
+    "i18n/ja.json",
+    "i18n/ko.json",
+    "i18n/pt.json",
+    "i18n/ru.json",
+    "i18n/zh-CN.json",
+    "i18n/zh-TW.json",
+    "models.py",
+    "plugin.toml",
+    "provider.py",
+    "ui/panel.tsx"
+  ],
   "source_sha256": "185cfa16c05c5e2fa755d51608ecfa369d894e7ee29ac1c780e4a378344c7b05"
 }

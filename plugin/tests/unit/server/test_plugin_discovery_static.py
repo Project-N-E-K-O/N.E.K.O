@@ -143,6 +143,7 @@ def _write_plugin(tmp_path: Path, *, entries: list[dict], sdk_version: str | Non
             if source_sha is not None
             else packaged_metadata.compute_source_sha256(plugin_dir)
         ),
+        "source_files": packaged_metadata.source_file_names(plugin_dir)[0],
         "entries": entries,
     }
     (plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME).write_text(
@@ -688,11 +689,15 @@ def test_binary_files_are_hashed_byte_for_byte(tmp_path: Path) -> None:
 def test_deleting_a_source_file_invalidates_the_metadata(tmp_path: Path) -> None:
     """A deletion leaves every surviving file untouched.
 
-    The mtime fast path only looked at files, so removing one that fed the
-    packaged entries was invisible and the host kept serving the pre-deletion
-    schema (codex). Directory mtimes move when entries are added or removed.
+    Directory mtimes do move when an entry is removed, but only strictly-newer
+    counts, so a delete landing in the same timestamp tick as the metadata write
+    is invisible — this test passed locally and failed on CI for exactly that
+    reason. The recorded file list settles it without depending on timing at
+    all, and as a bonus makes freshness independent of the order an archive
+    happens to extract in (codex).
 
-    Mutation: stop folding directory mtimes into ``newest_source_mtime_ns``.
+    Mutation: drop the ``source_files`` comparison from
+    ``read_packaged_metadata``.
     """
     plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
     extra = plugin_dir / "helper.py"
@@ -700,6 +705,7 @@ def test_deleting_a_source_file_invalidates_the_metadata(tmp_path: Path) -> None
     meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
     payload = json.loads(meta_path.read_text(encoding="utf-8"))
     payload["source_sha256"] = packaged_metadata.compute_source_sha256(plugin_dir)
+    payload["source_files"] = packaged_metadata.source_file_names(plugin_dir)[0]
     meta_path.write_text(json.dumps(payload), encoding="utf-8")
     assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None, (
         "前提没成立：这份元数据本来就该是可用的"
@@ -707,10 +713,18 @@ def test_deleting_a_source_file_invalidates_the_metadata(tmp_path: Path) -> None
 
     extra.unlink()
 
+    # 把 meta.json 的时间戳推到未来，关掉 mtime 那条快路径。不这样做的话，目录
+    # mtime 变新也能拒掉这次读取，测试就分辨不出到底是哪条判据在起作用——而 mtime
+    # 那条恰恰是不可靠的那条（本机过、CI 挂）。这里要单独证明清单校验有效。
+    future = time.time() + 3600
+    os.utime(meta_path, (future, future))
+    assert packaged_metadata.newest_source_mtime_ns(plugin_dir)[0] <= (
+        meta_path.stat().st_mtime_ns
+    ), "前提没成立：mtime 快路径还在生效，这条守卫测不到清单校验"
+
     assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
         "删掉一个源文件之后元数据仍被当成新鲜的，宿主会继续用删除前推出来的 schema"
     )
-
 
 def test_mark_reports_whether_the_gate_is_durable(
     monkeypatch: pytest.MonkeyPatch,

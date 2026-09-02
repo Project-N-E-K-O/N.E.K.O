@@ -1195,5 +1195,24 @@
   },
   "schema_version": 1,
   "sdk_version": "0.1.0",
+  "source_files": [
+    "__init__.py",
+    "docs/quickstart.tsx",
+    "i18n/en.json",
+    "i18n/es.json",
+    "i18n/ja.json",
+    "i18n/ko.json",
+    "i18n/pt.json",
+    "i18n/ru.json",
+    "i18n/zh-CN.json",
+    "i18n/zh-TW.json",
+    "invoker.py",
+    "normalizer.py",
+    "plugin.toml",
+    "router.py",
+    "serializer.py",
+    "transport.py",
+    "ui/panel.tsx"
+  ],
   "source_sha256": "972939fcfe63918d08225f6ad7126c366efb8302e900add7f9a43240fa2d93bb"
 }

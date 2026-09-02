@@ -724,5 +724,20 @@
   },
   "schema_version": 1,
   "sdk_version": "0.1.0",
+  "source_files": [
+    "__init__.py",
+    "config_store.py",
+    "doc/README.md",
+    "i18n/zh-CN.json",
+    "i18n/zh-TW.json",
+    "plugin.toml",
+    "static/i18n.js",
+    "static/index.html",
+    "static/script.js",
+    "static/style.css",
+    "tests/test_logout.py",
+    "tests/test_memory_settlement.py",
+    "wechat_client.py"
+  ],
   "source_sha256": "8af636aa5ce4b4829f0aa71efeb84d1145c06444e0b2298ecbd1863f96df44c6"
 }

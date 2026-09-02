@@ -184,5 +184,9 @@
   },
   "schema_version": 1,
   "sdk_version": "0.1.0",
+  "source_files": [
+    "__init__.py",
+    "plugin.toml"
+  ],
   "source_sha256": "425a9098f99095f8f2d8ac87397ab291574c517f5fb00be8b2c3434702b854f0"
 }

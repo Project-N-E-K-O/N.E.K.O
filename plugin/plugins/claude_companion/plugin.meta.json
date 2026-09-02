@@ -435,5 +435,17 @@
   },
   "schema_version": 1,
   "sdk_version": "0.1.0",
+  "source_files": [
+    "__init__.py",
+    "config.json",
+    "hooks.json",
+    "i18n/en.json",
+    "i18n/ja.json",
+    "i18n/ko.json",
+    "i18n/zh-CN.json",
+    "i18n/zh-TW.json",
+    "plugin.toml",
+    "static/index.html"
+  ],
   "source_sha256": "7e55d4539949608744df4540600b139cdd72fc235f4dbf1a70285a840558b070"
 }

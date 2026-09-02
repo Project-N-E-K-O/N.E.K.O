@@ -301,5 +301,20 @@
   },
   "schema_version": 1,
   "sdk_version": "0.1.0",
+  "source_files": [
+    "__init__.py",
+    "_parsing.py",
+    "_resilience.py",
+    "config.example.toml",
+    "i18n/en.json",
+    "i18n/es.json",
+    "i18n/ja.json",
+    "i18n/ko.json",
+    "i18n/pt.json",
+    "i18n/ru.json",
+    "i18n/zh-CN.json",
+    "i18n/zh-TW.json",
+    "plugin.toml"
+  ],
   "source_sha256": "9ab30c3874166d77129c717000783dec8da4cb64c562aad3bad48bbd7447c78a"
 }
