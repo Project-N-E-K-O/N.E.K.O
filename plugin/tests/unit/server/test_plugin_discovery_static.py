@@ -133,7 +133,7 @@ def _write_plugin(tmp_path: Path, *, entries: list[dict], sdk_version: str | Non
                   source_sha: str | None = None,
                   build_env: dict | None = None) -> Path:
     plugin_dir = tmp_path / "demo"
-    plugin_dir.mkdir()
+    plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.toml").write_text("id = 'demo'\n", encoding="utf-8")
     (plugin_dir / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
     payload = {
@@ -1078,3 +1078,29 @@ def test_a_config_declared_entry_table_wins_over_the_package(
     assert "packaged_only" not in ids, (
         f"生效配置自己声明了 entries，发现侧却还在端打包机那份：{ids}"
     )
+
+
+def test_a_v3_package_without_a_byte_total_is_refused(tmp_path: Path) -> None:
+    """The size field is part of the schema, not an optional extra.
+
+    Skipping the comparison when the field is missing or the wrong type puts
+    the decision back on mtime alone — and mtime being unreliable is the whole
+    reason the field exists (coderabbit). Same judgement as ``source_files``.
+
+    Mutation: treat a missing or non-int ``source_bytes`` as "no size change".
+    """
+    for bad in (None, "1234", 12.5, True):
+        plugin_dir = _write_plugin(
+            tmp_path / str(bad), entries=[{"id": "go"}]
+        )
+        meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        if bad is None:
+            payload.pop("source_bytes")
+        else:
+            payload["source_bytes"] = bad
+        meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+            f"source_bytes={bad!r} 被放过了，尺寸比对静默失效，判定退回只看 mtime"
+        )

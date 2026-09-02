@@ -30,6 +30,7 @@ produce a message rather than wedge the CLI.
 from __future__ import annotations
 
 import json
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -54,10 +55,13 @@ def _load_logger() -> Any:
     return get_logger("neko_plugin_cli.metadata_probe")
 
 
-def derive_plugin_metadata(
-    plugin_dir: Path, *, hash_dir: Path | None = None
-) -> dict[str, object]:
+def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
     """Import ``plugin_dir``'s entry class and return its packaged metadata.
+
+    One tree, imported and fingerprinted. Deriving from one tree and
+    fingerprinting another is precisely the shape that lets a package advertise
+    handlers derived from a file it does not carry, with a hash that verifies
+    (codex), so there is no way to ask for it.
 
     Raises :class:`MetadataProbeError` with the underlying reason when the
     plugin cannot be imported. Callers decide what that means;
@@ -108,7 +112,7 @@ def derive_plugin_metadata(
             f"importing the plugin failed ({exc.error_type}): {exc}"
         ) from exc
 
-    stat_summary = source_stat_summary(hash_dir or plugin_dir)
+    stat_summary = source_stat_summary(plugin_dir)
     return {
         "schema_version": PACKAGED_METADATA_SCHEMA_VERSION,
         "sdk_version": SDK_VERSION,
@@ -116,8 +120,8 @@ def derive_plugin_metadata(
         # （tool.neko.build 的 exclude/exclude_dirs/exclude_files）可以把 .py /
         # .toml / .json 排除在包外，而用户机器上哈希的是装出来的那份——两边算的
         # 树不一样，一旦走到内容校验就会条条判成"源码变了"，把好好的 schema 换成
-        # 占位（greptile）。
-        "source_sha256": compute_source_sha256(hash_dir or plugin_dir),
+        # 占位（greptile）。扫描现在也在同一棵树上，见函数开头。
+        "source_sha256": compute_source_sha256(plugin_dir),
         # 文件清单让"少了一个文件"这件事不依赖时间戳，也不依赖解包顺序。
         "source_files": stat_summary.names,
         "source_bytes": stat_summary.total_bytes,
@@ -133,12 +137,18 @@ def write_packaged_metadata(
     source_dir: Path,
     target_dir: Path,
 ) -> Path | None:
-    """Derive metadata from ``source_dir`` and write it into ``target_dir``.
+    """Derive metadata from the staged tree and write it into ``target_dir``.
 
     Returns the written path, or ``None`` when the plugin could not be imported
-    here. ``target_dir`` is the staged copy that goes into the package;
-    ``source_dir`` is where the plugin's dependencies actually resolve, so the
-    import runs there.
+    here. ``source_dir`` is only named in the warnings; the probe itself runs on
+    ``target_dir``, the copy that actually goes into the package. Importing the
+    author's tree instead lets a build rule exclude a file that decides which
+    entries get registered — the package would then carry handlers derived from
+    a file it does not contain, and because the fingerprint is taken on the
+    staged tree the host's verification passes and it advertises entries the
+    installed plugin never registers (codex). Dependencies resolve from the
+    staged ``vendor/`` directory, which is copied with everything else before
+    this runs.
 
     A failure warns rather than failing the build. Packaging is not the place to
     insist that a plugin imports: the build machine may be missing an optional
@@ -147,9 +157,13 @@ def write_packaged_metadata(
     host has defined behaviour for a package without metadata — it falls back to
     what the manifest declares — so shipping without it costs a degraded
     parameter form, not a broken plugin.
+
+    The one thing it will not do is ship a package that lies: if a stale
+    ``plugin.meta.json`` copied in from the source tree cannot be removed, the
+    build fails.
     """
     try:
-        payload = derive_plugin_metadata(source_dir, hash_dir=Path(target_dir))
+        payload = derive_plugin_metadata(Path(target_dir))
     except MetadataProbeError as exc:
         stale = Path(target_dir) / PACKAGED_METADATA_FILENAME
         if stale.exists():
@@ -159,14 +173,22 @@ def write_packaged_metadata(
             # 宿主于是照单全收，本该走的 manifest 回落根本不会发生（codex）。
             try:
                 stale.unlink()
-            except OSError as unlink_exc:
-                print(
-                    f"[WARN] {Path(source_dir).name}: could not remove the stale "
-                    f"{PACKAGED_METADATA_FILENAME} copied into the package "
-                    f"({unlink_exc}); it may advertise metadata from an earlier "
-                    "build.",
-                    file=sys.stderr,
-                )
+            except OSError:
+                # Windows 上只读属性会让 unlink 直接失败。清掉属性再试一次。
+                try:
+                    stale.chmod(stat.S_IWRITE | stat.S_IREAD)
+                    stale.unlink()
+                except OSError as unlink_exc:
+                    # 这条不能只警告。归档器照样会把这份旧文件打进包，而下面那句
+                    # 警告说的是"这次不带元数据"——包和说法对不上，用户机器上则
+                    # 拿着上一次构建的 handler 当真（codex）。出不了诚实的包就
+                    # 不出包。
+                    raise MetadataProbeError(
+                        f"a stale {PACKAGED_METADATA_FILENAME} from an earlier "
+                        f"build is in the package directory and cannot be "
+                        f"removed ({unlink_exc}); delete "
+                        f"{stale} and build again"
+                    ) from unlink_exc
         print(
             f"[WARN] {Path(source_dir).name}: could not derive plugin metadata "
             f"({exc}); packaging without {PACKAGED_METADATA_FILENAME}. Entry "

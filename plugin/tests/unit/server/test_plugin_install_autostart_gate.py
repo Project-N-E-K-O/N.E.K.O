@@ -223,50 +223,19 @@ def test_the_gate_records_the_manifest_id_not_the_directory_name(
     )
 
 
-def test_write_packaged_metadata_stamps_the_staged_tree(
+def test_packaging_probes_the_tree_it_ships(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End to end through the packaging entry point, not just the helper."""
-    source_dir = tmp_path / "src"
-    staged_dir = tmp_path / "staged"
-    source_dir.mkdir()
-    staged_dir.mkdir()
-    for directory in (source_dir, staged_dir):
-        (directory / "plugin.toml").write_text("id = 'demo'\n", encoding="utf-8")
-        (directory / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
-    (source_dir / "dev_only.py").write_text("SECRET = 2\n", encoding="utf-8")
+    """Import and fingerprint must land on the staged copy, not the source.
 
-    monkeypatch.setattr(
-        "plugin.neko_plugin_cli.core.metadata_probe.derive_plugin_metadata",
-        lambda plugin_dir, *, hash_dir=None: {
-            "schema_version": packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION,
-            "sdk_version": packaged_metadata.SDK_VERSION,
-            "source_sha256": packaged_metadata.compute_source_sha256(
-                hash_dir or plugin_dir
-            ),
-            "entries": [],
-        },
-    )
+    Build rules can exclude a file that decides which entries get registered.
+    Importing the author's tree while fingerprinting the staged one produces a
+    package carrying handlers derived from a file it does not contain — and the
+    host's verification passes, because the hash was taken on what shipped
+    (codex). So the probe reads the staged tree too.
 
-    written = write_packaged_metadata(source_dir=source_dir, target_dir=staged_dir)
-    assert written is not None
-    payload = json.loads(written.read_text(encoding="utf-8"))
-    assert payload["source_sha256"] == packaged_metadata.compute_source_sha256(
-        staged_dir
-    ), "打包期没有把 hash_dir 指向暂存目录"
-
-
-def test_derive_uses_the_hash_dir_it_was_given(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``derive_plugin_metadata`` must hash ``hash_dir``, not the source tree.
-
-    The sibling test above pins that ``write_packaged_metadata`` *passes*
-    ``hash_dir``; this one pins that the value is actually used. Passing an
-    argument that the callee ignores looks identical from the caller's side,
-    and a guard that only watches the call site survives exactly that mutation.
-
-    Mutation: hash ``plugin_dir`` instead of ``hash_dir or plugin_dir``.
+    Mutation: probe ``source_dir`` and fingerprint ``target_dir``, the split
+    this replaces.
     """
     from plugin.neko_plugin_cli.core import metadata_probe
 
@@ -285,6 +254,8 @@ def test_derive_uses_the_hash_dir_it_was_given(
         "前提没成立：两棵树内容一样，这条守卫证明不了任何事"
     )
 
+    probed: list[Path] = []
+
     class _Ctx:
         pid = "demo"
         entry = "demo.main:Plugin"
@@ -297,9 +268,12 @@ def test_derive_uses_the_hash_dir_it_was_given(
         handlers: dict = {}
         entry_methods: dict = {}
 
+    def _record_ctx(config_path, processed, logger):
+        probed.append(Path(config_path).parent)
+        return _Ctx()
+
     monkeypatch.setattr(
-        "plugin.core.registry._parse_single_plugin_config",
-        lambda config_path, processed, logger: _Ctx(),
+        "plugin.core.registry._parse_single_plugin_config", _record_ctx
     )
     monkeypatch.setattr(
         "plugin.server.application.plugins.metadata_scanner"
@@ -307,11 +281,56 @@ def test_derive_uses_the_hash_dir_it_was_given(
         lambda **_kwargs: _Isolated(),
     )
 
-    payload = metadata_probe.derive_plugin_metadata(source_dir, hash_dir=staged_dir)
+    written = write_packaged_metadata(source_dir=source_dir, target_dir=staged_dir)
+    assert written is not None
+    payload = json.loads(written.read_text(encoding="utf-8"))
 
+    assert probed == [staged_dir.resolve()], (
+        f"import 的是作者的源目录：包里可能带上一个自己都没装的文件推出来的 "
+        f"handler，而哈希算的是装出来的那份，宿主校验还会通过：{probed}"
+    )
     assert payload["source_sha256"] == packaged_metadata.compute_source_sha256(
         staged_dir
     ), "摘要算的是作者的源目录，用户机器上哈希的却是装出来的那份，两边永远对不上"
+    assert "dev_only.py" not in payload["source_files"], (
+        f"文件清单里有一个根本没进包的文件：{payload['source_files']}"
+    )
+
+
+def test_a_stale_metadata_file_that_cannot_be_removed_fails_the_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Better no package than a package that lies about its own contents.
+
+    The exporter archives whatever is in the staging directory. If the probe
+    failed and the stale copy survives, the package ships an earlier build's
+    handlers while the warning claims it shipped none (codex).
+
+    Mutation: warn and return ``None`` instead of raising.
+    """
+    from plugin.neko_plugin_cli.core import metadata_probe
+
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "plugin.toml").write_text("id = 'demo'\n", encoding="utf-8")
+    target = tmp_path / "staged"
+    target.mkdir()
+    stale = target / packaged_metadata.PACKAGED_METADATA_FILENAME
+    stale.write_text('{"schema_version": 1}', encoding="utf-8")
+
+    def _boom(*_args, **_kwargs):
+        raise metadata_probe.MetadataProbeError("optional dependency missing")
+
+    monkeypatch.setattr(metadata_probe, "derive_plugin_metadata", _boom)
+
+    def _refuse_unlink(_self):
+        raise PermissionError("read-only attribute")
+
+    monkeypatch.setattr(Path, "unlink", _refuse_unlink)
+
+    with pytest.raises(metadata_probe.MetadataProbeError) as excinfo:
+        write_packaged_metadata(source_dir=source, target_dir=target)
+    assert "stale" in str(excinfo.value)
 
 
 def test_reload_counts_as_the_user_starting_a_plugin(
@@ -914,7 +933,10 @@ def test_the_remnant_probe_fails_closed(tmp_path: Path) -> None:
 
 
 async def _drive_failed_install(
-    monkeypatch: pytest.MonkeyPatch, gate_root: Path, plugin_id: str
+    monkeypatch: pytest.MonkeyPatch,
+    gate_root: Path,
+    plugin_id: str,
+    gate_root_override=None,
 ) -> dict:
     """Run ``install()`` through its rollback branch and return the store."""
     store: dict[str, object] = {}
@@ -948,7 +970,11 @@ async def _drive_failed_install(
 
     monkeypatch.setattr(service, "plan_install", _plan_install)
     monkeypatch.setattr(service, "_install_sync", _boom)
-    monkeypatch.setattr(service, "_autostart_gate_root", lambda _root: gate_root)
+    monkeypatch.setattr(
+        service,
+        "_autostart_gate_root",
+        gate_root_override or (lambda _root: gate_root),
+    )
 
     with pytest.raises(RuntimeError):
         await service.install(package="whatever.neko-plugin")
@@ -1077,4 +1103,82 @@ def test_a_failed_probe_removes_metadata_copied_from_the_source_tree(
     assert write_packaged_metadata(source_dir=source, target_dir=target) is None
     assert not stale.exists(), (
         "探测失败却把源树里那份旧 plugin.meta.json 留在包里，宿主会当成这次打包的结果"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_root_keeps_the_ids_gated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The rollback probe must not throw from inside the except block.
+
+    ``_autostart_gate_root`` runs while the install's real failure is in flight.
+    Letting a path-policy error escape would replace that cause and skip every
+    restore in the loop (coderabbit). It returns ``None`` instead, and ``None``
+    means the same thing a surviving directory means: keep the id gated.
+
+    Mutation: raise out of ``_autostart_gate_root`` instead of returning None.
+    """
+    from plugin.server.infrastructure import autostart_approvals
+
+    def _no_root(_plugins_root):
+        return None
+
+    try:
+        await _drive_failed_install(
+            monkeypatch, tmp_path, "demo", gate_root_override=_no_root
+        )
+        assert not autostart_approvals.is_autostart_approved("demo"), (
+            "查不出残骸在不在却还是把批准位还了回去"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()
+
+
+def test_the_gate_root_helper_swallows_a_broken_path_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every lookup in that helper is inside the try, including the policy.
+
+    Mutation: move ``self._path_policy()`` back above the try.
+    """
+    service = cli_service.PluginCliService()
+
+    def _broken():
+        raise RuntimeError("settings are unreadable")
+
+    monkeypatch.setattr(service, "_path_policy", _broken)
+
+    assert service._autostart_gate_root(None) is None, (
+        "路径策略的异常从 except 分支里逃了出去：安装失败的真实原因会被它顶掉，"
+        "而且这一轮的批准位一个都不会还原"
+    )
+
+
+def test_a_lost_pending_restore_shows_up_in_the_uninstall_result() -> None:
+    """A compensation failure belongs in the result, not only in the log.
+
+    Re-raising would replace the uninstall's real failure cause, so it does not;
+    but staying silent leaves the caller believing the rollback was complete
+    (coderabbit). It rides along the same way ``preference_rollback`` does.
+
+    CodeRabbit also asked for a persisted blocking state; that half is not
+    implemented, and the reason is in the code: the only thing available to
+    persist it is the store whose write just failed.
+
+    Mutation: drop ``autostart_gate_rollback`` from the raised details.
+    """
+    import inspect
+
+    from plugin.server.application.plugins.installation_transactions import uninstall
+
+    source = inspect.getsource(uninstall.uninstall_plugin)
+    assert 'autostart_gate_rollback = "incomplete"' in source, (
+        "补偿失败没有被记下来"
+    )
+    assert source.count("**gate_details,") == 2, (
+        "两个构造出来的 UninstallPluginError 必须都带上它，只带一个等于看运气"
+    )
+    assert "exc.details.update(gate_details)" in source, (
+        "直接透传的 UninstallPluginError 没有带上补偿失败，那条路占了卸载失败的大头"
     )

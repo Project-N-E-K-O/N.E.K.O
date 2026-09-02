@@ -467,11 +467,17 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
         return None
 
     packaged_bytes = raw.get("source_bytes")
-    size_changed = (
-        isinstance(packaged_bytes, int)
-        and not isinstance(packaged_bytes, bool)
-        and packaged_bytes != summary.total_bytes
-    )
+    if not isinstance(packaged_bytes, int) or isinstance(packaged_bytes, bool):
+        # schema v3 声明了这个字段，缺了就当整份元数据不合格——和 source_files
+        # 同一条判据。悄悄跳过尺寸比对的话，判定就退回到只看 mtime，而 mtime
+        # 不可靠正是这个字段存在的理由（coderabbit）。
+        logger.warning(
+            "packaged plugin metadata has no valid source byte total, falling "
+            "back to manifest: path={}",
+            meta_path,
+        )
+        return None
+    size_changed = packaged_bytes != summary.total_bytes
     if newest_source_ns > meta_stat.st_mtime_ns or size_changed:
         # 时间戳只是快路径，不是判据。git 不保留 mtime，所以一份全新 clone 里源码
         # 和生成物的时间戳关系是任意的——只看 mtime 的话，内置插件会在每台新机器上

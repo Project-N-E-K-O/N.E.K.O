@@ -1119,6 +1119,7 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     source_update_attempted = False
     preference_update_attempted = False
     autostart_was_pending = False
+    autostart_gate_rollback: str | None = None
     try:
         stage = "stop"
         if was_running:
@@ -1200,13 +1201,23 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             # 跑起来（codex）。和别处同一条判据：看盘不看意图——代码真的没了就
             # 别补记录，否则将来占用这个 id 的插件会被它误伤。
             if not await asyncio.to_thread(mark_autostart_pending, plugin_id):
-                # 只能记一笔：这里正在处理另一个异常，改抛会把真正的失败原因换掉。
+                # 改抛会把真正的失败原因换掉，所以这里不抛；但也不能只写日志——
+                # 补偿失败要跟着回滚结果一起交出去，和 preference_rollback 同一个
+                # 形状（coderabbit）。coderabbit 还要求「持久化一条可恢复的阻止
+                # 状态」，那一半我没做：能持久化的只有刚刚写失败的那个存储。
+                autostart_gate_rollback = "incomplete"
                 logger.error(
                     "uninstall rollback restored plugin {} but could not restore "
                     "its pending-approval record; it may autostart without having "
                     "been started by the user",
                     plugin_id,
                 )
+        gate_details = (
+            {} if autostart_gate_rollback is None
+            else {"autostart_gate_rollback": autostart_gate_rollback}
+        )
+        if isinstance(exc, UninstallPluginError):
+            exc.details.update(gate_details)
         if not isinstance(exc, Exception) or isinstance(exc, UninstallPluginError):
             raise
         if isinstance(exc, ServerDomainError):
@@ -1227,6 +1238,7 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
                         if rollback.preference_restored
                         else {"preference_rollback": "incomplete"}
                     ),
+                    **gate_details,
                 },
             ) from exc
         raise UninstallPluginError(
@@ -1244,6 +1256,7 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
                     if rollback.preference_restored
                     else {"preference_rollback": "incomplete"}
                 ),
+                **gate_details,
             },
         ) from exc
 

@@ -414,12 +414,13 @@ class PluginCliService:
                     # rmtree(ignore_errors=True) 收尾，占用/权限/坏盘都可能留下一份
                     # 可执行的残骸；无条件还原批准等于放它下次开机自己跑起来
                     # （codex）。和覆盖回滚同一条判据：看盘不看意图。
-                    if await asyncio.to_thread(
+                    if gate_root is None or await asyncio.to_thread(
                         _plugin_directory_exists, gate_root, gate_plugin_id
                     ):
                         logger.error(
-                            "install rollback left a directory for plugin_id={}; "
-                            "keeping it gated so leftover code cannot autostart",
+                            "install rollback could not clear plugin_id={} of "
+                            "leftovers; keeping it gated so leftover code cannot "
+                            "autostart",
                             gate_plugin_id,
                         )
                         continue
@@ -1752,21 +1753,32 @@ class PluginCliService:
     def _path_policy() -> PluginCliPathPolicy:
         return PluginCliPathPolicy.from_settings()
 
-    def _autostart_gate_root(self, plugins_root: str | None) -> Path:
-        """The directory the install rollback checks for leftovers."""
-        policy = self._path_policy()
-        if not plugins_root:
-            return policy.user_plugins_root
+    def _autostart_gate_root(self, plugins_root: str | None) -> Path | None:
+        """The directory the install rollback checks for leftovers.
+
+        ``None`` means the question could not be asked, and the caller keeps the
+        id gated. Everything is inside the try on purpose: this runs from an
+        except block that is already carrying the install's real failure, and a
+        ``PluginCliPathPolicy.from_settings()`` error escaping here would both
+        replace that cause and skip every restore in the loop (coderabbit).
+        """
         try:
+            policy = self._path_policy()
+            if not plugins_root:
+                return policy.user_plugins_root
             return _require_within(
                 Path(plugins_root).expanduser().resolve(),
                 policy.user_plugins_root,
                 field="plugins_root",
             )
-        except Exception:
-            # 越界的 root 本来就装不进去。回落到真正的用户插件根去找残骸，
-            # 而不是放弃检查。
-            return policy.user_plugins_root
+        except Exception as exc:
+            # 越界的 root 本来就装不进去；能拿到策略就回落到真正的用户插件根去找
+            # 残骸，拿不到就交给调用方按「查不了」处理。
+            logger.error("cannot resolve the install rollback root: {}", exc)
+            try:
+                return self._path_policy().user_plugins_root
+            except Exception:
+                return None
 
     def _resolver(self) -> PluginSourceResolver:
         return PluginSourceResolver(self._path_policy())

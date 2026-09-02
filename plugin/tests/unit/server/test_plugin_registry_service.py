@@ -29,6 +29,7 @@ def _write_packaged_metadata_fixture(plugin_dir: Path, *, entry_ids: list[str]) 
         "sdk_version": packaged_metadata.SDK_VERSION,
         "source_sha256": packaged_metadata.compute_source_sha256(plugin_dir),
         "source_files": packaged_metadata.source_file_names(plugin_dir)[0],
+        "source_bytes": packaged_metadata.source_stat_summary(plugin_dir).total_bytes,
         "entries": [
             {
                 "id": entry_id,
