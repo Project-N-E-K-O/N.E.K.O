@@ -711,6 +711,9 @@ def test_deleting_a_source_file_invalidates_the_metadata(tmp_path: Path) -> None
     payload = json.loads(meta_path.read_text(encoding="utf-8"))
     payload["source_sha256"] = packaged_metadata.compute_source_sha256(plugin_dir)
     payload["source_files"] = packaged_metadata.source_file_names(plugin_dir)[0]
+    payload["source_bytes"] = packaged_metadata.source_stat_summary(
+        plugin_dir
+    ).total_bytes
     meta_path.write_text(json.dumps(payload), encoding="utf-8")
     assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None, (
         "前提没成立：这份元数据本来就该是可用的"
@@ -1366,3 +1369,37 @@ def test_an_emptied_entry_table_hides_the_manifest_entries(tmp_path: Path) -> No
     assert removed == [], (
         f"配置把入口删空了，注册表还在展示 manifest 里那份：{removed}"
     )
+
+
+def test_a_lying_byte_total_is_refused_not_re_hashed(tmp_path: Path) -> None:
+    """A package must not be able to make every refresh hash its whole tree.
+
+    A wrong ``source_bytes`` next to a valid digest kept the slow path armed
+    forever: the mismatch is true on every refresh, and each one re-reads the
+    whole tree (packages may carry up to 1 GiB) while holding the registry lock
+    — no plugin code required (codex). If the digest matches, the stated size is
+    simply false, and a package that misdescribes itself is one to fall back on.
+
+    Mutation: accept the metadata and only re-stamp the timestamp.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    payload["source_bytes"] = payload["source_bytes"] + 4096
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    hashed: list[Path] = []
+    real_hash = packaged_metadata.compute_source_sha256
+    packaged_metadata.compute_source_sha256 = lambda path: (
+        hashed.append(path) or real_hash(path)
+    )
+    try:
+        assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+            "字节数和自己刚验过的那棵树对不上还被接受了"
+        )
+        assert packaged_metadata.read_packaged_metadata(plugin_dir) is None
+        assert len(hashed) == 2, (
+            "前提没成立：这个用例要的就是尺寸不符每次都触发整树哈希"
+        )
+    finally:
+        packaged_metadata.compute_source_sha256 = real_hash

@@ -42,6 +42,7 @@ from plugin.server.infrastructure.packaged_metadata import (
     PACKAGED_METADATA_FILENAME,
     PACKAGED_METADATA_SCHEMA_VERSION,
     compute_source_sha256,
+    source_file_names,
     source_stat_summary,
 )
 
@@ -117,6 +118,20 @@ def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
             f"importing the plugin failed ({exc.error_type}): {exc}"
         ) from exc
 
+    renamed = [
+        name
+        for name in source_file_names(plugin_dir)[0]
+        if not (plugin_dir / name).exists()
+    ]
+    if renamed:
+        # 指纹按 NFC 记名，打包器写进档案的也是 NFC——但探测这一步 import 的是
+        # 文件系统上那个分解形式的名字。装到保留原拼写的文件系统上，插件里写死
+        # 分解形式字面量的代码会打不开文件，注册出来的东西和这里探到的不是一回事，
+        # 而两棵树的指纹又恰好一样，宿主会照单全收（codex）。宁可不带元数据。
+        raise MetadataProbeError(
+            "staged file names change under NFC normalization "
+            f"({renamed[:3]}); packaging without metadata so the host rescans"
+        )
     stat_summary = source_stat_summary(plugin_dir)
     return {
         "schema_version": PACKAGED_METADATA_SCHEMA_VERSION,

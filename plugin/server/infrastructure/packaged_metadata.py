@@ -599,6 +599,20 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
                 plugin_dir,
             )
             return None
+        if size_changed:
+            # 摘要对得上说明内容就是打包时那份，那 source_bytes 只能是错的——
+            # 这份元数据在描述自己时就不自洽。不拒的话，尺寸不符每次刷新都成立，
+            # 每次都要在持锁状态下重算整棵树的哈希（包体上限 1 GiB），一个不含
+            # 任何可执行代码的包就能把注册表焊死（codex）。
+            logger.warning(
+                "packaged plugin metadata states a source byte total that does "
+                "not match its own verified tree, falling back to manifest: "
+                "path={}, stated={}, actual={}",
+                meta_path,
+                packaged_bytes,
+                summary.total_bytes,
+            )
+            return None
         # 哈希刚刚证明这棵树就是打包时那棵，把这个结论盖在 meta.json 的时间戳上。
         # 不盖的话，解包顺序留下的"源码比生成物新"会一直成立，于是**每一次**刷新
         # 都要在持锁状态下重算整棵树的哈希（codex）。盖完之后源码再变照样会变新，
