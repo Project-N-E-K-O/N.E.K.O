@@ -389,7 +389,18 @@ class PluginCliService:
                 # 安装没成，把批准状态原样放回去——否则一次失败的安装会给这个 id
                 # 留下一条待批准记录，将来同 id 的插件会被它误伤。
                 if gate_plugin_id and gate_was_approved:
-                    await asyncio.to_thread(clear_autostart_pending, gate_plugin_id)
+                    if not await asyncio.to_thread(
+                        clear_autostart_pending, gate_plugin_id
+                    ):
+                        # 和覆盖回滚同一个判断：这里正在处理另一个异常，改抛会把
+                        # 真正的失败原因换掉。记一笔，后果有界——这个 id 上留了一条
+                        # 待批准记录，将来占用它的插件第一次要手动启动一次。
+                        logger.error(
+                            "install rollback could not restore the autostart "
+                            "approval for plugin_id={}; whatever later takes that "
+                            "id must be started once by hand",
+                            gate_plugin_id,
+                        )
                 raise
             # 挂在 install() 的成功出口上，不是挂在某一条来源登记路径上。
             # 上传安装（upload_and_install）自己登记来源、不走

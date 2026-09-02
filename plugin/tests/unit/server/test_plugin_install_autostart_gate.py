@@ -747,3 +747,52 @@ async def test_a_failed_install_restores_the_previous_approval(
     assert restored == ["doomed"], (
         f"安装失败后没有还原批准状态，这条记录会误伤将来占用同一个 id 的插件：{restored}"
     )
+
+
+def test_every_approval_write_checks_whether_it_persisted() -> None:
+    """No production call site may discard the durability result.
+
+    ``mark_autostart_pending`` and ``clear_autostart_pending`` return whether
+    the change reached disk. Ignoring that is how the gate silently stops
+    working: a lost mark lets unapproved code autostart, a lost clear strands a
+    record that blocks a plugin forever. Both directions have been shipped
+    broken in this PR at different call sites, each time found by a reviewer
+    rather than by the point tests — this checks all of them at once.
+
+    Mutation: drop the result check from any single call site.
+    """
+    import ast
+    from pathlib import Path as _Path
+
+    import plugin as plugin_pkg
+
+    root = _Path(plugin_pkg.__file__).parent
+    watched = {"mark_autostart_pending", "clear_autostart_pending"}
+    offenders: list[str] = []
+
+    for path in root.rglob("*.py"):
+        parts = path.parts
+        if "tests" in parts or path.name == "autostart_approvals.py":
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            # 裸表达式语句 = 调用了但把返回值扔了。
+            if not isinstance(node, ast.Expr):
+                continue
+            for inner in ast.walk(node):
+                name = None
+                if isinstance(inner, ast.Name):
+                    name = inner.id
+                elif isinstance(inner, ast.Attribute):
+                    name = inner.attr
+                if name in watched:
+                    offenders.append(f"{path.name}:{node.lineno}")
+                    break
+
+    assert not offenders, (
+        "这些调用点把批准写入的成败扔掉了，闸门会在磁盘出问题时静默失效："
+        f"{offenders}"
+    )
