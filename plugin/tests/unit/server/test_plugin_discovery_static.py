@@ -623,11 +623,90 @@ def test_a_named_pipe_never_reaches_the_digest(
         packaged_metadata.os, "scandir", lambda path: _Scan(path)
     )
 
-    files, untrustworthy = packaged_metadata._iter_source_files(plugin_dir)
+    files, untrustworthy, _dirs = packaged_metadata._iter_source_files(plugin_dir)
 
     assert fifo_path not in [str(plugin_dir / rel) for rel, _ in files], (
         "命名管道进了摘要列表，read_bytes() 会在没有写端时永久阻塞"
     )
     assert untrustworthy, (
         "非普通文件没有把这棵树标成不可信——摘要覆盖不到它，就不该拿包里的元数据当真"
+    )
+
+
+def test_an_oversized_metadata_file_is_refused_before_parsing(tmp_path: Path) -> None:
+    """``plugin.meta.json`` comes from a third-party package; cap it.
+
+    ``json.loads`` materialises the whole document, and registry refresh now
+    holds ``_REGISTRY_REFRESH_LOCK`` across the operation, so an enormous
+    metadata file in one installed package can exhaust memory while everything
+    else waits on the lock (codex).
+
+    Mutation: drop the ``MAX_PACKAGED_METADATA_BYTES`` check.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+
+    # 除了体积，这份元数据其它方面完全合法——否则"被拒"可能是缺字段导致的，
+    # 去掉大小闸门测试照样通过，守卫等于没守（本轮变异验证抓到过这一点）。
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None, (
+        "前提没成立：这份元数据在放大之前就该是可用的"
+    )
+    payload["padding"] = "x" * packaged_metadata.MAX_PACKAGED_METADATA_BYTES
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert meta_path.stat().st_size > packaged_metadata.MAX_PACKAGED_METADATA_BYTES, (
+        "前提没成立：文件没有超过上限"
+    )
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+        "超大的第三方元数据被原样解析：刷新整段持锁，一份够大的文件能把进程撑爆"
+    )
+
+
+def test_binary_files_are_hashed_byte_for_byte(tmp_path: Path) -> None:
+    """CR is a meaningful byte in a binary asset, not a line ending.
+
+    Line-ending normalisation exists so a package built on Windows still
+    verifies on Linux — a text-only problem. Applying it to binary assets makes
+    two different files hash the same (codex).
+
+    Mutation: normalise every file regardless of suffix.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    asset = plugin_dir / "model.bin"
+
+    asset.write_bytes(bytes([0, 13, 10, 1]))
+    with_crlf = packaged_metadata.compute_source_sha256(plugin_dir)
+    asset.write_bytes(bytes([0, 10, 1]))
+    with_lf = packaged_metadata.compute_source_sha256(plugin_dir)
+
+    assert with_crlf != with_lf, (
+        "两份不同的二进制资源算出了同一个摘要，改动它不会让元数据失效"
+    )
+
+
+def test_deleting_a_source_file_invalidates_the_metadata(tmp_path: Path) -> None:
+    """A deletion leaves every surviving file untouched.
+
+    The mtime fast path only looked at files, so removing one that fed the
+    packaged entries was invisible and the host kept serving the pre-deletion
+    schema (codex). Directory mtimes move when entries are added or removed.
+
+    Mutation: stop folding directory mtimes into ``newest_source_mtime_ns``.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    extra = plugin_dir / "helper.py"
+    extra.write_text("HELPER = 1\n", encoding="utf-8")
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    payload["source_sha256"] = packaged_metadata.compute_source_sha256(plugin_dir)
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None, (
+        "前提没成立：这份元数据本来就该是可用的"
+    )
+
+    extra.unlink()
+
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+        "删掉一个源文件之后元数据仍被当成新鲜的，宿主会继续用删除前推出来的 schema"
     )

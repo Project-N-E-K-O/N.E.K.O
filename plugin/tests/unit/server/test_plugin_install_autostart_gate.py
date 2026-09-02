@@ -533,3 +533,24 @@ def test_the_override_gate_is_written_before_the_source_switch() -> None:
     assert "clear_autostart_pending, plan.plugin_id" in source, (
         "切换失败后没有还原批准状态，一次失败的覆盖安装会误伤内置插件的自启动"
     )
+
+
+def test_uninstalling_clears_the_pending_record() -> None:
+    """The record belongs to the code that was just removed.
+
+    Uninstalling an override restores the builtin — which the user had
+    autostarting before — but a leftover pending record keyed on that id keeps
+    holding it back. When the plugin is removed outright the record is equally
+    stale and would ambush a later reinstall (codex).
+
+    Mutation: drop the ``clear_autostart_pending`` call from the uninstall
+    transaction.
+    """
+    import inspect
+
+    from plugin.server.application.plugins.installation_transactions import uninstall
+
+    source = inspect.getsource(uninstall.uninstall_plugin)
+    assert "clear_autostart_pending" in source, (
+        "卸载没有清掉待批准记录：恢复出来的内置插件会被一条属于已删除代码的记录拦住"
+    )

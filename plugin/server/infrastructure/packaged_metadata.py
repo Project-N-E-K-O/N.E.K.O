@@ -50,6 +50,11 @@ logger = get_logger("server.infrastructure.packaged_metadata")
 PACKAGED_METADATA_FILENAME = "plugin.meta.json"
 PACKAGED_METADATA_SCHEMA_VERSION = 1
 
+# 解析之前先封顶。这份文件来自第三方包，而 json.loads 会把整份内容读进内存再建对象；
+# 一个几百 MB 的 plugin.meta.json 足以在刷新注册表时把进程撑爆，而刷新现在整段持锁
+# （codex）。1 MiB 对元数据是很宽的余量：本机 16 个内置插件里最大的一份 47 KB。
+MAX_PACKAGED_METADATA_BYTES = 1024 * 1024
+
 # 用字节码点写，避免这几个常量本身在编辑/移植途中被行尾转换动过。
 _CR = bytes([13])
 _LF = bytes([10])
@@ -64,6 +69,14 @@ _CRLF = _CR + _LF
 
 # 下降之前就剪掉。node_modules 不在旧的扫描键忽略集里，带 vendor 树的插件会让
 # 每一次遍历都陪着走一遍。
+# 只有这些后缀会在摘要前做行尾归一化。二进制资源里 CR 是有意义的字节，把它换掉会
+# 让两份不同的文件算出同一个摘要（codex）；而归一化本身是为了让 Windows 打的包到
+# Linux 上还认得出来，那个问题只存在于文本。
+TEXT_SUFFIXES_FOR_HASHING = frozenset(
+    {".py", ".pyi", ".toml", ".json", ".yaml", ".yml", ".ini", ".cfg", ".txt", ".md",
+     ".csv", ".xml", ".html", ".css", ".js", ".ts", ".sql"}
+)
+
 SOURCE_IGNORED_DIRS = frozenset(
     {"__pycache__", ".git", ".mypy_cache", ".ruff_cache", "node_modules", ".venv"}
 )
@@ -101,7 +114,9 @@ class PackagedPluginMetadata:
     source_sha256: str = ""
 
 
-def _iter_source_files(plugin_dir: Path) -> tuple[list[tuple[str, os.stat_result]], bool]:
+def _iter_source_files(
+    plugin_dir: Path,
+) -> tuple[list[tuple[str, os.stat_result]], bool, list[str]]:
     # 手写 scandir 下降而不是 rglob：忽略目录必须在下降**之前**剪掉，否则一个带
     # 大 object database 的开发目录每次都要先枚举完才轮到忽略判断。
     #
@@ -111,6 +126,7 @@ def _iter_source_files(plugin_dir: Path) -> tuple[list[tuple[str, os.stat_result
     # saw_symlink 是"这棵树不可信"的旗子，软链只是最常见的那个来源：读不了的目录、
     # 以及 FIFO/socket/设备节点这类非普通文件也会把它立起来。
     files: list[tuple[str, os.stat_result]] = []
+    dirs: list[str] = [str(plugin_dir)]
     saw_symlink = os.path.islink(str(plugin_dir))
     stack = [str(plugin_dir)]
     while stack:
@@ -129,6 +145,11 @@ def _iter_source_files(plugin_dir: Path) -> tuple[list[tuple[str, os.stat_result
                 if entry.is_dir(follow_symlinks=False):
                     if entry.name not in SOURCE_IGNORED_DIRS:
                         stack.append(entry.path)
+                        # 目录自己的 mtime 也要看。删掉一个文件不会让任何**幸存**
+                        # 文件变新，于是纯看文件 mtime 的快路径会放过"源码少了一
+                        # 块"这种改动，宿主继续端着按删除前推出来的 schema
+                        # （codex）。增删条目都会更新父目录的 mtime。
+                        dirs.append(entry.path)
                     continue
                 if entry.name == PACKAGED_METADATA_FILENAME:
                     # 生成物不参与它自己的新鲜度判定。
@@ -148,7 +169,7 @@ def _iter_source_files(plugin_dir: Path) -> tuple[list[tuple[str, os.stat_result
                 (os.path.relpath(entry.path, str(plugin_dir)).replace(os.sep, "/"), stat_result)
             )
     files.sort(key=lambda item: item[0])
-    return files, saw_symlink
+    return files, saw_symlink, dirs
 
 
 def compute_source_sha256(plugin_dir: Path) -> str:
@@ -159,7 +180,7 @@ def compute_source_sha256(plugin_dir: Path) -> str:
     file costs hundreds of milliseconds against tens for a stat walk, so the
     cheap check runs first and this one decides.
     """
-    files, saw_symlink = _iter_source_files(plugin_dir)
+    files, saw_symlink, _dirs = _iter_source_files(plugin_dir)
     digest = hashlib.sha256()
     if saw_symlink:
         digest.update(b"<symlink-or-unreadable>\0")
@@ -171,7 +192,9 @@ def compute_source_sha256(plugin_dir: Path) -> str:
             # 不该依赖那份配置：作者在 Windows 上打的包一旦带着 CRLF 算出来的摘要，
             # 到 Linux 用户机器上就会条条判成"源码变了"，全部退化成占位。
             raw = (plugin_dir / rel_path).read_bytes()
-            digest.update(raw.replace(_CRLF, _LF).replace(_CR, _LF))
+            if Path(rel_path).suffix.lower() in TEXT_SUFFIXES_FOR_HASHING:
+                raw = raw.replace(_CRLF, _LF).replace(_CR, _LF)
+            digest.update(raw)
         except OSError as exc:
             raise PackagedMetadataError(
                 f"cannot read plugin source file for hashing: {rel_path}: {exc}"
@@ -181,11 +204,20 @@ def compute_source_sha256(plugin_dir: Path) -> str:
 
 
 def newest_source_mtime_ns(plugin_dir: Path) -> tuple[int, bool]:
-    """``(newest mtime, tree is untrustworthy)`` over the plugin's sources."""
-    files, saw_symlink = _iter_source_files(plugin_dir)
+    """``(newest mtime, tree is untrustworthy)`` over the plugin's sources.
+
+    Directory mtimes count too: deleting a source file leaves every surviving
+    file untouched, so a file-only check cannot see that the tree lost a piece.
+    """
+    files, saw_symlink, dirs = _iter_source_files(plugin_dir)
     newest = 0
     for _rel_path, stat_result in files:
         newest = max(newest, stat_result.st_mtime_ns)
+    for dir_path in dirs:
+        try:
+            newest = max(newest, os.stat(dir_path).st_mtime_ns)
+        except OSError:
+            saw_symlink = True
     return newest, saw_symlink
 
 
@@ -231,6 +263,16 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
     try:
         meta_stat = meta_path.stat()
     except OSError:
+        return None
+
+    if meta_stat.st_size > MAX_PACKAGED_METADATA_BYTES:
+        logger.warning(
+            "packaged plugin metadata is too large to parse, falling back to "
+            "manifest: path={}, size={}, limit={}",
+            meta_path,
+            meta_stat.st_size,
+            MAX_PACKAGED_METADATA_BYTES,
+        )
         return None
 
     try:

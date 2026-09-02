@@ -25,6 +25,7 @@ from plugin.server.application.install_source.scanner import PluginDirectoryScan
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure.autostart_approvals import clear_autostart_pending
 from plugin.server.infrastructure.runtime_overrides import (
     RuntimeOverride,
     clear_runtime_override,
@@ -1139,6 +1140,10 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         restored_builtin = bool(
             restored_meta and restored_meta.get("effective_source") == "builtin"
         )
+        # 卸载之后那条待批准记录一定是过时的：它是为被卸掉的那份代码记的。
+        # 留着的话，恢复出来的内置插件（用户原本就在自启）会被它继续拦下来；
+        # 插件被整个移除时，它也会挂在这个 id 上等着误伤将来的重装（codex）。
+        await asyncio.to_thread(clear_autostart_pending, plugin_id)
         preference_action: PreferenceAction = (
             "preserved" if restored_builtin else "cleared"
         )
