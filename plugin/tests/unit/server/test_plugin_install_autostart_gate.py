@@ -1904,6 +1904,14 @@ def test_a_probe_that_rewrites_the_tree_yields_no_metadata(
         (plugin_dir / "state.json").write_text("{}", encoding="utf-8")
         return _Isolated()
 
+    marker = plugin_dir / "marker"
+
+    def _scan_that_only_moves_a_directory(**_kwargs):
+        # 按空标记目录的存在与否注册入口，然后把它删掉——文件一个没动，
+        # 前后内容摘要完全相同。
+        marker.rmdir()
+        return _Isolated()
+
     monkeypatch.setattr(
         "plugin.server.application.plugins.metadata_scanner"
         ".scan_plugin_metadata_isolated",
@@ -1915,4 +1923,17 @@ def test_a_probe_that_rewrites_the_tree_yields_no_metadata(
     assert "changed the staged tree" in str(excinfo.value), (
         "import 期改动了暂存树却照常出元数据：装出来的树能过校验，"
         "import 它却会注册出别的入口"
+    )
+
+    (plugin_dir / "state.json").unlink()
+    marker.mkdir()
+    monkeypatch.setattr(
+        "plugin.server.application.plugins.metadata_scanner"
+        ".scan_plugin_metadata_isolated",
+        _scan_that_only_moves_a_directory,
+    )
+    with pytest.raises(metadata_probe.MetadataProbeError) as dir_exc:
+        metadata_probe.derive_plugin_metadata(plugin_dir)
+    assert "changed the staged tree" in str(dir_exc.value), (
+        "只动目录、不动文件的那种改法躲过了检查：内容摘要覆盖不到目录"
     )

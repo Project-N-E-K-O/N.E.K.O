@@ -43,6 +43,7 @@ from plugin.server.infrastructure.packaged_metadata import (
     PACKAGED_METADATA_SCHEMA_VERSION,
     compute_source_sha256,
     empty_source_directories,
+    source_directory_names,
     unicode_renamed_source_files,
     source_stat_summary,
 )
@@ -109,6 +110,7 @@ def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
     # 算的：装出来的树能通过校验，import 它却会注册出和 plugin.meta.json 不一样的
     # 入口（codex）。
     digest_before_probe = compute_source_sha256(plugin_dir)
+    dirs_before_probe = source_directory_names(plugin_dir)
 
     try:
         isolated = scan_plugin_metadata_isolated(
@@ -135,7 +137,12 @@ def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
             "staged tree contains directories that cannot survive packaging "
             f"({empty_dirs[:3]}); packaging without metadata so the host rescans"
         )
-    if compute_source_sha256(plugin_dir) != digest_before_probe:
+    if (
+        compute_source_sha256(plugin_dir) != digest_before_probe
+        or source_directory_names(plugin_dir) != dirs_before_probe
+    ):
+        # 目录也要比。内容摘要只覆盖文件，所以"建一个空标记目录、按它注册入口、
+        # 再把它删掉"这一串前后摘要完全相同（codex）。
         raise MetadataProbeError(
             "importing the plugin changed the staged tree; packaging without "
             "metadata so the host rescans"

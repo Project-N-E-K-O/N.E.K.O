@@ -315,6 +315,23 @@ def source_stat_summary(plugin_dir: Path) -> SourceStatSummary:
     )
 
 
+def source_directory_names(plugin_dir: Path) -> list[str]:
+    """Sorted relative paths of every directory the walk descends into.
+
+    The content digest covers files, so it cannot see a directory appear or
+    vanish on its own. Packaging compares this across the probe: module-level
+    code can create an entry from a marker directory's presence and then delete
+    it, leaving both digests identical (codex).
+    """
+    _files, _untrustworthy, dirs = _iter_source_files(plugin_dir)
+    root = str(plugin_dir)
+    return sorted(
+        os.path.relpath(path, root).replace(os.sep, "/")
+        for path in dirs
+        if path != root
+    )
+
+
 def empty_source_directories(plugin_dir: Path) -> list[str]:
     """Directories in the tree that hold no fingerprinted file, at any depth.
 
