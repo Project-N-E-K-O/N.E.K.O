@@ -861,6 +861,35 @@ def test_the_wrapped_error_keeps_a_stalled_attempt_output_where_callers_look():
 
 
 @pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_harness_that_pins_date_now_cannot_freeze_the_deadline(runner):
+    """Three harnesses in this repo pin ``Date.now`` to a fake clock.
+
+    ``test_app_websocket_static.py`` and ``test_avatar_annotation_frontend.py``
+    both do it to drive TTL logic. Reading the clock through the global at check
+    time froze ``overdue()`` for them -- the guard was inert for exactly the
+    suites that simulate the passage of time. The preload takes a monotonic
+    clock before the script gets a turn.
+    """
+    node_path = _node_or_skip()
+
+    # Date.now pinned, then real time burned through a clock the fake cannot
+    # reach. Under the old lookup this returned 0.
+    script = (
+        "Date.now = () => 1000000;\n"
+        "const until = process.hrtime.bigint() + 500000000n;\n"
+        "while (process.hrtime.bigint() < until) {}\n"
+        "process.stdout.write('done');\n"
+    )
+    result = runner(node_path, script, capture_output=True, check=False, timeout=0.1)
+
+    assert result.returncode == node_harness._WATCHDOG_EXIT_CODE, (
+        f"被钉死的 Date.now 不该冻住 deadline：rc={result.returncode} "
+        f"stdout={result.stdout!r}"
+    )
+    assert "still running" in result.stderr
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
 def test_a_harness_that_stubs_process_exit_cannot_disarm_the_timer(runner):
     """``process.exit = () => {}`` is a normal stub, not sabotage.
 
@@ -942,8 +971,8 @@ def test_the_script_budget_is_counted_from_the_preload_not_process_start():
     """
     preload = node_harness._PRELOAD_SOURCE
 
-    assert "const startedAt = Date.now();" in preload
-    assert "Date.now() - startedAt > deadlineMs" in preload
+    assert "const startedAt = millisNow();" in preload
+    assert "millisNow() - startedAt > deadlineMs" in preload
     assert "uptime()" not in preload, (
         "uptime() 从进程启动算起，会把 node 自己的 bootstrap 记到脚本头上"
     )

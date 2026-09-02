@@ -246,6 +246,16 @@ const armTimer = timers.setTimeout.bind(timers);
 const writeSync = fs.writeSync.bind(fs);
 const exitNow = nativeProcess.exit.bind(nativeProcess);
 const stringify = JSON.stringify.bind(JSON);
+// Monotonic, and snapshotted like everything else.  Three harnesses in this
+// repo pin Date.now to a fake clock (test_app_websocket_static,
+// test_avatar_annotation_frontend x2), which would freeze the deadline check
+// for exactly the scripts most likely to need it; hrtime is also immune to the
+// wall clock being adjusted underneath a long run.
+const hrtime = nativeProcess.hrtime && typeof nativeProcess.hrtime.bigint === 'function'
+  ? nativeProcess.hrtime.bigint.bind(nativeProcess.hrtime)
+  : null;
+const wallClock = Date.now.bind(Date);
+const millisNow = hrtime ? function () { return Number(hrtime() / 1000000n); } : wallClock;
 const activeResources = typeof nativeProcess.getActiveResourcesInfo === 'function'
   ? nativeProcess.getActiveResourcesInfo.bind(nativeProcess)
   : null;
@@ -258,10 +268,10 @@ const EXIT_CODE = __EXIT_CODE__;
 // catch and retry -- so charging it to the script would report a healthy script
 // as a harness timeout on precisely the slow spawn this launcher was written
 // for, and would do it *instead of* retrying.
-const startedAt = Date.now();
+const startedAt = millisNow();
 
 function overdue() {
-  return Date.now() - startedAt > deadlineMs;
+  return millisNow() - startedAt > deadlineMs;
 }
 
 function diagnose(prefix) {
