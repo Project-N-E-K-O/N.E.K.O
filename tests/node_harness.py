@@ -89,11 +89,12 @@ One in-script hang escapes the watchdog: a synchronous block.  ``while (true)
 no amount of retrying will make that script finish.  What separates it from a
 genuine spawn stall is evidence: measured on Windows, whatever the script wrote
 before it blocked still reaches the parent, while a node that never reached the
-script emits nothing at all.  So a stalled attempt that produced output is
-reported straight away, and only a silent one is retried.  A synchronous block
-that also printed nothing stays ambiguous, and the error says so rather than
-picking a side -- as does the case of a caller that never captured output at
-all, where the silence is nobody watching rather than nothing said.
+script emits nothing at all.  Which of the two happened is not inferred from output -- a caller
+that does not capture cannot show any, so silence would mean both things at
+once.  The preload drops a marker file the moment node compiles the script, so
+the launcher knows as a fact whether anything was under test: an attempt that
+never got that far is repeated, and one that did is reported as it stands,
+because a second run would block in exactly the same place.
 """
 
 import atexit
@@ -137,7 +138,7 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
     came with output and was not worth repeating; two means both were silent.
     """
 
-    def __init__(self, cmd, timeout, attempts):
+    def __init__(self, cmd, timeout, attempts, started=False):
         # Carry the last attempt's output on the exception the way
         # ``subprocess.run`` would have: a caller that catches
         # ``TimeoutExpired`` and reads ``.stdout``/``.stderr`` (or ``.output``)
@@ -150,16 +151,22 @@ class NodeHarnessSpawnTimeout(subprocess.TimeoutExpired):
             stderr=getattr(last, "stderr", None),
         )
         self.attempts = list(attempts)
+        self.started = started
 
     def __str__(self) -> str:
-        diagnosis = (
-            "Stalled before node exited, and the in-script watchdog never "
-            "fired. Either node never reached the script (process creation, "
-            "reading it off disk, V8 bootstrap), or the script blocked the "
-            "event loop synchronously -- a timer cannot interrupt that. Each "
-            "attempt's output below is the evidence, where there was a pipe "
-            "to collect it: anything at all means the script did run."
-        )
+        if self.started:
+            diagnosis = (
+                "The script ran and then stalled without the watchdog firing, "
+                "which a timer cannot interrupt: it blocked the event loop "
+                "synchronously. Not retried -- a second run would block the "
+                "same way."
+            )
+        else:
+            diagnosis = (
+                "node never reached the harness script -- process creation, "
+                "reading it off disk, or V8 bootstrap stalled. Nothing was "
+                "under test, so the attempt was repeated."
+            )
         lines = [super().__str__(), "", diagnosis]
         if not any(_observed_output(attempt) for attempt in self.attempts):
             lines.append(
@@ -230,6 +237,11 @@ def _budgeted(kwargs: dict) -> tuple[dict, float]:
 # than a substitution into the source keeps the preload file identical for every
 # call, so it can be written once per process instead of once per invocation.
 _DEADLINE_ENV = "NEKO_NODE_HARNESS_DEADLINE_MS"
+# Where the preload records that node reached the harness script.  Retrying is
+# only ever right for an attempt that never got that far, and output is a poor
+# proxy for it: a caller that does not capture cannot show any, so "silent" and
+# "never started" look identical from out here.  The file makes it a fact.
+_MARKER_ENV = "NEKO_NODE_HARNESS_STARTED_MARKER"
 
 _PRELOAD_SOURCE = r"""
 // Preloaded with `node --require`, so this runs before the harness script, in
@@ -248,6 +260,7 @@ const Module = require('node:module');
 const nativeProcess = process;
 const armTimer = timers.setTimeout.bind(timers);
 const writeSync = fs.writeSync.bind(fs);
+const writeFileSync = fs.writeFileSync.bind(fs);
 const exitNow = nativeProcess.exit.bind(nativeProcess);
 const stringify = JSON.stringify.bind(JSON);
 // Monotonic, and snapshotted like everything else.  Three harnesses in this
@@ -332,6 +345,16 @@ if (deadlineMs > 0) {
       startedAt = millisNow();
       Module.prototype._compile = originalCompile;
 
+      // Tell the launcher the script really started.  Best effort: if this
+      // cannot be written the launcher falls back to judging by output, which
+      // is where it was before.
+      try {
+        const marker = nativeProcess.env.NEKO_NODE_HARNESS_STARTED_MARKER;
+        if (marker) writeFileSync(marker, '1');
+      } catch (err) {
+        // Nothing to do; the deadline itself is unaffected.
+      }
+
       // ...and this covers the script that never exits at all.  unref() so the
       // watchdog is never itself the reason node stays up: with nothing else
       // holding the loop, node exits first and the hook above does the
@@ -397,10 +420,29 @@ def _preload_path() -> str:
         return _preload_file
 
 
-def _guarded(merged: dict, deadline_seconds: float) -> tuple[list[str], dict]:
+def _new_marker() -> str:
+    """A path the preload will create once node reaches the harness script."""
+    handle, path = tempfile.mkstemp(suffix=".neko-harness-started")
+    os.close(handle)
+    os.unlink(path)  # its *existence* is the signal, so start from absent
+    return path
+
+
+def _script_started(marker: str, exc: subprocess.TimeoutExpired) -> bool:
+    """Did this attempt get as far as running the harness script?
+
+    The marker is the direct answer.  Output is kept as a fallback for the case
+    where the marker could not be written at all: it is one-directional, but
+    anything on either stream still proves the script ran.
+    """
+    return os.path.exists(marker) or _emitted_anything(exc)
+
+
+def _guarded(merged: dict, deadline_seconds: float, marker: str) -> tuple[list[str], dict]:
     """The ``--require`` argument and the environment carrying the deadline."""
     base = merged.get("env")
     environment = dict(os.environ if base is None else base)
+    environment[_MARKER_ENV] = marker
     # Floor at 1ms: a sub-millisecond budget must still arm the guard, and
     # rounding it to 0 is how the preload gets switched off by accident.
     environment[_DEADLINE_ENV] = str(max(1, int(deadline_seconds * 1000)))
@@ -416,15 +458,24 @@ def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):
     """
     attempts = []
     for attempt in (1, 2):
-        argv, run_kwargs = next_attempt()
+        argv, run_kwargs, marker = next_attempt()
         try:
             return subprocess.run(argv, **run_kwargs)
         except subprocess.TimeoutExpired as exc:
             attempts.append(exc)
-            if attempt == 2 or _emitted_anything(exc):
+            started = _script_started(marker, exc)
+            if attempt == 2 or started:
                 raise NodeHarnessSpawnTimeout(
-                    cmd_for_error, exc.timeout, attempts
+                    cmd_for_error, exc.timeout, attempts, started=started
                 ) from exc
+        finally:
+            try:
+                os.unlink(marker)
+            except OSError:
+                # Absent is the normal case: the preload only creates it once
+                # node reaches the script, and there is nothing to clean up
+                # otherwise.
+                pass
     raise AssertionError("unreachable")  # pragma: no cover
 
 
@@ -434,17 +485,18 @@ def run_node_script(node_path: str, script: str, **kwargs) -> subprocess.Complet
     Use this when the script is large or grows with the behaviour it simulates.
     Extra keyword arguments go straight to ``subprocess.run``.
     """
-    merged, deadline_seconds = _budgeted(_utf8(kwargs))
-    preload, merged = _guarded(merged, deadline_seconds)
+    budget, deadline_seconds = _budgeted(_utf8(kwargs))
     staged: list[str] = []
 
     def _attempt():
+        marker = _new_marker()
+        preload, merged = _guarded(budget, deadline_seconds, marker)
         with tempfile.NamedTemporaryFile(
             "w", suffix=".js", delete=False, encoding="utf-8"
         ) as handle:
             handle.write(script)
             staged.append(handle.name)
-        return [node_path, *preload, staged[-1]], merged
+        return [node_path, *preload, staged[-1]], merged, marker
 
     try:
         return _run_retrying_spawn_stalls(_attempt, [node_path, "<temp script>"])
@@ -466,9 +518,11 @@ def run_node_stdin(node_path: str, script: str, **kwargs) -> subprocess.Complete
     stdin form; stdin has no length ceiling, so only the encoding pin matters
     here. Extra keyword arguments go straight to ``subprocess.run``.
     """
-    merged, deadline_seconds = _budgeted(_utf8(kwargs))
-    preload, merged = _guarded(merged, deadline_seconds)
-    return _run_retrying_spawn_stalls(
-        lambda: ([node_path, *preload, "-"], dict(merged, input=script)),
-        [node_path, "-"],
-    )
+    budget, deadline_seconds = _budgeted(_utf8(kwargs))
+
+    def _attempt():
+        marker = _new_marker()
+        preload, merged = _guarded(budget, deadline_seconds, marker)
+        return [node_path, *preload, "-"], dict(merged, input=script), marker
+
+    return _run_retrying_spawn_stalls(_attempt, [node_path, "-"])

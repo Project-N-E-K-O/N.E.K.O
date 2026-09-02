@@ -962,39 +962,134 @@ def test_a_zero_timeout_still_fails_fast_and_still_arms_the_guard(monkeypatch):
     )
 
 
-def test_a_script_that_never_compiles_is_left_to_the_ceiling_to_retry():
-    """If the script never started, the guard must stay out of the way.
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_the_preload_marks_that_the_script_actually_started(runner):
+    """The marker is the launcher's only direct evidence, so prove it appears.
 
-    A ``--require`` preload is loaded before node reads the main script, so a
-    stall in reading or compiling it sits inside the preload's lifetime. Marking
-    that 87 would be a clean, deterministic exit -- and therefore *not* retried,
-    which is exactly backwards for the pre-script stall this launcher exists to
-    recover from. The deadline only starts once ``_compile`` has fired.
+    Everything downstream -- whether a stall gets retried, and which of the two
+    stories the error tells -- hangs off this file existing.
     """
     node_path = _node_or_skip()
+    seen = {}
+    real_run = node_harness.subprocess.run
 
-    # NODE_OPTIONS carries a second preload that throws while loading, so node
-    # dies before the main script is ever compiled -- the closest reproducible
-    # stand-in for "the script never started".
-    exploding = Path(node_harness._preload_path()).with_name("neko-explode.js")
-    exploding.write_text("throw new Error('boom');\n", encoding="utf-8")
+    def _watching_run(argv, **kwargs):
+        result = real_run(argv, **kwargs)
+        marker = (kwargs.get("env") or {})[node_harness._MARKER_ENV]
+        seen["existed"] = os.path.exists(marker)
+        return result
+
+    node_harness.subprocess.run = _watching_run
     try:
-        result = run_node_script(
-            node_path,
-            "process.stdout.write('never');\n",
-            capture_output=True,
-            check=False,
-            timeout=5,
-            env={**os.environ, "NODE_OPTIONS": f"--require {exploding}"},
+        result = runner(
+            node_path, "process.stdout.write('ok');\n",
+            capture_output=True, check=False, timeout=6,
         )
     finally:
-        exploding.unlink(missing_ok=True)
+        node_harness.subprocess.run = real_run
 
-    assert result.returncode != node_harness._WATCHDOG_EXIT_CODE, (
-        "脚本根本没被编译过，不该被判成「脚本超时」——那是不可重试的确定性失败，"
-        f"而这正是要留给外层 ceiling 重试的情况：rc={result.returncode}"
+    assert result.returncode == 0
+    assert seen["existed"] is True, "脚本明明跑了，标记却没落下来"
+
+
+def test_a_stall_before_the_script_started_is_retried():
+    """No marker means nothing was under test, so the attempt is repeated.
+
+    This is the whole point of the retry: a spawn that never reached the script
+    has run no assertions, and no ceiling the caller picks can help it.
+    """
+    calls = []
+    ok = subprocess.CompletedProcess(["node"], 0, "ok", "")
+
+    def _fake_run(argv, **kwargs):
+        calls.append(kwargs.get("env", {}).get(node_harness._MARKER_ENV))
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"), output="", stderr="")
+        return ok
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        assert run_node_script("node", "process.stdout.write('ok');", timeout=3) is ok
+    finally:
+        node_harness.subprocess.run = original
+
+    assert len(calls) == 2
+    assert calls[0] != calls[1], "每次尝试要有自己的标记，否则上一次的会误导下一次"
+
+
+def test_a_stall_after_the_script_started_is_not_retried_even_with_no_output():
+    """The fix for the case output could never have answered.
+
+    A caller that does not capture leaves ``TimeoutExpired.stdout`` as None, so
+    the old output test read "silent" and retried -- repeating whatever the
+    script had already done. The marker answers it directly: the script ran, so
+    a second run would block in the same place.
+    """
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        # Stand in for the preload: node reached the script and marked it.
+        Path(kwargs["env"][node_harness._MARKER_ENV]).write_text("1", encoding="utf-8")
+        # No capture, so both streams come back as None -- indistinguishable
+        # from silence without the marker.
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            run_node_script("node", "process.stdout.write('ok');", timeout=1)
+    finally:
+        node_harness.subprocess.run = original
+
+    assert len(calls) == 1, (
+        f"脚本已经跑过了就不该重试——重跑一遍只会在同一个地方卡住，"
+        f"顺带把它已经做过的事再做一遍：{len(calls)} 次"
     )
-    assert result.stdout == ""
+    assert excinfo.value.started is True
+    assert "blocked the event loop synchronously" in str(excinfo.value)
+
+
+def test_the_error_says_which_of_the_two_stalls_it_was():
+    """The dual: a never-started stall must not be described as a script hang."""
+    def _fake_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"), output="", stderr="")
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            run_node_script("node", "process.stdout.write('ok');", capture_output=True, timeout=1)
+    finally:
+        node_harness.subprocess.run = original
+
+    assert excinfo.value.started is False
+    message = str(excinfo.value)
+    assert "never reached the harness script" in message
+    assert "blocked the event loop synchronously" not in message
+
+
+def test_the_marker_is_cleaned_up_after_a_run():
+    """One marker per attempt, and none of them outlive the call."""
+    seen = []
+
+    def _fake_run(argv, **kwargs):
+        marker = kwargs["env"][node_harness._MARKER_ENV]
+        Path(marker).write_text("1", encoding="utf-8")
+        seen.append(marker)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        run_node_script("node", "process.stdout.write('ok');", timeout=3)
+    finally:
+        node_harness.subprocess.run = original
+
+    assert len(seen) == 1
+    assert not os.path.exists(seen[0]), f"标记文件留在盘上了：{seen[0]}"
 
 
 def test_the_script_budget_is_counted_from_the_preload_not_process_start():
