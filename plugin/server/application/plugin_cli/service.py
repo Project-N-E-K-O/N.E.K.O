@@ -812,6 +812,11 @@ class PluginCliService:
                 "install_source_warning": "; ".join(lock_warnings) if lock_warnings else None,
             }
         )
+        # 覆盖安装同样是"装上了但用户没启动过"。这个 id 之前确实存在——它是内置
+        # 插件——但现在跑的是用户上传的第三方代码，而那个 id 早就带着自启动资格。
+        # 不登记的话，一次覆盖安装就能让未经启动的第三方代码在下次开机自动执行
+        # （greptile）。安装和运行是两件事，换掉代码之后这句话依然成立。
+        await asyncio.to_thread(_mark_new_install_awaiting_autostart, staged_result)
         return staged_result
 
     async def _install_market_builtin_replacement(

@@ -171,6 +171,26 @@ def test_an_upgrade_never_reaches_the_gate(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
+def test_a_builtin_override_install_is_gated_too() -> None:
+    """Overriding a builtin swaps trusted code for uploaded code.
+
+    ``install_builtin_override`` is a separate entry point — ``upload_and_install``
+    calls it directly for ``override_builtin`` packages, so it never passes
+    through ``install()``. The id existed before, as a builtin, and therefore
+    already carries autostart eligibility; without gating, one override install
+    makes never-started third-party code run at the next startup (greptile).
+
+    Mutation: drop the ``_mark_new_install_awaiting_autostart`` call from
+    ``install_builtin_override``.
+    """
+    import inspect
+
+    source = inspect.getsource(cli_service.PluginCliService.install_builtin_override)
+    assert "_mark_new_install_awaiting_autostart" in source, (
+        "覆盖安装没有登记待批准：一次覆盖就能让未经启动的第三方代码在下次开机自动执行"
+    )
+
+
 def test_the_gate_records_the_manifest_id_not_the_directory_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
