@@ -963,7 +963,7 @@ def test_a_zero_timeout_still_fails_fast_and_still_arms_the_guard(monkeypatch):
 
 
 @pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
-def test_another_preloads_dependency_does_not_start_the_budget(runner):
+def test_another_preloads_dependency_does_not_start_the_budget(runner, tmp_path):
     """The clock must start at the harness script, not at the first compile.
 
     An inherited ``NODE_OPTIONS`` can add preloads of its own, and an ESM
@@ -977,9 +977,10 @@ def test_another_preloads_dependency_does_not_start_the_budget(runner):
     """
     node_path = _node_or_skip()
 
-    directory = Path(node_harness._preload_path()).parent
-    dependency = directory / "neko-probe-dep.cjs"
-    slow_import = directory / "neko-probe-slow.mjs"
+    # tmp_path, not the shared temp dir: fixed names there let one parametrised
+    # instance delete the .mjs another is still loading.
+    dependency = tmp_path / "neko-probe-dep.cjs"
+    slow_import = tmp_path / "neko-probe-slow.mjs"
     dependency.write_text("module.exports = 1;\n", encoding="utf-8")
     slow_import.write_text(
         "import { createRequire } from 'node:module';\n"
