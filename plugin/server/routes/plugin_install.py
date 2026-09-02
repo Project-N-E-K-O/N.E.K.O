@@ -68,9 +68,12 @@ async def _run_blocking(func: Callable[..., Any], *args: Any, **kwargs: Any) -> 
     )
 
 
-def _get_plugin_registration(plugin_id: str) -> InstallPluginRegistration:
+async def _get_plugin_registration(plugin_id: str) -> InstallPluginRegistration:
     try:
-        registration = install_registry.get_install_plugin_registration(plugin_id)
+        registration = await _run_blocking(
+            install_registry.get_install_plugin_registration,
+            plugin_id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Plugin has no install API") from exc
     if registration is None:
@@ -78,12 +81,7 @@ def _get_plugin_registration(plugin_id: str) -> InstallPluginRegistration:
     return registration
 
 
-def _ensure_has_install(plugin_id: str) -> None:
-    _get_plugin_registration(plugin_id)
-
-
-def _ensure_tutorial_enabled(plugin_id: str) -> None:
-    registration = _get_plugin_registration(plugin_id)
+def _ensure_tutorial_enabled(registration: InstallPluginRegistration) -> None:
     if not registration.tutorial_enabled:
         raise HTTPException(status_code=404, detail=f"Plugin '{registration.plugin_id}' has no tutorial API")
 
@@ -94,7 +92,7 @@ class InstallStartPayload(BaseModel):
 
 @router.get("/plugin/{plugin_id}/ui-api/locale")
 async def get_plugin_ui_locale(plugin_id: str) -> JSONResponse:
-    _get_plugin_registration(plugin_id)
+    await _get_plugin_registration(plugin_id)
     try:
         from utils.language_utils import get_global_language_full
 
@@ -107,7 +105,7 @@ async def get_plugin_ui_locale(plugin_id: str) -> JSONResponse:
 
 @router.get("/plugin/{plugin_id}/ui-api/i18n/ui/{locale}.json")
 async def get_plugin_ui_i18n(plugin_id: str, locale: str) -> Response:
-    registration = _get_plugin_registration(plugin_id)
+    registration = await _get_plugin_registration(plugin_id)
     if registration.ui_i18n_dir is None:
         return Response(status_code=404)
     normalized = str(locale or "").strip()
@@ -115,13 +113,17 @@ async def get_plugin_ui_i18n(plugin_id: str, locale: str) -> Response:
         return Response(status_code=404)
     if normalized not in _ALLOWED_UI_LOCALES:
         return Response(status_code=404)
-    base_dir = registration.ui_i18n_dir.resolve()
-    file = (base_dir / f"{normalized}.json").resolve()
-    try:
-        file.relative_to(base_dir)
-    except ValueError:
-        return Response(status_code=404)
-    if not await _run_blocking(file.is_file):
+    def resolve_locale_file() -> Path | None:
+        try:
+            base_dir = registration.ui_i18n_dir.resolve(strict=True)
+            file = (base_dir / f"{normalized}.json").resolve(strict=True)
+            file.relative_to(base_dir)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError):
+            return None
+        return file if file.is_file() else None
+
+    file = await _run_blocking(resolve_locale_file)
+    if file is None:
         return Response(status_code=404)
     return FileResponse(file)
 
@@ -150,10 +152,9 @@ def _normalize_ui_locale(locale: str) -> str:
 def _get_install_kind_spec(
     kind: str,
     *,
-    plugin_id: str,
+    registration: InstallPluginRegistration,
     allow_legacy_read: bool = False,
 ) -> dict[str, Any]:
-    registration = _get_plugin_registration(plugin_id)
     normalized = str(kind or "").strip().lower()
     # rapidocr + dxcam used to live here as runtime-pip-install entries; both
     # are now bundled into the main program. textractor still needs runtime
@@ -470,8 +471,8 @@ async def _start_install_task(
     payload: InstallStartPayload,
     request: Request,
 ) -> JSONResponse:
-    _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
+    registration = await _get_plugin_registration(plugin_id)
+    spec = _get_install_kind_spec(kind, registration=registration)
     try:
         client_host = request.client.host if request.client is not None else None
         args: dict[str, object] = {"force": bool(payload.force)}
@@ -539,8 +540,12 @@ async def _start_install_task(
 
 
 async def _latest_install_task_payload(*, plugin_id: str, kind: str) -> JSONResponse:
-    _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind, plugin_id=plugin_id, allow_legacy_read=True)
+    registration = await _get_plugin_registration(plugin_id)
+    spec = _get_install_kind_spec(
+        kind,
+        registration=registration,
+        allow_legacy_read=True,
+    )
     payload = await _run_blocking(
         load_latest_install_task_state,
         kind=spec["kind"],
@@ -561,8 +566,12 @@ async def _latest_install_task_payload(*, plugin_id: str, kind: str) -> JSONResp
 
 
 async def _get_install_task_payload(*, plugin_id: str, kind: str, task_id: str) -> JSONResponse:
-    _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind, plugin_id=plugin_id, allow_legacy_read=True)
+    registration = await _get_plugin_registration(plugin_id)
+    spec = _get_install_kind_spec(
+        kind,
+        registration=registration,
+        allow_legacy_read=True,
+    )
     return JSONResponse(
         await _run_blocking(
             _resolve_install_task_payload,
@@ -581,8 +590,12 @@ async def _install_stream_response(
     task_id: str,
     request: Request,
 ) -> StreamingResponse:
-    _ensure_has_install(plugin_id)
-    spec = _get_install_kind_spec(kind, plugin_id=plugin_id, allow_legacy_read=True)
+    registration = await _get_plugin_registration(plugin_id)
+    spec = _get_install_kind_spec(
+        kind,
+        registration=registration,
+        allow_legacy_read=True,
+    )
     await _run_blocking(
         _resolve_install_task_payload,
         task_id,
@@ -881,7 +894,8 @@ def _normalize_tutorial_progress(raw: dict[str, Any] | None) -> dict[str, Any]:
 
 @router.get("/plugin/{plugin_id}/ui-api/tutorial/status")
 async def get_tutorial_status(plugin_id: str) -> JSONResponse:
-    _ensure_tutorial_enabled(plugin_id)
+    registration = await _get_plugin_registration(plugin_id)
+    _ensure_tutorial_enabled(registration)
     try:
         raw = await _run_blocking(_read_tutorial_progress, plugin_id)
     except Exception:
@@ -898,7 +912,8 @@ async def save_tutorial_progress(
     plugin_id: str,
     body: TutorialProgressPayload,
 ) -> JSONResponse:
-    _ensure_tutorial_enabled(plugin_id)
+    registration = await _get_plugin_registration(plugin_id)
+    _ensure_tutorial_enabled(registration)
     payload = body.model_dump(exclude_unset=True)
     try:
         current = _normalize_tutorial_progress(await _run_blocking(_read_tutorial_progress, plugin_id))

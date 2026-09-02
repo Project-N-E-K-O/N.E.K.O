@@ -172,6 +172,7 @@ async def test_refresh_registry_syncs_metadata_and_marks_missing_running_plugin(
         with module.state.acquire_plugins_read_lock():
             demo_meta = dict(module.state.plugins["demo_plugin"])
             running_removed = dict(module.state.plugins["running_removed"])
+            assert "demo_plugin_1" not in module.state.plugins
 
         assert demo_meta["runtime_enabled"] is True
         assert demo_meta["runtime_auto_start"] is False

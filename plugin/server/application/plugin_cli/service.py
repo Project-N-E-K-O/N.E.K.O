@@ -42,6 +42,7 @@ from plugin.server.application.plugins.installation_transactions import (
     replace as replacement_transaction,
 )
 from plugin.server.application.plugins import source_switch
+from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.application.plugins.installation_transactions.manual_takeover import (
     is_manual_takeover_entry,
     local_manual_takeover_confirmation_token,
@@ -79,6 +80,34 @@ _UPLOAD_MAX_BYTES = 500 * 1024 * 1024
 _UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 
 logger = get_logger("server.application.plugin_cli")
+plugin_registry_service = PluginRegistryService()
+
+
+async def _refresh_committed_market_install(plugin_id: str) -> str | None:
+    """Refresh a fresh Market install without rolling back committed files.
+
+    The source row is the commit point. Cancellation after it must wait for the
+    one refresh already in flight, then propagate to the caller; refresh failure
+    is surfaced as a warning while the committed installation remains intact.
+    """
+
+    try:
+        # upload_and_install is wrapped by serialized_plugin_operation, which
+        # shields the complete locked operation and waits for it before
+        # propagating caller cancellation. Await directly here so no orphan
+        # refresh task is created.
+        await plugin_registry_service.refresh_plugin(plugin_id, force=True)
+    except Exception as exc:  # noqa: BLE001 - committed install stays successful.
+        logger.warning(
+            "post-commit Market plugin refresh failed: plugin_id={}",
+            plugin_id,
+            exc_info=True,
+        )
+        return (
+            f"plugin '{plugin_id}' was installed, but its registry refresh failed "
+            f"({type(exc).__name__}: {exc}); refresh plugins or restart N.E.K.O"
+        )
+    return None
 
 _PACKAGE_ERROR_PATTERNS = (
     (
@@ -1253,6 +1282,12 @@ class PluginCliService:
                     package_id=str(unpack_result.get("package_id") or ""),
                     profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
+                if install_mode == "install":
+                    refresh_warning = await _refresh_committed_market_install(
+                        package_plugin_id
+                    )
+                    if refresh_warning is not None:
+                        warnings.append(refresh_warning)
                 return self._compose_install_result(
                     saved=saved,
                     unpack_result=unpack_result,
@@ -1343,6 +1378,12 @@ class PluginCliService:
                     profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
             warnings.extend(ism_warnings)
+            if install_mode == "install":
+                refresh_warning = await _refresh_committed_market_install(
+                    package_plugin_id
+                )
+                if refresh_warning is not None:
+                    warnings.append(refresh_warning)
 
             install_dict: dict[str, Any] = {
                 "channel": entry.channel,
