@@ -58,13 +58,16 @@ deterministically, with the leaked handle named, and is never retried.  The
 subprocess ceiling then sits a few seconds above that deadline, so a
 surviving ``TimeoutExpired`` means the watchdog never got to run.
 
-The deadline has to be enforced two ways, because ``unref()`` cuts both.  A
-script still holding the loop open gets the timer.  A script that merely ran
-long and then finished would sail past it -- node exits before an unref'd timer
-on an otherwise empty loop -- so the overdue case is checked once, synchronously,
-at the moment the watchdog arms.  Without that second half, moving the caller's
-timeout off ``subprocess.run`` and into the script would have quietly stopped
-the timeout from meaning anything for every script that overruns and completes.
+The deadline needs two enforcers, because ``unref()`` cuts both ways.  A script
+still holding the loop open is caught by the timer.  A script that merely ran
+long and then ended sails straight past it -- node exits before an unref'd timer
+on an otherwise empty loop -- and so does one that calls ``process.exit()`` in
+its own top level, which never reaches appended code at all.  Both are caught by
+an ``exit`` hook that re-checks the budget: every way out of node passes through
+it, and an ``exitCode`` assigned there overrides even an explicit
+``process.exit(0)``.  Without that half, moving the caller's timeout off
+``subprocess.run`` and into the script would have quietly stopped the timeout
+from meaning anything for every script that overruns and then terminates.
 
 One in-script hang escapes the watchdog: a synchronous block.  ``while (true)
 {}`` never yields, and a timer cannot interrupt the thread it is queued on --
@@ -79,6 +82,7 @@ all, where the silence is nobody watching rather than nothing said.
 """
 
 import os
+import re
 import subprocess
 import tempfile
 
@@ -95,6 +99,25 @@ _SPAWN_SLACK_SECONDS = 5.0
 # Distinctive exit code so a watchdog kill is never mistaken for an assertion
 # failure or an uncaught exception, both of which leave node with 1.
 _WATCHDOG_EXIT_CODE = 87
+# A leading string-literal statement, i.e. a directive such as 'use strict'.
+_DIRECTIVE = re.compile(r"""^(['\"])use [a-z]+\1\s*;?$""")
+
+# Registered before the script runs, on the script's own first line so no line
+# number moves.  It has to be here rather than in the appended block because a
+# script that calls ``process.exit()`` in its top level never reaches appended
+# code at all -- measured: an 800ms busy loop then ``process.exit(0)`` under a
+# 0.2s timeout came back 0.  Every way out of node passes through 'exit', and an
+# ``exitCode`` assigned in that handler overrides even an explicit exit(0).
+# Written on one line, with no ``//`` comments, because both of those would
+# swallow the caller's own first line.
+_WATCHDOG_PROLOGUE = (
+    ";(function(){var g=globalThis;var d=__MILLIS__;"
+    "g.process.on('exit',function(){"
+    "var e=Math.round((g.process.uptime?g.process.uptime():0)*1000);"
+    "if(e>d){try{require('node:fs').writeSync(2,"
+    "'\\n[node_harness] the script was still running __SECONDS__s after node started.\\n'"
+    ");}catch(err){}g.process.exitCode=__EXIT_CODE__;}});})();"
+)
 
 _WATCHDOG_TEMPLATE = r"""
 ;(function () {
@@ -113,7 +136,13 @@ _WATCHDOG_TEMPLATE = r"""
     timer = g.setTimeout;
   }
 
-  function report(prefix) {
+  var deadlineMs = __MILLIS__;
+
+  function elapsed() {
+    return Math.round((g.process.uptime ? g.process.uptime() : 0) * 1000);
+  }
+
+  function diagnose(prefix) {
     var held;
     try {
       held = typeof g.process.getActiveResourcesInfo === 'function'
@@ -136,31 +165,23 @@ _WATCHDOG_TEMPLATE = r"""
     } catch (err) {
       g.process.stderr.write(message);
     }
-    g.process.exit(__EXIT_CODE__);
   }
 
   // Charge node startup and the script's synchronous top level against the
   // budget, because the outer ceiling is charged for them too.  Arming for the
-  // full deadline here would put the watchdog at (startup + top level +
-  // deadline) while the ceiling sits at (deadline + slack): any top level
-  // heavier than the slack and the ceiling wins, losing the diagnosis.
-  var spent = Math.round((g.process.uptime ? g.process.uptime() : 0) * 1000);
-  var budget = __MILLIS__ - spent;
-
-  if (budget <= 0) {
-    // Already over budget by the time the top level finished.  Scheduling a
-    // timer here would be worse than useless: it is unref'd, so with the loop
-    // otherwise empty node exits 0 before the callback ever runs, and the
-    // caller's timeout silently stops meaning anything.  Fail now instead.
-    report('the script was still running');
-  }
+  // full deadline would put the watchdog at (startup + top level + deadline)
+  // while the ceiling sits at (deadline + slack): any top level heavier than
+  // the slack and the ceiling wins, losing the diagnosis.
+  var budget = deadlineMs - elapsed();
+  if (budget < 1) budget = 1;
 
   var deadline = timer(function () {
-    report('the script still had pending work');
+    diagnose('the script still had pending work');
+    g.process.exit(__EXIT_CODE__);
   }, budget);
   // unref() so the watchdog cannot itself be the reason node stays up: with no
-  // other handle open node exits first and the watchdog never fires, which is
-  // exactly the healthy case.
+  // other handle open node exits first, and the exit hook above is what holds
+  // the deadline on that path.
   if (deadline && typeof deadline.unref === 'function') deadline.unref();
 })();
 """
@@ -271,21 +292,54 @@ def _budgeted(kwargs: dict) -> tuple[dict, float]:
     return merged, watchdog
 
 
-def _with_watchdog(script: str, seconds: float) -> str:
-    """Append the self-deadline that turns a hung script into a named failure.
-
-    Appended rather than prepended so line numbers in the caller's own stack
-    traces keep pointing at the caller's own code.  It runs once the script's
-    synchronous top level is done, which is precisely when the event loop takes
-    over and a leaked handle starts to matter.
-    """
-    watchdog = (
-        _WATCHDOG_TEMPLATE
+def _fill(template: str, seconds: float) -> str:
+    """Bind one watchdog template to this call's deadline."""
+    return (
+        template
         .replace("__SECONDS__", f"{seconds:g}")
         .replace("__MILLIS__", str(int(seconds * 1000)))
         .replace("__EXIT_CODE__", str(_WATCHDOG_EXIT_CODE))
     )
-    return script + "\n" + watchdog
+
+
+def _splice_prologue(script: str, prologue: str) -> str:
+    """Put ``prologue`` before the script's first statement, on its line.
+
+    Two constraints pull against each other.  It has to run before the script
+    can exit, and it must not renumber the script's own lines, so it goes at the
+    front of the first line that carries code rather than on a line of its own.
+
+    It must also land *after* a directive prologue: one harness opens with
+    ``'use strict';``, and a statement in front of it silently demotes that from
+    a directive to an ordinary string expression, taking strict mode with it.
+    """
+    assert "\n" not in prologue, (
+        "the prologue shares a line with the first statement of the script, "
+        "so a newline in it would move every line below and truncate that "
+        "statement"
+    )
+    lines = script.split("\n")
+    index = 0
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    while index < len(lines) and _DIRECTIVE.match(lines[index].strip()):
+        index += 1
+    if index >= len(lines):  # nothing but blanks and directives
+        return script + "\n" + prologue
+    lines[index] = prologue + lines[index]
+    return "\n".join(lines)
+
+
+def _with_watchdog(script: str, seconds: float) -> str:
+    """Wrap ``script`` in the two halves that make its deadline real.
+
+    The timer goes at the end, where the event loop has taken over and a leaked
+    handle starts to matter, and where it can stay off the caller's line
+    numbering.  The exit hook goes at the front, because the paths it covers end
+    the process before appended code exists.
+    """
+    guarded = _splice_prologue(script, _fill(_WATCHDOG_PROLOGUE, seconds))
+    return guarded + "\n" + _fill(_WATCHDOG_TEMPLATE, seconds)
 
 
 def _run_retrying_spawn_stalls(next_attempt, cmd_for_error):

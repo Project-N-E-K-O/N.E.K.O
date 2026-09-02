@@ -241,6 +241,96 @@ def test_a_healthy_harness_is_untouched_by_the_watchdog(runner):
 
 
 @pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_leading_use_strict_survives_the_prologue(runner):
+    """The guard must go after a directive, never in front of it.
+
+    ``tests/unit/test_assistant_speech_finalize_static.py`` opens its harness
+    with ``'use strict';``. A statement placed before it demotes it from a
+    directive to an ordinary string expression -- silently, with strict mode
+    gone and the harness still green. Here the assignment to an undeclared name
+    is the witness: it throws under strict mode and quietly succeeds without it.
+    """
+    node_path = _node_or_skip()
+
+    script = "'use strict';\nundeclaredOnPurpose = 1;\nprocess.stdout.write('ok');\n"
+    result = runner(node_path, script, capture_output=True, check=False, timeout=6)
+
+    assert result.returncode != 0, (
+        f"'use strict' 被挤掉了：赋值给未声明变量本该抛 ReferenceError，"
+        f"却拿到 rc={result.returncode} stdout={result.stdout!r}"
+    )
+    assert "ReferenceError" in result.stderr, result.stderr[:400]
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_the_prologue_does_not_renumber_the_scripts_own_lines(runner):
+    """A stack trace must still point at the line the caller wrote.
+
+    The prologue rides on the front of the first statement's line rather than
+    taking a line of its own, so a throw on the script's line 3 still reports
+    line 3.
+    """
+    node_path = _node_or_skip()
+
+    script = "const a = 1;\nconst b = 2;\nthrow new Error('boom');\n"
+    result = runner(node_path, script, capture_output=True, check=False, timeout=6)
+
+    assert result.returncode != 0
+    assert ":3" in result.stderr, (
+        f"抛错行号应仍是脚本自己的第 3 行：{result.stderr[:400]!r}"
+    )
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_script_that_exits_itself_cannot_escape_its_deadline(runner):
+    """``process.exit(0)`` in the top level never reaches appended code.
+
+    The dual of the natural-completion case, and it defeats an arming-time check
+    too: the script terminates before the watchdog is even installed. Only a
+    hook on the exit itself sees it. Measured: an 800ms busy loop followed by
+    ``process.exit(0)`` under a 0.2s timeout came back rc=0 before this.
+    """
+    node_path = _node_or_skip()
+
+    script = (
+        "var until = Date.now() + 800;\n"
+        "while (Date.now() < until) {}\n"
+        "process.stdout.write('done');\n"
+        "process.exit(0);\n"
+    )
+    result = runner(node_path, script, capture_output=True, check=False, timeout=0.2)
+
+    assert result.returncode == node_harness._WATCHDOG_EXIT_CODE, (
+        "脚本自己 exit(0) 也不能绕过调用方的 timeout："
+        f"rc={result.returncode} stdout={result.stdout!r}"
+    )
+    assert "still running" in result.stderr
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_script_inside_its_budget_keeps_its_own_exit_code(runner):
+    """The dual: the hook must only fire when the budget is actually blown.
+
+    Ten harnesses end on ``process.exit(1)`` to signal their own failure. A hook
+    that rewrote every exit code would turn each of those into 87 and make the
+    two indistinguishable.
+    """
+    node_path = _node_or_skip()
+
+    result = runner(
+        node_path,
+        "process.stdout.write('bye');\nprocess.exit(3);\n",
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 3, f"预算之内的退出码必须原样保留：{result.returncode}"
+    assert result.stdout == "bye"
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
 def test_a_script_that_merely_runs_long_still_fails_its_deadline(runner):
     """A script that overruns and then finishes must not pass.
 
@@ -323,7 +413,7 @@ def test_the_spawn_ceiling_sits_above_the_script_deadline(monkeypatch):
     run_node_script("node", "process.stdout.write('ok');", timeout=12)
 
     assert seen["timeout"] == 12 + node_harness._SPAWN_SLACK_SECONDS
-    assert "var budget = 12000 - spent;" in seen["script"], (
+    assert "var deadlineMs = 12000;" in seen["script"], (
         f"watchdog 必须按调用方的 timeout 武装，而不是别的值：{seen['script'][-600:]!r}"
     )
 
@@ -344,7 +434,7 @@ def test_a_caller_without_a_timeout_still_gets_a_finite_script_deadline(monkeypa
         node_harness._DEFAULT_WATCHDOG_SECONDS + node_harness._SPAWN_SLACK_SECONDS
     ), "没给 timeout 的调用方以前连外层 ceiling 都没有，同步卡死能一路跑到 job cap"
     millis = int(node_harness._DEFAULT_WATCHDOG_SECONDS * 1000)
-    assert f"var budget = {millis} - spent;" in seen["script"]
+    assert f"var deadlineMs = {millis};" in seen["script"]
 
 
 def test_a_spawn_that_stalls_once_is_retried():
