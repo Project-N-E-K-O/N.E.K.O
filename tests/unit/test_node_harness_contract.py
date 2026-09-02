@@ -963,6 +963,53 @@ def test_a_zero_timeout_still_fails_fast_and_still_arms_the_guard(monkeypatch):
 
 
 @pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_another_preloads_dependency_does_not_start_the_budget(runner):
+    """The clock must start at the harness script, not at the first compile.
+
+    An inherited ``NODE_OPTIONS`` can add preloads of its own, and an ESM
+    ``--import`` module is evaluated after CommonJS ``--require`` ones -- so a
+    CommonJS dependency it pulls in compiles after the guard is installed and
+    before the harness script. Keying on "first compile" armed the deadline
+    there, putting pre-main startup back inside the script's budget.
+
+    The witness is a preload slower than the whole budget: if its time is
+    charged to the script, an otherwise instant script comes back 87.
+    """
+    node_path = _node_or_skip()
+
+    directory = Path(node_harness._preload_path()).parent
+    dependency = directory / "neko-probe-dep.cjs"
+    slow_import = directory / "neko-probe-slow.mjs"
+    dependency.write_text("module.exports = 1;\n", encoding="utf-8")
+    slow_import.write_text(
+        "import { createRequire } from 'node:module';\n"
+        "const require = createRequire(import.meta.url);\n"
+        f"require({str(dependency)!r}.split('\\\\').join('/'));\n"
+        "const until = Date.now() + 800;\n"
+        "while (Date.now() < until) {}\n",
+        encoding="utf-8",
+    )
+    try:
+        result = runner(
+            node_path,
+            "process.stdout.write('ok');\n",
+            capture_output=True,
+            check=False,
+            timeout=0.5,
+            env={**os.environ, "NODE_OPTIONS": f"--import {slow_import.as_uri()}"},
+        )
+    finally:
+        dependency.unlink(missing_ok=True)
+        slow_import.unlink(missing_ok=True)
+
+    assert result.returncode == 0, (
+        "别人的预载花掉的时间被算进了脚本预算："
+        f"rc={result.returncode} stderr={result.stderr[:300]!r}"
+    )
+    assert result.stdout == "ok"
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
 def test_the_preload_marks_that_the_script_actually_started(runner):
     """The marker is the launcher's only direct evidence, so prove it appears.
 

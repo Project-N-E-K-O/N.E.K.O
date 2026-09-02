@@ -339,9 +339,27 @@ if (deadlineMs > 0) {
     }
   });
 
+  // Which compile is the harness script?  Not simply the first one: an
+  // inherited NODE_OPTIONS can add its own preloads, and an ESM `--import`
+  // module is evaluated after CommonJS `--require` ones, so a CommonJS
+  // dependency it pulls in would compile after this hook is installed and
+  // before the harness script.  Arming there would put pre-main startup back
+  // inside the script's budget -- the very thing keying off compile was meant
+  // to take out of it.
+  //
+  // The main module identifies itself: `process.mainModule` is set once node
+  // starts loading it, so a preload's dependency is never `=== mainModule`.
+  // `node -` is the exception -- it has no main module and compiles as
+  // `[stdin]-wrapper` -- so that shape is matched explicitly, and only while
+  // there is no main module to compare against.
+  function isHarnessScript(module, filename) {
+    if (nativeProcess.mainModule) return module === nativeProcess.mainModule;
+    return String(filename).slice(0, 7) === '[stdin]';
+  }
+
   const originalCompile = Module.prototype._compile;
   Module.prototype._compile = function (content, filename) {
-    if (startedAt === null) {
+    if (startedAt === null && isHarnessScript(this, filename)) {
       startedAt = millisNow();
       Module.prototype._compile = originalCompile;
 
