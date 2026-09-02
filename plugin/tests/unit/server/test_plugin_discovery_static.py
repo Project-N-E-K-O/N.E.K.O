@@ -363,7 +363,7 @@ async def test_the_refresh_lock_covers_reading_disk_not_just_publishing(
 
     monkeypatch.setattr(module, "_discover_registry_snapshot_sync", _discover)
     monkeypatch.setattr(module, "_get_registered_plugin_snapshot_sync", _snapshot)
-    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", lambda: set())
+    monkeypatch.setattr(module, "_list_running_plugin_ids_sync", set)
     monkeypatch.setattr(module, "_collect_missing_plugin_ids_sync", lambda snapshot: set())
     monkeypatch.setattr(
         module, "_remove_stale_plugin_metadata_sync", lambda ids, running_ids: ([], [])

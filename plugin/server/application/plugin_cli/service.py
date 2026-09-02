@@ -2540,10 +2540,9 @@ def _installed_manifest_plugin_id(target_dir: object) -> str:
     """
     if not target_dir:
         return ""
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
-        import tomli as tomllib  # type: ignore[no-redef]
+    # 用模块顶层那个 tomllib。这里本来写了一段 try/except 回落到 tomli，但这个模块
+    # 顶层就是无条件 import tomllib 的——那段回落既到不了，又暗示了一套本模块并不
+    # 具备的 3.10 兼容性（github-code-quality）。
     config_path = Path(str(target_dir)) / "plugin.toml"
     try:
         with open(config_path, "rb") as handle:
