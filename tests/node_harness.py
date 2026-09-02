@@ -84,6 +84,14 @@ below.  A preloaded module has none of these problems -- it runs before the
 script, in a scope the script cannot reach, and leaves the script byte-for-byte
 as the caller wrote it.
 
+One boundary is worth naming: the deadline is armed from a CommonJS compile
+hook, so a harness evaluated as an ES module would never arm it and would be
+left with only the outer ceiling.  Every harness here is CommonJS, and the only
+way to change that from outside -- an inherited
+NODE_OPTIONS=--input-type=module -- makes all 26 of them fail immediately on
+their first require, so the guard cannot go quietly blind while the suites
+still pass.  Adding an ES-module harness would need this revisited.
+
 One in-script hang escapes the watchdog: a synchronous block.  ``while (true)
 {}`` never yields, and a timer cannot interrupt the thread it is queued on --
 no amount of retrying will make that script finish.  What separates it from a
