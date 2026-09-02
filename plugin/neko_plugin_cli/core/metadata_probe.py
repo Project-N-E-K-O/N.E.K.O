@@ -42,6 +42,7 @@ from plugin.server.infrastructure.packaged_metadata import (
     PACKAGED_METADATA_FILENAME,
     PACKAGED_METADATA_SCHEMA_VERSION,
     compute_source_sha256,
+    empty_source_directories,
     unicode_renamed_source_files,
     source_stat_summary,
 )
@@ -118,6 +119,16 @@ def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
             f"importing the plugin failed ({exc.error_type}): {exc}"
         ) from exc
 
+    empty_dirs = empty_source_directories(plugin_dir)
+    if empty_dirs:
+        # ZIP 不存目录条目，所以空目录装不到用户机器上；而指纹只覆盖文件，
+        # 装出来的那棵树照样和 source_files/source_bytes/source_sha256 全对得上。
+        # 一个按目录存在与否条件注册入口的插件，因此会拿着一份按「有这个目录」
+        # 推出来的 handler 在没有这个目录的机器上跑（codex）。
+        raise MetadataProbeError(
+            "staged tree contains directories that cannot survive packaging "
+            f"({empty_dirs[:3]}); packaging without metadata so the host rescans"
+        )
     renamed = unicode_renamed_source_files(plugin_dir)
     if renamed:
         # 指纹按 NFC 记名，打包器写进档案的也是 NFC——但探测这一步 import 的是

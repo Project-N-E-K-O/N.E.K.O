@@ -315,6 +315,31 @@ def source_stat_summary(plugin_dir: Path) -> SourceStatSummary:
     )
 
 
+def empty_source_directories(plugin_dir: Path) -> list[str]:
+    """Directories in the tree that hold no fingerprinted file, at any depth.
+
+    Both exporters write files only, so a directory with nothing in it never
+    reaches the installed tree — and the fingerprint covers files, so the
+    installed tree still matches. A plugin that registers entries depending on a
+    directory's presence would be probed with it and run without it (codex).
+    """
+    files, _untrustworthy, dirs = _iter_source_files(plugin_dir)
+    root = str(plugin_dir)
+    holding: set[str] = set()
+    for _key, real_rel, _stat in files:
+        parent = os.path.dirname(os.path.join(root, real_rel.replace("/", os.sep)))
+        while len(parent) >= len(root):
+            holding.add(parent)
+            if parent == root:
+                break
+            parent = os.path.dirname(parent)
+    return sorted(
+        os.path.relpath(path, root).replace(os.sep, "/")
+        for path in dirs
+        if path != root and path not in holding
+    )
+
+
 def unicode_renamed_source_files(plugin_dir: Path) -> list[str]:
     """Staged files whose recorded name differs from their spelling on disk.
 
@@ -357,9 +382,14 @@ def compute_source_sha256(plugin_dir: Path) -> str:
             # 行尾归一化之后再摘要。这个仓库用 .gitattributes 把文本钉成 LF，但哈希
             # 不该依赖那份配置：作者在 Windows 上打的包一旦带着 CRLF 算出来的摘要，
             # 到 Linux 用户机器上就会条条判成"源码变了"，全部退化成占位。
+            #
+            # ⚠️ 只折 CRLF，不折裸 CR。把 CR 也当 LF 会让"把每个 LF 换成 CR"这种
+            # 改动和原文摘要相同——路径、字节数、内容哈希全对得上，慢路径也拦不住
+            # （codex）。而 git 的行尾翻译只在 LF↔CRLF 之间发生，从不产生裸 CR，
+            # 所以少折这一层不影响它本来要解决的问题。
             raw = (plugin_dir / real_rel).read_bytes()
             if Path(real_rel).suffix.lower() in TEXT_SUFFIXES_FOR_HASHING:
-                raw = raw.replace(_CRLF, _LF).replace(_CR, _LF)
+                raw = raw.replace(_CRLF, _LF)
             digest.update(raw)
         except OSError as exc:
             raise PackagedMetadataError(

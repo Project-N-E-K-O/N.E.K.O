@@ -1467,3 +1467,55 @@ def test_a_decomposed_filename_is_reported_by_spelling(tmp_path: Path) -> None:
     assert packaged_metadata.unicode_renamed_source_files(
         plugin_dir / "does-not-exist"
     ) == []
+
+
+def test_a_bare_cr_rewrite_changes_the_digest(tmp_path: Path) -> None:
+    """Line-ending normalisation must not fold two different files together.
+
+    Folding bare CR into LF made "replace every LF with a CR" hash identically
+    to the original: same paths, same byte count, same digest — the slow path
+    could not catch it either (codex). git only ever translates between LF and
+    CRLF, so dropping that fold costs nothing it was added for.
+
+    Mutation: normalise bare CR to LF again.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    source = plugin_dir / "main.py"
+    source.write_bytes(b"A = 1\nB = 2\n")
+    lf_digest = packaged_metadata.compute_source_sha256(plugin_dir)
+
+    source.write_bytes(b"A = 1\r\nB = 2\r\n")
+    assert packaged_metadata.compute_source_sha256(plugin_dir) == lf_digest, (
+        "前提没成立：CRLF 和 LF 本来就该算出同一个摘要，否则 Windows 上打的包"
+        "到 Linux 上会条条失效"
+    )
+
+    source.write_bytes(b"A = 1\rB = 2\r")
+    assert packaged_metadata.compute_source_sha256(plugin_dir) != lf_digest, (
+        "把每个 LF 换成裸 CR 之后摘要没变：内容真的改了，宿主却还端着旧 schema"
+    )
+
+
+def test_an_empty_directory_is_reported_before_packaging(tmp_path: Path) -> None:
+    """A directory with no files cannot survive the archive.
+
+    ZIP stores files, so an empty staged directory never reaches the installed
+    tree — while the fingerprint, which covers files, still matches. A plugin
+    that registers entries based on a directory's presence gets probed with it
+    and runs without it (codex).
+
+    Mutation: report only directories directly under the root, or none at all.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    assert packaged_metadata.empty_source_directories(plugin_dir) == [], (
+        "前提没成立：这棵树本来就没有空目录"
+    )
+
+    (plugin_dir / "runtime" / "logs").mkdir(parents=True)
+    (plugin_dir / "assets").mkdir()
+    (plugin_dir / "assets" / "icon.txt").write_text("x", encoding="utf-8")
+
+    reported = packaged_metadata.empty_source_directories(plugin_dir)
+    assert reported == ["runtime", "runtime/logs"], (
+        f"空目录没被完整报出来（装不到用户机器上的正是它们）：{reported}"
+    )

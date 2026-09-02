@@ -1533,7 +1533,7 @@ def test_the_gate_move_runs_before_registration() -> None:
 
     source = inspect.getsource(registry_service._apply_discovery_record_sync)
     resolve_at = source.find("runtime_plugin_id = target_plugin_id if source_replacement")
-    move_at = source.find("_move_autostart_gate_to_runtime_id(record.plugin_id")
+    move_at = source.find("_move_autostart_gate_to_runtime_id(")
     meta_at = source.find("plugin_meta = _build_plugin_meta(")
     assert -1 not in (resolve_at, move_at, meta_at), "注册路径上没有搬迁批准位"
     assert resolve_at < move_at < meta_at, (
@@ -1688,3 +1688,55 @@ def test_the_scan_budget_is_computed_after_the_packaged_read() -> None:
         "扫描预算算在读包内元数据之前：读那一步可能哈希整棵树，算出来的上限"
         "到真正调 worker 时已经是过期快照"
     )
+
+
+def test_the_gate_move_does_not_steal_an_incumbent_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record under a live runtime id may belong to the plugin already there.
+
+    If the plugin holding ``demo`` is itself pending, moving that record to the
+    newcomer's ``demo_1`` makes the never-started incumbent autostart-eligible
+    (codex). The store is keyed by declared id and cannot say whose record it
+    is, so when the declared id is already someone's runtime id the record is
+    copied, not moved: both plugins stay gated, and starting either clears only
+    its own.
+
+    Mutation: move unconditionally, ignoring ``declared_id_is_taken``.
+    """
+    from plugin.server.application.plugins import registry_service
+    from plugin.server.infrastructure import autostart_approvals
+
+    store: dict[str, object] = {}
+
+    class _FakeConfigManager:
+        def load_json_config(self, name):
+            if name not in store:
+                raise FileNotFoundError(name)
+            return store[name]
+
+        def save_json_config(self, name, payload):
+            store[name] = payload
+
+    import utils.config_manager as config_manager_module
+
+    monkeypatch.setattr(
+        config_manager_module, "get_config_manager", _FakeConfigManager
+    )
+    autostart_approvals._reset_cache_for_testing()
+    try:
+        assert autostart_approvals.mark_autostart_pending("demo")
+
+        registry_service._move_autostart_gate_to_runtime_id(
+            "demo", "demo_1", declared_id_is_taken=True
+        )
+
+        assert not autostart_approvals.is_autostart_approved("demo"), (
+            "把已经在跑的那个插件的待批准记录搬走了：它从没被启动过，现在却"
+            "可以自启了"
+        )
+        assert not autostart_approvals.is_autostart_approved("demo_1"), (
+            "新来的那个没被拦住"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()

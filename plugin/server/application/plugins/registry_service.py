@@ -827,7 +827,11 @@ def _apply_discovery_record_sync(
             details={"plugin_id": record.plugin_id},
         )
 
-    _move_autostart_gate_to_runtime_id(record.plugin_id, runtime_plugin_id)
+    _move_autostart_gate_to_runtime_id(
+        record.plugin_id,
+        runtime_plugin_id,
+        declared_id_is_taken=record.plugin_id in existing_snapshot,
+    )
 
     plugin_meta = _build_plugin_meta(
         runtime_plugin_id,
@@ -958,7 +962,10 @@ def _collect_missing_plugin_ids_sync(existing_snapshot: dict[str, dict[str, obje
 
 
 def _move_autostart_gate_to_runtime_id(
-    declared_plugin_id: str, runtime_plugin_id: str
+    declared_plugin_id: str,
+    runtime_plugin_id: str,
+    *,
+    declared_id_is_taken: bool = False,
 ) -> None:
     """Re-key a pending approval when the registry renames a plugin.
 
@@ -1001,6 +1008,11 @@ def _move_autostart_gate_to_runtime_id(
                 "runtime_plugin_id": runtime_plugin_id,
             },
         )
+    if declared_id_is_taken:
+        # 声明 id 已经是另一个插件的运行时 id，那条记录可能是**它**的——它自己也
+        # 可能是装上了还没被启动过的（codex）。搬走等于顺手批准了它。这种情况下
+        # 只复制：两个插件各有一条记录，都拦着，谁被启动谁的那条被清掉。
+        return
     if not clear_autostart_pending(declared_plugin_id):
         logger.error(
             "pending approval moved to {} but the record under {} could not be "
