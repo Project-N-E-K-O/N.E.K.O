@@ -16,6 +16,7 @@ from .dependencies import (
     validate_source_dependency_layout,
     write_dependency_manifest,
 )
+from .metadata_probe import write_packaged_metadata
 from .plugin_source import load_plugin_source
 from .profile import write_bundle_profile, write_default_profile
 from .toml_utils import escape_string
@@ -216,6 +217,14 @@ class PluginBuilder:
             plugin_payload_dir,
             rules=build_rules,
         )
+        # 在算 payload_hash 之前写：plugin.meta.json 是包内容的一部分，不能游离在
+        # 完整性校验之外。导不进来的插件拿到 None，包照常出，只是不带元数据。
+        staged_metadata = write_packaged_metadata(
+            source_dir=source.plugin_dir,
+            target_dir=plugin_payload_dir,
+        )
+        if staged_metadata is not None:
+            staged_files.append(staged_metadata)
         profile_files = write_default_profile(source, paths.profiles_dir)
         write_dependency_manifest([source], paths.payload_dir)
         validate_payload_dependency_layout(paths.payload_dir, [source.plugin_id])
@@ -250,6 +259,12 @@ class PluginBuilder:
                     rules=build_rules,
                 )
             )
+            staged_metadata = write_packaged_metadata(
+                source_dir=source.plugin_dir,
+                target_dir=plugin_payload_dir,
+            )
+            if staged_metadata is not None:
+                staged_files.append(staged_metadata)
 
         profile_files = write_bundle_profile(sources, paths.profiles_dir)
         write_dependency_manifest(sources, paths.payload_dir)

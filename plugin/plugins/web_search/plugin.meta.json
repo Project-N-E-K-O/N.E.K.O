@@ -1,0 +1,113 @@
+{
+  "entries": [
+    {
+      "auto_start": false,
+      "description": "搜索网络内容。自动根据用户地区选择搜索引擎（国内百度/海外DuckDuckGo）。重要：query 应保留用户原始语言（如中文问题就用中文搜索），不要翻译成英文，这样能获得更准确的本地化结果。",
+      "event_key": "web_search.search",
+      "event_type": "plugin_entry",
+      "id": "search",
+      "input_schema": {
+        "properties": {
+          "backend": {
+            "default": "auto",
+            "description": "搜索后端；auto 优先 AnySearch，anysearch 不跨引擎回退",
+            "enum": [
+              "auto",
+              "anysearch",
+              "baidu",
+              "duckduckgo"
+            ],
+            "type": "string"
+          },
+          "max_results": {
+            "default": 8,
+            "description": "最大结果数 (默认 8，最少 3)",
+            "type": "integer"
+          },
+          "query": {
+            "description": "搜索关键词（保留用户原始语言，不要翻译）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "summary"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "summary": {}
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": "网络搜索",
+      "return_message": "",
+      "timeout": 30.0
+    },
+    {
+      "auto_start": false,
+      "description": "搜索并返回适合 AI 阅读的纯文本摘要格式。重要：query 应保留用户原始语言，不要翻译。",
+      "event_key": "web_search.search_summary",
+      "event_type": "plugin_entry",
+      "id": "search_summary",
+      "input_schema": {
+        "properties": {
+          "backend": {
+            "default": "auto",
+            "description": "搜索后端；auto 优先 AnySearch，anysearch 不跨引擎回退",
+            "enum": [
+              "auto",
+              "anysearch",
+              "baidu",
+              "duckduckgo"
+            ],
+            "type": "string"
+          },
+          "max_results": {
+            "default": 5,
+            "description": "最大结果数（最少 3）",
+            "type": "integer"
+          },
+          "query": {
+            "description": "搜索关键词（保留用户原始语言，不要翻译）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "summary"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "summary": {}
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": "搜索摘要",
+      "return_message": "",
+      "timeout": 30.0
+    }
+  ],
+  "schema_version": 1,
+  "sdk_version": "0.1.0",
+  "source_sha256": "9ab30c3874166d77129c717000783dec8da4cb64c562aad3bad48bbd7447c78a"
+}

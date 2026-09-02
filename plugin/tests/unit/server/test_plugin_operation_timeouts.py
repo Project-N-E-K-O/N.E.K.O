@@ -440,13 +440,36 @@ def test_the_step_clamp_never_widens_and_never_reaches_zero() -> None:
     """
     from plugin.server.application.plugins import lifecycle_service as module
 
-    assert module._clamp_step_timeout(10.0, 0.0) > 0, (
-        "预算见底时算出了 0，等于直接判失败"
+    start_floor = module._MIN_CLAMPED_START_TIMEOUT
+    stop_floor = module._MIN_CLAMPED_STOP_TIMEOUT
+    # 两个下界必须是各自独立的常量。合成一个数的话，为了让启动买得起一次真正的
+    # 尝试而抬高它，会连带把关停的最坏墙钟一起抬上去——那是两件无关的事。
+    assert start_floor != stop_floor, (
+        "启动和关停的下界又被合成同一个数了"
     )
-    assert module._clamp_step_timeout(10.0, 3.0) == 3.0, "剩余预算没有压住上限"
-    assert module._clamp_step_timeout(2.0, 30.0) == 2.0, "自己更短的超时被预算放宽了"
-    assert module._clamp_step_timeout(0.5, 0.0) == 0.5, "自己更短的超时被下界放宽了"
-    assert module._clamp_step_timeout(10.0, None) == 10.0, "没有预算时不该改动配置值"
+
+    for floor in (start_floor, stop_floor):
+        assert module._clamp_step_timeout(10.0, 0.0, floor=floor) > 0, (
+            "预算见底时算出了 0，等于直接判失败"
+        )
+        assert module._clamp_step_timeout(10.0, 5.0, floor=floor) == 5.0, (
+            "剩余预算没有压住上限"
+        )
+        assert module._clamp_step_timeout(2.0, 30.0, floor=floor) == 2.0, (
+            "自己更短的超时被预算放宽了"
+        )
+        assert module._clamp_step_timeout(0.5, 0.0, floor=floor) == 0.5, (
+            "自己更短的超时被下界放宽了"
+        )
+        assert module._clamp_step_timeout(10.0, None, floor=floor) == 10.0, (
+            "没有预算时不该改动配置值"
+        )
+
+    # 启动的下界必须买得起一次真正的尝试：起子进程加导入框架实测 0.74s，插件自己
+    # 的导入还没算。低于这个数等于发一个必然超时的窗口，健康插件会被记成启动失败。
+    assert start_floor >= 2.0, (
+        f"启动下界 {start_floor}s 买不到一次真正的启动尝试"
+    )
 
 
 @pytest.mark.asyncio
@@ -494,7 +517,12 @@ async def test_a_late_stop_is_still_asked_to_shut_down_not_just_killed(
         )
 
     assert handed, "前提没成立：根本没走到 host.shutdown"
-    assert handed[0] >= module._MIN_CLAMPED_STEP_TIMEOUT, (
+    # 下界只抬高被预算压扁的值，从不放宽插件自己配置的上限。配置的关停超时本来
+    # 就可能低于下界，那时拿到配置值才是对的；这里该守的是"没被压到 0 附近直接
+    # 杀掉"。
+    assert handed[0] >= min(
+        module.PLUGIN_SHUTDOWN_TIMEOUT, module._MIN_CLAMPED_STOP_TIMEOUT
+    ), (
         f"预算见底时把关停上限压到了下界以下，插件会被直接杀掉：{handed}"
     )
     assert handed[0] <= module.PLUGIN_SHUTDOWN_TIMEOUT, (
@@ -572,88 +600,6 @@ async def test_a_spent_budget_still_buys_a_real_wait_for_the_lock(
         f"预算见底时等锁被压成零，插件被直接判 busy 而留在停止状态：{result.get('failed')}"
     )
     assert result["reloaded"] == ["p0"]
-
-
-@pytest.mark.asyncio
-async def test_restarting_after_a_replacement_drops_the_scan_cache(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A replacement or rollback just moved files; the cache describes before.
-
-    The fingerprint usually notices, but two paths defeat it: an upgrade where
-    only an out-of-directory dependency changed (shared vendor, site-packages),
-    and a rollback that copies files back from a backup with their timestamps
-    preserved. This restart path ends in
-    ``start_plugin(refresh_registry=True) -> refresh_plugin()`` with **no**
-    force, so the new runtime would come up carrying pre-upgrade entries and
-    tool schemas (codex).
-
-    Mutation: drop the ``clear_plugin_metadata_scan_cache`` call.
-    """
-    from plugin.server.application.plugins.installation_transactions import replace as module
-    from plugin.server.application.plugins import lifecycle_service, metadata_scanner
-
-    cleared: list[int] = []
-    monkeypatch.setattr(
-        metadata_scanner,
-        "clear_plugin_metadata_scan_cache",
-        lambda: cleared.append(1),
-    )
-
-    class _Service:
-        async def start_plugin(self, plugin_id, *a, **k):
-            # 顺序也承重：清缓存必须在重启**之前**。反过来的话新运行时已经带着
-            # 旧元数据起来了，事后再清也追不回来。
-            assert cleared, "重启之前没有清掉扫描缓存——新运行时会带着旧元数据起来"
-            return {"success": True}
-
-    # 两个都是函数内 import，所以要打在它们各自的来源模块上。
-    monkeypatch.setattr(lifecycle_service, "PluginLifecycleService", _Service)
-
-    await module._start_plugin("demo")
-
-    assert cleared == [1], f"替换后的重启没有作废扫描缓存：{cleared}"
-
-
-def test_switching_the_selected_source_forces_a_rescan(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Promotion and rollback change *which* source is selected.
-
-    The scan cache key only sees the contents of the plugin directory, so a
-    source switch is invisible to it — the refresh has to say force explicitly
-    or it can answer from the previous source's metadata (codex).
-
-    This one is a structural guard, and deliberately so: the refresh callback is
-    a closure built deep inside a source-switch transaction, and standing that
-    whole transaction up would test the transaction rather than this. What it
-    pins is the pairing and the order — the cache is dropped *before* the
-    refresh reads it — which is the part that goes wrong.
-
-    Mutation: drop the ``clear_plugin_metadata_scan_cache`` call from that
-    callback, or move it after the refresh.
-    """
-    import inspect
-
-    from plugin.server.application.plugin_cli import service as module
-
-    source = inspect.getsource(module)
-    marker = "async def refresh_registry() -> object:"
-    assert marker in source, "换源刷新回调不见了，这条守卫已经不知道自己在盯什么"
-
-    body = source[source.index(marker) :]
-    body = body[: body.index("async def", len(marker))]
-    clear_at = body.find("clear_plugin_metadata_scan_cache)")
-    refresh_at = body.find("plugin_registry_service.refresh_registry()")
-
-    assert clear_at != -1, (
-        "换源/回滚的刷新没有作废扫描缓存，可能拿上一个源的元数据回答"
-    )
-    assert refresh_at != -1 and clear_at < refresh_at, (
-        "缓存是在刷新之后才清的——刷新已经把旧元数据读出去了"
-    )
-
-
 @pytest.mark.asyncio
 async def test_every_stopped_plugin_gets_a_start_attempt_even_over_budget(
     monkeypatch: pytest.MonkeyPatch,
@@ -894,7 +840,7 @@ async def test_a_spent_stop_budget_still_attempts_the_cleanup_on_a_short_leash(
     assert handed[0] == module._MIN_TOOL_CLEANUP_TIMEOUT, (
         f"预算见底时给的不是那一小段下界：{handed}"
     )
-    assert handed[0] < module._MIN_CLAMPED_STEP_TIMEOUT, (
+    assert handed[0] < module._MIN_CLAMPED_STOP_TIMEOUT, (
         f"又把「启动尝试」的下界套回到这次尽力而为的远端调用上了：{handed}"
     )
 
@@ -963,41 +909,6 @@ async def test_a_failed_tool_cleanup_is_reported_not_swallowed(
     hits = [w for w in warnings if "tools may still be advertised" in w[0]]
     assert hits, f"清理失败没有留下任何可追查的痕迹：{warnings}"
     assert "p0" in hits[0][1], f"痕迹里没有插件 id，出现幽灵工具时无从归因：{hits[0]}"
-
-
-@pytest.mark.asyncio
-async def test_replacing_a_stopped_plugin_still_drops_the_scan_cache(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Upgrading a plugin that was not running still changes the tree.
-
-    The invalidation lived in the restart path, and `replace_plugin` only
-    restarts when the plugin was already running — so upgrading a stopped
-    plugin never dropped the cache, and the next ordinary start could come up on
-    pre-upgrade metadata (codex). It now hangs off the unconditional
-    `invalidate_cache` stage instead.
-
-    Mutation: move the clear back into the restart path only.
-    """
-    from plugin.server.application.plugins.installation_transactions import replace as module
-    from plugin.server.application.plugins import metadata_scanner
-
-    cleared: list[int] = []
-    monkeypatch.setattr(
-        metadata_scanner, "clear_plugin_metadata_scan_cache", lambda: cleared.append(1)
-    )
-    monkeypatch.setattr(
-        "plugin.core.host.evict_cached_plugin_modules", lambda plugin_id: None
-    )
-
-    # 这是 replace 的 invalidate_cache 阶段调的那一个，不经过重启。
-    module._evict_replaced_plugin_modules("demo")
-
-    assert cleared == [1], (
-        f"替换一个停着的插件没有作废扫描缓存：{cleared}"
-    )
-
-
 def test_one_deadline_covers_both_lock_layers(monkeypatch: pytest.MonkeyPatch) -> None:
     """The two lock stages share a budget; they must not each spend a full one.
 

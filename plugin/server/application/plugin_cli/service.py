@@ -746,18 +746,10 @@ class PluginCliService:
 
         async def refresh_registry() -> object:
             from plugin.server.application.plugins.lifecycle_service import plugin_registry_service
-            from plugin.server.application.plugins.metadata_scanner import (
-                clear_plugin_metadata_scan_cache,
-            )
 
-            # 换源/回滚之后必须真的重扫：选中的源变了，而元数据缓存的键只看插件
-            # 目录的内容，换源本身它是看不见的（codex）。
-            #
-            # 用显式清理而不是 refresh_registry(force=True)——和 uninstall、replace
-            # 两条路同一个写法。原因就写在 uninstall 里：refresh_registry 在测试里
-            # 被替身顶掉，多一个关键字参数会把那些替身全打挂；而"作废缓存"本来也
-            # 不是刷新的职责，是换源这一步的职责。
-            await asyncio.to_thread(clear_plugin_metadata_scan_cache)
+            # 换源/回滚之后这一次刷新会重读选中源的 manifest 和 plugin.meta.json。
+            # 曾经要先清一次扫描缓存（缓存键只看插件目录内容，换源它看不见），
+            # 那个缓存已经不存在了。
             return await plugin_registry_service.refresh_registry()
 
         async def validate_promoted_source() -> None:
@@ -929,6 +921,7 @@ class PluginCliService:
                 **install_result,
                 "install_source_warning": f"install_source_prepare_failed: {exc}",
             }
+        await asyncio.to_thread(_mark_new_install_awaiting_autostart, install_result)
         warning = await self._record_install_source_best_effort(
             install_result=install_result,
             package_filename=package_path.name,
@@ -2529,6 +2522,39 @@ class PluginCliService:
             status_code=status_code,
             details={"action": action, "error_type": type(exc).__name__},
         )
+
+
+def _mark_new_install_awaiting_autostart(install_result: dict) -> None:
+    """Withhold autostart from a plugin the user has installed but never run.
+
+    Only genuinely new plugins are recorded. An upgrade or reinstall is still
+    in the registry at this point, and its owner has already started it at some
+    point in the past — taking its autostart away because it was upgraded would
+    be a regression dressed up as a safety feature.
+    """
+    from plugin.core.state import state
+    from plugin.server.infrastructure.autostart_approvals import mark_autostart_pending
+
+    installed = install_result.get("installed_plugins")
+    if not isinstance(installed, list):
+        return
+    for item in installed:
+        if not isinstance(item, dict):
+            continue
+        plugin_id = str(item.get("plugin_id") or "").strip()
+        if not plugin_id:
+            target_dir = item.get("target_dir")
+            plugin_id = Path(str(target_dir)).name if target_dir else ""
+        if not plugin_id:
+            continue
+        try:
+            with state.acquire_plugins_read_lock():
+                already_known = plugin_id in state.plugins
+        except Exception:
+            already_known = False
+        if already_known:
+            continue
+        mark_autostart_pending(plugin_id)
 
 
 def _record_install_source_for_install_result(

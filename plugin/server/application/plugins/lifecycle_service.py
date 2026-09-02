@@ -76,20 +76,32 @@ from plugin.settings import (
     PLUGIN_STARTUP_TIMEOUT,
     PLUGIN_SYNC_AUTO_START_ON_TOGGLE,
 )
+from plugin.server.infrastructure.autostart_approvals import clear_autostart_pending
 from plugin.utils import parse_bool_config
 
 logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
-# 被整轮预算压缩后，一次启动至少还能拿到这么久。
+# 被整轮预算压缩后，一步至少还能拿到这么久。
 #
 # 没有下界的话，预算见底时算出来的是 0 或负数，那等于"直接判这个插件启动失败"
 # 而不是"抓紧试一次"——而走到启动阶段的插件都是我们刚亲手停掉的，判它失败就是
-# 把它留在停止状态。
-_MIN_CLAMPED_STEP_TIMEOUT = 1.0
+# 把它留在停止状态；关停侧则会退化成直接杀进程而不是先请它自己收尾。
+#
+# 启动和关停各有各的下界。它们曾经共用一个数，而把启动的下界抬上去会连带把关停
+# 的最坏墙钟一起抬高——那是两件无关的事，一次改动不该同时动到。
+#
+# 启动 3.0 而不是 1.0：下界的意思是"至少给它一次真正的尝试"，而 1 秒买不到一次
+# 尝试。光是起子进程加导入框架，本机实测就要 0.74s（其中 0.38s 是 fastapi），插件
+# 自己的导入还没开始算。给一个必然超时的窗口，等于把健康插件在超支的那一轮记成
+# 启动失败。代价只落在已经超支的病态路径上：一轮 8 个插件最坏多花 16 秒，而正常
+# 一轮根本走不到这里。
+_MIN_CLAMPED_START_TIMEOUT = 3.0
+# 关停保持 1.0：这一步不起进程，它只是给插件一个说"我收好了"的机会。
 # 清理远端工具表这一步在没有预算约束时愿意花的时间（它自己内部还有更细的超时）。
 _CLEAR_TOOLS_BUDGET_SECONDS = 2.0
-# 预算见底时仍然留给它的一小段时间。不是"启动尝试"那种下界（那是 1.0s），
+# 预算见底时仍然留给它的一小段时间。不是"启动尝试"那种下界（那是
+# _MIN_CLAMPED_START_TIMEOUT），
 # 只是让这次幂等的远端清除**发得出去**——跳过的代价是永久的幽灵工具，而这
 # 一小段的代价只在 main_server 真的卡住时才付。
 _MIN_TOOL_CLEANUP_TIMEOUT = 0.25
@@ -111,7 +123,15 @@ def _resolve_python_requirements(
     return requirements, paths, missing
 
 
-def _clamp_step_timeout(configured: float, budget: float | None) -> float:
+_MIN_CLAMPED_STOP_TIMEOUT = 1.0
+
+
+def _clamp_step_timeout(
+    configured: float,
+    budget: float | None,
+    *,
+    floor: float,
+) -> float:
     """Fit one step of a stop or a start inside what is left of a round budget.
 
     Never *widens*: a plugin that declared a 0.5 s timeout of its own keeps it
@@ -124,7 +144,7 @@ def _clamp_step_timeout(configured: float, budget: float | None) -> float:
     """
     if budget is None:
         return configured
-    return min(configured, max(_MIN_CLAMPED_STEP_TIMEOUT, budget))
+    return min(configured, max(floor, budget))
 
 
 def _remaining_step_budget(deadline: float | None) -> float | None:
@@ -145,6 +165,9 @@ def _persist_user_runtime_intent(
     previous_plugin_ids: tuple[str, ...] = (),
     runtime_state_changed: bool = False,
 ) -> None:
+    if enabled:
+        # 这条路只有用户自己启用/启动插件才会走到，正是"它从此可以自启"的那一刻。
+        clear_autostart_pending(plugin_id)
     try:
         auto_start = enabled if PLUGIN_SYNC_AUTO_START_ON_TOGGLE else None
         if previous_plugin_ids:
@@ -969,7 +992,9 @@ class PluginLifecycleService:
                 # @serialized_plugin_operation，那个包装器拿到锁之后会屏蔽取消，
                 # 外面套超时只会把一次真实结果报成超时（见 stop 那边的说明）。
                 startup_timeout_value = _clamp_step_timeout(
-                    startup_timeout_value, _remaining_step_budget(start_deadline)
+                    startup_timeout_value,
+                    _remaining_step_budget(start_deadline),
+                    floor=_MIN_CLAMPED_START_TIMEOUT,
                 )
             startup_result = await _start_host_with_timeout(
                 plugin_id=current_plugin_id,
@@ -1005,7 +1030,9 @@ class PluginLifecycleService:
             # 正常一轮 reload 走到这里是命中缓存的（注册表刚刷过、指纹没变），代价
             # 接近零；钳位只在冷扫描那条病态路径上真的生效。
             scan_timeout = _clamp_step_timeout(
-                _DEFAULT_METADATA_SCAN_TIMEOUT, _remaining_step_budget(start_deadline)
+                _DEFAULT_METADATA_SCAN_TIMEOUT,
+                _remaining_step_budget(start_deadline),
+                floor=_MIN_CLAMPED_START_TIMEOUT,
             )
             isolated_metadata = await asyncio.to_thread(
                 scan_plugin_metadata_isolated,
@@ -1161,7 +1188,9 @@ class PluginLifecycleService:
                     PLUGIN_SHUTDOWN_TIMEOUT
                     if stop_deadline is None
                     else _clamp_step_timeout(
-                        PLUGIN_SHUTDOWN_TIMEOUT, _remaining_step_budget(stop_deadline)
+                        PLUGIN_SHUTDOWN_TIMEOUT,
+                        _remaining_step_budget(stop_deadline),
+                        floor=_MIN_CLAMPED_STOP_TIMEOUT,
                     )
                 )
             )
@@ -1420,7 +1449,7 @@ class PluginLifecycleService:
             #
             # 停止侧不需要这个下界，而且那是刻意的：停止侧等不到锁，插件还好好跑着。
             remaining = max(
-                _MIN_CLAMPED_STEP_TIMEOUT, start_deadline - time_module.monotonic()
+                _MIN_CLAMPED_START_TIMEOUT, start_deadline - time_module.monotonic()
             )
             with bounded_operation_wait(remaining):
                 outcome = await self._safe_start_for_reload(

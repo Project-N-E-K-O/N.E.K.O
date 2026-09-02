@@ -84,8 +84,7 @@ async def start_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[
 @router.post("/plugin/{plugin_id}/refresh")
 async def refresh_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        # 同 /plugins/refresh：用户点的刷新必须真的再看一眼。
-        return await registry_service.refresh_plugin(plugin_id, force=True)
+        return await registry_service.refresh_plugin(plugin_id)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -115,8 +114,7 @@ async def delete_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict
 @router.post("/plugins/refresh")
 async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
     try:
-        # 用户按了刷新键，意思就是「再去看一眼」——从缓存回答等于没刷新。
-        return await registry_service.refresh_registry(force=True)
+        return await registry_service.refresh_registry()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 

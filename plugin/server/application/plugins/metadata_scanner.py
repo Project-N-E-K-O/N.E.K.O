@@ -18,7 +18,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping
@@ -55,24 +54,16 @@ _WORKER_BOOTSTRAP = (
 # 注意单项上限本身不足以封顶：17 个插件按 5 并发是 4 波，4×10s 仍然超前端预算。
 # 真正封顶的是 registry_service 那边的总预算，这里只负责让单个坏插件早点放手。
 # Env: NEKO_PLUGIN_METADATA_SCAN_TIMEOUT
-from plugin.server.application.plugins._env_budgets import env_int, env_seconds
+from plugin.server.application.plugins._env_budgets import env_seconds
 
 _DEFAULT_SCAN_TIMEOUT_SECONDS = env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", 10.0)
 
-# 同时最多允许多少个元数据解释器活着。
+# 这里曾经有一个全局信号量，限制同时活着的元数据解释器数量，因为 discovery 会
+# 并行强扫十几个插件、每个常驻约 66 MB。discovery 不再扫描之后扇出没有了：唯一
+# 的调用方是 start_plugin，而它跑在插件操作锁里，一次只可能有一个。
 #
-# 每轮 discovery 各建各的线程池，池的 max_workers 只管住"这一次刷新"。刷新路由
-# 之间没有串行化，force 又绕过缓存，于是连点几下刷新、失败重试、或几个调用方撞
-# 在一起，就能同时拉起 请求数 x workers 个解释器；单个实测常驻约 66 MB，几次重叠
-# 足以把内存吃干、把插件服务器带走（codex）。
-#
-# 闸设在真正起进程的这一层，而不是线程池那一层：除了 discovery 之外，单插件刷新
-# 和生命周期路径也会各自扫描，池上的上限管不到它们。
-# Env: NEKO_PLUGIN_METADATA_SCAN_CONCURRENCY
-MAX_CONCURRENT_METADATA_SCANS = env_int("NEKO_PLUGIN_METADATA_SCAN_CONCURRENCY", 8)
-_SCAN_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_METADATA_SCANS)
-# 等槽位等到这个数以内，就当这个插件基本拿满了自己的扫描窗口。
-_SLOT_WAIT_IS_NEGLIGIBLE = 0.05
+# 连带删掉的还有"等槽位超过 50ms 就把超时改判成预算问题"那条判据——它的存在
+# 前提就是有人要排队等槽位。
 
 
 def _metadata_worker_command() -> list[str]:
@@ -723,312 +714,6 @@ def install_isolated_plugin_metadata(
     state.invalidate_snapshot_cache("handlers")
 
 
-# ── 扫描结果缓存 ────────────────────────────────────────────────────────
-#
-# 一次扫描是一个全新解释器（本机实测约 0.84s，其中约 0.76s 只是启动和导入扫描
-# 框架），而算出缓存键只要遍历插件目录 stat 一遍——实测 17 个插件合计约 17ms，
-# 差三个数量级。
-#
-# 键包含插件目录下所有 *.py / *.toml / *.json 的 (mtime_ns, size)，而不是只看
-# plugin.toml 和入口文件：插件常把代码拆到同目录别的模块里，只盯入口会在改了
-# 邻居文件之后命中脏缓存——那种 bug 很难联想到缓存。
-#
-# ⚠️ 目录外的依赖（共享的 vendor/、site-packages）变化抓不到。所以凡是"内容可能
-# 在我们背后变了"的路径——安装、升级、卸载、以及用户手点的刷新——必须传
-# force=True 绕过，不能指望键自己发现。
-# 值是 (结果, 这份结果是不是 force 扫出来的)。第二项承重：一次在 force 扫描期间
-# 开始的普通扫描会捕获同一个代次，所以代次比较放它过去；但两个子进程 import
-# 外部依赖的先后是不确定的，普通那次完全可能读到更旧的依赖却最后落地
-# （codex）。force 的结果不接受普通扫描覆盖。
-_SCAN_CACHE: dict[tuple, tuple[IsolatedPluginMetadata, bool]] = {}
-_SCAN_CACHE_LOCK = threading.Lock()
-_SCAN_CACHE_MAX_ENTRIES = 256
-# 指纹忽略的目录名。除此之外插件目录下的**所有**文件都进指纹。
-#
-# 原本只看 .py/.toml/.json，但插件的模块级代码常常从同目录的数据文件派生条目
-# （metadata.yaml、csv、模板……），只盯代码文件会在那些文件改了之后命中脏缓存，
-# 而注册的元数据和运行时行为对不上是最难查的一类不一致（codex）。
-_SCAN_KEY_IGNORED_DIRS = frozenset({"__pycache__", ".git", ".mypy_cache", ".ruff_cache"})
-
-# 刚被动过的插件不写缓存，要"安定"这么久之后才写。
-#
-# (mtime_ns, size) 漏掉的唯一情形是"写入后极短时间内再次等大小改写"——两次落在
-# 同一个文件系统时间戳刻度里，指纹看不出变化。CodeRabbit 建议给每个文件加内容
-# 摘要，但实测读+哈希全部插件文件要 359ms（810 个文件 / 20.9MB），而仅 stat 是
-# 47ms；热缓存路径现在总共才 0.14s，加这一笔等于把最该快的那条路慢 3.5 倍。
-#
-# 换个方向从源头关掉这个窗口：只在所有被指纹的文件都已经"老"到不可能发生
-# 同刻度改写时才写缓存。刚改过的插件这一轮照常扫、只是不缓存，安定之后自然
-# 开始命中。代价是零额外 I/O。
-#
-# 2s 不是随手取的，它必须 >= 文件系统时间戳粒度 G。设写入缓存的时刻为 T、被指纹
-# 文件的 mtime 为 M，安定条件是 M <= T - S。之后一次改写发生在 T' > T，它落在
-# 刻度 floor(T'/G)；要让指纹看不出变化就得 floor(T'/G) == floor(M/G)，也就是
-# T' < M + G <= T - S + G。与 T' > T 联立得到 G > S。所以只要 S >= G，"同刻度
-# 等大小改写"这个窗口在**写入**那一刻就不存在，缓存里也就不会先躺进一条已经过时
-# 的条目（CodeRabbit 追问的正是这一条）。NTFS 的 G 是 100ns，FAT/exFAT 最粗，
-# 是 2s——所以下界取 2s。
-_CACHE_SETTLE_NS = 2_000_000_000
-_NEVER_SETTLED = -1
-
-# 两道"这份结果还算数吗"的闸，管的是两件不同的事。
-#
-# 起因：普通扫描和 force 扫描算出来的键完全一样——键只看插件目录，而 force 存在
-# 的意义正是目录外的变化（共享 vendor、site-packages）。于是一次开始得早、结束得
-# 晚的普通扫描能把 force 刚写进去的新结果盖回旧的，之后每次普通读取都拿到那份
-# 陈旧元数据，恰好废掉 force 的语义（CodeRabbit）。
-#
-# ① 按键的 generation，只有 force 会 +1。
-#
-#    先前这里用的是一个全局计数，那是错的，而且错得比原问题更糟：一次
-#    refresh_registry(force=True) 会并发地强扫十几个插件，每个 worker 都把全局
-#    计数 +1，于是除了最后一个之外每个 worker 在写缓存前都看到"代不一样"，把
-#    自己刚读出来的新结果全部丢掉。又因为 force 不删旧条目，那些旧条目原封不动
-#    留在缓存里，下一次普通刷新照样把它们端出来——整次强制刷新等于没做（codex）。
-#    按键分代之后，强扫兄弟插件之间互不干扰。
-#
-# ② 全局 epoch，只有显式清缓存会 +1。
-#
-#    清缓存的语义就是"缓存里的东西现在都不可信"，让所有在途结果一起作废正是想
-#    要的效果；而它是低频的单次调用，不存在①那种自相残杀。放一个全局计数还能
-#    盖住"这个键我们从没见过"的在途扫描——按键的表里根本没有它的条目。
-_SCAN_GENERATION: dict[tuple, int] = {}
-_SCAN_EPOCH = 0
-# 缓存被显式清掉过几次。只增不减，注册表那边拿它对账。
-_SCAN_CACHE_CLEAR_COUNT = 0
-
-
-def _bump_scan_epoch_locked() -> None:
-    """Invalidate every scan currently in flight. Caller holds the cache lock."""
-    global _SCAN_EPOCH
-
-    _SCAN_EPOCH += 1
-
-
-def _make_room_for_locked(key: tuple) -> None:
-    """Enforce the cache cap before adding a new key. Caller holds the lock.
-
-    容量检查必须跟"写进 _SCAN_CACHE"这件事绑在一起，而不是只挂在成功那条路上：
-    墓碑也是条目，而且键里带着整份文件清单。连着几次 force 扫描失败、每次都是新的
-    源指纹，缓存就会一路涨过上限（CodeRabbit）。
-    """
-    if key in _SCAN_CACHE or len(_SCAN_CACHE) < _SCAN_CACHE_MAX_ENTRIES:
-        return
-    _SCAN_CACHE.clear()
-    # 清表会把别人赖以判断的那条 force 记录一起扔掉，所以在途结果一并作废。
-    _bump_scan_epoch_locked()
-
-
-def _begin_scan(key: tuple, *, force: bool) -> tuple[int, int]:
-    """Stamp a scan about to run, and drop what ``force`` says is untrustworthy."""
-    global _SCAN_EPOCH
-
-    with _SCAN_CACHE_LOCK:
-        generation = _SCAN_GENERATION.get(key, 0)
-        if force:
-            generation += 1
-            if len(_SCAN_GENERATION) >= _SCAN_CACHE_MAX_ENTRIES:
-                # 丢掉按键代次，就是丢掉在途扫描的判据：一个在清表前记下 gen=0 的
-                # 陈旧扫描，清表之后再读还是 0，校验反而放它过去，恰好把这道闸自己
-                # 打开（CodeRabbit）。所以清表的同时用 epoch 把在途结果一起作废——
-                # 这跟显式清缓存是同一件事：按键判据不再可靠了。
-                _SCAN_GENERATION.clear()
-                _SCAN_EPOCH += 1
-            _SCAN_GENERATION[key] = generation
-            # force 的意思是"缓存里那个答案不可信"，所以现在就把它作废，而不是
-            # 等着用新结果覆盖。旧条目留着的话，后面一次普通读取会把它端出来，这次
-            # force 就白做了（codex）。
-            #
-            # 作废的方式是留一块墓碑 (None, True)，不是 pop：
-            #   * 读取侧把 None 当未命中，所以普通扫描照常真扫，行为跟删掉一样；
-            #   * 写入侧那条「普通扫描不覆盖 force 的结果」现成的判据，因此对这块
-            #     墓碑也生效——force 万一超时或抛错、一条结果都没写成，同代次的普通
-            #     扫描也不能把它读到的（可能是变更前依赖的）结果填进这个坑
-            #     （codex）。
-            # 不用再引一张在途表，就是复用已有的 (结果, 是不是 force) 这个形状。
-            _make_room_for_locked(key)
-            _SCAN_CACHE[key] = (None, True)
-        return generation, _SCAN_EPOCH
-
-
-def _scan_with_slot(**kwargs: Any) -> IsolatedPluginMetadata:
-    """Run one uncached scan while holding a global interpreter slot.
-
-    Waiting for a slot spends the caller's own timeout, so a saturated server
-    degrades the way an over-budget discovery already does — the plugin is
-    recorded as scan-failed and retried on the next refresh — instead of
-    queueing more interpreters than the machine can hold.
-    """
-    timeout = float(kwargs.get("timeout", _DEFAULT_SCAN_TIMEOUT_SECONDS))
-    if timeout <= 0:
-        # 预算已经没了：不占槽位，让扫描器自己抛 ScanBudgetExhausted。
-        return _scan_plugin_metadata_uncached(**kwargs)
-    started = time.monotonic()
-    if not _SCAN_SLOTS.acquire(timeout=timeout):
-        raise PluginMetadataScanError(
-            "ScanBudgetExhausted",
-            "Plugin metadata scan skipped: no scan slot became free in time",
-        )
-    try:
-        waited = time.monotonic() - started
-        kwargs["timeout"] = timeout - waited
-        try:
-            return _scan_plugin_metadata_uncached(**kwargs)
-        except PluginMetadataScanError as exc:
-            if exc.error_type != "TimeoutExpired" or waited <= _SLOT_WAIT_IS_NEGLIGIBLE:
-                raise
-            # 等槽位吃掉了这个插件本该拥有的扫描时间，它是在被削短的窗口里超时的。
-            # 报成 TimeoutExpired 的话，上游会当成"这个插件自己的导入卡住了"，把一个
-            # 健康插件标成 failed 并取消它的自启动资格——而真正的原因是服务器当时
-            # 忙（codex）。改报预算类失败，语义才对得上。
-            raise PluginMetadataScanError(
-                "ScanBudgetExhausted",
-                "Plugin metadata scan timed out after waiting "
-                f"{waited:.1f}s for a scan slot",
-            ) from exc
-    finally:
-        _SCAN_SLOTS.release()
-
-
-def _plugin_source_fingerprint(config_path: Path) -> tuple[tuple, int]:
-    """``(指纹, 最新 mtime_ns)``，取自插件目录下的全部文件。
-
-    自顶向下走，并且**在下降之前**就把忽略目录剪掉。``rglob("*")`` 做不到这件
-    事：它会先把 ``.git`` 底下每一个后代都枚举出来、对每一个调用 ``is_file()``，
-    然后才轮到那句忽略判断。开发机上的插件目录带一个大 object database 时，每一
-    次"命中缓存"都要先花上几秒走一遍明确说了不看的文件，而这段时间不在 discovery
-    的扫描预算里（codex）。
-    """
-    root = config_path.parent
-    entries: list[tuple[str, int, int]] = []
-    newest = 0
-    unreadable = False
-    # 插件根目录本身就可能是软链。scandir 会跟着它进去，里面一个软链都看不到，
-    # 于是整棵树照常进缓存——而把根重新指向另一份代码，键一点都不会变
-    # （CodeRabbit）。所以先问根自己。
-    # 软链要进指纹本身，不能只影响"安不安定"。
-    #
-    # 只把 newest 设成 _NEVER_SETTLED 的话，指纹跟一棵没有软链的树**一模一样**：
-    # 如果这棵树在软链被加进来之前就已经缓存过，键没变，读取侧直接命中那条旧记录
-    # 就返回了，根本走不到"不可缓存"那条路，陈旧的条目可以一直留着（codex）。
-    # 给每条软链放一个哨兵条目，加一条链必然让键变化，旧条目自然失效。
-    symlinks: list[tuple[str, int, int]] = []
-    if os.path.islink(root):
-        symlinks.append(("<symlink>:.", 0, 0))
-    saw_symlink = bool(symlinks)
-
-    # 用 scandir 手写下降，而不是 os.walk + Path.stat。
-    #
-    # 一次 scandir 拿回来的 DirEntry 自带类型和（Windows 上）stat 信息，所以
-    # is_symlink()/is_dir()/stat() 都不用再多一次 syscall。os.walk 只给名字，判断
-    # 软链就得对每个文件再来一次 lstat——在这条本来就是为了变快而存在的路径上，
-    # 那是凭空多出一倍的系统调用。
-    stack = [str(root)]
-    while stack:
-        current = stack.pop()
-        try:
-            with os.scandir(current) as scan:
-                children = list(scan)
-        except OSError:
-            # 目录读不了就整棵树不可缓存，让这次扫描照常进行。
-            unreadable = True
-            continue
-        for entry in children:
-            try:
-                # 软链（目录的和文件的都算）一律让这棵树不进缓存。
-                #
-                # 目录软链：os.walk 不跟，rglob 当年也不跟，所以软链后面那棵树从来
-                # 就不在指纹里。文件软链更隐蔽：stat() 会跟过去，只记下目标的
-                # mtime/size，于是把链重新指向另一个同样大小、同样时间戳的文件
-                # （带时间戳拷贝的版本化文件就是这个形状）之后，键一点没变，而
-                # Python 已经在 import 另一份代码了（codex）。
-                #
-                # 跟进去不行：软链可能指向 site-packages 那种巨树，也可能成环，而
-                # 这个遍历就在热路径上。选另一头——不进缓存。这类插件每次都真扫，
-                # 只是慢，不会错。
-                if entry.is_symlink():
-                    saw_symlink = True
-                    symlinks.append(
-                        ("<symlink>:" + os.path.relpath(entry.path, root), 0, 0)
-                    )
-                    continue
-                if entry.is_dir(follow_symlinks=False):
-                    if entry.name not in _SCAN_KEY_IGNORED_DIRS:
-                        stack.append(entry.path)
-                    continue
-                st = entry.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            entries.append(
-                (os.path.relpath(entry.path, root), st.st_mtime_ns, st.st_size)
-            )
-            newest = max(newest, st.st_mtime_ns)
-
-    # 排序放在最后：这样指纹不依赖下降顺序，栈序换了也不会平白让缓存失效。
-    entries.extend(symlinks)
-    entries.sort()
-    if unreadable:
-        return (("<unreadable>", 0, 0),), _NEVER_SETTLED
-    if saw_symlink:
-        # 键照常带上看得见的那部分（不同插件仍然分得开），但永远不"安定"，
-        # 也就永远不进缓存——没有条目写进去，就不可能有陈旧命中。
-        return tuple(entries), _NEVER_SETTLED
-    return tuple(entries), newest
-
-
-def _scan_cache_key(
-    *,
-    plugin_id: str,
-    module_path: str,
-    class_name: str,
-    config_path: Path,
-    conf: Mapping[str, object],
-    pdata: Mapping[str, object],
-    python_requirement_paths: list[Path] | tuple[Path, ...],
-) -> tuple:
-    return (
-        plugin_id,
-        module_path,
-        class_name,
-        str(config_path),
-        tuple(sorted(str(p) for p in python_requirement_paths)),
-        json.dumps(_json_safe(dict(conf)), sort_keys=True, ensure_ascii=False),
-        json.dumps(_json_safe(dict(pdata)), sort_keys=True, ensure_ascii=False),
-        _plugin_source_fingerprint(config_path)[0],
-    )
-
-
-def scan_cache_clear_count() -> int:
-    """How many times the cache has been declared untrustworthy.
-
-    注册表那边用它来判断"我开始扫之后，有没有人动过盘"。清缓存的调用方恰好就是
-    那几条改盘的事务（卸载、替换、换源），而它们都在插件操作锁里跑，刷新路由却不
-    进那把锁——所以这是两者之间唯一现成的信号。
-    """
-    with _SCAN_CACHE_LOCK:
-        return _SCAN_CACHE_CLEAR_COUNT
-
-
-def clear_plugin_metadata_scan_cache() -> None:
-    """Drop every cached scan, and invalidate the ones still in flight.
-
-    There used to be a ``config_path`` parameter here for the single-plugin
-    refresh. It never got a production caller: that refresh is expressed as
-    ``force``, and a forced scan already evicts its own key in
-    :func:`_begin_scan`. A scoped branch nothing takes is not a spare tyre, it
-    is untested code that a guard test made look covered — and its path
-    matching was unnormalized, so it would not have matched reliably anyway.
-    """
-    global _SCAN_CACHE_CLEAR_COUNT
-
-    with _SCAN_CACHE_LOCK:
-        # 同时作废在途的扫描：它们是在清缓存**之前**读的盘，写回去等于把刚被
-        # 明确宣布过时的内容又放回缓存。
-        _bump_scan_epoch_locked()
-        _SCAN_CACHE.clear()
-        _SCAN_CACHE_CLEAR_COUNT += 1
-
-
 def scan_plugin_metadata_isolated(
     *,
     plugin_id: str,
@@ -1039,56 +724,20 @@ def scan_plugin_metadata_isolated(
     pdata: Mapping[str, object],
     python_requirement_paths: list[Path] | tuple[Path, ...] = (),
     timeout: float = _DEFAULT_SCAN_TIMEOUT_SECONDS,
-    force: bool = False,
 ) -> IsolatedPluginMetadata:
-    """Read one plugin's metadata in a throwaway worker, memoised on content.
+    """Import one plugin in a throwaway worker and read its metadata back.
 
-    ``force=True`` bypasses and refreshes the entry. Failures are deliberately
-    NOT cached: a scan that timed out or blew the budget must be retried on the
-    next refresh rather than sticking to the plugin until something on disk
-    changes.
+    On-demand only. The sole caller is ``start_plugin``, for the one plugin the
+    user just asked to run. Registry discovery reads packaged metadata off disk
+    and imports nothing — see
+    :mod:`plugin.server.infrastructure.packaged_metadata`.
+
+    There is no result cache and no concurrency gate here any more. Both existed
+    to make a fan-out of seventeen simultaneous scans survivable; discovery no
+    longer scans, and ``start_plugin`` runs under the plugin operation lock, so
+    scans are serialised by construction.
     """
-    key = _scan_cache_key(
-        plugin_id=plugin_id,
-        module_path=module_path,
-        class_name=class_name,
-        config_path=config_path,
-        conf=conf,
-        pdata=pdata,
-        python_requirement_paths=python_requirement_paths,
-    )
-    if not force:
-        with _SCAN_CACHE_LOCK:
-            hit = _SCAN_CACHE.get(key)
-        if hit is not None and hit[0] is not None:
-            result_only, _ = hit
-            # 先于预算判断：这个插件没变过，答案早就在手上，不花任何时间。反过来
-            # 做的话，一批改动过的插件把预算耗光之后，排在后面的健康插件会被标成
-            # 扫描失败——注册表里它的元数据被覆盖成 failed，还可能因此失去自启动
-            # 资格，而它其实什么都没发生（codex）。
-            return result_only
-
-    # 盖章要排在预算判断**前面**。放在后面的话，一次预算已经见底的 force 会在下面
-    # 那条 return 上直接走掉，它宣布不可信的那条旧条目原封不动留在缓存里，下一次
-    # 普通读取照样把它端出来——force 的意思是"缓存里那个答案不可信"，这个意思跟
-    # 这一刻还有没有时间扫无关。宁可让缓存变冷，也不能留着一条已经被宣布过时的。
-    generation, epoch = _begin_scan(key, force=force)
-
-    if timeout <= 0:
-        # 缓存里没有，预算也没了：这条路不写缓存——"现在没时间"描述的是此刻，
-        # 不是"这个插件是什么"。
-        return _scan_with_slot(
-            plugin_id=plugin_id,
-            module_path=module_path,
-            class_name=class_name,
-            config_path=config_path,
-            conf=conf,
-            pdata=pdata,
-            python_requirement_paths=python_requirement_paths,
-            timeout=timeout,
-        )
-
-    result = _scan_with_slot(
+    return _scan_plugin_metadata_uncached(
         plugin_id=plugin_id,
         module_path=module_path,
         class_name=class_name,
@@ -1098,42 +747,3 @@ def scan_plugin_metadata_isolated(
         python_requirement_paths=python_requirement_paths,
         timeout=timeout,
     )
-    _, newest_mtime_ns = _plugin_source_fingerprint(config_path)
-    settled = (
-        newest_mtime_ns != _NEVER_SETTLED
-        and time.time_ns() - newest_mtime_ns > _CACHE_SETTLE_NS
-    )
-    if settled:
-        with _SCAN_CACHE_LOCK:
-            if _SCAN_GENERATION.get(key, 0) != generation or _SCAN_EPOCH != epoch:
-                # 这一轮开始之后，同一个键又被 force 扫过，或者缓存被整个清了。
-                # 手上这份是照着旧内容读出来的，写回去就是拿陈旧结果盖掉更新的
-                # 那份。
-                return result
-            existing = _SCAN_CACHE.get(key)
-            if existing is not None and existing[1] and not force:
-                # 这一格里躺着的是 force 扫出来的结果。我们是普通扫描，代次虽然对得
-                # 上，但两个子进程读外部依赖的先后无法保证——不覆盖它。
-                return result
-            # 清表会把别人赖以判断的那条 force 记录一起扔掉：一个共享同一代次的
-            # 普通扫描随后就看不到"这里躺着 force 的结果"，于是把自己读到的更旧的
-            # 依赖写进来（codex）。所以 _make_room_for_locked 里连带作废在途结果。
-            # 我们自己已经过了检查，不受影响。
-            _make_room_for_locked(key)
-            _SCAN_CACHE[key] = (result, force)
-    elif force:
-        with _SCAN_CACHE_LOCK:
-            # 这次 force 成功了，只是文件太新、按安定窗口不该进缓存。墓碑的使命到
-            # 此为止：留着它，后面每一次普通扫描都会被"不覆盖 force 的结果"挡住，
-            # 这个插件就**永远**不再进缓存了——而"改完插件顺手点一下刷新"恰好是最
-            # 常见的操作（codex）。
-            #
-            # 只清我们自己这一代的墓碑：代次或 epoch 变了说明又有别人接手了，那块
-            # 墓碑不归我们处理。
-            if (
-                _SCAN_GENERATION.get(key, 0) == generation
-                and _SCAN_EPOCH == epoch
-                and _SCAN_CACHE.get(key) == (None, True)
-            ):
-                _SCAN_CACHE.pop(key, None)
-    return result

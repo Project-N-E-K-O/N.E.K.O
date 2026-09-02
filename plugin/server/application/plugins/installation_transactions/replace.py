@@ -74,22 +74,11 @@ async def _start_plugin(plugin_id: str) -> None:
     if not plugin_id:
         return
     from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService
-    from plugin.server.application.plugins.metadata_scanner import (
-        clear_plugin_metadata_scan_cache,
-    )
 
-    # 替换/回滚刚动过盘，缓存里那份元数据描述的是动之前。
-    #
-    # 指纹（路径 + mtime_ns + size）多数情况下会自己变，但两条路走不通：升级时只有
-    # 目录**外**的依赖变了（共享 vendor、site-packages），指纹看不见；回滚是从备份
-    # 拷回去，时间戳完全可能被原样保留。而这条重启路径最终调的是
-    # start_plugin(refresh_registry=True) -> refresh_plugin()，**没有** force，于是
-    # 新运行时会带着升级前的 entries 和工具 schema 起来（codex）。
-    #
-    # 用显式清理而不是给这条链路加 force：和 uninstall 那边同一个写法，也不用给
-    # 一串被测试替身顶掉的函数加关键字参数。
-    await asyncio.to_thread(clear_plugin_metadata_scan_cache)
-
+    # 这里原本要显式清一次元数据扫描缓存：替换/回滚刚动过盘，而缓存键（路径 +
+    # mtime_ns + size）看不见目录外的依赖变化，回滚更可能把时间戳原样拷回来。
+    # 缓存没有了——刷新每次都重读盘上的 manifest 和 plugin.meta.json——所以这一步
+    # 连同它要防的那类陈旧结果一起消失了。
     try:
         await PluginLifecycleService().start_plugin(plugin_id)
         return
@@ -277,18 +266,10 @@ def _notify_rollback_start(callback: Callable[[], None] | None) -> None:
 
 def _evict_replaced_plugin_modules(plugin_id: str) -> None:
     from plugin.core.host import evict_cached_plugin_modules
-    from plugin.server.application.plugins.metadata_scanner import (
-        clear_plugin_metadata_scan_cache,
-    )
 
+    # 已导入的模块仍然要清：这个进程里可能残留着被换掉的那份代码。元数据扫描缓存
+    # 曾经也在这里一起清，现在没有那个缓存了。
     evict_cached_plugin_modules(plugin_id)
-    # 扫描缓存和已导入模块是同一类东西：都是从这棵树推导出来的，而树刚被换掉。
-    #
-    # 原来只在重启那条路上清（_start_plugin 里），可 replace_plugin 只在插件**本来
-    # 就在跑**时才重启——升级一个停着的插件时那句清理根本不执行，之后一次普通启动
-    # 就会拿到升级前的元数据（codex）。这个"invalidate_cache"阶段是无条件跑的，
-    # 放这里才对。
-    clear_plugin_metadata_scan_cache()
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
