@@ -42,7 +42,7 @@ from plugin.server.infrastructure.packaged_metadata import (
     PACKAGED_METADATA_FILENAME,
     PACKAGED_METADATA_SCHEMA_VERSION,
     compute_source_sha256,
-    source_file_names,
+    unicode_renamed_source_files,
     source_stat_summary,
 )
 
@@ -118,11 +118,7 @@ def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
             f"importing the plugin failed ({exc.error_type}): {exc}"
         ) from exc
 
-    renamed = [
-        name
-        for name in source_file_names(plugin_dir)[0]
-        if not (plugin_dir / name).exists()
-    ]
+    renamed = unicode_renamed_source_files(plugin_dir)
     if renamed:
         # 指纹按 NFC 记名，打包器写进档案的也是 NFC——但探测这一步 import 的是
         # 文件系统上那个分解形式的名字。装到保留原拼写的文件系统上，插件里写死

@@ -233,8 +233,14 @@ def _iter_source_files(
                         # （codex）。增删条目都会更新父目录的 mtime。
                         dirs.append(entry.path)
                     continue
-                if entry.name == PACKAGED_METADATA_FILENAME:
-                    # 生成物不参与它自己的新鲜度判定。
+                if (
+                    entry.name == PACKAGED_METADATA_FILENAME
+                    and current == str(plugin_dir)
+                ):
+                    # 生成物不参与它自己的新鲜度判定——但只有根部那一份是生成物。
+                    # 按文件名一刀切会把插件自己带的 data/plugin.meta.json 这种运行
+                    # 时文件也排除掉，而打包管线照样把它放进包里：改它的内容不会让
+                    # 任何指纹变化（codex）。
                     continue
                 if not entry.is_file(follow_symlinks=False):
                     # ⚠️ 只收普通文件。FIFO、socket、设备节点都能通过 stat()，而摘要
@@ -307,6 +313,23 @@ def source_stat_summary(plugin_dir: Path) -> SourceStatSummary:
         total_bytes=total,
         untrustworthy=untrustworthy,
     )
+
+
+def unicode_renamed_source_files(plugin_dir: Path) -> list[str]:
+    """Staged files whose recorded name differs from their spelling on disk.
+
+    The fingerprint records NFC, and so does the archive writer; the probe
+    imports whatever the filesystem hands back. When those differ, a plugin that
+    opens a decomposed literal registers fine here and breaks after extraction
+    onto a spelling-preserving filesystem — while both trees fingerprint the
+    same, so the host trusts the metadata anyway (codex).
+
+    Compares the two spellings directly. Asking whether the NFC path *exists* is
+    useless on exactly the filesystems this targets: macOS resolves canonically
+    equivalent names, so the normalized name is always found (codex).
+    """
+    files, _untrustworthy, _dirs = _iter_source_files(plugin_dir)
+    return [key for key, real_rel, _stat in files if key != real_rel]
 
 
 def source_file_names(plugin_dir: Path) -> tuple[list[str], bool]:

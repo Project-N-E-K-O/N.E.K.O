@@ -1404,3 +1404,66 @@ def test_a_lying_byte_total_is_refused_not_re_hashed(tmp_path: Path) -> None:
         )
     finally:
         packaged_metadata.compute_source_sha256 = real_hash
+
+
+def test_a_nested_metadata_file_is_fingerprinted(tmp_path: Path) -> None:
+    """Only the root ``plugin.meta.json`` is the generated artifact.
+
+    A plugin can ship ``data/plugin.meta.json`` as a runtime file, and both
+    packaging pipelines copy it. Skipping every file with that name left it
+    outside the fingerprint while it shipped, so editing it kept stale handlers
+    alive (codex).
+
+    Mutation: skip the name at any depth again.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    nested_dir = plugin_dir / "data"
+    nested_dir.mkdir()
+    nested = nested_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    nested.write_text('{"payload": 1}', encoding="utf-8")
+
+    names, _untrustworthy = packaged_metadata.source_file_names(plugin_dir)
+    assert "data/plugin.meta.json" in names, (
+        f"插件自己带的运行时文件被当成生成物排除了：{names}"
+    )
+    assert packaged_metadata.PACKAGED_METADATA_FILENAME not in names, (
+        "根部那份生成物不该参与它自己的新鲜度判定"
+    )
+
+
+def test_a_decomposed_filename_is_reported_by_spelling(tmp_path: Path) -> None:
+    """The NFC check compares spellings, not path existence.
+
+    macOS resolves canonically equivalent names, so ``(dir / nfc_name).exists()``
+    is true even when the file on disk is decomposed — the check would never
+    fire on the filesystems it exists for (codex).
+
+    ⚠️ The ``exists()`` mutation survives this test *on NTFS and ext4*, and that
+    is not a weakness worth contorting the test to hide: those filesystems do
+    not resolve canonical equivalence, so both implementations answer the same
+    there. The difference is observable only on the filesystem the bug is about.
+    What this does pin is the output shape — a mutant returning ``[]``, or
+    comparing the wrong pair of names, dies here.
+    """
+    import unicodedata
+
+    decomposed = unicodedata.normalize("NFD", "café.py")
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.toml").write_text("id = 'demo'" + chr(10), encoding="utf-8")
+    try:
+        (plugin_dir / decomposed).write_text("VALUE = 1", encoding="utf-8")
+    except OSError:
+        pytest.skip("this filesystem cannot hold a decomposed filename")
+    if not any(
+        entry.name == decomposed for entry in plugin_dir.iterdir()
+    ):  # pragma: no cover - filesystem normalises on write
+        pytest.skip("this filesystem normalises filenames on write")
+
+    renamed = packaged_metadata.unicode_renamed_source_files(plugin_dir)
+    assert renamed == [unicodedata.normalize("NFC", "café.py")], (
+        f"分解形式的文件名没被报出来：{renamed}"
+    )
+    assert packaged_metadata.unicode_renamed_source_files(
+        plugin_dir / "does-not-exist"
+    ) == []

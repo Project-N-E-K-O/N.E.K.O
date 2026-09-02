@@ -1654,3 +1654,37 @@ def test_a_failed_gate_move_refuses_to_register_the_rename(
         )
     finally:
         autostart_approvals._reset_cache_for_testing()
+
+
+def test_the_scan_budget_is_computed_after_the_packaged_read() -> None:
+    """The worker's allowance must reflect time the metadata read consumed.
+
+    Reading packaged metadata can hash a whole changed tree before falling back,
+    so a budget captured before it is a stale snapshot and the worker still gets
+    a near-full ``scan_timeout`` — the reload then overruns its advertised wall
+    clock by the validation time plus the obsolete allowance (codex). Same
+    judgement already applied to ``startup_timeout_value`` one block below.
+
+    Driving this behaviourally would need the whole reload-all stack; the
+    ordering is what broke, so the ordering is what is pinned.
+
+    Mutation: compute ``scan_timeout`` before ``_read_packaged_isolated_metadata``,
+    or drop the clamp entirely.
+    """
+    import inspect
+
+    from plugin.server.application.plugins.lifecycle_service import (
+        PluginLifecycleService,
+    )
+
+    source = inspect.getsource(PluginLifecycleService.start_plugin)
+    read_at = source.find("_read_packaged_isolated_metadata,")
+    clamp_at = source.find("scan_timeout = _clamp_step_timeout(")
+    use_at = source.find("timeout=scan_timeout,")
+    assert -1 not in (read_at, clamp_at, use_at), (
+        "扫描预算没有钳位，或者钳位调用点不见了"
+    )
+    assert read_at < clamp_at < use_at, (
+        "扫描预算算在读包内元数据之前：读那一步可能哈希整棵树，算出来的上限"
+        "到真正调 worker 时已经是过期快照"
+    )

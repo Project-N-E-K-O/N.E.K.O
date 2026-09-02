@@ -1102,11 +1102,6 @@ class PluginLifecycleService:
             # 上限按剩余预算收窄：扫描自己的上限是 10s，只钳住 host 启动的话，一次
             # 冷扫描就能把整轮 reload 的墙钟顶穿（CodeRabbit）。
             module_path, class_name = entry.split(":", 1)
-            scan_timeout = _clamp_step_timeout(
-                _DEFAULT_METADATA_SCAN_TIMEOUT,
-                _remaining_step_budget(start_deadline),
-                floor=_MIN_CLAMPED_START_TIMEOUT,
-            )
             isolated_metadata = await asyncio.to_thread(
                 partial(
                     _read_packaged_isolated_metadata,
@@ -1117,6 +1112,15 @@ class PluginLifecycleService:
                 )
             )
             if isolated_metadata is None:
+                # 预算在读完包内元数据之后才算。读那一步自己可能要哈希一整棵改过的
+                # 树，然后才回落——在它前面算出来的上限是过期快照，worker 还会拿到
+                # 接近 10s 的额度，整轮 reload 就会超出对外承诺的墙钟（codex）。
+                # 和下面 startup_timeout_value 的重算是同一条判据。
+                scan_timeout = _clamp_step_timeout(
+                    _DEFAULT_METADATA_SCAN_TIMEOUT,
+                    _remaining_step_budget(start_deadline),
+                    floor=_MIN_CLAMPED_START_TIMEOUT,
+                )
                 isolated_metadata = await asyncio.to_thread(
                     scan_plugin_metadata_isolated,
                     plugin_id=current_plugin_id,
