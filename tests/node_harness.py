@@ -251,7 +251,7 @@ const activeResources = typeof nativeProcess.getActiveResourcesInfo === 'functio
   : null;
 
 const deadlineMs = Number(nativeProcess.env.NEKO_NODE_HARNESS_DEADLINE_MS || 0);
-const EXIT_CODE = 87;
+const EXIT_CODE = __EXIT_CODE__;
 
 // The budget starts here, not at process start.  Everything before this point
 // is node bootstrap -- exactly the pre-script stall the outer ceiling exists to
@@ -313,6 +313,20 @@ if (deadlineMs > 0) {
 }
 """
 
+def _rendered_preload() -> str:
+    """The preload with the exit code bound to the Python constant.
+
+    The substitution is the only one, and it does not vary per call, so the file
+    written from this is still identical for every invocation.  It exists so
+    that 87 has one definition: the JS carried its own literal for a while,
+    which is a drift waiting to happen between the guard and every test that
+    asserts on the code it exits with.
+    """
+    rendered = _PRELOAD_SOURCE.replace("__EXIT_CODE__", str(_WATCHDOG_EXIT_CODE))
+    assert "__EXIT_CODE__" not in rendered
+    return rendered
+
+
 _preload_guard = threading.Lock()
 _preload_file: str | None = None
 
@@ -324,6 +338,8 @@ def _drop_preload() -> None:
         try:
             os.unlink(_preload_file)
         except OSError:
+            # Deliberate: this runs at interpreter exit, where a leaked temp
+            # file is not worth raising over and there is nobody left to tell.
             pass
         _preload_file = None
 
@@ -341,7 +357,7 @@ def _preload_path() -> str:
             with tempfile.NamedTemporaryFile(
                 "w", suffix=".neko-harness-guard.js", delete=False, encoding="utf-8"
             ) as handle:
-                handle.write(_PRELOAD_SOURCE)
+                handle.write(_rendered_preload())
             _preload_file = handle.name
             atexit.register(_drop_preload)
         return _preload_file

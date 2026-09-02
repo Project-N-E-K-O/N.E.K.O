@@ -994,4 +994,19 @@ def test_one_preload_file_serves_the_whole_process():
     second = node_harness._preload_path()
 
     assert first == second
-    assert Path(first).read_text(encoding="utf-8") == node_harness._PRELOAD_SOURCE
+    assert Path(first).read_text(encoding="utf-8") == node_harness._rendered_preload()
+
+
+def test_the_exit_code_has_exactly_one_definition():
+    """The guard's exit code and the tests' expectation cannot drift apart.
+
+    The preload carried its own literal 87 for a while, which left
+    ``_WATCHDOG_EXIT_CODE`` unreferenced in the module and two places to change.
+    """
+    rendered = node_harness._rendered_preload()
+
+    assert f"const EXIT_CODE = {node_harness._WATCHDOG_EXIT_CODE};" in rendered
+    assert "__EXIT_CODE__" not in rendered
+    assert "= 87;" not in node_harness._PRELOAD_SOURCE, (
+        "预载不该再自带一个 87 的字面量，否则和 Python 常量会各改各的"
+    )
