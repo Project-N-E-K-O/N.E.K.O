@@ -32,11 +32,19 @@ exactly what a new harness file would slip past.
 
 import ast
 import re
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
 import pytest
 
+from tests import node_harness
+from tests.node_harness import (
+    NodeHarnessSpawnTimeout,
+    run_node_script,
+    run_node_stdin,
+)
 from tests.repo_ast_cache import parse_source_file
 
 TESTS_ROOT = Path(__file__).resolve().parents[1]
@@ -164,3 +172,201 @@ def test_shared_launcher_pins_utf8(runner):
     )
     helper_body = ast.get_source_segment(source, helper) or ""
     assert '"encoding"] = "utf-8"' in helper_body, "_utf8 必须强制 encoding，而不是 setdefault"
+
+
+def _node_or_skip() -> str:
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is required for the launcher's own liveness tests")
+    return node_path
+
+
+# A script that finishes its work but leaves a timer armed. Node's event loop
+# stays alive forever on it, which is the shape every "harness hangs" report in
+# this repo has taken.
+_LEAKS_A_TIMER = "setInterval(function () {}, 1000);\nprocess.stdout.write('started');\n"
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_harness_that_leaks_a_timer_fails_with_the_leak_named(runner):
+    """A never-settling script must die from inside node, saying what held it.
+
+    Before the watchdog this ran out the caller's ``subprocess.run`` ceiling and
+    surfaced as a bare ``TimeoutExpired`` naming only ``node.EXE`` and a temp
+    file - indistinguishable from a runner that never started node at all, and
+    with nothing in it to act on.
+    """
+    node_path = _node_or_skip()
+
+    # 3s, not the caller-typical 10-60: this test deliberately waits out the
+    # deadline, so the budget is CI time spent on purpose.
+    result = runner(
+        node_path, _LEAKS_A_TIMER, capture_output=True, check=False, timeout=3
+    )
+
+    assert result.returncode == node_harness._WATCHDOG_EXIT_CODE, (
+        "泄漏 handle 的脚本必须由 watchdog 结束，而不是被外层 ceiling 杀掉："
+        f"rc={result.returncode} stderr={result.stderr!r}"
+    )
+    assert "[node_harness]" in result.stderr
+    assert "Timeout" in result.stderr, (
+        f"诊断必须点名还占着事件循环的 handle：{result.stderr!r}"
+    )
+    # The script's own output is still there: the watchdog reports, it does not
+    # replace what the harness was saying.
+    assert result.stdout == "started"
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_healthy_harness_is_untouched_by_the_watchdog(runner):
+    """The dual: a script that settles must see no trace of the guard.
+
+    Without this the watchdog could "pass" the test above by firing on
+    everything, and every caller asserting ``result.stdout == "ok"`` or
+    ``result.stderr == ""`` would go red.
+    """
+    node_path = _node_or_skip()
+
+    result = runner(
+        node_path,
+        "process.stdout.write('ok');\n",
+        capture_output=True,
+        check=False,
+        timeout=6,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "ok"
+    assert result.stderr == ""
+
+
+def test_the_spawn_ceiling_sits_above_the_script_deadline(monkeypatch):
+    """The caller's timeout is the script's budget; the spawn gets slack on top.
+
+    This ordering is the whole basis for telling the two failures apart. If the
+    two deadlines were equal, the subprocess kill would race the watchdog and a
+    hung script could still surface as an undiagnosed ``TimeoutExpired`` - and
+    then get retried, which is exactly what must not happen to a real defect.
+    """
+    assert node_harness._SPAWN_SLACK_SECONDS > 0, "没有间隙就没有先后，分类失效"
+
+    seen = {}
+
+    def _fake_run(argv, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        seen["script"] = kwargs.get("input") or Path(argv[1]).read_text(encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(node_harness.subprocess, "run", _fake_run)
+    run_node_script("node", "process.stdout.write('ok');", timeout=12)
+
+    assert seen["timeout"] == 12 + node_harness._SPAWN_SLACK_SECONDS
+    assert "}, 12000);" in seen["script"], (
+        f"watchdog 必须按调用方的 timeout 武装，而不是别的值：{seen['script'][-400:]!r}"
+    )
+
+
+def test_a_caller_without_a_timeout_still_gets_a_finite_script_deadline(monkeypatch):
+    """No ceiling at all used to mean "hang until the 25-minute job cap"."""
+    seen = {}
+
+    def _fake_run(argv, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        seen["script"] = Path(argv[1]).read_text(encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(node_harness.subprocess, "run", _fake_run)
+    run_node_script("node", "process.stdout.write('ok');")
+
+    assert seen["timeout"] is None, "没给 timeout 的调用方不该被凭空加上一个外层 ceiling"
+    millis = int(node_harness._DEFAULT_WATCHDOG_SECONDS * 1000)
+    assert f"}}, {millis});" in seen["script"]
+
+
+def test_a_spawn_that_stalls_once_is_retried():
+    """A stall with the script never reached is the runner's fault, not ours.
+
+    ``node.EXE`` has come back from a Windows runner having burned 30s without
+    reaching the first line of a 55ms script. Nothing in the harness can make
+    that attempt succeed, and no assertion was under test, so the run is
+    repeated rather than reported as a contract violation.
+    """
+    calls = []
+    ok = subprocess.CompletedProcess(["node"], 0, "ok", "")
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+        return ok
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        result = run_node_script("node", "process.stdout.write('ok');", timeout=3)
+    finally:
+        node_harness.subprocess.run = original
+
+    assert result is ok
+    assert len(calls) == 2, "第一次 spawn 卡死后必须再试一次"
+    assert calls[0][1] != calls[1][1], "重试要用新的临时脚本，别继承上一次被 kill 时的残留"
+
+
+def test_a_spawn_that_keeps_stalling_reports_both_attempts():
+    """The dual: retrying must not become a way to hide a reproducible stall."""
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        raise subprocess.TimeoutExpired(
+            argv, kwargs.get("timeout"), output=f"partial-{len(calls)}", stderr=""
+        )
+
+    original = node_harness.subprocess.run
+    node_harness.subprocess.run = _fake_run
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            run_node_script("node", "process.stdout.write('ok');", timeout=3)
+    finally:
+        node_harness.subprocess.run = original
+
+    assert len(calls) == 2, "重试次数必须有界"
+    assert isinstance(excinfo.value, NodeHarnessSpawnTimeout)
+    message = str(excinfo.value)
+    assert "partial-1" in message and "partial-2" in message, (
+        f"两次尝试各自吐了什么必须跟着错误一起报出来：{message}"
+    )
+
+
+# Three suites drive fake clocks by shadowing the timer globals at module scope.
+# `const` makes that shadow cover the whole module, temporal dead zone included,
+# so an appended guard reading the bare name gets the fake or throws outright.
+_SHADOWS_THE_TIMERS = (
+    "const setTimeout = (callback) => { callback(); return 0; };\n"
+    "const clearTimeout = () => {};\n"
+    "const setInterval = (callback) => { callback(); return 0; };\n"
+    "setTimeout(function () {});\n"
+    "process.stdout.write('ok');\n"
+)
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_harness_that_shadows_the_timers_still_runs_clean(runner):
+    """The guard must not be steerable by the script it is guarding.
+
+    Found the hard way: the first version called the bare ``setTimeout`` and
+    ``tests/unit/test_avatar_annotation_frontend.py`` -- whose harness replaces
+    it with ``(callback) => callback()`` -- ran the watchdog's own callback on
+    the spot and died at exit 87 with nothing wrong with it.
+    """
+    node_path = _node_or_skip()
+
+    result = runner(
+        node_path, _SHADOWS_THE_TIMERS, capture_output=True, check=False, timeout=6
+    )
+
+    assert result.returncode == 0, (
+        f"被 harness 影子化的 setTimeout 不能牵动 watchdog：stderr={result.stderr!r}"
+    )
+    assert result.stdout == "ok"
+    assert result.stderr == ""
