@@ -61,7 +61,10 @@ the way out, covering the script that merely ran long and then ended and the one
 that calls ``process.exit()`` itself; every way out of node passes through it,
 and an ``exitCode`` assigned there overrides even ``process.exit(0)``.  The
 subprocess ceiling sits a few seconds above the deadline, so a surviving
-``TimeoutExpired`` means node never got as far as the preload.
+``TimeoutExpired`` means node never got as far as the preload.  The script's
+budget is counted from the preload, not from process start: everything before it
+is bootstrap, which is the stall the ceiling is there to catch and retry, and
+charging it to the script would report a slow *spawn* as a script timeout.
 
 The guard is a preload rather than text spliced into the script, because a
 harness script is not a safe place to stand.  Injected code resolves its names
@@ -213,7 +216,10 @@ def _budgeted(kwargs: dict) -> tuple[dict, float]:
     merged = dict(kwargs)
     timeout = merged.get("timeout")
     watchdog = _DEFAULT_WATCHDOG_SECONDS if timeout is None else float(timeout)
-    merged["timeout"] = watchdog + _SPAWN_SLACK_SECONDS
+    if watchdog > 0:
+        merged["timeout"] = watchdog + _SPAWN_SLACK_SECONDS
+    # A zero or negative timeout is a caller asking to fail immediately.  Adding
+    # slack to it would hand a slow script five seconds of grace it never had.
     return merged, watchdog
 
 
@@ -224,54 +230,84 @@ _DEADLINE_ENV = "NEKO_NODE_HARNESS_DEADLINE_MS"
 
 _PRELOAD_SOURCE = r"""
 // Preloaded with `node --require`, so this runs before the harness script, in
-// its own module scope, out of reach of anything the harness declares or
-// overwrites.  Nothing here is resolved in the caller's scope.
+// its own module scope, out of reach of anything the harness declares.
 const timers = require('node:timers');
 const fs = require('node:fs');
 
-const deadlineMs = Number(process.env.NEKO_NODE_HARNESS_DEADLINE_MS || 0);
+// Snapshot every moving part before the script gets a turn.  A preload is out
+// of reach of the caller's *lexical* scope, but not of shared objects: these
+// harnesses stub `process.exit` (a normal thing to do when the code under test
+// exits on error), hang browser shims off `global`, and `require('node:fs')`
+// hands the script the very same module object this one is holding.  A binding
+// taken here cannot be reached afterwards, which closes that class rather than
+// moving it one name further along.
+const nativeProcess = process;
+const armTimer = timers.setTimeout.bind(timers);
+const writeSync = fs.writeSync.bind(fs);
+const exitNow = nativeProcess.exit.bind(nativeProcess);
+const stringify = JSON.stringify.bind(JSON);
+const activeResources = typeof nativeProcess.getActiveResourcesInfo === 'function'
+  ? nativeProcess.getActiveResourcesInfo.bind(nativeProcess)
+  : null;
+
+const deadlineMs = Number(nativeProcess.env.NEKO_NODE_HARNESS_DEADLINE_MS || 0);
 const EXIT_CODE = 87;
+
+// The budget starts here, not at process start.  Everything before this point
+// is node bootstrap -- exactly the pre-script stall the outer ceiling exists to
+// catch and retry -- so charging it to the script would report a healthy script
+// as a harness timeout on precisely the slow spawn this launcher was written
+// for, and would do it *instead of* retrying.
+const startedAt = Date.now();
+
+function overdue() {
+  return Date.now() - startedAt > deadlineMs;
+}
 
 function diagnose(prefix) {
   let held;
   try {
-    held = typeof process.getActiveResourcesInfo === 'function'
-      ? JSON.stringify(process.getActiveResourcesInfo())
+    held = activeResources
+      ? stringify(activeResources())
       : '<getActiveResourcesInfo unavailable on this node>';
   } catch (err) {
     held = '<unavailable: ' + err + '>';
   }
-  // writeSync, because process.exit() does not flush a pending async pipe write
-  // and stderr to a pipe is async on Windows -- the diagnosis is the whole
-  // point, so it must not be the part that gets dropped.
-  fs.writeSync(
-    2,
-    '\n[node_harness] ' + prefix + ' ' + (deadlineMs / 1000) + 's after node '
-    + 'started.\n'
-    + '[node_harness] event loop is held by: ' + held + '\n'
-    + '[node_harness] a harness that never settles has usually left a timer '
-    + 'armed (clearInterval/clearTimeout) or is awaiting a promise that '
-    + 'nothing resolves.\n'
-  );
+  try {
+    // writeSync, because process.exit() does not flush a pending async pipe
+    // write and stderr to a pipe is async on Windows -- the diagnosis is the
+    // whole point, so it must not be the part that gets dropped.
+    writeSync(
+      2,
+      '\n[node_harness] ' + prefix + ' ' + (deadlineMs / 1000) + 's after the '
+      + 'script started.\n'
+      + '[node_harness] event loop is held by: ' + held + '\n'
+      + '[node_harness] a harness that never settles has usually left a timer '
+      + 'armed (clearInterval/clearTimeout) or is awaiting a promise that '
+      + 'nothing resolves.\n'
+    );
+  } catch (err) {
+    // Nothing left to report with; the exit code still carries the verdict.
+  }
 }
 
 if (deadlineMs > 0) {
   // Covers every way out of node: the loop draining, an explicit process.exit()
   // in the script, an uncaught throw.  An exitCode assigned in an 'exit'
   // listener overrides even process.exit(0).
-  process.on('exit', function () {
-    if (Math.round(process.uptime() * 1000) > deadlineMs) {
+  nativeProcess.on('exit', function () {
+    if (overdue()) {
       diagnose('the script was still running');
-      process.exitCode = EXIT_CODE;
+      nativeProcess.exitCode = EXIT_CODE;
     }
   });
 
   // ...and this covers the script that never exits at all.  unref() so the
   // watchdog is never itself the reason node stays up: with nothing else
   // holding the loop, node exits first and the hook above does the checking.
-  const deadline = timers.setTimeout(function () {
+  const deadline = armTimer(function () {
     diagnose('the script still had pending work');
-    process.exit(EXIT_CODE);
+    exitNow(EXIT_CODE);
   }, deadlineMs);
   if (deadline && typeof deadline.unref === 'function') deadline.unref();
 }
@@ -315,7 +351,9 @@ def _guarded(merged: dict, deadline_seconds: float) -> tuple[list[str], dict]:
     """The ``--require`` argument and the environment carrying the deadline."""
     base = merged.get("env")
     environment = dict(os.environ if base is None else base)
-    environment[_DEADLINE_ENV] = str(int(deadline_seconds * 1000))
+    # Floor at 1ms: a sub-millisecond budget must still arm the guard, and
+    # rounding it to 0 is how the preload gets switched off by accident.
+    environment[_DEADLINE_ENV] = str(max(1, int(deadline_seconds * 1000)))
     return ["--require", _preload_path()], dict(merged, env=environment)
 
 

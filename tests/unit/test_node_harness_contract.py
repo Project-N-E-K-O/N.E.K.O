@@ -860,6 +860,95 @@ def test_the_wrapped_error_keeps_a_stalled_attempt_output_where_callers_look():
     assert excinfo.value.stderr == "partial-err"
 
 
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_harness_that_stubs_process_exit_cannot_disarm_the_timer(runner):
+    """``process.exit = () => {}`` is a normal stub, not sabotage.
+
+    A harness testing code that exits on error will stub it. The preload
+    resolved ``process.exit`` when the timer fired, so the stub swallowed the
+    kill and the run hung to the outer ceiling; the binding is taken at preload
+    time now, before the script can touch it.
+    """
+    node_path = _node_or_skip()
+
+    script = (
+        "process.exit = () => {};\n"
+        "setInterval(function () {}, 1000);\n"
+        "process.stdout.write('started');\n"
+    )
+    result = runner(node_path, script, capture_output=True, check=False, timeout=2)
+
+    assert result.returncode == node_harness._WATCHDOG_EXIT_CODE, (
+        f"被打桩的 process.exit 不该让 watchdog 失效：rc={result.returncode}"
+    )
+
+
+@pytest.mark.parametrize("runner", [run_node_script, run_node_stdin])
+def test_a_harness_that_replaces_the_global_process_still_runs(runner):
+    """A browser shim may do ``global.process = { env: {} }``.
+
+    The preload is out of reach of the caller's lexical scope but not of the
+    global object, so resolving ``process`` at fire time picked up the
+    replacement and died in the exit hook with a TypeError -- turning a healthy
+    script into a failure.
+    """
+    node_path = _node_or_skip()
+
+    script = (
+        "const native = process;\n"
+        "global.process = { env: {} };\n"
+        "native.stdout.write('ok');\n"
+    )
+    result = runner(node_path, script, capture_output=True, check=False, timeout=6)
+
+    assert result.returncode == 0, (
+        f"换掉全局 process 不该把健康脚本打红：stderr={result.stderr[:300]!r}"
+    )
+    assert result.stdout == "ok"
+
+
+def test_a_zero_timeout_still_fails_fast_and_still_arms_the_guard(monkeypatch):
+    """``timeout=0`` means fail now, not "five seconds and no guard".
+
+    The slack is added only to a positive budget, and the deadline is floored at
+    1ms so rounding cannot switch the preload off -- ``int(0 * 1000)`` did, and
+    the preload's own ``deadlineMs > 0`` check then skipped everything.
+    """
+    seen = {}
+
+    def _fake_run(argv, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        seen["env"] = kwargs.get("env") or {}
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(node_harness.subprocess, "run", _fake_run)
+    run_node_script("node", "process.stdout.write('ok');", timeout=0)
+
+    assert seen["timeout"] == 0, (
+        f"timeout=0 的调用方要的是立刻失败，不是多给 5 秒：{seen['timeout']!r}"
+    )
+    assert seen["env"][node_harness._DEADLINE_ENV] == "1", (
+        f"预算再小也必须武装护栏，不能被取整成 0 关掉：{seen['env'].get(node_harness._DEADLINE_ENV)!r}"
+    )
+
+
+def test_the_script_budget_is_counted_from_the_preload_not_process_start():
+    """Bootstrap time belongs to the spawn stall, not to the script.
+
+    Structural, because a slow V8 bootstrap cannot be induced on demand -- but
+    the distinction matters more than most: ``process.uptime()`` includes the
+    pre-script delay this launcher exists to tell apart, so a healthy script on
+    a slow spawn would be reported as a harness timeout *instead of* retried.
+    """
+    preload = node_harness._PRELOAD_SOURCE
+
+    assert "const startedAt = Date.now();" in preload
+    assert "Date.now() - startedAt > deadlineMs" in preload
+    assert "uptime()" not in preload, (
+        "uptime() 从进程启动算起，会把 node 自己的 bootstrap 记到脚本头上"
+    )
+
+
 def test_the_guard_never_edits_the_script_it_is_guarding():
     """The script reaches node byte-for-byte as the caller wrote it.
 
