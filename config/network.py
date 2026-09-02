@@ -17,7 +17,6 @@
 
 import json
 import os
-import platform  # noqa: F401 - config/__init__.py 再导出它
 import sys
 import uuid
 

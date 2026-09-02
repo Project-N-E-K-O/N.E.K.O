@@ -39,7 +39,6 @@ from .character_fields import (  # noqa: F401
 from .network import (  # noqa: F401
     json,
     os,
-    platform,
     uuid,
     _read_port_overrides,
     _PORT_FILE_OVERRIDES,

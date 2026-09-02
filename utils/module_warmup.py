@@ -78,10 +78,11 @@ _warmup_started = False
 def _warm_one(name: str) -> None:
     """Warm one entry: ``"module"``, or ``"module:attribute"``.
 
-    带属性的形式是给**惰性求值**的重家伙准备的（比如一批正则的 compile）。那种
-    模块通常早就在 ``sys.modules`` 里了——它是被别的东西顺路 import 进来的，只是
-    真正贵的那部分被推迟到了首次取值。对它们光 ``import_module`` 会直接命中缓存
-    返回，一行代码都不执行，预热等于没做。所以属性要真的取一次。
+    The attribute form is for lazily-evaluated heavyweights -- a batch of regex
+    compilations, say. Such a module is usually in ``sys.modules`` already,
+    dragged in by something else, with only the expensive part deferred to first
+    access; importing it again is a cache hit that runs no code, so warming it
+    would do nothing. The attribute has to actually be read.
     """
     module_name, _, attr = name.partition(":")
     module = importlib.import_module(module_name)

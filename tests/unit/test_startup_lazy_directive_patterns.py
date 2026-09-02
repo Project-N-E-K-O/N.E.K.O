@@ -12,18 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""封禁话题模板必须惰性编译，且预热表要真的把它编出来。
+"""Ban-topic templates must compile lazily, and the warmup must really compile them.
 
-这两条守的是同一件事的两头。``config/prompts/prompts_directives`` 里那 21 条
-模板有 4 条各约 51 KB 正则源码，编译实测 294-298 ms；而这个模块坐在
-memory_server 的 eager 导入链上（``app/__init__.py`` -> ``app/runtime_bindings``
--> ``memory.user_directives``），memory_server 又是 merged 模式下第一个被 import
-的 app 模块。uvicorn 先 ``await lifespan.startup()`` 再 ``create_server()``，所以
-这段时间花在**端口还不存在**的阶段——用户那边是 connection-refused。
+These two guards cover the two ends of one change. Four of the 21 templates in
+``config/prompts/prompts_directives`` carry roughly 51 KB of regex source each;
+compiling the set measures 294-298 ms. That module sits on memory_server's eager
+import chain (``app/__init__.py`` -> ``app/runtime_bindings`` ->
+``memory.user_directives``), and memory_server is the first app module imported
+in merged mode. uvicorn awaits ``lifespan.startup()`` before ``create_server()``,
+so the time is spent while the port does not exist yet -- the user sees
+connection-refused, not slowness.
 
-把编译挪到首次访问，代价就转嫁给第一次指令抽取了；所以第二条守卫盯预热：
-``MAIN_SERVER_WARMUP`` 里那条 ``"模块:属性"`` 必须真的被求值，否则这个改动只是
-把 300 ms 从启动搬到了用户第一句话上，而且搬得悄无声息。
+Making the compile lazy on its own would just move the cost onto the first
+directive extraction, so the second guard watches the warmup: the
+``"module:attribute"`` entry in ``MAIN_SERVER_WARMUP`` has to actually be
+evaluated. Otherwise this change silently relocates 300 ms from startup to the
+user's first sentence.
 """
 
 from __future__ import annotations
@@ -42,11 +46,13 @@ _WARMUP_ENTRY = "config.prompts.prompts_directives:DIRECTIVE_PATTERNS"
 
 @pytest.mark.unit
 def test_directive_patterns_are_not_compiled_at_import_time() -> None:
-    """import 这个模块不许触发那 294 ms。
+    """Importing the module must not trigger the 294 ms compile.
 
-    起子进程来问，不在本进程里判：模块级状态跨用例存活，同一个 pytest session
-    里只要有任何一条用例先碰过 ``DIRECTIVE_PATTERNS``，缓存就已经填好了，本进程
-    里的断言会永远为真——那就是一条永远绿的假守卫。
+    Asked in a subprocess rather than judged in-process, deliberately.
+    Module-level state outlives a test, so if any earlier case in the same
+    pytest session has already touched ``DIRECTIVE_PATTERNS`` the cache is
+    filled and an in-process assertion would be true forever -- a guard that
+    can never fail.
     """
     probe = (
         "import config.prompts.prompts_directives as D;"
@@ -79,7 +85,11 @@ def test_directive_patterns_are_not_compiled_at_import_time() -> None:
 
 @pytest.mark.unit
 def test_warmup_entry_for_directive_patterns_is_registered() -> None:
-    """预热表里必须有这一条，否则第一次指令抽取要现编 294 ms。"""
+    """The warmup table must carry this entry.
+
+    Without it the first directive extraction compiles the 294 ms of regex
+    inline, on a user turn.
+    """
     from utils.module_warmup import MAIN_SERVER_WARMUP
 
     assert _WARMUP_ENTRY in MAIN_SERVER_WARMUP, (
@@ -92,13 +102,14 @@ def test_warmup_entry_for_directive_patterns_is_registered() -> None:
 def test_warmup_touches_the_attribute_not_just_the_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``"模块:属性"`` 这种条目必须真的取一次属性。
+    """A ``"module:attribute"`` entry must actually read the attribute.
 
-    只 import 是不够的，而且恰恰对这条毫无作用：被预热的模块此刻早就在
-    ``sys.modules`` 里了（memory_server 的导入链把它拉进来的），
-    ``import_module`` 直接命中缓存返回，一行代码都不会执行——贵的是那次属性求值。
+    Importing alone is not enough, and for this entry it does nothing at all:
+    the module is already in ``sys.modules`` by then, dragged in by
+    memory_server's import chain, so ``import_module`` is a cache hit that runs
+    no code. The expensive part is the attribute evaluation.
 
-    变异：把 ``_warm_one`` 里的 ``getattr`` 去掉，这条必须红。
+    Mutation: drop the ``getattr`` in ``_warm_one``; this must go red.
     """
     from utils import module_warmup
 
