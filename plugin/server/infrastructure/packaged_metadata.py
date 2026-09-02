@@ -351,15 +351,20 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
     # mtime，同一个时间戳刻度内就不成立（本机过、CI 挂，就是这条）。清单还顺带让
     # 判定不依赖解包顺序（codex）。
     packaged_names = raw.get("source_files")
-    if not isinstance(packaged_names, list):
+    if not isinstance(packaged_names, list) or not all(
+        isinstance(item, str) for item in packaged_names
+    ):
+        # 类型也要校验，不能只 str() 强转了事。强转确实会让比对失配、从而拒绝，
+        # 但那是"碰巧拒对了"，不是在表达契约——而这份文件来自第三方包
+        # （coderabbit）。
         logger.warning(
-            "packaged plugin metadata has no source file list, falling back to "
-            "manifest: path={}",
+            "packaged plugin metadata has no valid source file list, falling "
+            "back to manifest: path={}",
             meta_path,
         )
         return None
     current_names, _untrustworthy = source_file_names(plugin_dir)
-    if sorted(str(item) for item in packaged_names) != sorted(current_names):
+    if sorted(packaged_names) != sorted(current_names):
         logger.info(
             "plugin source file set differs from the packaged one; rebuild "
             "with 'neko-plugin build' to refresh its metadata: path={}",

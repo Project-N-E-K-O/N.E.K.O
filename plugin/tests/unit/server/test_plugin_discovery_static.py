@@ -829,3 +829,37 @@ def test_metadata_without_a_file_list_is_refused(tmp_path: Path) -> None:
     assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
         "没有文件清单的元数据仍被接受，那道确定性判据就整个静默失效了"
     )
+
+
+def test_a_malformed_file_list_is_refused(tmp_path: Path) -> None:
+    """A malformed file list must be refused, whatever shape it takes.
+
+    This pins behaviour, not implementation: the previous ``str()`` coercion
+    rejected every case below too, because the comparison failed. Mutating the
+    explicit type check away therefore does **not** turn this red, and no
+    honest mutation would — the only input that separates the two is a file
+    literally named ``17`` paired with the JSON number ``17``, which is
+    contorting the test to fit the guard rather than testing anything worth
+    protecting.
+
+    The type check still earns its place by stating the contract for a file
+    that arrives from a third-party package (coderabbit); this test guards the
+    outcome that actually matters.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    good_names = list(payload["source_files"])
+
+    for broken in ("not-a-list", {"a": 1}, good_names + [17], [None]):
+        payload["source_files"] = broken
+        meta_path.write_text(json.dumps(payload), encoding="utf-8")
+        assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+            f"畸形的文件清单被接受了：{broken!r}"
+        )
+
+    payload["source_files"] = good_names
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None, (
+        "前提没成立：合法清单本来就该通过"
+    )
