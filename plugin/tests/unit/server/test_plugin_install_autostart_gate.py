@@ -554,3 +554,25 @@ def test_uninstalling_clears_the_pending_record() -> None:
     assert "clear_autostart_pending" in source, (
         "卸载没有清掉待批准记录：恢复出来的内置插件会被一条属于已删除代码的记录拦住"
     )
+
+
+def test_a_failed_rollback_keeps_the_override_gated() -> None:
+    """Restoring approval is conditional on the override actually being gone.
+
+    A rollback can fail to delete the user directory — the file is in use, the
+    permission is wrong, the disk is bad. The third-party source is then still
+    on disk as the effective source, and restoring approval would let it run at
+    the next startup before the user ever approved it (greptile). The condition
+    is what is on disk, not what we intended.
+
+    Mutation: restore approval on ``override_was_approved`` alone.
+    """
+    import inspect
+
+    source = inspect.getsource(cli_service.PluginCliService.install_builtin_override)
+    assert "override_removed" in source, (
+        "回滚失败时没有检查覆盖是否真的消失，残留的第三方源会绕过批准闸"
+    )
+    assert "if override_was_approved and override_removed:" in source, (
+        "恢复批准的条件没有把「覆盖真的没留在盘上」算进去"
+    )

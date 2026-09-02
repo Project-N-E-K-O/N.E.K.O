@@ -805,7 +805,11 @@ class PluginCliService:
                 start=source_switch.start_plugin_for_source_switch,
             )
         except BaseException:
-            if override_was_approved:
+            # 只有覆盖真的没留在盘上时才恢复批准。回滚可能删不掉用户目录（占用、
+            # 权限、坏盘），那种情况下第三方源还在，恢复批准等于让它在下次开机
+            # 直接跑起来（greptile）。所以看盘不看意图：目录还在就保持拦截。
+            override_removed = not await asyncio.to_thread(target_dir.exists)
+            if override_was_approved and override_removed:
                 await asyncio.to_thread(clear_autostart_pending, plan.plugin_id)
             raise
         finally:
