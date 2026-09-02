@@ -541,6 +541,27 @@ class PluginCliService:
                 details=asdict(plan),
             )
 
+        # 目标目录里只有 config/data/cache、连 plugin.toml 都没有时，install_plan
+        # 给的是 reinstall——而这条替换出口按定义不登记待批准。可那里从来没装过
+        # 插件代码：这一次是**全新**把可执行代码放进去，默认 enabled/auto_start
+        # 会让它在下次开机自己跑起来，用户一次都没启动过（codex）。所以按全新安装
+        # 处理，闸设在提升之前。
+        manifestless_gate_restore = False
+        if plan.manifestless_state:
+            manifestless_gate_restore = await asyncio.to_thread(
+                is_autostart_approved, plan.plugin_id
+            )
+            if not await asyncio.to_thread(mark_autostart_pending, plan.plugin_id):
+                raise ServerDomainError(
+                    code="PLUGIN_AUTOSTART_GATE_UNAVAILABLE",
+                    message=(
+                        "cannot record the plugin as awaiting approval; refusing "
+                        "to install code that would autostart unapproved"
+                    ),
+                    status_code=500,
+                    details={"plugin_id": plan.plugin_id},
+                )
+
         manual_manager: InstallSourceManager | None = None
         manual_entry: LockEntry | None = None
         expected_manual_snapshot = ""
@@ -664,6 +685,20 @@ class PluginCliService:
                 ),
             )
         except replacement_transaction.ReplacePluginError as exc:
+            if manifestless_gate_restore and not await asyncio.to_thread(
+                (target_dir / "plugin.toml").exists
+            ):
+                # 和别处同一条判据：看盘不看意图。manifest 还在说明代码留在盘上了，
+                # 那就保持拦截；真的回滚干净了才把批准位还回去。
+                if not await asyncio.to_thread(
+                    clear_autostart_pending, plan.plugin_id
+                ):
+                    logger.error(
+                        "manifestless replacement rollback could not restore the "
+                        "autostart approval for plugin_id={}; it must be started "
+                        "once by hand",
+                        plan.plugin_id,
+                    )
             source_restored = True
             if manual_entry is not None and source_write_attempted:
                 try:

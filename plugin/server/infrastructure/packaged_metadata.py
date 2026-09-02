@@ -374,6 +374,39 @@ def _coerce_entry_methods(raw: object) -> dict[str, str]:
     }
 
 
+def _tables_are_well_formed(raw: Mapping[str, object]) -> bool:
+    """Whether the v3 tables are the shapes v3 promises.
+
+    An empty ``handlers`` mapping is a real answer — a background-only plugin
+    registers nothing — and the start path now trusts it instead of rescanning.
+    That makes the difference between "empty" and "malformed" load-bearing:
+    coercing a missing or non-object table into an empty one would let a broken
+    package install *no* handlers while its ``entries`` advertise tools, leaving
+    the plugin running with nothing dispatchable (codex). v3 always writes all
+    three tables, so anything else is a package to fall back on, not to believe.
+    """
+    handlers = raw.get("handlers")
+    entry_methods = raw.get("entry_methods")
+    entries = raw.get("entries")
+    if not isinstance(handlers, Mapping):
+        return False
+    if not isinstance(entry_methods, Mapping):
+        return False
+    if not isinstance(entries, list):
+        return False
+    if any(
+        not isinstance(key, str) or not isinstance(value, Mapping)
+        for key, value in handlers.items()
+    ):
+        return False
+    if any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in entry_methods.items()
+    ):
+        return False
+    return all(isinstance(item, Mapping) for item in entries)
+
+
 def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
     """Load and validate ``plugin.meta.json``, or ``None`` if unusable.
 
@@ -446,6 +479,14 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
             meta_path,
             packaged_sdk,
             SDK_VERSION,
+        )
+        return None
+
+    if not _tables_are_well_formed(raw):
+        logger.warning(
+            "packaged plugin metadata has malformed entry tables, falling back "
+            "to manifest: path={}",
+            meta_path,
         )
         return None
 

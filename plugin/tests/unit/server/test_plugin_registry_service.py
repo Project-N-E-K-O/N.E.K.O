@@ -39,6 +39,9 @@ def _write_packaged_metadata_fixture(plugin_dir: Path, *, entry_ids: list[str]) 
             }
             for entry_id in entry_ids
         ],
+        # v3 一定会写这三张表，缺哪张都算包坏了。
+        "handlers": {},
+        "entry_methods": {},
     }
     (plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME).write_text(
         json.dumps(payload), encoding="utf-8"

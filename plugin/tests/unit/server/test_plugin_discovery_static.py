@@ -153,6 +153,9 @@ def _write_plugin(tmp_path: Path, *, entries: list[dict], sdk_version: str | Non
             else packaged_metadata.build_environment()
         ),
         "entries": entries,
+        # v3 一定会写这三张表，缺哪张都算包坏了。
+        "handlers": {},
+        "entry_methods": {},
     }
     (plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME).write_text(
         json.dumps(payload), encoding="utf-8"
@@ -1195,3 +1198,63 @@ def test_a_packaged_plugin_with_no_entries_still_skips_the_scan(
         "模块级副作用跟着做两遍"
     )
     assert recovered.handlers == {}
+
+
+def test_a_malformed_handler_table_is_refused(tmp_path: Path) -> None:
+    """"Empty" and "malformed" must not collapse into the same answer.
+
+    Now that an empty ``handlers`` mapping is trusted as an authoritative "this
+    plugin registers nothing", coercing a missing or non-object table into an
+    empty one would let a broken package start a plugin with its tools
+    advertised in ``entries`` but nothing dispatchable behind them (codex).
+
+    Mutation: coerce the tables instead of validating them.
+    """
+    cases = [
+        ("handlers", None, "missing"),
+        ("handlers", [], "list"),
+        ("handlers", {"demo.go": "not-a-mapping"}, "string value"),
+        ("entry_methods", 5, "int"),
+        ("entry_methods", {"go": 1}, "non-string value"),
+        ("entries", {}, "mapping instead of list"),
+    ]
+    for index, (field, value, label) in enumerate(cases):
+        plugin_dir = _write_plugin(tmp_path / f"case{index}", entries=[{"id": "go"}])
+        meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        payload.setdefault("handlers", {})
+        payload.setdefault("entry_methods", {})
+        if value is None:
+            payload.pop(field, None)
+        else:
+            payload[field] = value
+        meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+            f"{field} 是 {label} 却被当成合法的空表：插件会带着一份广告了工具、"
+            "却一个 handler 都注册不上的元数据跑起来"
+        )
+
+
+def test_every_pruned_directory_is_one_packaging_drops(tmp_path: Path) -> None:
+    """The fingerprint may only skip what no package can contain.
+
+    ``SOURCE_IGNORED_DIRS`` is justified entirely by "packaging never ships
+    these", and that justification is only true as long as both pipelines
+    actually exclude them. ``.ruff_cache`` sat in the ignore set while neither
+    rule set excluded it, so it shipped inside packages and stayed outside every
+    fingerprint (codex). Rather than re-checking by hand, this pins the subset
+    relation.
+
+    Mutation: put a name in ``SOURCE_IGNORED_DIRS`` that packaging ships.
+    """
+    from plugin.neko_plugin_cli.core import build_rules
+    from plugin.neko_plugin_cli.public import pack_rules
+
+    build_excluded = build_rules._DEFAULT_EXCLUDE_DIR_NAMES
+    pack_excluded = pack_rules._DEFAULT_EXCLUDE_DIR_NAMES
+    shipped = packaged_metadata.SOURCE_IGNORED_DIRS - (build_excluded & pack_excluded)
+    assert not shipped, (
+        f"这些目录会被打进包，却不进指纹也不让整棵树失效：{sorted(shipped)}。"
+        "要么两条打包管线都排除它们，要么把它们移进 SOURCE_UNFINGERPRINTABLE_DIRS"
+    )

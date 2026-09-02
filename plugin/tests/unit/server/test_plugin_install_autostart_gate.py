@@ -1387,3 +1387,46 @@ def test_a_deleted_stale_metadata_leaves_the_staged_list(tmp_path: Path) -> None
     assert staged_files == [other, written], (
         f"成功写出的元数据没有被记进清单：{staged_files}"
     )
+
+
+def test_a_manifestless_state_replacement_is_gated() -> None:
+    """Putting code where there was none is a fresh install, not a replacement.
+
+    A directory holding only ``config``/``data``/``cache`` and no
+    ``plugin.toml`` makes ``build_install_plan`` return ``reinstall``, so it
+    travels the replacement exit — which deliberately skips the gate because a
+    replacement takes over a plugin the user already runs. That reasoning does
+    not hold here: no plugin code was ever in that directory, so the default
+    enabled/auto_start settings would run brand-new third-party code at the next
+    startup without the user having started it (codex).
+
+    The ordering half stays a source check — driving the whole replacement
+    transaction would need the entire upgrade stack. The durability half is
+    covered behaviourally by ``test_mark_reports_whether_the_gate_is_durable``.
+
+    Mutation: drop the ``plan.manifestless_state`` branch.
+    """
+    import inspect
+
+    source = inspect.getsource(cli_service.PluginCliService.install)
+    gate_at = source.find("if plan.manifestless_state:")
+    mark_at = source.find("mark_autostart_pending, plan.plugin_id")
+    replace_at = source.find("replacement_transaction.replace_plugin(")
+    assert -1 not in (gate_at, mark_at, replace_at), (
+        "无 manifest 的遗留状态目录没有过闸：那里从没装过插件代码，这次是全新"
+        "把可执行代码放进去，默认设置会让它在下次开机自己跑起来"
+    )
+    assert gate_at < mark_at < replace_at, (
+        "闸设在提升之后就晚了——代码已经在盘上，拒绝也收不回来"
+    )
+    assert "PLUGIN_AUTOSTART_GATE_UNAVAILABLE" in source, (
+        "登记写盘失败时没有拒绝，等于放一份没有待批准记录的第三方代码上盘"
+    )
+    restore_at = source.find("clear_autostart_pending, plan.plugin_id")
+    manifest_check_at = source.find('(target_dir / "plugin.toml").exists')
+    assert -1 not in (restore_at, manifest_check_at), (
+        "回滚没有还原批准位，或者还原时没看盘"
+    )
+    assert manifest_check_at < restore_at, (
+        "先还原再看盘：代码留在盘上时批准位已经还回去了"
+    )
