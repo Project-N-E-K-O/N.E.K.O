@@ -979,15 +979,28 @@ def _move_autostart_gate_to_runtime_id(
     if is_autostart_approved(declared_plugin_id):
         return
     if not mark_autostart_pending(runtime_plugin_id):
-        # 记不上就别把原来那条清掉：宁可留在声明 id 上（可能误伤同 id 的插件），
-        # 也不能两边都没有记录、让这份新代码直接自启。
+        # 记不上就不能把这条改名记录发布出去。留在声明 id 上等于没拦住：注册用的
+        # 和自启动筛选看的都是运行时 id，那边没有记录就是"已批准"，这份从没被启动
+        # 过的新代码会在下次开机自己跑起来（coderabbit）。抛出去，让这一个插件这轮
+        # 注册失败——刷新循环按记录逐个兜底，其它插件不受影响。
         logger.error(
             "could not move the pending approval from {} to its runtime id {}; "
-            "leaving it under the declared id",
+            "refusing to register the renamed plugin",
             declared_plugin_id,
             runtime_plugin_id,
         )
-        return
+        raise ServerDomainError(
+            code="PLUGIN_AUTOSTART_GATE_UNAVAILABLE",
+            message=(
+                "cannot record the renamed plugin as awaiting approval; refusing "
+                "to register code that would autostart unapproved"
+            ),
+            status_code=500,
+            details={
+                "plugin_id": declared_plugin_id,
+                "runtime_plugin_id": runtime_plugin_id,
+            },
+        )
     if not clear_autostart_pending(declared_plugin_id):
         logger.error(
             "pending approval moved to {} but the record under {} could not be "

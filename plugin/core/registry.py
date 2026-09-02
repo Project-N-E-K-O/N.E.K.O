@@ -540,7 +540,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     if handlers_updated:
         state.invalidate_snapshot_cache("handlers")
 
-    entries = conf.get("entries") or pdata.get("entries") or []
+    entries = _effective_entries(conf, pdata)
     for ent in entries:
         try:
             eid = ent.get("id") if isinstance(ent, dict) else str(ent)
@@ -698,6 +698,21 @@ def _router_entry_preview(
     return preview
 
 
+def _effective_entries(conf: dict, pdata: dict) -> Any:
+    """The ``entries`` table the effective configuration declares.
+
+    Selected by key presence, not by truthiness. An overlay that sets
+    ``entries = []`` is removing them, and ``deep_merge`` keeps that empty list;
+    reading it as "no entries table here" falls through to the manifest and
+    shows the user the very entries their configuration removed (coderabbit).
+    """
+    for table in (conf, pdata):
+        if isinstance(table, dict) and "entries" in table:
+            value = table["entries"]
+            return value if isinstance(value, (list, dict)) else []
+    return []
+
+
 def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> List[Dict[str, Any]]:
     """Extract entry metadata for UI visibility without registering event handlers.
 
@@ -842,7 +857,7 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
         pass
 
     # 2) Config-specified entries (conf/pdata)
-    entries = conf.get("entries") or pdata.get("entries") or []
+    entries = _effective_entries(conf, pdata)
     for ent in entries:
         try:
             if isinstance(ent, dict):

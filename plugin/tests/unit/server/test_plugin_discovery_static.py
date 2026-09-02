@@ -1338,3 +1338,31 @@ def test_metadata_without_a_valid_digest_is_refused(tmp_path: Path) -> None:
         assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
             f"source_sha256={bad!r} 也被接受了：这份元数据从头到尾没做过内容校验"
         )
+
+
+def test_an_emptied_entry_table_hides_the_manifest_entries(tmp_path: Path) -> None:
+    """Removing entries must actually remove them from what the UI shows.
+
+    Detecting the override was only half of it: the fallback path selected the
+    table with ``conf.get("entries") or pdata.get("entries")``, so an explicit
+    empty list fell through to the manifest and the registry kept advertising
+    the entries the configuration had removed (coderabbit).
+
+    Mutation: go back to the ``or`` chain in ``_effective_entries``.
+    """
+    from plugin.core.registry import _extract_entries_preview
+
+    manifest_entries = [{"id": "go", "description": "from the manifest"}]
+    stub = type("Stub", (), {})
+
+    kept = _extract_entries_preview("demo", stub, {}, {"entries": manifest_entries})
+    assert [entry["id"] for entry in kept] == ["go"], (
+        "前提没成立：manifest 里声明的入口本来就该显示出来"
+    )
+
+    removed = _extract_entries_preview(
+        "demo", stub, {"entries": []}, {"entries": manifest_entries}
+    )
+    assert removed == [], (
+        f"配置把入口删空了，注册表还在展示 manifest 里那份：{removed}"
+    )

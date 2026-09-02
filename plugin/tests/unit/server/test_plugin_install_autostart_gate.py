@@ -1604,3 +1604,53 @@ def test_packaging_parses_the_manifest_without_local_overlays(
         plugin_dir / "plugin.toml", set(), get_logger("test")
     )
     assert consulted, "前提没成立：默认路径本来就该读用户覆盖"
+
+
+def test_a_failed_gate_move_refuses_to_register_the_rename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gate that could not be written must stop the plugin being published.
+
+    Leaving the record under the declared id and registering anyway is the same
+    as no gate at all: registration and the autostart filter both use the
+    runtime id, and no record there means approved (coderabbit). The refresh
+    loop catches ``ServerDomainError`` per record, so refusing costs this one
+    plugin a failed registration, not the whole refresh.
+
+    Mutation: log and return instead of raising.
+    """
+    from plugin.server.application.plugins import registry_service
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.infrastructure import autostart_approvals
+
+    store: dict[str, object] = {}
+
+    class _WriteOnceConfigManager:
+        def load_json_config(self, name):
+            if name not in store:
+                raise FileNotFoundError(name)
+            return store[name]
+
+        def save_json_config(self, name, payload):
+            if store.get("_sealed"):
+                raise OSError("disk full")
+            store[name] = payload
+
+    import utils.config_manager as config_manager_module
+
+    monkeypatch.setattr(
+        config_manager_module, "get_config_manager", _WriteOnceConfigManager
+    )
+    autostart_approvals._reset_cache_for_testing()
+    try:
+        assert autostart_approvals.mark_autostart_pending("demo")
+        store["_sealed"] = True
+
+        with pytest.raises(ServerDomainError) as excinfo:
+            registry_service._move_autostart_gate_to_runtime_id("demo", "demo_1")
+        assert excinfo.value.code == "PLUGIN_AUTOSTART_GATE_UNAVAILABLE"
+        assert not autostart_approvals.is_autostart_approved("demo"), (
+            "搬迁失败之后声明 id 上那条记录也丢了"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()
