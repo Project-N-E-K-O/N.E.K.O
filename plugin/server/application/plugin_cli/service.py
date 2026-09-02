@@ -367,7 +367,18 @@ class PluginCliService:
             # 上传安装（upload_and_install）自己登记来源、不走
             # _record_requested_install_source，把钩子放在那里等于对上传来的
             # 插件完全不生效——而那正是最需要这道闸的一条路（greptile）。
-            await asyncio.to_thread(_mark_new_install_awaiting_autostart, result)
+            #
+            # 这里的插件已经落盘了，不像覆盖路径那样还能拒绝。所以登记失败时不
+            # 假装无事发生：把它挂进结果里，让调用方看得见"这个插件没被拦住"
+            # （greptile）。
+            unrecorded = await asyncio.to_thread(
+                _mark_new_install_awaiting_autostart, result
+            )
+            if unrecorded:
+                result["autostart_gate_warning"] = (
+                    "could not record as awaiting approval: "
+                    + ", ".join(sorted(unrecorded))
+                )
             return await self._record_requested_install_source(
                 install_result=result,
                 package=package,
@@ -2590,7 +2601,7 @@ def _installed_manifest_plugin_id(target_dir: object) -> str:
     return str(plugin_table.get("id") or "").strip()
 
 
-def _mark_new_install_awaiting_autostart(install_result: dict) -> None:
+def _mark_new_install_awaiting_autostart(install_result: dict) -> list[str]:
     """Withhold autostart from a plugin the user has installed but never run.
 
     Call this only from the fresh-install path. "Is this plugin new?" is decided
@@ -2606,9 +2617,10 @@ def _mark_new_install_awaiting_autostart(install_result: dict) -> None:
     """
     from plugin.server.infrastructure.autostart_approvals import mark_autostart_pending
 
+    unrecorded: list[str] = []
     installed = install_result.get("installed_plugins")
     if not isinstance(installed, list):
-        return
+        return unrecorded
     for item in installed:
         if not isinstance(item, dict):
             continue
@@ -2624,7 +2636,9 @@ def _mark_new_install_awaiting_autostart(install_result: dict) -> None:
             plugin_id = Path(str(target_dir)).name
         if not plugin_id:
             continue
-        mark_autostart_pending(plugin_id)
+        if not mark_autostart_pending(plugin_id):
+            unrecorded.append(plugin_id)
+    return unrecorded
 
 
 def _record_install_source_for_install_result(

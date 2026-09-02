@@ -626,3 +626,43 @@ def test_uninstall_fails_when_the_approval_record_cannot_be_cleared() -> None:
         "卸载忽略了批准清除的失败，会带着一条过时记录报成功"
     )
     assert "PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED" in source
+
+
+@pytest.mark.asyncio
+async def test_a_lost_install_gate_is_reported_in_the_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The plain install path cannot refuse — but it must not stay silent.
+
+    By the time the gate runs the plugin is already on disk, so unlike the
+    override path there is nothing to refuse. If the pending record cannot be
+    written, the next startup treats the missing record as approval and the
+    plugin runs before the user ever started it, so the result has to say so
+    (greptile).
+
+    Mutation: discard ``_mark_new_install_awaiting_autostart``'s return value.
+    """
+    monkeypatch.setattr(
+        cli_service, "_mark_new_install_awaiting_autostart", lambda result: ["stuck"]
+    )
+    monkeypatch.setattr(cli_service, "get_install_source_manager", lambda: None)
+
+    install_result = {"installed_plugins": [{"target_plugin_id": "stuck"}]}
+    service = cli_service.PluginCliService()
+
+    async def _plan_install(**_kwargs):
+        return {"action": "install"}
+
+    monkeypatch.setattr(service, "plan_install", _plan_install)
+    monkeypatch.setattr(service, "_install_sync", lambda **_kwargs: install_result)
+
+    async def _record(*, install_result, package, source):
+        return install_result
+
+    monkeypatch.setattr(service, "_record_requested_install_source", _record)
+
+    result = await service.install(package="whatever.neko-plugin")
+
+    assert "stuck" in str(result.get("autostart_gate_warning", "")), (
+        f"登记失败没有出现在安装结果里，调用方会以为这个插件被拦住了：{result}"
+    )
