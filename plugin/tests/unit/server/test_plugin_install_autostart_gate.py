@@ -368,9 +368,16 @@ def test_metadata_is_obtained_before_the_host_process_starts(tmp_path: Path) -> 
     source = inspect.getsource(lifecycle_service.PluginLifecycleService.start_plugin)
     metadata_at = source.find("_read_packaged_isolated_metadata")
     host_start_at = source.find("_start_host_with_timeout(")
-    assert metadata_at != -1 and host_start_at != -1, "前提没成立：两个调用点都要在"
+    clamp_at = source.find("startup_timeout_value = _clamp_step_timeout(")
+    assert -1 not in (metadata_at, host_start_at, clamp_at), "前提没成立：三个点都要在"
     assert metadata_at < host_start_at, (
         "元数据 import 排在 host 启动之后，会和插件进程自己的 import 并发"
+    )
+    # 取元数据自己要花时间（最多一个 scan_timeout），所以启动上限必须在它之后再
+    # 算——算在前面的话，等真正启动时那个上限已经是过期快照，reload 的启动阶段
+    # 会比设计值多出"每个插件一次扫描"。
+    assert metadata_at < clamp_at < host_start_at, (
+        "启动超时的钳位没有夹在取元数据和启动之间，算出来的是过期预算"
     )
 
 

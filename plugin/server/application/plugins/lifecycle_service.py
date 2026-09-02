@@ -1049,20 +1049,6 @@ class PluginLifecycleService:
                         error_type="DependencyCheckFailed",
                     )
 
-            if start_deadline is not None and startup_timeout_value is not None:
-                # reload-all 把本轮的截止期压进来。只在启动**开始前**检查一次是不
-                # 够的：一个在截止期前一瞬开始的启动，之后仍会一路等到它自己的
-                # startup timeout，于是整轮 reload 照样冲破对外承诺的墙钟，前端早已
-                # 放弃而插件状态还在被改（codex / CodeRabbit / Greptile）。
-                #
-                # 压进去而不是套 asyncio.wait_for：start_plugin 带
-                # @serialized_plugin_operation，那个包装器拿到锁之后会屏蔽取消，
-                # 外面套超时只会把一次真实结果报成超时（见 stop 那边的说明）。
-                startup_timeout_value = _clamp_step_timeout(
-                    startup_timeout_value,
-                    _remaining_step_budget(start_deadline),
-                    floor=_MIN_CLAMPED_START_TIMEOUT,
-                )
             # 元数据在 host 起来**之前**取。取法有两种：包里带了就直接读，没有才
             # 起一次隔离 worker 去 import。
             #
@@ -1101,6 +1087,28 @@ class PluginLifecycleService:
                     pdata=pdata,
                     python_requirement_paths=python_requirement_paths,
                     timeout=scan_timeout,
+                )
+
+            if start_deadline is not None and startup_timeout_value is not None:
+                # reload-all 把本轮的截止期压进来。只在启动**开始前**检查一次是不
+                # 够的：一个在截止期前一瞬开始的启动，之后仍会一路等到它自己的
+                # startup timeout，于是整轮 reload 照样冲破对外承诺的墙钟，前端早已
+                # 放弃而插件状态还在被改（codex / CodeRabbit / Greptile）。
+                #
+                # 压进去而不是套 asyncio.wait_for：start_plugin 带
+                # @serialized_plugin_operation，那个包装器拿到锁之后会屏蔽取消，
+                # 外面套超时只会把一次真实结果报成超时（见 stop 那边的说明）。
+                #
+                # ⚠️ 必须算在取元数据**之后**。取元数据现在排在 host 启动前面，它自己
+                # 最多要花一个 scan_timeout；在它前面算出来的上限，等真正调
+                # _start_host_with_timeout 时已经是过期快照，于是启动阶段的墙钟会比
+                # 设计值多出"每个插件一次扫描"——正是这段钳位本来要防的那件事
+                # （coderabbit）。_remaining_step_budget 按绝对截止期算，挪到这里重算
+                # 就是对的。
+                startup_timeout_value = _clamp_step_timeout(
+                    startup_timeout_value,
+                    _remaining_step_budget(start_deadline),
+                    floor=_MIN_CLAMPED_START_TIMEOUT,
                 )
 
             startup_result = await _start_host_with_timeout(
