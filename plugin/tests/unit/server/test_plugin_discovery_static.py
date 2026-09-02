@@ -1395,11 +1395,12 @@ def test_a_lying_byte_total_is_refused_not_re_hashed(tmp_path: Path) -> None:
     )
     try:
         assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
-            "字节数和自己刚验过的那棵树对不上还被接受了"
+            "字节数和这棵树对不上还被接受了"
         )
         assert packaged_metadata.read_packaged_metadata(plugin_dir) is None
-        assert len(hashed) == 2, (
-            "前提没成立：这个用例要的就是尺寸不符每次都触发整树哈希"
+        assert hashed == [], (
+            "拒绝发生在整树哈希之后：拦住的是结论，拦不住开销——而这条意见针对的"
+            f"就是开销：{hashed}"
         )
     finally:
         packaged_metadata.compute_source_sha256 = real_hash

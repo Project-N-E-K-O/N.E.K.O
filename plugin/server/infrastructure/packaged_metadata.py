@@ -577,8 +577,20 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
             meta_path,
         )
         return None
-    size_changed = packaged_bytes != summary.total_bytes
-    if newest_source_ns > meta_stat.st_mtime_ns or size_changed:
+    if packaged_bytes != summary.total_bytes:
+        # 尺寸对不上就到此为止，别再往下走整树哈希。这份元数据要么在描述自己时
+        # 就不自洽，要么源码真的变了——两种情况都该回落 manifest，而它们都不值得
+        # 每次刷新在持锁状态下重读一遍整棵树（包体上限 1 GiB）。拒绝放在慢路径
+        # **之前**，否则这道闸拦住的是结论、拦不住开销（coderabbit）。
+        logger.info(
+            "packaged plugin metadata does not match its tree's byte total, "
+            "falling back to manifest: path={}, stated={}, actual={}",
+            meta_path,
+            packaged_bytes,
+            summary.total_bytes,
+        )
+        return None
+    if newest_source_ns > meta_stat.st_mtime_ns:
         # 时间戳只是快路径，不是判据。git 不保留 mtime，所以一份全新 clone 里源码
         # 和生成物的时间戳关系是任意的——只看 mtime 的话，内置插件会在每台新机器上
         # 集体退化成占位。所以时间戳说"可能过时"时再真算一次内容哈希来定夺；这条
@@ -597,20 +609,6 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
                 "plugin sources changed since packaging; rebuild with "
                 "'neko-plugin build' to refresh its metadata: path={}",
                 plugin_dir,
-            )
-            return None
-        if size_changed:
-            # 摘要对得上说明内容就是打包时那份，那 source_bytes 只能是错的——
-            # 这份元数据在描述自己时就不自洽。不拒的话，尺寸不符每次刷新都成立，
-            # 每次都要在持锁状态下重算整棵树的哈希（包体上限 1 GiB），一个不含
-            # 任何可执行代码的包就能把注册表焊死（codex）。
-            logger.warning(
-                "packaged plugin metadata states a source byte total that does "
-                "not match its own verified tree, falling back to manifest: "
-                "path={}, stated={}, actual={}",
-                meta_path,
-                packaged_bytes,
-                summary.total_bytes,
             )
             return None
         # 哈希刚刚证明这棵树就是打包时那棵，把这个结论盖在 meta.json 的时间戳上。
