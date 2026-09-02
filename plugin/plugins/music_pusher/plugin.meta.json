@@ -765,6 +765,7 @@
       "timeout": null
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "create_schedule_task": "create_schedule_task",
     "delete_music_item": "delete_music_item",

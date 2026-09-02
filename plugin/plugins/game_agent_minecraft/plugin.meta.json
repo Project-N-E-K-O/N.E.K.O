@@ -93,6 +93,7 @@
       "timeout": null
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "game_agent_reload_config": "game_agent_reload_config",
     "game_agent_status": "game_agent_status",

@@ -2837,6 +2837,7 @@
       "timeout": null
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "get_config": "get_config_entry",
     "update_config": "update_config_entry"

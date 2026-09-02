@@ -25,9 +25,15 @@ from plugin.core.registry import (
     _resolve_plugin_id_conflict,
     register_plugin,
 )
-from plugin.server.infrastructure.autostart_approvals import is_autostart_approved
+from plugin.server.infrastructure.autostart_approvals import (
+    clear_autostart_pending,
+    is_autostart_approved,
+    mark_autostart_pending,
+)
 from plugin.server.infrastructure.packaged_metadata import (
     PLACEHOLDER_INPUT_SCHEMA,
+    PackagedPluginMetadata,
+    entries_config_digest,
     read_packaged_metadata,
 )
 from plugin.core.state import state
@@ -542,21 +548,26 @@ def _normalize_entry_input_schema(entry: Mapping[str, object]) -> dict[str, obje
     return result
 
 
-def config_declares_entries(conf: object, pdata: object) -> bool:
-    """Whether the effective config carries its own ``entries`` table.
+def config_overrides_packaged_entries(
+    conf: object, pdata: object, packaged: PackagedPluginMetadata
+) -> bool:
+    """Whether this machine's configuration changed the plugin's entry table.
 
-    Packaging reads the author's ``plugin.toml``; it cannot see the user's
-    runtime configuration or the profile they activated. When those declare
-    entries of their own, the packaged list describes a different plugin than
-    the one this machine would run (codex).
+    Packaging reads the staged ``plugin.toml``; it cannot see the user's runtime
+    configuration or the profile they activated. When those change ``entries``,
+    the packaged list describes a different plugin than the one this machine
+    would run (codex).
+
+    The comparison is against what the package was built from, not against the
+    mere presence of a table. Presence was wrong in both directions: a plugin
+    that declares ``entries`` in its own manifest looked permanently overridden
+    and lost its build-time schemas, and an overlay setting ``entries = []`` to
+    remove them looked like no overlay at all (codex).
 
     Lives here rather than in the lifecycle service because both the discovery
     preview and the start path need it, and the import only goes one way.
     """
-    for table in (conf, pdata):
-        if isinstance(table, Mapping) and table.get("entries"):
-            return True
-    return False
+    return entries_config_digest(conf, pdata) != packaged.entries_config_sha256
 
 
 def _packaged_entries_preview(
@@ -572,7 +583,7 @@ def _packaged_entries_preview(
     if (
         packaged is not None
         and packaged.entries
-        and not config_declares_entries(ctx.conf, ctx.pdata)
+        and not config_overrides_packaged_entries(ctx.conf, ctx.pdata, packaged)
     ):
         return [_normalize_entry_input_schema(entry) for entry in packaged.entries]
     # 没有打包期元数据时，manifest 里静态声明的 entries 仍是一条完整通路——它只是
@@ -816,6 +827,8 @@ def _apply_discovery_record_sync(
             details={"plugin_id": record.plugin_id},
         )
 
+    _move_autostart_gate_to_runtime_id(record.plugin_id, runtime_plugin_id)
+
     plugin_meta = _build_plugin_meta(
         runtime_plugin_id,
         {
@@ -942,6 +955,46 @@ def _collect_missing_plugin_ids_sync(existing_snapshot: dict[str, dict[str, obje
         if not config_path.exists():
             missing_ids.add(plugin_id)
     return missing_ids
+
+
+def _move_autostart_gate_to_runtime_id(
+    declared_plugin_id: str, runtime_plugin_id: str
+) -> None:
+    """Re-key a pending approval when the registry renames a plugin.
+
+    The install gate can only write the id the manifest declares; the runtime id
+    is decided here, and a second plugin declaring an id that is already taken
+    gets a suffix (``demo`` -> ``demo_1``). The autostart check asks about the
+    runtime id, so the record written at install time missed it entirely and the
+    freshly installed code was free to start itself (codex).
+
+    Moving rather than copying: the store is keyed by id, so a copy would leave
+    a record under ``demo`` that belongs to nobody — it would hold back whichever
+    plugin owns that id (one it may have earned long ago), and clearing it by
+    starting that plugin would silently approve this one. After the move each
+    record belongs to exactly one runtime plugin.
+    """
+    if not declared_plugin_id or declared_plugin_id == runtime_plugin_id:
+        return
+    if is_autostart_approved(declared_plugin_id):
+        return
+    if not mark_autostart_pending(runtime_plugin_id):
+        # 记不上就别把原来那条清掉：宁可留在声明 id 上（可能误伤同 id 的插件），
+        # 也不能两边都没有记录、让这份新代码直接自启。
+        logger.error(
+            "could not move the pending approval from {} to its runtime id {}; "
+            "leaving it under the declared id",
+            declared_plugin_id,
+            runtime_plugin_id,
+        )
+        return
+    if not clear_autostart_pending(declared_plugin_id):
+        logger.error(
+            "pending approval moved to {} but the record under {} could not be "
+            "cleared; the plugin holding that id may need one manual start",
+            runtime_plugin_id,
+            declared_plugin_id,
+        )
 
 
 def _get_autostart_plugin_ids_sync() -> list[str]:

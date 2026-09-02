@@ -633,6 +633,7 @@
       "timeout": null
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "add_app": "add_app",
     "export_apps": "export_apps",

@@ -185,6 +185,7 @@
       "timeout": null
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "add_reminder": "add_reminder",
     "bind_task": "bind_task",

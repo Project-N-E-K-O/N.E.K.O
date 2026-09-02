@@ -130,6 +130,7 @@
       "timeout": null
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "clear_music_u": "clear_music_u",
     "play_netease_music": "play_netease_music",

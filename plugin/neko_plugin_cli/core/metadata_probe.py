@@ -38,6 +38,7 @@ from typing import Any
 from plugin._types.version import SDK_VERSION
 from plugin.server.infrastructure.packaged_metadata import (
     build_environment,
+    entries_config_digest,
     PACKAGED_METADATA_FILENAME,
     PACKAGED_METADATA_SCHEMA_VERSION,
     compute_source_sha256,
@@ -82,7 +83,11 @@ def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
 
     logger = _load_logger()
     try:
-        ctx = _parse_single_plugin_config(config_path, set(), logger)
+        # 不带用户覆盖：这份元数据要发给别人，不能掺进作者机器上的 profile
+        # 和运行时配置（codex）。
+        ctx = _parse_single_plugin_config(
+            config_path, set(), logger, apply_user_overlays=False
+        )
     except Exception as exc:
         raise MetadataProbeError(
             f"plugin.toml could not be parsed: {type(exc).__name__}: {exc}"
@@ -126,6 +131,9 @@ def derive_plugin_metadata(plugin_dir: Path) -> dict[str, object]:
         "source_files": stat_summary.names,
         "source_bytes": stat_summary.total_bytes,
         "build_env": build_environment(),
+        # 打包时那份 manifest 声明的 entries 表；宿主拿它判断用户的覆盖有没有
+        # 动过入口表，而不是判断「存不存在这张表」。
+        "entries_config_sha256": entries_config_digest(ctx.conf, ctx.pdata),
         "entries": list(isolated.entries_preview),
         "handlers": dict(isolated.handlers),
         "entry_methods": dict(isolated.entry_methods),

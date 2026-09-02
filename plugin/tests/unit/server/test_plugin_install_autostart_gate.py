@@ -268,8 +268,12 @@ def test_packaging_probes_the_tree_it_ships(
         handlers: dict = {}
         entry_methods: dict = {}
 
-    def _record_ctx(config_path, processed, logger):
+    def _record_ctx(config_path, processed, logger, *, apply_user_overlays=True):
         probed.append(Path(config_path).parent)
+        # 打包必须不带用户覆盖，否则作者机器上的 profile 会被导出去。
+        assert apply_user_overlays is False, (
+            "打包期解析带上了用户覆盖：作者的 profile 会被写进发出去的元数据"
+        )
         return _Ctx()
 
     monkeypatch.setattr(
@@ -1430,3 +1434,173 @@ def test_a_manifestless_state_replacement_is_gated() -> None:
     assert manifest_check_at < restore_at, (
         "先还原再看盘：代码留在盘上时批准位已经还回去了"
     )
+
+
+def test_a_renamed_plugin_keeps_its_pending_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gate follows the plugin when the registry renames it.
+
+    Install can only write the id the manifest declares. When a second plugin
+    declares an id that is already taken, the registry runs it as ``demo_1`` —
+    and the autostart check asks about *that* id, so the record written at
+    install time missed it and the new code was free to start itself (codex).
+
+    Mutation: skip the move and leave the record under the declared id.
+    """
+    from plugin.server.application.plugins import registry_service
+    from plugin.server.infrastructure import autostart_approvals
+
+    store: dict[str, object] = {}
+
+    class _FakeConfigManager:
+        def load_json_config(self, name):
+            if name not in store:
+                raise FileNotFoundError(name)
+            return store[name]
+
+        def save_json_config(self, name, payload):
+            store[name] = payload
+
+    import utils.config_manager as config_manager_module
+
+    monkeypatch.setattr(
+        config_manager_module, "get_config_manager", _FakeConfigManager
+    )
+    autostart_approvals._reset_cache_for_testing()
+    try:
+        assert autostart_approvals.mark_autostart_pending("demo")
+
+        registry_service._move_autostart_gate_to_runtime_id("demo", "demo_1")
+
+        assert not autostart_approvals.is_autostart_approved("demo_1"), (
+            "改名之后新装的插件不再被拦：自启动检查问的是运行时 id，"
+            "而记录还留在声明 id 上"
+        )
+        assert autostart_approvals.is_autostart_approved("demo"), (
+            "记录是搬走不是复制：留一份在声明 id 上会拦住本来就拥有这个 id 的"
+            "那个插件，而清掉它又会顺手批准这一个"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()
+
+
+def test_the_gate_move_leaves_an_approved_plugin_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No pending record means nothing to move.
+
+    Mutation: mark the runtime id unconditionally.
+    """
+    from plugin.server.application.plugins import registry_service
+    from plugin.server.infrastructure import autostart_approvals
+
+    store: dict[str, object] = {}
+
+    class _FakeConfigManager:
+        def load_json_config(self, name):
+            if name not in store:
+                raise FileNotFoundError(name)
+            return store[name]
+
+        def save_json_config(self, name, payload):
+            store[name] = payload
+
+    import utils.config_manager as config_manager_module
+
+    monkeypatch.setattr(
+        config_manager_module, "get_config_manager", _FakeConfigManager
+    )
+    autostart_approvals._reset_cache_for_testing()
+    try:
+        registry_service._move_autostart_gate_to_runtime_id("demo", "demo_1")
+        assert autostart_approvals.is_autostart_approved("demo_1"), (
+            "声明 id 上根本没有待批准记录，却给运行时 id 记了一条：一次改名就能"
+            "把用户早就在用的插件拦下来"
+        )
+    finally:
+        autostart_approvals._reset_cache_for_testing()
+
+
+def test_the_gate_move_runs_before_registration() -> None:
+    """It has to happen where the runtime id is decided.
+
+    Mutation: move the call after ``state.plugins`` is written.
+    """
+    import inspect
+
+    from plugin.server.application.plugins import registry_service
+
+    source = inspect.getsource(registry_service._apply_discovery_record_sync)
+    resolve_at = source.find("runtime_plugin_id = target_plugin_id if source_replacement")
+    move_at = source.find("_move_autostart_gate_to_runtime_id(record.plugin_id")
+    meta_at = source.find("plugin_meta = _build_plugin_meta(")
+    assert -1 not in (resolve_at, move_at, meta_at), "注册路径上没有搬迁批准位"
+    assert resolve_at < move_at < meta_at, (
+        "搬迁必须在运行时 id 定下来之后、登记进注册表之前"
+    )
+
+
+def test_packaging_parses_the_manifest_without_local_overlays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The author's own profile must not travel inside the package.
+
+    ``_parse_single_plugin_config`` resolves the machine's runtime config and
+    activated profile for that plugin id. Producing distributable metadata
+    through it would export entry ids, schemas and handlers derived from the
+    author's private configuration, and consumers would trust them because the
+    source fingerprint still matches (codex).
+
+    Mutation: ignore ``apply_user_overlays`` and apply the overlay anyway.
+    """
+    from plugin.core import registry
+
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.toml").write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                'id = "demo"',
+                'entry = "main:Plugin"',
+                'name = "Demo"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    consulted: list[str] = []
+
+    def _resolver(*_args, **_kwargs):
+        consulted.append("profile")
+        return {"effective_config": {"plugin": {"id": "demo", "entry": "main:Plugin"}}}
+
+    monkeypatch.setattr(registry, "resolve_plugin_config_from_path", _resolver)
+    monkeypatch.setattr(
+        registry, "get_runtime_override", lambda _pid: consulted.append("enabled")
+    )
+    monkeypatch.setattr(
+        registry,
+        "get_runtime_auto_start_override",
+        lambda _pid: consulted.append("auto_start"),
+    )
+
+    from plugin.logging_config import get_logger
+
+    registry._parse_single_plugin_config(
+        plugin_dir / "plugin.toml",
+        set(),
+        get_logger("test"),
+        apply_user_overlays=False,
+    )
+    assert consulted == [], (
+        f"打包期解析读了这台机器上的用户覆盖：{consulted}——作者的 profile 会被"
+        "写进发出去的元数据，而源码指纹还是对得上的"
+    )
+
+    registry._parse_single_plugin_config(
+        plugin_dir / "plugin.toml", set(), get_logger("test")
+    )
+    assert consulted, "前提没成立：默认路径本来就该读用户覆盖"

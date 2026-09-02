@@ -464,6 +464,7 @@
       "timeout": null
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "add_server": "add_server",
     "call_tool": "call_tool",

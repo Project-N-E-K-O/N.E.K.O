@@ -42,7 +42,7 @@ from plugin.server.application.plugins.operation_lock import (
 )
 from plugin.server.application.plugins.registry_service import (
     PluginRegistryService,
-    config_declares_entries,
+    config_overrides_packaged_entries,
 )
 from plugin.server.application.plugins.installation_transactions import (
     UninstallOwnershipError,
@@ -166,13 +166,13 @@ def _read_packaged_isolated_metadata(
 
     Returns ``None`` when there is no usable metadata at all.
     """
-    if config_declares_entries(conf, pdata):
-        # 打包期读的是作者那份 plugin.toml，看不到用户的运行时配置/激活 profile。
-        # 一旦生效配置自带 entries 表，包里那份 handler 就不是这台机器上该注册的
-        # 那一套了（codex）。这种插件回落到真扫一次。
-        return None
     packaged = read_packaged_metadata(Path(config_path).parent)
     if packaged is None:
+        return None
+    if config_overrides_packaged_entries(conf, pdata, packaged):
+        # 打包期读的是暂存目录那份 plugin.toml，看不到用户的运行时配置/激活
+        # profile。生效配置一旦改过 entries 表，包里那份 handler 就不是这台机器上
+        # 该注册的那一套了（codex）。这种插件回落到真扫一次。
         return None
     if not packaged.built_in_this_environment:
         # 这一份是别的机器上 import 出来的结果。插件完全可以按 sys.platform 或

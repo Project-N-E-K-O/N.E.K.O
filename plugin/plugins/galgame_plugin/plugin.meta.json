@@ -1861,6 +1861,7 @@
       "timeout": null
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "galgame_agent_command": "galgame_agent_command",
     "galgame_apply_recommended_ocr_capture_profile": "galgame_apply_recommended_ocr_capture_profile",

@@ -128,6 +128,9 @@ class PackagedPluginMetadata:
     """Validated contents of one plugin's ``plugin.meta.json``."""
 
     entries: list[dict[str, object]] = field(default_factory=list)
+    # 打包时那份 plugin.toml 声明的 entries 表的摘要，用来判断用户的配置覆盖
+    # 有没有动过它。
+    entries_config_sha256: str = ""
     # 注册进 state.event_handlers 的那份元数据，以及 entry_id -> 方法名。
     # 启动一个插件本来要为这两样再 import 它一次——插件进程自己已经 import 过，
     # 那一次纯属重复（codex）。带上之后 start_plugin 只剩宿主进程那一次导入。
@@ -374,6 +377,29 @@ def _coerce_entry_methods(raw: object) -> dict[str, str]:
     }
 
 
+def entries_config_digest(conf: object, pdata: object) -> str:
+    """Digest of the ``entries`` table the effective configuration declares.
+
+    Packaging records this for the staged ``plugin.toml``; the host computes it
+    from the configuration a plugin would actually run under. Equal means no
+    overlay touched ``entries`` and the packaged metadata still describes this
+    machine.
+
+    Comparing digests rather than asking "does a table exist" fixes two mirror
+    errors (codex). A plugin that declares ``entries`` in its own manifest was
+    being treated as user-overridden, so it never got its build-time schemas and
+    re-imported on every start. And an overlay that sets ``entries = []`` to
+    remove them is a real override that a truthiness test reads as absence.
+    """
+    for table in (conf, pdata):
+        if isinstance(table, Mapping) and "entries" in table:
+            payload = json.dumps(
+                table["entries"], sort_keys=True, ensure_ascii=False, default=str
+            )
+            return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return ""
+
+
 def _tables_are_well_formed(raw: Mapping[str, object]) -> bool:
     """Whether the v3 tables are the shapes v3 promises.
 
@@ -388,6 +414,8 @@ def _tables_are_well_formed(raw: Mapping[str, object]) -> bool:
     handlers = raw.get("handlers")
     entry_methods = raw.get("entry_methods")
     entries = raw.get("entries")
+    if not isinstance(raw.get("entries_config_sha256"), str):
+        return False
     if not isinstance(handlers, Mapping):
         return False
     if not isinstance(entry_methods, Mapping):
@@ -501,6 +529,17 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
         return None
 
     packaged_sha = str(raw.get("source_sha256") or "")
+    if len(packaged_sha) != 64 or any(
+        char not in "0123456789abcdef" for char in packaged_sha
+    ):
+        # 缺了它或者写坏了，慢路径就没有可比的东西——而快路径（清单+尺寸+时间戳）
+        # 全过时，这份元数据会在从未做过任何内容校验的情况下被当成权威（codex）。
+        logger.warning(
+            "packaged plugin metadata has no valid source digest, falling back "
+            "to manifest: path={}",
+            meta_path,
+        )
+        return None
 
     # 先比文件清单，再比时间戳。清单是确定性的：增删文件一定改变它，而"删掉一个
     # 文件"在时间戳上只体现为父目录 mtime 变新——那要求它严格大于 meta.json 的
@@ -569,6 +608,7 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
     return PackagedPluginMetadata(
         built_in_this_environment=_environment_matches(raw.get("build_env")),
         entries=_coerce_entries(raw.get("entries")),
+        entries_config_sha256=str(raw.get("entries_config_sha256") or ""),
         handlers=_coerce_handlers(raw.get("handlers")),
         entry_methods=_coerce_entry_methods(raw.get("entry_methods")),
         sdk_version=packaged_sdk,

@@ -112,6 +112,7 @@
       "timeout": 30.0
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "search": "search",
     "search_summary": "search_summary"

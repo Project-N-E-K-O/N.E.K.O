@@ -156,6 +156,7 @@ def _write_plugin(tmp_path: Path, *, entries: list[dict], sdk_version: str | Non
         # v3 一定会写这三张表，缺哪张都算包坏了。
         "handlers": {},
         "entry_methods": {},
+        "entries_config_sha256": packaged_metadata.entries_config_digest({}, {}),
     }
     (plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME).write_text(
         json.dumps(payload), encoding="utf-8"
@@ -1258,3 +1259,82 @@ def test_every_pruned_directory_is_one_packaging_drops(tmp_path: Path) -> None:
         f"这些目录会被打进包，却不进指纹也不让整棵树失效：{sorted(shipped)}。"
         "要么两条打包管线都排除它们，要么把它们移进 SOURCE_UNFINGERPRINTABLE_DIRS"
     )
+
+
+def test_a_manifest_declared_entry_table_is_not_an_override(tmp_path: Path) -> None:
+    """A plugin declaring its own entries must still get its packaged schemas.
+
+    ``conf``/``pdata`` carry the *effective* configuration, which already
+    includes the package's own ``entries`` table. Testing for the presence of
+    that table labelled every such plugin as user-overridden: previews lost the
+    schemas derived at build time and every start re-imported the module
+    (codex). The comparison is against what the package was built from.
+
+    Mutation: go back to "does an entries table exist".
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    declared = {"go": {"description": "from the manifest"}}
+    payload["entries_config_sha256"] = packaged_metadata.entries_config_digest(
+        {"entries": declared}, {}
+    )
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    packaged = packaged_metadata.read_packaged_metadata(plugin_dir)
+    assert packaged is not None
+
+    assert not module.config_overrides_packaged_entries(
+        {"entries": declared}, {}, packaged
+    ), "插件自己 manifest 里声明的 entries 被当成用户覆盖，打包期的 schema 全丢了"
+
+
+def test_an_emptied_entry_table_is_an_override(tmp_path: Path) -> None:
+    """``entries = []`` removes them, and removal is a change.
+
+    An overlay can set an empty list to drop the manifest's entries;
+    ``deep_merge`` keeps that empty list. A truthiness test reads it as "no
+    override" and keeps serving the packaged entries the configuration just
+    removed (codex).
+
+    Mutation: compare truthiness instead of digests.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    payload["entries_config_sha256"] = packaged_metadata.entries_config_digest(
+        {"entries": {"go": {}}}, {}
+    )
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    packaged = packaged_metadata.read_packaged_metadata(plugin_dir)
+    assert packaged is not None
+
+    assert module.config_overrides_packaged_entries({"entries": []}, {}, packaged), (
+        "配置显式清空了 entries，宿主还在端着包里那份被删掉的入口表"
+    )
+
+
+def test_metadata_without_a_valid_digest_is_refused(tmp_path: Path) -> None:
+    """No digest means nothing to verify against, ever.
+
+    The fast path (file list, byte total, timestamps) can all agree while the
+    content check never runs, so a package with a missing or malformed
+    ``source_sha256`` would install authoritative handlers having never been
+    verified at all (codex).
+
+    Mutation: keep coercing ``source_sha256`` with ``str(...)``.
+    """
+    for bad in (None, "", "not-a-digest", "ABC" * 21 + "D", 12345):
+        plugin_dir = _write_plugin(
+            tmp_path / str(bad)[:12], entries=[{"id": "go"}]
+        )
+        meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        if bad is None:
+            payload.pop("source_sha256")
+        else:
+            payload["source_sha256"] = bad
+        meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        assert packaged_metadata.read_packaged_metadata(plugin_dir) is None, (
+            f"source_sha256={bad!r} 也被接受了：这份元数据从头到尾没做过内容校验"
+        )

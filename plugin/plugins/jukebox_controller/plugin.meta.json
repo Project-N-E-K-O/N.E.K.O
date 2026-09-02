@@ -82,6 +82,7 @@
       "timeout": null
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "control_jukebox": "control_jukebox"
   },

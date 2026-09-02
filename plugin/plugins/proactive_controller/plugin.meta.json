@@ -145,6 +145,7 @@
       "timeout": null
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "command": "command",
     "get_state": "get_state",

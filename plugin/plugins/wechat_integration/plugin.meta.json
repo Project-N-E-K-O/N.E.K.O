@@ -256,6 +256,7 @@
       "timeout": null
     }
   ],
+  "entries_config_sha256": "",
   "entry_methods": {
     "get_dashboard_state": "get_dashboard_state",
     "logout": "logout",
