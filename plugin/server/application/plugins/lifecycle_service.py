@@ -10,6 +10,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
 from collections.abc import Mapping
+from functools import partial
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -129,8 +130,20 @@ def _resolve_python_requirements(
 _MIN_CLAMPED_STOP_TIMEOUT = 1.0
 
 
+def _config_declares_entries(conf: object, pdata: object) -> bool:
+    """Whether the effective config carries its own ``entries`` table."""
+    for table in (conf, pdata):
+        if isinstance(table, Mapping) and table.get("entries"):
+            return True
+    return False
+
+
 def _read_packaged_isolated_metadata(
-    config_path: Path, plugin_id: str
+    config_path: Path,
+    plugin_id: str,
+    *,
+    conf: object = None,
+    pdata: object = None,
 ) -> IsolatedPluginMetadata | None:
     """Reuse the packaging-time metadata instead of importing the plugin again.
 
@@ -151,6 +164,11 @@ def _read_packaged_isolated_metadata(
     Returns ``None`` when there is nothing usable, which is also what a package
     built before these fields existed produces — those keep scanning.
     """
+    if _config_declares_entries(conf, pdata):
+        # 打包期读的是作者那份 plugin.toml，看不到用户的运行时配置/激活 profile。
+        # 一旦生效配置自带 entries 表，包里那份 handler 就不是这台机器上该注册的
+        # 那一套了（codex）。这种插件回落到真扫一次。
+        return None
     packaged = read_packaged_metadata(Path(config_path).parent)
     if packaged is None or not packaged.handlers:
         return None
@@ -1064,7 +1082,13 @@ class PluginLifecycleService:
                 floor=_MIN_CLAMPED_START_TIMEOUT,
             )
             isolated_metadata = await asyncio.to_thread(
-                _read_packaged_isolated_metadata, config_path, current_plugin_id
+                partial(
+                    _read_packaged_isolated_metadata,
+                    config_path,
+                    current_plugin_id,
+                    conf=conf,
+                    pdata=pdata,
+                )
             )
             if isolated_metadata is None:
                 isolated_metadata = await asyncio.to_thread(

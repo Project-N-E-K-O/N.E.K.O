@@ -442,3 +442,59 @@ def test_packaged_handlers_minted_under_another_id_are_not_reused(
         )
         is None
     ), "改名后的插件复用了按原 id 铸的 handler key，会一个 handler 都注册不上"
+
+
+def test_config_declared_entries_force_a_real_scan(tmp_path: Path) -> None:
+    """Packaged handlers are derived from the author's manifest, not this machine's.
+
+    A runtime config or an active profile can carry its own ``entries`` table.
+    The packager never saw it, so its handlers are not the set this machine
+    should register (codex). Those plugins have to scan.
+
+    Mutation: drop the ``_config_declares_entries`` check.
+    """
+    from plugin.server.application.plugins import lifecycle_service
+
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    payload["handlers"] = {"demo.go": {"event_type": "plugin_entry", "id": "go"}}
+    payload["entry_methods"] = {"go": "go"}
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert (
+        lifecycle_service._read_packaged_isolated_metadata(
+            plugin_dir / "plugin.toml", "demo"
+        )
+        is not None
+    ), "前提没成立：没有配置覆盖时本来就该用打包元数据"
+
+    assert (
+        lifecycle_service._read_packaged_isolated_metadata(
+            plugin_dir / "plugin.toml",
+            "demo",
+            conf={"entries": [{"id": "from_profile"}]},
+        )
+        is None
+    ), "生效配置自带 entries 时仍然用了包里的 handler，注册的会是另一套"
+
+
+def test_the_freshness_fingerprint_watches_every_file(tmp_path: Path) -> None:
+    """Entries can be derived from data files, not just code.
+
+    A plugin whose module-level code builds entries from a YAML, CSV or
+    template invalidates nothing if the fingerprint only looks at
+    ``.py``/``.toml``/``.json`` — the host keeps serving a schema derived from
+    data that has since changed (codex).
+
+    Mutation: put a suffix filter back into ``_iter_source_files``.
+    """
+    plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
+    before = packaged_metadata.compute_source_sha256(plugin_dir)
+
+    (plugin_dir / "entries.yaml").write_text("go: {}\n", encoding="utf-8")
+    after = packaged_metadata.compute_source_sha256(plugin_dir)
+
+    assert before != after, (
+        "加了一个数据文件而指纹没变，从它派生条目的插件会一直用旧 schema"
+    )

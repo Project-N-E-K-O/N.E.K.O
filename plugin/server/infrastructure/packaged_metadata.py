@@ -55,9 +55,12 @@ _CR = bytes([13])
 _LF = bytes([10])
 _CRLF = _CR + _LF
 
-# 参与"源码是否比 plugin.meta.json 新"判定的文件类型。和打包期算内容哈希的集合
-# 必须是同一个，否则作者改了一类文件、宿主看不见，schema 会静默过时。
-SOURCE_SUFFIXES = frozenset({".py", ".toml", ".json"})
+# 指纹盯插件目录下的**所有**文件，不筛后缀。
+#
+# 原本只看 .py/.toml/.json，但插件的模块级代码经常从同目录的数据文件派生条目
+# （metadata.yaml、csv、模板……）：改了那些文件而指纹不变，宿主就会一直端着按旧
+# 数据推出来的 schema，而注册的元数据和运行时行为对不上是最难查的一类不一致
+# （codex，也是旧扫描缓存键当年选择全量的同一个理由）。
 
 # 下降之前就剪掉。node_modules 不在旧的扫描键忽略集里，带 vendor 树的插件会让
 # 每一次遍历都陪着走一遍。
@@ -127,8 +130,6 @@ def _iter_source_files(plugin_dir: Path) -> tuple[list[tuple[str, os.stat_result
                     continue
                 if entry.name == PACKAGED_METADATA_FILENAME:
                     # 生成物不参与它自己的新鲜度判定。
-                    continue
-                if Path(entry.name).suffix.lower() not in SOURCE_SUFFIXES:
                     continue
                 stat_result = entry.stat(follow_symlinks=False)
             except OSError:
