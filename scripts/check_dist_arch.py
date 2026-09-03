@@ -296,24 +296,48 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
 
         opposite = _OPPOSITE_ARCH.get(expect_arch)
         wrong_binaries: list[str] = []
+        wrong_format: list[str] = []
         # 直接迭代 rglob，别先 sorted() 把整棵树物化 —— 那样上限形同虚设，
         # 树一大就先把内存吃光。只对最后要打印的结果排序。
         scanned = 0
+        truncated = False
         for path in browser_root.rglob("*"):
             if scanned >= _BROWSER_SCAN_FILE_LIMIT:
+                truncated = True
                 break
             scanned += 1
             if not path.is_file() or path.is_symlink():
                 continue
             info = read_binary(path)
-            if info and opposite in info.arches and expect_arch not in info.arches:
-                wrong_binaries.append(f"{path.relative_to(dist_root)} is {'/'.join(info.arches)}")
+            if info is None:
+                continue
+            relative = path.relative_to(dist_root)
+            if info.format != expect_format:
+                # 和 dist 主体同一条判据：装错平台的浏览器架构反而是「对」的
+                # （chrome-mac 底下的 PE x64 满足 x64），只有格式这维抓得住。
+                wrong_format.append(f"{relative} is {info.format}")
+            elif opposite in info.arches and expect_arch not in info.arches:
+                wrong_binaries.append(f"{relative} is {'/'.join(info.arches)}")
         if wrong_binaries:
             shown = ", ".join(sorted(wrong_binaries)[:5])
             issues.append(
                 f"vendored browser tree contains {len(wrong_binaries)} {opposite} "
                 f"binary/binaries: {shown}"
                 + (" ..." if len(wrong_binaries) > 5 else "")
+            )
+        if wrong_format:
+            shown = ", ".join(sorted(wrong_format)[:5])
+            issues.append(
+                f"vendored browser tree contains {len(wrong_format)} non-{expect_format} "
+                f"binary/binaries (wrong platform): {shown}"
+                + (" ..." if len(wrong_format) > 5 else "")
+            )
+        if truncated:
+            # 截断了就等于「后面那截没验过」。这里必须 fail-closed：否则一个越过
+            # 上限的错架构二进制会让整个闸门静默放行，比不设上限更糟。
+            issues.append(
+                f"vendored browser tree exceeds the {_BROWSER_SCAN_FILE_LIMIT}-file scan "
+                "cap, so it could not be fully verified"
             )
 
     return issues

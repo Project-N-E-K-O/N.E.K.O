@@ -384,6 +384,21 @@ def test_browser_scan_honours_its_file_cap(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(check_dist_arch, "read_binary", counting_read_binary)
     monkeypatch.setattr(check_dist_arch, "_BROWSER_SCAN_FILE_LIMIT", 3)
-    check_dist_arch.check_dist_arch(root, "x64", "mac")
+    issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
     browser_reads = [p for p in seen if "playwright_browsers" in p.parts]
     assert len(browser_reads) <= 3
+    # 截断即「没验完」，必须 fail-closed：否则越过上限的错架构二进制会静默放行。
+    assert any("could not be fully verified" in issue for issue in issues)
+
+
+def test_browser_tree_with_wrong_container_format_is_rejected(tmp_path: Path) -> None:
+    """A Windows browser build inside a macOS bundle is PE x64: the arch test passes it.
+
+    `_iter_native_binaries()` skips `playwright_browsers`, so nothing else would
+    look at this file either.
+    """
+    root = tmp_path / "Xiao8"
+    write(root / "projectneko_server", macho("x64"))
+    write(root / "playwright_browsers" / "chromium-1208" / "chrome-mac" / "chrome.dll", pe("x64"))
+    issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
+    assert any("wrong platform" in issue and "chrome.dll" in issue for issue in issues)
