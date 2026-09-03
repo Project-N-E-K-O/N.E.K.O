@@ -31,17 +31,23 @@ a mis-resolved electron-builder/Nuitka target would fail the same way.
 
 ## What it checks
 
-- The main entry binary's declared CPU type.
-- Every native library outside the vendored browser tree (``.so``/``.dylib``/
-  ``.pyd``/``.dll``).
+- The main entry binary's CPU type and container format.
+- Every packaged native binary. Three filename shapes, because a plain suffix
+  allowlist misses two real ones: versioned ELF sonames such as
+  ``libpython3.11.so.1.0`` (whose ``Path.suffix`` is ``.0``) and the
+  extensionless helpers Nuitka's Playwright plugin packages
+  (``playwright/driver/node``).
+- That the container format matches the target platform. A Windows PE that
+  survived inside a macOS bundle has a perfectly matching *architecture*, so
+  only the format check catches it -- and this repo does keep all three
+  platforms' Steam natives in the source tree, stripped by ``rm -f`` at build
+  time.
 - Inside ``playwright_browsers/``, both that no path component carries the
   *opposite* architecture token (#2898's bad build shipped
   ``chromium-1208/chrome-mac-arm64`` inside an x64 bundle) and that no bundled
   binary *is* the opposite architecture. The directory check alone is not
   enough: Playwright also uses tokenless names such as ``chrome-mac``, under
-  which a wrong-arch Chromium would pass unnoticed. The browser's own
-  executables carry no filename suffix, so this scan dispatches on the file
-  magic rather than on ``.so``/``.dylib``.
+  which a wrong-arch Chromium would pass unnoticed.
 
 Headers are parsed directly, so this runs identically on all three CI hosts and
 needs neither ``lipo`` nor ``file``.
@@ -52,6 +58,11 @@ import argparse
 import struct
 import sys
 from pathlib import Path
+from typing import NamedTuple
+
+MACHO = "mach-o"
+ELF = "elf"
+PE = "pe"
 
 # Mach-O
 _MACHO_MAGICS = {
@@ -60,7 +71,16 @@ _MACHO_MAGICS = {
     b"\xce\xfa\xed\xfe": "<",  # MH_MAGIC (32-bit)
     b"\xfe\xed\xfa\xce": ">",
 }
-_MACHO_FAT_MAGICS = {b"\xca\xfe\xba\xbe": ">", b"\xbe\xba\xfe\xca": "<"}
+# FAT_MAGIC/FAT_CIGAM carry 20-byte fat_arch records; FAT_MAGIC_64/FAT_CIGAM_64
+# (trailing byte 0xbf, not 0xbe) carry 32-byte fat_arch_64 records. Both are
+# valid universal binaries -- reading only the 32-bit form reports a 64-bit fat
+# main binary as "not an executable" and skips a 64-bit fat dylib entirely.
+_MACHO_FAT_MAGICS = {
+    b"\xca\xfe\xba\xbe": (">", 20),
+    b"\xbe\xba\xfe\xca": ("<", 20),
+    b"\xca\xfe\xba\xbf": (">", 32),
+    b"\xbf\xba\xfe\xca": ("<", 32),
+}
 _MACHO_CPU = {0x01000007: "x64", 0x0100000C: "arm64", 0x00000007: "x86", 0x0000000C: "arm"}
 
 # ELF
@@ -69,7 +89,9 @@ _ELF_MACHINE = {62: "x64", 183: "arm64", 3: "x86", 40: "arm"}
 # PE
 _PE_MACHINE = {0x8664: "x64", 0xAA64: "arm64", 0x014C: "x86", 0x01C0: "arm"}
 
-_NATIVE_SUFFIXES = (".so", ".dylib", ".pyd", ".dll")
+_FORMAT_BY_PLATFORM = {"mac": MACHO, "linux": ELF, "win": PE}
+
+_NATIVE_SUFFIXES = (".so", ".dylib", ".pyd", ".dll", ".exe")
 _ARCH_TOKENS = ("x64", "arm64")
 # 供应商目录里出现的架构写法不止一种（chrome-mac-x64 / chrome-linux-arm64 / mac-arm64 ...），
 # 用「对立架构的词元」做黑名单，比要求某个确切目录名更耐得住 Playwright 改布局。
@@ -83,6 +105,16 @@ _VENDORED_BROWSER_DIR = "playwright_browsers"
 _OPPOSITE_ARCH = {"x64": "arm64", "arm64": "x64"}
 # 只是别让畸形目录把这一步拖死；正常 Chromium 包也就几千个文件。
 _BROWSER_SCAN_FILE_LIMIT = 50000
+# PE 的 e_lfanew 指向可执行头。真实文件里它是几百字节；给个宽松上界，免得
+# 一个伪造值让我们去读整个文件。
+_MAX_PE_HEADER_OFFSET = 4 * 1024 * 1024
+
+
+class BinaryInfo(NamedTuple):
+    """The container format and the CPU architectures a binary declares."""
+
+    format: str
+    arches: list[str]
 
 
 def _read_head(path: Path, size: int = 64) -> bytes:
@@ -90,52 +122,68 @@ def _read_head(path: Path, size: int = 64) -> bytes:
         return handle.read(size)
 
 
-def read_arches(path: Path) -> list[str] | None:
-    """Return the architectures a binary declares, or None if it is not one.
+def read_binary(path: Path) -> BinaryInfo | None:
+    """Inspect a file's header, or return None when it is not an executable.
 
     A Mach-O fat binary reports every slice it carries; every other format
     reports a single entry.
     """
-    head = _read_head(path)
+    try:
+        head = _read_head(path)
+    except OSError:
+        return None
     if len(head) < 20:
         return None
 
     magic = head[:4]
     if magic in _MACHO_FAT_MAGICS:
-        endian = _MACHO_FAT_MAGICS[magic]
+        endian, record_size = _MACHO_FAT_MAGICS[magic]
         (count,) = struct.unpack(endian + "I", head[4:8])
-        # 每个 fat_arch 是 20 字节，cputype 在其起始处；限个上界，别让畸形头把内存吃穿。
+        # 限个上界，别让畸形头把内存吃穿。
         if count > 64:
             return None
-        blob = _read_head(path, 8 + 20 * count)
+        blob = _read_head(path, 8 + record_size * count)
         arches: list[str] = []
         for index in range(count):
-            offset = 8 + 20 * index
+            offset = 8 + record_size * index
             if offset + 4 > len(blob):
                 break
             (cpu,) = struct.unpack(endian + "I", blob[offset : offset + 4])
             arches.append(_MACHO_CPU.get(cpu, f"unknown(0x{cpu:08x})"))
-        return arches or None
+        return BinaryInfo(MACHO, arches) if arches else None
 
     if magic in _MACHO_MAGICS:
         endian = _MACHO_MAGICS[magic]
         (cpu,) = struct.unpack(endian + "I", head[4:8])
-        return [_MACHO_CPU.get(cpu, f"unknown(0x{cpu:08x})")]
+        return BinaryInfo(MACHO, [_MACHO_CPU.get(cpu, f"unknown(0x{cpu:08x})")])
 
     if magic == b"\x7fELF":
         endian = "<" if head[5] == 1 else ">"
         (machine,) = struct.unpack(endian + "H", head[18:20])
-        return [_ELF_MACHINE.get(machine, f"unknown({machine})")]
+        return BinaryInfo(ELF, [_ELF_MACHINE.get(machine, f"unknown({machine})")])
 
     if magic[:2] == b"MZ":
+        # 浏览器树里每个普通文件都会流经这里，其中不乏「恰好以 MZ 开头」的数据文件。
+        # 头不足 0x40 字节时切片是空的，struct.unpack 会抛 struct.error 把闸门整个
+        # 打崩；伪造的巨大 pe_offset 还会让 _read_head 去要一个无界的读。两处都挡住。
+        if len(head) < 0x40:
+            return None
         (pe_offset,) = struct.unpack("<I", head[0x3C:0x40])
+        if pe_offset > _MAX_PE_HEADER_OFFSET:
+            return None
         blob = _read_head(path, pe_offset + 8)
         if len(blob) < pe_offset + 8 or blob[pe_offset : pe_offset + 4] != b"PE\x00\x00":
             return None
         (machine,) = struct.unpack("<H", blob[pe_offset + 4 : pe_offset + 6])
-        return [_PE_MACHINE.get(machine, f"unknown(0x{machine:04x})")]
+        return BinaryInfo(PE, [_PE_MACHINE.get(machine, f"unknown(0x{machine:04x})")])
 
     return None
+
+
+def read_arches(path: Path) -> list[str] | None:
+    """Convenience wrapper returning just the architectures."""
+    info = read_binary(path)
+    return None if info is None else info.arches
 
 
 def _entry_binary(dist_root: Path, platform: str) -> Path | None:
@@ -153,25 +201,32 @@ def _entry_binary(dist_root: Path, platform: str) -> Path | None:
         candidates = [dist_root / "projectneko_server.exe"]
     for candidate in candidates:
         # macOS 的 dist 根上还有个同名 shell wrapper（exec 进 .app），它不是 Mach-O，
-        # read_arches 返回 None —— 跳过继续找真的那个，别把 wrapper 当主程序放行。
-        if candidate.is_file() and read_arches(candidate) is not None:
+        # read_binary 返回 None —— 跳过继续找真的那个，别把 wrapper 当主程序放行。
+        if candidate.is_file() and read_binary(candidate) is not None:
             return candidate
     return None
 
 
-def _iter_native_libs(dist_root: Path):
+def _looks_native(path: Path) -> bool:
+    """Is this filename shaped like something that could be a native binary?"""
+    return path.suffix.lower() in _NATIVE_SUFFIXES or ".so." in path.name.lower() or not path.suffix
+
+
+def _iter_native_binaries(dist_root: Path):
     for path in dist_root.rglob("*"):
         if not path.is_file() or path.is_symlink():
             continue
-        if _VENDORED_BROWSER_DIR in path.parts:
+        # 用相对路径判断，别把 dist_root 的祖先目录名算进来。
+        if _VENDORED_BROWSER_DIR in path.relative_to(dist_root).parts:
             continue
-        if path.suffix.lower() in _NATIVE_SUFFIXES:
+        if _looks_native(path):
             yield path
 
 
 def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[str]:
     """Return a list of human-readable problems; empty means the dist is clean."""
     issues: list[str] = []
+    expect_format = _FORMAT_BY_PLATFORM[platform]
 
     entry = _entry_binary(dist_root, platform)
     if entry is None:
@@ -180,26 +235,44 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
             f"{dist_root}"
         )
     else:
-        arches = read_arches(entry) or []
-        if expect_arch not in arches:
+        info = read_binary(entry)
+        assert info is not None  # _entry_binary only returns readable binaries
+        if expect_arch not in info.arches:
             issues.append(
-                f"main binary is {'/'.join(arches) or 'unreadable'}, expected {expect_arch}: "
-                f"{entry.relative_to(dist_root)}"
+                f"main binary is {'/'.join(info.arches) or 'unreadable'}, expected "
+                f"{expect_arch}: {entry.relative_to(dist_root)}"
+            )
+        if info.format != expect_format:
+            issues.append(
+                f"main binary is a {info.format} file but {platform} builds must be "
+                f"{expect_format}: {entry.relative_to(dist_root)}"
             )
 
     mismatched: list[str] = []
-    for lib in _iter_native_libs(dist_root):
-        arches = read_arches(lib)
-        if arches is None:
-            # 后缀像原生库但根本不是可执行格式（占位文件、文本 stub）——不是架构问题。
+    foreign_format: list[str] = []
+    for lib in _iter_native_binaries(dist_root):
+        info = read_binary(lib)
+        if info is None:
+            # 名字像原生库但根本不是可执行格式（占位文件、文本 stub）——不是架构问题。
             continue
-        if expect_arch not in arches:
-            mismatched.append(f"{lib.relative_to(dist_root)} is {'/'.join(arches)}")
+        relative = lib.relative_to(dist_root)
+        if info.format != expect_format:
+            # 跨平台库混进来时架构反而是「对」的（Windows DLL 也是 PE x64），
+            # 只有格式这一维能抓住它，所以单独归一类报。
+            foreign_format.append(f"{relative} is {info.format}")
+        elif expect_arch not in info.arches:
+            mismatched.append(f"{relative} is {'/'.join(info.arches)}")
     if mismatched:
         shown = ", ".join(sorted(mismatched)[:10])
         issues.append(
-            f"{len(mismatched)} native library/libraries are not {expect_arch}: {shown}"
+            f"{len(mismatched)} native binary/binaries are not {expect_arch}: {shown}"
             + (" ..." if len(mismatched) > 10 else "")
+        )
+    if foreign_format:
+        shown = ", ".join(sorted(foreign_format)[:10])
+        issues.append(
+            f"{len(foreign_format)} native binary/binaries are not {expect_format} "
+            f"(wrong platform): {shown}" + (" ..." if len(foreign_format) > 10 else "")
         )
 
     browser_root = dist_root / _VENDORED_BROWSER_DIR
@@ -209,7 +282,11 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
             str(path.relative_to(dist_root))
             for path in browser_root.rglob("*")
             if path.is_dir()
-            and any(token in part.lower() for part in path.parts for token in tokens)
+            and any(
+                token in part.lower()
+                for part in path.relative_to(browser_root).parts
+                for token in tokens
+            )
         )
         if bad_paths:
             issues.append(
@@ -219,14 +296,18 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
 
         opposite = _OPPOSITE_ARCH.get(expect_arch)
         wrong_binaries: list[str] = []
-        for scanned, path in enumerate(sorted(browser_root.rglob("*"))):
+        # 直接迭代 rglob，别先 sorted() 把整棵树物化 —— 那样上限形同虚设，
+        # 树一大就先把内存吃光。只对最后要打印的结果排序。
+        scanned = 0
+        for path in browser_root.rglob("*"):
             if scanned >= _BROWSER_SCAN_FILE_LIMIT:
                 break
+            scanned += 1
             if not path.is_file() or path.is_symlink():
                 continue
-            arches = read_arches(path)
-            if arches and opposite in arches and expect_arch not in arches:
-                wrong_binaries.append(f"{path.relative_to(dist_root)} is {'/'.join(arches)}")
+            info = read_binary(path)
+            if info and opposite in info.arches and expect_arch not in info.arches:
+                wrong_binaries.append(f"{path.relative_to(dist_root)} is {'/'.join(info.arches)}")
         if wrong_binaries:
             shown = ", ".join(sorted(wrong_binaries)[:5])
             issues.append(
@@ -255,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--expect-platform",
         required=True,
-        choices=("win", "mac", "linux"),
+        choices=tuple(_FORMAT_BY_PLATFORM),
         help="Host platform this build targets",
     )
     args = parser.parse_args(argv)
