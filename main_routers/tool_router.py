@@ -44,8 +44,11 @@ Endpoints
         }
 
 ``POST /api/tools/unregister``
-    Body: ``{"name": "...", "role": null}`` — drops the tool. Returns
-    ``{"removed": bool}``.
+    Body: ``{"name": "...", "role": null, "expected_source": "plugin:foo"}`` —
+    drops the tool. ``expected_source`` is optional; when set, roles whose
+    tool is owned by a different source are NOT removed and reported in
+    ``refused_roles`` (a plugin can never delete another plugin's tool by
+    name collision). Returns ``{"removed": bool, "refused_roles": [...]}``.
 
 ``POST /api/tools/clear``
     Body: ``{"source": "plugin:foo", "role": null}`` — drops every tool
@@ -195,6 +198,10 @@ class ToolRegisterRequest(BaseModel):
 class ToolUnregisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     role: Optional[str] = None  # None = remove from all roles
+    # 设置时校验该名字当前归属的 source，不匹配的 role 拒绝删除（响应记入
+    # refused_roles）。用于插件注销自己的工具时防止误删其它 source 占用的
+    # 同名工具（例如本插件的注册从未生效、名字实际归属别的插件的场景）。
+    expected_source: Optional[str] = None
 
 
 class ToolClearRequest(BaseModel):
@@ -469,6 +476,26 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
+            # 跨 source 重名拒绝：registry 以名字为键、replace=True 无条件覆盖，
+            # 若不设防，后注册的插件会把其它 source 已有的同名工具静默挤掉
+            # （模型调用被重定向到新 callback，原插件还能把别人的工具注销）。
+            # 同 source 重注册（插件重启刷新 callback_url / 更新 schema）不受影响。
+            existing = mgr.tool_registry.get(req.name)
+            if existing is not None:
+                existing_source = str((getattr(existing, "metadata", None) or {}).get("source", ""))
+                if existing_source != req.source:
+                    logger.warning(
+                        "register_tool refused cross-source overwrite on {}: name='{}' owned_by='{}' incoming='{}'",
+                        role_name, req.name, existing_source or "unknown", req.source,
+                    )
+                    failed.append({
+                        "role": role_name,
+                        "error": (
+                            f"tool '{req.name}' already owned by source "
+                            f"'{existing_source or 'unknown'}' (cross-source overwrite refused)"
+                        ),
+                    })
+                    continue
             # 用 _and_sync 版本：注册后等 session.update 推送完成再返回，
             # 这样调用方拿到 ok=True 的瞬间，active/pending session 上的
             # tools 已经是最新 —— 不会出现"返回成功但下一次 model 调用
@@ -504,9 +531,28 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
     removed_any = False
     affected: List[str] = []
     failed: List[Dict[str, str]] = []
+    refused: List[Dict[str, str]] = []
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
+            # 所有权校验：expected_source 与现属 source 不匹配时拒绝删除。
+            # 与 /register 的跨 source 拒绝对偶——注销也只能删自己的工具。
+            # tool_registry 用 getattr 兼容鸭子类型的 manager（如测试桩），
+            # 没有 registry 的 manager 跳过校验，保持原有注销行为。
+            registry = getattr(mgr, "tool_registry", None)
+            existing = registry.get(req.name) if registry is not None else None
+            if req.expected_source is not None and existing is not None:
+                existing_source = str((getattr(existing, "metadata", None) or {}).get("source", ""))
+                if existing_source != req.expected_source:
+                    logger.warning(
+                        "unregister_tool refused foreign-owned name on {}: name='{}' owned_by='{}' expected='{}'",
+                        role_name, req.name, existing_source or "unknown", req.expected_source,
+                    )
+                    refused.append({
+                        "role": role_name,
+                        "owned_by": existing_source or "unknown",
+                    })
+                    continue
             # _and_sync 版本：等 session 同步完成再返回，与 register 端点对偶。
             if await mgr.unregister_tool_and_sync(req.name):
                 removed_any = True
@@ -523,6 +569,7 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
         "name": req.name,
         "affected_roles": affected,
         "failed_roles": failed,
+        "refused_roles": refused,
     }
 
 

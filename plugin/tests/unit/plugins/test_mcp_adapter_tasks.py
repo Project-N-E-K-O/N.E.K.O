@@ -12,6 +12,9 @@ class _Logger:
     def info(self, *_args, **_kwargs) -> None:
         pass
 
+    def warning(self, *_args, **_kwargs) -> None:
+        pass
+
     def exception(self, *_args, **_kwargs) -> None:
         pass
 
@@ -46,6 +49,10 @@ def _plugin_stub(MCPAdapterPlugin):
     plugin._pending_auto_connect = {}
     plugin._reconnect_tasks = {}
     plugin._servers_config = {}
+    plugin._chat_tools = {}
+    plugin._pending_chat_tools = {}
+    plugin._chat_tools_lock = asyncio.Lock()
+    plugin._route_engine = None
     plugin.config = _Config({})
     plugin.ctx = SimpleNamespace(logger=_Logger())
     return plugin
