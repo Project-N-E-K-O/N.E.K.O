@@ -1295,6 +1295,20 @@ jobs:
             SIGNING_NOTE="signed"
           fi
 
+          # linux-arm64 是 continue-on-error 的试验腿，红了不会挡住这一步发布，
+          # 但那时它的 artifact 根本没上传。表格行必须跟着实际产物走，否则发布说明
+          # 会一直挂着两条下不到的下载。判据用 artifact 目录名（本 workflow 矩阵里
+          # 自己定的 artifact_name），不猜 electron-builder 的输出文件名。
+          NL=$'\n'
+          ARM64_DESKTOP_ROW=""
+          ARM64_BACKEND_ROW=""
+          if [ -d "artifacts/desktop-linux-arm64" ]; then
+            ARM64_DESKTOP_ROW="${NL}| Linux arm64 (experimental) | \`N.E.K.O-*-arm64.AppImage\` / \`.deb\` / \`.tar.gz\` |"
+          fi
+          if [ -d "artifacts/python-backend-linux-arm64" ]; then
+            ARM64_BACKEND_ROW="${NL}| Linux arm64 (experimental) | \`python-backend-linux-arm64-*.zip\` |"
+          fi
+
           gh release create nightly release/* \
             --title "Nightly Build ${DATE}" \
             --target "${{ github.sha }}" \
@@ -1315,8 +1329,7 @@ jobs:
           | Windows x64 | \`N.E.K.O_*_win.zip\` (Portable) |
           | macOS Intel | \`N.E.K.O-*.dmg\` / \`.zip\` |
           | macOS Apple Silicon | \`N.E.K.O-*-arm64.dmg\` / \`.zip\` |
-          | Linux x64 | \`N.E.K.O-*.AppImage\` / \`.deb\` / \`.tar.gz\` |
-          | Linux arm64 (experimental) | \`N.E.K.O-*-arm64.AppImage\` / \`.deb\` / \`.tar.gz\` |
+          | Linux x64 | \`N.E.K.O-*.AppImage\` / \`.deb\` / \`.tar.gz\` |${ARM64_DESKTOP_ROW}
 
           ### Python Backend Only (standalone, no Electron)
           | Platform | File |
@@ -1324,8 +1337,7 @@ jobs:
           | Windows x64 | \`python-backend-win-*.zip\` |
           | macOS Intel | \`python-backend-mac-x64-*.zip\` |
           | macOS Apple Silicon | \`python-backend-mac-arm64-*.zip\` |
-          | Linux x64 | \`python-backend-linux-*.zip\` |
-          | Linux arm64 (experimental) | \`python-backend-linux-arm64-*.zip\` |
+          | Linux x64 | \`python-backend-linux-*.zip\` |${ARM64_BACKEND_ROW}
 
           ---
           Built from [\`${VERSION}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})
