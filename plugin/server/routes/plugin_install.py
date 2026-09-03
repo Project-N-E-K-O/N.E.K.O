@@ -108,7 +108,7 @@ async def get_plugin_ui_locale(plugin_id: str) -> JSONResponse:
 @router.get("/plugin/{plugin_id}/ui-api/i18n/ui/{locale}.json")
 async def get_plugin_ui_i18n(plugin_id: str, locale: str) -> Response:
     registration = await _get_plugin_registration(plugin_id)
-    if registration.ui_i18n_dir is None:
+    if registration.ui_i18n_dir is None or registration.config_path is None:
         return Response(status_code=404)
     normalized = str(locale or "").strip()
     if ".." in normalized or "/" in normalized or "\\" in normalized:
@@ -118,6 +118,7 @@ async def get_plugin_ui_i18n(plugin_id: str, locale: str) -> Response:
 
     payload = await _run_blocking(
         _read_ui_locale_payload,
+        registration.config_path.parent,
         registration.ui_i18n_dir,
         normalized,
     )
@@ -126,16 +127,28 @@ async def get_plugin_ui_i18n(plugin_id: str, locale: str) -> Response:
     return Response(content=payload, media_type="application/json")
 
 
-def _read_ui_locale_payload(base_path: Path, locale: str) -> bytes | None:
+def _read_ui_locale_payload(
+    plugin_root: Path,
+    base_path: Path,
+    locale: str,
+) -> bytes | None:
     """Read one locale through a verified handle so path swaps cannot escape."""
 
     file_descriptor = -1
     try:
+        if not plugin_root.is_absolute():
+            return None
         base_dir = base_path.resolve(strict=True)
+        base_dir.relative_to(plugin_root)
         if not base_dir.is_dir():
             return None
         candidate = base_dir / f"{locale}.json"
-        open_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        open_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
         file_descriptor = os.open(candidate, open_flags)
 
         opened_metadata = os.fstat(file_descriptor)
@@ -150,7 +163,7 @@ def _read_ui_locale_payload(base_path: Path, locale: str) -> bytes | None:
             return None
 
         resolved = candidate.resolve(strict=True)
-        resolved.relative_to(base_dir)
+        resolved.relative_to(plugin_root)
         if not os.path.samestat(opened_metadata, resolved.stat()):
             return None
 

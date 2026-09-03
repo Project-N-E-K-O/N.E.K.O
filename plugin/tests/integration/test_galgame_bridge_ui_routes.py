@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
 import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -381,7 +382,11 @@ async def test_plugin_ui_i18n_rejects_locale_file_symlink_escape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    i18n_dir = tmp_path / "i18n"
+    plugin_root = tmp_path / "plugin"
+    plugin_root.mkdir()
+    config_path = plugin_root / "plugin.toml"
+    config_path.write_text('[plugin]\nid = "external_plugin"\n', encoding="utf-8")
+    i18n_dir = plugin_root / "i18n"
     i18n_dir.mkdir()
     outside_file = tmp_path / "outside.json"
     outside_file.write_text('{"secret": true}', encoding="utf-8")
@@ -395,6 +400,7 @@ async def test_plugin_ui_i18n_rejects_locale_file_symlink_escape(
         plugin_id="external_plugin",
         install_kinds={},
         ui_i18n_dir=i18n_dir,
+        config_path=config_path,
     )
 
     async def registration_for(_plugin_id: str):
@@ -419,7 +425,11 @@ async def test_plugin_ui_i18n_pins_payload_before_locale_path_is_swapped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    i18n_dir = tmp_path / "i18n"
+    plugin_root = tmp_path / "plugin"
+    plugin_root.mkdir()
+    config_path = plugin_root / "plugin.toml"
+    config_path.write_text('[plugin]\nid = "external_plugin"\n', encoding="utf-8")
+    i18n_dir = plugin_root / "i18n"
     i18n_dir.mkdir()
     locale_file = i18n_dir / "en.json"
     locale_file.write_text('{"safe": true}', encoding="utf-8")
@@ -430,6 +440,7 @@ async def test_plugin_ui_i18n_pins_payload_before_locale_path_is_swapped(
         plugin_id="external_plugin",
         install_kinds={},
         ui_i18n_dir=i18n_dir,
+        config_path=config_path,
     )
 
     async def registration_for(_plugin_id: str):
@@ -462,6 +473,103 @@ async def test_plugin_ui_i18n_pins_payload_before_locale_path_is_swapped(
     assert response.status_code == 200
     assert response.body == b'{"safe": true}'
     assert b"secret" not in response.body
+
+
+@pytest.mark.asyncio
+async def test_plugin_ui_i18n_rejects_replaced_base_directory_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_root = tmp_path / "plugin"
+    plugin_root.mkdir()
+    config_path = plugin_root / "plugin.toml"
+    config_path.write_text('[plugin]\nid = "external_plugin"\n', encoding="utf-8")
+    i18n_dir = plugin_root / "i18n"
+    i18n_dir.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "en.json").write_text('{"secret": true}', encoding="utf-8")
+    i18n_dir.rmdir()
+    try:
+        i18n_dir.symlink_to(outside_dir, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink creation is unavailable: {exc}")
+
+    registration = galgame_install_route_module.InstallPluginRegistration(
+        plugin_id="external_plugin",
+        install_kinds={},
+        ui_i18n_dir=i18n_dir,
+        config_path=config_path,
+    )
+
+    async def registration_for(_plugin_id: str):
+        return registration
+
+    monkeypatch.setattr(
+        galgame_install_route_module,
+        "_get_plugin_registration",
+        registration_for,
+    )
+
+    response = await galgame_install_route_module.get_plugin_ui_i18n(
+        "external_plugin",
+        "en",
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_plugin_ui_i18n_opens_fifo_nonblocking_before_rejecting_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not hasattr(os, "mkfifo") or not getattr(os, "O_NONBLOCK", 0):
+        pytest.skip("FIFO nonblocking behavior requires POSIX")
+
+    plugin_root = tmp_path / "plugin"
+    plugin_root.mkdir()
+    config_path = plugin_root / "plugin.toml"
+    config_path.write_text('[plugin]\nid = "external_plugin"\n', encoding="utf-8")
+    i18n_dir = plugin_root / "i18n"
+    i18n_dir.mkdir()
+    fifo_path = i18n_dir / "en.json"
+    os.mkfifo(fifo_path)
+
+    registration = galgame_install_route_module.InstallPluginRegistration(
+        plugin_id="external_plugin",
+        install_kinds={},
+        ui_i18n_dir=i18n_dir,
+        config_path=config_path,
+    )
+
+    async def registration_for(_plugin_id: str):
+        return registration
+
+    original_open = os.open
+    opened_nonblocking = False
+
+    def guarded_open(path, flags, *args, **kwargs):
+        nonlocal opened_nonblocking
+        opened_nonblocking = bool(flags & os.O_NONBLOCK)
+        if not opened_nonblocking:
+            raise AssertionError("locale files must be opened nonblocking")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        galgame_install_route_module,
+        "_get_plugin_registration",
+        registration_for,
+    )
+    monkeypatch.setattr(galgame_install_route_module.os, "open", guarded_open)
+
+    response = await galgame_install_route_module.get_plugin_ui_i18n(
+        "external_plugin",
+        "en",
+    )
+
+    assert opened_nonblocking is True
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
