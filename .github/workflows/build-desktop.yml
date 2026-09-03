@@ -889,7 +889,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"}]' || '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"},{"os":"macos-15","platform":"mac-x64","portable_key":"mac_x64","builder_platform":"macos","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/mac/N.E.K.O.app","python_artifact":"python-backend-mac-x64","electron_args":"--mac --x64","artifact_name":"desktop-mac-x64"},{"os":"macos-latest","platform":"mac-arm64","portable_key":"mac_arm64","builder_platform":"macos","portable_arch_args":"--arm64","portable_dir":"dist/portable-stage/mac-arm64/N.E.K.O.app","python_artifact":"python-backend-mac-arm64","electron_args":"--mac --arm64","artifact_name":"desktop-mac-arm64"},{"os":"ubuntu-latest","platform":"linux","portable_key":"linux_x64","builder_platform":"linux","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/linux-unpacked","python_artifact":"python-backend-linux","electron_args":"--linux","artifact_name":"desktop-linux-x64"},{"os":"ubuntu-24.04-arm","platform":"linux-arm64","portable_key":"linux_arm64","builder_platform":"linux","portable_arch_args":"--arm64","portable_dir":"dist/portable-stage/linux-arm64-unpacked","python_artifact":"python-backend-linux-arm64","electron_args":"--linux --arm64","artifact_name":"desktop-linux-arm64","experimental":true}]') }}
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"}]' || '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"},{"os":"macos-15","platform":"mac-x64","portable_key":"mac_x64","builder_platform":"macos","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/mac/N.E.K.O.app","python_artifact":"python-backend-mac-x64","electron_args":"--mac --x64","artifact_name":"desktop-mac-x64"},{"os":"macos-latest","platform":"mac-arm64","portable_key":"mac_arm64","builder_platform":"macos","portable_arch_args":"--arm64","portable_dir":"dist/portable-stage/mac-arm64/N.E.K.O.app","python_artifact":"python-backend-mac-arm64","electron_args":"--mac --arm64","artifact_name":"desktop-mac-arm64"},{"os":"ubuntu-latest","platform":"linux","portable_key":"linux_x64","builder_platform":"linux","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/linux-unpacked","python_artifact":"python-backend-linux","electron_args":"--linux","artifact_name":"desktop-linux-x64"},{"os":"ubuntu-24.04-arm","platform":"linux-arm64","portable_key":"linux_arm64","builder_platform":"linux","portable_arch_args":"--arm64","builder_target_args":"-c.linux.target=AppImage -c.linux.target=deb -c.linux.target=tar.gz","skip_portable_channel":true,"portable_dir":"dist/portable-stage/linux-arm64-unpacked","python_artifact":"python-backend-linux-arm64","electron_args":"--linux --arm64","artifact_name":"desktop-linux-arm64","experimental":true}]') }}
 
     runs-on: ${{ matrix.os }}
     # 同 build-python：linux-arm64 是试验腿，失败不应让 nightly 发布判红
@@ -1035,10 +1035,17 @@ jobs:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
 
+      # `builder_target_args` 只有 linux-arm64 非空。N.E.K.O.-PC 的 package.json 把
+      # build.linux.target 三个 target 的 arch 写死成 ["x64"]，而 electron-builder 的
+      # computeArchToTargetNamesMap 只在 CLI 显式给了 target 名时才无视配置里的 arch：
+      # 光传 `--arm64` 会解析成 {arm64: [], x64: [AppImage, deb, tar.gz]}，也就是在
+      # arm64 机器上打出一套 x64 产物，文件名和真正的 x64 腿逐字相同，在 nightly 扁平的
+      # release/ 目录里互相覆盖。重复的 -c.linux.target= 把目标列表整个换掉，解析结果
+      # 才是 {arm64: [AppImage, deb, tar.gz]}；x64 腿传空串，行为不变。
       - name: Build Electron app (macOS/Linux)
         if: runner.os != 'Windows'
         working-directory: electron-app
-        run: node scripts/build-electron-distribution.js ${{ matrix.builder_platform }} ${{ matrix.portable_arch_args }} --publish never
+        run: node scripts/build-electron-distribution.js ${{ matrix.builder_platform }} ${{ matrix.portable_arch_args }} ${{ matrix.builder_target_args }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || inputs.skip_signing == 'true') && 'false' || 'true' }}
@@ -1052,8 +1059,14 @@ jobs:
 
       # Build a separate marked unpacked tree for the self-managed Portable
       # channel. On macOS the marker is added by afterPack before signing.
+      # skip_portable_channel 只有 linux-arm64 为 true：N.E.K.O.-PC 的 getTargetKey()
+      # 对 linux + arm64 返回 null，下面两个 create-portable-update.js 步骤会直接抛
+      # `Unsupported Portable target: linux-arm64` / `Invalid AppImage target`。把 arm64
+      # 接进 Portable 自更新通道要同时改闭源的 N.E.K.O.-PC（targetKey、manifest 资产名
+      # 正则、客户端解析），是独立决定；在那之前 arm64 只出 AppImage/deb/tar.gz 原始
+      # 产物，不进增量自更新。这一步的 --dir 产物只被那两步消费，一并跳过。
       - name: Build Electron app (macOS/Linux Portable directory)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.skip_portable_channel != true
         working-directory: electron-app
         run: node scripts/build-electron-distribution.js ${{ matrix.builder_platform }} --dir ${{ matrix.portable_arch_args }} --publish never -c.directories.output=dist/portable-stage
         env:
@@ -1067,7 +1080,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Download previous Portable manifests
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.previous_portable_release != ''
+        if: (startsWith(github.ref, 'refs/tags/v') || inputs.previous_portable_release != '') && matrix.skip_portable_channel != true
         working-directory: electron-app
         shell: bash
         env:
@@ -1131,7 +1144,7 @@ jobs:
             ${PREVIOUS_ARGS[@]+"${PREVIOUS_ARGS[@]}"}
 
       - name: Create macOS/Linux Portable directory update assets
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.skip_portable_channel != true
         working-directory: electron-app
         shell: bash
         env:
@@ -1157,7 +1170,7 @@ jobs:
             ${PREVIOUS_ARGS[@]+"${PREVIOUS_ARGS[@]}"}
 
       - name: Create Linux AppImage full and differential update assets
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.skip_portable_channel != true
         working-directory: electron-app
         shell: bash
         env:
