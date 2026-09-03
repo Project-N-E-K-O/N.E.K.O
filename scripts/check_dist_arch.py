@@ -34,11 +34,14 @@ a mis-resolved electron-builder/Nuitka target would fail the same way.
 - The main entry binary's declared CPU type.
 - Every native library outside the vendored browser tree (``.so``/``.dylib``/
   ``.pyd``/``.dll``).
-- Inside ``playwright_browsers/``, that no path component carries the *opposite*
-  architecture token. The vendored browser has its own layout and its own
-  third-party binaries, so it is matched by directory naming rather than by
-  header scanning (#2898's bad build shipped ``chromium-1208/chrome-mac-arm64``
-  inside an x64 bundle).
+- Inside ``playwright_browsers/``, both that no path component carries the
+  *opposite* architecture token (#2898's bad build shipped
+  ``chromium-1208/chrome-mac-arm64`` inside an x64 bundle) and that no bundled
+  binary *is* the opposite architecture. The directory check alone is not
+  enough: Playwright also uses tokenless names such as ``chrome-mac``, under
+  which a wrong-arch Chromium would pass unnoticed. The browser's own
+  executables carry no filename suffix, so this scan dispatches on the file
+  magic rather than on ``.so``/``.dylib``.
 
 Headers are parsed directly, so this runs identically on all three CI hosts and
 needs neither ``lipo`` nor ``file``.
@@ -75,6 +78,11 @@ _OPPOSITE_TOKENS = {
     "arm64": ("-x64", "_x64", "-x86_64", "_x86_64", "amd64"),
 }
 _VENDORED_BROWSER_DIR = "playwright_browsers"
+# 供应商树按「只禁对立架构」判，不要求逐个命中期望架构：Chromium 里带一两个
+# 32 位/无法识别的小工具是正常的，而整树跑偏必然大面积撞上对立架构。
+_OPPOSITE_ARCH = {"x64": "arm64", "arm64": "x64"}
+# 只是别让畸形目录把这一步拖死；正常 Chromium 包也就几千个文件。
+_BROWSER_SCAN_FILE_LIMIT = 50000
 
 
 def _read_head(path: Path, size: int = 64) -> bytes:
@@ -207,6 +215,24 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
             issues.append(
                 f"vendored browser tree carries non-{expect_arch} directories: "
                 + ", ".join(bad_paths[:5])
+            )
+
+        opposite = _OPPOSITE_ARCH.get(expect_arch)
+        wrong_binaries: list[str] = []
+        for scanned, path in enumerate(sorted(browser_root.rglob("*"))):
+            if scanned >= _BROWSER_SCAN_FILE_LIMIT:
+                break
+            if not path.is_file() or path.is_symlink():
+                continue
+            arches = read_arches(path)
+            if arches and opposite in arches and expect_arch not in arches:
+                wrong_binaries.append(f"{path.relative_to(dist_root)} is {'/'.join(arches)}")
+        if wrong_binaries:
+            shown = ", ".join(sorted(wrong_binaries)[:5])
+            issues.append(
+                f"vendored browser tree contains {len(wrong_binaries)} {opposite} "
+                f"binary/binaries: {shown}"
+                + (" ..." if len(wrong_binaries) > 5 else "")
             )
 
     return issues

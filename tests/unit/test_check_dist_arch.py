@@ -151,14 +151,40 @@ def test_vendored_browser_directory_matching_the_build_passes(tmp_path: Path) ->
     assert check_dist_arch.check_dist_arch(root, "x64", "mac") == []
 
 
-def test_vendored_browser_binaries_are_not_header_scanned(tmp_path: Path) -> None:
-    """The browser tree is judged by directory naming, not by scanning its libs."""
+def test_tokenless_browser_directory_with_wrong_arch_binary_is_rejected(tmp_path: Path) -> None:
+    """Playwright also uses tokenless names like `chrome-mac`.
+
+    Directory-name matching alone would let a wrong-arch Chromium through, so
+    the browser tree is header-scanned as well.
+    """
     root = tmp_path / "Xiao8"
     write(root / "projectneko_server", macho("x64"))
-    write(
-        root / "playwright_browsers" / "chromium-1208" / "chrome-mac" / "libEGL.dylib",
-        macho("arm64"),
+    browser = root / "playwright_browsers" / "chromium-1208" / "chrome-mac"
+    write(browser / "libEGL.dylib", macho("arm64"))
+    issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
+    assert any("vendored browser tree contains" in issue for issue in issues)
+
+
+def test_suffixless_browser_executable_is_scanned(tmp_path: Path) -> None:
+    """Chromium's own executable has no filename suffix; dispatch on magic."""
+    root = tmp_path / "Xiao8"
+    write(root / "projectneko_server", macho("arm64"))
+    browser = (
+        root / "playwright_browsers" / "chromium-1208" / "chrome-mac"
+        / "Chromium.app" / "Contents" / "MacOS"
     )
+    write(browser / "Chromium", macho("x64"))
+    issues = check_dist_arch.check_dist_arch(root, "arm64", "mac")
+    assert any("vendored browser tree contains" in issue for issue in issues)
+
+
+def test_matching_browser_tree_passes(tmp_path: Path) -> None:
+    root = tmp_path / "Xiao8"
+    write(root / "projectneko_server", macho("x64"))
+    browser = root / "playwright_browsers" / "chromium-1208" / "chrome-mac"
+    write(browser / "libEGL.dylib", macho("x64"))
+    write(browser / "Chromium.app" / "Contents" / "MacOS" / "Chromium", macho("x64"))
+    write(browser / "icudtl.dat", b"binary blob, not an executable\n")
     assert check_dist_arch.check_dist_arch(root, "x64", "mac") == []
 
 
