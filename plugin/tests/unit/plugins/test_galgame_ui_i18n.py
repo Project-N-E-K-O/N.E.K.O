@@ -56,6 +56,25 @@ def _register_galgame_install_plugin(module, *, i18n_dir: Path = UI_I18N_DIR) ->
     )
 
 
+def _select_plugin_source(
+    monkeypatch: pytest.MonkeyPatch,
+    plugin_id: str,
+    config_path: Path,
+    *,
+    entry_ids: tuple[str, ...] = (),
+) -> None:
+    from plugin.core.state import state
+
+    selected_meta = {
+        "id": plugin_id,
+        "config_path": str(config_path),
+        "entries_preview": [{"id": entry_id} for entry_id in entry_ids],
+        "effective_source": "builtin",
+    }
+    with state.acquire_plugins_write_lock():
+        monkeypatch.setitem(state.plugins, plugin_id, selected_meta)
+
+
 def test_galgame_ui_i18n_locale_bundles_have_same_keys() -> None:
     bundles = {
         locale: json.loads((UI_I18N_DIR / f"{locale}.json").read_text(encoding="utf-8"))
@@ -115,6 +134,15 @@ def test_galgame_ui_locale_route_falls_back_when_language_utils_unavailable(monk
     try:
         module = importlib.import_module(module_name)
         _register_galgame_install_plugin(module)
+        _select_plugin_source(
+            monkeypatch,
+            "galgame_plugin",
+            UI_I18N_DIR.parents[1] / "plugin.toml",
+            entry_ids=(
+                "galgame_install_textractor",
+                "galgame_download_rapidocr_models",
+            ),
+        )
         response = asyncio.run(module.get_plugin_ui_locale("galgame_plugin"))
 
         assert json.loads(response.body.decode("utf-8")) == {"locale": "en"}
@@ -130,12 +158,15 @@ def test_plugin_ui_i18n_route_uses_registered_i18n_dir(monkeypatch, tmp_path: Pa
     i18n_dir.mkdir()
     expected_file = i18n_dir / "en.json"
     expected_file.write_text('{"custom":"ok"}', encoding="utf-8")
+    config_path = tmp_path / "plugin.toml"
+    config_path.write_text('[plugin]\nid = "custom_plugin"\n', encoding="utf-8")
     monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
     plugin_install.register_install_plugin(
         "custom_plugin",
         install_kinds={},
         ui_i18n_dir=i18n_dir,
     )
+    _select_plugin_source(monkeypatch, "custom_plugin", config_path)
 
     response = asyncio.run(plugin_install.get_plugin_ui_i18n("custom_plugin", "en"))
 
@@ -155,6 +186,12 @@ def test_plugin_ui_i18n_route_bootstraps_builtin_registration(monkeypatch) -> No
     )
     monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
     monkeypatch.setattr(install_registry, "_tutorial_migration_hooks", {})
+    _select_plugin_source(
+        monkeypatch,
+        "study_companion",
+        expected_file.parents[1] / "plugin.toml",
+        entry_ids=("study_download_rapidocr_models",),
+    )
 
     response = asyncio.run(plugin_install.get_plugin_ui_i18n("study_companion", "en"))
 
@@ -232,6 +269,15 @@ def test_tutorial_progress_routes_use_blocking_runner(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
     monkeypatch.setattr(plugin_install, "_run_blocking", _fake_run_blocking)
     _register_galgame_install_plugin(plugin_install)
+    _select_plugin_source(
+        monkeypatch,
+        "galgame_plugin",
+        UI_I18N_DIR.parents[1] / "plugin.toml",
+        entry_ids=(
+            "galgame_install_textractor",
+            "galgame_download_rapidocr_models",
+        ),
+    )
 
     status_response = asyncio.run(plugin_install.get_tutorial_status("galgame_plugin"))
     save_response = asyncio.run(
