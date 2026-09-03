@@ -22,6 +22,7 @@ from plugin.runs.manager import RunError, RunRecord
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.routes import plugin_ui as plugin_ui_route_module
+from tests.fake_clock import patch_module_clock
 
 
 pytestmark = pytest.mark.plugin_integration
@@ -179,6 +180,12 @@ def tutorial_runtime_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Pa
     else:
         monkeypatch.setattr(install_registry_module, "_tutorial_migration_hooks", [])
     monkeypatch.setattr(galgame_install_route_module, "_tutorial_migrated_paths", set(), raising=False)
+    monkeypatch.setattr(
+        galgame_install_route_module,
+        "_galgame_tutorial_migration_retry_after",
+        {},
+        raising=False,
+    )
     monkeypatch.setattr(galgame_install_route_module, "_tutorial_store_instance", None, raising=False)
     monkeypatch.setattr(galgame_install_route_module, "_tutorial_store_instances", {}, raising=False)
     return runtime_root
@@ -1420,7 +1427,7 @@ async def test_galgame_tutorial_migration_does_not_overwrite_existing_target(
 
 
 @pytest.mark.asyncio
-async def test_galgame_tutorial_atomic_migration_failure_only_warns(
+async def test_galgame_tutorial_migration_failure_cools_down_then_recovers(
     plugin_ui_async_client: AsyncClient,
     tutorial_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1434,18 +1441,49 @@ async def test_galgame_tutorial_atomic_migration_failure_only_warns(
         {"completed": True},
     )
 
-    def _fail_replace(_source: Path, _target: Path) -> None:
-        raise OSError("replace failed")
+    now = [100.0]
+    replace_attempts = 0
+    real_replace = galgame_install_route_module.os.replace
 
-    monkeypatch.setattr(galgame_install_route_module.os, "replace", _fail_replace)
+    def _replace(source: Path, target: Path) -> None:
+        nonlocal replace_attempts
+        replace_attempts += 1
+        if replace_attempts == 1:
+            raise OSError("replace failed")
+        real_replace(source, target)
 
-    response = await plugin_ui_async_client.get(
+    patch_module_clock(
+        monkeypatch,
+        galgame_install_route_module,
+        monotonic=lambda: now[0],
+    )
+    monkeypatch.setattr(galgame_install_route_module.os, "replace", _replace)
+
+    first_response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/tutorial/status"
+    )
+    cooldown_response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/tutorial/status"
     )
 
-    assert response.status_code == 200
-    assert response.json()["progress"]["completed"] is False
+    assert first_response.status_code == 200
+    assert first_response.json()["progress"]["completed"] is False
+    assert cooldown_response.status_code == 200
+    assert cooldown_response.json()["progress"]["completed"] is False
+    assert replace_attempts == 1
     assert not _galgame_tutorial_target(tutorial_runtime_root).exists()
+
+    now[0] += galgame_install_route_module._GALGAME_TUTORIAL_MIGRATION_RETRY_COOLDOWN_SECONDS
+    recovered_response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/tutorial/status"
+    )
+
+    assert recovered_response.status_code == 200
+    assert recovered_response.json()["progress"]["completed"] is True
+    assert replace_attempts == 2
+    target = _galgame_tutorial_target(tutorial_runtime_root)
+    assert target.is_file()
+    assert target not in galgame_install_route_module._galgame_tutorial_migration_retry_after
 
 
 @pytest.mark.asyncio

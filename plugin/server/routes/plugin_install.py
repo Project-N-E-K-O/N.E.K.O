@@ -846,6 +846,8 @@ _tutorial_store_instance: Path | None = None
 _tutorial_store_instances: dict[str, Path] = {}
 _tutorial_store_lock = threading.RLock()
 _tutorial_migrated_paths: set[Path] = set()
+_GALGAME_TUTORIAL_MIGRATION_RETRY_COOLDOWN_SECONDS = 60.0
+_galgame_tutorial_migration_retry_after: dict[Path, float] = {}
 
 
 def _read_legacy_galgame_tutorial_progress(
@@ -943,28 +945,37 @@ def _migrate_legacy_galgame_tutorial_progress(
     *,
     registration: InstallPluginRegistration | None,
 ) -> None:
-    if (
-        registration is None
-        or registration.plugin_id != "galgame_plugin"
-        or store_path.exists()
-    ):
-        return
-    try:
-        progress, source_path = _load_legacy_galgame_tutorial_progress(registration)
-        if progress is None or source_path is None:
+    with _tutorial_store_lock:
+        if registration is None or registration.plugin_id != "galgame_plugin":
             return
-        if _write_migrated_tutorial_progress(store_path, progress):
-            logger.info(
-                "galgame tutorial progress migrated from legacy store: {} -> {}",
-                source_path,
+        if store_path.exists():
+            _galgame_tutorial_migration_retry_after.pop(store_path, None)
+            return
+        if time.monotonic() < _galgame_tutorial_migration_retry_after.get(store_path, 0.0):
+            return
+        try:
+            progress, source_path = _load_legacy_galgame_tutorial_progress(registration)
+            if progress is None or source_path is None:
+                return
+            if _write_migrated_tutorial_progress(store_path, progress):
+                logger.info(
+                    "galgame tutorial progress migrated from legacy store: {} -> {}",
+                    source_path,
+                    store_path,
+                )
+        except Exception:  # noqa: BLE001 - migration is best effort and must not break the API.
+            logger.warning(
+                "galgame tutorial progress migration failed for {}",
                 store_path,
+                exc_info=True,
             )
-    except Exception:  # noqa: BLE001 - migration is best effort and must not break the API.
-        logger.warning(
-            "galgame tutorial progress migration failed for {}",
-            store_path,
-            exc_info=True,
-        )
+        finally:
+            if store_path.exists():
+                _galgame_tutorial_migration_retry_after.pop(store_path, None)
+            else:
+                _galgame_tutorial_migration_retry_after[store_path] = (
+                    time.monotonic() + _GALGAME_TUTORIAL_MIGRATION_RETRY_COOLDOWN_SECONDS
+                )
 
 
 def _run_tutorial_migrations(
