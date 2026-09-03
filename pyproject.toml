@@ -225,9 +225,6 @@ select = [
   "ASYNC251",  # time.sleep in async function
 ]
 
-[tool.coverage.run]
-source = ["plugin/plugins/study_companion"]
-
 [tool.coverage.report]
 fail_under = 80
 show_missing = true

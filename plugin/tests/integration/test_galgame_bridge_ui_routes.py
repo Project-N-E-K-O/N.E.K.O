@@ -36,10 +36,39 @@ def galgame_plugin_dir() -> Path:
 def registered_install_plugins(
     monkeypatch: pytest.MonkeyPatch,
     galgame_plugin_dir: Path,
+    tmp_path: Path,
 ) -> Iterator[None]:
     with state.acquire_plugins_read_lock():
         plugins_backup = copy.deepcopy(state.plugins)
     monkeypatch.setattr(install_registry_module, "_install_plugin_registry", {})
+    study_plugin_dir = tmp_path / "market" / "study_companion"
+    study_i18n_dir = study_plugin_dir / "i18n"
+    study_i18n_dir.mkdir(parents=True)
+    (study_plugin_dir / "plugin.toml").write_text(
+        """[plugin]
+id = "study_companion"
+name = "Study Companion"
+version = "0.2.4"
+type = "plugin"
+entry = "plugin.plugins.study_companion:StudyCompanionPlugin"
+
+[plugin.install]
+enabled = true
+ui_i18n_dir = "i18n"
+tutorial_enabled = true
+
+[plugin.install.kinds.rapidocr_models]
+entry_id = "study_download_rapidocr_models"
+label = "RapidOCR Models"
+queued_message = "RapidOCR model download queued"
+entry_timeout = 600.0
+""",
+        encoding="utf-8",
+    )
+    (study_i18n_dir / "en.json").write_text(
+        json.dumps({"entries.open_ui.name": "Open Study Companion UI"}),
+        encoding="utf-8",
+    )
     galgame_install_route_module.register_install_plugin(
         "galgame_plugin",
         install_kinds={
@@ -57,18 +86,6 @@ def registered_install_plugins(
         ui_i18n_dir=galgame_plugin_dir / "i18n" / "ui",
         tutorial_enabled=True,
     )
-    galgame_install_route_module.register_install_plugin(
-        "study_companion",
-        install_kinds={
-            "rapidocr_models": galgame_install_route_module.InstallKindRegistration(
-                entry_id="study_download_rapidocr_models",
-                label="RapidOCR Models",
-                queued_message="RapidOCR model download queued",
-            ),
-        },
-        ui_i18n_dir=galgame_plugin_dir.parent / "study_companion" / "i18n",
-        tutorial_enabled=True,
-    )
     with state.acquire_plugins_write_lock():
         state.plugins.clear()
         state.plugins.update(
@@ -84,11 +101,11 @@ def registered_install_plugins(
                 },
                 "study_companion": {
                     "id": "study_companion",
-                    "config_path": str(galgame_plugin_dir.parent / "study_companion" / "plugin.toml"),
+                    "config_path": str(study_plugin_dir / "plugin.toml"),
                     "entries_preview": [
                         {"id": "study_download_rapidocr_models"},
                     ],
-                    "effective_source": "builtin",
+                    "effective_source": "user",
                 },
             }
         )
@@ -807,11 +824,11 @@ async def test_legacy_study_tesseract_status_routes_remain_read_only_after_resta
 
 
 @pytest.mark.asyncio
-async def test_legacy_study_tesseract_route_recovers_after_old_plugin_registration(
+async def test_legacy_study_tesseract_route_stays_hidden_after_old_plugin_registration(
     plugin_ui_async_client: AsyncClient,
-    galgame_plugin_dir: Path,
     galgame_install_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     seen: list[tuple[str, str, dict[str, object]]] = []
 
@@ -829,7 +846,7 @@ async def test_legacy_study_tesseract_route_recovers_after_old_plugin_registrati
                 queued_message="Tesseract install queued",
             ),
         },
-        ui_i18n_dir=galgame_plugin_dir.parent / "study_companion" / "i18n",
+        ui_i18n_dir=tmp_path,
         tutorial_enabled=True,
     )
 
@@ -845,20 +862,13 @@ async def test_legacy_study_tesseract_route_recovers_after_old_plugin_registrati
         json={"force": True},
     )
 
-    assert response.status_code == 200
-    assert seen == [
-        (
-            "study_companion",
-            "study_install_tesseract",
-            {"force": True, "_ctx": {"entry_timeout": 600.0}},
-        )
-    ]
-    assert response.json()["state"]["kind"] == "tesseract"
+    assert response.status_code == 404
+    assert seen == []
     assert install_task_module.load_install_task_state(
         "run-study_install_tesseract",
         kind="tesseract",
         plugin_id="study_companion",
-    ) is not None
+    ) is None
 
 
 @pytest.mark.asyncio

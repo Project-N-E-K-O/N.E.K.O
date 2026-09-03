@@ -153,35 +153,42 @@ def test_dist_check_matches_stage_and_allows_shared_directory(tmp_path: Path) ->
     assert "unstaged file" in issues[0]
 
 
-def test_nuitka_dist_rejects_marketplace_only_plugin(tmp_path: Path) -> None:
+@pytest.mark.parametrize("plugin_id", sorted(_MARKETPLACE_ONLY_PLUGIN_IDS))
+def test_nuitka_dist_rejects_marketplace_only_plugin(
+    tmp_path: Path,
+    plugin_id: str,
+) -> None:
     dist_root = tmp_path / "dist"
     _write(
         dist_root / "plugin" / "plugins" / "demo" / "plugin.toml",
         '[plugin]\nid = "demo"\n',
     )
     _write(
-        dist_root / "plugin" / "plugins" / "neko_warthunder" / "plugin.toml",
-        '[plugin]\nid = "neko_warthunder"\n',
+        dist_root / "plugin" / "plugins" / plugin_id / "plugin.toml",
+        f'[plugin]\nid = "{plugin_id}"\n',
     )
 
     issues = _check_plugin_tomls(dist_root)
 
     assert issues == [
-        "marketplace-only plugin bundled: plugin/plugins/neko_warthunder"
+        f"marketplace-only plugin bundled: plugin/plugins/{plugin_id}"
     ]
 
 
+@pytest.mark.parametrize("plugin_id", sorted(_MARKETPLACE_ONLY_PLUGIN_IDS))
 def test_nuitka_dist_rejects_marketplace_only_manifest_id_after_directory_rename(
     tmp_path: Path,
+    plugin_id: str,
 ) -> None:
     dist_root = tmp_path / "dist"
+    renamed_dir = f"renamed_{plugin_id}"
     _write(
-        dist_root / "plugin" / "plugins" / "renamed_war_thunder" / "plugin.toml",
-        '[plugin]\nid = "neko_warthunder"\n',
+        dist_root / "plugin" / "plugins" / renamed_dir / "plugin.toml",
+        f'[plugin]\nid = "{plugin_id}"\n',
     )
 
     assert _check_plugin_tomls(dist_root) == [
-        "marketplace-only plugin bundled: plugin/plugins/renamed_war_thunder"
+        f"marketplace-only plugin bundled: plugin/plugins/{renamed_dir}"
     ]
 
 

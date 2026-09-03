@@ -225,6 +225,34 @@ def _dynamic_registration(
     )
 
 
+def _study_legacy_registration(
+    plugin_id: str,
+    *,
+    config_path: Path,
+    selected: _SelectedPluginState,
+) -> InstallPluginRegistration | None:
+    if plugin_id != "study_companion":
+        return None
+    kinds = MappingProxyType(
+        {
+            "rapidocr_models": InstallKindRegistration(
+                entry_id="study_download_rapidocr_models",
+                label="RapidOCR Models",
+                queued_message="RapidOCR model download queued",
+            )
+        }
+    )
+    _validate_entry_ids(kinds, selected)
+    return InstallPluginRegistration(
+        plugin_id=plugin_id,
+        install_kinds=kinds,
+        ui_i18n_dir=_resolve_i18n_dir(config_path.parent, "i18n"),
+        tutorial_enabled=True,
+        config_path=config_path,
+        effective_source=selected.effective_source,
+    )
+
+
 def _registration_for_selected_source(
     plugin_id: str,
     selected: _SelectedPluginState,
@@ -240,6 +268,13 @@ def _registration_for_selected_source(
             selected=selected,
             install_table=plugin_table.get("install"),
         )
+    legacy_registration = _study_legacy_registration(
+        plugin_id,
+        config_path=config_path,
+        selected=selected,
+    )
+    if legacy_registration is not None:
+        return legacy_registration
     return _dynamic_registration(
         plugin_id,
         config_path=config_path,
@@ -303,22 +338,6 @@ def bootstrap_builtin_install_plugins() -> None:
                     ),
                 },
                 ui_i18n_dir=plugins_root / "galgame_plugin" / "i18n" / "ui",
-                tutorial_enabled=True,
-            )
-        if (
-            "study_companion" not in _install_plugin_registry
-            and _plugin_module_available("study_companion")
-        ):
-            register_install_plugin(
-                "study_companion",
-                install_kinds={
-                    "rapidocr_models": InstallKindRegistration(
-                        entry_id="study_download_rapidocr_models",
-                        label="RapidOCR Models",
-                        queued_message="RapidOCR model download queued",
-                    ),
-                },
-                ui_i18n_dir=plugins_root / "study_companion" / "i18n",
                 tutorial_enabled=True,
             )
         if _plugin_module_available("galgame_plugin"):

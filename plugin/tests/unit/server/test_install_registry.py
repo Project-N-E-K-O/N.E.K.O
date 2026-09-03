@@ -76,18 +76,12 @@ def _select_plugin(
         state.plugins[plugin_id] = meta
 
 
-def _select_builtin_plugins() -> None:
+def _select_builtin_galgame() -> None:
     plugins_root = Path(install_registry.__file__).resolve().parents[1] / "plugins"
     _select_plugin(
         "galgame_plugin",
         plugins_root / "galgame_plugin" / "plugin.toml",
         entries=("galgame_install_textractor", "galgame_download_rapidocr_models"),
-        source="builtin",
-    )
-    _select_plugin(
-        "study_companion",
-        plugins_root / "study_companion" / "plugin.toml",
-        entries=("study_download_rapidocr_models",),
         source="builtin",
     )
 
@@ -111,10 +105,9 @@ def test_builtin_install_registration_bootstraps_from_empty_registry(
 ) -> None:
     monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
     monkeypatch.setattr(install_registry, "_tutorial_migration_hooks", {})
-    _select_builtin_plugins()
+    _select_builtin_galgame()
 
     galgame = install_registry.get_install_plugin_registration("galgame_plugin")
-    study = install_registry.get_install_plugin_registration("study_companion")
 
     assert galgame is not None
     assert set(galgame.install_kinds) == {"rapidocr_models", "textractor"}
@@ -127,35 +120,94 @@ def test_builtin_install_registration_bootstraps_from_empty_registry(
         / "ui"
     )
 
-    assert study is not None
-    assert set(study.install_kinds) == {"rapidocr_models"}
-    assert study.tutorial_enabled is True
 
-
-def test_builtin_install_registration_does_not_overwrite_existing_registration(
-    monkeypatch: pytest.MonkeyPatch,
+def test_study_legacy_registration_uses_selected_market_source(
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
-    monkeypatch.setattr(install_registry, "_tutorial_migration_hooks", {})
-    install_registry.register_install_plugin(
+    plugin_root = tmp_path / "market" / "study_companion"
+    manifest = _write_manifest(
+        plugin_root,
         "study_companion",
-        install_kinds={},
-        ui_i18n_dir=tmp_path,
+        declaration=None,
     )
-    plugins_root = Path(install_registry.__file__).resolve().parents[1] / "plugins"
+    (plugin_root / "i18n").mkdir(parents=True)
     _select_plugin(
         "study_companion",
-        plugins_root / "study_companion" / "plugin.toml",
+        manifest,
         entries=("study_download_rapidocr_models",),
-        source="builtin",
+        source="user",
     )
 
     study = install_registry.get_install_plugin_registration("study_companion")
 
     assert study is not None
-    assert study.install_kinds == {}
-    assert study.ui_i18n_dir == tmp_path.resolve()
+    assert set(study.install_kinds) == {"rapidocr_models"}
+    assert "tesseract" not in study.install_kinds
+    assert study.install_kinds["rapidocr_models"].entry_id == (
+        "study_download_rapidocr_models"
+    )
+    assert study.install_kinds["rapidocr_models"].entry_timeout == 600.0
+    assert study.ui_i18n_dir == (plugin_root / "i18n").resolve()
+    assert study.tutorial_enabled is True
+    assert study.config_path == manifest.resolve()
+    assert study.effective_source == "user"
+
+
+def test_study_legacy_registration_fails_closed_when_entry_is_missing(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "market" / "study_companion"
+    manifest = _write_manifest(
+        plugin_root,
+        "study_companion",
+        declaration=None,
+    )
+    (plugin_root / "i18n").mkdir(parents=True)
+    _select_plugin("study_companion", manifest, entries=(), source="user")
+
+    with pytest.raises(ValueError, match="study_download_rapidocr_models"):
+        install_registry.get_install_plugin_registration("study_companion")
+
+
+def test_study_explicit_disabled_declaration_does_not_use_legacy(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "market" / "study_companion"
+    manifest = _write_manifest(
+        plugin_root,
+        "study_companion",
+        declaration="[plugin.install]\nenabled = false",
+    )
+    (plugin_root / "i18n").mkdir(parents=True)
+    _select_plugin(
+        "study_companion",
+        manifest,
+        entries=("study_download_rapidocr_models",),
+        source="user",
+    )
+
+    assert install_registry.get_install_plugin_registration("study_companion") is None
+
+
+def test_study_invalid_explicit_declaration_fails_closed_without_legacy(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "market" / "study_companion"
+    manifest = _write_manifest(
+        plugin_root,
+        "study_companion",
+        declaration="[plugin.install]\nenabled = \"yes\"",
+    )
+    (plugin_root / "i18n").mkdir(parents=True)
+    _select_plugin(
+        "study_companion",
+        manifest,
+        entries=("study_download_rapidocr_models",),
+        source="user",
+    )
+
+    with pytest.raises(ValueError, match="install declaration rejected"):
+        install_registry.get_install_plugin_registration("study_companion")
 
 
 def test_builtin_install_registration_skips_unavailable_optional_plugins(
@@ -166,7 +218,6 @@ def test_builtin_install_registration_skips_unavailable_optional_plugins(
     monkeypatch.setattr(install_registry, "_plugin_module_available", lambda _plugin_id: False)
 
     assert install_registry.get_install_plugin_registration("galgame_plugin") is None
-    assert install_registry.get_install_plugin_registration("study_companion") is None
 
 
 def test_plugin_module_available_treats_import_errors_as_unavailable(
