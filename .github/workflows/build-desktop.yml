@@ -126,7 +126,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"win","artifact_name":"python-backend-win","output_binary":"projectneko_server.exe"}]' || '[{"os":"windows-latest","platform":"win","artifact_name":"python-backend-win","output_binary":"projectneko_server.exe"},{"os":"macos-15","platform":"mac-x64","python_arch":"x64","artifact_name":"python-backend-mac-x64","output_binary":"projectneko_server"},{"os":"macos-latest","platform":"mac-arm64","artifact_name":"python-backend-mac-arm64","output_binary":"projectneko_server"},{"os":"ubuntu-latest","platform":"linux","artifact_name":"python-backend-linux","output_binary":"projectneko_server"}]') }}
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"win","artifact_name":"python-backend-win","output_binary":"projectneko_server.exe","expect_arch":"x64","expect_platform":"win"}]' || '[{"os":"windows-latest","platform":"win","artifact_name":"python-backend-win","output_binary":"projectneko_server.exe","expect_arch":"x64","expect_platform":"win"},{"os":"macos-15-intel","platform":"mac-x64","python_arch":"x64","artifact_name":"python-backend-mac-x64","output_binary":"projectneko_server","expect_arch":"x64","expect_platform":"mac"},{"os":"macos-latest","platform":"mac-arm64","artifact_name":"python-backend-mac-arm64","output_binary":"projectneko_server","expect_arch":"arm64","expect_platform":"mac"},{"os":"ubuntu-latest","platform":"linux","artifact_name":"python-backend-linux","output_binary":"projectneko_server","expect_arch":"x64","expect_platform":"linux"}]') }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 300
@@ -847,6 +847,23 @@ jobs:
             .venv/bin/python scripts/check_nuitka_dist.py "$NEKO_NUITKA_RUNTIME_DIR" --plugin-stage build/nuitka-plugins
           fi
 
+      # 产物架构闸门（#2898）。`macos-15` 是 Apple Silicon 镜像，mac-x64 那条腿曾经在
+      # 它上面构建，`actions/setup-python` 的 architecture: x64 只让 Python 走 Rosetta，
+      # Nuitka 照样吐 arm64，Playwright 也按宿主架构下成了 chrome-mac-arm64 —— 整整几个
+      # 月的 Intel Mac 版都启动不了，而流水线全绿。runner 已换成 macos-15-intel，这一步
+      # 是防它（以及任何一条腿）再无声地跑偏：不匹配就直接红，不上传。
+      - name: Verify dist CPU architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            .venv/Scripts/python.exe scripts/check_dist_arch.py dist/Xiao8 \
+              --expect-arch "${{ matrix.expect_arch }}" --expect-platform "${{ matrix.expect_platform }}"
+          else
+            .venv/bin/python scripts/check_dist_arch.py "$NEKO_NUITKA_RUNTIME_DIR" \
+              --expect-arch "${{ matrix.expect_arch }}" --expect-platform "${{ matrix.expect_platform }}"
+          fi
+
       # Nuitka signs macOS app bundles when it creates them. The steps above
       # then add Playwright and plugin payloads inside the bundle, invalidating
       # that seal. Restore a valid ad-hoc signature for the backend artifact;
@@ -879,7 +896,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"}]' || '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"},{"os":"macos-15","platform":"mac-x64","portable_key":"mac_x64","builder_platform":"macos","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/mac/N.E.K.O.app","python_artifact":"python-backend-mac-x64","electron_args":"--mac --x64","artifact_name":"desktop-mac-x64"},{"os":"macos-latest","platform":"mac-arm64","portable_key":"mac_arm64","builder_platform":"macos","portable_arch_args":"--arm64","portable_dir":"dist/portable-stage/mac-arm64/N.E.K.O.app","python_artifact":"python-backend-mac-arm64","electron_args":"--mac --arm64","artifact_name":"desktop-mac-arm64"},{"os":"ubuntu-latest","platform":"linux","portable_key":"linux_x64","builder_platform":"linux","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/linux-unpacked","python_artifact":"python-backend-linux","electron_args":"--linux","artifact_name":"desktop-linux-x64"}]') }}
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"}]' || '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"},{"os":"macos-15-intel","platform":"mac-x64","portable_key":"mac_x64","builder_platform":"macos","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/mac/N.E.K.O.app","python_artifact":"python-backend-mac-x64","electron_args":"--mac --x64","artifact_name":"desktop-mac-x64"},{"os":"macos-latest","platform":"mac-arm64","portable_key":"mac_arm64","builder_platform":"macos","portable_arch_args":"--arm64","portable_dir":"dist/portable-stage/mac-arm64/N.E.K.O.app","python_artifact":"python-backend-mac-arm64","electron_args":"--mac --arm64","artifact_name":"desktop-mac-arm64"},{"os":"ubuntu-latest","platform":"linux","portable_key":"linux_x64","builder_platform":"linux","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/linux-unpacked","python_artifact":"python-backend-linux","electron_args":"--linux","artifact_name":"desktop-linux-x64"}]') }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
