@@ -496,8 +496,8 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=frozendict"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=qrcode"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=qrcode_terminal"
-          # galgame_plugin native OCR/vision cohort. Installed on every platform by
-          # `uv sync --group galgame` (local rapidocr-pillow fork + pyclipper).
+          # Marketplace Galgame native OCR/vision cohort. Installed on every platform
+          # by `uv sync --group galgame` (local rapidocr-pillow fork + pyclipper).
           # Nuitka's auto-follow misses their data files, so include package +
           # data explicitly.
           NUITKA_OPTS="$NUITKA_OPTS --include-package=rapidocr_onnxruntime"
@@ -519,11 +519,6 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
 
           # Exclusions
-          # galgame_plugin/training/ is offline model-training code (torch /
-          # torchvision / albumentations) — not declared deps, not installed, and
-          # runtime inference uses the exported .onnx via onnxruntime instead.
-          # Carve it out so --include-package=plugin.plugins doesn't recurse into it.
-          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins.galgame_plugin.training"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=audiolab"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
@@ -622,7 +617,6 @@ jobs:
           rem plugin's [tool.neko.build] rules while --include-package compiles
           rem the remaining dynamically imported built-in modules.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin
-          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins.galgame_plugin.training
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=brain
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_logic
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_routers
@@ -670,7 +664,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=qrcode
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=qrcode_terminal
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api
-          rem galgame_plugin native OCR/vision cohort (uv sync --group galgame:
+          rem Marketplace Galgame native OCR/vision cohort (uv sync --group galgame:
           rem local rapidocr-pillow fork + pyclipper; mss/dxcam from main deps).
           rem Nuitka auto-follow misses their data files, so include package + data.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=rapidocr_onnxruntime

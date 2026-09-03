@@ -246,7 +246,6 @@ def test_desktop_workflows_use_filtered_plugin_stage() -> None:
         assert "--include-data-dir=plugin/plugins=plugin/plugins" not in workflow
         assert 'NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins"' not in workflow
         assert "set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins" not in workflow_lines
-        assert "--nofollow-import-to=plugin.plugins.galgame_plugin.training" in workflow
 
 
 def test_prepare_helper_is_directly_executable_without_pythonpath(tmp_path: Path) -> None:

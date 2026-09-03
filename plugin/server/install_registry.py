@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -253,6 +252,41 @@ def _study_legacy_registration(
     )
 
 
+def _galgame_legacy_registration(
+    plugin_id: str,
+    *,
+    config_path: Path,
+    selected: _SelectedPluginState,
+) -> InstallPluginRegistration | None:
+    if plugin_id != "galgame_plugin":
+        return None
+    kinds = MappingProxyType(
+        {
+            "textractor": InstallKindRegistration(
+                entry_id="galgame_install_textractor",
+                label="Textractor",
+                queued_message="Textractor install queued",
+                entry_timeout=600.0,
+            ),
+            "rapidocr_models": InstallKindRegistration(
+                entry_id="galgame_download_rapidocr_models",
+                label="RapidOCR Models",
+                queued_message="RapidOCR model download queued",
+                entry_timeout=600.0,
+            ),
+        }
+    )
+    _validate_entry_ids(kinds, selected)
+    return InstallPluginRegistration(
+        plugin_id=plugin_id,
+        install_kinds=kinds,
+        ui_i18n_dir=_resolve_i18n_dir(config_path.parent, "i18n/ui"),
+        tutorial_enabled=True,
+        config_path=config_path,
+        effective_source=selected.effective_source,
+    )
+
+
 def _registration_for_selected_source(
     plugin_id: str,
     selected: _SelectedPluginState,
@@ -268,84 +302,22 @@ def _registration_for_selected_source(
             selected=selected,
             install_table=plugin_table.get("install"),
         )
-    legacy_registration = _study_legacy_registration(
-        plugin_id,
-        config_path=config_path,
-        selected=selected,
-    )
-    if legacy_registration is not None:
-        return legacy_registration
+    for legacy_resolver in (
+        _study_legacy_registration,
+        _galgame_legacy_registration,
+    ):
+        legacy_registration = legacy_resolver(
+            plugin_id,
+            config_path=config_path,
+            selected=selected,
+        )
+        if legacy_registration is not None:
+            return legacy_registration
     return _dynamic_registration(
         plugin_id,
         config_path=config_path,
         selected=selected,
     )
-
-
-def _plugins_root() -> Path:
-    return Path(__file__).resolve().parents[1] / "plugins"
-
-
-def _plugin_module_available(plugin_id: str) -> bool:
-    try:
-        return importlib.util.find_spec(f"plugin.plugins.{plugin_id}") is not None
-    except ImportError:
-        return False
-
-
-def _copy_legacy_galgame_tutorial_progress_if_missing(store_path: Path) -> None:
-    try:
-        from plugin.plugins.galgame_plugin._tutorial_migration import (
-            copy_legacy_tutorial_progress_if_missing,
-        )
-    except ModuleNotFoundError as exc:
-        missing_name = str(getattr(exc, "name", "") or "")
-        optional_missing = {
-            "plugin.plugins",
-            "plugin.plugins.galgame_plugin",
-            "plugin.plugins.galgame_plugin._tutorial_migration",
-        }
-        if missing_name in optional_missing:
-            logger.warning(
-                "galgame tutorial migration module unavailable; skipping legacy migration: {}",
-                exc,
-            )
-            return
-        raise
-
-    copy_legacy_tutorial_progress_if_missing(store_path)
-
-
-def bootstrap_builtin_install_plugins() -> None:
-    with _registry_lock:
-        plugins_root = _plugins_root()
-        if (
-            "galgame_plugin" not in _install_plugin_registry
-            and _plugin_module_available("galgame_plugin")
-        ):
-            register_install_plugin(
-                "galgame_plugin",
-                install_kinds={
-                    "textractor": InstallKindRegistration(
-                        entry_id="galgame_install_textractor",
-                        label="Textractor",
-                        queued_message="Textractor install queued",
-                    ),
-                    "rapidocr_models": InstallKindRegistration(
-                        entry_id="galgame_download_rapidocr_models",
-                        label="RapidOCR Models",
-                        queued_message="RapidOCR model download queued",
-                    ),
-                },
-                ui_i18n_dir=plugins_root / "galgame_plugin" / "i18n" / "ui",
-                tutorial_enabled=True,
-            )
-        if _plugin_module_available("galgame_plugin"):
-            register_tutorial_migration_hook(
-                _copy_legacy_galgame_tutorial_progress_if_missing,
-                plugin_id="galgame_plugin",
-            )
-
 
 def get_install_plugin_registration(plugin_id: str) -> InstallPluginRegistration | None:
     """Resolve install metadata from the source selected by the main registry.
@@ -357,7 +329,6 @@ def get_install_plugin_registration(plugin_id: str) -> InstallPluginRegistration
     """
 
     normalized_plugin_id = normalize_registered_plugin_id(plugin_id)
-    bootstrap_builtin_install_plugins()
     for attempt in range(2):
         selected = _selected_plugin_state(normalized_plugin_id)
         if selected is None or selected.runtime_load_state == "failed":

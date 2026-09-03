@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import builtins
 import copy
 from collections.abc import Iterator
 from pathlib import Path
@@ -76,16 +75,6 @@ def _select_plugin(
         state.plugins[plugin_id] = meta
 
 
-def _select_builtin_galgame() -> None:
-    plugins_root = Path(install_registry.__file__).resolve().parents[1] / "plugins"
-    _select_plugin(
-        "galgame_plugin",
-        plugins_root / "galgame_plugin" / "plugin.toml",
-        entries=("galgame_install_textractor", "galgame_download_rapidocr_models"),
-        source="builtin",
-    )
-
-
 _DEMO_DECLARATION = """
 [plugin.install]
 enabled = true
@@ -100,25 +89,94 @@ entry_timeout = 600.0
 """
 
 
-def test_builtin_install_registration_bootstraps_from_empty_registry(
-    monkeypatch: pytest.MonkeyPatch,
+def test_galgame_legacy_registration_uses_selected_market_source(
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
-    monkeypatch.setattr(install_registry, "_tutorial_migration_hooks", {})
-    _select_builtin_galgame()
+    plugin_root = tmp_path / "market" / "galgame_plugin"
+    manifest = _write_manifest(plugin_root, "galgame_plugin", declaration=None)
+    (plugin_root / "i18n" / "ui").mkdir(parents=True)
+    _select_plugin(
+        "galgame_plugin",
+        manifest,
+        entries=("galgame_install_textractor", "galgame_download_rapidocr_models"),
+        source="user",
+    )
 
     galgame = install_registry.get_install_plugin_registration("galgame_plugin")
 
     assert galgame is not None
     assert set(galgame.install_kinds) == {"rapidocr_models", "textractor"}
-    assert galgame.tutorial_enabled is True
-    assert galgame.ui_i18n_dir == (
-        Path(install_registry.__file__).resolve().parents[1]
-        / "plugins"
-        / "galgame_plugin"
-        / "i18n"
-        / "ui"
+    assert galgame.install_kinds["textractor"].entry_id == (
+        "galgame_install_textractor"
     )
+    assert galgame.install_kinds["rapidocr_models"].entry_id == (
+        "galgame_download_rapidocr_models"
+    )
+    assert all(kind.entry_timeout == 600.0 for kind in galgame.install_kinds.values())
+    assert galgame.tutorial_enabled is True
+    assert galgame.ui_i18n_dir == (plugin_root / "i18n" / "ui").resolve()
+    assert galgame.config_path == manifest.resolve()
+    assert galgame.effective_source == "user"
+
+
+@pytest.mark.parametrize(
+    "entries, missing_entry",
+    [
+        (("galgame_download_rapidocr_models",), "galgame_install_textractor"),
+        (("galgame_install_textractor",), "galgame_download_rapidocr_models"),
+    ],
+)
+def test_galgame_legacy_registration_fails_closed_when_entry_is_missing(
+    tmp_path: Path,
+    entries: tuple[str, ...],
+    missing_entry: str,
+) -> None:
+    plugin_root = tmp_path / "market" / "galgame_plugin"
+    manifest = _write_manifest(plugin_root, "galgame_plugin", declaration=None)
+    (plugin_root / "i18n" / "ui").mkdir(parents=True)
+    _select_plugin("galgame_plugin", manifest, entries=entries, source="user")
+
+    with pytest.raises(ValueError, match=missing_entry):
+        install_registry.get_install_plugin_registration("galgame_plugin")
+
+
+def test_galgame_explicit_disabled_declaration_does_not_use_legacy(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "market" / "galgame_plugin"
+    manifest = _write_manifest(
+        plugin_root,
+        "galgame_plugin",
+        declaration="[plugin.install]\nenabled = false",
+    )
+    (plugin_root / "i18n" / "ui").mkdir(parents=True)
+    _select_plugin(
+        "galgame_plugin",
+        manifest,
+        entries=("galgame_install_textractor", "galgame_download_rapidocr_models"),
+    )
+
+    assert install_registry.get_install_plugin_registration("galgame_plugin") is None
+
+
+def test_galgame_invalid_explicit_declaration_fails_closed_without_legacy(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "market" / "galgame_plugin"
+    manifest = _write_manifest(
+        plugin_root,
+        "galgame_plugin",
+        declaration='[plugin.install]\nenabled = "yes"',
+    )
+    (plugin_root / "i18n" / "ui").mkdir(parents=True)
+    _select_plugin(
+        "galgame_plugin",
+        manifest,
+        entries=("galgame_install_textractor", "galgame_download_rapidocr_models"),
+    )
+
+    with pytest.raises(ValueError, match="install declaration rejected"):
+        install_registry.get_install_plugin_registration("galgame_plugin")
 
 
 def test_study_legacy_registration_uses_selected_market_source(
@@ -208,27 +266,6 @@ def test_study_invalid_explicit_declaration_fails_closed_without_legacy(
 
     with pytest.raises(ValueError, match="install declaration rejected"):
         install_registry.get_install_plugin_registration("study_companion")
-
-
-def test_builtin_install_registration_skips_unavailable_optional_plugins(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
-    monkeypatch.setattr(install_registry, "_tutorial_migration_hooks", {})
-    monkeypatch.setattr(install_registry, "_plugin_module_available", lambda _plugin_id: False)
-
-    assert install_registry.get_install_plugin_registration("galgame_plugin") is None
-
-
-def test_plugin_module_available_treats_import_errors_as_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_find_spec(_module_name: str):
-        raise ModuleNotFoundError("No module named 'plugin.plugins'", name="plugin.plugins")
-
-    monkeypatch.setattr(install_registry.importlib.util, "find_spec", fail_find_spec)
-
-    assert install_registry._plugin_module_available("galgame_plugin") is False
 
 
 def test_explicit_install_declaration_uses_selected_registry_source(
@@ -486,54 +523,3 @@ def test_tutorial_migration_hooks_for_normalizes_plugin_id(
     assert install_registry.tutorial_migration_hooks_for(" study_companion ") == [
         migrate
     ]
-
-
-@pytest.mark.parametrize(
-    "missing_module",
-    [
-        "plugin.plugins",
-        "plugin.plugins.galgame_plugin._tutorial_migration",
-    ],
-)
-def test_builtin_galgame_migration_hook_ignores_missing_optional_plugin(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    missing_module: str,
-) -> None:
-    original_import = builtins.__import__
-
-    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "plugin.plugins.galgame_plugin._tutorial_migration":
-            raise ModuleNotFoundError(
-                f"No module named {missing_module!r}",
-                name=missing_module,
-            )
-        return original_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", guarded_import)
-
-    install_registry._copy_legacy_galgame_tutorial_progress_if_missing(
-        tmp_path / "tutorial_progress.json",
-    )
-
-
-def test_builtin_galgame_migration_hook_reraises_unexpected_missing_module(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    original_import = builtins.__import__
-
-    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "plugin.plugins.galgame_plugin._tutorial_migration":
-            raise ModuleNotFoundError(
-                "No module named 'plugin.plugins.galgame_plugin.store'",
-                name="plugin.plugins.galgame_plugin.store",
-            )
-        return original_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", guarded_import)
-
-    with pytest.raises(ModuleNotFoundError):
-        install_registry._copy_legacy_galgame_tutorial_progress_if_missing(
-            tmp_path / "tutorial_progress.json",
-        )

@@ -28,8 +28,47 @@ pytestmark = pytest.mark.plugin_integration
 
 
 @pytest.fixture
-def galgame_plugin_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "plugins" / "galgame_plugin"
+def galgame_plugin_dir(tmp_path: Path) -> Path:
+    plugin_dir = tmp_path / "market" / "galgame_plugin"
+    i18n_dir = plugin_dir / "i18n" / "ui"
+    static_dir = plugin_dir / "static"
+    i18n_dir.mkdir(parents=True)
+    static_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text(
+        """[plugin]
+id = "galgame_plugin"
+name = "Galgame Plugin"
+version = "1.0.2"
+type = "plugin"
+entry = "plugin.plugins.galgame_plugin:GalgamePlugin"
+""",
+        encoding="utf-8",
+    )
+    for locale in ("en", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
+        (i18n_dir / f"{locale}.json").write_text(
+            json.dumps(
+                {
+                    "ui.button.collapse": f"Collapse ({locale})",
+                    "ui.install.textractor.action": f"Install ({locale})",
+                }
+            ),
+            encoding="utf-8",
+        )
+    (static_dir / "index.html").write_text(
+        "<html><head><title>Market Galgame fixture</title></head>"
+        '<body><script src="./i18n.js?v=fixture"></script></body></html>',
+        encoding="utf-8",
+    )
+    (static_dir / "main.js").write_text(
+        "window.marketGalgameFixture = true;\n",
+        encoding="utf-8",
+    )
+    (static_dir / "i18n.js").write_text(
+        "window.marketGalgameI18nFixture = true;\n",
+        encoding="utf-8",
+    )
+    (static_dir / "style.css").write_text("body {}\n", encoding="utf-8")
+    return plugin_dir
 
 
 @pytest.fixture(autouse=True)
@@ -69,23 +108,6 @@ entry_timeout = 600.0
         json.dumps({"entries.open_ui.name": "Open Study Companion UI"}),
         encoding="utf-8",
     )
-    galgame_install_route_module.register_install_plugin(
-        "galgame_plugin",
-        install_kinds={
-            "textractor": galgame_install_route_module.InstallKindRegistration(
-                entry_id="galgame_install_textractor",
-                label="Textractor",
-                queued_message="Textractor install queued",
-            ),
-            "rapidocr_models": galgame_install_route_module.InstallKindRegistration(
-                entry_id="galgame_download_rapidocr_models",
-                label="RapidOCR Models",
-                queued_message="RapidOCR model download queued",
-            ),
-        },
-        ui_i18n_dir=galgame_plugin_dir / "i18n" / "ui",
-        tutorial_enabled=True,
-    )
     with state.acquire_plugins_write_lock():
         state.plugins.clear()
         state.plugins.update(
@@ -97,7 +119,7 @@ entry_timeout = 600.0
                         {"id": "galgame_install_textractor"},
                         {"id": "galgame_download_rapidocr_models"},
                     ],
-                    "effective_source": "builtin",
+                    "effective_source": "user",
                 },
                 "study_companion": {
                     "id": "study_companion",
@@ -257,27 +279,12 @@ async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
-    assert '<title data-i18n="ui.app.title">Galgame 游玩助手</title>' in response.text
-    assert "让猫娘陪你一起玩 Galgame" in response.text
-    assert "RapidOCR" in response.text
-    assert "依赖安装" in response.text
-    assert "DXcam" in response.text
-    assert "Textractor" in response.text
-    assert 'id="rapidocrCard"' in response.text
-    assert 'id="dxcamCard"' in response.text
-    assert 'id="textractorCard"' in response.text
-    assert "OCR 截图校准" in response.text
-    assert 'id="primaryDiagnosisPanel"' in response.text
-    assert 'id="firstRunGuide"' in response.text
-    assert 'id="currentLineOverview"' in response.text
-    assert 'id="ocrPipelinePanel"' in response.text
-    assert 'id="installCompactSummary"' in response.text
-    assert "./i18n.js?v=" in response.text
-    assert 'data-i18n="ui.app.title"' in response.text
+    assert "Market Galgame fixture" in response.text
+    assert "./i18n.js?v=fixture" in response.text
 
 
 @pytest.mark.asyncio
-async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
+async def test_galgame_plugin_ui_script_is_served_from_selected_market_source(
     plugin_ui_async_client: AsyncClient,
     registered_galgame_plugin_meta,
 ) -> None:
@@ -285,69 +292,7 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
 
     assert response.status_code == 200
     assert "javascript" in response.headers["content-type"]
-    assert "const RUNS_URL = '/runs';" in response.text
-    # rapidocr / dxcam install URLs and restore state helpers removed —
-    # both packages are now bundled main-program deps (see pyproject.toml
-    # [dependency-groups] galgame). Only textractor retains runtime install
-    # machinery; RapidOCR models use the same task lifecycle.
-    assert "const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;" in response.text
-    assert "new EventSource(" in response.text
-    assert "restoreTextractorInstallState" in response.text
-    assert "session.json" not in response.text
-    assert "events.jsonl" not in response.text
-    assert "galgame_get_status" in response.text
-    assert "galgame_get_snapshot" in response.text
-    assert "galgame_get_history" in response.text
-    assert "galgame_agent_command" in response.text
-    assert "galgame_set_ocr_capture_profile" in response.text
-    assert "galgame_list_ocr_windows" in response.text
-    assert "force: Boolean(force)" in response.text
-    assert "galgame_set_ocr_window_target" in response.text
-    assert "active_data_source" in response.text
-    assert "memory_reader_runtime" in response.text
-    assert "ocr_reader_runtime" in response.text
-    assert "renderPrimaryDiagnosis" in response.text
-    assert "normalizePrimaryDiagnosis" in response.text
-    assert "primary_diagnosis" in response.text
-    assert "renderFirstRunGuide" in response.text
-    assert "renderCurrentLineOverview" in response.text
-    assert "renderOcrPipelinePanel" in response.text
-    assert "renderInstallCompactSummary" in response.text
-    assert "excluded_non_game_process" in response.text
-    assert "rapidocr" in response.text
-    assert "dxcam" in response.text
-    assert "textractor" in response.text
-    assert "function uiT(" in response.text
-    assert "getInstallUIConfig" in response.text
-    assert "i18n-ready" in response.text
-
-
-@pytest.mark.asyncio
-async def test_galgame_plugin_ui_script_skips_stale_rapidocr_model_failures(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-) -> None:
-    response = await plugin_ui_async_client.get("/plugin/galgame_plugin/ui/main.js")
-
-    assert response.status_code == 200
-    script = response.text
-    assert "function canApplyRestoredInstallTaskState" in script
-    assert "function shouldOfferRapidOcrModelsDownload" in script
-    assert "generation: 0" in script
-    assert "const restoreGeneration = Number((runtime && runtime.generation) || 0);" in script
-    assert "state.generation = Number(state.generation || 0) + 1;" in script
-    assert "state.currentTaskId = null;" in script
-    assert "clearPersistedInstallTaskId(kind);" in script
-    assert "function shouldRestoreRapidOcrModelsFailure" in script
-    assert "return shouldOfferRapidOcrModelsDownload((status || {}).rapidocr || {});" in script
-    assert "ui.install.rapidocr.missing_models_manual_body" in script
-    assert "{ allowRefresh: true }" in script
-    assert "showTerminalFlash: false" in script
-    assert "clearPersistedInstallTaskId('rapidocr_models');" in script
-    assert script.index("function canApplyRestoredInstallTaskState") < script.index("applyInstallTaskState(kind, restoredState")
-    assert script.index("applyRapidOcrModelsGate(rapidocr);") < script.index(
-        "const lastTask = installRuntime.rapidocr_models.state;"
-    )
+    assert "window.marketGalgameFixture = true" in response.text
 
 
 @pytest.mark.asyncio
@@ -359,9 +304,7 @@ async def test_galgame_plugin_ui_i18n_script_is_served(
 
     assert response.status_code == 200
     assert "javascript" in response.headers["content-type"]
-    assert "const I18n" in response.text
-    assert "/ui-api/locale" in response.text
-    assert "/ui-api/i18n/ui/" in response.text
+    assert "window.marketGalgameI18nFixture = true" in response.text
 
 
 @pytest.mark.asyncio
@@ -603,6 +546,29 @@ async def test_unregistered_plugin_install_route_returns_404(
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Plugin 'unknown_plugin' has no install API"
+
+
+@pytest.mark.asyncio
+async def test_uninstalled_market_galgame_has_no_install_i18n_or_tutorial_api(
+    plugin_ui_async_client: AsyncClient,
+) -> None:
+    with state.acquire_plugins_write_lock():
+        state.plugins.pop("galgame_plugin", None)
+
+    responses = [
+        await plugin_ui_async_client.post(
+            "/plugin/galgame_plugin/ui-api/textractor/install",
+            json={"force": False},
+        ),
+        await plugin_ui_async_client.get(
+            "/plugin/galgame_plugin/ui-api/i18n/ui/en.json"
+        ),
+        await plugin_ui_async_client.get(
+            "/plugin/galgame_plugin/ui-api/tutorial/status"
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [404, 404, 404]
 
 
 @pytest.mark.asyncio
@@ -1326,6 +1292,160 @@ async def test_tutorial_progress_is_namespaced_by_plugin_id(
     assert save_response.json()["progress"]["completed"] is True
     assert study_response.status_code == 200
     assert study_response.json()["progress"]["completed"] is False
+
+
+def _write_legacy_galgame_store(path: Path, progress: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"tutorial_progress": progress}),
+        encoding="utf-8",
+    )
+
+
+def _galgame_tutorial_target(runtime_root: Path) -> Path:
+    return (
+        runtime_root
+        / "server"
+        / "plugin_install"
+        / "galgame_plugin"
+        / "tutorial_progress.json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_galgame_tutorial_migrates_runtime_primary_store(
+    plugin_ui_async_client: AsyncClient,
+    tutorial_runtime_root: Path,
+) -> None:
+    legacy_path = (
+        tutorial_runtime_root
+        / "plugins"
+        / "galgame_plugin"
+        / "data"
+        / "galgame_store.json"
+    )
+    _write_legacy_galgame_store(
+        legacy_path,
+        {"completed": True, "last_step_index": 4},
+    )
+
+    response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/tutorial/status"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["progress"]["completed"] is True
+    assert response.json()["progress"]["last_step_index"] == 4
+    assert json.loads(
+        _galgame_tutorial_target(tutorial_runtime_root).read_text(encoding="utf-8")
+    )["completed"] is True
+
+
+@pytest.mark.asyncio
+async def test_galgame_tutorial_recovers_valid_backup_after_corrupt_primary(
+    plugin_ui_async_client: AsyncClient,
+    tutorial_runtime_root: Path,
+) -> None:
+    legacy_path = (
+        tutorial_runtime_root
+        / "plugins"
+        / "galgame_plugin"
+        / "data"
+        / "galgame_store.json"
+    )
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text("{broken", encoding="utf-8")
+    _write_legacy_galgame_store(
+        legacy_path.with_name("galgame_store.json.bak"),
+        {"skipped": True, "last_step_index": 2},
+    )
+
+    response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/tutorial/status"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["progress"]["skipped"] is True
+    assert response.json()["progress"]["last_step_index"] == 2
+
+
+@pytest.mark.asyncio
+async def test_galgame_tutorial_falls_back_to_selected_market_source(
+    plugin_ui_async_client: AsyncClient,
+    tutorial_runtime_root: Path,
+    galgame_plugin_dir: Path,
+) -> None:
+    _write_legacy_galgame_store(
+        galgame_plugin_dir / "data" / "galgame_store.json",
+        {"completed": True, "completed_at": 321.0},
+    )
+
+    response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/tutorial/status"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["progress"]["completed"] is True
+    assert response.json()["progress"]["completed_at"] == 321.0
+    assert _galgame_tutorial_target(tutorial_runtime_root).is_file()
+
+
+@pytest.mark.asyncio
+async def test_galgame_tutorial_migration_does_not_overwrite_existing_target(
+    plugin_ui_async_client: AsyncClient,
+    tutorial_runtime_root: Path,
+) -> None:
+    target = _galgame_tutorial_target(tutorial_runtime_root)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps({"completed": False, "last_step_index": 1}),
+        encoding="utf-8",
+    )
+    _write_legacy_galgame_store(
+        tutorial_runtime_root
+        / "plugins"
+        / "galgame_plugin"
+        / "data"
+        / "galgame_store.json",
+        {"completed": True, "last_step_index": 9},
+    )
+
+    response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/tutorial/status"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["progress"]["completed"] is False
+    assert response.json()["progress"]["last_step_index"] == 1
+
+
+@pytest.mark.asyncio
+async def test_galgame_tutorial_atomic_migration_failure_only_warns(
+    plugin_ui_async_client: AsyncClient,
+    tutorial_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_legacy_galgame_store(
+        tutorial_runtime_root
+        / "plugins"
+        / "galgame_plugin"
+        / "data"
+        / "galgame_store.json",
+        {"completed": True},
+    )
+
+    def _fail_replace(_source: Path, _target: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(galgame_install_route_module.os, "replace", _fail_replace)
+
+    response = await plugin_ui_async_client.get(
+        "/plugin/galgame_plugin/ui-api/tutorial/status"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["progress"]["completed"] is False
+    assert not _galgame_tutorial_target(tutorial_runtime_root).exists()
 
 
 @pytest.mark.asyncio

@@ -77,12 +77,12 @@ dependencies = [
   # routine in a child process that Huorong's heuristic flags as a trojan.
   "onnxruntime",
   "tokenizers",
-  # Cross-platform screen capture used by galgame_plugin and potentially other
-  # plugins (mss is also a candidate for brain/computer_use). Tiny (<1MB).
+  # Cross-platform screen capture retained for marketplace plugins and potential
+  # host computer-use features (mss is tiny, <1MB).
   "mss",
   "dxcam ; sys_platform == 'win32'",
-  # Linux X11 window enumeration / geometry for galgame_plugin
-  # (cross-platform-capture-plan). Falls back to `wmctrl` subprocess
+  # Linux X11 window enumeration / geometry for marketplace plugins. Falls back
+  # to the `wmctrl` subprocess
   # when this dependency is unavailable. Skipped on Windows/macOS
   # to keep dev installs lean.
   "python-xlib ; sys_platform == 'linux'",
@@ -160,8 +160,8 @@ pyncm-async = { path = "./deps/pyncm_async-1.8.1-py3-none-any.whl" }
 rapidocr-pillow = { path = "./deps/rapidocr_pillow" }
 
 # python3-xlib (0.15, a stale 2016 py3 fork that pyautogui/mouseinfo pin) and
-# python-xlib (0.33, the maintained fork we depend on directly for galgame_plugin
-# X11 enumeration) both install into the same `Xlib` import namespace — having
+# python-xlib (0.33, the maintained fork retained for marketplace plugin X11
+# enumeration) both install into the same `Xlib` import namespace — having
 # both means whichever lands last wins, a latent Linux import hazard. We block
 # python3-xlib so the single, modern python-xlib provides `Xlib` for everyone;
 # its API is a strict superset, so pyautogui's `from Xlib...` resolves fine.
@@ -191,10 +191,9 @@ dev = [
     "pytest-xdist>=3.8.0",
     "ruff>=0.15.4",
 ]
-# galgame_plugin native deps. NOT installed by default `uv sync` — keeps dev
-# install lean. Build scripts add `--group galgame` so packaged
-# Nuitka/PyInstaller dist bundles everything; plugin code import-guards these
-# so the plugin still loads (with degraded OCR backend) when the group is missing.
+# Marketplace Galgame native deps. NOT installed by default `uv sync` — keeps
+# dev installs lean. Build scripts add `--group galgame` so packaged
+# Nuitka/PyInstaller dist bundles the host-side dependency cohort.
 # The local rapidocr-pillow fork keeps the rapidocr_onnxruntime import package
 # but removes the opencv/shapely transitive dependency chain.
 galgame = [
