@@ -402,3 +402,23 @@ def test_browser_tree_with_wrong_container_format_is_rejected(tmp_path: Path) ->
     write(root / "playwright_browsers" / "chromium-1208" / "chrome-mac" / "chrome.dll", pe("x64"))
     issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
     assert any("wrong platform" in issue and "chrome.dll" in issue for issue in issues)
+
+
+def test_directory_token_walk_is_capped_too(tmp_path: Path, monkeypatch) -> None:
+    """The cap must bound the directory-name pass as well as the byte pass.
+
+    Two separate walks would leave this one unbounded, which makes the cap --
+    and the fail-closed message that goes with it -- theatre.
+    """
+    root = tmp_path / "Xiao8"
+    write(root / "projectneko_server", macho("x64"))
+    browsers = root / "playwright_browsers"
+    for index in range(40):
+        (browsers / f"chrome-mac-arm64-{index}").mkdir(parents=True)
+
+    monkeypatch.setattr(check_dist_arch, "_BROWSER_SCAN_FILE_LIMIT", 3)
+    issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
+    assert any("could not be fully verified" in issue for issue in issues)
+    reported = [issue for issue in issues if "non-x64 directories" in issue]
+    # 上限是 3，40 个坏目录不可能全被看到；真全看到了就说明这道遍历没受限。
+    assert not reported or reported[0].count("chrome-mac-arm64-") <= 3

@@ -278,27 +278,13 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
     browser_root = dist_root / _VENDORED_BROWSER_DIR
     if browser_root.is_dir():
         tokens = _OPPOSITE_TOKENS.get(expect_arch, ())
-        bad_paths = sorted(
-            str(path.relative_to(dist_root))
-            for path in browser_root.rglob("*")
-            if path.is_dir()
-            and any(
-                token in part.lower()
-                for part in path.relative_to(browser_root).parts
-                for token in tokens
-            )
-        )
-        if bad_paths:
-            issues.append(
-                f"vendored browser tree carries non-{expect_arch} directories: "
-                + ", ".join(bad_paths[:5])
-            )
-
         opposite = _OPPOSITE_ARCH.get(expect_arch)
+        bad_paths: list[str] = []
         wrong_binaries: list[str] = []
         wrong_format: list[str] = []
-        # 直接迭代 rglob，别先 sorted() 把整棵树物化 —— 那样上限形同虚设，
-        # 树一大就先把内存吃光。只对最后要打印的结果排序。
+        # 目录名和字节两道检查走同一次遍历。分两次走的话上限只约束得住第二次，
+        # 第一次照样把整棵树走完，那个上限就是摆设。也别先 sorted() 把树物化，
+        # 只对最后要打印的结果排序。
         scanned = 0
         truncated = False
         for path in browser_root.rglob("*"):
@@ -306,18 +292,31 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
                 truncated = True
                 break
             scanned += 1
+            relative = path.relative_to(dist_root)
+            if path.is_dir():
+                if any(
+                    token in part.lower()
+                    for part in path.relative_to(browser_root).parts
+                    for token in tokens
+                ):
+                    bad_paths.append(str(relative))
+                continue
             if not path.is_file() or path.is_symlink():
                 continue
             info = read_binary(path)
             if info is None:
                 continue
-            relative = path.relative_to(dist_root)
             if info.format != expect_format:
                 # 和 dist 主体同一条判据：装错平台的浏览器架构反而是「对」的
                 # （chrome-mac 底下的 PE x64 满足 x64），只有格式这维抓得住。
                 wrong_format.append(f"{relative} is {info.format}")
             elif opposite in info.arches and expect_arch not in info.arches:
                 wrong_binaries.append(f"{relative} is {'/'.join(info.arches)}")
+        if bad_paths:
+            issues.append(
+                f"vendored browser tree carries non-{expect_arch} directories: "
+                + ", ".join(sorted(bad_paths)[:5])
+            )
         if wrong_binaries:
             shown = ", ".join(sorted(wrong_binaries)[:5])
             issues.append(
