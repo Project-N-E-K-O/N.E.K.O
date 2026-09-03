@@ -44,8 +44,8 @@ a mis-resolved electron-builder/Nuitka target would fail the same way.
   time.
 - Inside ``playwright_browsers/``, both that no path component carries the
   *opposite* architecture token (#2898's bad build shipped
-  ``chromium-1208/chrome-mac-arm64`` inside an x64 bundle) and that no bundled
-  binary *is* the opposite architecture. The directory check alone is not
+  ``chromium-1208/chrome-mac-arm64`` inside an x64 bundle) and that every
+  bundled binary carries the expected one. The directory check alone is not
   enough: Playwright also uses tokenless names such as ``chrome-mac``, under
   which a wrong-arch Chromium would pass unnoticed.
 
@@ -100,9 +100,6 @@ _OPPOSITE_TOKENS = {
     "arm64": ("-x64", "_x64", "-x86_64", "_x86_64", "amd64"),
 }
 _VENDORED_BROWSER_DIR = "playwright_browsers"
-# 供应商树按「只禁对立架构」判，不要求逐个命中期望架构：Chromium 里带一两个
-# 32 位/无法识别的小工具是正常的，而整树跑偏必然大面积撞上对立架构。
-_OPPOSITE_ARCH = {"x64": "arm64", "arm64": "x64"}
 # 只是别让畸形目录把这一步拖死；正常 Chromium 包也就几千个文件。
 _BROWSER_SCAN_FILE_LIMIT = 50000
 # PE 的 e_lfanew 指向可执行头。真实文件里它是几百字节；给个宽松上界，免得
@@ -278,7 +275,6 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
     browser_root = dist_root / _VENDORED_BROWSER_DIR
     if browser_root.is_dir():
         tokens = _OPPOSITE_TOKENS.get(expect_arch, ())
-        opposite = _OPPOSITE_ARCH.get(expect_arch)
         bad_paths: list[str] = []
         wrong_binaries: list[str] = []
         wrong_format: list[str] = []
@@ -310,7 +306,11 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
                 # 和 dist 主体同一条判据：装错平台的浏览器架构反而是「对」的
                 # （chrome-mac 底下的 PE x64 满足 x64），只有格式这维抓得住。
                 wrong_format.append(f"{relative} is {info.format}")
-            elif opposite in info.arches and expect_arch not in info.arches:
+            elif expect_arch not in info.arches:
+                # 和 dist 主体同一条判据：不含期望架构就是错的，不只是「恰好是对立
+                # 架构」才算。原来这里放宽成只禁对立架构，理由是「Chromium 带一两个
+                # 32 位小工具属正常」—— 那是推测，拿不出证据，而且让 x86 的浏览器
+                # 二进制在 x64 包里畅通无阻。
                 wrong_binaries.append(f"{relative} is {'/'.join(info.arches)}")
         if bad_paths:
             issues.append(
@@ -320,7 +320,7 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
         if wrong_binaries:
             shown = ", ".join(sorted(wrong_binaries)[:5])
             issues.append(
-                f"vendored browser tree contains {len(wrong_binaries)} {opposite} "
+                f"vendored browser tree contains {len(wrong_binaries)} non-{expect_arch} "
                 f"binary/binaries: {shown}"
                 + (" ..." if len(wrong_binaries) > 5 else "")
             )

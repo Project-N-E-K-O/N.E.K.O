@@ -32,7 +32,7 @@ sys.modules["check_dist_arch"] = check_dist_arch
 _SPEC.loader.exec_module(check_dist_arch)
 
 
-_MACHO_CPU_BY_ARCH = {"x64": 0x01000007, "arm64": 0x0100000C}
+_MACHO_CPU_BY_ARCH = {"x64": 0x01000007, "arm64": 0x0100000C, "x86": 0x00000007}
 _ELF_MACHINE_BY_ARCH = {"x64": 62, "arm64": 183}
 _PE_MACHINE_BY_ARCH = {"x64": 0x8664, "arm64": 0xAA64}
 
@@ -422,3 +422,18 @@ def test_directory_token_walk_is_capped_too(tmp_path: Path, monkeypatch) -> None
     reported = [issue for issue in issues if "non-x64 directories" in issue]
     # 上限是 3，40 个坏目录不可能全被看到；真全看到了就说明这道遍历没受限。
     assert not reported or reported[0].count("chrome-mac-arm64-") <= 3
+
+
+def test_browser_binary_of_a_third_architecture_is_rejected(tmp_path: Path) -> None:
+    """Neither the expected arch nor its opposite: an x86 helper in an x64 bundle.
+
+    The browser tree used to run a denylist ("only the opposite arch fails"),
+    which let this through. It now uses the same strict rule as the rest of the
+    dist: not carrying the expected architecture is enough to fail.
+    """
+    root = tmp_path / "Xiao8"
+    write(root / "projectneko_server", macho("x64"))
+    browser = root / "playwright_browsers" / "chromium-1208" / "chrome-mac"
+    write(browser / "helper", macho("x86"))
+    issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
+    assert any("non-x64" in issue and "helper" in issue for issue in issues)
