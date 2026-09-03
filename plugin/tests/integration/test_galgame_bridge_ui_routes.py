@@ -415,6 +415,56 @@ async def test_plugin_ui_i18n_rejects_locale_file_symlink_escape(
 
 
 @pytest.mark.asyncio
+async def test_plugin_ui_i18n_pins_payload_before_locale_path_is_swapped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    i18n_dir = tmp_path / "i18n"
+    i18n_dir.mkdir()
+    locale_file = i18n_dir / "en.json"
+    locale_file.write_text('{"safe": true}', encoding="utf-8")
+    outside_file = tmp_path / "outside.json"
+    outside_file.write_text('{"secret": true}', encoding="utf-8")
+
+    registration = galgame_install_route_module.InstallPluginRegistration(
+        plugin_id="external_plugin",
+        install_kinds={},
+        ui_i18n_dir=i18n_dir,
+    )
+
+    async def registration_for(_plugin_id: str):
+        return registration
+
+    original_run_blocking = galgame_install_route_module._run_blocking
+
+    async def swap_after_blocking_read(func, *args, **kwargs):
+        result = await original_run_blocking(func, *args, **kwargs)
+        locale_file.unlink()
+        outside_file.replace(locale_file)
+        return result
+
+    monkeypatch.setattr(
+        galgame_install_route_module,
+        "_get_plugin_registration",
+        registration_for,
+    )
+    monkeypatch.setattr(
+        galgame_install_route_module,
+        "_run_blocking",
+        swap_after_blocking_read,
+    )
+
+    response = await galgame_install_route_module.get_plugin_ui_i18n(
+        "external_plugin",
+        "en",
+    )
+
+    assert response.status_code == 200
+    assert response.body == b'{"safe": true}'
+    assert b"secret" not in response.body
+
+
+@pytest.mark.asyncio
 async def test_unregistered_plugin_install_route_returns_404(
     plugin_ui_async_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,

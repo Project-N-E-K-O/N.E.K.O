@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import stat
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -9,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from plugin._types.models import RunCreateRequest
@@ -113,19 +115,53 @@ async def get_plugin_ui_i18n(plugin_id: str, locale: str) -> Response:
         return Response(status_code=404)
     if normalized not in _ALLOWED_UI_LOCALES:
         return Response(status_code=404)
-    def resolve_locale_file() -> Path | None:
-        try:
-            base_dir = registration.ui_i18n_dir.resolve(strict=True)
-            file = (base_dir / f"{normalized}.json").resolve(strict=True)
-            file.relative_to(base_dir)
-        except (FileNotFoundError, OSError, RuntimeError, ValueError):
-            return None
-        return file if file.is_file() else None
 
-    file = await _run_blocking(resolve_locale_file)
-    if file is None:
+    payload = await _run_blocking(
+        _read_ui_locale_payload,
+        registration.ui_i18n_dir,
+        normalized,
+    )
+    if payload is None:
         return Response(status_code=404)
-    return FileResponse(file)
+    return Response(content=payload, media_type="application/json")
+
+
+def _read_ui_locale_payload(base_path: Path, locale: str) -> bytes | None:
+    """Read one locale through a verified handle so path swaps cannot escape."""
+
+    file_descriptor = -1
+    try:
+        base_dir = base_path.resolve(strict=True)
+        if not base_dir.is_dir():
+            return None
+        candidate = base_dir / f"{locale}.json"
+        open_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        file_descriptor = os.open(candidate, open_flags)
+
+        opened_metadata = os.fstat(file_descriptor)
+        current_metadata = os.stat(candidate, follow_symlinks=False)
+        reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if (
+            not stat.S_ISREG(opened_metadata.st_mode)
+            or not stat.S_ISREG(current_metadata.st_mode)
+            or bool(getattr(current_metadata, "st_file_attributes", 0) & reparse_attribute)
+            or not os.path.samestat(opened_metadata, current_metadata)
+        ):
+            return None
+
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(base_dir)
+        if not os.path.samestat(opened_metadata, resolved.stat()):
+            return None
+
+        with os.fdopen(file_descriptor, "rb") as file_obj:
+            file_descriptor = -1
+            return file_obj.read()
+    except (FileNotFoundError, OSError, RuntimeError, ValueError):
+        return None
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
 
 
 def _normalize_ui_locale(locale: str) -> str:

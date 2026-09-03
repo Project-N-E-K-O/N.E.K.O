@@ -170,7 +170,8 @@ def test_plugin_ui_i18n_route_uses_registered_i18n_dir(monkeypatch, tmp_path: Pa
 
     response = asyncio.run(plugin_install.get_plugin_ui_i18n("custom_plugin", "en"))
 
-    assert Path(response.path) == expected_file
+    assert response.status_code == 200
+    assert response.body == expected_file.read_bytes()
 
 
 def test_plugin_ui_i18n_route_bootstraps_builtin_registration(monkeypatch) -> None:
@@ -195,7 +196,8 @@ def test_plugin_ui_i18n_route_bootstraps_builtin_registration(monkeypatch) -> No
 
     response = asyncio.run(plugin_install.get_plugin_ui_i18n("study_companion", "en"))
 
-    assert Path(response.path) == expected_file
+    assert response.status_code == 200
+    assert response.body == expected_file.read_bytes()
 
 
 def test_tutorial_store_uses_runtime_data_root(monkeypatch, tmp_path: Path) -> None:
