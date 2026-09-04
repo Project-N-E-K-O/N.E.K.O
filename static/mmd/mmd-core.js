@@ -437,6 +437,7 @@ class MMDCore {
 
     async loadModel(modelUrl, options = {}, managerLoadToken = null) {
         const THREE = window.THREE;
+        const embed = options.embed === true;
         if (!THREE) {
             throw new Error('Three.js 库未加载，无法加载 MMD 模型');
         }
@@ -591,8 +592,11 @@ class MMDCore {
             // 材质诊断日志
             this._logMaterialDiagnostics(mmd);
 
-            // 恢复保存的偏好设置（位置/旋转/缩放）
-            await this._restoreUserPreferences(mmd, modelUrl);
+            // The forge embed owns its own camera and model coordinate system.
+            // Desktop position/scale/camera preferences must never leak into it.
+            if (!embed) {
+                await this._restoreUserPreferences(mmd, modelUrl);
+            }
 
             return modelInfo;
         } catch (error) {
