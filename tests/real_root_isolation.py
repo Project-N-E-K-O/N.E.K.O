@@ -42,9 +42,15 @@ over this and restores back to it.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
+import os
+import shutil
 import tempfile
 from pathlib import Path
+
+# Escape hatch for inspecting what a run wrote into the stand-in root.
+KEEP_ROOT_ENV = "NEKO_TEST_KEEP_APPDATA_ROOT"
 
 _PATCHED_METHODS = (
     "_get_standard_data_directory_candidates",
@@ -57,11 +63,32 @@ _ISOLATED_ROOT: Path | None = None
 _ORIGINALS: dict[str, object] = {}
 
 
+def _discard_root(root: Path) -> None:
+    """Delete the stand-in root at process exit.
+
+    One per PROCESS, so under ``-n auto`` a full run mints one per worker plus
+    one for the controller, and each holds a whole N.E.K.O tree -- config,
+    memory, card faces, migration workspaces. Measured on a dev machine: three
+    full runs left 42 directories and 45 MB behind. atexit rather than
+    ``pytest_sessionfinish`` because the root is minted at conftest IMPORT
+    time, before any hook or fixture exists, and a collection-time crash never
+    reaches sessionfinish.
+
+    ``ignore_errors`` because on Windows a still-open SQLite handle makes the
+    unlink fail, and leaving a temp directory behind must never be what turns
+    a green run red.
+    """
+    if os.environ.get(KEEP_ROOT_ENV, "").strip():
+        return
+    shutil.rmtree(root, ignore_errors=True)
+
+
 def isolated_app_data_root() -> Path:
     """The throwaway parent directory that stands in for the app-data root."""
     global _ISOLATED_ROOT
     if _ISOLATED_ROOT is None:
         _ISOLATED_ROOT = Path(tempfile.mkdtemp(prefix="neko_test_appdata_"))
+        atexit.register(_discard_root, _ISOLATED_ROOT)
     return _ISOLATED_ROOT
 
 

@@ -178,10 +178,10 @@ from tests.clock_guard import pytest_runtest_call  # noqa: F401,E402
 # 一旦泄漏到进程环境，后面每个"临时" ConfigManager 都会无视 patch 过的目录、直接写进
 # 开发机的真实运行根（2026-09-01 就这样把六个角色从 characters.json 里抹掉了）。
 # 同 clock_guard：pytest 按名字发现 hook，这个导入没有显式调用点但不是死代码。
-from tests.storage_root_env_guard import (  # noqa: F401,E402
-    pytest_runtest_setup,
-    pytest_runtest_teardown,
-    pytest_sessionstart,
+from tests.storage_root_env_guard import (  # noqa: E402
+    pytest_runtest_setup,  # noqa: F401
+    pytest_runtest_teardown,  # noqa: F401
+    pytest_sessionstart,  # noqa: F401
 )
 
 
