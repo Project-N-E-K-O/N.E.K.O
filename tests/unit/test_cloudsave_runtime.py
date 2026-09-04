@@ -3341,7 +3341,7 @@ def test_cloud_export_rejects_redirected_recent_snapshot(tmp_path):
 
 
 @pytest.mark.unit
-def test_standard_data_candidates_on_unix_platforms(tmp_path):
+def test_standard_data_candidates_on_unix_platforms(tmp_path, real_root_resolution):
     from utils.config_manager import ConfigManager
 
     fake_home = tmp_path / "home"
