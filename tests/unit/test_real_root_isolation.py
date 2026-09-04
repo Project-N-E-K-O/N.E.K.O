@@ -87,12 +87,20 @@ def test_real_resolution_restores_the_genuine_methods_and_puts_the_stubs_back():
 
 
 def test_real_resolution_puts_the_stubs_back_even_when_the_body_raises():
+    # try/except rather than pytest.raises: this asserts two things about one
+    # event -- the exception still escapes, AND the stubs are back afterwards.
+    # Spelling the control flow out keeps both visible (and keeps static
+    # analysers from reading everything after the block as unreachable).
     stub = ConfigManager._get_standard_data_directory_candidates
+    escaped = False
 
-    with pytest.raises(RuntimeError):
+    try:
         with isolation.real_resolution(ConfigManager):
             raise RuntimeError("boom")
+    except RuntimeError:
+        escaped = True
 
+    assert escaped, "real_resolution swallowed the body's exception"
     assert ConfigManager._get_standard_data_directory_candidates is stub
 
 
