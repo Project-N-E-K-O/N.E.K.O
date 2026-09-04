@@ -23,13 +23,15 @@ async function readMaintainerGuide() {
   )
 }
 
-test('scheduled and manually dispatched paid runs force a depth-100 AIO baseline', async () => {
+test('paid baselines require manual dispatch and still force depth-100 AIO', async () => {
   const workflow = await readWorkflow()
 
-  assert.match(workflow, /cron: '15 0 \* \* \*'/)
-  assert.match(workflow, /github\.event_name == 'schedule' && 'paid'/)
-  assert.match(workflow, /\(github\.event_name == 'schedule' \|\| inputs\.run_mode == 'paid'\) && '100'/)
-  assert.match(workflow, /\(github\.event_name == 'schedule' \|\| inputs\.run_mode == 'paid'\) && 'true'/)
+  assert.doesNotMatch(workflow, /\r?\n  schedule:/)
+  assert.doesNotMatch(workflow, /github\.event_name == 'schedule'/)
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch'/)
+  assert.match(workflow, /COLLECTION_KIND: \$\{\{ inputs\.run_mode \}\}/)
+  assert.match(workflow, /inputs\.run_mode == 'paid' && '100'/)
+  assert.match(workflow, /inputs\.run_mode == 'paid' && 'true'/)
   assert.doesNotMatch(workflow, /ENABLE_PAID_DATAFORSEO_SCHEDULE/)
 })
 
@@ -46,15 +48,16 @@ test('forks cannot run validation or paid report jobs', async () => {
   )
 })
 
-test('maintainer documentation cannot revive the obsolete paid-schedule kill switch', async () => {
+test('maintainer documentation keeps paid collection manual', async () => {
   const guide = await readMaintainerGuide()
 
-  assert.match(guide, /08:15 Asia\/Shanghai schedule always runs the paid baseline/)
+  assert.match(guide, /workflow has no `schedule` trigger/)
+  assert.match(guide, /paid baseline must be started manually/)
   assert.match(guide, /fixed-name `seo-geo-daily-report` diagnostic artifact/)
   assert.match(guide, /`seo-geo-daily-paid-baseline`/)
   assert.match(guide, /obsolete `ENABLE_PAID_DATAFORSEO_SCHEDULE` variable/)
   assert.doesNotMatch(guide, /set `ENABLE_PAID_DATAFORSEO_SCHEDULE=true`/)
-  assert.doesNotMatch(guide, /schedule is skipped unless/)
+  assert.doesNotMatch(guide, /schedule always runs the paid baseline/)
 })
 
 test('one run collects independent CN, online-English, and online-Chinese segments', async () => {
