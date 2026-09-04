@@ -26,8 +26,8 @@ async function readMaintainerGuide() {
 test('paid baselines require manual dispatch and still force depth-100 AIO', async () => {
   const workflow = await readWorkflow()
 
-  assert.doesNotMatch(workflow, /\r?\n  schedule:/)
-  assert.doesNotMatch(workflow, /github\.event_name == 'schedule'/)
+  assert.doesNotMatch(workflow, /\bschedule\b/u)
+  assert.doesNotMatch(workflow, /\bcron\b/u)
   assert.match(workflow, /github\.event_name == 'workflow_dispatch'/)
   assert.match(workflow, /COLLECTION_KIND: \$\{\{ inputs\.run_mode \}\}/)
   assert.match(workflow, /inputs\.run_mode == 'paid' && '100'/)
