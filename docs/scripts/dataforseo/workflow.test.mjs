@@ -23,11 +23,27 @@ async function readMaintainerGuide() {
   )
 }
 
+function topLevelMapping(source, key) {
+  const lines = source.split(/\r?\n/u)
+  const start = lines.findIndex((line) => line.startsWith(`${key}:`))
+  assert.notEqual(start, -1, `missing top-level ${key} mapping`)
+
+  const block = [lines[start]]
+  for (const line of lines.slice(start + 1)) {
+    if (line && !/^\s/u.test(line)) break
+    block.push(line)
+  }
+
+  return block.join('\n').replace(/\s+#.*$/gmu, '')
+}
+
 test('paid baselines require manual dispatch and still force depth-100 AIO', async () => {
   const workflow = await readWorkflow()
+  const triggers = topLevelMapping(workflow, 'on')
 
-  assert.doesNotMatch(workflow, /\bschedule\b/u)
-  assert.doesNotMatch(workflow, /\bcron\b/u)
+  assert.doesNotMatch(triggers, /\bschedule\b/u)
+  assert.doesNotMatch(triggers, /\bcron\b/u)
+  assert.match(triggers, /\bworkflow_dispatch\b/u)
   assert.match(workflow, /github\.event_name == 'workflow_dispatch'/)
   assert.match(workflow, /COLLECTION_KIND: \$\{\{ inputs\.run_mode \}\}/)
   assert.match(workflow, /inputs\.run_mode == 'paid' && '100'/)
