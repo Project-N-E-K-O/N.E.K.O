@@ -157,12 +157,12 @@ def _read_packaged_isolated_metadata(
     worker in that case, since it mints keys under the id we pass it.
 
     An empty ``handlers`` mapping is an answer, not a gap: a background-only
-    plugin registers no entries, and schema v3 always writes the key. Treating
-    empty as "no metadata" sent exactly those plugins back through the worker —
+    plugin registers no entries, and the current schema always writes the key.
+    Treating empty as "no metadata" sent exactly those plugins back through the worker —
     one import for the scan, one for the host, so any module-level side effect
     (writing state, sending a notification, launching a helper) happened twice
-    (codex). There is no older package to protect: the version gate above only
-    accepts v3, and v1/v2 were never released.
+    (codex). The version gate rejects older artifacts whose handler contracts
+    may be incomplete; rebuilding or an explicit start derives current metadata.
 
     Returns ``None`` when there is no usable metadata at all.
     """
