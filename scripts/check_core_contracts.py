@@ -3311,8 +3311,15 @@ def run(root: Path) -> list[Violation]:
                 "wait_transcript_idle",
                 "has_pending_transcript_delivery",
                 "set_speaker_verifier_factory",
+                # Typed installation lifecycle API; Runtime still composes its
+                # implementation and may not inherit or expose arbitrary APIs.
+                "create_speaker_verifier_install_identity",
+                "install_speaker_verifier",
+                "retire_speaker_verifier_authority",
+                "speaker_verifier_installation_permits_evidence",
                 "request_speaker_candidate_rejection",
                 "start",
+                "stop_session",
                 "submit",
             }
             for node in ast.walk(component_class):
