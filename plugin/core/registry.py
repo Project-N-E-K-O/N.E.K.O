@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import inspect
@@ -37,6 +38,7 @@ except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
 from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
+from plugin._types.entry_metadata import entry_contract_fields
 from plugin._types.version import SDK_VERSION
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import (
@@ -537,9 +539,6 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
             handlers_updated = True
             if etype == "plugin_entry":
                 plugin_entry_method_map[(pid, str(eid))] = name
-    if handlers_updated:
-        state.invalidate_snapshot_cache("handlers")
-
     entries = _effective_entries(conf, pdata)
     for ent in entries:
         try:
@@ -563,13 +562,19 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
                 description=ent.get("description", "") if isinstance(ent, dict) else "",
                 input_schema=ent.get("input_schema", {}) if isinstance(ent, dict) else {},
             )
+            # The configured declaration still wins; retain all of its controls.
+            for field_name, value in entry_contract_fields(ent if isinstance(ent, dict) else {}).items():
+                setattr(entry_meta, field_name, deepcopy(value))
             eh = EventHandler(meta=entry_meta, handler=handler_fn)
             with state.acquire_event_handlers_write_lock():
                 state.event_handlers[f"{pid}.{eid}"] = eh
                 state.event_handlers[f"{pid}:plugin_entry:{eid}"] = eh
+            handlers_updated = True
         except (AttributeError, KeyError, TypeError) as e:
             logger.warning("Error parsing entry {} for plugin {}: {}", ent, pid, e, exc_info=True)
             # 继续处理其他条目，不中断整个插件加载
+    if handlers_updated:
+        state.invalidate_snapshot_cache("handlers")
 
 
 def _remove_scanned_metadata(pid: str) -> None:

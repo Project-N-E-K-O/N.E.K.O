@@ -57,7 +57,10 @@ PACKAGED_METADATA_FILENAME = "plugin.meta.json"
 # schema 变了就该换号，否则一份没有 source_files 的元数据仍会被当成合法的第 1 版
 # 接受，增删源文件时那道确定性的判据整个静默失效（coderabbit）。旧包因此回落到
 # manifest 声明的 entries，重新打包即可恢复。
-PACKAGED_METADATA_SCHEMA_VERSION = 3
+# 4: handlers retain the complete entry contract, including slotted SDK fields.
+# v3 artifacts may contain correct previews but incomplete handlers; rescan on
+# explicit start or rebuild the package, never import during discovery.
+PACKAGED_METADATA_SCHEMA_VERSION = 4
 
 # 解析之前先封顶。这份文件来自第三方包，而 json.loads 会把整份内容读进内存再建对象；
 # 一个几百 MB 的 plugin.meta.json 足以在刷新注册表时把进程撑爆，而刷新现在整段持锁
@@ -471,14 +474,14 @@ def entries_config_digest(conf: object, pdata: object) -> str:
 
 
 def _tables_are_well_formed(raw: Mapping[str, object]) -> bool:
-    """Whether the v3 tables are the shapes v3 promises.
+    """Whether the metadata tables have their required shapes.
 
     An empty ``handlers`` mapping is a real answer — a background-only plugin
     registers nothing — and the start path now trusts it instead of rescanning.
     That makes the difference between "empty" and "malformed" load-bearing:
     coercing a missing or non-object table into an empty one would let a broken
     package install *no* handlers while its ``entries`` advertise tools, leaving
-    the plugin running with nothing dispatchable (codex). v3 always writes all
+    the plugin running with nothing dispatchable (codex). The current schema writes all
     three tables, so anything else is a package to fall back on, not to believe.
     """
     handlers = raw.get("handlers")

@@ -1440,6 +1440,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "add_trusted_group",
       "input_schema": {
         "properties": {
@@ -1463,11 +1464,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.add_trusted_group.name",
         "default": "添加信任群聊"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.add_trusted_user": {
       "auto_start": false,
@@ -1478,6 +1489,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "add_trusted_user",
       "input_schema": {
         "properties": {
@@ -1502,11 +1514,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.add_trusted_user.name",
         "default": "添加信任用户"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.adjust_group_attention": {
       "auto_start": false,
@@ -1517,6 +1539,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "adjust_group_attention",
       "input_schema": {
         "additionalProperties": false,
@@ -1535,11 +1558,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.adjust_group_attention.name",
         "default": "手动调整群注意力"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.bind_identity_account": {
       "auto_start": false,
@@ -1550,6 +1583,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "bind_identity_account",
       "input_schema": {
         "additionalProperties": false,
@@ -1568,11 +1602,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.bind_identity_account.name",
         "default": "合并到已有身份"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.configure_onebot_nl": {
       "auto_start": false,
@@ -1583,6 +1627,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "configure_onebot_nl",
       "input_schema": {
         "additionalProperties": false,
@@ -1598,11 +1643,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.configure_onebot_nl.name",
         "default": "用自然语言配置 OneBot 连接"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.delete_group_prompt": {
       "auto_start": false,
@@ -1610,6 +1665,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "delete_group_prompt",
       "input_schema": {
         "properties": {
@@ -1623,8 +1679,18 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
-      "name": "delete_group_prompt"
+      "model_validate": true,
+      "name": "delete_group_prompt",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.ensure_napcat": {
       "auto_start": false,
@@ -1635,6 +1701,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "ensure_napcat",
       "input_schema": {
         "additionalProperties": false,
@@ -1642,11 +1709,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.ensure_napcat.name",
         "default": "启动 NapCat 进程"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.forget_group_memory": {
       "auto_start": false,
@@ -1657,6 +1734,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "forget_group_memory",
       "input_schema": {
         "properties": {
@@ -1670,11 +1748,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.forget_group_memory.name",
         "default": "清除群记忆"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.get_attention_state": {
       "auto_start": false,
@@ -1685,6 +1773,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_attention_state",
       "input_schema": {
         "additionalProperties": false,
@@ -1692,11 +1781,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_attention_state.name",
         "default": "获取注意力状态"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.get_backlog_summary": {
       "auto_start": false,
@@ -1707,17 +1806,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_backlog_summary",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_backlog_summary.name",
         "default": "读取待审阅摘要"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.get_buffer_state": {
       "auto_start": false,
@@ -1725,14 +1835,25 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_buffer_state",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
-      "name": "get_buffer_state"
+      "model_validate": true,
+      "name": "get_buffer_state",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.get_dashboard_state": {
       "auto_start": false,
@@ -1743,17 +1864,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_dashboard_state",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_dashboard_state.name",
         "default": "获取控制面板状态"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.get_group_backlog_detail": {
       "auto_start": false,
@@ -1764,6 +1896,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_group_backlog_detail",
       "input_schema": {
         "properties": {
@@ -1777,11 +1910,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_group_backlog_detail.name",
         "default": "读取群聊待审阅详情"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.get_group_prompts": {
       "auto_start": false,
@@ -1789,14 +1932,25 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_group_prompts",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
-      "name": "get_group_prompts"
+      "model_validate": true,
+      "name": "get_group_prompts",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.get_napcat_webui": {
       "auto_start": false,
@@ -1807,6 +1961,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_napcat_webui",
       "input_schema": {
         "additionalProperties": false,
@@ -1814,11 +1969,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_napcat_webui.name",
         "default": "获取 NapCat WebUI 地址"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.get_prompt_editor_state": {
       "auto_start": false,
@@ -1829,6 +1994,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_prompt_editor_state",
       "input_schema": {
         "additionalProperties": false,
@@ -1840,11 +2006,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_prompt_editor_state.name",
         "default": "获取提示词编辑器状态"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.get_recent_logs": {
       "auto_start": false,
@@ -1855,6 +2031,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_recent_logs",
       "input_schema": {
         "additionalProperties": false,
@@ -1867,11 +2044,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_recent_logs.name",
         "default": "获取最近日志"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.get_user_profiles": {
       "auto_start": false,
@@ -1882,17 +2069,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_user_profiles",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_user_profiles.name",
         "default": "获取用户画像"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.init_config": {
       "auto_start": false,
@@ -1903,6 +2101,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "init_config",
       "input_schema": {
         "additionalProperties": false,
@@ -1914,11 +2113,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.init_config.name",
         "default": "初始化 QQ 配置"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.list_identity_claims": {
       "auto_start": false,
@@ -1929,6 +2138,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "list_identity_claims",
       "input_schema": {
         "additionalProperties": false,
@@ -1936,11 +2146,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.list_identity_claims.name",
         "default": "列出未认领的群内 ID"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.list_stickers": {
       "auto_start": false,
@@ -1951,6 +2171,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "list_stickers",
       "input_schema": {
         "additionalProperties": false,
@@ -1958,11 +2179,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.list_stickers.name",
         "default": "列出表情包"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.mark_group_backlog_reviewed": {
       "auto_start": false,
@@ -1973,6 +2204,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "mark_group_backlog_reviewed",
       "input_schema": {
         "properties": {
@@ -1986,11 +2218,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.mark_group_backlog_reviewed.name",
         "default": "标记群聊已处理"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.pick_directory": {
       "auto_start": false,
@@ -2001,6 +2243,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "pick_directory",
       "input_schema": {
         "additionalProperties": false,
@@ -2008,11 +2251,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.pick_directory.name",
         "default": "选择目录"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.refresh_actual_contacts": {
       "auto_start": false,
@@ -2023,17 +2276,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "refresh_actual_contacts",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.refresh_actual_contacts.name",
         "default": "刷新实际联系人列表"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.register_sticker": {
       "auto_start": false,
@@ -2044,6 +2308,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "register_sticker",
       "input_schema": {
         "additionalProperties": false,
@@ -2064,11 +2329,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.register_sticker.name",
         "default": "注册表情包"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.remove_trusted_group": {
       "auto_start": false,
@@ -2079,6 +2354,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "remove_trusted_group",
       "input_schema": {
         "properties": {
@@ -2092,11 +2368,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.remove_trusted_group.name",
         "default": "移除信任群聊"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.remove_trusted_user": {
       "auto_start": false,
@@ -2107,6 +2393,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "remove_trusted_user",
       "input_schema": {
         "properties": {
@@ -2120,11 +2407,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.remove_trusted_user.name",
         "default": "移除信任用户"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.reset_prompt_override": {
       "auto_start": false,
@@ -2135,6 +2432,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "reset_prompt_override",
       "input_schema": {
         "additionalProperties": false,
@@ -2153,11 +2451,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.reset_prompt_override.name",
         "default": "重置提示词覆盖"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.save_group_prompt": {
       "auto_start": false,
@@ -2165,6 +2473,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "save_group_prompt",
       "input_schema": {
         "properties": {
@@ -2182,8 +2491,18 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
-      "name": "save_group_prompt"
+      "model_validate": true,
+      "name": "save_group_prompt",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.save_proactive_topics": {
       "auto_start": false,
@@ -2194,6 +2513,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "save_proactive_topics",
       "input_schema": {
         "additionalProperties": false,
@@ -2211,11 +2531,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.save_proactive_topics.name",
         "default": "保存主动发言话题"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.save_prompt_override": {
       "auto_start": false,
@@ -2226,6 +2556,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "save_prompt_override",
       "input_schema": {
         "additionalProperties": false,
@@ -2249,11 +2580,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.save_prompt_override.name",
         "default": "保存提示词覆盖"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.save_settings": {
       "auto_start": false,
@@ -2264,6 +2605,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "save_settings",
       "input_schema": {
         "additionalProperties": false,
@@ -2358,11 +2700,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.save_settings.name",
         "default": "保存 QQ 自动回复设置"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.send_backlog_reply_direct": {
       "auto_start": false,
@@ -2373,6 +2725,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "send_backlog_reply_direct",
       "input_schema": {
         "additionalProperties": false,
@@ -2405,11 +2758,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.send_backlog_reply_direct.name",
         "default": "发送这条回复"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.send_group_proactive_message": {
       "auto_start": false,
@@ -2420,6 +2783,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "send_group_proactive_message",
       "input_schema": {
         "additionalProperties": false,
@@ -2438,13 +2802,23 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {
         "timeout": 90
       },
+      "model_validate": true,
       "name": {
         "$i18n": "entries.send_group_proactive_message.name",
         "default": "主动发送群聊消息"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.send_private_proactive_message": {
       "auto_start": false,
@@ -2455,6 +2829,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "send_private_proactive_message",
       "input_schema": {
         "additionalProperties": false,
@@ -2473,13 +2848,23 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {
         "timeout": 90
       },
+      "model_validate": true,
       "name": {
         "$i18n": "entries.send_private_proactive_message.name",
         "default": "主动发送私聊消息"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.set_user_nickname": {
       "auto_start": false,
@@ -2490,6 +2875,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "set_user_nickname",
       "input_schema": {
         "properties": {
@@ -2507,11 +2893,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.set_user_nickname.name",
         "default": "设置用户昵称"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.start_auto_reply": {
       "auto_start": false,
@@ -2522,17 +2918,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "start_auto_reply",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.start_auto_reply.name",
         "default": "启动自动回复"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.stop_auto_reply": {
       "auto_start": false,
@@ -2543,17 +2950,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "stop_auto_reply",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.stop_auto_reply.name",
         "default": "停止自动回复"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.sync_qrcode": {
       "auto_start": false,
@@ -2564,17 +2982,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "sync_qrcode",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.sync_qrcode.name",
         "default": "刷新二维码"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.unbind_identity_account": {
       "auto_start": false,
@@ -2585,6 +3014,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "unbind_identity_account",
       "input_schema": {
         "additionalProperties": false,
@@ -2599,11 +3029,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.unbind_identity_account.name",
         "default": "撤销合并"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply.upload_sticker": {
       "auto_start": false,
@@ -2614,6 +3054,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "upload_sticker",
       "input_schema": {
         "additionalProperties": false,
@@ -2639,13 +3080,23 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {
         "timeout": 30
       },
+      "model_validate": true,
       "name": {
         "$i18n": "entries.upload_sticker.name",
         "default": "上传表情包"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:lifecycle:shutdown": {
       "auto_start": false,
@@ -2653,14 +3104,25 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "lifecycle",
+      "extra": {},
       "id": "shutdown",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "lifecycle",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
-      "name": "shutdown"
+      "model_validate": true,
+      "name": "shutdown",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:lifecycle:startup": {
       "auto_start": false,
@@ -2668,14 +3130,25 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "lifecycle",
+      "extra": {},
       "id": "startup",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "lifecycle",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
-      "name": "startup"
+      "model_validate": true,
+      "name": "startup",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:add_trusted_group": {
       "auto_start": false,
@@ -2686,6 +3159,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "add_trusted_group",
       "input_schema": {
         "properties": {
@@ -2709,11 +3183,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.add_trusted_group.name",
         "default": "添加信任群聊"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:add_trusted_user": {
       "auto_start": false,
@@ -2724,6 +3208,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "add_trusted_user",
       "input_schema": {
         "properties": {
@@ -2748,11 +3233,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.add_trusted_user.name",
         "default": "添加信任用户"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:adjust_group_attention": {
       "auto_start": false,
@@ -2763,6 +3258,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "adjust_group_attention",
       "input_schema": {
         "additionalProperties": false,
@@ -2781,11 +3277,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.adjust_group_attention.name",
         "default": "手动调整群注意力"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:bind_identity_account": {
       "auto_start": false,
@@ -2796,6 +3302,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "bind_identity_account",
       "input_schema": {
         "additionalProperties": false,
@@ -2814,11 +3321,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.bind_identity_account.name",
         "default": "合并到已有身份"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:configure_onebot_nl": {
       "auto_start": false,
@@ -2829,6 +3346,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "configure_onebot_nl",
       "input_schema": {
         "additionalProperties": false,
@@ -2844,11 +3362,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.configure_onebot_nl.name",
         "default": "用自然语言配置 OneBot 连接"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:delete_group_prompt": {
       "auto_start": false,
@@ -2856,6 +3384,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "delete_group_prompt",
       "input_schema": {
         "properties": {
@@ -2869,8 +3398,18 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
-      "name": "delete_group_prompt"
+      "model_validate": true,
+      "name": "delete_group_prompt",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:ensure_napcat": {
       "auto_start": false,
@@ -2881,6 +3420,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "ensure_napcat",
       "input_schema": {
         "additionalProperties": false,
@@ -2888,11 +3428,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.ensure_napcat.name",
         "default": "启动 NapCat 进程"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:forget_group_memory": {
       "auto_start": false,
@@ -2903,6 +3453,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "forget_group_memory",
       "input_schema": {
         "properties": {
@@ -2916,11 +3467,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.forget_group_memory.name",
         "default": "清除群记忆"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:get_attention_state": {
       "auto_start": false,
@@ -2931,6 +3492,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_attention_state",
       "input_schema": {
         "additionalProperties": false,
@@ -2938,11 +3500,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_attention_state.name",
         "default": "获取注意力状态"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:get_backlog_summary": {
       "auto_start": false,
@@ -2953,17 +3525,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_backlog_summary",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_backlog_summary.name",
         "default": "读取待审阅摘要"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:get_buffer_state": {
       "auto_start": false,
@@ -2971,14 +3554,25 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_buffer_state",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
-      "name": "get_buffer_state"
+      "model_validate": true,
+      "name": "get_buffer_state",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:get_dashboard_state": {
       "auto_start": false,
@@ -2989,17 +3583,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_dashboard_state",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_dashboard_state.name",
         "default": "获取控制面板状态"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:get_group_backlog_detail": {
       "auto_start": false,
@@ -3010,6 +3615,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_group_backlog_detail",
       "input_schema": {
         "properties": {
@@ -3023,11 +3629,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_group_backlog_detail.name",
         "default": "读取群聊待审阅详情"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:get_group_prompts": {
       "auto_start": false,
@@ -3035,14 +3651,25 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_group_prompts",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
-      "name": "get_group_prompts"
+      "model_validate": true,
+      "name": "get_group_prompts",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:get_napcat_webui": {
       "auto_start": false,
@@ -3053,6 +3680,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_napcat_webui",
       "input_schema": {
         "additionalProperties": false,
@@ -3060,11 +3688,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_napcat_webui.name",
         "default": "获取 NapCat WebUI 地址"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:get_prompt_editor_state": {
       "auto_start": false,
@@ -3075,6 +3713,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_prompt_editor_state",
       "input_schema": {
         "additionalProperties": false,
@@ -3086,11 +3725,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_prompt_editor_state.name",
         "default": "获取提示词编辑器状态"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:get_recent_logs": {
       "auto_start": false,
@@ -3101,6 +3750,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_recent_logs",
       "input_schema": {
         "additionalProperties": false,
@@ -3113,11 +3763,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_recent_logs.name",
         "default": "获取最近日志"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:get_user_profiles": {
       "auto_start": false,
@@ -3128,17 +3788,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "get_user_profiles",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.get_user_profiles.name",
         "default": "获取用户画像"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:init_config": {
       "auto_start": false,
@@ -3149,6 +3820,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "init_config",
       "input_schema": {
         "additionalProperties": false,
@@ -3160,11 +3832,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.init_config.name",
         "default": "初始化 QQ 配置"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:list_identity_claims": {
       "auto_start": false,
@@ -3175,6 +3857,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "list_identity_claims",
       "input_schema": {
         "additionalProperties": false,
@@ -3182,11 +3865,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.list_identity_claims.name",
         "default": "列出未认领的群内 ID"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:list_stickers": {
       "auto_start": false,
@@ -3197,6 +3890,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "list_stickers",
       "input_schema": {
         "additionalProperties": false,
@@ -3204,11 +3898,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.list_stickers.name",
         "default": "列出表情包"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:mark_group_backlog_reviewed": {
       "auto_start": false,
@@ -3219,6 +3923,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "mark_group_backlog_reviewed",
       "input_schema": {
         "properties": {
@@ -3232,11 +3937,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.mark_group_backlog_reviewed.name",
         "default": "标记群聊已处理"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:pick_directory": {
       "auto_start": false,
@@ -3247,6 +3962,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "pick_directory",
       "input_schema": {
         "additionalProperties": false,
@@ -3254,11 +3970,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.pick_directory.name",
         "default": "选择目录"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:refresh_actual_contacts": {
       "auto_start": false,
@@ -3269,17 +3995,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "refresh_actual_contacts",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.refresh_actual_contacts.name",
         "default": "刷新实际联系人列表"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:register_sticker": {
       "auto_start": false,
@@ -3290,6 +4027,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "register_sticker",
       "input_schema": {
         "additionalProperties": false,
@@ -3310,11 +4048,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.register_sticker.name",
         "default": "注册表情包"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:remove_trusted_group": {
       "auto_start": false,
@@ -3325,6 +4073,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "remove_trusted_group",
       "input_schema": {
         "properties": {
@@ -3338,11 +4087,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.remove_trusted_group.name",
         "default": "移除信任群聊"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:remove_trusted_user": {
       "auto_start": false,
@@ -3353,6 +4112,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "remove_trusted_user",
       "input_schema": {
         "properties": {
@@ -3366,11 +4126,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.remove_trusted_user.name",
         "default": "移除信任用户"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:reset_prompt_override": {
       "auto_start": false,
@@ -3381,6 +4151,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "reset_prompt_override",
       "input_schema": {
         "additionalProperties": false,
@@ -3399,11 +4170,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.reset_prompt_override.name",
         "default": "重置提示词覆盖"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:save_group_prompt": {
       "auto_start": false,
@@ -3411,6 +4192,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "save_group_prompt",
       "input_schema": {
         "properties": {
@@ -3428,8 +4210,18 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
-      "name": "save_group_prompt"
+      "model_validate": true,
+      "name": "save_group_prompt",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:save_proactive_topics": {
       "auto_start": false,
@@ -3440,6 +4232,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "save_proactive_topics",
       "input_schema": {
         "additionalProperties": false,
@@ -3457,11 +4250,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.save_proactive_topics.name",
         "default": "保存主动发言话题"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:save_prompt_override": {
       "auto_start": false,
@@ -3472,6 +4275,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "save_prompt_override",
       "input_schema": {
         "additionalProperties": false,
@@ -3495,11 +4299,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.save_prompt_override.name",
         "default": "保存提示词覆盖"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:save_settings": {
       "auto_start": false,
@@ -3510,6 +4324,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "save_settings",
       "input_schema": {
         "additionalProperties": false,
@@ -3604,11 +4419,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.save_settings.name",
         "default": "保存 QQ 自动回复设置"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:send_backlog_reply_direct": {
       "auto_start": false,
@@ -3619,6 +4444,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "send_backlog_reply_direct",
       "input_schema": {
         "additionalProperties": false,
@@ -3651,11 +4477,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.send_backlog_reply_direct.name",
         "default": "发送这条回复"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:send_group_proactive_message": {
       "auto_start": false,
@@ -3666,6 +4502,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "send_group_proactive_message",
       "input_schema": {
         "additionalProperties": false,
@@ -3684,13 +4521,23 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {
         "timeout": 90
       },
+      "model_validate": true,
       "name": {
         "$i18n": "entries.send_group_proactive_message.name",
         "default": "主动发送群聊消息"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:send_private_proactive_message": {
       "auto_start": false,
@@ -3701,6 +4548,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "send_private_proactive_message",
       "input_schema": {
         "additionalProperties": false,
@@ -3719,13 +4567,23 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {
         "timeout": 90
       },
+      "model_validate": true,
       "name": {
         "$i18n": "entries.send_private_proactive_message.name",
         "default": "主动发送私聊消息"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:set_user_nickname": {
       "auto_start": false,
@@ -3736,6 +4594,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "set_user_nickname",
       "input_schema": {
         "properties": {
@@ -3753,11 +4612,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.set_user_nickname.name",
         "default": "设置用户昵称"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:start_auto_reply": {
       "auto_start": false,
@@ -3768,17 +4637,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "start_auto_reply",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.start_auto_reply.name",
         "default": "启动自动回复"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:stop_auto_reply": {
       "auto_start": false,
@@ -3789,17 +4669,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "stop_auto_reply",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.stop_auto_reply.name",
         "default": "停止自动回复"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:sync_qrcode": {
       "auto_start": false,
@@ -3810,17 +4701,28 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "sync_qrcode",
       "input_schema": {
         "properties": {},
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.sync_qrcode.name",
         "default": "刷新二维码"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:unbind_identity_account": {
       "auto_start": false,
@@ -3831,6 +4733,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "unbind_identity_account",
       "input_schema": {
         "additionalProperties": false,
@@ -3845,11 +4748,21 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {},
+      "model_validate": true,
       "name": {
         "$i18n": "entries.unbind_identity_account.name",
         "default": "撤销合并"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     },
     "qq_auto_reply:plugin_entry:upload_sticker": {
       "auto_start": false,
@@ -3860,6 +4773,7 @@
       "dynamic": false,
       "enabled": true,
       "event_type": "plugin_entry",
+      "extra": {},
       "id": "upload_sticker",
       "input_schema": {
         "additionalProperties": false,
@@ -3885,16 +4799,26 @@
         "type": "object"
       },
       "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
       "metadata": {
         "timeout": 30
       },
+      "model_validate": true,
       "name": {
         "$i18n": "entries.upload_sticker.name",
         "default": "上传表情包"
-      }
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
     }
   },
-  "schema_version": 3,
+  "schema_version": 4,
   "sdk_version": "0.1.0",
   "source_bytes": 2470196,
   "source_files": [
