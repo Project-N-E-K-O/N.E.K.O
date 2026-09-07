@@ -414,3 +414,50 @@ def test_compact_plugin_tabs_keep_chrome_visible_and_do_not_steal_selection(mock
     _receive(page, _view('while-collapsed', 'another-plugin'))
     expect(hud).to_have_attribute('data-agent-hud-collapsed', 'true')
     expect(navigation).to_be_hidden()
+
+
+@pytest.mark.frontend
+def test_theme_changes_update_chat_and_agent_colors_without_rebuilding_content(mock_page, running_server):
+    page = mock_page
+    pending = []
+    page.route("**/api/plugin-cards/demo/action/download", lambda route: pending.append(route))
+    _open_hud(page, running_server, "chat_full")
+    page.wait_for_function('() => window.nekoTheme')
+    page.evaluate("""() => {
+        if (document.documentElement.getAttribute('data-theme') === 'dark') nekoTheme.toggle();
+    }""")
+    page.wait_for_function("() => !document.documentElement.classList.contains('theme-transitioning')")
+    view = _view(html='<p>Theme test</p><input value="initial"><button data-neko-action="go">Download</button>')
+    _receive(page, view)
+    chat = {**view, "cardId": "theme-chat", "presentation": "chat"}
+    page.evaluate('block => appendReactChatBlocks({blocks: [block]})', chat)
+    chat_content = page.locator('[data-message-id="plugin-card-demo-theme-chat"]')
+    agent_content = _content(page, 'view-one')
+    for content in (chat_content, agent_content):
+        expect(content.frame_locator('iframe').get_by_role('button', name='Download', exact=True)).to_be_visible()
+    chat_content.frame_locator('iframe').get_by_role('textbox').fill('unsent edit')
+    chat_content.frame_locator('iframe').get_by_role('button', name='Download', exact=True).click()
+    assert len(pending) == 1
+    page.evaluate("""() => {
+        window.themeTestNodes = [
+            document.querySelector('[data-message-id="plugin-card-demo-theme-chat"] iframe'),
+            document.querySelector('.agent-plugin-view iframe')
+        ].map(frame => ({frame, doc: frame.contentDocument,
+            input: frame.contentDocument.querySelector('input'),
+            button: frame.contentDocument.querySelector('button'),
+            style: frame.contentDocument.querySelector('[data-card-style]')}));
+    }""")
+    for dark in (True, False):
+        assert page.evaluate('nekoTheme.toggle()') is dark
+        page.wait_for_function("""() => !document.documentElement.classList.contains('theme-transitioning') &&
+            themeTestNodes.every(({frame, doc}) => doc.body.style.color === getComputedStyle(frame.parentElement).color)
+        """)
+        assert page.evaluate("""() => themeTestNodes.every(({frame, doc, input, button, style}) =>
+            frame.contentDocument === doc && doc.querySelector('input') === input &&
+            doc.querySelector('button') === button && doc.querySelector('[data-card-style]') === style)
+        """)
+        expect(chat_content.frame_locator('iframe').get_by_role('textbox')).to_have_value('unsent edit')
+        expect(chat_content.frame_locator('iframe').get_by_role('button', name='Download', exact=True)).to_be_disabled()
+    pending[0].fulfill(json={"result": {"message": "Completed after theme changes"}})
+    expect(chat_content.get_by_role('status')).to_have_text('Completed after theme changes')
+    assert len(pending) == 1

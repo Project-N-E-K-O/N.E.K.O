@@ -11,6 +11,10 @@ logger = logging.getLogger(__name__)
 
 # Routing hints only, not stored card contents or an authorization registry.
 _targets: OrderedDict[tuple[str, str], str] = OrderedDict()
+# AgentHUD has one active page per plugin/character, independent of chat history.
+# Both indexes contain only these active pages; replacement/close are O(1).
+_view_targets: dict[tuple[str, str], str] = {}
+_active_views: dict[tuple[str, str], str] = {}
 
 
 async def deliver_plugin_card(event: dict, managers: dict[str, Any], default_target: str | None) -> bool:
@@ -40,7 +44,8 @@ async def deliver_plugin_card(event: dict, managers: dict[str, Any], default_tar
         if presentation == "agent":
             fields.setdefault("summary", fields["title"])
     key = (plugin_id, card_id)
-    target = _targets.get(key) or event.get("lanlan_name")
+    targets = _view_targets if presentation == "agent" else _targets
+    target = targets.get(key) or event.get("lanlan_name")
     if not target and operation == "create":
         target = default_target
     if not isinstance(target, str) or not target:
@@ -48,10 +53,11 @@ async def deliver_plugin_card(event: dict, managers: dict[str, Any], default_tar
     mgr = managers.get(target)
     if mgr is None:
         return False
-    _targets[key] = target
-    _targets.move_to_end(key)
-    while len(_targets) > 512:
-        _targets.popitem(last=False)
+    if presentation != "agent":
+        _targets[key] = target
+        _targets.move_to_end(key)
+        while len(_targets) > 512:
+            _targets.popitem(last=False)
     block = {"type": "html_card", "cardId": card_id, "pluginId": plugin_id,
              "targetLanlan": target, "operation": operation, **fields}
     if presentation == "agent":
@@ -65,6 +71,18 @@ async def deliver_plugin_card(event: dict, managers: dict[str, Any], default_tar
         except Exception as error:
             logger.warning("Plugin view WebSocket send failed for %s: %s", target, error)
             return False
+        # A failed replacement/close must leave the previous page routable.
+        slot = (plugin_id, target)
+        if operation == "create":
+            previous = _active_views.get(slot)
+            if previous is not None:
+                _view_targets.pop((plugin_id, previous), None)
+            _active_views[slot] = card_id
+            _view_targets[key] = target
+        elif operation == "close" and _active_views.get(slot) == card_id:
+            _active_views.pop(slot)
+            _view_targets.pop(key, None)
+        # Do not repopulate either index from stale/recovered update handles.
         return True
     return await mgr.render_chat_blocks(
         [block],

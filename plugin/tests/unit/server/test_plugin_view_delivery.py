@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from starlette.websockets import WebSocketState
 
-from main_logic.plugin_cards import _targets, deliver_plugin_card
+from main_logic.plugin_cards import _active_views, _targets, _view_targets, deliver_plugin_card
 
 
 class Socket:
@@ -27,8 +27,12 @@ class Manager:
 @pytest.fixture(autouse=True)
 def clear_targets():
     _targets.clear()
+    _view_targets.clear()
+    _active_views.clear()
     yield
     _targets.clear()
+    _view_targets.clear()
+    _active_views.clear()
 
 
 def event(operation, **fields):
@@ -105,3 +109,89 @@ def test_view_delivery_is_best_effort_without_a_connected_socket():
     alice.websocket.client_state = WebSocketState.CONNECTED
     alice.websocket.send_json = fail_send
     assert not asyncio.run(deliver_plugin_card(event("close"), {"Alice": alice}, "Alice"))
+
+
+def test_chat_churn_cannot_evict_a_live_untargeted_view():
+    alice, bob = Manager(), Manager()
+
+    async def accept_chat(*args, **kwargs):
+        return True
+
+    bob.render_chat_blocks = accept_chat
+    managers = {"Alice": alice, "Bob": bob}
+
+    async def run():
+        assert await deliver_plugin_card(event("create", title="Long job", html="Ready"), managers, "Alice")
+        for index in range(1024):
+            assert await deliver_plugin_card({"plugin_id": "chat-producer", "card": {
+                "card_id": str(index), "operation": "create", "html": "Message", "summary": "Message",
+            }}, managers, "Bob")
+        assert len(_targets) == 512
+        assert len(_view_targets) == len(_active_views) == 1
+        assert await deliver_plugin_card(event("update", html="Still working"), managers, "Bob")
+        assert await deliver_plugin_card(event("close"), managers, "Bob")
+        assert not _view_targets and not _active_views
+        assert not await deliver_plugin_card(event("update", html="Late result"), managers, "Bob")
+
+    asyncio.run(run())
+    assert len(alice.websocket.frames) == 3
+    assert not bob.websocket.frames
+    assert all(frame["view"]["targetLanlan"] == "Alice" for frame in alice.websocket.frames)
+
+
+def test_view_replacement_reclaims_routes_and_stale_handles_do_not_regrow_them():
+    alice, bob = Manager(), Manager()
+    managers = {"Alice": alice, "Bob": bob}
+
+    async def run():
+        other = event("create", title="Other role", html="Ready")
+        other["card"]["card_id"] = "bob-view"
+        assert await deliver_plugin_card(other, managers, "Bob")
+        for index in range(1024):
+            created = event("create", title="Replacement", html="Ready")
+            created["card"]["card_id"] = str(index)
+            assert await deliver_plugin_card(created, managers, "Alice")
+        assert len(_view_targets) == len(_active_views) == 2
+        assert not _targets, "Agent routing must not consume chat cache entries"
+        for operation in ("update", "close"):
+            stale = event(operation, html="Old completion")
+            stale["card"]["card_id"] = "0"
+            assert not await deliver_plugin_card(stale, managers, "Bob")
+            # Recovered handles with an explicit target may still send, but the
+            # frontend ignores stale IDs and routing must not retain them again.
+            stale["lanlan_name"] = "Alice"
+            assert await deliver_plugin_card(stale, managers, "Bob")
+        assert len(_view_targets) == len(_active_views) == 2
+        latest = event("close")
+        latest["card"]["card_id"] = "1023"
+        assert await deliver_plugin_card(latest, managers, "Bob")
+        assert _view_targets == {("demo", "bob-view"): "Bob"}
+        assert _active_views == {("demo", "Bob"): "bob-view"}
+
+    asyncio.run(run())
+
+
+def test_failed_replacement_and_close_preserve_the_previous_route_for_retry():
+    alice = Manager()
+    managers = {"Alice": alice}
+
+    async def run():
+        assert await deliver_plugin_card(event("create", title="Job", html="Ready"), managers, "Alice")
+        send = alice.websocket.send_json
+
+        async def fail_send(frame):
+            raise RuntimeError("socket unavailable")
+
+        alice.websocket.send_json = fail_send
+        replacement = event("create", title="Replacement", html="New")
+        replacement["card"]["card_id"] = "replacement"
+        assert not await deliver_plugin_card(replacement, managers, "Alice")
+        assert not await deliver_plugin_card(event("close"), managers, None)
+        assert _view_targets == {("demo", "one"): "Alice"}
+        assert _active_views == {("demo", "Alice"): "one"}
+        alice.websocket.send_json = send
+        assert await deliver_plugin_card(event("update", html="Retry"), managers, None)
+        assert await deliver_plugin_card(event("close"), managers, None)
+        assert not _view_targets and not _active_views
+
+    asyncio.run(run())

@@ -20,6 +20,87 @@ async function buttonIn(container: HTMLElement) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('HTML card buttons', () => {
+  it('shares and batches theme synchronization without replacing content or pending actions', async () => {
+    const root = document.documentElement;
+    const observe = vi.spyOn(MutationObserver.prototype, 'observe');
+    const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+    const appearance = vi.fn(() => ({
+      color: root.getAttribute('data-theme') === 'dark' ? 'rgb(230, 230, 230)' : 'rgb(30, 30, 30)',
+      fontFamily: 'sans-serif',
+    }));
+    vi.stubGlobal('getComputedStyle', appearance);
+    const fetch = vi.fn((_url: string, _request: RequestInit) => new Promise(() => {}));
+    vi.stubGlobal('fetch', fetch);
+    const withInput = { ...block, html: '<input value="initial">' + block.html };
+    const { container, unmount } = render(<>
+      <HtmlCardBlock block={withInput} />
+      <HtmlCardBlock block={{ ...block, cardId: 'agent', presentation: 'agent' }} />
+    </>);
+    try {
+      fireEvent.click(await buttonIn(container));
+      const frames = Array.from(container.querySelectorAll('iframe'));
+      fireEvent.load(frames[1]);
+      const docs = frames.map(frame => frame.contentDocument!);
+      const button = docs[0].querySelector('button')!;
+      const input = docs[0].querySelector('input')!;
+      input.value = 'unsent edit';
+      const styles = docs.map(doc => doc.querySelector('[data-card-style]'));
+      const reads = appearance.mock.calls.length;
+      const observations = observe.mock.calls.filter(([node]) => node === root);
+      expect(observations).toHaveLength(1);
+      expect(observations[0][1]).toEqual({ attributes: true, attributeFilter: ['data-theme', 'class'] });
+
+      await act(async () => {
+        root.setAttribute('data-theme', 'dark');
+        root.classList.add('dark', 'theme-transitioning');
+        await new Promise(resolve => setTimeout(resolve, 30));
+      });
+      expect(appearance.mock.calls.length - reads).toBe(2); // One read per card, not per mutation.
+      docs.forEach((doc, index) => {
+        expect(doc.body.style.color).toBe('rgb(230, 230, 230)');
+        expect(doc.querySelector('[data-card-style]')).toBe(styles[index]);
+      });
+      expect(docs[0].querySelector('button')).toBe(button);
+      expect(docs[0].querySelector('input')).toBe(input);
+      expect(input.value).toBe('unsent edit');
+      expect(button.disabled).toBe(true);
+      expect(fetch.mock.calls[0][1].signal!.aborted).toBe(false);
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      const afterTheme = appearance.mock.calls.length;
+      await act(async () => {
+        root.classList.add('unrelated-layout-class');
+        await new Promise(resolve => setTimeout(resolve, 30));
+      });
+      expect(appearance).toHaveBeenCalledTimes(afterTheme);
+      await act(async () => {
+        root.classList.remove('theme-transitioning');
+        await new Promise(resolve => setTimeout(resolve, 30));
+      });
+      expect(appearance).toHaveBeenCalledTimes(afterTheme + 2); // Read the final transition color.
+      await act(async () => {
+        root.removeAttribute('data-theme');
+        root.classList.remove('dark');
+        await new Promise(resolve => setTimeout(resolve, 30));
+      });
+      docs.forEach(doc => expect(doc.body.style.color).toBe('rgb(30, 30, 30)'));
+      const beforeUnmount = appearance.mock.calls.length;
+      unmount();
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        root.setAttribute('data-theme', 'dark');
+        await new Promise(resolve => setTimeout(resolve, 30));
+      });
+      expect(appearance).toHaveBeenCalledTimes(beforeUnmount);
+    } finally {
+      unmount();
+      root.removeAttribute('data-theme');
+      root.classList.remove('dark', 'theme-transitioning', 'unrelated-layout-class');
+      observe.mockRestore();
+      disconnect.mockRestore();
+    }
+  });
+
   it.each([
     { summary: 'Working' },
     { css: 'button { color: red; }' },

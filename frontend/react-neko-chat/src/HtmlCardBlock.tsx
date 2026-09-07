@@ -14,6 +14,41 @@ type PendingAction = {
   timeout: number;
 };
 
+// One observer for all mounted cards. Only theme changes schedule work; no
+// subtree observation, polling or per-card observer. The transition ending also
+// needs a sync so we do not retain an intermediate computed text color.
+const themeListeners = new Set<() => void>();
+let themeObserver: MutationObserver | null = null;
+let themeFrame: number | null = null;
+function subscribeCardTheme(listener: () => void) {
+  themeListeners.add(listener);
+  if (!themeObserver) {
+    const root = document.documentElement;
+    const signature = () => `${root.getAttribute('data-theme')}|${root.classList.contains('theme-transitioning')}`;
+    let previous = signature();
+    themeObserver = new MutationObserver(() => {
+      const next = signature();
+      if (next === previous) return;
+      previous = next;
+      if (themeFrame !== null) return;
+      themeFrame = window.requestAnimationFrame(() => {
+        themeFrame = null;
+        themeListeners.forEach(sync => sync());
+      });
+    });
+    themeObserver.observe(root, { attributes: true, attributeFilter: ['data-theme', 'class'] });
+  }
+  return () => {
+    themeListeners.delete(listener);
+    if (!themeListeners.size) {
+      themeObserver?.disconnect();
+      themeObserver = null;
+      if (themeFrame !== null) window.cancelAnimationFrame(themeFrame);
+      themeFrame = null;
+    }
+  };
+}
+
 export default function HtmlCardBlock({ block }: { block: HtmlCard }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const updateRef = useRef<((card: HtmlCard) => void) | null>(null);
@@ -52,6 +87,12 @@ export default function HtmlCardBlock({ block }: { block: HtmlCard }) {
     const resize = () => {
       if (!disposed && doc?.body) frame.style.height = `${Math.min(640, Math.max(48, doc.body.scrollHeight))}px`;
     };
+    const syncAppearance = () => {
+      if (!doc?.body || disposed) return;
+      const parentStyle = getComputedStyle(frame.parentElement || frame);
+      doc.body.style.color = parentStyle.color;
+      doc.body.style.fontFamily = parentStyle.fontFamily;
+    };
     const renderDocument = () => {
       if (!card || !doc?.body || disposed) return;
       if (renderedCss !== card.css) {
@@ -67,9 +108,7 @@ export default function HtmlCardBlock({ block }: { block: HtmlCard }) {
         renderedHtml = card.html;
       }
       doc.documentElement.lang = document.documentElement.lang;
-      const parentStyle = getComputedStyle(frame.parentElement || frame);
-      doc.body.style.color = parentStyle.color;
-      doc.body.style.fontFamily = parentStyle.fontFamily;
+      syncAppearance();
       syncButtons();
       resize();
     };
@@ -153,10 +192,12 @@ export default function HtmlCardBlock({ block }: { block: HtmlCard }) {
       renderDocument();
     };
     updateRef.current = update;
+    const unsubscribeTheme = subscribeCardTheme(syncAppearance);
     frame.addEventListener('load', mount);
     if (frame.contentDocument?.readyState === 'complete') mount();
     return () => {
       disposed = true;
+      unsubscribeTheme();
       updateRef.current = null;
       frame.removeEventListener('load', mount);
       detach();
