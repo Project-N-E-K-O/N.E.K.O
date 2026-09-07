@@ -62,7 +62,6 @@ from plugin.server.application.plugins.metadata_scanner import (
     scan_plugin_metadata_isolated,
 )
 from plugin.server.infrastructure.packaged_metadata import (
-    PackagedPluginMetadata,
     read_packaged_metadata,
 )
 from plugin.server.application.install_source import (

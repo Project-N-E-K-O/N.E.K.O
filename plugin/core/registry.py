@@ -726,6 +726,7 @@ def _entry_mapping(value: Any) -> Dict[str, Any]:
             dumped = value.model_dump()
             return dumped if isinstance(dumped, dict) else {}
     except Exception:
+        # A model that cannot dump itself is a preview gap, not a listing failure.
         pass
     return {}
 
