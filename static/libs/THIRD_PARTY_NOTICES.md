@@ -29,7 +29,7 @@ root Apache-2.0 license does not replace them.
 - Local changes: physics constraint limits and damping, rigid-body behavior,
   floor/distance handling, and model-rotation fixes. The existing implementation
   is preserved; this license update only prepends a comment.
-- Local history: introduced in N.E.K.O. commit `2800df92d`, subsequently modified
+- Local history: introduced in N.E.K.O. commit `450e78744`, subsequently modified
   in `665417441` and `3440b9bb7`.
 - License: MIT; full upstream text is in [THREE-MMD-LICENSE.txt](licenses/THREE-MMD-LICENSE.txt)
   and the file's leading comment, retaining both upstream copyright statements.
