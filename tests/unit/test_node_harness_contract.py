@@ -932,8 +932,10 @@ def test_another_preloads_dependency_does_not_start_the_budget(runner, tmp_path)
     before the harness script. Keying on "first compile" armed the deadline
     there, putting pre-main startup back inside the script's budget.
 
-    The witness is a preload slower than the whole budget: if its time is
-    charged to the script, an otherwise instant script comes back 87.
+    Advance a controlled clock past the whole budget inside the preload. If
+    that time is charged to the script, an otherwise instant script returns
+    87. A real 800ms busy loop against a 500ms deadline also measures Windows
+    scheduling and pipe shutdown, which made this test intermittently fail.
     """
     node_path = _node_or_skip()
 
@@ -941,13 +943,22 @@ def test_another_preloads_dependency_does_not_start_the_budget(runner, tmp_path)
     # instance delete the .mjs another is still loading.
     dependency = tmp_path / "neko-probe-dep.cjs"
     slow_import = tmp_path / "neko-probe-slow.mjs"
+    clock_preload = tmp_path / "neko-probe-clock.cjs"
+    # NODE_OPTIONS --require runs before the launcher's --require guard; the
+    # guard snapshots this clock before --import evaluates the dependency.
+    clock_preload.write_text(
+        "const clock = { now: 0n };\n"
+        "process.hrtime.bigint = () => clock.now;\n"
+        "module.exports = clock;\n",
+        encoding="utf-8",
+    )
     dependency.write_text("module.exports = 1;\n", encoding="utf-8")
     slow_import.write_text(
         "import { createRequire } from 'node:module';\n"
         "const require = createRequire(import.meta.url);\n"
+        f"const clock = require({clock_preload.as_posix()!r});\n"
         f"require({str(dependency)!r}.split('\\\\').join('/'));\n"
-        "const until = Date.now() + 800;\n"
-        "while (Date.now() < until) {}\n",
+        "clock.now += 20000000000n;\n",
         encoding="utf-8",
     )
     try:
@@ -956,12 +967,19 @@ def test_another_preloads_dependency_does_not_start_the_budget(runner, tmp_path)
             "process.stdout.write('ok');\n",
             capture_output=True,
             check=False,
-            timeout=0.5,
-            env={**os.environ, "NODE_OPTIONS": f"--import {slow_import.as_uri()}"},
+            timeout=10,
+            env={
+                **os.environ,
+                "NODE_OPTIONS": (
+                    f'--require "{clock_preload.as_posix()}" '
+                    f'--import "{slow_import.as_uri()}"'
+                ),
+            },
         )
     finally:
         dependency.unlink(missing_ok=True)
         slow_import.unlink(missing_ok=True)
+        clock_preload.unlink(missing_ok=True)
 
     assert result.returncode == 0, (
         "别人的预载花掉的时间被算进了脚本预算："
