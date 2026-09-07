@@ -1625,8 +1625,10 @@ def test_an_upgraded_file_is_what_the_packager_would_have_written(tmp_path):
     meta_path.write_text(json.dumps(raw), encoding="utf-8")
     handler = {"event_type": "plugin_entry", "id": "go", "name": "Go", "timeout": 4}
 
+    before_scan = packaged_metadata.snapshot_source_tree(plugin_dir)
     assert packaged_metadata.refresh_stale_packaged_metadata(
         plugin_dir,
+        before_scan=before_scan,
         entries=[{"id": "go", "name": "Go"}],
         handlers={"demo.go": handler},
         entry_methods={"go": "go"},
@@ -1665,10 +1667,24 @@ def test_an_upgraded_file_is_what_the_packager_would_have_written(tmp_path):
     packaged_metadata.compute_source_sha256 = _vanished
     try:
         assert packaged_metadata.refresh_stale_packaged_metadata(
-            plugin_dir, entries=[], handlers={}, entry_methods={}, conf={}, pdata={},
+            plugin_dir, before_scan=before_scan,
+            entries=[], handlers={}, entry_methods={}, conf={}, pdata={},
         ) is False
     finally:
         packaged_metadata.compute_source_sha256 = original
+    assert meta_path.read_bytes() == before
+
+    # 写出来的文件读取器读不了（超过尺寸上限）就不写：它会是"当前版本且超大"，
+    # 之后没有任何路径能再修它。
+    original_cap = packaged_metadata.MAX_PACKAGED_METADATA_BYTES
+    packaged_metadata.MAX_PACKAGED_METADATA_BYTES = 64
+    try:
+        assert packaged_metadata.refresh_stale_packaged_metadata(
+            plugin_dir, before_scan=before_scan,
+            entries=[], handlers={}, entry_methods={}, conf={}, pdata={},
+        ) is False
+    finally:
+        packaged_metadata.MAX_PACKAGED_METADATA_BYTES = original_cap
     assert meta_path.read_bytes() == before
     raw["schema_version"] = packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION
     meta_path.write_text(json.dumps(raw), encoding="utf-8")
@@ -1676,6 +1692,7 @@ def test_an_upgraded_file_is_what_the_packager_would_have_written(tmp_path):
     # 第二次没有过期文件可升，什么都不写。
     before = meta_path.read_bytes()
     assert packaged_metadata.refresh_stale_packaged_metadata(
-        plugin_dir, entries=[], handlers={}, entry_methods={}, conf={}, pdata={},
+        plugin_dir, before_scan=before_scan,
+        entries=[], handlers={}, entry_methods={}, conf={}, pdata={},
     ) is False
     assert meta_path.read_bytes() == before

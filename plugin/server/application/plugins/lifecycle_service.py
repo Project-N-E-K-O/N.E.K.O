@@ -62,9 +62,12 @@ from plugin.server.application.plugins.metadata_scanner import (
     scan_plugin_metadata_isolated,
 )
 from plugin.server.infrastructure.packaged_metadata import (
+    SourceTreeSnapshot,
     entries_config_digest,
     read_packaged_metadata,
     refresh_stale_packaged_metadata,
+    snapshot_source_tree,
+    stale_packaged_schema_version,
 )
 from plugin.server.application.install_source import (
     InstallSourceError,
@@ -215,11 +218,24 @@ def _read_packaged_isolated_metadata(
     )
 
 
+def _snapshot_stale_package_tree(config_path: Path) -> SourceTreeSnapshot | None:
+    """Fingerprint the tree before the scan imports it, if an upgrade is in prospect.
+
+    Only a stale-schema package can be upgraded, so only that case pays for
+    the snapshot; every other start skips this entirely.
+    """
+    plugin_dir = Path(config_path).parent
+    if stale_packaged_schema_version(plugin_dir) is None:
+        return None
+    return snapshot_source_tree(plugin_dir)
+
+
 def _upgrade_stale_packaged_metadata(
     config_path: Path,
     plugin_id: str,
     scanned: IsolatedPluginMetadata,
     *,
+    before_scan: SourceTreeSnapshot | None,
     conf: object,
     pdata: object,
 ) -> None:
@@ -231,6 +247,8 @@ def _upgrade_stale_packaged_metadata(
     ``_read_packaged_isolated_metadata`` would then treat that machine's
     overrides as the packaged baseline).
     """
+    if before_scan is None:
+        return
     plugin_dir = Path(config_path).parent
     try:
         manifest = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
@@ -256,6 +274,7 @@ def _upgrade_stale_packaged_metadata(
         return
     refresh_stale_packaged_metadata(
         plugin_dir,
+        before_scan=before_scan,
         entries=scanned.entries_preview,
         handlers=scanned.handlers,
         entry_methods=scanned.entry_methods,
@@ -1182,6 +1201,15 @@ class PluginLifecycleService:
                     _remaining_step_budget(start_deadline),
                     floor=_MIN_CLAMPED_START_TIMEOUT,
                 )
+                # 包里那份元数据如果只是 schema 过期，这次扫描学到的就是打包器本
+                # 该写的那份：写回去，下次启动走快路径。指纹在 import 之前先取一份，
+                # 之后比对，和打包器一样拒绝"import 改动了树"的情况。reload_all 有
+                # 总预算，可选的优化不放进去；应用启动的自动拉起没有截止期，在那里做。
+                before_scan = (
+                    await asyncio.to_thread(_snapshot_stale_package_tree, config_path)
+                    if start_deadline is None
+                    else None
+                )
                 isolated_metadata = await asyncio.to_thread(
                     scan_plugin_metadata_isolated,
                     plugin_id=current_plugin_id,
@@ -1193,13 +1221,12 @@ class PluginLifecycleService:
                     python_requirement_paths=python_requirement_paths,
                     timeout=scan_timeout,
                 )
-                # 包里那份元数据如果只是 schema 过期，这次扫描学到的就是打包器本
-                # 该写的那份。写回去，下次启动走快路径；写不成也不影响这次启动。
                 await asyncio.to_thread(
                     _upgrade_stale_packaged_metadata,
                     config_path,
                     current_plugin_id,
                     isolated_metadata,
+                    before_scan=before_scan,
                     conf=conf,
                     pdata=pdata,
                 )

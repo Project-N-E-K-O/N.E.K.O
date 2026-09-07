@@ -4233,7 +4233,7 @@ def _write_stale_package(plugin_dir: Path, *, schema_version: object, handler: d
 
 async def _start_packaged_adapter(
     monkeypatch, config_path: Path, *, scanned_handler: dict, effective_overlay: dict | None = None,
-    runtime_id: str = "packaged_adapter",
+    runtime_id: str = "packaged_adapter", scan_side_effect=None, start_deadline: float | None = None,
 ) -> list[str]:
     """Run start_plugin against a fake host and return the plugin ids that were scanned."""
     with module.state.acquire_plugins_write_lock():
@@ -4266,6 +4266,8 @@ async def _start_packaged_adapter(
     def _recording_scan(**kwargs):
         scans.append(str(kwargs["plugin_id"]))
         kwargs.pop("timeout", None)
+        if scan_side_effect is not None:
+            scan_side_effect()
         scanned = inner_scan(**kwargs)
         return IsolatedPluginMetadata(
             entries_preview=scanned.entries_preview,
@@ -4275,7 +4277,7 @@ async def _start_packaged_adapter(
 
     monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _recording_scan)
     response = await module.PluginLifecycleService().start_plugin(
-        "packaged_adapter", refresh_registry=False,
+        "packaged_adapter", refresh_registry=False, start_deadline=start_deadline,
     )
     assert response["success"] is True
     return scans
@@ -4366,7 +4368,10 @@ async def test_a_stale_package_is_upgraded_in_place_by_its_first_start(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason", ["no_file", "current_schema", "config_overrides", "unwritable", "renamed"])
+@pytest.mark.parametrize("reason", [
+    "no_file", "current_schema", "config_overrides", "unwritable", "renamed",
+    "import_mutates_tree", "reload_budget",
+])
 async def test_a_scan_does_not_write_metadata_it_has_no_business_writing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _isolated_plugin_state, reason,
 ) -> None:
@@ -4377,9 +4382,12 @@ async def test_a_scan_does_not_write_metadata_it_has_no_business_writing(
     another reason (a foreign build environment here) is not fixed by a
     rewrite. An effective configuration that overrides the entries table would
     freeze one machine's overrides into the package. A directory the host
-    cannot write to is not a failed start. And a plugin renamed by an id
+    cannot write to is not a failed start. A plugin renamed by an id
     conflict scans handler keys under the runtime id, which must not land in
-    the package of the manifest id (coderabbit).
+    the package of the manifest id (coderabbit). An import that changes its
+    own tree leaves handlers and fingerprint describing different states, the
+    case the packager refuses too (codex). And under a reload_all deadline the
+    optional work is skipped rather than charged to the round (codex).
     """
     from plugin.server.infrastructure import packaged_metadata
 
@@ -4405,14 +4413,19 @@ async def test_a_scan_does_not_write_metadata_it_has_no_business_writing(
         def _refuse(*args, **kwargs):
             raise PermissionError("read-only plugin directory")
 
-        monkeypatch.setattr(packaged_metadata, "atomic_write_json", _refuse)
+        monkeypatch.setattr(packaged_metadata, "atomic_write_text", _refuse)
     else:
         config_path = _write_stale_package(plugin_dir, schema_version=3, handler=old_handler)
     before = meta_path.read_bytes() if meta_path.exists() else None
 
+    def _import_writes_a_cache_file():
+        (plugin_dir / "cache.json").write_text("{}", encoding="utf-8")
+
     scans = await _start_packaged_adapter(
         monkeypatch, config_path, scanned_handler=scanned, effective_overlay=conf_overlay,
         runtime_id="packaged_adapter_1" if reason == "renamed" else "packaged_adapter",
+        scan_side_effect=_import_writes_a_cache_file if reason == "import_mutates_tree" else None,
+        start_deadline=time.monotonic() + 20.0 if reason == "reload_budget" else None,
     )
     assert scans == ["packaged_adapter_1" if reason == "renamed" else "packaged_adapter"]
     if before is None:

@@ -50,7 +50,7 @@ from typing import Any, Mapping
 
 from plugin._types.version import SDK_VERSION
 from plugin.logging_config import get_logger
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_text
 
 logger = get_logger("server.infrastructure.packaged_metadata")
 
@@ -543,9 +543,35 @@ def stale_packaged_schema_version(plugin_dir: Path) -> int | None:
     return version if version < PACKAGED_METADATA_SCHEMA_VERSION else None
 
 
+@dataclass(frozen=True, slots=True)
+class SourceTreeSnapshot:
+    """What a tree looked like before the plugin was imported.
+
+    The packager takes the same snapshot before its probe and refuses to write
+    metadata when the import changed the tree: handlers derived during the
+    import and a fingerprint taken after it can describe two different trees
+    (codex). ``None`` from :func:`snapshot_source_tree` means the tree could
+    not be read, which also refuses the upgrade.
+    """
+
+    sha256: str
+    directories: tuple[str, ...]
+
+
+def snapshot_source_tree(plugin_dir: Path) -> SourceTreeSnapshot | None:
+    try:
+        return SourceTreeSnapshot(
+            sha256=compute_source_sha256(plugin_dir),
+            directories=tuple(source_directory_names(plugin_dir)),
+        )
+    except (OSError, PackagedMetadataError):
+        return None
+
+
 def refresh_stale_packaged_metadata(
     plugin_dir: Path,
     *,
+    before_scan: SourceTreeSnapshot | None,
     entries: list[dict[str, object]],
     handlers: dict[str, dict[str, object]],
     entry_methods: dict[str, str],
@@ -563,16 +589,20 @@ def refresh_stale_packaged_metadata(
 
     The same refusals the packager applies (``metadata_probe``) apply here: a
     tree with symlinks, empty directories or names that change under NFC
-    cannot be described by a fingerprint, so it is left alone. The caller
-    guarantees that the effective ``entries`` table equals the manifest's,
-    since the file must describe the package, not one machine's overrides.
+    cannot be described by a fingerprint, and a tree the import itself changed
+    (``before_scan`` no longer matches) is one whose handlers and fingerprint
+    describe different states. Both are left alone. The caller guarantees that
+    the effective ``entries`` table equals the manifest's, since the file must
+    describe the package, not one machine's overrides.
 
     Returns whether a file was written. Failing to fingerprint or write is not
     an error: a source file can vanish between enumeration and hashing, the
     directory may be read-only, and the plugin started fine without the file.
+    A file the reader would refuse for its size is not written either: it would
+    be current-schema and oversized, so nothing could ever repair it (codex).
     """
     stale = stale_packaged_schema_version(plugin_dir)
-    if stale is None:
+    if stale is None or before_scan is None:
         return False
     try:
         summary = source_stat_summary(plugin_dir)
@@ -586,10 +616,18 @@ def refresh_stale_packaged_metadata(
                 plugin_dir,
             )
             return False
+        after_scan = snapshot_source_tree(plugin_dir)
+        if after_scan != before_scan:
+            logger.info(
+                "stale packaged metadata left as is; importing the plugin changed "
+                "its tree, so the scan and the fingerprint describe different states: path={}",
+                plugin_dir,
+            )
+            return False
         payload = {
             "schema_version": PACKAGED_METADATA_SCHEMA_VERSION,
             "sdk_version": SDK_VERSION,
-            "source_sha256": compute_source_sha256(plugin_dir),
+            "source_sha256": before_scan.sha256,
             "source_files": summary.names,
             "source_bytes": summary.total_bytes,
             "build_env": build_environment(),
@@ -598,7 +636,17 @@ def refresh_stale_packaged_metadata(
             "handlers": dict(handlers),
             "entry_methods": dict(entry_methods),
         }
-        atomic_write_json(plugin_dir / PACKAGED_METADATA_FILENAME, payload)
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+        if len(text.encode("utf-8")) > MAX_PACKAGED_METADATA_BYTES:
+            logger.info(
+                "stale packaged metadata left as is; the upgraded file would exceed "
+                "the reader's size cap: path={}, bytes={}, cap={}",
+                plugin_dir,
+                len(text.encode("utf-8")),
+                MAX_PACKAGED_METADATA_BYTES,
+            )
+            return False
+        atomic_write_text(plugin_dir / PACKAGED_METADATA_FILENAME, text)
     except (OSError, PackagedMetadataError) as exc:
         # compute_source_sha256 wraps its OSError in PackagedMetadataError (a
         # ValueError); an optional optimisation must not turn that into a
