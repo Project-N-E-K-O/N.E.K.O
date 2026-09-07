@@ -96,8 +96,8 @@ def test_shared_slot_rename_and_secret_roundtrip_leave_core_config_untouched(con
     assert created["base_url"] == "https://models.example/v1"
     assert created["api_key"] == SECRET_MASK
     for plugin_id in ("alpha", "beta"):
-        service.set_binding(plugin_id, "analysis", slot_id)
-    renamed = service.update_slot(slot_id, {"name": "Renamed", "api_key": SECRET_MASK})
+        service.set_binding(plugin_id, "analysis", slot_id, 0)
+    renamed = service.update_slot(slot_id, {"name": "Renamed"})
     assert renamed["id"] == slot_id
     assert len(renamed["bound_by"]) == 2
     assert service.get_bindings("alpha")["requirements"]["analysis"]["status"] == "bound"
@@ -109,22 +109,19 @@ def test_shared_slot_rename_and_secret_roundtrip_leave_core_config_untouched(con
     assert all(tx == {"operation": "save", "target": CONFIG_FILENAME} for tx in cm.transactions)
 
 
-@pytest.mark.parametrize("mask", [SECRET_MASK, "********", "••••••"])
-def test_display_masks_preserve_secret_and_empty_key_clears_it(config_env, mask):
+@pytest.mark.parametrize("key", [SECRET_MASK, "********", "••••••", "abcdef......wxyz", "prefix......suffix-extra"])
+def test_opaque_keys_can_be_created_replaced_and_cleared(config_env, key):
     _, service, _ = config_env
-    slot_id = service.create_slot(slot_payload())["id"]
-    service.update_slot(slot_id, {"api_key": mask})
-    assert service.store.read().slots[slot_id].api_key == "test-secret-key"
+    slot_id = service.create_slot(slot_payload(api_key=key))["id"]
+    assert service.store.read().slots[slot_id].api_key == key
+    assert service.get_slot(slot_id)["api_key_preview"] != key
+    service.update_slot(slot_id, {"api_key": "old-key"})
+    service.update_slot(slot_id, {"api_key": key})
+    assert service.store.read().slots[slot_id].api_key == key
+    service.update_slot(slot_id, {"name": "Renamed"})
+    assert service.store.read().slots[slot_id].api_key == key
     service.update_slot(slot_id, {"api_key": ""})
-    assert service.get_slot(slot_id)["api_key"] == ""
     assert service.store.read().slots[slot_id].api_key == ""
-
-
-def test_new_slot_cannot_store_mask(config_env):
-    cm, service, _ = config_env
-    with pytest.raises(ServerDomainError, match="API key"):
-        service.create_slot(slot_payload(api_key=SECRET_MASK))
-    assert not cm.get_runtime_config_path(CONFIG_FILENAME).exists()
 
 
 @pytest.mark.parametrize("change", [
@@ -135,7 +132,7 @@ def test_endpoint_change_does_not_reuse_previous_credential(config_env, change):
     _, service, _ = config_env
     slot_id = service.create_slot(slot_payload())["id"]
     with pytest.raises(ServerDomainError) as error:
-        service.update_slot(slot_id, {**change, "api_key": SECRET_MASK})
+        service.update_slot(slot_id, change)
     assert error.value.code == "MODEL_CREDENTIAL_UPDATE_REQUIRED"
     assert service.store.read().slots[slot_id].api_key == "test-secret-key"
     service.update_slot(slot_id, {**change, "api_key": "new-test-key"})
@@ -152,7 +149,7 @@ def test_binding_must_be_declared_and_meet_capabilities(config_env):
         ("missing", "analysis", "PLUGIN_NOT_FOUND"),
     ]:
         with pytest.raises(ServerDomainError) as error:
-            service.set_binding(plugin_id, usage_id, slot_id)
+            service.set_binding(plugin_id, usage_id, slot_id, 0)
         assert error.value.code == code
     assert service.store.read().bindings == {}
     assert service.get_bindings("alpha")["ready"] is False
@@ -161,7 +158,7 @@ def test_binding_must_be_declared_and_meet_capabilities(config_env):
 def test_capability_edit_cannot_break_existing_binding(config_env):
     _, service, declarations = config_env
     slot_id = service.create_slot(slot_payload())["id"]
-    service.set_binding("alpha", "analysis", slot_id)
+    service.set_binding("alpha", "analysis", slot_id, 0)
     with pytest.raises(ServerDomainError) as error:
         service.update_slot(slot_id, {"capabilities": ["text"]})
     assert error.value.code == "MODEL_CAPABILITY_MISMATCH"
@@ -173,13 +170,13 @@ def test_capability_edit_cannot_break_existing_binding(config_env):
 def test_delete_requires_explicit_unbind_and_stale_binding_can_be_cleaned(config_env):
     _, service, declarations = config_env
     slot_id = service.create_slot(slot_payload())["id"]
-    service.set_binding("alpha", "analysis", slot_id)
+    service.set_binding("alpha", "analysis", slot_id, 0)
     del declarations["alpha"]
-    assert service.get_slot(slot_id)["bound_by"] == [{"plugin_id": "alpha", "usage_id": "analysis"}]
+    assert service.get_slot(slot_id)["bound_by"] == [{"plugin_id": "alpha", "usage_id": "analysis", "version": 1}]
     with pytest.raises(ServerDomainError) as error:
         service.delete_slot(slot_id)
     assert error.value.code == "MODEL_SLOT_IN_USE"
-    service.delete_binding("alpha", "analysis")
+    service.delete_binding("alpha", "analysis", 1)
     service.delete_slot(slot_id)
     assert service.store.read().bindings == {}
     assert service.list_slots()["slots"] == []
@@ -323,15 +320,9 @@ def test_slot_returns_only_masked_preview(config_env, key, preview):
     assert service.get_slot(created["id"])["api_key_preview"] == preview
     assert service.list_slots()["slots"][0]["api_key_preview"] == preview
     if key:
-        service.update_slot(created["id"], {"api_key": preview, "name": "Renamed"})
+        service.update_slot(created["id"], {"name": "Renamed"})
         assert service.store.read().slots[created["id"]].api_key == key
     assert "api_key_preview" not in service.store.read().slots[created["id"]].model_dump()
-
-
-def test_display_preview_cannot_be_created_as_a_real_key(config_env):
-    _, service, _ = config_env
-    with pytest.raises(ServerDomainError):
-        service.create_slot(slot_payload(api_key="sk-abc......1234"))
 
 
 def test_output_default_limit_is_validated_before_saving(config_env):

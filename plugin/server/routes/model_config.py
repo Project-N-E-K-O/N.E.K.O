@@ -5,7 +5,7 @@ import asyncio
 from collections.abc import Callable
 
 import anyio
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 
 from plugin.logging_config import get_logger
 from plugin.server.application.model_config_service import ModelConfigService
@@ -138,11 +138,19 @@ async def get_bindings(plugin_id: str, _: str = require_admin):
 @router.put("/plugins/{plugin_id}/bindings/{usage_id}")
 async def set_binding(plugin_id: str, usage_id: str, payload: object = Body(...), _: str = require_admin):
     payload = _object_payload(payload)
-    if set(payload) != {"slot_id"} or not isinstance(payload.get("slot_id"), str):
-        raise HTTPException(422, "Expected a slot_id string")
-    return await _call(service.set_binding, plugin_id, usage_id, payload["slot_id"])
+    if set(payload) != {"slot_id", "expected_version"} or not isinstance(payload.get("slot_id"), str):
+        raise HTTPException(422, "Expected slot_id and expected_version")
+    return await _call(service.set_binding, plugin_id, usage_id, payload["slot_id"], payload["expected_version"])
 
 
 @router.delete("/plugins/{plugin_id}/bindings/{usage_id}")
-async def delete_binding(plugin_id: str, usage_id: str, _: str = require_admin):
-    return await _call(service.delete_binding, plugin_id, usage_id)
+async def delete_binding(plugin_id: str, usage_id: str, expected_version: int = Query(..., ge=0), _: str = require_admin):
+    return await _call(service.delete_binding, plugin_id, usage_id, expected_version)
+
+
+@router.post("/plugins/{plugin_id}/bindings/{usage_id}/confirm")
+async def confirm_binding(plugin_id: str, usage_id: str, payload: object = Body(...), _: str = require_admin):
+    payload = _object_payload(payload)
+    if set(payload) != {"expected_version"}:
+        raise HTTPException(422, "Expected expected_version")
+    return await _call(service.confirm_binding, plugin_id, usage_id, payload["expected_version"])

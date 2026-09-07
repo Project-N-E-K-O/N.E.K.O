@@ -1,5 +1,8 @@
+import { modelBindingErrors } from './model-binding-errors'
+
 export const modelBindingsMessages = {
   'en-US': {
+    bindingErrors: modelBindingErrors['en-US'],
     title: 'Model API bindings',
     manage: 'Manage slots and usage',
     description: 'Choose a saved model slot for each purpose declared by this plugin. Changes are saved immediately.',
@@ -17,6 +20,7 @@ export const modelBindingsMessages = {
     status: { bound: 'Bound', unbound: 'No slot selected', incompatible: 'The bound slot no longer meets this purpose’s requirements' },
   },
   'zh-CN': {
+    bindingErrors: modelBindingErrors['zh-CN'],
     title: '模型 API 绑定',
     manage: '管理槽位与用量',
     description: '为插件声明的每个用途选择已保存的模型槽位，选择后立即保存。',
@@ -34,6 +38,7 @@ export const modelBindingsMessages = {
     status: { bound: '已绑定', unbound: '尚未选择槽位', incompatible: '已绑定槽位不再满足此用途的能力要求' },
   },
   'zh-TW': {
+    bindingErrors: modelBindingErrors['zh-TW'],
     title: '模型 API 綁定',
     manage: '管理槽位與用量',
     description: '為外掛宣告的每個用途選擇已儲存的模型槽位，選擇後立即儲存。',
@@ -51,6 +56,7 @@ export const modelBindingsMessages = {
     status: { bound: '已綁定', unbound: '尚未選擇槽位', incompatible: '已綁定槽位不再符合此用途的能力需求' },
   },
   ja: {
+    bindingErrors: modelBindingErrors['ja'],
     title: 'モデル API の割り当て',
     manage: 'スロットと使用量の管理',
     description: 'プラグインが宣言した用途ごとに、保存済みモデルスロットを選択します。変更はすぐに保存されます。',
@@ -68,6 +74,7 @@ export const modelBindingsMessages = {
     status: { bound: '割り当て済み', unbound: 'スロット未選択', incompatible: '割り当て済みのスロットがこの用途の要件を満たしていません' },
   },
   ko: {
+    bindingErrors: modelBindingErrors['ko'],
     title: '모델 API 연결',
     manage: '슬롯 및 사용량 관리',
     description: '플러그인이 선언한 각 용도에 저장된 모델 슬롯을 선택하세요. 변경 사항은 즉시 저장됩니다.',
@@ -85,6 +92,7 @@ export const modelBindingsMessages = {
     status: { bound: '연결됨', unbound: '선택된 슬롯 없음', incompatible: '연결된 슬롯이 이 용도의 요구 사항을 더 이상 충족하지 않습니다' },
   },
   es: {
+    bindingErrors: modelBindingErrors['es'],
     title: 'Asignaciones de API de modelos',
     manage: 'Gestionar slots y uso',
     description: 'Elige un slot de modelo guardado para cada uso declarado por este plugin. Los cambios se guardan al instante.',
@@ -102,6 +110,7 @@ export const modelBindingsMessages = {
     status: { bound: 'Asignado', unbound: 'Ningún slot seleccionado', incompatible: 'El slot asignado ya no cumple los requisitos de este uso' },
   },
   pt: {
+    bindingErrors: modelBindingErrors['pt'],
     title: 'Vínculos de API de modelos',
     manage: 'Gerenciar slots e uso',
     description: 'Escolha um slot de modelo salvo para cada finalidade declarada por este plugin. As alterações são salvas imediatamente.',
@@ -119,6 +128,7 @@ export const modelBindingsMessages = {
     status: { bound: 'Vinculado', unbound: 'Nenhum slot selecionado', incompatible: 'O slot vinculado não atende mais aos requisitos desta finalidade' },
   },
   ru: {
+    bindingErrors: modelBindingErrors['ru'],
     title: 'Привязки API моделей',
     manage: 'Слоты и использование',
     description: 'Выберите сохранённый слот модели для каждой задачи, объявленной плагином. Изменения сохраняются сразу.',

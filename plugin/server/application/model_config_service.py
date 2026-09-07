@@ -14,7 +14,6 @@ from plugin.server.domain.model_config import (
     SECRET_MASK,
     ModelSlot,
     PluginModelsConfig,
-    is_secret_mask,
     secret_preview,
 )
 from plugin.server.infrastructure.config_paths import get_plugin_manifest_path
@@ -76,7 +75,7 @@ class ModelConfigService:
             api_key=SECRET_MASK if slot.api_key else "",
             api_key_preview=secret_preview(slot.api_key),
             bound_by=[
-                {"plugin_id": plugin_id, "usage_id": usage_id}
+                {"plugin_id": plugin_id, "usage_id": usage_id, "version": config.binding_versions.get(plugin_id, {}).get(usage_id, 0)}
                 for plugin_id, bindings in sorted(config.bindings.items())
                 for usage_id, target in sorted(bindings.items())
                 if target == slot_id
@@ -95,8 +94,6 @@ class ModelConfigService:
 
     def create_slot(self, payload: dict) -> dict:
         slot = _validate_slot(payload)
-        if is_secret_mask(slot.api_key):
-            raise ServerDomainError("MODEL_SLOT_INVALID", "Enter an API key or leave it empty", 422)
         slot_id = "slot_" + uuid4().hex
 
         def change(config):
@@ -123,9 +120,6 @@ class ModelConfigService:
         def change(config):
             old = self._slot(config, slot_id)
             updates = dict(payload)
-            key = updates.get("api_key")
-            if isinstance(key, str) and is_secret_mask(key.strip()):
-                updates.pop("api_key")
             slot = _validate_slot({**old.model_dump(), **updates})
             if old.api_key and "api_key" not in updates and (
                 old.protocol != slot.protocol or not same_endpoint(old.base_url, slot.base_url)
@@ -183,7 +177,7 @@ class ModelConfigService:
             status = "unbound" if slot is None else (
                 "bound" if set(requirement.capabilities).issubset(slot.capabilities) else "incompatible"
             )
-            usages[usage_id] = {**requirement.model_dump(), "slot_id": slot_id, "status": status}
+            usages[usage_id] = {**requirement.model_dump(), "slot_id": slot_id, "status": status, "version": config.binding_versions.get(plugin_id, {}).get(usage_id, 0)}
         return {
             "plugin_id": plugin_id,
             "requirements": usages,
@@ -191,7 +185,18 @@ class ModelConfigService:
             "ready": all(not item["required"] or item["status"] == "bound" for item in usages.values()),
         }
 
-    def set_binding(self, plugin_id: str, usage_id: str, slot_id: str) -> dict:
+    @staticmethod
+    def _advance_binding_version(config: PluginModelsConfig, plugin_id: str, usage_id: str, expected_version: int) -> int:
+        if type(expected_version) is not int or expected_version < 0:
+            raise ServerDomainError("MODEL_BINDING_VERSION_REQUIRED", "A nonnegative binding version is required", 422)
+        versions = config.binding_versions.setdefault(plugin_id, {})
+        current = versions.get(usage_id, 0)
+        if current != expected_version:
+            raise ServerDomainError("MODEL_BINDING_CONFLICT", "The binding changed. Refresh before trying again", 409)
+        versions[usage_id] = current + 1
+        return current + 1
+
+    def set_binding(self, plugin_id: str, usage_id: str, slot_id: str, expected_version: int) -> dict:
         requirements = self.requirements_loader(plugin_id)
         requirement = requirements.get(usage_id)
         if requirement is None:
@@ -200,18 +205,33 @@ class ModelConfigService:
         def change(config):
             slot = self._slot(config, slot_id)
             self._check_capabilities(slot, requirement)
+            version = self._advance_binding_version(config, plugin_id, usage_id, expected_version)
             config.bindings.setdefault(plugin_id, {})[usage_id] = slot_id
-            return {"plugin_id": plugin_id, "usage_id": usage_id, "slot_id": slot_id}
+            return {"plugin_id": plugin_id, "usage_id": usage_id, "slot_id": slot_id, "version": version}
 
         return self.store.update(change)
 
-    def delete_binding(self, plugin_id: str, usage_id: str) -> dict:
+    def delete_binding(self, plugin_id: str, usage_id: str, expected_version: int) -> dict:
         # Permit cleanup after uninstall or after a manifest removes a usage.
         def change(config):
+            version = self._advance_binding_version(config, plugin_id, usage_id, expected_version)
             bindings = config.bindings.get(plugin_id, {})
             bindings.pop(usage_id, None)
             if not bindings:
                 config.bindings.pop(plugin_id, None)
-            return {"success": True}
+            return {"success": True, "version": version}
 
+        return self.store.update(change)
+
+    def confirm_binding(self, plugin_id: str, usage_id: str, expected_version: int) -> dict:
+        """Fence an uncertain write before reporting its authoritative state."""
+        def change(config):
+            if type(expected_version) is not int or expected_version < 0:
+                raise ServerDomainError("MODEL_BINDING_VERSION_REQUIRED", "A nonnegative binding version is required", 422)
+            current = config.binding_versions.get(plugin_id, {}).get(usage_id, 0)
+            if current == expected_version:
+                current = self._advance_binding_version(config, plugin_id, usage_id, expected_version)
+            elif current < expected_version:
+                raise ServerDomainError("MODEL_BINDING_CONFLICT", "Refresh the binding before trying again", 409)
+            return {"version": current, "slot_id": config.bindings.get(plugin_id, {}).get(usage_id)}
         return self.store.update(change)

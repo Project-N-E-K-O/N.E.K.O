@@ -17,10 +17,11 @@ export interface ModelSlot extends ModelSlotInput {
   id: string
   api_key: string
   api_key_preview?: string
-  bound_by: { plugin_id: string; usage_id: string }[]
+  bound_by: { plugin_id: string; usage_id: string; version: number }[]
 }
 
 export interface ModelRequirement {
+  version: number
   label: string
   description: string
   required: boolean

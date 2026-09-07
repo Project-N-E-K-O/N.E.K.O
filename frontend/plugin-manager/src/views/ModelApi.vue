@@ -88,8 +88,8 @@
           <el-form-item :label="t('modelApi.model')" required><el-input v-model="form.model" data-testid="slot-model" maxlength="256" :disabled="saving" /></el-form-item>
         </div>
         <el-form-item :label="t('modelApi.endpoint')" required><el-input v-model="form.base_url" data-testid="slot-endpoint" :placeholder="form.protocol === 'openai_chat' ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'" :disabled="saving" /><p class="field-hint">{{ t('modelApi.endpointHint') }}</p></el-form-item>
-        <el-form-item :label="t('modelApi.key')">
-          <el-input v-model="form.api_key" data-testid="slot-key" :type="form.api_key === form.initial_api_key ? 'text' : 'password'" autocomplete="new-password" :placeholder="t('modelApi.keyPlaceholder')" :disabled="saving" @copy="copyMaskedKey" @cut="copyMaskedKey" @focus="selectMaskedKey" />
+        <el-form-item :label="t('modelApi.key')" @input.capture="form.key_edited = true">
+          <el-input v-model="form.api_key" data-testid="slot-key" :type="form.key_edited ? 'password' : 'text'" autocomplete="new-password" :placeholder="t('modelApi.keyPlaceholder')" :disabled="saving" @copy="copyMaskedKey" @cut="copyMaskedKey" @focus="selectMaskedKey" />
           <p class="field-hint">{{ t('modelApi.keyEditHint') }}</p>
           <p v-if="keyUpdateRequired" class="field-error">{{ t('modelApi.keyUpdateRequired') }}</p>
         </el-form-item>
@@ -112,6 +112,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
 import { createModelSlot, deleteModelBinding, deleteModelSlot, getModelUsage, listModelSlots, testModelSlot, updateModelSlot } from '@/api/models'
+import { bindingErrorKey } from '@/utils/model-binding-error'
 import { formatHttpError } from '@/utils/request'
 import type { ModelCapability, ModelSlot, ModelUsageAttempt, ModelUsageResult } from '@/types/model-api'
 import { maskedKeyCopy, modelSlotForm, modelSlotPayload, needsModelKeyUpdate } from './model-api-form'
@@ -150,13 +151,14 @@ const duration = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 const tokenValue = (attempt: ModelUsageAttempt, field: 'prompt_tokens' | 'completion_tokens' | 'total_tokens') => attempt.usage_status === 'unknown' ? '—' : (attempt.usage?.[field]?.toLocaleString() ?? '—')
 const slotInUse = (slot: ModelSlot) => slot.bound_by.length > 0 || slots.value.some(other => other.fallback_slot_id === slot.id)
 
+let slotsGeneration = 0
 async function loadSlots() {
-  if (loadingSlots.value) return
+  const revision = ++slotsGeneration
   loadingSlots.value = true
   slotsError.value = ''
-  try { slots.value = (await listModelSlots()).slots }
-  catch (error) { slotsError.value = errorMessage(error) }
-  finally { loadingSlots.value = false }
+  try { const result = await listModelSlots(); if (revision === slotsGeneration) slots.value = result.slots }
+  catch (error) { if (revision !== slotsGeneration) return; slots.value = []; slotsError.value = bindingErrorKey(error) === 'bindingErrors.unknown' ? t('modelApi.bindingErrors.unknown') : errorMessage(error) }
+  finally { if (revision === slotsGeneration) loadingSlots.value = false }
 }
 async function loadUsage() {
   if (loadingUsage.value) return
@@ -179,16 +181,15 @@ function clearEditor() {
   formError.value = ''
 }
 function selectMaskedKey(event: FocusEvent) {
-  if (form.api_key && form.api_key === form.initial_api_key) (event.target as HTMLInputElement).select()
+  if (form.api_key && !form.key_edited) (event.target as HTMLInputElement).select()
 }
 function copyMaskedKey(event: ClipboardEvent) {
   event.preventDefault()
-  event.clipboardData?.setData('text/plain', maskedKeyCopy(form.api_key))
+  event.clipboardData?.setData('text/plain', form.key_edited ? maskedKeyCopy(form.api_key) : form.initial_api_key)
 }
 async function saveSlot() {
   if (saving.value || keyUpdateRequired.value) return
   if (!form.name.trim() || !form.model.trim() || !form.base_url.trim()) { formError.value = t('modelApi.requiredFields'); return }
-  if (form.api_key.trim() !== form.initial_api_key && form.api_key.includes('......')) { formError.value = t('modelApi.keyEditHint'); return }
   saving.value = true
   formError.value = ''
   try {
@@ -213,9 +214,9 @@ async function unbindSlot(binding: ModelSlot['bound_by'][number]) {
   try {
     try { await ElMessageBox.confirm(t('modelApi.unbindConfirm', { plugin: binding.plugin_id, usage: binding.usage_id }), t('modelApi.unbind'), { type: 'warning', confirmButtonText: t('modelApi.unbind'), cancelButtonText: t('common.cancel') }) }
     catch { return }
-    await deleteModelBinding(binding.plugin_id, binding.usage_id)
+    await deleteModelBinding(binding.plugin_id, binding.usage_id, binding.version)
     await loadSlots()
-  } catch (error) { slotsError.value = errorMessage(error) }
+  } catch (error) { await loadSlots(); if (!slotsError.value) slotsError.value = t(`modelApi.${bindingErrorKey(error)}`) }
   finally { unbindingId.value = '' }
 }
 async function testSlot(slot: ModelSlot) {

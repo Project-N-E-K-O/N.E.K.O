@@ -21,16 +21,12 @@ SlotId = Annotated[StrictStr, Field(pattern=r"^slot_[0-9a-f]{32}$")]
 PluginId = Annotated[StrictStr, Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")]
 
 
-def is_secret_mask(value: str) -> bool:
-    """Recognize non-secret sentinels and display previews as no-op edits."""
-    return value == SECRET_MASK or (len(value) == 16 and value[6:12] == "......") or (len(value) >= 3 and set(value) in ({"*"}, {"•"}))
-
-
 def secret_preview(value: str) -> str:
     """Never reveal a complete short credential or overlapping visible parts."""
     if not value:
         return ""
-    return value[:6] + "......" + value[-4:] if len(value) > 10 else "******"
+    preview = value[:6] + "......" + value[-4:] if len(value) > 10 else "******"
+    return ("••••••" if value == "******" else "******") if preview == value else preview
 
 
 class ModelDefaults(BaseModel):
@@ -101,6 +97,9 @@ class PluginModelsConfig(BaseModel):
     slots: dict[SlotId, ModelSlot] = Field(default_factory=dict)
     bindings: dict[PluginId, dict[PluginModelUsageId, SlotId]] = Field(default_factory=dict)
 
+    # Keep revisions after unbinding, so an old request cannot resurrect a binding.
+    binding_versions: dict[PluginId, dict[PluginModelUsageId, Annotated[int, Field(ge=0)]]] = Field(default_factory=dict)
+
     @field_validator("schema_version", mode="before")
     @classmethod
     def validate_version(cls, value: object) -> object:
@@ -111,8 +110,6 @@ class PluginModelsConfig(BaseModel):
     @model_validator(mode="after")
     def validate_references(self) -> PluginModelsConfig:
         for slot_id, slot in self.slots.items():
-            if is_secret_mask(slot.api_key):
-                raise ValueError("A display mask is not a stored API key")
             seen = {slot_id}
             fallback = slot.fallback_slot_id
             while fallback is not None:

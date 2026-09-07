@@ -1,4 +1,7 @@
+import { modelBindingErrors } from './model-binding-errors'
+
 const enUS = {
+  bindingErrors: modelBindingErrors['en-US'],
   title: 'Plugin API', subtitle: 'Manage the models your plugins can use.',
   slots: 'Model slots', addSlot: 'Add model slot', editSlot: 'Edit model slot',
   bindingHint: 'Create a slot here, then assign it to a declared use in the plugin’s configuration.',
@@ -30,6 +33,7 @@ const enUS = {
 }
 
 const zhCN: typeof enUS = {
+  bindingErrors: modelBindingErrors['zh-CN'],
   title: 'Plugin API', subtitle: '管理供插件使用的模型。',
   slots: '模型槽位', addSlot: '添加模型槽位', editSlot: '编辑模型槽位',
   bindingHint: '先在这里创建槽位，再到插件配置中为声明的模型用途选择槽位。',
@@ -61,6 +65,7 @@ const zhCN: typeof enUS = {
 }
 
 const zhTW: typeof enUS = {
+  bindingErrors: modelBindingErrors['zh-TW'],
   title: 'Plugin API', subtitle: '管理供外掛使用的模型。',
   slots: '模型槽位', addSlot: '新增模型槽位', editSlot: '編輯模型槽位',
   bindingHint: '先在這裡建立槽位，再到外掛設定中為宣告的模型用途選擇槽位。',
@@ -92,6 +97,7 @@ const zhTW: typeof enUS = {
 }
 
 const ja: typeof enUS = {
+  bindingErrors: modelBindingErrors['ja'],
   title: 'Plugin API', subtitle: 'プラグインが利用するモデルを管理します。',
   slots: 'モデルスロット', addSlot: 'モデルスロットを追加', editSlot: 'モデルスロットを編集',
   bindingHint: 'ここでスロットを作成し、プラグインの設定で宣言された用途に割り当ててください。',
@@ -123,6 +129,7 @@ const ja: typeof enUS = {
 }
 
 const ko: typeof enUS = {
+  bindingErrors: modelBindingErrors['ko'],
   title: 'Plugin API', subtitle: '플러그인이 사용할 모델을 관리합니다.',
   slots: '모델 슬롯', addSlot: '모델 슬롯 추가', editSlot: '모델 슬롯 편집',
   bindingHint: '여기에서 슬롯을 만든 후 플러그인 설정에서 선언된 용도에 연결하세요.',
@@ -154,6 +161,7 @@ const ko: typeof enUS = {
 }
 
 const es: typeof enUS = {
+  bindingErrors: modelBindingErrors['es'],
   title: 'Plugin API', subtitle: 'Gestiona los modelos que pueden utilizar tus plugins.',
   slots: 'Configuraciones de modelos', addSlot: 'Añadir modelo', editSlot: 'Editar modelo',
   bindingHint: 'Crea una configuración aquí y asígnala a un uso declarado en la configuración del plugin.',
@@ -185,6 +193,7 @@ const es: typeof enUS = {
 }
 
 const pt: typeof enUS = {
+  bindingErrors: modelBindingErrors['pt'],
   title: 'Plugin API', subtitle: 'Gerencie os modelos que seus plugins podem usar.',
   slots: 'Configurações de modelos', addSlot: 'Adicionar modelo', editSlot: 'Editar modelo',
   bindingHint: 'Crie uma configuração aqui e associe-a a um uso declarado nas configurações do plugin.',
@@ -216,6 +225,7 @@ const pt: typeof enUS = {
 }
 
 const ru: typeof enUS = {
+  bindingErrors: modelBindingErrors['ru'],
   title: 'Plugin API', subtitle: 'Управляйте моделями, доступными плагинам.',
   slots: 'Слоты моделей', addSlot: 'Добавить слот модели', editSlot: 'Изменить слот модели',
   bindingHint: 'Создайте слот здесь, затем назначьте его заявленной задаче в настройках плагина.',

@@ -74,6 +74,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { deleteModelBinding, getModelBindings, listModelSlots, setModelBinding } from '@/api/models'
 import type { ModelBindings, ModelRequirement, ModelSlot } from '@/types/model-api'
+import { bindingErrorKey } from '@/utils/model-binding-error'
 import { formatHttpError } from '@/utils/request'
 
 const props = defineProps<{ pluginId: string }>()
@@ -111,7 +112,7 @@ async function load(): Promise<void> {
       slots.value = available.slots
     }
   } catch (cause) {
-    if (revision === generation) error.value = formatHttpError(cause) || t('modelBindings.loadFailed')
+    if (revision === generation) error.value = bindingErrorKey(cause) === 'bindingErrors.unknown' ? t('modelBindings.bindingErrors.unknown') : formatHttpError(cause) || t('modelBindings.loadFailed')
   } finally {
     if (revision === generation) loading.value = false
   }
@@ -128,9 +129,11 @@ async function changeBinding(usageId: string, slotId: string): Promise<void> {
   saving.value = true
   error.value = ''
   try {
-    if (slotId) await setModelBinding(pluginId, usageId, slotId)
-    else await deleteModelBinding(pluginId, usageId)
+    const result = slotId
+      ? await setModelBinding(pluginId, usageId, slotId, requirement.version)
+      : await deleteModelBinding(pluginId, usageId, requirement.version)
     if (revision !== generation) return
+    requirement.version = result.version
     requirement.slot_id = slotId || null
     requirement.status = slotId ? 'bound' : 'unbound'
     if (slotId) current.bindings[usageId] = slotId
@@ -138,8 +141,9 @@ async function changeBinding(usageId: string, slotId: string): Promise<void> {
     current.ready = Object.values(current.requirements).every((item) => !item.required || item.status === 'bound')
   } catch (cause) {
     if (revision === generation) {
-      selections.value[usageId] = requirement.slot_id ?? ''
-      error.value = formatHttpError(cause) || t('modelBindings.saveFailed')
+      const message = t(`modelBindings.${bindingErrorKey(cause)}`)
+      await load()
+      if (props.pluginId === pluginId && revision + 1 === generation && !error.value) error.value = message
     }
   } finally {
     if (revision === generation) saving.value = false

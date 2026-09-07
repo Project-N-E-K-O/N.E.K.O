@@ -5,6 +5,7 @@ export interface ModelSlotForm {
   protocol: ModelProtocol
   base_url: string
   model: string
+  key_edited: boolean
   initial_api_key: string
   api_key: string
   capabilities: ModelCapability[]
@@ -20,6 +21,7 @@ export function modelSlotForm(slot?: ModelSlot): ModelSlotForm {
     protocol: slot?.protocol ?? 'openai_chat',
     base_url: slot?.base_url ?? '',
     model: slot?.model ?? '',
+    key_edited: false,
     initial_api_key: slot?.api_key ? slot.api_key_preview || '******' : '',
     api_key: slot?.api_key ? slot.api_key_preview || '******' : '',
     capabilities: [...(slot?.capabilities ?? ['text'])],
@@ -36,7 +38,7 @@ function endpoint(value: string): string {
 }
 
 export function needsModelKeyUpdate(form: ModelSlotForm, slot: ModelSlot | null): boolean {
-  return Boolean(slot?.api_key && form.api_key.trim() === form.initial_api_key
+  return Boolean(slot?.api_key && !form.key_edited
     && (form.protocol !== slot.protocol || endpoint(form.base_url) !== endpoint(slot.base_url)))
 }
 
@@ -48,12 +50,13 @@ export function modelSlotPayload(form: ModelSlotForm): ModelSlotInput {
     timeout_seconds: form.timeout_seconds,
     fallback_slot_id: form.fallback_slot_id || null,
   }
-  if (form.api_key.trim() !== form.initial_api_key) payload.api_key = form.api_key.trim()
+  if (form.key_edited) payload.api_key = form.api_key.trim()
   return payload
 }
 
 export function maskedKeyCopy(value: string): string {
-  if (!value || value.includes('......') || /^\*+$/.test(value)) return value
+  if (!value) return ''
   const characters = Array.from(value)
-  return characters.length > 10 ? `${characters.slice(0, 6).join('')}......${characters.slice(-4).join('')}` : '******'
+  const preview = characters.length > 10 ? `${characters.slice(0, 6).join('')}......${characters.slice(-4).join('')}` : '******'
+  return preview === value ? (value === '******' ? '••••••' : '******') : preview
 }

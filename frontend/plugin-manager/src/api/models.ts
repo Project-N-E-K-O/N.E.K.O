@@ -8,7 +8,52 @@ const slotsUrl = '/api/model-config/slots'
 const slotUrl = (id: string) => `${slotsUrl}/${encodeURIComponent(id)}`
 const bindingsUrl = (id: string) => `/api/model-config/plugins/${encodeURIComponent(id)}/bindings`
 
-export function listModelSlots(): Promise<{ schema_version: 1; slots: ModelSlot[] }> {
+// Uncertain requests remain tracked across page navigation. A confirmation
+// advances the server version if necessary, preventing a late write after GET.
+type PendingBinding = { pluginId: string; usageId: string; version: number }
+const pendingStorageKey = 'neko.model-binding-confirmations'
+const uncertainBindings = new Map<string, PendingBinding>()
+try {
+  const saved: unknown = JSON.parse(sessionStorage.getItem(pendingStorageKey) || '[]')
+  if (Array.isArray(saved)) for (const item of saved) {
+    if (item && typeof item.pluginId === 'string' && typeof item.usageId === 'string' && Number.isSafeInteger(item.version) && item.version >= 0) {
+      uncertainBindings.set(JSON.stringify([item.pluginId, item.usageId]), item)
+    }
+  }
+} catch { /* Storage may be unavailable; keep tracking within this application. */ }
+function persistPendingBindings(): void {
+  try { sessionStorage.setItem(pendingStorageKey, JSON.stringify([...uncertainBindings.values()])) }
+  catch { /* The in-memory confirmation state remains available. */ }
+}
+export class BindingResultUnknown extends Error {
+  constructor() { super('MODEL_BINDING_RESULT_UNKNOWN') }
+}
+export async function confirmPendingBindings(pluginId?: string): Promise<void> {
+  for (const [key, pending] of uncertainBindings) {
+    if (pluginId !== undefined && pending.pluginId !== pluginId) continue
+    try {
+      await request.post(`${bindingsUrl(pending.pluginId)}/${encodeURIComponent(pending.usageId)}/confirm`,
+        { expected_version: pending.version }, config)
+      if (uncertainBindings.get(key) === pending) { uncertainBindings.delete(key); persistPendingBindings() }
+    } catch { throw new BindingResultUnknown() }
+  }
+}
+async function mutateBinding<T>(pluginId: string, usageId: string, version: number, send: () => Promise<T>): Promise<T> {
+  await confirmPendingBindings(pluginId)
+  try { return await send() }
+  catch (error) {
+    const status = (error as { response?: { status?: number } })?.response?.status
+    if (status === undefined || status >= 500) {
+      uncertainBindings.set(JSON.stringify([pluginId, usageId]), { pluginId, usageId, version })
+      persistPendingBindings()
+      await confirmPendingBindings(pluginId)
+    }
+    throw error
+  }
+}
+
+export async function listModelSlots(): Promise<{ schema_version: 1; slots: ModelSlot[] }> {
+  await confirmPendingBindings()
   return request.get(slotsUrl, config)
 }
 export function createModelSlot(payload: ModelSlotInput): Promise<ModelSlot> {
@@ -23,14 +68,15 @@ export function deleteModelSlot(id: string): Promise<{ success: boolean }> {
 export function testModelSlot(id: string): Promise<ModelSlotTestResult> {
   return request.post(`${slotUrl(id)}/test`, undefined, { ...config, timeout: 35000 })
 }
-export function getModelBindings(pluginId: string): Promise<ModelBindings> {
+export async function getModelBindings(pluginId: string): Promise<ModelBindings> {
+  await confirmPendingBindings(pluginId)
   return request.get(bindingsUrl(pluginId), config)
 }
-export function setModelBinding(pluginId: string, usageId: string, slotId: string): Promise<{ plugin_id: string; usage_id: string; slot_id: string }> {
-  return request.put(`${bindingsUrl(pluginId)}/${encodeURIComponent(usageId)}`, { slot_id: slotId }, config)
+export function setModelBinding(pluginId: string, usageId: string, slotId: string, expectedVersion: number): Promise<{ plugin_id: string; usage_id: string; slot_id: string; version: number }> {
+  return mutateBinding(pluginId, usageId, expectedVersion, () => request.put(`${bindingsUrl(pluginId)}/${encodeURIComponent(usageId)}`, { slot_id: slotId, expected_version: expectedVersion }, config))
 }
-export function deleteModelBinding(pluginId: string, usageId: string): Promise<{ success: boolean }> {
-  return request.delete(`${bindingsUrl(pluginId)}/${encodeURIComponent(usageId)}`, config)
+export function deleteModelBinding(pluginId: string, usageId: string, expectedVersion: number): Promise<{ success: boolean; version: number }> {
+  return mutateBinding(pluginId, usageId, expectedVersion, () => request.delete(`${bindingsUrl(pluginId)}/${encodeURIComponent(usageId)}`, { ...config, params: { expected_version: expectedVersion } }))
 }
 export function getModelUsage(filters: { plugin_id?: string; slot_id?: string; limit?: number } = {}): Promise<ModelUsageResult> {
   return request.get('/api/model-config/usage', { ...config, params: filters })

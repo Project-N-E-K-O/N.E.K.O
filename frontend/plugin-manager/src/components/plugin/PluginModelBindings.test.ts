@@ -31,11 +31,11 @@ function bindings(pluginId = 'vision_plugin', slotId: string | null = null): Mod
     requirements: {
       vision: {
         label: `${pluginId} vision`, description: 'Describe an image', required: true,
-        capabilities: ['text', 'image_input'], slot_id: slotId, status: slotId ? 'bound' : 'unbound',
+        capabilities: ['text', 'image_input'], slot_id: slotId, version: 0, status: slotId ? 'bound' : 'unbound',
       },
       optional: {
         label: 'Optional summary', description: '', required: false,
-        capabilities: ['text'], slot_id: null, status: 'unbound',
+        capabilities: ['text'], slot_id: null, version: 0, status: 'unbound',
       },
     },
     bindings: slotId ? { vision: slotId } : {},
@@ -104,8 +104,8 @@ beforeEach(() => {
   vi.resetAllMocks()
   api.getModelBindings.mockResolvedValue(bindings())
   api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [capable, textOnly] })
-  api.setModelBinding.mockResolvedValue({ plugin_id: 'vision_plugin', usage_id: 'vision', slot_id: capable.id })
-  api.deleteModelBinding.mockResolvedValue({ success: true })
+  api.setModelBinding.mockResolvedValue({ plugin_id: 'vision_plugin', usage_id: 'vision', slot_id: capable.id, version: 1 })
+  api.deleteModelBinding.mockResolvedValue({ success: true, version: 1 })
 })
 
 afterEach(() => { mounted.splice(0).forEach((cleanup) => cleanup()) })
@@ -131,7 +131,7 @@ describe('PluginModelBindings', () => {
     expect(host.textContent).toContain('modelBindings.optional')
     change(select, capable.id)
     await flush()
-    expect(api.setModelBinding).toHaveBeenCalledExactlyOnceWith('vision_plugin', 'vision', capable.id)
+    expect(api.setModelBinding).toHaveBeenCalledExactlyOnceWith('vision_plugin', 'vision', capable.id, 0)
     expect(selectFor(host).value).toBe(capable.id)
     expect(host.textContent).toContain('modelBindings.ready')
     expect(host.textContent).toContain('modelBindings.readinessHint')
@@ -144,7 +144,7 @@ describe('PluginModelBindings', () => {
     await flush()
     change(selectFor(host), '')
     await flush()
-    expect(api.deleteModelBinding).toHaveBeenCalledExactlyOnceWith('vision_plugin', 'vision')
+    expect(api.deleteModelBinding).toHaveBeenCalledExactlyOnceWith('vision_plugin', 'vision', 0)
     expect(api.setModelBinding).not.toHaveBeenCalled()
     expect(selectFor(host).value).toBe('')
     expect(host.textContent).toContain('modelBindings.notReady')
@@ -158,7 +158,7 @@ describe('PluginModelBindings', () => {
     change(selectFor(host), '')
     await flush()
     expect(selectFor(host).value).toBe(capable.id)
-    expect(host.textContent).toContain('MODEL_BINDING_REJECTED')
+    expect(host.textContent).toContain('modelBindings.bindingErrors.failed')
     expect(host.textContent).toContain('modelBindings.ready')
   })
 
@@ -191,7 +191,7 @@ describe('PluginModelBindings', () => {
     await flush()
     resolveSave()
     await flush()
-    expect(api.setModelBinding).toHaveBeenCalledExactlyOnceWith('old', 'vision', capable.id)
+    expect(api.setModelBinding).toHaveBeenCalledExactlyOnceWith('old', 'vision', capable.id, 0)
     expect(host.textContent).toContain('new vision')
     expect(selectFor(host).value).toBe('')
     expect(selectFor(host).disabled).toBe(false)
@@ -207,4 +207,68 @@ describe('PluginModelBindings', () => {
     expect(host.textContent).not.toContain('Temporary load failure')
     expect(selectFor(host)).toBeDefined()
   })
+})
+
+it('uses the returned version for the next mutation', async () => {
+  const { host } = mountBindings()
+  await flush()
+  change(selectFor(host), capable.id)
+  await flush()
+  change(selectFor(host), '')
+  await flush()
+  expect(api.setModelBinding).toHaveBeenCalledWith('vision_plugin', 'vision', capable.id, 0)
+  expect(api.deleteModelBinding).toHaveBeenCalledWith('vision_plugin', 'vision', 1)
+})
+
+it('reloads authoritative state on conflict without replaying the rejected selection', async () => {
+  const { host } = mountBindings()
+  await flush()
+  const authoritative = bindings('vision_plugin', capable.id)
+  authoritative.requirements.vision!.version = 7
+  api.getModelBindings.mockResolvedValue(authoritative)
+  api.setModelBinding.mockRejectedValue(new Error('MODEL_BINDING_CONFLICT'))
+  change(selectFor(host), capable.id)
+  await flush()
+  expect(api.setModelBinding).toHaveBeenCalledTimes(1)
+  expect(api.getModelBindings).toHaveBeenCalledTimes(2)
+  expect(selectFor(host).value).toBe(capable.id)
+  expect(host.textContent).toContain('modelBindings.bindingErrors.conflict')
+  change(selectFor(host), '')
+  await flush()
+  expect(api.deleteModelBinding).toHaveBeenCalledWith('vision_plugin', 'vision', 7)
+})
+
+it('keeps the new binding when an old save finishes after leaving and returning', async () => {
+  let rejectOld!: (reason: Error) => void
+  api.getModelBindings.mockImplementation((pluginId: string) => Promise.resolve(bindings(pluginId)))
+  api.setModelBinding.mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject }))
+  const { host, pluginId } = mountBindings('old')
+  await flush()
+  change(selectFor(host), capable.id)
+  await flush()
+  pluginId.value = 'other'; await flush()
+  pluginId.value = 'old'; await flush()
+  change(selectFor(host), capable.id); await flush()
+  rejectOld(new Error('MODEL_BINDING_CONFLICT')); await flush()
+  expect(api.setModelBinding).toHaveBeenCalledTimes(2)
+  expect(api.setModelBinding).toHaveBeenLastCalledWith('old', 'vision', capable.id, 0)
+  expect(selectFor(host).value).toBe(capable.id)
+  expect(host.textContent).not.toContain('modelBindings.bindingErrors.conflict')
+})
+
+it('does not display stale readiness when confirmation and reload fail', async () => {
+  const { host } = mountBindings()
+  await flush()
+  api.setModelBinding.mockRejectedValue(new Error('MODEL_BINDING_RESULT_UNKNOWN'))
+  api.getModelBindings.mockRejectedValue(new Error('MODEL_BINDING_RESULT_UNKNOWN'))
+  change(selectFor(host), capable.id)
+  await flush()
+  expect(host.textContent).toContain('modelBindings.bindingErrors.unknown')
+  expect(host.textContent).not.toContain('modelBindings.notReady')
+  expect(host.querySelector('select')).toBeNull()
+  api.getModelBindings.mockResolvedValue(bindings('vision_plugin', capable.id))
+  host.querySelector<HTMLButtonElement>('button')!.click()
+  await flush()
+  expect(selectFor(host).value).toBe(capable.id)
+  expect(host.textContent).not.toContain('modelBindings.bindingErrors.unknown')
 })

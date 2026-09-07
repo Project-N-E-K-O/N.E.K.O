@@ -14,7 +14,7 @@ vi.mock('@/api/models', () => api)
 vi.mock('@/utils/request', () => ({ formatHttpError: (error: Error) => error.message }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
 
-const saved: ModelSlot = { id: 'slot_123', name: 'Vision model', protocol: 'openai_chat', base_url: 'https://example.test/v1', model: 'model-a', api_key: '__NEKO_SECRET_MASKED__', api_key_preview: 'sk-abc......wxyz', capabilities: ['text', 'image_input'], defaults: { temperature: null, max_output_tokens: null }, timeout_seconds: 60, fallback_slot_id: null, bound_by: [{ plugin_id: 'example', usage_id: 'vision' }] }
+const saved: ModelSlot = { id: 'slot_123', name: 'Vision model', protocol: 'openai_chat', base_url: 'https://example.test/v1', model: 'model-a', api_key: '__NEKO_SECRET_MASKED__', api_key_preview: 'sk-abc......wxyz', capabilities: ['text', 'image_input'], defaults: { temperature: null, max_output_tokens: null }, timeout_seconds: 60, fallback_slot_id: null, bound_by: [{ plugin_id: 'example', usage_id: 'vision', version: 0 }] }
 const emptyUsage: ModelUsageResult = { requests: [], filters: { plugin_id: null, slot_id: null }, summary: { window: 'recent_retained', retained_request_count: 0, logical_request_count: 0, upstream_attempt_count: 0, usage_counts: { reported: 0, partial: 0, unknown: 0 }, status_counts: { success: 0, error: 0, timeout: 0, cancelled: 0 }, tokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0 } } }
 let cleanup: (() => void) | undefined
 const NativeMutationObserver = globalThis.MutationObserver
@@ -65,12 +65,12 @@ describe('model slot credentials', () => {
     const form = modelSlotForm(saved)
     form.base_url = 'https://other.test/v1'
     expect(needsModelKeyUpdate(form, saved)).toBe(true)
-    form.api_key = ''
+    form.api_key = ''; form.key_edited = true
     expect(needsModelKeyUpdate(form, saved)).toBe(false)
     expect(modelSlotPayload(form).api_key).toBe('')
     form.api_key = ' new-secret '
     expect(modelSlotPayload(form).api_key).toBe('new-secret')
-    form.api_key = form.initial_api_key; form.base_url = saved.base_url; form.protocol = 'anthropic_messages'
+    form.api_key = form.initial_api_key; form.key_edited = false; form.base_url = saved.base_url; form.protocol = 'anthropic_messages'
     expect(needsModelKeyUpdate(form, saved)).toBe(true)
   })
   it('accepts a normalized equivalent endpoint and preserves explicit zero temperature', () => {
@@ -126,7 +126,7 @@ describe('Plugin API page', () => {
     expect(container.textContent).not.toContain('No model slots yet')
   })
   it('removes a stale plugin usage binding and enables slot deletion after refreshing', async () => {
-    api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [{ ...saved, bound_by: [{ plugin_id: 'uninstalled_plugin', usage_id: 'removed_usage' }] }] })
+    api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [{ ...saved, bound_by: [{ plugin_id: 'uninstalled_plugin', usage_id: 'removed_usage', version: 0 }] }] })
     const confirm = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as MessageBoxData)
     api.deleteModelBinding.mockResolvedValue({ success: true })
     const container = await mount()
@@ -135,7 +135,7 @@ describe('Plugin API page', () => {
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [{ ...saved, bound_by: [] }] })
     await clickText('Unbind')
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('uninstalled_plugin / removed_usage'), 'Unbind', expect.objectContaining({ confirmButtonText: 'Unbind' }))
-    expect(api.deleteModelBinding).toHaveBeenCalledExactlyOnceWith('uninstalled_plugin', 'removed_usage')
+    expect(api.deleteModelBinding).toHaveBeenCalledExactlyOnceWith('uninstalled_plugin', 'removed_usage', 0)
     expect(api.listModelSlots).toHaveBeenCalledTimes(2)
     expect(deleteButton().disabled).toBe(false)
     expect(container.textContent).not.toContain('uninstalled_plugin / removed_usage')
@@ -148,7 +148,7 @@ describe('Plugin API page', () => {
     confirm.mockResolvedValue('confirm' as MessageBoxData)
     api.deleteModelBinding.mockRejectedValue(new Error('Binding could not be saved'))
     await clickText('Unbind')
-    expect(container.textContent).toContain('Binding could not be saved')
+    expect(container.textContent).toContain('The change could not be completed')
     expect(container.textContent).toContain('example / vision')
   })
   it('labels partial counters and does not invent missing totals for an interrupted attempt', async () => {
@@ -185,11 +185,59 @@ describe('masked clipboard', () => {
     expect(clipboard.setData).toHaveBeenLastCalledWith('text/plain', 'sk-new......1234')
     expect(input('slot-key').type).toBe('password')
   })
-  it('fully masks short keys and never sends an edited preview as a new key', async () => {
+  it('fully masks short keys and saves explicit replacements containing dots', async () => {
     expect(maskedKeyCopy('short-key')).toBe('******')
     await mount(); await clickText('Edit')
     await fill('slot-key', 'sk-abc......wxyz-edited')
     await clickText('Save')
-    expect(api.updateModelSlot).not.toHaveBeenCalled()
+    expect(api.updateModelSlot).toHaveBeenCalledWith(saved.id, expect.objectContaining({ api_key: 'sk-abc......wxyz-edited' }))
   })
+})
+
+it.each(['prefix......suffix-extra', 'abcdef......wxyz', '******', '********'])('masks an opaque replacement on copy and cut: %s', async (key) => {
+  await mount(); await clickText('Edit')
+  await fill('slot-key', key)
+  for (const action of ['copy', 'cut']) {
+    const clipboard = { setData: vi.fn() }
+    const event = new Event(action, { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'clipboardData', { value: clipboard })
+    input('slot-key').dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(clipboard.setData).toHaveBeenCalledWith('text/plain', maskedKeyCopy(key))
+    expect(clipboard.setData.mock.calls[0]![1]).not.toBe(key)
+  }
+  await clickText('Save')
+  expect(api.updateModelSlot).toHaveBeenCalledWith(saved.id, expect.objectContaining({ api_key: key }))
+})
+
+it('saves an explicitly entered key even when it equals the old preview', async () => {
+  await mount(); await clickText('Edit')
+  await fill('slot-key', saved.api_key_preview!)
+  await clickText('Save')
+  expect(api.updateModelSlot).toHaveBeenCalledWith(saved.id, expect.objectContaining({ api_key: saved.api_key_preview }))
+})
+
+it('reloads slot consumers when an old unbind conflicts with a newer binding', async () => {
+  vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue({ action: 'confirm' } as MessageBoxData)
+  api.deleteModelBinding.mockRejectedValue(new Error('MODEL_BINDING_CONFLICT'))
+  const container = await mount()
+  await clickText('Unbind')
+  expect(api.deleteModelBinding).toHaveBeenCalledWith('example', 'vision', 0)
+  expect(api.listModelSlots).toHaveBeenCalledTimes(2)
+  expect(container.textContent).toContain('This binding changed elsewhere')
+  expect(container.textContent).toContain('example / vision')
+})
+
+it('hides old consumers while the unbind result cannot be confirmed', async () => {
+  vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue({ action: 'confirm' } as MessageBoxData)
+  const container = await mount()
+  api.deleteModelBinding.mockRejectedValue(new Error('MODEL_BINDING_RESULT_UNKNOWN'))
+  api.listModelSlots.mockRejectedValue(new Error('MODEL_BINDING_RESULT_UNKNOWN'))
+  await clickText('Unbind')
+  expect(container.textContent).toContain('The result is not confirmed')
+  expect(container.textContent).not.toContain('example / vision')
+  api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [saved] })
+  await clickText('Refresh')
+  expect(container.textContent).toContain('example / vision')
+  expect(container.textContent).not.toContain('The result is not confirmed')
 })

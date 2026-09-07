@@ -68,18 +68,30 @@ use its existing management access policy.
 | GET / PATCH / DELETE | `/slots/{slot_id}` | Read / edit / delete a slot |
 | POST | `/slots/{slot_id}/test` | Test the saved slot with a short text request |
 | GET | `/plugins/{plugin_id}/bindings` | Declarations, bindings and readiness |
-| PUT | `/plugins/{plugin_id}/bindings/{usage_id}` | Bind with `{"slot_id":"..."}` |
-| DELETE | `/plugins/{plugin_id}/bindings/{usage_id}` | Remove a binding |
+| PUT | `/plugins/{plugin_id}/bindings/{usage_id}` | Bind with `{"slot_id":"...", "expected_version":0}` |
+| DELETE | `/plugins/{plugin_id}/bindings/{usage_id}` | Remove with `?expected_version=0` |
 
 Slot responses include `id` and `bound_by` (plugin/usage references). Nonempty
 keys are replaced with `__NEKO_SECRET_MASKED__`; `api_key_preview` contains only
 the first six and last four characters separated by `......`. Keys of ten or
-fewer characters are fully masked. The UI displays this preview, and copying
-returns masked text only. A PATCH with a display preview, that sentinel or
-an omitted key preserves the stored value. An explicit empty string clears it.
+fewer characters are fully masked; if the preview would equal the entire key,
+it is fully masked as well. The UI displays this preview, and copying returns
+masked text only. A PATCH with an omitted `api_key` preserves the stored value. A supplied
+`api_key` is a literal replacement (including mask-like strings); an explicit
+empty string clears it. Response previews and sentinels are display-only and
+must not be echoed in updates. The UI tracks edits separately from the preview.
 Changing the endpoint or protocol of a credentialed slot requires an explicit
 key update, including an empty string for an unauthenticated endpoint. URLs
 cannot contain credentials, a query, or a fragment.
+
+Binding reads include a per-usage `version`; slot `bound_by` entries include the
+same version. PUT requires `expected_version` in its JSON body, and DELETE
+requires an `expected_version` query parameter. Both check and advance that
+version within the storage write transaction. Stale writes return
+`MODEL_BINDING_CONFLICT` (409); the UI reloads the current state without retrying
+the old action automatically. Versions start at zero for existing configurations
+and are persisted in `binding_versions`, including after an unbind (even an
+already-empty unbind), so delayed requests cannot resurrect removed bindings.
 
 Bindings must reference declared usages and meet their capabilities. Renaming
 a slot preserves its ID and bindings. Removing a used slot returns 409 until
@@ -310,3 +322,16 @@ holding up the event loop's default-executor shutdown. Python cannot interrupt
 an OS filesystem operation already in progress: that write may finish later,
 and any storage lock it owns remains held until it returns. General Main/Agent
 TokenTracker periodic-save and exit behavior is unchanged by this policy.
+
+
+An uncertain binding write (network failure or HTTP 5xx) is confirmed with
+`POST /plugins/{plugin_id}/bindings/{usage_id}/confirm` and
+`{"expected_version": N}` before the UI reads configuration again. Within the
+write transaction, confirmation advances version N without changing the
+binding, or retains a newer version if another write already committed. Thus
+the original write can no longer commit after confirmation. This applies to
+both PUT and DELETE; it is not a retry of the user's mutation.
+If confirmation fails, the UI hides potentially stale binding data and displays
+a localized unconfirmed-result message. Refresh retries confirmation before
+reading state. Pending confirmations survive navigation and page reload in
+session storage when available (otherwise in memory); no credentials are stored.
