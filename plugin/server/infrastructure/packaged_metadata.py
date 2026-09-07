@@ -50,7 +50,7 @@ from typing import Any, Mapping
 
 from plugin._types.version import SDK_VERSION
 from plugin.logging_config import get_logger
-from utils.file_utils import atomic_write_text
+from utils.file_utils import atomic_write_bytes
 
 logger = get_logger("server.infrastructure.packaged_metadata")
 
@@ -636,17 +636,19 @@ def refresh_stale_packaged_metadata(
             "handlers": dict(handlers),
             "entry_methods": dict(entry_methods),
         }
-        text = json.dumps(payload, ensure_ascii=False, indent=2)
-        if len(text.encode("utf-8")) > MAX_PACKAGED_METADATA_BYTES:
+        # 量的就是写的：按字节落盘，文本模式在 Windows 上会把换行展开成 CRLF，
+        # 刚好卡在上限下的文件落到磁盘上就超了（codex）。打包器同样用 newline=""。
+        encoded = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        if len(encoded) > MAX_PACKAGED_METADATA_BYTES:
             logger.info(
                 "stale packaged metadata left as is; the upgraded file would exceed "
                 "the reader's size cap: path={}, bytes={}, cap={}",
                 plugin_dir,
-                len(text.encode("utf-8")),
+                len(encoded),
                 MAX_PACKAGED_METADATA_BYTES,
             )
             return False
-        atomic_write_text(plugin_dir / PACKAGED_METADATA_FILENAME, text)
+        atomic_write_bytes(plugin_dir / PACKAGED_METADATA_FILENAME, encoded)
     except (OSError, PackagedMetadataError) as exc:
         # compute_source_sha256 wraps its OSError in PackagedMetadataError (a
         # ValueError); an optional optimisation must not turn that into a

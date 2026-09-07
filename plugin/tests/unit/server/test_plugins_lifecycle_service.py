@@ -4413,7 +4413,7 @@ async def test_a_scan_does_not_write_metadata_it_has_no_business_writing(
         def _refuse(*args, **kwargs):
             raise PermissionError("read-only plugin directory")
 
-        monkeypatch.setattr(packaged_metadata, "atomic_write_text", _refuse)
+        monkeypatch.setattr(packaged_metadata, "atomic_write_bytes", _refuse)
     else:
         config_path = _write_stale_package(plugin_dir, schema_version=3, handler=old_handler)
     before = meta_path.read_bytes() if meta_path.exists() else None

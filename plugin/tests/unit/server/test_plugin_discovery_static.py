@@ -1634,7 +1634,10 @@ def test_an_upgraded_file_is_what_the_packager_would_have_written(tmp_path):
         entry_methods={"go": "go"},
         conf={}, pdata={},
     ) is True
-    written = json.loads(meta_path.read_text(encoding="utf-8"))
+    written_bytes = meta_path.read_bytes()
+    # 落盘的字节就是量过的字节：不能经文本模式在 Windows 上被展开成 CRLF（codex）。
+    assert b"\r" not in written_bytes
+    written = json.loads(written_bytes.decode("utf-8"))
     # 键集合和打包器 derive_plugin_metadata 返回的字典一致：多一个少一个都算格式漂移。
     import ast as _ast
     import inspect as _inspect
