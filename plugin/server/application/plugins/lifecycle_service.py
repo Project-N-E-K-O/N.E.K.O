@@ -237,6 +237,16 @@ def _upgrade_stale_packaged_metadata(
     except (OSError, ValueError):
         return
     manifest_pdata = manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
+    if str(manifest_pdata.get("id") or "") != plugin_id:
+        # handler 键里嵌着运行时 id。id 冲突把这个插件改名成 foo_1 之后，扫描出的
+        # 键全是 foo_1.*；写进 foo 的包里，冲突一消失就再也对不上归属检查（coderabbit）。
+        logger.info(
+            "stale packaged metadata left as is; the runtime id differs from the "
+            "manifest id: plugin_id={}, manifest_id={}",
+            plugin_id,
+            manifest_pdata.get("id"),
+        )
+        return
     if entries_config_digest(conf, pdata) != entries_config_digest(manifest, manifest_pdata):
         logger.info(
             "stale packaged metadata left as is; the effective configuration "

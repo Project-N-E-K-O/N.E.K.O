@@ -518,9 +518,11 @@ def stale_packaged_schema_version(plugin_dir: Path) -> int | None:
     """The schema version of a real but outdated ``plugin.meta.json``, else ``None``.
 
     Only a regular, size-capped, well-formed JSON object whose integer
-    ``schema_version`` differs from the current one counts. A missing, broken
-    or current file is not "stale": the first two have nothing to upgrade and
-    the last one was refused for some other reason the upgrade cannot fix.
+    ``schema_version`` is *older* than the current one counts. A missing or
+    broken file has nothing to upgrade; a current one was refused for some
+    other reason the upgrade cannot fix; and a newer one was written by a
+    newer host, so rewriting it here would be a downgrade that throws away
+    fields this host does not know about (greptile).
     """
     meta_path = plugin_dir / PACKAGED_METADATA_FILENAME
     try:
@@ -538,7 +540,7 @@ def stale_packaged_schema_version(plugin_dir: Path) -> int | None:
     version = raw.get("schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
         return None
-    return None if version == PACKAGED_METADATA_SCHEMA_VERSION else version
+    return version if version < PACKAGED_METADATA_SCHEMA_VERSION else None
 
 
 def refresh_stale_packaged_metadata(
@@ -565,34 +567,42 @@ def refresh_stale_packaged_metadata(
     guarantees that the effective ``entries`` table equals the manifest's,
     since the file must describe the package, not one machine's overrides.
 
-    Returns whether a file was written. Failing to write is not an error: the
-    directory may be read-only, and the plugin started fine without it.
+    Returns whether a file was written. Failing to fingerprint or write is not
+    an error: a source file can vanish between enumeration and hashing, the
+    directory may be read-only, and the plugin started fine without the file.
     """
     stale = stale_packaged_schema_version(plugin_dir)
     if stale is None:
         return False
-    summary = source_stat_summary(plugin_dir)
-    if summary.untrustworthy or empty_source_directories(plugin_dir) or unicode_renamed_source_files(plugin_dir):
-        logger.info(
-            "stale packaged metadata left as is; the tree cannot be fingerprinted: path={}",
-            plugin_dir,
-        )
-        return False
-    payload = {
-        "schema_version": PACKAGED_METADATA_SCHEMA_VERSION,
-        "sdk_version": SDK_VERSION,
-        "source_sha256": compute_source_sha256(plugin_dir),
-        "source_files": summary.names,
-        "source_bytes": summary.total_bytes,
-        "build_env": build_environment(),
-        "entries_config_sha256": entries_config_digest(conf, pdata),
-        "entries": list(entries),
-        "handlers": dict(handlers),
-        "entry_methods": dict(entry_methods),
-    }
     try:
+        summary = source_stat_summary(plugin_dir)
+        if (
+            summary.untrustworthy
+            or empty_source_directories(plugin_dir)
+            or unicode_renamed_source_files(plugin_dir)
+        ):
+            logger.info(
+                "stale packaged metadata left as is; the tree cannot be fingerprinted: path={}",
+                plugin_dir,
+            )
+            return False
+        payload = {
+            "schema_version": PACKAGED_METADATA_SCHEMA_VERSION,
+            "sdk_version": SDK_VERSION,
+            "source_sha256": compute_source_sha256(plugin_dir),
+            "source_files": summary.names,
+            "source_bytes": summary.total_bytes,
+            "build_env": build_environment(),
+            "entries_config_sha256": entries_config_digest(conf, pdata),
+            "entries": list(entries),
+            "handlers": dict(handlers),
+            "entry_methods": dict(entry_methods),
+        }
         atomic_write_json(plugin_dir / PACKAGED_METADATA_FILENAME, payload)
-    except OSError as exc:
+    except (OSError, PackagedMetadataError) as exc:
+        # compute_source_sha256 wraps its OSError in PackagedMetadataError (a
+        # ValueError); an optional optimisation must not turn that into a
+        # failed start (greptile).
         logger.info(
             "stale packaged metadata could not be rewritten; the plugin will rescan "
             "on every start until it is repackaged: path={}, err_type={}, err={}",

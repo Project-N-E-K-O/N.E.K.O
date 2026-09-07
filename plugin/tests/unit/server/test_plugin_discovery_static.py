@@ -1572,6 +1572,7 @@ def test_a_v3_package_is_refused_and_takes_the_worker_path(tmp_path, monkeypatch
     ("current", None),
     ("v3", 3),
     ("v2", 2),
+    ("newer", None),
     ("string_version", None),
     ("bool_version", None),
     ("not_json", None),
@@ -1583,7 +1584,8 @@ def test_only_a_real_outdated_file_counts_as_stale(tmp_path, shape, expected):
 
     A missing or broken file has nothing to upgrade; a current-schema file was
     refused for a reason a rewrite cannot fix; a version that is not an int is
-    a malformed file, not an old one.
+    a malformed file, not an old one; a newer version came from a newer host
+    and rewriting it would be a downgrade (greptile).
     """
     plugin_dir = _write_plugin(tmp_path, entries=[{"id": "go"}])
     meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
@@ -1594,6 +1596,8 @@ def test_only_a_real_outdated_file_counts_as_stale(tmp_path, shape, expected):
         raw["schema_version"] = 3
     elif shape == "v2":
         raw["schema_version"] = 2
+    elif shape == "newer":
+        raw["schema_version"] = packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION + 1
     elif shape == "string_version":
         raw["schema_version"] = "3"
     elif shape == "bool_version":
@@ -1648,6 +1652,27 @@ def test_an_upgraded_file_is_what_the_packager_would_have_written(tmp_path):
     packaged = packaged_metadata.read_packaged_metadata(plugin_dir)
     assert packaged is not None
     assert packaged.handlers["demo.go"]["timeout"] == 4
+    # 指纹阶段出错（文件在枚举和哈希之间消失）不能变成启动失败：只记日志、不写。
+    raw = json.loads(meta_path.read_text(encoding="utf-8"))
+    raw["schema_version"] = 3
+    meta_path.write_text(json.dumps(raw), encoding="utf-8")
+    before = meta_path.read_bytes()
+
+    def _vanished(_plugin_dir):
+        raise packaged_metadata.PackagedMetadataError("source file vanished mid-hash")
+
+    original = packaged_metadata.compute_source_sha256
+    packaged_metadata.compute_source_sha256 = _vanished
+    try:
+        assert packaged_metadata.refresh_stale_packaged_metadata(
+            plugin_dir, entries=[], handlers={}, entry_methods={}, conf={}, pdata={},
+        ) is False
+    finally:
+        packaged_metadata.compute_source_sha256 = original
+    assert meta_path.read_bytes() == before
+    raw["schema_version"] = packaged_metadata.PACKAGED_METADATA_SCHEMA_VERSION
+    meta_path.write_text(json.dumps(raw), encoding="utf-8")
+
     # 第二次没有过期文件可升，什么都不写。
     before = meta_path.read_bytes()
     assert packaged_metadata.refresh_stale_packaged_metadata(

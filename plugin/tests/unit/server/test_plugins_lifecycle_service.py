@@ -4233,6 +4233,7 @@ def _write_stale_package(plugin_dir: Path, *, schema_version: object, handler: d
 
 async def _start_packaged_adapter(
     monkeypatch, config_path: Path, *, scanned_handler: dict, effective_overlay: dict | None = None,
+    runtime_id: str = "packaged_adapter",
 ) -> list[str]:
     """Run start_plugin against a fake host and return the plugin ids that were scanned."""
     with module.state.acquire_plugins_write_lock():
@@ -4256,7 +4257,7 @@ async def _start_packaged_adapter(
             "warnings": [],
         },
     )
-    monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+    monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: runtime_id)
     monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
     monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
     inner_scan = _metadata_scan_for(_FakeAdapterPlugin)
@@ -4268,7 +4269,7 @@ async def _start_packaged_adapter(
         scanned = inner_scan(**kwargs)
         return IsolatedPluginMetadata(
             entries_preview=scanned.entries_preview,
-            handlers={"packaged_adapter.list_servers": scanned_handler},
+            handlers={f"{runtime_id}.list_servers": scanned_handler},
             entry_methods={"list_servers": "list_servers"},
         )
 
@@ -4365,7 +4366,7 @@ async def test_a_stale_package_is_upgraded_in_place_by_its_first_start(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason", ["no_file", "current_schema", "config_overrides", "unwritable"])
+@pytest.mark.parametrize("reason", ["no_file", "current_schema", "config_overrides", "unwritable", "renamed"])
 async def test_a_scan_does_not_write_metadata_it_has_no_business_writing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _isolated_plugin_state, reason,
 ) -> None:
@@ -4375,8 +4376,10 @@ async def test_a_scan_does_not_write_metadata_it_has_no_business_writing(
     must not start growing one. A current-schema file that was refused for
     another reason (a foreign build environment here) is not fixed by a
     rewrite. An effective configuration that overrides the entries table would
-    freeze one machine's overrides into the package. And a directory the host
-    cannot write to is not a failed start.
+    freeze one machine's overrides into the package. A directory the host
+    cannot write to is not a failed start. And a plugin renamed by an id
+    conflict scans handler keys under the runtime id, which must not land in
+    the package of the manifest id (coderabbit).
     """
     from plugin.server.infrastructure import packaged_metadata
 
@@ -4396,19 +4399,22 @@ async def test_a_scan_does_not_write_metadata_it_has_no_business_writing(
     elif reason == "config_overrides":
         config_path = _write_stale_package(plugin_dir, schema_version=3, handler=old_handler)
         conf_overlay = {"entries": [{"id": "list_servers", "timeout": 5}]}
-    else:
+    elif reason == "unwritable":
         config_path = _write_stale_package(plugin_dir, schema_version=3, handler=old_handler)
 
         def _refuse(*args, **kwargs):
             raise PermissionError("read-only plugin directory")
 
         monkeypatch.setattr(packaged_metadata, "atomic_write_json", _refuse)
+    else:
+        config_path = _write_stale_package(plugin_dir, schema_version=3, handler=old_handler)
     before = meta_path.read_bytes() if meta_path.exists() else None
 
     scans = await _start_packaged_adapter(
         monkeypatch, config_path, scanned_handler=scanned, effective_overlay=conf_overlay,
+        runtime_id="packaged_adapter_1" if reason == "renamed" else "packaged_adapter",
     )
-    assert scans == ["packaged_adapter"]
+    assert scans == ["packaged_adapter_1" if reason == "renamed" else "packaged_adapter"]
     if before is None:
         assert not meta_path.exists(), "没有元数据文件的插件不该被凭空造出一份"
     elif reason == "config_overrides":
