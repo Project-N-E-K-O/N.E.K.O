@@ -4163,11 +4163,18 @@ async def test_start_plugin_scans_once_when_the_packaged_schema_is_stale(
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
         inner_scan = _metadata_scan_for(_FakeAdapterPlugin)
         scans: list[str] = []
+        scanned_handler = dict(handler, name="Scanned")
 
         def _recording_scan(**kwargs):
             scans.append(str(kwargs["plugin_id"]))
             kwargs.pop("timeout", None)
-            return inner_scan(**kwargs)
+            scanned = inner_scan(**kwargs)
+            # 扫描结果和包里那份只差一个 name，好分辨最终注册的是哪一份。
+            return IsolatedPluginMetadata(
+                entries_preview=scanned.entries_preview,
+                handlers={"packaged_adapter.list_servers": scanned_handler},
+                entry_methods={"list_servers": "list_servers"},
+            )
 
         monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _recording_scan)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
@@ -4177,13 +4184,15 @@ async def test_start_plugin_scans_once_when_the_packaged_schema_is_stale(
         )
 
         assert response["success"] is True
+        registered = module.state.event_handlers["packaged_adapter.list_servers"].meta
         if current:
             assert scans == [], "当前 schema 的包不该再起隔离扫描"
-            assert "packaged_adapter.list_servers" in module.state.event_handlers
+            assert registered.name == "List Servers", "注册的不是包里那份 handler"
         else:
             assert scans == ["packaged_adapter"], (
                 f"过期 schema 的包应该恰好回落扫描一次：{scans}"
             )
+            assert registered.name == "Scanned", "扫描结果没有被应用到注册表"
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
