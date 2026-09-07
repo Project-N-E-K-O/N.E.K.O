@@ -143,7 +143,10 @@ async function changeBinding(usageId: string, slotId: string): Promise<void> {
     if (revision === generation) {
       const message = t(`modelBindings.${bindingErrorKey(cause)}`)
       await load()
-      if (props.pluginId === pluginId && revision + 1 === generation && !error.value) error.value = message
+      if (props.pluginId === pluginId && revision + 1 === generation && !error.value) {
+        if (bindingErrorKey(cause) !== 'bindingErrors.unknown') error.value = message
+        else if ((bindings.value?.requirements[usageId]?.slot_id ?? '') !== slotId) error.value = t('modelBindings.bindingErrors.failed')
+      }
     }
   } finally {
     if (revision === generation) saving.value = false

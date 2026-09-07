@@ -54,7 +54,8 @@ The version-1 document contains `slots` keyed by host-generated stable IDs and
 `bindings` keyed by plugin ID, then usage ID. Each binding points to one slot ID.
 A slot contains `name`, `protocol` (`openai_chat` or `anthropic_messages`),
 `base_url`, `model`, `api_key`, `capabilities`, `defaults`, `timeout_seconds`, and
-an optional `fallback_slot_id`. Defaults currently accept `temperature` and
+an optional `fallback_slot_id`. Defaults validate temperature against the selected protocol (0–1 for Anthropic,
+0–2 for OpenAI Chat), including on protocol changes. Defaults currently accept `temperature` and
 `max_output_tokens` (1–1,000,000, matching the request limit). These fields
 configure subsequent execution; saving does not make a model request or prove
 provider capabilities.
@@ -335,3 +336,11 @@ If confirmation fails, the UI hides potentially stale binding data and displays
 a localized unconfirmed-result message. Refresh retries confirmation before
 reading state. Pending confirmations survive navigation and page reload in
 session storage when available (otherwise in memory); no credentials are stored.
+
+Pending confirmation versions only increase: a late failure from an older
+request cannot replace a newer pending version, and an in-flight confirmation
+must fence the latest pending version before it is removed. Confirmation returns
+the current binding; when it matches the requested target (including unbound),
+the client returns success rather than rethrowing the lost-response error.
+If a subsequent refresh confirms an initially unknown result, the UI removes
+the unknown warning and reports failure only if the requested target differs.

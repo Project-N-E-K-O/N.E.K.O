@@ -272,3 +272,27 @@ it('does not display stale readiness when confirmation and reload fail', async (
   expect(selectFor(host).value).toBe(capable.id)
   expect(host.textContent).not.toContain('modelBindings.bindingErrors.unknown')
 })
+
+it('clears the unknown warning when reload confirms the requested binding', async () => {
+  const { host } = mountBindings()
+  await flush()
+  api.setModelBinding.mockRejectedValue(new Error('MODEL_BINDING_RESULT_UNKNOWN'))
+  api.getModelBindings.mockResolvedValue(bindings('vision_plugin', capable.id))
+  change(selectFor(host), capable.id)
+  await flush()
+  expect(selectFor(host).value).toBe(capable.id)
+  expect(host.textContent).not.toContain('modelBindings.bindingErrors.unknown')
+  expect(host.textContent).not.toContain('modelBindings.bindingErrors.failed')
+})
+
+it('reports a confirmed different result without leaving an unknown warning', async () => {
+  const { host } = mountBindings()
+  await flush()
+  api.setModelBinding.mockRejectedValue(new Error('MODEL_BINDING_RESULT_UNKNOWN'))
+  api.getModelBindings.mockResolvedValue(bindings())
+  change(selectFor(host), capable.id)
+  await flush()
+  expect(selectFor(host).value).toBe('')
+  expect(host.textContent).toContain('modelBindings.bindingErrors.failed')
+  expect(host.textContent).not.toContain('modelBindings.bindingErrors.unknown')
+})

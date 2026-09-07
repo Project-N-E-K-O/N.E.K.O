@@ -49,6 +49,13 @@ class ModelSlot(BaseModel):
     timeout_seconds: float = Field(default=60, gt=0, le=300)
     fallback_slot_id: SlotId | None = None
 
+    @model_validator(mode="after")
+    def validate_protocol_defaults(self) -> ModelSlot:
+        temperature = self.defaults.temperature
+        if self.protocol == "anthropic_messages" and temperature is not None and temperature > 1:
+            raise ValueError("Anthropic default temperature must not exceed 1")
+        return self
+
     @field_validator("name", "model", "api_key", mode="before")
     @classmethod
     def strip_strings(cls, value: object) -> object:

@@ -216,7 +216,14 @@ async function unbindSlot(binding: ModelSlot['bound_by'][number]) {
     catch { return }
     await deleteModelBinding(binding.plugin_id, binding.usage_id, binding.version)
     await loadSlots()
-  } catch (error) { await loadSlots(); if (!slotsError.value) slotsError.value = t(`modelApi.${bindingErrorKey(error)}`) }
+  } catch (error) {
+    await loadSlots()
+    if (!slotsError.value) {
+      const key = bindingErrorKey(error)
+      if (key !== 'bindingErrors.unknown') slotsError.value = t(`modelApi.${key}`)
+      else if (slots.value.some(slot => slot.bound_by.some(item => item.plugin_id === binding.plugin_id && item.usage_id === binding.usage_id))) slotsError.value = t('modelApi.bindingErrors.failed')
+    }
+  }
   finally { unbindingId.value = '' }
 }
 async function testSlot(slot: ModelSlot) {

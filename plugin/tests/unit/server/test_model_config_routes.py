@@ -380,3 +380,37 @@ async def test_confirmation_fences_a_write_that_has_not_committed(model_client):
     assert confirmed.json() == {"slot_id": slot_id, "version": 3}
     late = await model_client.delete(url, params={"expected_version": 2})
     assert late.status_code == 409
+
+
+@pytest.mark.parametrize("temperature", [1.01, 1.5, 2])
+async def test_anthropic_default_temperature_is_rejected_before_writing(model_client, model_setup, temperature):
+    _, cm, _ = model_setup
+    path = cm.root / CONFIG_FILENAME
+    rejected = await model_client.post(f"{PREFIX}/slots", json={**SLOT, "protocol": "anthropic_messages", "defaults": {"temperature": temperature}})
+    assert rejected.status_code == 422
+    assert not path.exists()
+    created = await create_slot(model_client, protocol="anthropic_messages", defaults={"temperature": 1})
+    before = path.read_bytes()
+    rejected = await model_client.patch(f"{PREFIX}/slots/{created['id']}", json={"defaults": {"temperature": temperature}})
+    assert rejected.status_code == 422
+    assert path.read_bytes() == before
+
+
+async def test_protocol_switch_validates_stored_temperature_and_accepts_boundary(model_client, model_setup):
+    from plugin.server.model_gateway.request import prepare_chat_request
+    from plugin.server.model_gateway.anthropic import prepare_request
+
+    created = await create_slot(model_client, defaults={"temperature": 2})
+    url = f"{PREFIX}/slots/{created['id']}"
+    _, cm, _ = model_setup
+    before = (cm.root / CONFIG_FILENAME).read_bytes()
+    rejected = await model_client.patch(url, json={"protocol": "anthropic_messages", "api_key": SECRET})
+    assert rejected.status_code == 422
+    assert (cm.root / CONFIG_FILENAME).read_bytes() == before
+    accepted = await model_client.patch(url, json={"protocol": "anthropic_messages", "api_key": SECRET, "defaults": {"temperature": 1}})
+    assert accepted.status_code == 200
+    slot = ModelConfigStore(cm).read().slots[created['id']]
+    request = prepare_chat_request(slot, {"model": "analysis", "messages": [{"role": "user", "content": "hello"}]})
+    assert prepare_request(request)["temperature"] == 1
+    accepted = await model_client.patch(url, json={"defaults": {"temperature": None}})
+    assert accepted.status_code == 200

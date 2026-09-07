@@ -241,3 +241,14 @@ it('hides old consumers while the unbind result cannot be confirmed', async () =
   expect(container.textContent).toContain('example / vision')
   expect(container.textContent).not.toContain('The result is not confirmed')
 })
+
+it('clears the unknown warning when reload confirms the requested unbind', async () => {
+  vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue({ action: 'confirm' } as MessageBoxData)
+  const container = await mount()
+  api.deleteModelBinding.mockRejectedValue(new Error('MODEL_BINDING_RESULT_UNKNOWN'))
+  api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [{ ...saved, bound_by: [] }] })
+  await clickText('Unbind')
+  expect(container.textContent).not.toContain('example / vision')
+  expect(container.textContent).not.toContain('The result is not confirmed')
+  expect(container.textContent).not.toContain('The change could not be completed')
+})
