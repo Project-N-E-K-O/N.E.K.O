@@ -63,6 +63,12 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     # 只编 .py 不带；守该目录里至少有一份 locale json，否则非默认语言用户的角色种子回退错语言。
     ("config/characters", "*.json"),
     ("static", None),
+    # Vendored MMD libraries must ship with their upstream license notices.
+    ("static/libs", "three-mmd.module.js"),
+    ("static/libs", "three-mmd-physics-ammo.module.js"),
+    ("static/libs", "THIRD_PARTY_NOTICES.md"),
+    ("static/libs/licenses", "THREE-MMD-LICENSE.txt"),
+    ("static/libs/licenses", "BABYLON-MMD-LICENSE.txt"),
     # 内置 Live2D 模型：源码打包在 assets/<name>.tar.gz，build_frontend 解到 static/<name>/。
     # 默认角色用 yui-lolita，加载失败的兜底与教程也指向它；yui-origin 仍随包发。
     # 只查 model3.json 挡不住半截解包——moc3 与纹理是加载硬依赖，一并断言。
