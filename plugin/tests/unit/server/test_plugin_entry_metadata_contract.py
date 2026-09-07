@@ -625,6 +625,35 @@ def test_configured_values_are_normalized_the_same_way_for_preview_and_handler(
     assert after["consult"]["llm_result_fields"] == ["a"]
 
 
+@pytest.mark.parametrize("declared, expected", [
+    ([], []),
+    (["a", 1, " a "], ["a"]),
+    # Not a list: not declared. The decorator's own ["summary"] is inherited,
+    # and a config-only entry falls back to deriving from its schema.
+    ("summary", ["summary"]),
+    (None, ["summary"]),
+])
+def test_only_a_list_declares_result_fields(isolated_registry, declared, expected):
+    """A mistyped ``llm_result_fields`` is not an explicit empty list.
+
+    ``[]`` switches schema derivation off on purpose; a string or null must
+    read as "not declared" on both sides so the decorator value or the schema
+    still supplies the fields.
+    """
+    schema = {"type": "object", "properties": {"summary": {}, "detail": {}}}
+    conf = {"entries": [
+        {"id": "consult", "llm_result_fields": declared},
+        {"id": "solo", "llm_result_schema": schema, "llm_result_fields": declared},
+    ]}
+    preview = registry._extract_entries_preview("contract", ContractPlugin, conf, {})
+    registry.scan_static_metadata("contract", ContractPlugin, conf, {})
+    before, after = _listed_before_and_after_start(preview)
+    assert before["consult"]["llm_result_fields"] == expected
+    assert after["consult"]["llm_result_fields"] == expected
+    solo_expected = expected if isinstance(declared, list) else ["summary", "detail"]
+    assert before["solo"]["llm_result_fields"] == solo_expected
+
+
 def test_config_only_entries_get_their_declared_fields_from_the_overlay(isolated_registry):
     conf = {"entries": [
         "bare",

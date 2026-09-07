@@ -840,7 +840,12 @@ def _normalized_entry_declaration(declaration: Dict[str, Any]) -> Dict[str, Any]
         elif name in _ENTRY_MAPPING_FIELDS:
             fields[name] = _entry_mapping(value)
         elif name == "llm_result_fields":
-            fields[name] = _entry_string_list(value)
+            # 只有 list 才是声明：一个写错类型的值不能变成"显式清空"，那会关掉
+            # 消费端按 schema 推导的兜底。非 list 当作没写这个键。
+            if isinstance(value, list):
+                fields[name] = _entry_string_list(value)
+            else:
+                del fields[name]
         elif name in _ENTRY_TEXT_FIELDS:
             fields[name] = value if isinstance(value, (str, dict)) else str(value or "")
     return deepcopy(fields)
