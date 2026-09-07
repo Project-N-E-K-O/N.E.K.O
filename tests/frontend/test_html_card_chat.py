@@ -37,13 +37,13 @@ def test_html_cards_update_and_call_buttons_without_executing_scripts(mock_page,
     if surface_path == "chat":
         page.evaluate("() => reactChatWindowHost.setCompactHistoryOpen(true)")
     attribute = 'data-message-id' if surface_path == 'chat_full' else 'data-compact-export-history-message-id'
-    first = page.locator(f'[{attribute}="plugin-card-demo-one"]')
+    first = page.locator(f'[{attribute}="plugin-card-demo:one"]')
     frame = first.frame_locator('iframe')
     expect(frame.get_by_role('button', name='Play')).to_be_visible()
     frame.get_by_role('button', name='Play').click()
     expect(first.get_by_role('status')).to_have_text('Track started')
     assert calls == [{"card_id": "one", "target_lanlan": "Alice", "presentation": "chat", "args": {"track_id": "123"}, "locale": page.locator('html').get_attribute('lang') or 'en'}]
-    second = page.locator(f'[{attribute}="plugin-card-demo-two"]')
+    second = page.locator(f'[{attribute}="plugin-card-demo:two"]')
     second.frame_locator('iframe').get_by_role('button', name='Play').click()
     expect(second.get_by_role('status')).to_have_text('Track started')
     assert calls[1]['card_id'] == 'two'
@@ -59,7 +59,7 @@ def test_html_cards_update_and_call_buttons_without_executing_scripts(mock_page,
     assert page.evaluate("reactChatWindowHost.getState().messages[0].blocks[0].css") == block['css']
 
     preview = page.evaluate("""() => appChatExport.buildCompactInlinePreview({
-        messageIds:['plugin-card-demo-one','plugin-card-demo-two'],format:'markdown'
+        messageIds:['plugin-card-demo:one','plugin-card-demo:two'],format:'markdown'
     })""")
     assert preview['previewKind'] == 'document'
     assert 'Playing' in preview['previewDocument'] and 'Song two' in preview['previewDocument']
@@ -82,7 +82,7 @@ def test_card_partial_updates_preserve_pending_action(mock_page, running_server,
     if surface_path == "chat":
         page.evaluate("() => reactChatWindowHost.setCompactHistoryOpen(true)")
     attribute = 'data-message-id' if surface_path == 'chat_full' else 'data-compact-export-history-message-id'
-    card = page.locator(f'[{attribute}="plugin-card-demo-pending"]')
+    card = page.locator(f'[{attribute}="plugin-card-demo:pending"]')
     button = card.frame_locator('iframe').get_by_role('button', name='Run')
     button.click()
     expect(button).to_be_disabled()

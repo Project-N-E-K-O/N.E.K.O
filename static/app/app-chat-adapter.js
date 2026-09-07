@@ -1044,7 +1044,7 @@
     function appendReactHtmlCard(block) {
         if (!block.cardId || !block.pluginId || !block.targetLanlan) return false;
         var host = getHost();
-        var id = 'plugin-card-' + encodeURIComponent(block.pluginId) + '-' + encodeURIComponent(block.cardId);
+        var id = 'plugin-card-' + encodeURIComponent(block.pluginId) + ':' + encodeURIComponent(block.cardId);
         var messages = host && typeof host.getState === 'function' ? host.getState().messages : [];
         var existing = (messages || []).find(function (message) { return message.id === id; });
         var pending = _pendingHostMessages.find(function (message) { return message.id === id; });

@@ -431,7 +431,7 @@ def test_theme_changes_update_chat_and_agent_colors_without_rebuilding_content(m
     _receive(page, view)
     chat = {**view, "cardId": "theme-chat", "presentation": "chat"}
     page.evaluate('block => appendReactChatBlocks({blocks: [block]})', chat)
-    chat_content = page.locator('[data-message-id="plugin-card-demo-theme-chat"]')
+    chat_content = page.locator('[data-message-id="plugin-card-demo:theme-chat"]')
     agent_content = _content(page, 'view-one')
     for content in (chat_content, agent_content):
         expect(content.frame_locator('iframe').get_by_role('button', name='Download', exact=True)).to_be_visible()
@@ -440,7 +440,7 @@ def test_theme_changes_update_chat_and_agent_colors_without_rebuilding_content(m
     assert len(pending) == 1
     page.evaluate("""() => {
         window.themeTestNodes = [
-            document.querySelector('[data-message-id="plugin-card-demo-theme-chat"] iframe'),
+            document.querySelector('[data-message-id="plugin-card-demo:theme-chat"] iframe'),
             document.querySelector('.agent-plugin-view iframe')
         ].map(frame => ({frame, doc: frame.contentDocument,
             input: frame.contentDocument.querySelector('input'),

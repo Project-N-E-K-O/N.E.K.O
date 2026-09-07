@@ -12,13 +12,14 @@ from plugin.sdk.shared.core.context import SdkContext
 def test_view_lifecycle_keeps_target_and_snapshots_fields(tmp_path, facade):
     sent = []
     host = PluginContext(plugin_id="demo", config_path=tmp_path / "plugin.toml",
-                         logger=None, status_queue=None, _current_lanlan="Alice")
+                         logger=None, status_queue=None, _current_lanlan="Stale")
     host.push_message = lambda **kw: sent.append(kw) or {"submitted": True}
     ctx = SdkContext(host) if facade else host
 
     async def run():
         actions = {"go": {"entry": "start", "args": {"items": [1]}}}
-        view = await ctx.create_view(title="Downloads", html="Ready", actions=actions)
+        with host._lanlan_scope("Alice"):
+            view = await ctx.create_view(title="Downloads", html="Ready", actions=actions)
         assert isinstance(view, PluginView)
         actions["go"]["args"]["items"].append(2)
         host._current_lanlan = "Bob"
@@ -46,7 +47,7 @@ def test_view_lifecycle_keeps_target_and_snapshots_fields(tmp_path, facade):
 
 def test_view_partial_update_preserves_omissions_and_explicit_target():
     sent = []
-    ctx = SdkContext(SimpleNamespace(_current_lanlan="Bob",
+    ctx = SdkContext(SimpleNamespace(current_lanlan="Bob",
                      push_message=lambda **kw: sent.append(kw) or {"submitted": True}))
 
     async def run():

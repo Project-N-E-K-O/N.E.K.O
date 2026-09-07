@@ -27,6 +27,7 @@ await card.update(html="<p>播放结束</p>", actions={})
 - `card.id` 是稳定 ID。句柄保留创建时的目标；未指定目标的卡片由主服务在首次创建时选择聊天，并在本次运行内为后续更新保留投递目标。
 - `update()` 只替换提供的字段；省略的字段保留，`actions={}` 清空动作绑定，`css=""` 清空自定义样式。
 - 创建必须提供 `html` 和 `summary`；`css`、`actions` 和 `target_lanlan` 可选。
+- 省略 `target_lanlan` 时，卡片/视图助手使用当前调用的 `_ctx.lanlan_name`，并发调用之间相互隔离；没有角色上下文时留空，交给主服务路由，不沿用上一次调用的角色。显式目标优先。
 - `await` 表示本地消息提交完成，不是用户已看到的回执。提交失败抛出 `CardSubmissionError`（可从 `plugin.sdk.plugin` 导入）。
 - 卡片是插件来源的显示消息，不触发 AI 回复，也不把 HTML/CSS 注入模型。
 
@@ -87,7 +88,7 @@ async def download_file(self, file_id: str, _ctx: dict):
     return Ok({"message": "下载完成"})
 ```
 
-`create_view()` 返回可从 `plugin.sdk.plugin` 导入的 `PluginView`。创建必须提供 `title` 和 `html`；`css`、`actions`、`summary` 和 `target_lanlan` 可选，初始 `summary` 默认采用标题。`update()` 可替换标题和卡片的四个内容字段；省略或 `None` 保留，空字符串/空动作字典清空对应字段。`get_view()` 仅恢复发送句柄，不读取内容。回调中的 `view_id`、`card_id`、`lanlan_name` 和 `run_id` 由宿主提供；恢复句柄时显式传入回调角色，避免并发任务改变默认角色。
+`create_view()` 返回可从 `plugin.sdk.plugin` 导入的 `PluginView`。创建必须提供 `title` 和 `html`；`css`、`actions`、`summary` 和 `target_lanlan` 可选，初始 `summary` 默认采用标题。`update()` 可替换标题和卡片的四个内容字段；省略或 `None` 保留，空字符串/空动作字典清空对应字段。`get_view()` 仅恢复发送句柄，不读取内容。回调中的 `view_id`、`card_id`、`lanlan_name` 和 `run_id` 由宿主提供；恢复句柄时可显式传入回调角色，使接收目标清晰。
 
 每个插件在每个角色下保留一个活动视图。重新创建使用新 ID，替换旧实例；旧实例的更新和关闭不会影响新实例。用户关闭或 `await view.close()` 结束该显示实例，后续更新不会重新打开或抢焦点；需要再次显示时重新创建。关闭视图不自动取消插件业务。按钮沿用现有同源动作代理、脚本隔离和错误反馈。
 

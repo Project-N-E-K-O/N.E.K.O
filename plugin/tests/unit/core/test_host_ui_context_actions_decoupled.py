@@ -180,3 +180,32 @@ def test_provider_budget_falls_back_below_the_default(requested: object) -> None
     # asyncio.wait_for，必须一起落到默认预算上。
     assert math.isfinite(resolved)
     assert 0 < resolved < host_module._UI_CONTEXT_DEFAULT_BUDGET
+
+
+@pytest.mark.asyncio
+async def test_concurrent_card_helpers_use_invocation_target_in_both_context_apis(tmp_path):
+    config_path = tmp_path / "plugin.toml"
+    config_path.write_text("[plugin]\nname='scoped_cards'\n", encoding="utf-8")
+    host = PluginProcessHost(
+        plugin_id="scoped_cards",
+        entry_point="tests.fixtures.plugin_test_ui_context_fixture:ScopedCardTargetFixturePlugin",
+        config_path=config_path,
+    )
+    try:
+        await host.start(message_target_queue=asyncio.Queue())
+        alice, bob = await asyncio.gather(
+            host.trigger("emit", {"label": "first", "wait": True, "_ctx": {"lanlan_name": "Alice"}}, timeout=10),
+            host.trigger("emit", {"label": "second", "peer": True, "_ctx": {"lanlan_name": "Bob"}}, timeout=10),
+        )
+        assert alice == (["Alice"] * 4 + ["Explicit"]) * 2
+        assert bob == (["Bob"] * 4 + ["Explicit"]) * 2
+        no_target = await host.trigger("emit", {"label": "untargeted"}, timeout=10)
+        assert no_target == ([None] * 4 + ["Explicit"]) * 2
+        custom = await host.trigger_custom_event("test", "emit_custom", {
+            "label": "custom", "_ctx": {"lanlan_name": "Carol"},
+        }, timeout=10)
+        assert custom == (["Carol"] * 4 + ["Explicit"]) * 2
+        no_custom_target = await host.trigger_custom_event("test", "emit_custom", {"label": "custom-untargeted"}, timeout=10)
+        assert no_custom_target == ([None] * 4 + ["Explicit"]) * 2
+    finally:
+        await host.shutdown(timeout=2)

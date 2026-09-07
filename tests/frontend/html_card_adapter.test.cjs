@@ -55,3 +55,17 @@ test('plugin identity scopes IDs and missing updates do not resurrect old cards'
     assert.equal(messages.length, 2);
     assert.notEqual(messages[0].id, messages[1].id);
 });
+
+test('tuple identity cannot collide across hyphens or encoded separators', () => {
+    for (const mounted of [true, false]) {
+        const { ctx, messages, push } = setup(mounted);
+        const identities = [['a-b', 'c'], ['a', 'b-c'], ['a:b', 'c'], ['a', 'b:c'], ['a%3Ab', 'c']];
+        for (const [pluginId, cardId] of identities) push({ ...initial, pluginId, cardId });
+        const stored = mounted ? messages : ctx._pendingHostMessages;
+        assert.equal(new Set(stored.map(m => m.id)).size, identities.length);
+        push({ ...initial, pluginId: 'a', cardId: 'b-c', operation: 'update', html: 'Second card only' });
+        assert.equal(stored.length, identities.length);
+        assert.equal(stored[0].blocks[0].html, initial.html);
+        assert.equal(stored[1].blocks[0].html, 'Second card only');
+    }
+});

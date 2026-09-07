@@ -15,6 +15,8 @@ await card.update(html="<p>Finished</p>", actions={})
 
 `html` and `summary` are required on creation. `css`, `actions`, and `target_lanlan` are optional. Updates replace supplied fields only: omitted fields remain unchanged; `actions={}` clears bindings. `card.id` is stable. The original recipient is retained; untargeted cards are routed and pinned by the main server on first creation during its current lifetime.
 
+When `target_lanlan` is omitted, card/view helpers use the current invocation’s `_ctx.lanlan_name`, isolated from concurrent invocations. A call without a character context leaves the target unspecified for main-server routing; it never reuses another invocation’s character. Explicit targets take precedence.
+
 Awaiting confirms local submission, not display or delivery. Submission failures raise `CardSubmissionError`, exported from `plugin.sdk.plugin`.
 
 ## Actions
@@ -64,7 +66,7 @@ async def download_file(self, file_id: str, _ctx: dict):
     return Ok({"message": "Download complete"})
 ```
 
-`create_view()` returns `PluginView`, exported from `plugin.sdk.plugin`. Creation requires `title` and `html`; `css`, `actions`, `summary`, and `target_lanlan` are optional. The initial summary defaults to the title. `update()` accepts the title and the four card content fields: omitted or `None` fields stay unchanged, and empty strings/dictionaries clear the corresponding field. `get_view()` restores a sending handle without fetching content. The host supplies `view_id`, `card_id`, `lanlan_name`, and `run_id` in action context; pass that character explicitly when restoring a handle so concurrent tasks cannot change its target.
+`create_view()` returns `PluginView`, exported from `plugin.sdk.plugin`. Creation requires `title` and `html`; `css`, `actions`, `summary`, and `target_lanlan` are optional. The initial summary defaults to the title. `update()` accepts the title and the four card content fields: omitted or `None` fields stay unchanged, and empty strings/dictionaries clear the corresponding field. `get_view()` restores a sending handle without fetching content. The host supplies `view_id`, `card_id`, `lanlan_name`, and `run_id` in action context; pass that character explicitly when restoring a handle to make the intended recipient clear.
 
 Each plugin has one active view per character. Creating another gives it a new ID and replaces the old instance; stale updates and closes cannot affect the replacement. User close or `await view.close()` ends that display instance. Updates never reopen it or steal focus; create a new view to show content again. Closing the view does not automatically cancel plugin work. Buttons reuse the same-origin action proxy, script isolation, and error feedback.
 

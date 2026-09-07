@@ -9,14 +9,14 @@ from plugin.sdk.shared.core.context import SdkContext
 
 def test_create_update_snapshot_and_target_binding():
     sent = []
-    host = SimpleNamespace(_current_lanlan="Alice", push_message=lambda **kw: sent.append(kw) or {"submitted": True})
+    host = SimpleNamespace(current_lanlan="Alice", push_message=lambda **kw: sent.append(kw) or {"submitted": True})
     ctx = SdkContext(host)
 
     async def run():
         actions = {"go": {"entry": "play", "args": {"id": 1}}}
         card = await ctx.create_card(html="<button>Play</button>", summary="Play", actions=actions)
         actions["go"]["args"]["id"] = 2
-        host._current_lanlan = "Bob"
+        host.current_lanlan = "Bob"
         await card.update(html="Playing")
         await card.update(actions={})
         return card

@@ -4,7 +4,8 @@ import asyncio
 import threading
 from collections.abc import Mapping
 
-from plugin.sdk.plugin import NekoPluginBase, plugin_entry, ui
+from plugin.sdk.plugin import NekoPluginBase, custom_event, plugin_entry, ui
+from plugin.sdk.shared.core.context import SdkContext
 
 
 class MissingUiContextFixturePlugin(NekoPluginBase):
@@ -143,3 +144,44 @@ class MappingConfirmUiContextFixturePlugin(NekoPluginBase):
     @ui.context(id="main")
     async def main_context(self, **_: object) -> dict[str, object]:
         return {}
+
+
+class ScopedCardTargetFixturePlugin(NekoPluginBase):
+    """Real host dispatch and SDK handles, with only the message sink replaced."""
+
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self._sdk_context = SdkContext(ctx)
+        self.first_waiting = asyncio.Event()
+        self.peer_finished = asyncio.Event()
+        self.sent = []
+        ctx.push_message = self._record_push
+
+    def _record_push(self, **payload):
+        self.sent.append(payload)
+        return {"submitted": True}
+
+    async def _emit(self, label):
+        for context in (self._sdk_context, self._host_ctx):
+            await context.create_card(html=label, summary=label)
+            await context.create_view(title=label, html=label)
+            await context.get_card(label).update(html=label)
+            await context.get_view(label).update(html=label)
+            await context.create_card(html=label, summary=label, target_lanlan="Explicit")
+        return [payload["target_lanlan"] for payload in self.sent if payload["parts"][0].get("html") == label]
+
+    @plugin_entry(id="emit")
+    async def emit(self, label: str, wait: bool = False, peer: bool = False, _ctx=None):
+        if wait:
+            self.first_waiting.set()
+            await self.peer_finished.wait()
+        if peer:
+            await self.first_waiting.wait()
+        result = await self._emit(label)
+        if peer:
+            self.peer_finished.set()
+        return result
+
+    @custom_event(event_type="test", id="emit_custom")
+    async def emit_custom(self, label: str, _ctx=None):
+        return await self._emit(label)
