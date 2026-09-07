@@ -5,7 +5,7 @@ from typing import Any
 
 from starlette.websockets import WebSocketState
 
-from plugin.sdk.shared.core.cards import card_fields
+from utils.plugin_card_fields import card_fields
 
 logger = logging.getLogger(__name__)
 
