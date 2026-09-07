@@ -21,8 +21,10 @@ get its module-level code run, and starting one plugin imported every other.
 
 The derivation now happens once, on the author's machine, at packaging time
 (see ``neko_plugin_cli.core.metadata_probe``), and the result ships inside the
-package as ``plugin.meta.json``. The host only ever reads that file. Nothing in
-this module imports, executes, or subprocesses plugin code.
+package as ``plugin.meta.json``. The host reads that file; the one thing it
+writes back is an upgrade of a file whose schema fell behind, and only from a
+scan the start path already had to run (see :func:`refresh_stale_packaged_metadata`).
+Nothing in this module imports, executes, or subprocesses plugin code.
 
 Entries whose schema is not available statically get
 :data:`PLACEHOLDER_INPUT_SCHEMA`, and that degradation is narrower than it
@@ -48,6 +50,7 @@ from typing import Any, Mapping
 
 from plugin._types.version import SDK_VERSION
 from plugin.logging_config import get_logger
+from utils.file_utils import atomic_write_json
 
 logger = get_logger("server.infrastructure.packaged_metadata")
 
@@ -509,6 +512,102 @@ def _tables_are_well_formed(raw: Mapping[str, object]) -> bool:
     ):
         return False
     return all(isinstance(item, Mapping) for item in entries)
+
+
+def stale_packaged_schema_version(plugin_dir: Path) -> int | None:
+    """The schema version of a real but outdated ``plugin.meta.json``, else ``None``.
+
+    Only a regular, size-capped, well-formed JSON object whose integer
+    ``schema_version`` differs from the current one counts. A missing, broken
+    or current file is not "stale": the first two have nothing to upgrade and
+    the last one was refused for some other reason the upgrade cannot fix.
+    """
+    meta_path = plugin_dir / PACKAGED_METADATA_FILENAME
+    try:
+        meta_stat = meta_path.stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(meta_stat.st_mode) or meta_stat.st_size > MAX_PACKAGED_METADATA_BYTES:
+        return None
+    try:
+        raw: Any = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(raw, Mapping):
+        return None
+    version = raw.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        return None
+    return None if version == PACKAGED_METADATA_SCHEMA_VERSION else version
+
+
+def refresh_stale_packaged_metadata(
+    plugin_dir: Path,
+    *,
+    entries: list[dict[str, object]],
+    handlers: dict[str, dict[str, object]],
+    entry_methods: dict[str, str],
+    conf: object,
+    pdata: object,
+) -> bool:
+    """Rewrite an outdated ``plugin.meta.json`` from a scan of this very tree.
+
+    A schema bump refuses every package built before it, and the plugin then
+    pays one isolated import per start until its author repackages — which,
+    for a plugin the author no longer touches, is forever. The start path has
+    just imported the tree anyway; what it learned is exactly what the
+    packager would have written, so write it, once, and the next start takes
+    the fast path again.
+
+    The same refusals the packager applies (``metadata_probe``) apply here: a
+    tree with symlinks, empty directories or names that change under NFC
+    cannot be described by a fingerprint, so it is left alone. The caller
+    guarantees that the effective ``entries`` table equals the manifest's,
+    since the file must describe the package, not one machine's overrides.
+
+    Returns whether a file was written. Failing to write is not an error: the
+    directory may be read-only, and the plugin started fine without it.
+    """
+    stale = stale_packaged_schema_version(plugin_dir)
+    if stale is None:
+        return False
+    summary = source_stat_summary(plugin_dir)
+    if summary.untrustworthy or empty_source_directories(plugin_dir) or unicode_renamed_source_files(plugin_dir):
+        logger.info(
+            "stale packaged metadata left as is; the tree cannot be fingerprinted: path={}",
+            plugin_dir,
+        )
+        return False
+    payload = {
+        "schema_version": PACKAGED_METADATA_SCHEMA_VERSION,
+        "sdk_version": SDK_VERSION,
+        "source_sha256": compute_source_sha256(plugin_dir),
+        "source_files": summary.names,
+        "source_bytes": summary.total_bytes,
+        "build_env": build_environment(),
+        "entries_config_sha256": entries_config_digest(conf, pdata),
+        "entries": list(entries),
+        "handlers": dict(handlers),
+        "entry_methods": dict(entry_methods),
+    }
+    try:
+        atomic_write_json(plugin_dir / PACKAGED_METADATA_FILENAME, payload)
+    except OSError as exc:
+        logger.info(
+            "stale packaged metadata could not be rewritten; the plugin will rescan "
+            "on every start until it is repackaged: path={}, err_type={}, err={}",
+            plugin_dir,
+            type(exc).__name__,
+            str(exc),
+        )
+        return False
+    logger.info(
+        "packaged metadata upgraded in place from schema {} to {}: path={}",
+        stale,
+        PACKAGED_METADATA_SCHEMA_VERSION,
+        plugin_dir,
+    )
+    return True
 
 
 def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:

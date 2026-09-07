@@ -62,7 +62,9 @@ from plugin.server.application.plugins.metadata_scanner import (
     scan_plugin_metadata_isolated,
 )
 from plugin.server.infrastructure.packaged_metadata import (
+    entries_config_digest,
     read_packaged_metadata,
+    refresh_stale_packaged_metadata,
 )
 from plugin.server.application.install_source import (
     InstallSourceError,
@@ -166,9 +168,9 @@ def _read_packaged_isolated_metadata(
     one import for the scan, one for the host, so any module-level side effect
     (writing state, sending a notification, launching a helper) happened twice
     (codex). An artifact written under an older schema is refused by the reader
-    and takes the worker path: one import per start until the plugin is
-    repackaged, which is what every plugin paid before packaged metadata
-    existed. Schema 3 never shipped in a release, so no in-memory migration.
+    and takes the worker path; ``start_plugin`` then rewrites it from that scan
+    (``_upgrade_stale_packaged_metadata``), so the cost is one import, not one
+    per start. Schema 3 never shipped in a release, so no in-memory migration.
 
     Returns ``None`` when there is no usable metadata at all.
     """
@@ -210,6 +212,45 @@ def _read_packaged_isolated_metadata(
         ),
         handlers=dict(packaged.handlers),
         entry_methods=dict(packaged.entry_methods),
+    )
+
+
+def _upgrade_stale_packaged_metadata(
+    config_path: Path,
+    plugin_id: str,
+    scanned: IsolatedPluginMetadata,
+    *,
+    conf: object,
+    pdata: object,
+) -> None:
+    """Turn the scan a stale package forced into the package's next fast path.
+
+    Only when the effective ``entries`` table is the manifest's own: the file
+    describes the package, and an active profile or runtime override that
+    rewrote the table would otherwise be frozen into it (the digest gate in
+    ``_read_packaged_isolated_metadata`` would then treat that machine's
+    overrides as the packaged baseline).
+    """
+    plugin_dir = Path(config_path).parent
+    try:
+        manifest = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    manifest_pdata = manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
+    if entries_config_digest(conf, pdata) != entries_config_digest(manifest, manifest_pdata):
+        logger.info(
+            "stale packaged metadata left as is; the effective configuration "
+            "overrides the entries table: plugin_id={}",
+            plugin_id,
+        )
+        return
+    refresh_stale_packaged_metadata(
+        plugin_dir,
+        entries=scanned.entries_preview,
+        handlers=scanned.handlers,
+        entry_methods=scanned.entry_methods,
+        conf=manifest,
+        pdata=manifest_pdata,
     )
 
 
@@ -1141,6 +1182,16 @@ class PluginLifecycleService:
                     pdata=pdata,
                     python_requirement_paths=python_requirement_paths,
                     timeout=scan_timeout,
+                )
+                # 包里那份元数据如果只是 schema 过期，这次扫描学到的就是打包器本
+                # 该写的那份。写回去，下次启动走快路径；写不成也不影响这次启动。
+                await asyncio.to_thread(
+                    _upgrade_stale_packaged_metadata,
+                    config_path,
+                    current_plugin_id,
+                    isolated_metadata,
+                    conf=conf,
+                    pdata=pdata,
                 )
 
             if start_deadline is not None and startup_timeout_value is not None:
