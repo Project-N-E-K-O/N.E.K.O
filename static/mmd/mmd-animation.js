@@ -1135,9 +1135,8 @@ class MMDAnimation {
         if (!this.isLoop) {
             const activeAction = this._activeSlot?.action || this.currentAction;
             const activeClip = this._activeSlot?.clip || this.currentClip;
-            const activeMixer = this._activeSlot?.mixer || this.mixer;
-            if (activeAction && activeClip && activeMixer) {
-                if (activeMixer.time >= activeClip.duration) {
+            if (activeAction && activeClip) {
+                if (activeAction.time >= activeClip.duration) {
                     this.pause();
                     if (this.manager.core) {
                         this.manager.core.resetModelPose();
