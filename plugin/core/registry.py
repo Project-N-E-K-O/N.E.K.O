@@ -515,10 +515,23 @@ def register_plugin(
     return resolved_id
 
 
-def _declared_entry_field(
-    declaration: Dict[str, Any], base_meta: Any, field_name: str, fallback: Any
-) -> Any:
-    """Pick a display field: explicit declaration wins, absence inherits.
+def _copied_entry_value(value: Any) -> Any:
+    """A private copy of a decorator value, or the value itself if it cannot be copied.
+
+    Registry records must not alias the decorator's mutable mappings, but a
+    lock or a client handle stashed in decorator metadata makes ``deepcopy``
+    raise, and swallowing that would silently drop the configured override
+    that shares the same loop iteration. Sharing such a value is the lesser
+    harm: it is exactly what the decorator handler itself references.
+    """
+    try:
+        return deepcopy(value)
+    except Exception:
+        return value
+
+
+def _inherited_entry_field(base_meta: Any, field_name: str, fallback: Any) -> Any:
+    """A display field the declaration never mentions inherits the decorator's.
 
     Same rule the control fields follow: writing an empty value is a
     declaration, not a fallback. Only a field the declaration never mentions
@@ -528,10 +541,8 @@ def _declared_entry_field(
     # description / input_schema 一起抹成空。参数 schema 抹空之后，面板和 Agent
     # 会按"这个入口没有参数"发起调用，而子进程仍然拿装饰器的真 schema 校验，调用
     # 直接被打回（codex）。
-    if field_name in declaration:
-        return deepcopy(declaration[field_name])
     inherited = getattr(base_meta, field_name, None) if base_meta is not None else None
-    return deepcopy(inherited) if inherited is not None else fallback
+    return _copied_entry_value(inherited) if inherited is not None else fallback
 
 
 def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
@@ -577,20 +588,35 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
                     cls.__name__,
                 )
                 continue
-            declaration = ent if isinstance(ent, dict) else {}
+            declared = _normalized_entry_declaration(ent if isinstance(ent, dict) else {})
             base_meta = decorated.meta if decorated is not None else None
             entry_meta = EventMeta(
                 event_type="plugin_entry",
                 id=eid,
-                name=_declared_entry_field(declaration, base_meta, "name", ""),
-                description=_declared_entry_field(declaration, base_meta, "description", ""),
-                input_schema=_declared_entry_field(declaration, base_meta, "input_schema", {}),
+                name=declared.get("name", _inherited_entry_field(base_meta, "name", "")),
+                description=declared.get(
+                    "description", _inherited_entry_field(base_meta, "description", "")
+                ),
+                input_schema=declared.get(
+                    "input_schema", _inherited_entry_field(base_meta, "input_schema", {})
+                ),
             )
             # Only explicitly configured fields override the decorator contract.
-            controls = entry_contract_fields(base_meta)
-            controls.update(entry_contract_fields(declaration))
+            # 装饰器那份按"能复制就复制"来：deepcopy 碰到装饰器塞进 metadata / extra
+            # 的锁、模块之类会抛 TypeError，被下面的 except 吞掉之后配置里的 timeout
+            # 就悄悄丢了。配置那份在规范化时已经复制过，注册记录不会和可变的配置表
+            # 互相影响。
+            controls = {
+                name: _copied_entry_value(value)
+                for name, value in entry_contract_fields(base_meta).items()
+            }
+            controls.update(
+                (name, value)
+                for name, value in declared.items()
+                if name not in _ENTRY_DISPLAY_FIELDS
+            )
             for field_name, value in controls.items():
-                setattr(entry_meta, field_name, deepcopy(value))
+                setattr(entry_meta, field_name, value)
             eh = EventHandler(meta=entry_meta, handler=handler_fn)
             with state.acquire_event_handlers_write_lock():
                 state.event_handlers[f"{pid}.{eid}"] = eh
@@ -691,9 +717,37 @@ def _build_plugin_meta(
     return meta
 
 
-def _set_declared_result_fields(
-    preview: Dict[str, Any], declared: Any, to_string_list: Callable[[Any], List[str]]
-) -> None:
+def _entry_mapping(value: Any) -> Dict[str, Any]:
+    """A mapping-valued entry field as a dict; anything else is an empty one."""
+    if isinstance(value, dict):
+        return value
+    try:
+        if hasattr(value, "model_dump"):
+            dumped = value.model_dump()
+            return dumped if isinstance(dumped, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _entry_string_list(value: Any) -> List[str]:
+    """A list-valued entry field with only its distinct, non-blank strings."""
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        field_name = item.strip()
+        if not field_name or field_name in seen:
+            continue
+        seen.add(field_name)
+        out.append(field_name)
+    return out
+
+
+def _set_declared_result_fields(preview: Dict[str, Any], declared: Any) -> None:
     """Write llm_result_fields only when the source actually declared a list.
 
     Absence and an explicit empty list mean different things downstream: the
@@ -705,16 +759,10 @@ def _set_declared_result_fields(
     # schema 的 required，一个字段全带默认值的结果模型 required 为空、fields 被
     # 塌成 None，schema 却有 properties，这条路真会走到（coderabbit）。
     if isinstance(declared, list):
-        preview["llm_result_fields"] = to_string_list(declared)
+        preview["llm_result_fields"] = _entry_string_list(declared)
 
 
-def _router_entry_preview(
-    pid: str,
-    eid: str,
-    event_meta: Any,
-    _to_dict: Callable[[Any], Dict[str, Any]],
-    _to_string_list: Callable[[Any], List[str]],
-) -> Dict[str, Any]:
+def _router_entry_preview(pid: str, eid: str, event_meta: Any) -> Dict[str, Any]:
     """Build the static preview dict for one router-declared entry.
 
     与 1) 分支保持一致：从 `event_meta` 读 return_message，避免 router 预览丢字段喵。
@@ -729,17 +777,17 @@ def _router_entry_preview(
         "name": name_obj if isinstance(name_obj, (str, dict)) else str(name_obj),
         "description": description_obj if isinstance(description_obj, (str, dict)) else str(description_obj),
         "event_key": f"{pid}.{eid}",
-        "input_schema": _to_dict(getattr(event_meta, "input_schema", {}) or {}),
+        "input_schema": _entry_mapping(getattr(event_meta, "input_schema", {}) or {}),
         "return_message": return_message_obj if isinstance(return_message_obj, (str, dict)) else str(return_message_obj),
         "event_type": "plugin_entry",
         "kind": str(getattr(event_meta, "kind", "action") or "action"),
         "auto_start": bool(getattr(event_meta, "auto_start", False)),
         "timeout": getattr(event_meta, "timeout", None),
         "model_validate": bool(getattr(event_meta, "model_validate", True)),
-        "llm_result_schema": _to_dict(getattr(event_meta, "llm_result_schema", {}) or {}),
-        "metadata": _to_dict(getattr(event_meta, "metadata", {}) or {}),
+        "llm_result_schema": _entry_mapping(getattr(event_meta, "llm_result_schema", {}) or {}),
+        "metadata": _entry_mapping(getattr(event_meta, "metadata", {}) or {}),
     }
-    _set_declared_result_fields(preview, getattr(event_meta, "llm_result_fields", None), _to_string_list)
+    _set_declared_result_fields(preview, getattr(event_meta, "llm_result_fields", None))
     meta_dict = getattr(event_meta, "metadata", None)
     if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
         preview["llm_result_fields"] = meta_dict["llm_result_fields"]
@@ -762,6 +810,39 @@ def _effective_entries(conf: dict, pdata: dict) -> Any:
 
 
 _ENTRY_DISPLAY_FIELDS = ("name", "description", "input_schema")
+_ENTRY_BOOL_FIELDS = ("auto_start", "enabled", "dynamic", "model_validate", "quick_action")
+_ENTRY_MAPPING_FIELDS = (
+    "input_schema", "llm_result_schema", "metadata", "extra", "quick_action_config",
+)
+_ENTRY_TEXT_FIELDS = ("name", "description", "return_message")
+
+
+def _normalized_entry_declaration(declaration: Dict[str, Any]) -> Dict[str, Any]:
+    """Every field a configured entry mentions, coerced to its wire shape.
+
+    Presence is the declaration: an explicit empty value stays an explicit
+    empty value. The shapes match what decorator previews already carry, so a
+    preview and a handler built from one declaration agree, and a manifest typo
+    (``metadata = "x"``, ``llm_result_fields = ["a", 1]``) cannot put a
+    non-mapping or a non-string item on the wire. Values are copied so registry
+    records never alias the mutable configuration tables.
+    """
+    fields = entry_contract_fields(declaration)
+    for name in _ENTRY_DISPLAY_FIELDS:
+        if name in declaration:
+            fields[name] = declaration[name]
+    for name, value in list(fields.items()):
+        if name == "kind":
+            fields[name] = str(value or "action")
+        elif name in _ENTRY_BOOL_FIELDS:
+            fields[name] = bool(value)
+        elif name in _ENTRY_MAPPING_FIELDS:
+            fields[name] = _entry_mapping(value)
+        elif name == "llm_result_fields":
+            fields[name] = _entry_string_list(value)
+        elif name in _ENTRY_TEXT_FIELDS:
+            fields[name] = value if isinstance(value, (str, dict)) else str(value or "")
+    return deepcopy(fields)
 
 
 def _overlay_entry_declaration(
@@ -770,24 +851,35 @@ def _overlay_entry_declaration(
     """Apply every explicitly declared field to scanned or packaged previews.
 
     Same presence-based precedence the registration path uses, display fields
-    included: preview and handler must describe one entry the same way.
+    included: preview and handler must describe one entry the same way. Only a
+    preview some declaration matches is rebuilt; the others pass through as
+    they are, so a plugin without an ``entries`` table costs nothing here.
     """
-    results = deepcopy(previews)
-    by_id = {str(entry.get("id")): entry for entry in results}
+    results = list(previews)
+    positions = {str(entry.get("id")): index for index, entry in enumerate(results)}
     for declaration in _effective_entries(conf, pdata):
         if not isinstance(declaration, dict):
             continue
-        preview = by_id.get(str(declaration.get("id")))
-        if preview is None:
+        position = positions.get(str(declaration.get("id")))
+        if position is None:
             continue
-        preview.update(deepcopy(entry_contract_fields(declaration)))
+        preview = dict(results[position])
         # 装饰器声明在前、id 已经进 seen，配置那条 preview 根本不会被生成，所以
         # 配置显式改写的 name / description / input_schema 到不了列表侧。停着的
         # 插件按装饰器 schema 报参数、跑起来的按配置那份，客户端会照两套参数构造
         # 调用（codex）。
-        for field_name in _ENTRY_DISPLAY_FIELDS:
-            if field_name in declaration:
-                preview[field_name] = deepcopy(declaration[field_name])
+        declared = _normalized_entry_declaration(declaration)
+        if "metadata" in declared and "llm_result_fields" not in declared:
+            # 结果字段可能是从装饰器 metadata 里提上来的（旧写法）。配置整个换掉
+            # metadata 之后，handler 侧的 query_service 在新 metadata 里找不到它，
+            # 退回 SDK 字段 / schema 推导；preview 侧要走同一条路，不能留着旧值。
+            old_metadata = preview.get("metadata")
+            if isinstance(old_metadata, dict) and "llm_result_fields" in old_metadata:
+                preview.pop("llm_result_fields", None)
+            if "llm_result_fields" in declared["metadata"]:
+                declared["llm_result_fields"] = declared["metadata"]["llm_result_fields"]
+        preview.update(declared)
+        results[position] = preview
     return results
 
 
@@ -799,32 +891,6 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
     """
     results: List[Dict[str, Any]] = []
     seen: set[str] = set()
-
-    def _to_dict(v: Any) -> Dict[str, Any]:
-        if isinstance(v, dict):
-            return v
-        try:
-            if hasattr(v, "model_dump"):
-                d = v.model_dump()
-                return d if isinstance(d, dict) else {}
-        except Exception:
-            pass
-        return {}
-
-    def _to_string_list(v: Any) -> List[str]:
-        if not isinstance(v, list):
-            return []
-        out: List[str] = []
-        seen: set[str] = set()
-        for item in v:
-            if not isinstance(item, str):
-                continue
-            field_name = item.strip()
-            if not field_name or field_name in seen:
-                continue
-            seen.add(field_name)
-            out.append(field_name)
-        return out
 
     # 1) Decorator-based metadata (@plugin_entry / EVENT_META_ATTR)
     try:
@@ -844,7 +910,7 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                 continue
             seen.add(eid)
 
-            input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
+            input_schema = _entry_mapping(getattr(event_meta, "input_schema", {}) or {})
             name_obj = getattr(event_meta, "name", None)
             description_obj = getattr(event_meta, "description", None)
             return_message_obj = getattr(event_meta, "return_message", None)
@@ -866,11 +932,11 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                     "auto_start": bool(getattr(event_meta, "auto_start", False)),
                     "timeout": getattr(event_meta, "timeout", None),
                     "model_validate": bool(getattr(event_meta, "model_validate", True)),
-                    "llm_result_schema": _to_dict(getattr(event_meta, "llm_result_schema", {}) or {}),
-                    "metadata": _to_dict(getattr(event_meta, "metadata", {}) or {}),
+                    "llm_result_schema": _entry_mapping(getattr(event_meta, "llm_result_schema", {}) or {}),
+                    "metadata": _entry_mapping(getattr(event_meta, "metadata", {}) or {}),
                 }
             _set_declared_result_fields(
-                entry_preview, getattr(event_meta, "llm_result_fields", None), _to_string_list
+                entry_preview, getattr(event_meta, "llm_result_fields", None)
             )
             meta_dict = getattr(event_meta, "metadata", None)
             if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
@@ -914,7 +980,7 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                         if not eid or eid in seen:
                             continue
                         seen.add(eid)
-                        results.append(_router_entry_preview(pid, eid, event_meta, _to_dict, _to_string_list))
+                        results.append(_router_entry_preview(pid, eid, event_meta))
 
             if instance_handled:
                 continue
@@ -932,62 +998,35 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                 if not eid or eid in seen:
                     continue
                 seen.add(eid)
-                results.append(_router_entry_preview(pid, eid, event_meta, _to_dict, _to_string_list))
+                results.append(_router_entry_preview(pid, eid, event_meta))
     except Exception:
         pass
 
-    # 2) Config-specified entries (conf/pdata)
-    entries = _effective_entries(conf, pdata)
-    for ent in entries:
-        try:
-            if isinstance(ent, dict):
-                eid = str(ent.get("id") or "")
-                if not eid or eid in seen:
-                    continue
-                seen.add(eid)
-                config_preview: Dict[str, Any] = {
-                    "id": eid,
-                    "name": ent.get("name") if isinstance(ent.get("name"), (str, dict)) else str(ent.get("name") or ""),
-                    "description": ent.get("description") if isinstance(ent.get("description"), (str, dict)) else str(ent.get("description") or ""),
-                    "event_key": f"{pid}.{eid}",
-                    "input_schema": _to_dict(ent.get("input_schema") or {}),
-                    "return_message": "",
-                    "event_type": "plugin_entry",
-                    "kind": str(ent.get("kind") or "action"),
-                    "auto_start": bool(ent.get("auto_start", False)),
-                    "timeout": ent.get("timeout"),
-                    "model_validate": bool(ent.get("model_validate", True)),
-                    "llm_result_schema": _to_dict(ent.get("llm_result_schema") or {}),
-                    "metadata": _to_dict(ent.get("metadata") or {}),
-                }
-                _set_declared_result_fields(
-                    config_preview, ent.get("llm_result_fields"), _to_string_list
-                )
-                results.append(config_preview)
-            else:
-                eid = str(ent)
-                if not eid or eid in seen:
-                    continue
-                seen.add(eid)
-                results.append(
-                    {
-                        "id": eid,
-                        "name": "",
-                        "description": "",
-                        "event_key": f"{pid}.{eid}",
-                        "input_schema": {},
-                        "return_message": "",
-                        "event_type": "plugin_entry",
-                        "kind": "action",
-                        "auto_start": False,
-                        "timeout": None,
-                        "model_validate": True,
-                        "llm_result_schema": {},
-                        "metadata": {},
-                    }
-                )
-        except Exception:
+    # 2) Config-specified entries (conf/pdata). Only the skeleton is built here:
+    #    the declared fields are written by the overlay below, the same way it
+    #    writes them onto decorator previews, so there is one normalization.
+    for ent in _effective_entries(conf, pdata):
+        eid = str(ent.get("id") or "") if isinstance(ent, dict) else str(ent)
+        if not eid or eid in seen:
             continue
+        seen.add(eid)
+        results.append(
+            {
+                "id": eid,
+                "name": "",
+                "description": "",
+                "event_key": f"{pid}.{eid}",
+                "input_schema": {},
+                "return_message": "",
+                "event_type": "plugin_entry",
+                "kind": "action",
+                "auto_start": False,
+                "timeout": None,
+                "model_validate": True,
+                "llm_result_schema": {},
+                "metadata": {},
+            }
+        )
 
     return _overlay_entry_declaration(results, conf, pdata)
 

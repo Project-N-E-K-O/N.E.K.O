@@ -26,6 +26,7 @@ from plugin.settings import (
     PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS,
 )
 from plugin._types.exceptions import PluginExecutionError
+from plugin._types.entry_metadata import entry_contract_fields
 from plugin.logging_config import format_log_text as _format_log_text
 from plugin.core.zmq_transport import (
     HostTransport, CH_RES, CH_STS, CH_MSG, CH_MSG_BATCH, CH_COMM,
@@ -886,6 +887,13 @@ class PluginCommunicationResourceManager:
                     dynamic=True,
                     metadata=ipc_metadata,
                 )
+                # 动态入口和静态入口走同一份契约。只抄显示字段的话，/plugins 对
+                # 运行时注册的入口报 timeout=null、没有结果 schema，Agent 按默认预算
+                # 掐掉长任务。metadata 已在上面合成，dynamic 固定为真，这两个不覆盖。
+                for field_name, value in entry_contract_fields(meta_dict).items():
+                    if field_name in ("metadata", "dynamic"):
+                        continue
+                    setattr(event_meta, field_name, value)
                 handler = EventHandler(meta=event_meta, handler=lambda *args, **kwargs: None)
                 state.register_event_handler(plugin_id, handler)
                 self.logger.info("Dynamic entry registered: {} for plugin {}", entry_id, plugin_id)

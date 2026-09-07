@@ -58,8 +58,11 @@ PACKAGED_METADATA_FILENAME = "plugin.meta.json"
 # 接受，增删源文件时那道确定性的判据整个静默失效（coderabbit）。旧包因此回落到
 # manifest 声明的 entries，重新打包即可恢复。
 # 4: handlers retain the complete entry contract, including slotted SDK fields.
-# v3 previews remain readable; the start path restores their truncated handlers
-# using the preview and the matching effective entries configuration.
+# 3 serialized slotted SDK metadata through a ten-field fallback and lost
+# timeout / result fields, so a v3 handler table describes an entry the host
+# would call with the wrong budget and read the wrong result from. Schema 3 was
+# only ever on nightly, so it is refused like any other stale schema and the
+# plugin takes the worker path until it is repackaged.
 PACKAGED_METADATA_SCHEMA_VERSION = 4
 
 # 解析之前先封顶。这份文件来自第三方包，而 json.loads 会把整份内容读进内存再建对象；
@@ -143,7 +146,6 @@ class PackagedPluginMetadata:
     source_sha256: str = ""
     # 打包机和这台机器是不是同一套 (os, python, arch)。
     built_in_this_environment: bool = False
-    schema_version: int = PACKAGED_METADATA_SCHEMA_VERSION
 
 
 def _stamp_metadata_verified(meta_path: Path, newest_source_ns: int) -> None:
@@ -431,26 +433,6 @@ def _coerce_entries(raw: object) -> list[dict[str, object]]:
     return [dict(item) for item in raw if isinstance(item, Mapping)]
 
 
-def _drop_synthesized_result_fields(
-    entries: list[dict[str, object]], schema_version: object
-) -> list[dict[str, object]]:
-    """Drop a v3 preview's empty result-field list when a schema can supply it.
-
-    v3 generators normalized "not declared" into ``[]``, so an empty list there
-    carries no intent. Readers now take a list as the entry's final answer, and
-    an entry that only declares a result schema would lose its projection —
-    while a rescan of the same plugin derives the fields. v4 previews omit the
-    key when it was never declared, so an empty list there is a real choice and
-    must survive.
-    """
-    if schema_version != 3:
-        return entries
-    for entry in entries:
-        if entry.get("llm_result_fields") == [] and entry.get("llm_result_schema"):
-            entry.pop("llm_result_fields", None)
-    return entries
-
-
 def _coerce_handlers(raw: object) -> dict[str, dict[str, object]]:
     if not isinstance(raw, Mapping):
         return {}
@@ -581,7 +563,7 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
         return None
 
     schema_version = raw.get("schema_version")
-    if schema_version not in (3, PACKAGED_METADATA_SCHEMA_VERSION):
+    if schema_version != PACKAGED_METADATA_SCHEMA_VERSION:
         logger.warning(
             "packaged plugin metadata schema mismatch, falling back to manifest: "
             "path={}, found={}, expected={}",
@@ -712,9 +694,8 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
         _stamp_metadata_verified(meta_path, newest_source_ns)
 
     return PackagedPluginMetadata(
-        schema_version=schema_version,
         built_in_this_environment=_environment_matches(raw.get("build_env")),
-        entries=_drop_synthesized_result_fields(_coerce_entries(raw.get("entries")), schema_version),
+        entries=_coerce_entries(raw.get("entries")),
         entries_config_sha256=str(raw.get("entries_config_sha256") or ""),
         handlers=_coerce_handlers(raw.get("handlers")),
         entry_methods=_coerce_entry_methods(raw.get("entry_methods")),

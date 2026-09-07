@@ -488,6 +488,62 @@ async def test_entry_update_register_uses_outer_entry_id_for_meta() -> None:
             state._snapshot_cache = cache_backup
 
 
+@pytest.mark.asyncio
+async def test_entry_update_register_keeps_the_declared_controls() -> None:
+    """A runtime-registered entry carries the same contract as a static one.
+
+    Copying only the display fields left /plugins reporting timeout=null and
+    no result schema for dynamic entries, so the Agent used the default budget
+    on a long task the plugin had declared as slow.
+    """
+    manager = PluginCommunicationResourceManager(
+        plugin_id="demo",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    schema = {"type": "object", "properties": {"summary": {"type": "string"}}}
+
+    handlers_backup = dict(state.event_handlers)
+    cache_backup = copy.deepcopy(state._snapshot_cache)
+    try:
+        with state.acquire_event_handlers_write_lock():
+            state.event_handlers.clear()
+        state.invalidate_snapshot_cache("handlers")
+
+        await manager._handle_entry_update({
+            "type": "ENTRY_UPDATE",
+            "action": "register",
+            "plugin_id": "demo",
+            "entry_id": "dyn",
+            "meta": {
+                "id": "dyn",
+                "name": "Dynamic",
+                "timeout": 42.0,
+                "model_validate": False,
+                "llm_result_fields": ["summary"],
+                "llm_result_schema": schema,
+                "metadata": {"agent_auto": False},
+                "dynamic": False,
+            },
+        })
+
+        with state.acquire_event_handlers_read_lock():
+            meta = state.event_handlers["demo.dyn"].meta
+        assert meta.timeout == 42.0
+        assert meta.model_validate is False
+        assert meta.llm_result_fields == ["summary"]
+        assert meta.llm_result_schema == schema
+        assert meta.metadata["agent_auto"] is False
+        assert meta.metadata["_dynamic"] is True
+        assert meta.dynamic is True
+    finally:
+        with state.acquire_event_handlers_write_lock():
+            state.event_handlers.clear()
+            state.event_handlers.update(handlers_backup)
+        with state._snapshot_cache_lock:
+            state._snapshot_cache = cache_backup
+
+
 # ---------------------------------------------------------------------------
 # push_message 的实际投递路径：message plane
 # ---------------------------------------------------------------------------

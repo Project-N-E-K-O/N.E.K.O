@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from plugin._types.events import EventMeta as LegacyEventMeta
+from plugin._types.events import EVENT_META_ATTR, EventMeta as LegacyEventMeta
 from plugin.core import registry
 from plugin.core.state import state
 from plugin.sdk.plugin import plugin_entry
@@ -315,7 +315,7 @@ def test_metadata_controls_remain_explicit_in_isolated_reconstruction(
 
 
 @pytest.mark.parametrize("partial", [False, True])
-def test_packaging_uses_fixed_worker_and_restores_v3_contract_artifacts(
+def test_packaging_uses_fixed_worker_and_refuses_v3_artifacts(
     tmp_path: Path, isolated_registry, monkeypatch, partial
 ):
     from plugin.neko_plugin_cli.core.metadata_probe import derive_plugin_metadata
@@ -359,36 +359,27 @@ def test_packaging_uses_fixed_worker_and_restores_v3_contract_artifacts(
     metadata_scanner.install_isolated_plugin_metadata("contract", loaded)
     assert state.event_handlers["contract.consult"].meta.timeout == 100
 
-    # Old files may match all source fingerprints and still have truncated handlers.
+    # A schema 3 file may match every source fingerprint and still carry
+    # truncated handlers. It is refused like any other stale schema: no
+    # in-memory repair, no plugin import, no rewrite of the artifact.
     payload["schema_version"] = 3
     for old_handler in payload["handlers"].values():
         old_handler.pop("timeout", None)
         old_handler.pop("llm_result_fields", None)
         old_handler["metadata"] = None
     meta_path.write_text(json.dumps(payload), encoding="utf-8")
-    restored = _read_packaged_isolated_metadata(
-        plugin_dir / "plugin.toml", "contract", conf=config, pdata=config["plugin"]
-    )
-    assert restored is not None
-    for old_handler in restored.handlers.values():
-        assert old_handler["timeout"] == 100
-        assert old_handler["llm_result_fields"] == ["summary"]
-        assert old_handler["metadata"] == {"agent_auto": False}
-    metadata_scanner.install_isolated_plugin_metadata("contract", restored)
-    assert state.event_handlers["contract.consult"].meta.timeout == 100
 
-    # Reading the old format must not import the plugin or rewrite the artifact.
     def cannot_import(*args, **kwargs):
         raise AssertionError("metadata reads must not import plugins")
 
     monkeypatch.setattr(
         metadata_scanner, "scan_plugin_metadata_isolated", cannot_import
     )
-    assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None
-    assert json.loads(meta_path.read_text()) == payload
-    payload["schema_version"] = 2
-    meta_path.write_text(json.dumps(payload), encoding="utf-8")
     assert packaged_metadata.read_packaged_metadata(plugin_dir) is None
+    assert _read_packaged_isolated_metadata(
+        plugin_dir / "plugin.toml", "contract", conf=config, pdata=config["plugin"]
+    ) is None
+    assert json.loads(meta_path.read_text()) == payload
 
 
 @pytest.mark.parametrize("controls", [{}, {
@@ -591,3 +582,136 @@ def test_configured_result_schema_projects_the_same_before_and_after_start(
         == []
     )
     assert running()[0]["llm_result_fields"] == []
+
+
+def _listed_before_and_after_start(preview):
+    before: list = []
+    query_service._append_entries_from_preview(
+        plugin_id="contract", plugin_meta={"entries_preview": preview}, entries=before, seen=set(),
+    )
+    after, _ = query_service._build_entries_from_handlers(
+        plugin_id="contract", handlers_snapshot=dict(state.event_handlers),
+    )
+    return {entry["id"]: entry for entry in before}, {entry["id"]: entry for entry in after}
+
+
+def test_configured_values_are_normalized_the_same_way_for_preview_and_handler(
+    isolated_registry,
+):
+    """A manifest typo must not put a raw shape on the wire.
+
+    The overlay used to write the declaration verbatim over values the config
+    branch had just coerced, so ``metadata = "x"`` reached plugin.meta.json as
+    a string and ``["a", 1]`` reached /plugins with the integer in it.
+    """
+    conf = {"entries": [{
+        "id": "consult", "name": 7, "kind": "", "auto_start": "yes",
+        "metadata": "x", "llm_result_schema": "nope",
+        "llm_result_fields": ["a", 1, " a ", ""],
+    }]}
+    preview = registry._extract_entries_preview("contract", ContractPlugin, conf, {})
+    registry.scan_static_metadata("contract", ContractPlugin, conf, {})
+    meta = state.event_handlers["contract.consult"].meta
+    entry = next(item for item in preview if item["id"] == "consult")
+    expected = {
+        "name": "7", "kind": "action", "auto_start": True, "metadata": {},
+        "llm_result_schema": {}, "llm_result_fields": ["a"], "timeout": 100,
+    }
+    for key, value in expected.items():
+        assert entry[key] == value, key
+        assert getattr(meta, key) == value, key
+    before, after = _listed_before_and_after_start(preview)
+    assert before["consult"]["llm_result_fields"] == ["a"]
+    assert after["consult"]["llm_result_fields"] == ["a"]
+
+
+def test_config_only_entries_get_their_declared_fields_from_the_overlay(isolated_registry):
+    conf = {"entries": [
+        "bare",
+        {"id": "declared", "name": 7, "timeout": 9, "llm_result_fields": ["x"]},
+    ]}
+    preview = registry._extract_entries_preview(
+        "contract", type("UnscannedPluginStub", (), {}), conf, {},
+    )
+    by_id = {entry["id"]: entry for entry in preview}
+    assert by_id["bare"]["name"] == ""
+    assert by_id["bare"]["timeout"] is None
+    assert "llm_result_fields" not in by_id["bare"]
+    assert by_id["declared"]["name"] == "7"
+    assert by_id["declared"]["timeout"] == 9
+    assert by_id["declared"]["llm_result_fields"] == ["x"]
+    assert by_id["declared"]["event_key"] == "contract.declared"
+
+
+def test_unpicklable_decorator_metadata_keeps_the_configured_override(isolated_registry):
+    """Decorator values are referenced, not deep-copied.
+
+    A lock or a client handle stashed in decorator metadata made ``deepcopy``
+    raise TypeError inside the config loop, whose except clause swallowed it:
+    the decorator handler stayed registered and the configured timeout was
+    silently gone. The preview overlay copied the same object outside any
+    guard and failed the whole scan.
+    """
+    import threading
+
+    class Plugin:
+        async def locked(self):
+            pass
+
+    source = LegacyEventMeta(
+        "plugin_entry", "locked", "Locked", metadata={"lock": threading.Lock()}
+    )
+    setattr(Plugin.locked, EVENT_META_ATTR, source)
+    conf = {"entries": [{"id": "locked", "timeout": 5}]}
+
+    preview = registry._extract_entries_preview("contract", Plugin, conf, {})
+    assert preview[0]["timeout"] == 5
+    registry.scan_static_metadata("contract", Plugin, conf, {})
+    meta = state.event_handlers["contract.locked"].meta
+    assert meta.timeout == 5
+    assert meta.metadata is source.metadata
+    assert meta.name == "Locked"
+
+
+@pytest.mark.parametrize("replacement", [
+    {"agent_auto": False}, {"llm_result_fields": ["detail"]},
+])
+def test_config_metadata_replacement_projects_result_fields_the_same_way(
+    isolated_registry, replacement,
+):
+    """The legacy ``metadata={"llm_result_fields": [...]}`` lift follows the metadata.
+
+    The handler side reads that key from the effective metadata; once the
+    configuration replaces the mapping, the old lift is gone there. The preview
+    must not keep the value it lifted from the decorator's mapping.
+    """
+    class Plugin:
+        async def probe(self):
+            pass
+
+    setattr(
+        Plugin.probe,
+        EVENT_META_ATTR,
+        LegacyEventMeta(
+            "plugin_entry", "probe", "Probe", metadata={"llm_result_fields": ["summary"]}
+        ),
+    )
+    conf = {"entries": [{"id": "probe", "metadata": replacement}]}
+    preview = registry._extract_entries_preview("contract", Plugin, conf, {})
+    registry.scan_static_metadata("contract", Plugin, conf, {})
+    before, after = _listed_before_and_after_start(preview)
+    expected = replacement.get("llm_result_fields", [])
+    assert before["probe"]["llm_result_fields"] == expected
+    assert after["probe"]["llm_result_fields"] == expected
+
+
+def test_slotted_wire_payload_has_no_hand_copied_controls():
+    """Everything beyond identity and display comes from the shared contract."""
+    source = ContractPlugin.consult.__neko_event_meta__
+    payload = metadata_scanner._event_meta_payload(source)
+    identity = {"event_type", "id", "name", "description", "input_schema", "enabled", "dynamic"}
+    from plugin._types.entry_metadata import ENTRY_CONTRACT_FIELDS
+
+    assert set(payload) <= identity | set(ENTRY_CONTRACT_FIELDS)
+    assert payload["timeout"] == 100
+    assert payload["quick_action_config"] == {"icon": None, "priority": 0}
