@@ -1675,13 +1675,16 @@ def test_an_upgraded_file_is_what_the_packager_would_have_written(tmp_path):
     assert meta_path.read_bytes() == before
 
     # 写出来的文件读取器读不了（超过尺寸上限）就不写：它会是"当前版本且超大"，
-    # 之后没有任何路径能再修它。
+    # 之后没有任何路径能再修它。上限设成正好等于输入文件的大小：输入能过
+    # stale 判据，带缩进、多了指纹字段的输出一定超（coderabbit）。
     original_cap = packaged_metadata.MAX_PACKAGED_METADATA_BYTES
-    packaged_metadata.MAX_PACKAGED_METADATA_BYTES = 64
+    packaged_metadata.MAX_PACKAGED_METADATA_BYTES = len(before)
+    assert packaged_metadata.stale_packaged_schema_version(plugin_dir) == 3
     try:
         assert packaged_metadata.refresh_stale_packaged_metadata(
             plugin_dir, before_scan=before_scan,
-            entries=[], handlers={}, entry_methods={}, conf={}, pdata={},
+            entries=[{"id": "go", "name": "Go"}], handlers={"demo.go": handler},
+            entry_methods={"go": "go"}, conf={}, pdata={},
         ) is False
     finally:
         packaged_metadata.MAX_PACKAGED_METADATA_BYTES = original_cap
