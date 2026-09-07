@@ -624,3 +624,91 @@ async def test_falsey_scalar_hash_deduplicates_archive_copy(query_pool, scalar_h
     assert payload["totalMemoryCount"] == payload["returnedCount"] == 1
     assert payload["facts"][0]["id"] == active["id"]
     assert payload["facts"][0]["hash"] == str(scalar_hash)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collection", ["active", "archive"])
+@pytest.mark.parametrize("bad_text", [["invented"], {"text": "invented"}, 123, True, None])
+@pytest.mark.parametrize("with_identity", [False, True])
+async def test_malformed_text_cannot_count_or_become_candidates(query_pool, collection, bad_text, with_identity):
+    malformed = [memory(f"malformed-{i}", text=bad_text) for i in range(15)]
+    if not with_identity:
+        for row in malformed:
+            row.pop("id")
+            row.pop("hash")
+    active, archive = (malformed, []) if collection == "active" else ([], malformed)
+    payload = await query_pool(active, archive)
+    assert payload["totalMemoryCount"] == payload["returnedCount"] == 0
+
+
+@pytest.mark.asyncio
+async def test_malformed_active_text_does_not_mask_valid_archive(query_pool):
+    target = memory("target")
+    payload = await query_pool([dict(target, text=["invalid"])], [target])
+    assert payload["totalMemoryCount"] == payload["returnedCount"] == 1
+    assert payload["facts"][0]["text"] == target["text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collection", ["active", "archive"])
+async def test_blank_text_without_identity_does_not_count(query_pool, collection):
+    rows = [{"text": " " * i} for i in range(1, 16)]
+    payload = await query_pool(rows if collection == "active" else [], rows if collection == "archive" else [])
+    assert payload["totalMemoryCount"] == payload["returnedCount"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity_mode", ["hash", "text"])
+@pytest.mark.parametrize("collection", ["active", "archive", "overlap"])
+@pytest.mark.parametrize("scoped", [False, True])
+async def test_original_prefixed_fallback_id_excludes_memory(query_pool, identity_mode, collection, scoped):
+    target = memory("target", id=None)
+    if identity_mode == "text":
+        target.pop("hash")
+    value = target.get("hash") or hashlib.sha1(target["text"].encode("utf-8")).hexdigest()
+    legacy_id = f"{identity_mode}:{value}"
+    if scoped:
+        target.update(subject_kind="participant", subject_id="a", scope="participant:a")
+    active = [target] if collection in ("active", "overlap") else []
+    archive = [dict(target)] if collection in ("archive", "overlap") else []
+    archive += [memory("kept")]
+    initial = await query_pool(active, archive)
+    current_id = next(row["id"] for row in initial["facts"] if row["text"] == target["text"])
+    for excluded_id in (legacy_id, current_id):
+        payload = await query_pool(active, archive, exclude_fact_ids=excluded_id)
+        assert payload["totalMemoryCount"] == 2
+        assert [row["id"] for row in payload["facts"]] == ["kept"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity_mode", ["hash", "text"])
+@pytest.mark.parametrize("literal_private", [False, True])
+async def test_original_prefixed_fallback_collision_remains_ambiguous(query_pool, identity_mode, literal_private):
+    target = memory("target", id=None)
+    if identity_mode == "text":
+        target.pop("hash")
+    value = target.get("hash") or hashlib.sha1(target["text"].encode("utf-8")).hexdigest()
+    legacy_id = f"{identity_mode}:{value}"
+    literal = memory("literal", id=legacy_id, private=literal_private)
+    initial = await query_pool([literal], [target], exclude_fact_ids=legacy_id)
+    assert {row["text"] for row in initial["facts"]} == {
+        target["text"], *([] if literal_private else [literal["text"]]),
+    }
+    selected = next(row for row in initial["facts"] if row["text"] == target["text"])
+    for exclusions in (
+        {"exclude_fact_ids": legacy_id, "exclude_hashes": selected["hash"]},
+        {"exclude_fact_ids": selected["id"]},
+    ):
+        payload = await query_pool([literal], [target], **exclusions)
+        assert [row["text"] for row in payload["facts"]] == ([] if literal_private else [literal["text"]])
+
+
+@pytest.mark.asyncio
+async def test_current_scoped_wire_id_does_not_exclude_legacy_literal_namesake(query_pool):
+    target = memory("target", id=1, subject_kind="participant", subject_id="a", scope="participant:a")
+    initial = await query_pool([target], [])
+    wire_id = initial["facts"][0]["id"]
+    literal = memory("literal", id=wire_id)
+    payload = await query_pool([target], [literal], exclude_fact_ids=wire_id)
+    assert payload["totalMemoryCount"] == 2
+    assert [row["text"] for row in payload["facts"]] == [literal["text"]]

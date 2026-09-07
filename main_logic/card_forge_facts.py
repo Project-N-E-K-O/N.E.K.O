@@ -230,7 +230,8 @@ _FORGE_WIRE_ID_PREFIX = "__neko_forge_id_v1__:"
 
 
 def _fact_identity(item: dict[str, Any]) -> tuple[_FactKey | None, str, set[str]]:
-    text = str(item.get("text") or "")
+    text_value = item.get("text")
+    text = text_value if isinstance(text_value, str) else ""
     hash_value = item.get("hash")
     # Structured values are malformed hashes, not persistent memory identities.
     raw_hash = str(hash_value) if isinstance(hash_value, (str, int, float, bool)) else ""
@@ -244,7 +245,7 @@ def _fact_identity(item: dict[str, Any]) -> tuple[_FactKey | None, str, set[str]
         json.dumps([subject_key, text], ensure_ascii=False, separators=(",", ":"))
         if subject_key else text
     )
-    text_hash = hashlib.sha1(text_identity.encode("utf-8")).hexdigest() if text else ""
+    text_hash = hashlib.sha1(text_identity.encode("utf-8")).hexdigest() if text.strip() else ""
     raw_id = item.get("id")
     if isinstance(raw_id, (str, int, float, bool)) and raw_id != "":
         fact_key: _FactKey | None = (f"id:{type(raw_id).__name__}", str(raw_id))
@@ -291,7 +292,7 @@ def _legacy_excluded_fact_keys(
     raw_archive: list[dict[str, Any]],
     exclude_ids: set[str],
 ) -> set[_FactKey]:
-    """Resolve pre-scope wire IDs only when the entire memory pool is unambiguous."""
+    """Resolve historical wire IDs only when the entire memory pool is unambiguous."""
     if not exclude_ids:
         return set()
     # Eligibility can change after forging. Ignoring a now-private/archived row
@@ -311,8 +312,21 @@ def _legacy_excluded_fact_keys(
                 })
             if legacy_key is None:
                 continue
-            legacy_id = _fact_wire_id(legacy_key)
-            if legacy_id in exclude_ids:
+            legacy_ids = {_fact_wire_id(fact_key), _fact_wire_id(legacy_key)}
+            # Before opaque/scoped IDs, scalar IDs were stringified and missing
+            # IDs used hash:<raw hash> or text:<unscoped SHA-1>. Include literal
+            # IDs in the same map so a prefix collision stays ambiguous.
+            raw_id = item.get("id")
+            if isinstance(raw_id, (str, int, float, bool)) and raw_id != "":
+                legacy_ids.add(str(raw_id))
+            if not raw_id:
+                raw_hash = item.get("hash")
+                text = item.get("text")
+                if isinstance(raw_hash, (str, int, float, bool)) and raw_hash:
+                    legacy_ids.add(f"hash:{raw_hash}")
+                elif isinstance(text, str) and text.strip():
+                    legacy_ids.add("text:" + hashlib.sha1(text.encode("utf-8")).hexdigest())
+            for legacy_id in legacy_ids & exclude_ids:
                 matches.setdefault(legacy_id, set()).add(fact_key)
     return {next(iter(keys)) for keys in matches.values() if len(keys) == 1}
 
@@ -329,6 +343,10 @@ def _memory_identity_stats(
     for collection, is_active in ((raw, True), (raw_archive, False)):
         for item in collection:
             if not isinstance(item, dict):
+                continue
+            # Keep identity-only legacy records, but never count malformed text
+            # as content or let it hide a valid archive copy.
+            if "text" in item and not isinstance(item["text"], str):
                 continue
             fact_id, _, fact_hashes = _fact_identity(item)
             if fact_id is None:
@@ -368,7 +386,8 @@ def _select_forge_facts_with_stats(
         has_scalar_id = fact_key is not None and fact_key[0].startswith("id:")
         if not has_scalar_id:
             missing_id_count += 1
-        if fact_key is None or not str(item.get("text") or "").strip():
+        text = item.get("text")
+        if fact_key is None or not isinstance(text, str) or not text.strip():
             continue
         wire_id = _fact_wire_id(fact_key)
         if wire_id in exclude_ids or fact_key in exclude_keys or hash_aliases.intersection(exclude_hashes):
@@ -496,7 +515,7 @@ def _select_forge_facts_with_stats(
     facts = [
         {
             "id": item["_forge_wire_id"],
-            "text": str(item.get("text", "")),
+            "text": item["text"],
             "importance": _safe_importance(item.get("importance")),
             "entity": str(item.get("entity", "")),
             "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
