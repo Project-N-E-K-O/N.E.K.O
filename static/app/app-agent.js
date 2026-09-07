@@ -1543,7 +1543,8 @@
         // 如果轮询已经停止，跳过重复清理
         if (!agentTaskPollingInterval && !agentTaskTimeUpdateInterval && !window._agentTaskTimeUpdateInterval) {
             // 仍然确保 HUD 隐藏（幂等操作）
-            if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD) {
+            if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD &&
+            (isGoodbyeAgentUiSuppressed() || !(window.NekoPluginViews && window.NekoPluginViews.hasContent()))) {
                 window.AgentHUD.hideAgentTaskHUD();
             }
             return;
@@ -1562,7 +1563,8 @@
         }
         agentTaskPollingInterval = null;
 
-        if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD) {
+        if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD &&
+            (isGoodbyeAgentUiSuppressed() || !(window.NekoPluginViews && window.NekoPluginViews.hasContent()))) {
             window.AgentHUD.hideAgentTaskHUD();
         }
     };

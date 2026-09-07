@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from .cards import ChatCard, PluginView, create_card, create_view
 from .bus_context import SdkBusContext, ensure_sdk_bus_context
 from .finish import (
     build_finish_envelope,
@@ -40,6 +41,10 @@ _SDK_CONTEXT_METHOD_NAMES = (
     "export_push",
     "finish",
     "push_message",
+    "create_card",
+    "get_card",
+    "create_view",
+    "get_view",
     "update_status",
 )
 
@@ -476,6 +481,33 @@ class SdkContext:
             delivery=delivery,
             reply=reply,
         )
+
+    async def create_card(self, *, html: str, summary: str, css: str = "",
+                          actions: dict[str, Any] | None = None,
+                          target_lanlan: str | None = None) -> ChatCard:
+        """Create an online chat card. The handle keeps the original recipient."""
+        target = target_lanlan or getattr(self._host_ctx, "_current_lanlan", None)
+        return await create_card(self, html=html, summary=summary, css=css,
+                                 actions=actions, target_lanlan=target)
+
+    def get_card(self, card_id: str, *, target_lanlan: str | None = None) -> ChatCard:
+        """Recover a handle in a UI action using _ctx['card_id']; no network read."""
+        target = target_lanlan or getattr(self._host_ctx, "_current_lanlan", None)
+        return ChatCard(self, card_id, target)
+
+    async def create_view(self, *, title: str, html: str, css: str = "",
+                          actions: dict[str, Any] | None = None,
+                          summary: str | None = None,
+                          target_lanlan: str | None = None) -> PluginView:
+        """Create online AgentHUD content, bound to its original character."""
+        target = target_lanlan or getattr(self._host_ctx, "_current_lanlan", None)
+        return await create_view(self, title=title, html=html, css=css,
+                                 actions=actions, summary=summary, target_lanlan=target)
+
+    def get_view(self, view_id: str, *, target_lanlan: str | None = None) -> PluginView:
+        """Recover an AgentHUD view using _ctx['view_id']; no network read."""
+        target = target_lanlan or getattr(self._host_ctx, "_current_lanlan", None)
+        return PluginView(self, view_id, target)
 
     def update_status(self, status: dict[str, object]) -> None:
         self._host_ctx.update_status(status)

@@ -688,6 +688,11 @@
         "occupied": "Camera is occupied by another app? Close QR code/photo apps and try again"
     },
     "chat": {
+        "cardActionFailed": "Plugin action failed",
+        "cardActionRunning": "Working…",
+        "cardActionDone": "Done",
+        "cardActionTimeout": "Request timed out; the action may have completed.",
+        "cardServerUnavailable": "Plugin service is unavailable.",
         "title": "Chat",
         "topicHint": "{{author}} seems to have something they'd like to chat about…",
         "viewerTitle": "Chat (Viewer Mode)",
@@ -3150,6 +3155,12 @@
         },
         "contentFilterError": "The web page content browsed by NekoClaw was rejected by the AI model's safety filter and the task has been aborted. This usually happens when the page contains sensitive topics. Please try different keywords or websites.",
         "taskHud": {
+            "tasksTab": "Tasks",
+            "pluginsTab": "Plugin content",
+            "contentTabs": "Tasks and plugin content",
+            "newPluginContent": "New content",
+            "selectPluginContent": "Select plugin content",
+            "closePluginContent": "Close content",
             "title": "NekoClaw Tasks",
             "running": "Running",
             "queued": "Queued",

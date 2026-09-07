@@ -1,0 +1,41 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "N.E.K.O: check ui_push_test",
+      "type": "shell",
+      "command": "uv run neko-plugin check ui_push_test",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: sync ui_push_test",
+      "type": "shell",
+      "command": "uv run --with pip neko-plugin sync ui_push_test --clean",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: check -r ui_push_test",
+      "type": "shell",
+      "command": "uv run neko-plugin check -r ui_push_test",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: build ui_push_test",
+      "type": "shell",
+      "command": "uv run neko-plugin build ui_push_test",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

@@ -299,6 +299,15 @@ class ProactiveBridge:
 
         events_out: list[dict[str, Any]] = []
 
+        # Cards use their own display-only event, including updates with no text.
+        if "chat" in visibility:
+            for part in parts:
+                if isinstance(part, dict) and part.get("type") == "html_card":
+                    events_out.append({
+                        "event_type": "plugin_card", "plugin_id": plugin_id,
+                        "lanlan_name": target_lanlan, "card": part,
+                    })
+
         # ---- ui_action parts → frontend control events ----
         for ui in _ui_action_parts(parts):
             action = ui.get("action")

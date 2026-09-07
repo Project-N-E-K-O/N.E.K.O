@@ -883,6 +883,12 @@ async def _handle_agent_event(event: dict):
         event_type = event.get("event_type")
         lanlan = event.get("lanlan_name")
 
+        if event_type == "plugin_card":
+            from main_logic.plugin_cards import deliver_plugin_card
+            default_name, _ = _select_fallback_session_manager()
+            await deliver_plugin_card(event, dict(_iter_session_managers()), default_name)
+            return
+
         if event_type == "analyze_ack":
             logger.info(
                 "[EventBus] analyze_ack received on main: event_id=%s lanlan=%s",

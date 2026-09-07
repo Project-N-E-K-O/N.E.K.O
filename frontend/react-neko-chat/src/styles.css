@@ -7410,3 +7410,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     transition: none !important;
   }
 }
+
+
+/* Plugin HTML cards keep their source label outside the isolated document. */
+.system-chip-card {
+  width: min(100%, 640px);
+  border-radius: 12px;
+  justify-content: flex-start;
+}
+.system-chip-card .system-chip-content {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+.message-block-html-card { width: 100%; min-width: 0; }
+.message-card-feedback { padding: 4px 12px; font-size: 12px; overflow-wrap: anywhere; }

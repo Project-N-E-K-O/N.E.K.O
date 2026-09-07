@@ -1485,6 +1485,34 @@ class PluginContext:
             "reason": "transport_unavailable",
         }
 
+    async def create_card(self, *, html: str, summary: str, css: str = "",
+                          actions: Optional[Dict[str, Any]] = None,
+                          target_lanlan: Optional[str] = None):
+        """Create a display-only HTML card; awaiting confirms local submission."""
+        from plugin.sdk.shared.core.cards import create_card
+        return await create_card(self, html=html, summary=summary, css=css,
+                                 actions=actions, target_lanlan=target_lanlan or self._current_lanlan)
+
+    def get_card(self, card_id: str, *, target_lanlan: Optional[str] = None):
+        """Recover an online card handle from a UI action's _ctx."""
+        from plugin.sdk.shared.core.cards import ChatCard
+        return ChatCard(self, card_id, target_lanlan or self._current_lanlan)
+
+    async def create_view(self, *, title: str, html: str, css: str = "",
+                          actions: Optional[Dict[str, Any]] = None,
+                          summary: Optional[str] = None,
+                          target_lanlan: Optional[str] = None):
+        """Create online AgentHUD content; awaiting confirms local submission."""
+        from plugin.sdk.shared.core.cards import create_view
+        return await create_view(self, title=title, html=html, css=css,
+                                 actions=actions, summary=summary,
+                                 target_lanlan=target_lanlan or self._current_lanlan)
+
+    def get_view(self, view_id: str, *, target_lanlan: Optional[str] = None):
+        """Recover an AgentHUD view handle from a UI action's _ctx."""
+        from plugin.sdk.shared.core.cards import PluginView
+        return PluginView(self, view_id, target_lanlan or self._current_lanlan)
+
     async def push_message_async(self, *args: Any, **kwargs: Any) -> "PushMessageResult":
         """异步版本的 push_message，使用 asyncio.to_thread 包装同步调用。
 

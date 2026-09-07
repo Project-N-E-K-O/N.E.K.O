@@ -688,6 +688,11 @@
         "occupied": "カメラが他のアプリに占有されています？QRコード/写真アプリを閉じて再試行してください"
     },
     "chat": {
+        "cardActionFailed": "プラグインの操作に失敗しました",
+        "cardActionRunning": "実行中…",
+        "cardActionDone": "完了",
+        "cardActionTimeout": "リクエストがタイムアウトしました。操作は完了している可能性があります。",
+        "cardServerUnavailable": "プラグインサービスを利用できません。",
         "title": "チャット",
         "topicHint": "{{author}}は何か話したいことがあるみたい…",
         "viewerTitle": "チャット（ビューアーモード）",
@@ -3150,6 +3155,12 @@
         },
         "contentFilterError": "ネコクローが閲覧したウェブページの内容が AI モデルの安全フィルターに引っかかり、タスクが中止されました。ページにセンシティブなトピックが含まれている場合に発生します。別のキーワードやウェブサイトをお試しください。",
         "taskHud": {
+            "tasksTab": "タスク",
+            "pluginsTab": "プラグイン",
+            "contentTabs": "タスクとプラグイン内容",
+            "newPluginContent": "新しい内容",
+            "selectPluginContent": "プラグインの内容を選択",
+            "closePluginContent": "内容を閉じる",
             "title": "ネコクロータスク",
             "running": "実行中",
             "queued": "キュー中",

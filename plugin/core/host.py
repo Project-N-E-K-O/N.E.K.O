@@ -1554,6 +1554,10 @@ def _plugin_process_runner(
                 # 时，宿主仍然要拿得到 api.call 的授权白名单，否则面板上每个按钮
                 # 都会返回一条与真实原因无关的 500。
                 actions = _collect_ui_actions()
+                if context_id == "__chat_card__":
+                    # Card buttons need the UI-action list, not a panel's state provider.
+                    ret.update(success=True, data={"state": {}, "actions": actions})
+                    return
                 provider_budget = _ui_context_provider_budget(msg.get("timeout"))
 
                 provider = ui_context_map.get(context_id)

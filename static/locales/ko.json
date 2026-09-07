@@ -688,6 +688,11 @@
         "occupied": "카메라가 다른 앱에 의해 사용 중입니다. QR코드/사진 앱을 닫고 다시 시도하세요"
     },
     "chat": {
+        "cardActionFailed": "플러그인 작업 실패",
+        "cardActionRunning": "실행 중…",
+        "cardActionDone": "완료",
+        "cardActionTimeout": "요청 시간이 초과되었습니다. 작업이 이미 완료되었을 수 있습니다.",
+        "cardServerUnavailable": "플러그인 서비스를 사용할 수 없습니다.",
         "title": "채팅",
         "topicHint": "{{author}}이(가) 하고 싶은 이야기가 있나 봐요…",
         "viewerTitle": "채팅(뷰어 모드)",
@@ -3150,6 +3155,12 @@
         },
         "contentFilterError": "네코클로가 탐색한 웹 페이지 내용이 AI 모델의 안전 필터에 의해 거부되어 작업이 중단되었습니다. 페이지에 민감한 주제가 포함된 경우 발생합니다. 다른 키워드나 웹사이트를 시도해 주세요.",
         "taskHud": {
+            "tasksTab": "작업",
+            "pluginsTab": "플러그인 콘텐츠",
+            "contentTabs": "작업 및 플러그인 내용",
+            "newPluginContent": "새 내용",
+            "selectPluginContent": "플러그인 콘텐츠 선택",
+            "closePluginContent": "콘텐츠 닫기",
             "title": "네코클로 작업",
             "running": "실행 중",
             "queued": "대기 중",

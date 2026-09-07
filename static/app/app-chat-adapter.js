@@ -122,7 +122,7 @@
     // The renderer understands exactly these, and the React message schema
     // validates against the same set — a block outside it is dropped by
     // validation and takes its whole message with it.
-    var STRUCTURED_BLOCK_TYPES = ['text', 'image', 'link', 'status', 'buttons'];
+    var STRUCTURED_BLOCK_TYPES = ['text', 'image', 'link', 'status', 'buttons', 'html_card'];
 
     function structuredBlocksFrom(list) {
         // Shared by both structured entry points. Checking only that `type` is
@@ -496,6 +496,7 @@
     }
 
     function _resetReactChatSwitchState() {
+        if (window.NekoPluginViews) window.NekoPluginViews.clear();
         _pendingHostMessages = [];
         if (_pendingFlushTimer) {
             clearInterval(_pendingFlushTimer);
@@ -1040,11 +1041,51 @@
         });
     }
 
+    function appendReactHtmlCard(block) {
+        if (!block.cardId || !block.pluginId || !block.targetLanlan) return false;
+        var host = getHost();
+        var id = 'plugin-card-' + encodeURIComponent(block.pluginId) + '-' + encodeURIComponent(block.cardId);
+        var messages = host && typeof host.getState === 'function' ? host.getState().messages : [];
+        var existing = (messages || []).find(function (message) { return message.id === id; });
+        var pending = _pendingHostMessages.find(function (message) { return message.id === id; });
+        existing = existing || pending;
+        // An update cannot resurrect an evicted card or one from a previous chat.
+        if (block.operation === 'update' && !existing) return false;
+        var previous = existing && existing.blocks[0];
+        var card = Object.assign({ html: '', css: '', summary: '', actions: {} }, previous || {}, block);
+        delete card.operation;
+        var message = Object.assign({}, existing || {}, {
+            id: id, role: 'system', author: block.pluginId,
+            time: existing ? existing.time : getCurrentTimeString(),
+            createdAt: existing ? existing.createdAt : Date.now(),
+            blocks: [card], status: 'sent'
+        });
+        if (pending) {
+            Object.assign(pending, message);
+            _tryFlushPendingHostMessages();
+        } else if (existing && host && typeof host.updateMessage === 'function') {
+            host.updateMessage(id, { blocks: [card] });
+        } else if (host && typeof host.appendMessage === 'function') {
+            _tryFlushPendingHostMessages();
+            if (!appendHostMessageSafely(host, message, 'plugin_html_card')) return false;
+        } else {
+            _queuePendingHostMessage(message);
+            _tryFlushPendingHostMessages();
+        }
+        return true;
+    }
+
     function appendReactChatBlocks(payload) {
         var host = getHost();
         var blocks = structuredBlocksFrom(payload && payload.blocks);
-        if (blocks.length === 0) {
+        var cardHandled = false;
+        blocks = blocks.filter(function (block) {
+            if (block.type !== 'html_card') return true;
+            cardHandled = appendReactHtmlCard(block) || cardHandled;
             return false;
+        });
+        if (blocks.length === 0) {
+            return cardHandled;
         }
         // SYSTEM, not assistant. Plugin content is neither the character
         // speaking nor the user typing, and either identity is a claim the

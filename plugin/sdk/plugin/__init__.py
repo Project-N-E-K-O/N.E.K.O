@@ -129,3 +129,7 @@ __all__ = [
     "PluginSettings",
     "SettingsField",
 ]
+
+from plugin.sdk.shared.core.cards import ChatCard, CardSubmissionError, PluginView
+
+__all__ += ["ChatCard", "CardSubmissionError", "PluginView"]
