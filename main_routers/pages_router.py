@@ -484,7 +484,11 @@ async def get_subtitle_page(request: Request):
 async def get_agenthud_page(request: Request):
     """Standalone AgentHUD window page."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/agenthud.html", {"request": request})
+    return templates.TemplateResponse("templates/agenthud.html", {
+        "request": request,
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
+    })
 
 
 @router.get("/card_maker", response_class=HTMLResponse)

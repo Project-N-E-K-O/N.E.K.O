@@ -33,6 +33,8 @@ async def play_track(self, track_id: str, _ctx: dict):
 
 `data-neko-action` refers to an `actions` dictionary key. `entry` resolves to an existing UI action/entry in the same plugin. Arguments must be JSON objects. The host supplies `_ctx.card_id`, `_ctx.lanlan_name`, and `_ctx.run_id`; handlers may omit `_ctx` if unused. A returned `message` string is optional feedback. Exceptions and `Err(...)` produce error feedback.
 
+Card/character identifiers in `_ctx` are UI request context, not authenticated identity or an authorization token. Actions are exposed at plugin scope, as with hosted panels; the card `actions` dictionary maps buttons to those actions rather than establishing a per-card access-control boundary. This follows the application’s trusted first-party UI model, not separate permissions for each character.
+
 The parent handles clicks and pending state. Plugin scripts and inline event handlers do not execute. This is trusted installed-plugin HTML in a script-disabled iframe, not a new JavaScript application runtime. Business idempotency remains the plugin's responsibility; timeouts do not guarantee rollback.
 
 Cards do not trigger AI replies or inject markup into model context. Copy/export and export previews use `summary` without activating buttons. Images must have browser-accessible URLs; `/media/<id>` references use the temporary plugin image cache.

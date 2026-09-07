@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>N.E.K.O. Agent HUD</title>
     <!-- 复用主页面的 i18n 和 CSS -->
-    <script src="/static/i18n-i18next.js"></script>
-    <link rel="stylesheet" href="/static/css/index.css">
-    <link rel="stylesheet" href="/static/css/dark-mode.css">
-    <link rel="stylesheet" href="/static/css/agent-plugin-views.css">
-    <script src="/static/theme-manager.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/index.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/agent-plugin-views.css?v={{ static_asset_version }}">
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
     <style>
         html.agent-hud-standalone-page,
         body.agent-hud-standalone-page:not(.lanlan-pet-mode) {
@@ -49,10 +49,10 @@
     </div>
 
     <!-- 加载 AgentHUD 组件 -->
-    <script src="/static/neko-tooltip.js"></script>
-    <script src="/static/common-ui-hud.js"></script>
-    <script src="/static/react/neko-chat/neko-chat-window.iife.js"></script>
-    <script src="/static/app/app-plugin-views.js"></script>
+    <script src="/static/neko-tooltip.js?v={{ static_asset_version }}"></script>
+    <script src="/static/common-ui-hud.js?v={{ static_asset_version }}"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-plugin-views.js?v={{ static_asset_version }}"></script>
     <script>
         // AgentHUD 独立窗口模式：接收 IPC 消息并更新 UI
         // window.AgentHUD 由 common-ui-hud.js 提供
