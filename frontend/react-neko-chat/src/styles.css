@@ -2795,48 +2795,93 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   inset: 0;
   z-index: 1;
   border-radius: inherit;
-  background-image:
-    linear-gradient(180deg, var(--compact-chat-surface-glow) 0%, rgba(255, 255, 255, 0.05) 16%, transparent 40%, transparent 82%, rgba(115, 181, 229, 0.05) 100%),
-    radial-gradient(ellipse at 14% 4%, var(--compact-chat-refraction-blue) 0%, transparent 34%),
-    radial-gradient(ellipse at 62% 100%, var(--compact-chat-refraction-violet) 0%, transparent 36%),
-    radial-gradient(ellipse at 92% 12%, var(--compact-chat-refraction-rose) 0%, transparent 30%);
-  background-position: 0 0, 0% 0%, 55% 100%, 100% 10%;
-  background-repeat: no-repeat;
-  background-size: 100% 100%, 180% 220%, 190% 220%, 180% 200%;
+  background: linear-gradient(180deg, var(--compact-chat-surface-glow) 0%, rgba(255, 255, 255, 0.05) 16%, transparent 40%, transparent 82%, rgba(115, 181, 229, 0.05) 100%);
   box-shadow:
     inset 0 2px 6px var(--compact-chat-highlight-top),
     inset 0 -1px 3px var(--compact-chat-highlight-bottom),
     inset 2px 0 4px var(--compact-chat-highlight-left),
     inset -2px 0 4px var(--compact-chat-highlight-right);
-  animation: compact-chat-liquid-edge 20s ease-in-out infinite;
-  animation-play-state: var(--compact-decoration-play-state, paused);
   pointer-events: none;
-}
-
-@keyframes compact-chat-liquid-edge {
-  0%,
-  100% {
-    background-position: 0 0, 0% 0%, 55% 100%, 100% 10%;
-  }
-
-  33% {
-    background-position: 0 0, 58% 18%, 8% 48%, 42% 88%;
-  }
-
-  66% {
-    background-position: 0 0, 92% 72%, 86% 12%, 4% 34%;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .compact-chat-surface-frame::after {
-    animation: none;
-  }
 }
 
 .compact-chat-surface-frame > * {
   position: relative;
   z-index: 2;
+}
+
+/* Rasterize the three gradients separately, then move their textures on the
+   compositor. Animating background-position repainted the entire glass capsule
+   at display refresh rate, even with Focus disabled and the avatar FPS capped.
+   This clipped layer stays below the static highlights and interactive content. */
+.compact-chat-surface-frame > .compact-chat-refraction {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.compact-chat-refraction > span {
+  position: absolute;
+  top: 0;
+  left: 0;
+  animation-duration: 20s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+
+.compact-chat-refraction-blue {
+  width: 180%;
+  height: 220%;
+  background: radial-gradient(ellipse at 14% 4%, var(--compact-chat-refraction-blue) 0%, transparent 34%);
+  animation-name: compact-chat-refraction-blue;
+}
+
+.compact-chat-refraction-violet {
+  width: 190%;
+  height: 220%;
+  background: radial-gradient(ellipse at 62% 100%, var(--compact-chat-refraction-violet) 0%, transparent 36%);
+  animation-name: compact-chat-refraction-violet;
+}
+
+.compact-chat-refraction-rose {
+  width: 180%;
+  height: 200%;
+  background: radial-gradient(ellipse at 92% 12%, var(--compact-chat-refraction-rose) 0%, transparent 30%);
+  animation-name: compact-chat-refraction-rose;
+}
+
+/* Preserve the old background-position path: a position p on an image sized s
+   times its container is a translation of (1 - s) * p / s of the image itself. */
+@keyframes compact-chat-refraction-blue {
+  0%, 100% { transform: translate(0, 0); }
+  33% { transform: translate(-25.777778%, -9.818182%); }
+  66% { transform: translate(-40.888889%, -39.272727%); }
+}
+
+@keyframes compact-chat-refraction-violet {
+  0%, 100% { transform: translate(-26.052632%, -54.545455%); }
+  33% { transform: translate(-3.789474%, -26.181818%); }
+  66% { transform: translate(-40.736842%, -6.545455%); }
+}
+
+@keyframes compact-chat-refraction-rose {
+  0%, 100% { transform: translate(-44.444444%, -5%); }
+  33% { transform: translate(-18.666667%, -44%); }
+  66% { transform: translate(-1.777778%, -17%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-chat-refraction > span {
+    animation: none;
+  }
+  .compact-chat-refraction-violet {
+    transform: translate(-26.052632%, -54.545455%);
+  }
+  .compact-chat-refraction-rose {
+    transform: translate(-44.444444%, -5%);
+  }
 }
 
 .compact-chat-surface-frame .compact-chat-minimize-ball {
@@ -3868,7 +3913,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0.92;
   transform: translate(-50%, -50%);
   animation: compact-history-handle-breathe 2.35s ease-in-out infinite;
-  animation-play-state: var(--compact-decoration-play-state, paused);
   transition: width 0.16s ease, background 0.16s ease;
 }
 
@@ -3889,7 +3933,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0.42;
   transform: translate(-50%, -50%) scaleX(1.16);
   animation: compact-history-handle-glow-breathe 2.35s ease-in-out infinite;
-  animation-play-state: var(--compact-decoration-play-state, paused);
   transition: width 0.16s ease, opacity 0.16s ease;
 }
 

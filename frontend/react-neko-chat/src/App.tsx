@@ -36,7 +36,6 @@ import {
   resolveCompactToolWheelPointerHit,
 } from './compactToolWheelGeometry';
 import { useFocusGlow } from './useFocusGlow';
-import { useCompactDecorationActivity } from './useCompactDecorationActivity';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
@@ -2071,7 +2070,6 @@ function CompactChatApp({
 
   // Focus 凝神 edge glow: charge-driven, scaled on the app-shell via CSS vars.
   useFocusGlow(appShellRef);
-  useCompactDecorationActivity(appShellRef, chatSurfaceMode === 'compact', compactChoiceLayerRef);
 
   useEffect(() => {
     if (compactMessagePreview?.isAssistant && compactMessagePreview.isStreaming) {
@@ -5957,6 +5955,11 @@ function CompactChatApp({
                     onPointerCancel={endCompactToolOriginDrag}
                     onClickCapture={suppressCompactToolOriginClickAfterDrag}
                   >
+                    <div className="compact-chat-refraction" aria-hidden="true">
+                      <span className="compact-chat-refraction-rose" />
+                      <span className="compact-chat-refraction-violet" />
+                      <span className="compact-chat-refraction-blue" />
+                    </div>
                     {effectiveCompactChatState === 'input' ? (
                       <>
                         {/* 输入态左侧毛绒球：点按折叠为 minimized，按住拖动整个输入框（见 compactMinimizeButton 定义）。
