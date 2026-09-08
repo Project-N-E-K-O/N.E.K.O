@@ -37,19 +37,6 @@ function handleCloudsaveCharacterSync(data) {
     });
 })();
 
-// sendBeacon 生命周期
-window.addEventListener('beforeunload', function () {
-    try {
-        navigator.sendBeacon('/api/beacon/shutdown');
-    } catch (e) { /* ignore */ }
-});
-
-window.addEventListener('unload', function () {
-    try {
-        navigator.sendBeacon('/api/beacon/shutdown');
-    } catch (e) { /* ignore */ }
-});
-
 // =========================================================================
 // 清理遗留记忆（Legacy Memory Cleanup）
 // -----------------------------------------------------------------------

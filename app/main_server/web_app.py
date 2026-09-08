@@ -43,6 +43,112 @@ logger = runtime.logger
 _AVATAR_TOOL_ASSET_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
+# ``--open-browser`` owns the backend for as long as at least one of its UI
+# documents is alive. A page unload alone cannot tell a real tab close from a
+# reload, so shutdown is debounced and cancelled when the replacement document
+# registers. Electron/Steam never enables browser_mode_enabled and continues
+# to use the separate authenticated /api/runtime/shutdown path.
+_BROWSER_LIFECYCLE_CLOSE_GRACE_SECONDS = 2.0
+_BROWSER_LIFECYCLE_HEARTBEAT_TIMEOUT_SECONDS = 120.0
+_BROWSER_LIFECYCLE_MAX_CLIENTS = 64
+_browser_lifecycle_clients: dict[str, float] = {}
+_browser_lifecycle_expiry_tasks: dict[str, asyncio.Task] = {}
+_browser_lifecycle_shutdown_task: asyncio.Task | None = None
+
+
+def _cancel_browser_lifecycle_task(task: asyncio.Task | None) -> None:
+    if task is not None and not task.done():
+        task.cancel()
+
+
+def _cancel_pending_browser_lifecycle_shutdown() -> None:
+    global _browser_lifecycle_shutdown_task
+    _cancel_browser_lifecycle_task(_browser_lifecycle_shutdown_task)
+    _browser_lifecycle_shutdown_task = None
+
+
+async def _expire_browser_lifecycle_client(client_id: str, touched_at: float) -> None:
+    try:
+        await asyncio.sleep(_BROWSER_LIFECYCLE_HEARTBEAT_TIMEOUT_SECONDS)
+    except asyncio.CancelledError:
+        return
+
+    if _browser_lifecycle_clients.get(client_id) != touched_at:
+        return
+    _browser_lifecycle_clients.pop(client_id, None)
+    if _browser_lifecycle_expiry_tasks.get(client_id) is asyncio.current_task():
+        _browser_lifecycle_expiry_tasks.pop(client_id, None)
+    _schedule_browser_lifecycle_shutdown()
+
+
+async def _shutdown_browser_lifecycle_after_grace() -> None:
+    global _browser_lifecycle_shutdown_task
+    try:
+        await asyncio.sleep(_BROWSER_LIFECYCLE_CLOSE_GRACE_SECONDS)
+        if _browser_lifecycle_clients:
+            return
+        logger.info("浏览器页面已关闭，准备关闭源码模式服务器...")
+        await runtime.shutdown_server_async()
+    except asyncio.CancelledError:
+        return
+    finally:
+        if _browser_lifecycle_shutdown_task is asyncio.current_task():
+            _browser_lifecycle_shutdown_task = None
+
+
+def _schedule_browser_lifecycle_shutdown() -> None:
+    global _browser_lifecycle_shutdown_task
+    if _browser_lifecycle_clients:
+        return
+    if _browser_lifecycle_shutdown_task is not None:
+        if not _browser_lifecycle_shutdown_task.done():
+            return
+        _browser_lifecycle_shutdown_task = None
+    _browser_lifecycle_shutdown_task = asyncio.create_task(
+        _shutdown_browser_lifecycle_after_grace()
+    )
+
+
+def _touch_browser_lifecycle_client(client_id: str) -> bool:
+    if not client_id or len(client_id) > 128:
+        return False
+    if (
+        client_id not in _browser_lifecycle_clients
+        and len(_browser_lifecycle_clients) >= _BROWSER_LIFECYCLE_MAX_CLIENTS
+    ):
+        return False
+
+    _cancel_pending_browser_lifecycle_shutdown()
+    touched_at = asyncio.get_running_loop().time()
+    _browser_lifecycle_clients[client_id] = touched_at
+    _cancel_browser_lifecycle_task(_browser_lifecycle_expiry_tasks.get(client_id))
+    _browser_lifecycle_expiry_tasks[client_id] = asyncio.create_task(
+        _expire_browser_lifecycle_client(client_id, touched_at)
+    )
+    return True
+
+
+def _release_browser_lifecycle_client(client_id: str) -> None:
+    _browser_lifecycle_clients.pop(client_id, None)
+    _cancel_browser_lifecycle_task(_browser_lifecycle_expiry_tasks.pop(client_id, None))
+    _schedule_browser_lifecycle_shutdown()
+
+
+def _reset_browser_lifecycle_state() -> None:
+    """Cancel browser lifecycle tasks; primarily useful for isolated tests."""
+    _cancel_pending_browser_lifecycle_shutdown()
+    for task in _browser_lifecycle_expiry_tasks.values():
+        _cancel_browser_lifecycle_task(task)
+    _browser_lifecycle_expiry_tasks.clear()
+    _browser_lifecycle_clients.clear()
+
+
+def _browser_lifecycle_origin_allowed(request: Request) -> bool:
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    expected_origin = str(request.base_url).strip().rstrip("/")
+    return bool(origin and secrets.compare_digest(origin, expected_origin))
+
+
 def _has_generated_asset_version(query_string: bytes) -> bool:
     """Return whether ``v`` is a content-derived version safe to cache immutably."""
     try:
@@ -538,20 +644,63 @@ async def get_card_drop_active_character(
 
 
 @app.post("/api/beacon/shutdown")
-async def beacon_shutdown():
-    """Beacon endpoint: used for graceful server shutdown"""
+async def beacon_shutdown(request: Request):
+    """Track standalone-browser pages and stop their backend after the last closes."""
     try:
-        # 从 app.state 获取配置
         current_config = runtime.get_start_config()
-        # 仅当服务由 --open-browser 模式启动时才响应 beacon
-        if current_config["browser_mode_enabled"]:
-            logger.info("收到beacon信号，准备关闭服务器...")
-            # 调度服务器关闭任务
-            asyncio.create_task(runtime.shutdown_server_async())
-            return {"success": True, "message": "服务器关闭信号已接收"}
+        # Steam/Electron uses /api/runtime/shutdown. Keep this browser-page
+        # lease completely inert in packaged and ordinary server modes.
+        if not current_config.get("browser_mode_enabled"):
+            return {"success": True, "ignored": True, "reason": "browser_mode_disabled"}
+        if not _browser_lifecycle_origin_allowed(request):
+            return JSONResponse(
+                {"success": False, "error": "origin_not_allowed"},
+                status_code=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        action = str(payload.get("action") or "shutdown").strip().lower()
+        client_id = str(payload.get("client_id") or "").strip()
+        if action in {"register", "heartbeat"}:
+            if not _touch_browser_lifecycle_client(client_id):
+                return JSONResponse(
+                    {"success": False, "error": "invalid_browser_client"},
+                    status_code=400,
+                )
+            return {"success": True, "message": "浏览器页面租约已更新"}
+
+        if action == "release":
+            if not client_id:
+                return JSONResponse(
+                    {"success": False, "error": "invalid_browser_client"},
+                    status_code=400,
+                )
+            _release_browser_lifecycle_client(client_id)
+            return {"success": True, "message": "浏览器页面租约已释放"}
+
+        if action == "shutdown":
+            # Compatibility for a cached pre-fix page. New pages release an
+            # explicit client lease; a legacy signal may only close the backend
+            # when no live replacement page is registered.
+            _schedule_browser_lifecycle_shutdown()
+            return {"success": True, "message": "服务器关闭待确认"}
+
+        return JSONResponse(
+            {"success": False, "error": "unsupported_browser_lifecycle_action"},
+            status_code=400,
+        )
     except Exception as e:
         logger.error(f"Beacon处理错误: {e}")
-        return {"success": False, "error": str(e)}
+        return JSONResponse(
+            {"success": False, "error": "browser_lifecycle_failed"},
+            status_code=500,
+        )
 
 
 def _runtime_shutdown_has_target() -> bool:

@@ -39,6 +39,7 @@
          配置帧率低于刷新率时改用定时器驱动而非 rAF 跳帧。只在本页加载；其它页面不加载
          即保持原行为。详见 static/frame-pacing.js。 -->
     <script src="/static/frame-pacing.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/browser-mode-lifecycle.js?v={{ static_asset_version }}"></script>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>

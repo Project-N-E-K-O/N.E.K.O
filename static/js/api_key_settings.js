@@ -3308,46 +3308,6 @@ function autoFillAssistApiKey(force) {
     }
 }
 
-// Beacon功能 - 页面关闭时发送信号给服务器
-let beaconSent = false;
-
-function sendBeacon() {
-    if (window.parent !== window) {
-        return;
-    }
-
-    if (beaconSent) return;
-    beaconSent = true;
-
-    try {
-        const payload = JSON.stringify({
-            timestamp: Date.now(),
-            action: 'shutdown'
-        });
-
-        const blob = new Blob([payload], { type: 'application/json' });
-        const success = navigator.sendBeacon('/api/beacon/shutdown', blob);
-
-        if (!success) {
-            console.warn('Beacon发送失败，尝试使用fetch');
-            fetch('/api/beacon/shutdown', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: payload,
-                keepalive: true
-            }).catch(() => { });
-        }
-    } catch (e) {
-        // 忽略异常
-    }
-}
-
-// 监听页面关闭事件（仅在直接打开时）
-if (window.parent === window) {
-    window.addEventListener('beforeunload', sendBeacon);
-    window.addEventListener('unload', sendBeacon);
-}
-
 // Tooltip 动态定位功能
 function positionTooltip(iconElement, tooltipElement) {
     const iconRect = iconElement.getBoundingClientRect();
