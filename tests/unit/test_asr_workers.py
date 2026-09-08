@@ -3008,7 +3008,11 @@ async def test_grok_server_vad_final_replaces_locked_segments(
         ("seg1", True, False),
         ("tail", False, False),
         ("seg2", True, False),
-        ("seg3", True, True),
+        # A terminal event restates the whole utterance, locked chunks
+        # included -- a tail-only payload here would be a shape xAI never
+        # sends, and asserting on it would freeze "drop the locked prefix"
+        # into the guard.
+        ("seg1seg2seg3", True, True),
     ):
         await websocket.server_send(
             {
@@ -3024,9 +3028,10 @@ async def test_grok_server_vad_final_replaces_locked_segments(
     for expected in ("draft", "seg1", "seg1tail", "seg1seg2"):
         assert (await _next_event(responses, "partial")).text == expected
     # The terminal event restates the whole utterance, so it replaces the
-    # locked segments instead of being appended to them.
+    # locked segments instead of being appended to them (appending would
+    # say "seg1seg2" twice).
     final = await _next_event(responses, "final")
-    assert (final.utterance_id, final.text) == (1, "seg3")
+    assert (final.utterance_id, final.text) == (1, "seg1seg2seg3")
 
     # A following utterance on the same connection starts from an empty
     # segment buffer: no text bleeds over, and a single-segment utterance's
