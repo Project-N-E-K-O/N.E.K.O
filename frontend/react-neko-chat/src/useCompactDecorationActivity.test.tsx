@@ -1,11 +1,15 @@
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useCompactDecorationActivity } from './useCompactDecorationActivity';
 
-function Host({ enabled = true }: { enabled?: boolean }) {
+function Host({ enabled = true, portal = false }: { enabled?: boolean; portal?: boolean }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  useCompactDecorationActivity(ref, enabled);
-  return <div ref={ref} data-testid="host"><input aria-label="message" /></div>;
+  const portalRef = useRef<HTMLDivElement | null>(null);
+  useCompactDecorationActivity(ref, enabled, portalRef);
+  return <><div ref={ref} data-testid="host"><input aria-label="message" /></div>
+    {portal && createPortal(<div ref={portalRef}><button>Choice</button></div>, document.body)}
+  </>;
 }
 const playState = (element: HTMLElement) => element.style.getPropertyValue('--compact-decoration-play-state');
 
@@ -71,6 +75,29 @@ describe('compact decoration activity', () => {
     expect(playState(host)).toBe('');
   });
 
+  it('observes late-mounted owned portal controls while ignoring unrelated page input', () => {
+    const { getByTestId, getByRole, rerender } = render(<Host />);
+    const host = getByTestId('host');
+    rerender(<Host portal />);
+    const choice = getByRole('button', { name: 'Choice' });
+    fireEvent.pointerMove(document.body);
+    expect(playState(host)).toBe('');
+    fireEvent.pointerMove(choice);
+    expect(playState(host)).toBe('running');
+    // Moving between the shell and its portal stays in the same activity region.
+    fireEvent.pointerOut(host, { relatedTarget: choice });
+    expect(playState(host)).toBe('running');
+    fireEvent.pointerOut(choice, { relatedTarget: document.body });
+    expect(playState(host)).toBe('');
+    fireEvent.keyDown(choice, { key: 'Enter' });
+    expect(playState(host)).toBe('running');
+    vi.advanceTimersByTime(1800);
+    expect(playState(host)).toBe('');
+    rerender(<Host />);
+    fireEvent.pointerMove(document.body);
+    expect(playState(host)).toBe('');
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it('cleans up when minimized or unmounted and reattaches on restore', () => {
     const { getByTestId, rerender, unmount } = render(<Host />);
     const host = getByTestId('host');

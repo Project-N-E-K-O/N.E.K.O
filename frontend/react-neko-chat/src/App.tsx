@@ -2071,7 +2071,7 @@ function CompactChatApp({
 
   // Focus 凝神 edge glow: charge-driven, scaled on the app-shell via CSS vars.
   useFocusGlow(appShellRef);
-  useCompactDecorationActivity(appShellRef, chatSurfaceMode === 'compact');
+  useCompactDecorationActivity(appShellRef, chatSurfaceMode === 'compact', compactChoiceLayerRef);
 
   useEffect(() => {
     if (compactMessagePreview?.isAssistant && compactMessagePreview.isStreaming) {

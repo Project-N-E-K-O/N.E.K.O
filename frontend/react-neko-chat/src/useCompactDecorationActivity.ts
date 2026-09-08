@@ -8,6 +8,7 @@ const PLAY_STATE = '--compact-decoration-play-state';
 export function useCompactDecorationActivity(
   ref: RefObject<HTMLElement | null>,
   enabled: boolean,
+  portalRef?: RefObject<HTMLElement | null>,
 ): void {
   useEffect(() => {
     const element = ref.current;
@@ -28,7 +29,12 @@ export function useCompactDecorationActivity(
       if (remaining > 0) timer = setTimeout(settle, remaining);
       else stop();
     };
-    const activate = () => {
+    // Choice controls mount in a body portal. Read its current ref per event so
+    // late mounts work without observing or waking on unrelated page input.
+    const owns = (target: EventTarget | null) => target instanceof Node
+      && (element.contains(target) || !!portalRef?.current?.contains(target));
+    const activate = (event: Event) => {
+      if (!owns(event.target)) return;
       if (document.hidden) return;
       deadline = Date.now() + IDLE_DELAY_MS;
       if (!active) {
@@ -41,17 +47,22 @@ export function useCompactDecorationActivity(
     const onVisibilityChange = () => {
       if (document.hidden) stop();
     };
+    const onPointerOut = (event: PointerEvent) => {
+      if (owns(event.target) && !owns(event.relatedTarget)) stop();
+    };
     const events = ['pointermove', 'pointerdown', 'keydown', 'input', 'wheel'] as const;
-    for (const event of events) element.addEventListener(event, activate, { capture: true, passive: true });
-    element.addEventListener('pointerleave', stop);
+    for (const event of events) document.addEventListener(event, activate, { capture: true, passive: true });
+    element.addEventListener('pointerleave', onPointerOut);
+    document.addEventListener('pointerout', onPointerOut, true);
     window.addEventListener('blur', stop);
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       stop();
-      for (const event of events) element.removeEventListener(event, activate, true);
-      element.removeEventListener('pointerleave', stop);
+      for (const event of events) document.removeEventListener(event, activate, true);
+      element.removeEventListener('pointerleave', onPointerOut);
+      document.removeEventListener('pointerout', onPointerOut, true);
       window.removeEventListener('blur', stop);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [ref, enabled]);
+  }, [ref, enabled, portalRef]);
 }
