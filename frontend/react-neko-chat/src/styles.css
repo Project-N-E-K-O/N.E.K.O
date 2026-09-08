@@ -2809,6 +2809,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     inset 2px 0 4px var(--compact-chat-highlight-left),
     inset -2px 0 4px var(--compact-chat-highlight-right);
   animation: compact-chat-liquid-edge 20s ease-in-out infinite;
+  animation-play-state: var(--compact-decoration-play-state, paused);
   pointer-events: none;
 }
 
@@ -3867,6 +3868,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0.92;
   transform: translate(-50%, -50%);
   animation: compact-history-handle-breathe 2.35s ease-in-out infinite;
+  animation-play-state: var(--compact-decoration-play-state, paused);
   transition: width 0.16s ease, background 0.16s ease;
 }
 
@@ -3887,6 +3889,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0.42;
   transform: translate(-50%, -50%) scaleX(1.16);
   animation: compact-history-handle-glow-breathe 2.35s ease-in-out infinite;
+  animation-play-state: var(--compact-decoration-play-state, paused);
   transition: width 0.16s ease, opacity 0.16s ease;
 }
 

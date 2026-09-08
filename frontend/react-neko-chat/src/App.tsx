@@ -36,6 +36,7 @@ import {
   resolveCompactToolWheelPointerHit,
 } from './compactToolWheelGeometry';
 import { useFocusGlow } from './useFocusGlow';
+import { useCompactDecorationActivity } from './useCompactDecorationActivity';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
@@ -2070,6 +2071,7 @@ function CompactChatApp({
 
   // Focus 凝神 edge glow: charge-driven, scaled on the app-shell via CSS vars.
   useFocusGlow(appShellRef);
+  useCompactDecorationActivity(appShellRef, chatSurfaceMode === 'compact');
 
   useEffect(() => {
     if (compactMessagePreview?.isAssistant && compactMessagePreview.isStreaming) {
