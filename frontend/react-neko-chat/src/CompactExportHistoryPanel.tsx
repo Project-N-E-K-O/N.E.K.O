@@ -68,6 +68,8 @@ type CompactExportHistoryPanelProps = {
   theaterTitle?: string;
   theaterEnded?: boolean;
   theaterError?: string;
+  // 只在剧场头部呈现请求统计，不进入聊天导出或普通聊天状态。
+  theaterTokenUsage?: { summary: string; detail: string };
   onTheaterEnd?: () => void;
   selectedIds: Set<string>;
   selectedCount: number;
@@ -228,6 +230,7 @@ export default function CompactExportHistoryPanel({
   theaterTitle = '',
   theaterEnded = false,
   theaterError = '',
+  theaterTokenUsage,
   onTheaterEnd,
   selectedIds,
   selectedCount,
@@ -1002,6 +1005,12 @@ export default function CompactExportHistoryPanel({
             </button>
           </div>
           {theaterError ? <div className="compact-theater-history-error" role="alert">{theaterError}</div> : null}
+          {theaterTokenUsage ? (
+            <details className="compact-theater-token-usage" data-compact-no-drag="true">
+              <summary>{theaterTokenUsage.summary}</summary>
+              <div style={{ whiteSpace: 'pre-line' }}>{theaterTokenUsage.detail}</div>
+            </details>
+          ) : null}
         </div>
       ) : null}
       {previewOpen ? previewNode : (

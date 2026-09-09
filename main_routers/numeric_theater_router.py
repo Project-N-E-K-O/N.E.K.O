@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 from main_routers.shared_state import get_config_manager
 from main_routers.system_router._shared import _validate_local_mutation_request
+from services.theater.numeric_v2_usage import numeric_v2_usage_scope, with_numeric_v2_usage
 from services.theater.numeric_v2 import NumericV2CompileError
 from services.theater.numeric_v2_actor import (
     NumericV2Actor,
@@ -67,7 +68,10 @@ from services.theater.numeric_v2_store import (
     NumericV2StoreError,
     NumericV2StoreRevisionConflictError,
 )
-from services.theater.numeric_v2_workflow import execute_numeric_v2_turn
+from services.theater.numeric_v2_workflow import (
+    execute_numeric_v2_turn,
+    generate_validated_opening,
+)
 from services.theater.tts_bridge import speak_committed_line
 from utils.cloudsave_runtime import (
     MaintenanceModeError,
@@ -116,6 +120,22 @@ def _performance_block_group(
             return blocks, offset
         offset += len(blocks)
     return None
+
+
+def _current_suggested_inputs(session: Any) -> tuple[str, ...]:
+    """返回玩家此刻真正可见的推荐，供推荐点击来源复验。"""  # noqa: DOCSTRING_CJK
+
+    if session.revision == 0:
+        performance = session.opening_performance
+    elif session.performance_history:
+        performance = session.performance_history[-1]
+    else:
+        return ()
+    return tuple(
+        str(item).strip()
+        for item in performance.get("suggested_inputs") or []
+        if str(item).strip()
+    )
 
 
 def _numeric_root(config_manager: Any) -> Path:
@@ -508,6 +528,13 @@ async def delete_numeric_story(story_id: str, request: Request):
 
 @router.post("/session/start")
 async def start_numeric_session(request: Request):
+    # 请求级统计包含失败尝试与争议复查；不会写入 Session，也不污染普通聊天。
+    with numeric_v2_usage_scope() as calls:
+        response = await _start_numeric_session(request)
+    return with_numeric_v2_usage(response, calls)
+
+
+async def _start_numeric_session(request: Request):
     payload = await _json_object(request)
     validation_error = _validate_local_mutation_request(request, payload=payload, error_defaults={"ok": False, "reason": "csrf_validation_failed"})
     if validation_error is not None:
@@ -551,8 +578,11 @@ async def start_numeric_session(request: Request):
                     return _error("numeric_active_session_cannot_restart", 409)
 
         # 开场模型调用不占用角色或剧本锁；最终提交前会重新读取并验证全部可变事实。
-        opening = await NumericV2Actor(config_manager).generate_opening(
+        opening = await generate_validated_opening(
             engine=runtime.engine,
+            config_manager=config_manager,
+            session_id=session_id,
+            catgirl_binding=binding,
             actor_budget_profile=actor_budget_profile,
         )
         async with character_config_mutation_lock, runtime.story_session_guard():
@@ -727,6 +757,13 @@ async def get_numeric_session(session_id: str, story_id: str):
 
 @router.post("/session/input")
 async def submit_numeric_input(request: Request):
+    # 请求级统计包含失败尝试与争议复查；不会写入 Session，也不污染普通聊天。
+    with numeric_v2_usage_scope() as calls:
+        response = await _submit_numeric_input(request)
+    return with_numeric_v2_usage(response, calls)
+
+
+async def _submit_numeric_input(request: Request):
     payload = await _json_object(request)
     validation_error = _validate_local_mutation_request(request, payload=payload, error_defaults={"ok": False, "reason": "csrf_validation_failed"})
     if validation_error is not None:
@@ -768,6 +805,12 @@ async def submit_numeric_input(request: Request):
             return _error("session_already_ended", 409)
         if turn.base_revision != current.session.revision:
             return _error("numeric_base_revision_mismatch", 409)
+        if (
+            turn.input_source == "suggestion"
+            and turn.message not in _current_suggested_inputs(current.session)
+        ):
+            # 推荐来源只能引用当前 revision 已公开的按钮；过期或伪造文本不能改变 Actor 节奏。
+            return _error("numeric_suggested_input_not_current", 409)
         # HTTP 层只完成请求前置校验和错误映射，模型顺序与原子提交由应用工作流固定。
         workflow = await execute_numeric_v2_turn(
             config_manager=config_manager,

@@ -11,6 +11,8 @@ from typing import Any, Mapping
 
 from utils.tokenize import truncate_to_tokens
 
+from .numeric_v2_context import pending_transition_record
+
 from .numeric_v2 import (
     CompiledNumericV2Package,
     NumericV2Compiler,
@@ -35,6 +37,7 @@ SESSION_SCHEMA = "neko.script.session.numeric.v2"
 LEDGER_EVENT_SCHEMA = "neko.script.ledger_event.numeric.v2"
 PERFORMANCE_RECORD_SCHEMA = "neko.script.performance_record.numeric.v2"
 NUMERIC_V2_PLAYER_INPUT_MAX_TOKENS = 140
+NUMERIC_V2_INPUT_SOURCES = frozenset({"freeform", "suggestion"})
 # 当前 Session 只保存正文、数值和转场状态；旧证据链 Session 不再可恢复。
 _DIALOGUE_POLICIES = frozenset({"required", "optional", "forbidden"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -178,6 +181,8 @@ class TurnRequestV2:
     client_turn_id: str
     base_revision: int
     message: str
+    # 只描述本轮 UI 输入来源，不参与数值、路线或 Session 状态机。
+    input_source: str = "freeform"
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "TurnRequestV2":
@@ -185,8 +190,13 @@ class TurnRequestV2:
             client_turn_id=_stable_id(value.get("client_turn_id"), "client_turn_id"),
             base_revision=_integer(value.get("base_revision"), "base_revision"),
             message=str(value.get("message") or "").strip(),
+            input_source=str(value.get("input_source") or "freeform").strip(),
         )
-        if request.base_revision < 0 or not request.message:
+        if (
+            request.base_revision < 0
+            or not request.message
+            or request.input_source not in NUMERIC_V2_INPUT_SOURCES
+        ):
             raise NumericV2RuntimeError("numeric_turn_request_invalid")
         if truncate_to_tokens(request.message, NUMERIC_V2_PLAYER_INPUT_MAX_TOKENS) != request.message:
             raise NumericV2RuntimeError("numeric_turn_input_too_long")
@@ -418,6 +428,7 @@ class NumericV2Engine:
         *,
         scene_complete: bool = False,
         transition_intent: str = "unclear",
+        natural_ending_ready: bool = False,
     ) -> TurnOutcomeV2:
         """结算 v2.2 回合；目标、证据和完成锁存不再进入状态机。"""  # noqa: DOCSTRING_CJK
 
@@ -430,13 +441,17 @@ class NumericV2Engine:
             raise NumericV2DuplicateTurnError("duplicate_client_turn_id")
         if len({change.metric_id for change in changes}) != len(changes):
             raise NumericV2RuntimeError("metric_change_duplicate")
-        if transition_intent not in {"accept", "reject", "unclear"}:
+        if transition_intent not in {"accept", "initiate", "reject", "unclear"}:
             raise NumericV2RuntimeError("transition_intent_invalid")
-        # 没有上一轮可见的具体提议时，Evaluator 的 accept/reject 不能改变路线。
+        # 重新接受只能依据本次场景访问中已经公开的邀请；不新增状态，冷恢复仍从同一历史判定。
+        can_accept_offer = session.transition_offered or (
+            transition_intent == "accept"
+            and pending_transition_record(session, include_withdrawn=True) is not None
+        )
         effective_transition_intent = transition_intent
         if (
             transition_intent in {"accept", "reject"}
-            and not session.transition_offered
+            and not (can_accept_offer if transition_intent == "accept" else session.transition_offered)
         ):
             effective_transition_intent = "unclear"
 
@@ -453,8 +468,12 @@ class NumericV2Engine:
         next_turn_count = session.node_turn_count + 1
         route = None
         route_status = "playing"
-        if effective_transition_intent == "accept" and session.transition_offered:
-            # 玩家只能接受上一轮已经可见的具体提议；目标和完成信号不参与换幕门槛。
+        if effective_transition_intent == "initiate":
+            # 玩家可主动要求进入已公开的下一阶段；不伪造邀请，也不绕过本轮数值选路。
+            # Evaluator 识别明确请求，正式转场复核再检查公开去向和授权；不合格正文仍不提交。
+            route, route_status = self._select_route(source, after)
+        elif effective_transition_intent == "accept" and can_accept_offer:
+            # 活跃或明确重新接受的历史邀请共用选路条件；不能凭作者目标或模型空口 accept 换幕。
             route, route_status = self._select_route(source, after)
             if route is None:
                 # 提议对应的路线当前仍不可达时，留在当前幕而不伪造 advanced。
@@ -465,6 +484,17 @@ class NumericV2Engine:
         elif effective_transition_intent == "reject":
             # reject 清除当前提议；Actor 可在出现新因果后重新提出。
             route_status = "playing"
+
+        # 自然结束只放行本轮已经可收束的结局，不借用 scene_complete 自动推进普通幕。
+        # 保持原路线优先级；若胜出的路线是普通幕，不跳过它另找一个结局。
+        if route is None and scene_complete and natural_ending_ready is True and effective_transition_intent != "reject":
+            ending_route, _ = self._select_route(source, after)
+            # 判定看到的是结算前的候选结局；数值变化若改选另一出口，不能挪用前者的授权。
+            preview_route, _ = self._select_route(source, before)
+            if ending_route is not None and preview_route is not None and ending_route["id"] == preview_route["id"]:
+                ending_target = self.nodes[str(ending_route["target_node_id"])]
+                if ending_target.get("type") == "ending" or ending_target.get("terminal") is True:
+                    route = ending_route
 
         target_node_id = session.current_node_id
         next_status = "active"
@@ -528,7 +558,8 @@ class NumericV2Engine:
             # 单独锁存正文生成时看到的发声合同，避免提交时用更新后的状态反向否定本轮合法对白。
             "performance_dialogue_policy": dialogue_policy,
             "dialogue_policy": dialogue_policy,
-            # 工作流在正文通过校验后会覆盖本回合的新提议状态；这里先记录状态机清除结果。
+            # 正文通过校验后由本引擎的 finalize_transition_offer_state 统一锁存新提议；
+            # 这里先记录 Evaluator 结算后的旧提议保留或清除结果。
             "transition_offered": (
                 session.transition_offered
                 if route is None and effective_transition_intent == "unclear"
@@ -538,7 +569,39 @@ class NumericV2Engine:
             "player_address_disclosure_version": 2,
         }
         event["transition_intent"] = effective_transition_intent
+        # 只记录新信号的阳性值；旧 Ledger 缺省为 false，分叉重放不会替旧历史提前结束。
+        if natural_ending_ready is True:
+            event["natural_ending_ready"] = True
         return TurnOutcomeV2(next_session, event, changes, route, route_status, transition)
+
+    def finalize_transition_offer_state(
+        self,
+        outcome: TurnOutcomeV2,
+        performance: Mapping[str, Any],
+        *,
+        new_offer: bool,
+    ) -> tuple[TurnOutcomeV2, dict[str, Any]]:
+        """由 Runtime 唯一锁存本轮公开提议，并同步 Session、Ledger 与正文。"""  # noqa: DOCSTRING_CJK
+
+        if not isinstance(new_offer, bool):
+            raise NumericV2RuntimeError("transition_offered_invalid")
+        transition_offered = outcome.session.transition_offered or new_offer
+        finalized_performance = {
+            **performance,
+            "transition_offered": transition_offered,
+        }
+        finalized_outcome = replace(
+            outcome,
+            session=replace(
+                outcome.session,
+                transition_offered=transition_offered,
+            ),
+            ledger_event={
+                **outcome.ledger_event,
+                "transition_offered": transition_offered,
+            },
+        )
+        return finalized_outcome, finalized_performance
 
     def finalize_transition_performance(
         self,
@@ -551,7 +614,7 @@ class NumericV2Engine:
         source_dialogue_policy: str = "required",
         target_dialogue_policy: str = "required",
     ) -> dict[str, Any]:
-        """由 Runtime 注入作者桥段和目标开场，统一生成可原子提交的三段换场。"""  # noqa: DOCSTRING_CJK
+        """固定三段提交结构；新旁白承接历史，旧数组调用仍按原协议组装。"""  # noqa: DOCSTRING_CJK
 
         target_node_id = str(outcome.ledger_event["to_node_id"])
         if outcome.ledger_event["from_node_id"] == target_node_id:
@@ -559,12 +622,16 @@ class NumericV2Engine:
         result = deepcopy(dict(performance))
         segments = result.get("segments")
         authored_bridge = str(bridge_scene_narration or "").strip()
-        if authored_bridge and {
+        if {
             "source_performance",
             "target_performance",
         }.issubset(result):
-            # 严格版本紧凑合同只让 Actor 生成两侧角色正文。段位标签、作者桥段与目标开场均由
-            # Runtime 按固定顺序组装，避免模型的数组长度或字段漂移把一次有效演绎变成发送失败。
+            # 两段旁白必须来自同一次生成；作者原文是事实约束，不再覆盖已适配历史的文本。
+            if not all(valid_scene_narration({"scene_narration": result.get(key)})
+                       for key in ("bridge_scene_narration", "target_scene_narration")):
+                raise NumericV2RuntimeError("numeric_transition_performance_invalid")
+            authored_bridge = result.pop("bridge_scene_narration")
+            target_opening = result.pop("target_scene_narration")
             segments = [
                 {
                     "phase": "source_response",
@@ -586,7 +653,7 @@ class NumericV2Engine:
             and len(segments) == 3
             and isinstance(segments[1], Mapping)
         ):
-            # 作者显式桥段属于剧本事实，模型只负责两侧角色演绎；提交前原文覆盖可消除转场漏项和近义漂移。
+            # 紧凑输出在上方已选用生成旁白；此处也保留旧三段数组调用的原有组装行为。
             segments[1] = {
                 "phase": "transition_bridge",
                 "scene_narration": authored_bridge,
@@ -786,6 +853,7 @@ class NumericV2Runtime:
                 changes,
                 scene_complete=bool(source_event.get("scene_complete")),
                 transition_intent=str(source_event.get("transition_intent") or "unclear"),
+                natural_ending_ready=source_event.get("natural_ending_ready") is True,
             )
             source_performance = deepcopy(
                 dict(source.session.performance_history[index])
@@ -847,6 +915,7 @@ class NumericV2Runtime:
         *,
         scene_complete: bool = False,
         transition_intent: str = "unclear",
+        natural_ending_ready: bool = False,
     ) -> TurnOutcomeV2:
         return self.engine.resolve_turn(
             current.session,
@@ -854,6 +923,7 @@ class NumericV2Runtime:
             changes,
             scene_complete=scene_complete,
             transition_intent=transition_intent,
+            natural_ending_ready=natural_ending_ready,
         )
 
     async def commit_turn(

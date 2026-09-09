@@ -25,7 +25,7 @@
     var createId = transport.createId;
     var requestJson = transport.requestJson;
     // pendingEnd 跨窗口保存结束回执，确保返回选剧页后才询问是否写入记忆。
-    var state = { stories: [], storyId: '', characterId: '', session: null, actorBudgetProfile: 'balanced', archives: [], busy: false, channel: null, pendingEnd: null, memoryPromptActive: false };
+    var state = { stories: [], storyId: '', characterId: '', session: null, archives: [], busy: false, channel: null, pendingEnd: null, memoryPromptActive: false };
     // 同一剧本在切换猫娘后仍保持相同 story_id，单独世代号用于拦截旧角色的迟到响应。
     var characterEpoch = 0;
     var modalResolve = null;
@@ -70,7 +70,7 @@
     }
     function setBusy(busy) {
         state.busy = busy;
-        ['theater-import-btn', 'theater-empty-import-btn', 'theater-token-budget', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
+        ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
             var node = $(id);
             if (node) node.disabled = busy;
         });
@@ -105,10 +105,6 @@
         endButton.hidden = kind !== 'active';
         endButton.disabled = state.busy || kind !== 'active';
         $('theater-delete-btn').disabled = state.busy || !state.storyId;
-        var budgetSelect = $('theater-token-budget');
-        budgetSelect.value = state.actorBudgetProfile;
-        // 档位是 Session 快照的一部分；继续中途变更会让同一轨迹的上下文语义漂移。
-        budgetSelect.disabled = state.busy || kind === 'active';
         startButton.classList.toggle('is-current-primary', kind === 'new' || kind === 'ended');
         $('theater-continue-btn').classList.toggle('is-current-primary', kind === 'active' || kind === 'paused');
         $('theater-session-hint').textContent = kind === 'active'
@@ -304,7 +300,6 @@
         var selectionCharacterEpoch = characterEpoch;
         state.storyId = storyId;
         state.session = null;
-        state.actorBudgetProfile = 'balanced';
         state.archives = [];
         setFeedback('');
         renderStories();
@@ -323,7 +318,6 @@
         if (state.storyId !== storyId || selectionCharacterEpoch !== characterEpoch) return;
         if (result.ok && result.session) {
             state.session = result.session;
-            state.actorBudgetProfile = String(result.session.actor_budget_profile || 'balanced');
             if (result.session.status === 'ended' && result.end_receipt_id) {
                 if (result.archive_status === 'pending' || result.archive_status === 'writing') {
                     state.pendingEnd = {
@@ -433,7 +427,9 @@
         var launchId = createId('theater_launch_');
         var payload = {
             action: 'theater:launch-request', launch_id: launchId, launch_action: action,
-            story_id: state.storyId, session_id: snapshot.session.session_id, revision: snapshot.session.revision
+            story_id: state.storyId, session_id: snapshot.session.session_id, revision: snapshot.session.revision,
+            // 开场用量随启动回执传给演绎页，仅用于显示，不成为会话或剧情字段。
+            token_usage: snapshot.token_usage || null
         };
         setStatus('theater.connectingNeko', '演出已准备好，正在连接 N.E.K.O 本体');
         return new Promise(function (resolve) {
@@ -473,13 +469,11 @@
                 story_id: state.storyId,
                 session_id: createId('numeric_capsule_session_'),
                 character_id: startCharacterId,
-                replace_existing: replaceExisting === true,
-                actor_budget_profile: state.actorBudgetProfile
+                replace_existing: replaceExisting === true
             }});
             if (startCharacterEpoch !== characterEpoch) return;
             if (!result.ok) throw new Error(result.reason || 'start_failed');
             state.session = result.session;
-            state.actorBudgetProfile = String(result.session.actor_budget_profile || state.actorBudgetProfile);
             renderActions();
             await launchSnapshot(result, replaceExisting ? 'restart' : (result.resumed ? 'continue' : 'start'));
         } catch (_) {
@@ -504,7 +498,6 @@
             if (continueCharacterEpoch !== characterEpoch) return;
             if (!result.ok) throw new Error(result.reason || 'restore_failed');
             state.session = result.session;
-            state.actorBudgetProfile = String(result.session.actor_budget_profile || state.actorBudgetProfile);
             renderActions();
             await launchSnapshot(result, 'continue');
         } catch (_) { setFeedback(t('theater.continueFailed', '继续演出失败，请重试。'), true); }
@@ -811,9 +804,6 @@
         $('theater-empty-import-btn').addEventListener('click', function () { $('theater-import-input').click(); });
         $('theater-import-input').addEventListener('change', function () { importStory(this.files && this.files[0]); });
         $('theater-start-btn').addEventListener('click', beginSession);
-        $('theater-token-budget').addEventListener('change', function () {
-            state.actorBudgetProfile = this.value;
-        });
         $('theater-continue-btn').addEventListener('click', continueSession);
         $('theater-end-btn').addEventListener('click', endSession);
         $('theater-delete-btn').addEventListener('click', deleteStory);

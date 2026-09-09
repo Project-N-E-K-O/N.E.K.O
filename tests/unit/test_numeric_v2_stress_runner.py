@@ -243,12 +243,14 @@ def test_numeric_v2_stress_dynamic_player_only_receives_visible_history():
     assert "hidden_node" not in encoded
     assert "trust" not in encoded
     assert "隐藏推荐" not in encoded
-    assert "不要连续主动发起摸耳" in messages[0].content
-    assert "不得为玩家新增神经接口、加密算法" in messages[0].content
+    assert "不要连续主动发起未经铺垫的亲密互动" in messages[0].content
+    # 完整历史取代三轮窗口，客观事实的授权来源仍然只限于玩家可见演绎。
+    assert "所有事实、能力、行动与结果都必须由已提交的可见演绎支持" in messages[0].content
+    assert "玩家没有可假定的库存、工具、特殊能力或专业知识" in messages[0].content
     assert "不能替环境、角色或 NPC 决定结果" in messages[0].content
-    assert "不得自行回答、发现物品或宣布成功" in messages[0].content
+    assert "未知结果只能请求观察并等待演绎交付" in messages[0].content
     assert "自然把这项行动完整做完" in messages[0].content
-    assert "不要再只靠近一步、再听一次" in messages[0].content
+    assert "不要再重复不改变结果的等价子步骤" in messages[0].content
 
 
 def test_numeric_v2_stress_chat_strategy_stays_in_visible_scene():
@@ -285,9 +287,66 @@ def test_numeric_v2_stress_chat_strategy_stays_in_visible_scene():
     assert rewrite_payload["candidate"] == "那我们现在就穿过雨幕出发吧。"
     assert rewrite_payload["transition_pending"] is True
     assert "只保留口头闲聊" in rewrite_messages[0].content
-    assert "只能询问猫娘的主观感受、偏好、记忆或性格" in rewrite_messages[0].content
+    assert "只能询问猫娘不改变客观事实的主观回应" in rewrite_messages[0].content
     assert "我还没决定要不要继续" in rewrite_messages[0].content
     assert "仍要直接回应 latest_visible_performance" in rewrite_messages[0].content
+
+
+def test_numeric_v2_stress_grounded_rewrite_only_uses_visible_facts():
+    """正常自由输入也要二次复核，不能让动态玩家自行补库存或外部结果。"""
+
+    messages = run_numeric_v2_stress._grounded_player_rewrite_messages(
+        latest_performance={"performance": "（看向熄灭的终端）来源还不知道。"},
+        recent_turns=[{
+            "player_input": "我先看看周围。",
+            "performance": {"performance": "（点头）这里只能确认终端已经熄灭。"},
+        }],
+        candidate="（拿出未出现的工具）我已经查到来源了。",
+    )
+    payload = json.loads(messages[1].content)
+
+    assert payload["candidate"] == "（拿出未出现的工具）我已经查到来源了。"
+    assert "所有客观事实必须能从 recent_visible_turns" in messages[0].content
+    assert "未明确出现的库存、工具、能力、专业知识、名称、编号" in messages[0].content
+    assert "改成自然提问或保守尝试" in messages[0].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage,chat_only,expected_calls", [
+    ("_dynamic_player_messages", False, 0),
+    ("_grounded_player_rewrite_messages", False, 1),
+    ("_chat_player_rewrite_messages", True, 1),
+])
+async def test_dynamic_player_budget_failure_counts_only_started_calls(monkeypatch, stage, chat_only, expected_calls):
+    """三个装箱入口都可能超预算，失败的本地准备不能冒充一次供应商调用。"""
+
+    calls = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def ainvoke(self, messages):
+            calls.append(messages)
+            return SimpleNamespace(content='{"player_input":"我继续听。"}')
+
+    async def create_client(*_args, **_kwargs):
+        return Client()
+
+    def over_budget(**_kwargs):
+        raise ValueError("dynamic_player_context_over_budget")
+
+    monkeypatch.setattr(run_numeric_v2_stress, "create_chat_llm_async", create_client)
+    monkeypatch.setattr(run_numeric_v2_stress, stage, over_budget)
+    player = run_numeric_v2_stress._DynamicPlayerGenerator(SimpleNamespace(
+        get_model_api_config=lambda _name: {"model": "test", "base_url": "https://example.invalid"}))
+    with pytest.raises(ValueError, match="dynamic_player_context_over_budget"):
+        await player.generate(latest_performance={"performance": "继续说吧。"}, recent_turns=[],
+            off_topic_turn=False, chat_only=chat_only)
+    assert player.provider_call_count == len(calls) == expected_calls
 
 
 def test_numeric_v2_stress_dynamic_player_parses_one_strict_input():
@@ -299,6 +358,95 @@ def test_numeric_v2_stress_dynamic_player_parses_one_strict_input():
         run_numeric_v2_stress._parse_dynamic_player_input(
             '{"player_input":"继续。","hidden_goal":"去下一幕"}'
         )
+
+
+def test_numeric_v2_stress_player_and_reviewer_keep_early_visible_facts():
+    """超过三轮的交接仍须同时供玩家生成和输入复核使用，不能净化成失忆反问。"""
+
+    turns = [{
+        "player_input": "我把借来的针放回木盒，归还给你。",
+        "performance": {"performance": "针已归还，放在木盒里。"},
+        "metrics": {"hidden_trust": 50},
+    }] + [{
+        "player_input": f"我询问第 {index} 项安排。",
+        "performance": {"performance": f"我们讨论第 {index} 项安排。"},
+    } for index in range(6)]
+    latest = turns[-1]["performance"]
+    generated = run_numeric_v2_stress._dynamic_player_messages(
+        latest_performance=latest, recent_turns=turns, off_topic_turn=False,
+    )
+    reviewed = run_numeric_v2_stress._grounded_player_rewrite_messages(
+        latest_performance=latest, recent_turns=turns, candidate="针还在木盒里吧？",
+    )
+
+    for messages in (generated, reviewed):
+        visible = json.loads(messages[1].content)["recent_visible_turns"]
+        assert len(visible) == len(turns)
+        assert visible[0]["player_input"] == turns[0]["player_input"]
+        assert visible[0]["actor_reply"] == "针已归还，放在木盒里。"
+        assert "hidden_trust" not in messages[1].content
+    assert json.loads(generated[1].content)["recent_visible_turns"] == json.loads(
+        reviewed[1].content
+    )["recent_visible_turns"]
+
+
+def test_numeric_v2_stress_player_over_budget_stops_without_truncation(monkeypatch):
+    """超预算不能静默删除早期事实；模拟器应把它作为自身失败报告。"""
+
+    monkeypatch.setattr(run_numeric_v2_stress, "DYNAMIC_PLAYER_MAX_INPUT_TOKENS", 1, raising=False)
+    with pytest.raises(ValueError, match="dynamic_player_context_over_budget"):
+        run_numeric_v2_stress._dynamic_player_messages(
+            latest_performance={"performance": "借来的针已经归还。"},
+            recent_turns=[], off_topic_turn=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_numeric_v2_stress_fork_player_reads_committed_history_and_stops_on_failure(monkeypatch):
+    """续跑要读取 Session 的真实前情；玩家生成失败不允许用推荐或固定话术继续。"""
+
+    session = SimpleNamespace(
+        session_id="stress_fork", revision=8, status="active", current_node_id="start",
+        catgirl_binding={"character_id": "character_test"},
+        opening_performance={"performance": "针最初借给了玩家。"},
+        performance_history=({
+            "input_text": "我把针归还到木盒里。",
+            "performance": "针已收回木盒。",
+            "suggested_inputs": ["未选推荐不构成事实。"],
+            "to_node_id": "hidden_node",
+        },),
+    )
+    stored = SimpleNamespace(session=session, ledger_events=())
+    received = []
+
+    class FakePlayer:
+        provider_call_count = 1
+
+        def __init__(self, _config):
+            pass
+
+        async def generate(self, **kwargs):
+            received.extend(kwargs["recent_turns"])
+            raise ValueError("dynamic_player_failed")
+
+    async def forbidden_turn(**_kwargs):
+        pytest.fail("模拟玩家失败后不应调用正式回合工作流")
+
+    monkeypatch.setattr(run_numeric_v2_stress, "_DynamicPlayerGenerator", FakePlayer)
+    monkeypatch.setattr(run_numeric_v2_stress, "execute_numeric_v2_turn", forbidden_turn)
+    _, trace = await run_numeric_v2_stress._run_trace(
+        runtime=SimpleNamespace(), config_manager=SimpleNamespace(), current=stored,
+        attempts=2, strategy="freeform", trace_name="fork",
+        packing_handler=run_numeric_v2_stress._PackingLogHandler(),
+        max_errors=1, dynamic_player_enabled=True,
+    )
+
+    assert received[0]["performance"] == session.opening_performance
+    assert received[1]["player_input"] == "我把针归还到木盒里。"
+    assert trace["committed_turns"] == 0
+    assert trace["errors"] == []
+    assert len(trace["player_input_generation_errors"]) == 1
+    assert trace["stop_reason"] == "player_input_generation_failed"
 
 
 def test_numeric_v2_stress_keeps_visible_order_in_transition_offer_state():
@@ -318,7 +466,6 @@ def test_numeric_v2_stress_accepts_visible_offer_before_soft_pacing_window():
         attempt_index=2,
         suggestions=["（我点头）好，就按这个安排。", "（我摇头）先等等。"],
         route_status="transition_offered",
-        transition_expected=False,
     ) == ("（我点头）好，就按这个安排。", "recommended")
 
 
@@ -343,7 +490,6 @@ def test_numeric_v2_stress_pending_transition_uses_first_visible_option():
             "（我先坐下）我们再等等。",
         ],
         route_status="transition_offered",
-        transition_expected=True,
     )
 
     assert source == "recommended"
@@ -498,6 +644,10 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
                         "transition_ownership_retries": 1,
                         "transition_author_boundary_retries": 2,
                         "transition_offer_retries": 1,
+                        "semantic_rewrite_attempts": 1,
+                        "phantom_transition_flags_cleared": 1,
+                        "unsafe_suggestions_removed": 1,
+                        "route_suggestion_reviews": 1,
                     },
                 }],
                 "errors": [{
@@ -510,8 +660,7 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
                         "actor_suggestion_fill_attempts": 2,
                         "actor_suggestion_fill_provider_calls": 2,
                         "actor_suggestion_fill_reasons": {
-                            "transition_refresh": 1,
-                            "scene_refresh": 1,
+                            "invalid_or_missing": 2,
                         },
                         "actor_base_suggestion_parse_counts": {
                             "accepted_items": 3,
@@ -519,6 +668,10 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
                         "transition_judge_calls": 1,
                         "transition_judge_degraded": True,
                         "transition_author_boundary_retries": 1,
+                        "semantic_rewrite_attempts": 1,
+                        "phantom_transition_flags_cleared": 2,
+                        "unsafe_suggestions_removed": 2,
+                        "route_suggestion_reviews": 2,
                     },
                 }],
                 "quality_errors": [
@@ -549,9 +702,7 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
         "actor_suggestion_fill_attempts": 3,
         "actor_suggestion_fill_provider_calls": 3,
         "actor_suggestion_fill_reasons": {
-            "invalid_or_missing": 1,
-            "transition_refresh": 1,
-            "scene_refresh": 1,
+            "invalid_or_missing": 3,
         },
         "actor_base_suggestion_parse_counts": {
             "mixed_shape_invalid": 2,
@@ -561,6 +712,10 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
         "transition_scene_boundary_retries": 0,
         "transition_author_boundary_retries": 3,
         "transition_offer_retries": 1,
+        "semantic_rewrite_attempts": 2,
+        "phantom_transition_flags_cleared": 3,
+        "unsafe_suggestions_removed": 3,
+        "route_suggestion_reviews": 3,
         "transition_judge_calls": 3,
         "transition_judge_degraded_count": 1,
         "dynamic_player_provider_calls": 0,

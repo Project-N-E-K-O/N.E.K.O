@@ -7,40 +7,162 @@ from typing import Any
 
 import pytest
 
+from services.theater import numeric_v2_workflow
 from services.theater.numeric_v2_actor import (
     NumericV2ActorOutputError,
 )
-from services.theater.numeric_v2_evaluator import NumericV2TransitionOfferReview
+from services.theater.numeric_v2_evaluator import (
+    NumericV2TransitionOfferReview,
+)
 from services.theater.numeric_v2_workflow import (
+    _actor_rewrite_candidate_context,
+    _drop_reported_unsafe_suggestions,
     _generate_actor_turn_with_output_retry,
-    _merge_transition_offered,
     _transition_review_failure_context,
     _transition_boundary_repair_context,
+    generate_validated_opening,
 )
+from services.theater.numeric_v2_runtime import NumericV2Engine
+from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 
-def test_unclear_runtime_proposal_is_not_cleared_by_actor_false() -> None:
-    """Runtime 保留待确认提议时，Actor 没有新提议不能把它清掉。"""
+@pytest.mark.asyncio
+async def test_scoped_opening_is_reviewed_and_rewritten_before_session(monkeypatch) -> None:
+    """开场临时边界失败时只改写一次，通过前不能创建正式 Session。"""
 
-    assert _merge_transition_offered(True, False) is True
+    story = numeric_v2_story()
+    story["nodes"][0]["story_beat"]["opening_only_boundaries"] = [
+        "不得在公开开场披露后续身份。"
+    ]
+    engine = NumericV2Engine.from_mapping(story)
+    actor_calls = []
+    review_calls = []
+
+    async def generate_opening(self, **kwargs):
+        actor_calls.append(str(kwargs.get("retry_hint") or ""))
+        if len(actor_calls) == 1:
+            return {"performance": "我是后续身份。", "suggested_inputs": []}
+        return {"performance": "（抬眼）这里是什么地方？", "suggested_inputs": []}
+
+    async def validate(self, **kwargs):
+        review_calls.append(kwargs)
+        safe = "后续身份" not in kwargs["actor_performance"]["performance"]
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            body_violations=() if safe else ("author_boundary",),
+            unsafe_suggestion_indexes=(),
+            failure_reason=("公开开场提前披露身份。" if not safe else ""),
+        )
+
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, "generate_opening", generate_opening)
+    monkeypatch.setattr(
+        numeric_v2_workflow.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        validate,
+    )
+
+    opening = await generate_validated_opening(
+        engine=engine,
+        config_manager=object(),
+        session_id="opening_review",
+        catgirl_binding={"catgirl_id": "catgirl:test", "catgirl_name": "测试猫娘"},
+        actor_budget_profile="balanced",
+    )
+
+    assert opening["performance"] == "（抬眼）这里是什么地方？"
+    assert len(actor_calls) == 2
+    assert "具体失败：公开开场提前披露身份" in actor_calls[1]
+    assert "我是后续身份" in actor_calls[1]
+    assert "尚未提交、必须修正的上一版输出" in actor_calls[1]
+    assert len(review_calls) == 2
+    assert all(call["route_changed"] is True for call in review_calls)
 
 
-def test_actor_can_create_a_new_transition_proposal() -> None:
-    """没有旧提议时，合法 Actor true 仍可创建新的可见提议。"""
+@pytest.mark.asyncio
+async def test_scoped_opening_drops_only_unsafe_suggestions(monkeypatch) -> None:
+    """开场正文安全但推荐越过作者边界时保留正文并去掉按钮。"""
 
-    assert _merge_transition_offered(False, True) is True
+    story = numeric_v2_story()
+    story["nodes"][0]["story_beat"]["opening_only_boundaries"] = [
+        "不得在公开开场披露后续身份。"
+    ]
+    engine = NumericV2Engine.from_mapping(story)
+    actor_calls = 0
+    review_calls = []
+
+    async def generate_opening(self, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        return {
+            "performance": "（抬眼）这里是什么地方？",
+            "suggested_inputs": ["（追问）请公开后续身份。"],
+        }
+
+    async def validate(self, **kwargs):
+        review_calls.append(kwargs)
+        suggestions = kwargs["actor_performance"].get("suggested_inputs") or []
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            body_violations=(),
+            unsafe_suggestion_indexes=(0,) if suggestions else (),
+            failure_reason=("推荐提前要求后续身份。" if suggestions else ""),
+        )
+
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, "generate_opening", generate_opening)
+    monkeypatch.setattr(
+        numeric_v2_workflow.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        validate,
+    )
+
+    opening = await generate_validated_opening(
+        engine=engine,
+        config_manager=object(),
+        session_id="opening_suggestion_review",
+        catgirl_binding={"catgirl_id": "catgirl:test", "catgirl_name": "测试猫娘"},
+        actor_budget_profile="balanced",
+    )
+
+    assert opening["performance"] == "（抬眼）这里是什么地方？"
+    assert opening["suggested_inputs"] == []
+    assert actor_calls == 1
+    assert len(review_calls) == 1
 
 
-def test_semantic_review_can_recover_an_unflagged_visible_proposal() -> None:
-    """正文与推荐已经公开合法提议时，Actor 漏写布尔值不能让玩家接受后死锁。"""
+@pytest.mark.asyncio
+async def test_unscoped_opening_skips_semantic_review(monkeypatch) -> None:
+    """旧包未声明开场临时边界时维持原调用成本和启动行为。"""
 
-    assert _merge_transition_offered(False, False, True) is True
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    review_calls = 0
 
+    async def generate_opening(self, **kwargs):
+        return {"performance": "（抬眼）这里是什么地方？", "suggested_inputs": []}
 
-def test_invalid_actor_transition_value_is_treated_as_no_new_proposal() -> None:
-    """旧模型返回非布尔值时不猜测状态。"""
+    async def validate(self, **kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        raise AssertionError("未声明 opening_only_boundaries 时不应调用开场复核")
 
-    assert _merge_transition_offered(False, "true") is False
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, "generate_opening", generate_opening)
+    monkeypatch.setattr(
+        numeric_v2_workflow.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        validate,
+    )
+
+    opening = await generate_validated_opening(
+        engine=engine,
+        config_manager=object(),
+        session_id="opening_without_scope",
+        catgirl_binding={"catgirl_id": "catgirl:test", "catgirl_name": "测试猫娘"},
+        actor_budget_profile="balanced",
+    )
+
+    assert opening["performance"] == "（抬眼）这里是什么地方？"
+    assert review_calls == 0
 
 
 def test_transition_boundary_repair_receives_bridge_and_target_opening() -> None:
@@ -67,7 +189,9 @@ def test_transition_boundary_repair_receives_bridge_and_target_opening() -> None
 
     assert "只定义停止边界" in context
     assert "仍可在当前幕交付的作者方向" in context
-    assert "保留玩家本轮已经实施的当前幕行动及其直接结果" in context
+    assert "保留玩家本轮已经实施的合法当前幕行动及其获准结果" in context
+    assert "不覆盖本轮玩家所有权和作者事实的修复要求" in context
+    assert "只删除桥段或目标幕独有结果" not in context
     assert "舱门在玩家确认后关闭" in context
     assert "下一幕的警报已经响起" in context
 
@@ -79,9 +203,8 @@ def test_transition_boundary_retry_receives_specific_failure_reason() -> None:
         NumericV2TransitionOfferReview(
             offer_present=False,
             valid=False,
-            player_action_preserved=True,
-            scene_boundary_preserved=True,
-            author_boundaries_preserved=False,
+            body_violations=("author_boundary",),
+            unsafe_suggestion_indexes=(),
             failure_reason=(
                 "上一版声称保护罩能隔绝热信号，但当前幕只确认保护罩可以短时展开。"
             ),
@@ -91,6 +214,87 @@ def test_transition_boundary_retry_receives_specific_failure_reason() -> None:
     assert "保护罩能隔绝热信号" in context
     assert "只用于定位并删除上一版问题" in context
     assert "不是剧情事实" in context
+
+
+def test_transition_boundary_repair_uses_same_legacy_opening_as_playback() -> None:
+    """旧包省略开场字段时，改写仍须知道实际播放的摘要首句边界。"""
+
+    engine = SimpleNamespace(
+        nodes={"current": {"story_beat": {"summary": "来源阶段。"}},
+               "target": {"story_beat": {"summary": "警报响起。稍后才揭露真相。"}}},
+        preview_route=lambda *_: {"target_node_id": "target", "transition_contract": {}},
+    )
+    context = _transition_boundary_repair_context(
+        SimpleNamespace(engine=engine),
+        SimpleNamespace(session=SimpleNamespace(current_node_id="current", metrics={})),
+    )
+    assert "正式换幕后才成立的下一幕开场：警报响起。" in context
+    assert "稍后才揭露真相" not in context
+
+
+def test_boundary_repair_uses_updated_route_and_preserves_its_proposal() -> None:
+    """同轮数值越过分支门槛后，修复上下文须与演员及复核看到同一路线。"""
+    engine = SimpleNamespace(
+        nodes={"current": {"story_beat": {"summary": "眼前交流已完成。"}},
+               "low": {"story_beat": {"opening_scene": "次日回接待室。"}},
+               "high": {"story_beat": {"opening_scene": "周末到观测室。"}}},
+        preview_route=lambda _, metrics: {
+            "target_node_id": "high" if metrics["trust"] >= 70 else "low",
+            "transition_contract": {"reason": "周末到观测室核对结果。" if metrics["trust"] >= 70 else "次日回接待室。"},
+        },
+    )
+    current = SimpleNamespace(session=SimpleNamespace(current_node_id="current", metrics={"trust": 69}))
+    context = _transition_boundary_repair_context(SimpleNamespace(engine=engine), current, metrics={"trust": 71})
+    assert "周末到观测室核对结果。" in context
+    assert "次日回接待室" not in context
+    assert current.session.metrics == {"trust": 69}
+
+
+def test_unsafe_suggestion_drop_preserves_all_visible_body_fields() -> None:
+    """按钮定点删除不能顺带删改正文、场景更新或提议标记。"""
+
+    candidate = {
+        "performance": "（望向门边）我们还在屋内。",
+        "scene_narration": "两人已经抵达长街。",
+        "suggested_inputs": ["继续追问。", "已经抵达了。", "再等等。"],
+        "transition_offered": True,
+    }
+    filtered, removed = _drop_reported_unsafe_suggestions(candidate, (1,))
+
+    assert removed == 1
+    assert filtered == {**candidate, "suggested_inputs": ["继续追问。", "再等等。"]}
+    assert candidate["suggested_inputs"] == ["继续追问。", "已经抵达了。", "再等等。"]
+
+
+def test_invalid_unsafe_suggestion_index_drops_buttons_without_touching_body() -> None:
+    """无法定位坏按钮时清空按钮，不把索引错误当成正文安全证据或另开复核。"""
+
+    candidate = {
+        "performance": "（指向门口）我们去阅览室，好吗？",
+        "scene_narration": "档案仍留在桌上。",
+        "transition_offered": True,
+        "suggested_inputs": ["好，一起去。", "先等等。"],
+    }
+    filtered, removed = _drop_reported_unsafe_suggestions(candidate, (2,))
+
+    assert filtered == {**candidate, "suggested_inputs": []}
+    assert removed == 2
+    assert candidate["suggested_inputs"] == ["好，一起去。", "先等等。"]
+
+
+def test_actor_rewrite_candidate_context_marks_rejected_output_as_uncommitted() -> None:
+    """唯一一次边界改写必须看到待编辑原文，但不能把它写进剧情事实。"""
+
+    context = _actor_rewrite_candidate_context({
+        "performance": "（抬眼）这是尚未获准公开的信息。",
+        "suggested_inputs": ["（追问）请继续。"],
+        "transition_offered": False,
+    })
+
+    assert "这是尚未获准公开的信息" in context
+    assert "尚未提交、必须修正的上一版输出" in context
+    assert "不是剧情事实" in context
+    assert "再逐条复核全部作者边界" in context
 
 
 @pytest.mark.asyncio

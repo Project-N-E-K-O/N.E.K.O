@@ -28,6 +28,32 @@ from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from utils.config_manager import ensure_catgirl_character_id, get_reserved
 
 
+def test_numeric_v2_turn_request_validates_ephemeral_input_source():
+    """输入来源只接受自由输入和当前推荐两种 UI 事实。"""  # noqa: DOCSTRING_CJK
+
+    legacy = TurnRequestV2.from_mapping({
+        "client_turn_id": "legacy_input_source",
+        "base_revision": 0,
+        "message": "继续。",
+    })
+    suggested = TurnRequestV2.from_mapping({
+        "client_turn_id": "suggested_input_source",
+        "base_revision": 0,
+        "message": "（点头）就这么做。",
+        "input_source": "suggestion",
+    })
+
+    assert legacy.input_source == "freeform"
+    assert suggested.input_source == "suggestion"
+    with pytest.raises(NumericV2RuntimeError, match="numeric_turn_request_invalid"):
+        TurnRequestV2.from_mapping({
+            "client_turn_id": "invalid_input_source",
+            "base_revision": 0,
+            "message": "继续。",
+            "input_source": "unknown",
+        })
+
+
 def test_numeric_v2_idle_store_and_receipt_locks_are_reclaimed(tmp_path):
     """锁在并发窗口内必须复用，调用方释放后不得按历史 ID 永久积累。"""  # noqa: DOCSTRING_CJK
 
@@ -369,6 +395,46 @@ def _branch_story() -> dict:
     story["nodes"][0]["route_gates"][0]["conditions"]["all"][0]["value"] = 25
     story["nodes"][0]["route_gates"][1]["conditions"]["all"][0]["value"] = 25
     return story
+
+
+@pytest.mark.parametrize(
+    ("existing_offer", "new_offer", "expected_offer"),
+    [
+        (False, True, True),
+        (True, False, True),
+        (False, False, False),
+    ],
+)
+def test_numeric_v2_runtime_is_the_only_transition_offer_state_writer(
+    existing_offer,
+    new_offer,
+    expected_offer,
+):
+    """Actor 只提交已验证信号，三份公开状态由 Runtime 一次性同步。"""  # noqa: DOCSTRING_CJK
+
+    engine = NumericV2Engine.from_mapping(_branch_story())
+    session = engine.create_session(
+        session_id=f"offer_state_{existing_offer}_{new_offer}",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    session = replace(session, transition_offered=existing_offer)
+    outcome = engine.resolve_turn(
+        session,
+        TurnRequestV2("offer_state_turn", 0, "我们再确认一下。"),
+        (),
+        transition_intent="unclear",
+    )
+
+    finalized, performance = engine.finalize_transition_offer_state(
+        outcome,
+        {"performance": "（点头）好。", "transition_offered": False},
+        new_offer=new_offer,
+    )
+
+    assert finalized.session.transition_offered is expected_offer
+    assert finalized.ledger_event["transition_offered"] is expected_offer
+    assert performance["transition_offered"] is expected_offer
 
 
 @pytest.mark.asyncio

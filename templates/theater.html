@@ -49,15 +49,7 @@
                     <div class="theater-detail-heading"><div><p id="theater-detail-meta"></p><h1 id="theater-detail-title"></h1></div><span class="theater-session-badge" id="theater-session-badge"></span></div>
                     <div class="theater-detail-actions" aria-label="剧本操作" data-i18n-aria="theater.storyActionsAria">
                         <p class="theater-session-hint" id="theater-session-hint" role="status" aria-live="polite"></p>
-                        <div class="theater-budget-control">
-                            <label for="theater-token-budget" data-i18n="theater.actorBudgetLabel">单回合上下文</label>
-                            <select id="theater-token-budget">
-                                <option value="economy" data-i18n="theater.actorBudgetEconomy">精简 · 输入 6k · 历史 6 回合</option>
-                                <option value="balanced" data-i18n="theater.actorBudgetBalanced" selected>标准 · 输入 10k · 历史 12 回合</option>
-                                <option value="quality" data-i18n="theater.actorBudgetQuality">丰富 · 输入 16k · 历史 20 回合</option>
-                            </select>
-                            <p data-i18n="theater.actorBudgetHint">限制正文与推荐生成每回合带入的上下文；选项显示正文输入上限和最多历史回合。继续沿用原档，重新开始采用当前选择。</p>
-                        </div>
+                        <!-- 演绎统一使用固定预算，旧存档兼容由后端处理。 -->
                         <button type="button" class="theater-primary" id="theater-start-btn" data-i18n="theater.start">开始</button>
                         <button type="button" class="theater-primary" id="theater-continue-btn" data-i18n="theater.continueSession">继续</button>
                         <button type="button" class="theater-secondary theater-danger" id="theater-end-btn" data-i18n="theater.endPerformance" hidden>结束演绎</button>

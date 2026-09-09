@@ -437,6 +437,35 @@ def test_numeric_v2_validates_optional_acting_contract():
     )
 
 
+def test_numeric_v2_validates_opening_only_boundaries():
+    """临时开场边界是显式作者字段，旧边界字段仍保持原语义。"""
+
+    story = numeric_v2_story()
+    beat = story["nodes"][0]["story_beat"]
+    beat["opening_only_boundaries"] = ["不得在公开开场披露后续身份。"]
+
+    compiled = NumericV2Compiler().compile(story)
+    assert compiled.story["nodes"][0]["story_beat"]["opening_only_boundaries"] == [
+        "不得在公开开场披露后续身份。"
+    ]
+
+    beat["opening_only_boundaries"] = ["开场保持克制。"]
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+    assert any(
+        issue.code == "opening_only_boundary_polarity_invalid"
+        for issue in caught.value.issues
+    )
+
+    beat["opening_only_boundaries"] = [f"不得提前披露第 {index} 项。" for index in range(5)]
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile(story)
+    assert any(
+        issue.code == "too_many_opening_only_boundaries"
+        for issue in caught.value.issues
+    )
+
+
 def test_numeric_v2_accepts_structured_story_beat_contract_without_rewriting_legacy_beats():
     """新包可声明明确开场、关系上限和目标证据，未迁移节点仍保持原文与哈希输入。"""  # noqa: DOCSTRING_CJK
 

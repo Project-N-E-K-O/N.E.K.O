@@ -5842,6 +5842,7 @@ function CompactChatApp({
       theaterTitle={theaterPresentation.storyTitle}
       theaterEnded={theaterPresentation.sessionEnded === true}
       theaterError={theaterPresentation.errorMessage}
+      theaterTokenUsage={theaterPresentation.tokenUsage ?? undefined}
       onTheaterEnd={onTheaterEnd}
       selectedIds={compactExportSelectedIds}
       selectedCount={compactExportSelectedCount}

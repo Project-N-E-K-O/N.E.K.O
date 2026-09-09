@@ -24,9 +24,11 @@ from services.theater.numeric_v2_archive import (
 )
 from services.theater.numeric_v2_evaluator import (
     NumericV2EvaluationResult,
+    NumericV2EvaluatorError,
     NumericV2TransitionOfferReview,
 )
 from services.theater.numeric_v2_registry import NumericV2PackageError
+from services.theater.numeric_v2_runtime import MetricChangeV2
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_1_story, numeric_v2_story
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.llm_client import (
@@ -344,6 +346,7 @@ def test_numeric_v2_interaction_intent_reaches_actor_but_not_persisted(
 
     async def turn(*args, **kwargs):
         captured["interaction_intent"] = str(kwargs.get("interaction_intent"))
+        captured["input_source"] = str(kwargs.get("input_source"))
         return {
             "performance": "（轻轻点头）我也有一点紧张。",
             "suggested_inputs": ["你最担心什么？", "我们先聊点别的。"],
@@ -354,9 +357,8 @@ def test_numeric_v2_interaction_intent_reaches_actor_but_not_persisted(
         return NumericV2TransitionOfferReview(
             offer_present=False,
             valid=False,
-            player_action_preserved=True,
-            scene_boundary_preserved=True,
-            author_boundaries_preserved=True,
+            body_violations=(),
+            unsafe_suggestion_indexes=(),
         )
 
     monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
@@ -386,6 +388,7 @@ def test_numeric_v2_interaction_intent_reaches_actor_but_not_persisted(
     assert started.status_code == 200
     assert submitted.status_code == 200
     assert captured["interaction_intent"] == "chat"
+    assert captured["input_source"] == "freeform"
     session_path = (
         tmp_path
         / "theater"
@@ -397,6 +400,1895 @@ def test_numeric_v2_interaction_intent_reaches_actor_but_not_persisted(
     assert "interaction_intent" not in persisted["session"]
     assert "interaction_intent" not in persisted["ledger_events"][0]
     assert persisted["ledger_events"][0]["input_text"] == "你现在是不是有点害怕？"
+
+
+def test_numeric_v2_suggested_input_bypasses_chat_pacing_only_when_current(
+    tmp_path,
+    monkeypatch,
+):
+    """推荐点击承接公开选择；伪造或过期推荐不能借来源字段改变 Actor 节奏。"""
+
+    captured: dict[str, str] = {}
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="chat",
+        )
+
+    async def turn(*args, **kwargs):
+        captured["interaction_intent"] = str(kwargs.get("interaction_intent"))
+        captured["input_source"] = str(kwargs.get("input_source"))
+        return {
+            "performance": "（轻轻点头）我知道了，那就照这个选择继续。",
+            "suggested_inputs": [
+                "（向前一步）我想继续看看。",
+                "（停在原地）我想先缓一缓。",
+            ],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            body_violations=(),
+            unsafe_suggestion_indexes=(),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "suggested_source"},
+        )
+        suggestion = started.json()["suggested_inputs"][0]
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "suggested_source",
+                "client_turn_id": "suggested_source_1",
+                "base_revision": 0,
+                "message": suggestion,
+                "input_source": "suggestion",
+            },
+        )
+        invalid = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "suggested_source",
+                "client_turn_id": "suggested_source_invalid",
+                "base_revision": 1,
+                "message": "（闭上眼睛）这不是当前推荐。",
+                "input_source": "suggestion",
+            },
+        )
+
+    assert started.status_code == 200
+    assert submitted.status_code == 200
+    assert captured == {
+        "interaction_intent": "mixed_or_unclear",
+        "input_source": "suggestion",
+    }
+    assert invalid.status_code == 409
+    assert invalid.json()["reason"] == "numeric_suggested_input_not_current"
+
+
+def test_numeric_v2_scene_complete_does_not_trigger_second_actor_call(
+    tmp_path,
+    monkeypatch,
+):
+    """自然收束只进入基础 Actor 提示，不再事后补生成提议。"""
+
+    actor_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=True,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        return {
+            "performance": "（看着你盖好毯子）安静一点，别吵到我。",
+            "suggested_inputs": ["（闭上眼睛）晚安。", "我再坐一会儿。"],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        offered = kwargs["actor_performance"].get("transition_offered") is True
+        return NumericV2TransitionOfferReview(
+            offer_present=offered,
+            valid=offered,
+            body_violations=(),
+            unsafe_suggestion_indexes=(),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "natural_closure"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "natural_closure",
+                "client_turn_id": "natural_closure_1",
+                "base_revision": 0,
+                "message": "（盖好毯子闭上眼睛）今晚就先休息吧。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 1
+    body = submitted.json()
+    assert body["resolved_turn"]["route_changed"] is False
+    assert body["performance"]["transition_offered"] is False
+    assert body["performance"]["performance"] == "（看着你盖好毯子）安静一点，别吵到我。"
+    persisted = json.loads(
+        (
+            tmp_path
+            / "theater"
+            / "numeric_v2"
+            / "sessions"
+            / "natural_closure.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted["session"]["current_node_id"] == "start"
+    assert persisted["session"]["transition_offered"] is False
+
+
+@pytest.mark.parametrize("failure_reason", ["", "当前只有观察结果，还没有新的离幕提议。"])
+def test_numeric_v2_overdue_turns_do_not_trigger_second_actor_call(
+    tmp_path,
+    monkeypatch,
+    failure_reason,
+):
+    """超过推荐回合只影响基础 Actor pacing，不再调用事后聚焦生成。"""
+
+    actor_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        return {
+            "performance": "（把旧信放回桌面）眼前的事已经处理好了。",
+            "suggested_inputs": [
+                "（看向店门）接下来呢？",
+                "（留在原地）我再想想。",
+            ],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        candidate = kwargs["actor_performance"]
+        offered = (
+            candidate.get("transition_offered") is True
+            and "一起沿长街离开花店吗" in str(candidate.get("performance") or "")
+        )
+        return NumericV2TransitionOfferReview(
+            offer_present=offered,
+            valid=offered,
+            body_violations=(),
+            unsafe_suggestion_indexes=(),
+            failure_reason=failure_reason,
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "overdue_closure"},
+        )
+        submitted = None
+        for revision in range(5):
+            submitted = client.post(
+                "/api/theater-numeric/session/input",
+                json={
+                    "story_id": "numeric_v2_contract",
+                    "session_id": "overdue_closure",
+                    "client_turn_id": f"overdue_closure_{revision + 1}",
+                    "base_revision": revision,
+                    "message": f"（整理桌面）继续处理眼前的事，第 {revision + 1} 次。",
+                },
+            )
+            assert submitted.status_code == 200
+
+    assert submitted is not None
+    assert actor_calls == 5
+    assert submitted.json()["performance"]["transition_offered"] is False
+    assert submitted.json()["suggested_inputs"][0] == "（看向店门）接下来呢？"
+    assert submitted.json()["resolved_turn"]["route_changed"] is False
+    persisted = json.loads(
+        (
+            tmp_path
+            / "theater"
+            / "numeric_v2"
+            / "sessions"
+            / "overdue_closure.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted["session"]["current_node_id"] == "start"
+    assert persisted["session"]["transition_offered"] is False
+
+
+def test_numeric_v2_drops_reviewed_invalid_transition_suggestions(
+    tmp_path,
+    monkeypatch,
+):
+    """未登记但已确认冲突的推荐不能继续作为可点击死路公开。"""
+
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        return {
+            "performance": "（收好终端）现有线索只能确认到这里。",
+            "suggested_inputs": [
+                "（冲向未知出口）我们直接离开这里。",
+                "（放弃当前证据）先去别的地方。",
+            ],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            failure_reason="推荐离开当前地点，与下一阶段继续现场备份明确冲突。",
+            body_violations=(),
+            unsafe_suggestion_indexes=(0, 1),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "invalid_suggestions"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "invalid_suggestions",
+                "client_turn_id": "invalid_suggestions_1",
+                "base_revision": 0,
+                "message": "我们先确认现有线索。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert submitted.json()["performance"]["performance"] == "（收好终端）现有线索只能确认到这里。"
+    assert submitted.json()["suggested_inputs"] == []
+
+
+def test_numeric_v2_filters_unsafe_future_suggestions_without_body_rereview(
+    tmp_path,
+    monkeypatch,
+):
+    """推荐的违规只删除对应按钮，不重审正文或在复核后补推荐。"""
+
+    actor_calls = 0
+    review_calls = 0
+    refill_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        return {
+            "performance": "（看向玩家）当前结果已经清楚了。",
+            "suggested_inputs": ["（继续当前动作）我来处理。"],
+            "transition_offered": False,
+        }
+
+    async def refill(*args, **kwargs):
+        nonlocal refill_calls
+        refill_calls += 1
+        return ["（留在原地）我再确认一下。", "（摇头）先不处理。"]
+
+    async def review(*args, **kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        candidate = kwargs["actor_performance"]
+        original_suggestion = "（继续当前动作）我来处理。" in (
+            candidate.get("suggested_inputs") or []
+        )
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            unsafe_suggestion_indexes=(0,) if original_suggestion else (),
+            failure_reason="推荐是未来候选，不是已播放场景。" if original_suggestion else "",
+            body_violations=(),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Actor,
+        "generate_current_scene_suggestions",
+        refill,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "suggestion_scene_false_positive"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "suggestion_scene_false_positive",
+                "client_turn_id": "suggestion_scene_false_positive_1",
+                "base_revision": 0,
+                "message": "继续当前互动。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 1
+    assert review_calls == 1
+    assert refill_calls == 0
+    assert submitted.json()["performance"]["performance"] == "（看向玩家）当前结果已经清楚了。"
+    assert submitted.json()["suggested_inputs"] == []
+
+
+def test_numeric_v2_removes_only_reported_unsafe_suggestion(
+    tmp_path,
+    monkeypatch,
+):
+    """结构化索引只删除坏选项，不能放弃同组安全选择或重写正文。"""
+
+    actor_calls = 0
+    review_calls = 0
+    bad_suggestion = "（使用未持有的设备）我来检测。"
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        return {
+            "performance": "（看向桌面）目前只能确认这些可见痕迹。",
+            "suggested_inputs": [
+                "（凑近桌面）我再看看边缘。",
+                bad_suggestion,
+                "（退后一步）先记录现有结果。",
+            ],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        suggestions = kwargs["actor_performance"].get("suggested_inputs") or []
+        unsafe = (
+            (suggestions.index(bad_suggestion),)
+            if bad_suggestion in suggestions
+            else ()
+        )
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            unsafe_suggestion_indexes=unsafe,
+            failure_reason="第二条推荐使用了玩家未持有的设备。" if unsafe else "",
+            body_violations=(),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "indexed_suggestion"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "indexed_suggestion",
+                "client_turn_id": "indexed_suggestion_1",
+                "base_revision": 0,
+                "message": "继续确认当前痕迹。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 1
+    assert review_calls == 1
+    assert submitted.json()["suggested_inputs"] == [
+        "（凑近桌面）我再看看边缘。",
+        "（退后一步）先记录现有结果。",
+    ]
+
+
+def test_numeric_v2_reviews_and_filters_target_opening_suggestions(
+    tmp_path,
+    monkeypatch,
+):
+    """正式换幕后只过滤目标开场坏按钮，不重写来源回应和作者桥段。"""
+
+    bad_suggestion = "（使用未持有的设备）我来检查新场景。"
+    client = _client(tmp_path, monkeypatch)
+    package_path = (
+        tmp_path / "theater" / "numeric_v2" / "packages" / "numeric_v2_contract.json"
+    )
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    for route in package["nodes"][0]["route_gates"]:
+        route["transition_contract"]["bridge_scene_narration"] = "两人走进雨后的长街。"
+    package_path.write_text(json.dumps(package, ensure_ascii=False), encoding="utf-8")
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            transition_intent=("accept" if kwargs["message"] == "好，我们现在出发。" else "unclear"),
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        outcome = kwargs["outcome"]
+        route_changed = (
+            outcome.ledger_event["from_node_id"]
+            != outcome.ledger_event["to_node_id"]
+        )
+        if not route_changed:
+            return {
+                "performance": "（看向门外）要和我一起离开这里吗？",
+                "suggested_inputs": [
+                    "（点头）好，我们现在出发。",
+                    "（摇头）我还想留一会儿。",
+                ],
+                "transition_offered": True,
+            }
+        return {
+            "segments": [
+                {
+                    "phase": "source_response",
+                    "performance": "（点头）那就走吧。",
+                },
+                {
+                    "phase": "transition_bridge",
+                    "scene_narration": "两人走进雨后的长街。",
+                },
+                {
+                    "phase": "target_opening",
+                    "scene_narration": "雨停后的长街恢复了安静。",
+                    "performance": "（停下脚步）已经到了。",
+                },
+            ],
+            "suggested_inputs": [
+                "（观察四周）先看看眼前环境。",
+                bad_suggestion,
+                "（留在原地）先听她说明情况。",
+            ],
+            "transition_delivered": True,
+            "visible_node_id": "ending_leave",
+        }
+
+    async def review(*args, **kwargs):
+        candidate = kwargs["actor_performance"]
+        suggestions = candidate.get("suggested_inputs") or []
+        unsafe = (
+            (suggestions.index(bad_suggestion),)
+            if bad_suggestion in suggestions
+            else ()
+        )
+        offered = candidate.get("transition_offered") is True
+        return NumericV2TransitionOfferReview(
+            offer_present=offered,
+            valid=offered,
+            unsafe_suggestion_indexes=unsafe,
+            failure_reason="目标开场推荐使用了未持有物品。" if unsafe else "",
+            body_violations=(),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "route_suggestion_review"},
+        )
+        offered = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "route_suggestion_review",
+                "client_turn_id": "route_suggestion_review_1",
+                "base_revision": 0,
+                "message": "我们可以离开了吗？",
+            },
+        )
+        advanced = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "route_suggestion_review",
+                "client_turn_id": "route_suggestion_review_2",
+                "base_revision": 1,
+                "message": "好，我们现在出发。",
+            },
+        )
+
+    assert offered.status_code == 200
+    assert advanced.status_code == 200, advanced.text
+    assert advanced.json()["resolved_turn"]["route_changed"] is True
+    assert advanced.json()["suggested_inputs"] == [
+        "（观察四周）先看看眼前环境。",
+        "（留在原地）先听她说明情况。",
+    ]
+    assert advanced.json()["performance"]["segments"][0]["performance"] == "（点头）那就走吧。"
+
+
+def test_numeric_v2_preserves_safe_body_when_flagged_retry_only_has_invalid_suggestions(
+    tmp_path,
+    monkeypatch,
+):
+    """唯一改写后若只剩失效按钮，保留安全正文而不是让整轮发送失败。"""
+
+    actor_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        return {
+            "performance": (
+                "眼前的工作还没完成，现在就去下一地点吧。"
+                if actor_calls == 1
+                else "（确认当前结果）这一阶段的变化已经清楚了。"
+            ),
+            "suggested_inputs": ["（开始不相干的下一步）现在就做。"],
+            "transition_offered": True,
+        }
+
+    async def review(*args, **kwargs):
+        candidate = kwargs["actor_performance"]
+        has_suggestions = bool(candidate.get("suggested_inputs"))
+        return NumericV2TransitionOfferReview(
+            offer_present="现在就去下一地点吧" in candidate["performance"],
+            valid=False,
+            failure_reason="推荐与下一互动阶段冲突。" if has_suggestions else "",
+            body_violations=(),
+            unsafe_suggestion_indexes=((0,) if has_suggestions else ()),
+        )
+
+    async def refill(*args, **kwargs):
+        pytest.fail("Guard 之后不能再调用补推荐")
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Actor,
+        "generate_current_scene_suggestions",
+        refill,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "flagged_invalid_suggestions"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "flagged_invalid_suggestions",
+                "client_turn_id": "flagged_invalid_suggestions_1",
+                "base_revision": 0,
+                "message": "继续当前互动。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 2
+    assert submitted.json()["performance"]["performance"] == "（确认当前结果）这一阶段的变化已经清楚了。"
+    assert submitted.json()["performance"]["transition_offered"] is False
+    assert submitted.json()["suggested_inputs"] == []
+
+
+def test_numeric_v2_confirmed_body_violation_cannot_be_erased_by_later_review_drift(
+    tmp_path,
+    monkeypatch,
+):
+    """同次复核已定位正文越界时必须改写，不能被后续随机安全结论覆盖。"""
+
+    actor_calls = 0
+    unsafe_body_only_reviews = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        if actor_calls == 1:
+            return {
+                "performance": "（查看传感器）已经确认外面有三架侦察机。",
+                "suggested_inputs": [
+                    "（指向屏幕）它们的具体位置在哪里？",
+                    "（留在原地）先确认目前已知信号。",
+                ],
+                "transition_offered": False,
+            }
+        return {
+            "performance": "（收回视线）目前只能确认外面仍有不明嗡鸣。",
+            "suggested_inputs": [
+                "（侧耳倾听）我再确认一下声音。",
+                "（压低声音）先说说已经知道的情况。",
+            ],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        nonlocal unsafe_body_only_reviews
+        candidate = kwargs["actor_performance"]
+        text = str(candidate.get("performance") or "")
+        unsafe_body = "三架侦察机" in text
+        suggestions = candidate.get("suggested_inputs") or []
+        if unsafe_body and not suggestions:
+            # 模拟真实 Qwen 在下一次纯正文复核中漂移成安全；新协议不应再调用到这里。
+            unsafe_body_only_reviews += 1
+            return NumericV2TransitionOfferReview(
+                offer_present=False,
+                valid=False,
+                unsafe_suggestion_indexes=(),
+                body_violations=(),
+            )
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            failure_reason="正文提前确认了侦察机数量。" if unsafe_body else "",
+            unsafe_suggestion_indexes=(0,) if unsafe_body else (),
+            body_violations=("author_boundary",) if unsafe_body else (),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "body_violation_sticky"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "body_violation_sticky",
+                "client_turn_id": "body_violation_sticky_1",
+                "base_revision": 0,
+                "message": "外面的威胁已经确认了吗？",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 2
+    assert unsafe_body_only_reviews == 0
+    assert submitted.json()["performance"]["performance"] == (
+        "（收回视线）目前只能确认外面仍有不明嗡鸣。"
+    )
+
+
+def test_numeric_v2_unflagged_played_result_is_rewritten_once(
+    tmp_path,
+    monkeypatch,
+):
+    """Actor 漏写提议布尔也不能让已经抵达下一地点的正文通过。"""
+
+    actor_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        if actor_calls == 1:
+            return {
+                "performance": "（推开门）我们已经抵达下一处大厅。",
+                "suggested_inputs": ["（查看大厅）观察周围。"],
+                "transition_offered": False,
+            }
+        return {
+            "performance": "（扶住门）门外情况还不明确，我们先停在这里。",
+            "suggested_inputs": ["（留在门边）先观察。", "（退后一步）暂不出去。"],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        played = "已经抵达" in str(kwargs["actor_performance"].get("performance") or "")
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            failure_reason="正文已经抵达下一地点。" if played else "",
+            unsafe_suggestion_indexes=(),
+            body_violations=("scene_boundary",) if played else (),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "unflagged_played_result"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "unflagged_played_result",
+                "client_turn_id": "unflagged_played_result_1",
+                "base_revision": 0,
+                "message": "看看门外。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 2
+    assert "已经抵达" not in submitted.json()["performance"]["performance"]
+
+
+def test_numeric_v2_played_transition_is_rewritten_once(
+    tmp_path,
+    monkeypatch,
+):
+    """Judge 确认已经抵达时须走唯一一次 Actor 改写。"""  # noqa: DOCSTRING_CJK
+
+    actor_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=True,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        if actor_calls == 1:
+            return {
+                "performance": "（走到树下）我们已经到了。",
+                "scene_narration": "两人离开教室并抵达树下。",
+                "suggested_inputs": ["开始现场核对。"],
+                "transition_offered": True,
+            }
+        return {
+            "performance": "（背起书包）那我们现在出发，好吗？",
+            "suggested_inputs": ["好，现在出发。"],
+            "transition_offered": True,
+        }
+
+    async def review(*args, **kwargs):
+        candidate = kwargs["actor_performance"]
+        if "已经到了" not in str(candidate.get("performance") or ""):
+            return NumericV2TransitionOfferReview(
+                offer_present=True,
+                valid=True,
+                unsafe_suggestion_indexes=(),
+                body_violations=(),
+            )
+        return NumericV2TransitionOfferReview(
+            offer_present=True,
+            valid=False,
+            failure_reason="正文已经离开教室并抵达下一场景。",
+            unsafe_suggestion_indexes=(),
+            body_violations=("scene_boundary", "author_boundary"),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "played_offer_arbitration"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "played_offer_arbitration",
+                "client_turn_id": "played_offer_arbitration_1",
+                "base_revision": 0,
+                "message": "我们现在出发吧。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 2
+    assert "已经到了" not in submitted.json()["performance"]["performance"]
+
+
+@pytest.mark.parametrize("failure_reason", ["", "正文同时提出了两个互不相容的转场方向。"])
+def test_numeric_v2_mixed_route_offer_is_rewritten_once(
+    tmp_path,
+    monkeypatch,
+    failure_reason,
+):
+    """Judge 拒绝多方向提议后应改写一次，不能锁存错误选择。"""  # noqa: DOCSTRING_CJK
+
+    actor_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=True,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        if actor_calls == 1:
+            return {
+                "performance": "是去树下，还是先去档案室？",
+                "suggested_inputs": ["去档案室。", "去树下。"],
+                "transition_offered": True,
+            }
+        return {
+            "performance": "那我们下一步一起去树下，好吗？",
+            "suggested_inputs": ["好，一起去树下。", "先等一下。"],
+            "transition_offered": True,
+        }
+
+    async def review(*args, **kwargs):
+        candidate = kwargs["actor_performance"]
+        if "档案室" not in str(candidate.get("performance") or ""):
+            return NumericV2TransitionOfferReview(
+                offer_present=True,
+                valid=True,
+                unsafe_suggestion_indexes=(),
+                body_violations=(),
+            )
+        return NumericV2TransitionOfferReview(
+            offer_present=True,
+            valid=False,
+            failure_reason=failure_reason,
+            unsafe_suggestion_indexes=(),
+            body_violations=(),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "mixed_offer_arbitration"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "mixed_offer_arbitration",
+                "client_turn_id": "mixed_offer_arbitration_1",
+                "base_revision": 0,
+                "message": "下一步做什么？",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 2
+    assert "档案室" not in submitted.json()["performance"]["performance"]
+    assert submitted.json()["performance"]["transition_offered"] is True
+
+
+def test_numeric_v2_filters_only_unsafe_suggestions_after_body_retry(
+    tmp_path,
+    monkeypatch,
+):
+    """边界改稿后只剩推荐违规时按索引删除，安全正文不再采样或复核。"""
+
+    actor_calls = 0
+    review_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        if actor_calls == 1:
+            return {
+                "performance": "第一版正文越过作者事实边界。",
+                "suggested_inputs": ["（留在原地）继续确认。"],
+                "transition_offered": False,
+            }
+        return {
+            "performance": "（收好照片）目前只能确认这是一处模糊痕迹。",
+            "suggested_inputs": ["（前往下一场景）现在就去。"],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        candidate = kwargs["actor_performance"]
+        text = str(candidate.get("performance") or "")
+        suggestions = candidate.get("suggested_inputs") or []
+        first_draft = "越过作者事实边界" in text
+        retry_suggestion = "（前往下一场景）现在就去。" in suggestions
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            failure_reason="第一版正文包含未授权事实。" if first_draft else "把未来推荐误作已播放场景。" if retry_suggestion else "",
+            body_violations=(("author_boundary",) if first_draft else ()),
+            unsafe_suggestion_indexes=((0,) if retry_suggestion else ()),
+        )
+
+    async def refill(*args, **kwargs):
+        pytest.fail("Guard 之后不能再调用补推荐")
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2Actor,
+        "generate_current_scene_suggestions",
+        refill,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "retry_suggestion_scope"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "retry_suggestion_scope",
+                "client_turn_id": "retry_suggestion_scope_1",
+                "base_revision": 0,
+                "message": "继续查看当前照片。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 2
+    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    assert review_calls == 3
+    assert submitted.json()["performance"]["performance"] == "（收好照片）目前只能确认这是一处模糊痕迹。"
+    assert submitted.json()["performance"]["suggested_inputs"] == []
+
+
+def test_numeric_v2_body_violation_with_unsafe_suggestion_requires_rewrite(
+    tmp_path,
+    monkeypatch,
+):
+    """同次主复核同时定位正文和推荐违规，必须改稿，不能删按钮后重判。"""
+
+    actor_calls = 0
+    review_calls = 0
+    unsafe_body_only_reviews = 0
+    client = _client(tmp_path, monkeypatch)
+    unsafe_performance = "（看向屏幕）你已经按下快门，新照片已经生成。"
+    safe_performance = "（站稳在窗边）这个角度可以，我保持这个姿势。"
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        if actor_calls == 1:
+            return {
+                "performance": unsafe_performance,
+                "suggested_inputs": ["（查看照片）告诉我尚未公开的信息。", "（放下相机）先休息。"],
+                "transition_offered": False,
+            }
+        assert "正文替玩家按下快门并生成照片" in str(kwargs.get("retry_hint") or "")
+        return {
+            "performance": safe_performance,
+            "suggested_inputs": ["（按下快门）拍好了。", "（放下相机）先休息。"],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        nonlocal review_calls, unsafe_body_only_reviews
+        review_calls += 1
+        candidate = kwargs["actor_performance"]
+        unsafe_body = candidate["performance"] == unsafe_performance
+        if review_calls == 1:
+            # 正文证据与推荐索引分开报告；删除推荐不能解除正文的修稿要求。
+            return NumericV2TransitionOfferReview(
+                offer_present=False,
+                valid=False,
+                failure_reason="正文替玩家按下快门并生成照片。第一条推荐索要尚未公开的信息。",
+                unsafe_suggestion_indexes=(0,),
+                body_violations=("player_action", "author_boundary"),
+            )
+        if unsafe_body and not candidate.get("suggested_inputs"):
+            # 模拟再次只看正文时随机改判安全；该调用不应发生。
+            unsafe_body_only_reviews += 1
+            unsafe_body = False
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            failure_reason="正文替玩家按下快门并生成照片。" if unsafe_body else "",
+            unsafe_suggestion_indexes=(),
+            body_violations=("player_action", "author_boundary") if unsafe_body else (),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "post_drop_body_violation"},
+        )
+        assert started.status_code == 200
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "post_drop_body_violation",
+                "client_turn_id": "post_drop_body_violation_1",
+                "base_revision": 0,
+                "message": "（举起相机对焦）这个角度可以吗？",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 2
+    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    assert review_calls == 3
+    assert unsafe_body_only_reviews == 0
+    assert submitted.json()["performance"]["performance"] == safe_performance
+
+
+@pytest.mark.parametrize("remaining_violation", [None, "scene_boundary", "invalid_offer"])
+def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
+    tmp_path,
+    monkeypatch,
+    remaining_violation,
+):
+    """旁白违规不删除后重判；改稿仍有其他问题时采用末稿，不增加纠错额度。"""
+
+    actor_calls = 0
+    review_calls = 0
+    unsafe_body_only_reviews = 0
+    client = _client(tmp_path, monkeypatch)
+    unsafe_performance = "（听见快门声）这张照片应该拍好了。"
+    unsafe_update = "两人已经带着新照片抵达另一条街。"
+    safe_performance = "（站稳在窗边）这个角度可以，我保持这个姿势。"
+    original_reason = "scene_update 提前播放了抵达下一地点。"
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        candidate = {
+            "performance": unsafe_performance,
+            "scene_narration": unsafe_update,
+            "suggested_inputs": ["（按下快门）拍好了。", "（放下相机）先休息。"],
+            "transition_offered": False,
+        }
+        assert actor_calls <= 2
+        if actor_calls == 2:
+            hint = str(kwargs.get("retry_hint") or "")
+            assert unsafe_performance in hint
+            assert unsafe_update in hint
+            if remaining_violation is None:
+                assert original_reason in hint
+                candidate["performance"] = safe_performance
+                candidate.pop("scene_narration")
+            elif remaining_violation == "invalid_offer":
+                candidate["performance"] = "去尚未确认的另一个地点吧。"
+                candidate.pop("scene_narration")
+                candidate["transition_offered"] = True
+        return candidate
+
+    async def review(*args, **kwargs):
+        nonlocal review_calls, unsafe_body_only_reviews
+        review_calls += 1
+        assert review_calls <= 3
+        candidate = kwargs["actor_performance"]
+        if review_calls == 1:
+            assert candidate["scene_narration"] == unsafe_update
+        unsafe = candidate["performance"] == unsafe_performance
+        if unsafe and not candidate.get("suggested_inputs"):
+            # 模拟对原文再次做纯正文复核时随机放行；新链路禁止走到这里。
+            unsafe_body_only_reviews += 1
+            unsafe = False
+        if unsafe and remaining_violation and actor_calls == 1:
+            return NumericV2TransitionOfferReview(
+                offer_present=False,
+                valid=False,
+                failure_reason="正文先播放了未经授权的结果。",
+                unsafe_suggestion_indexes=(),
+                body_violations=("author_boundary",),
+            )
+        if remaining_violation == "invalid_offer" and actor_calls == 2:
+            return NumericV2TransitionOfferReview(
+                offer_present=True,
+                valid=False,
+                body_violations=(),
+                unsafe_suggestion_indexes=(),
+                failure_reason="改稿仍提出了与下一幕方向不符的行动。",
+            )
+        scene_violation = unsafe and bool(candidate.get("scene_narration"))
+        body_violation = unsafe and not scene_violation
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            failure_reason=original_reason if scene_violation else "正文仍虚构了玩家按快门。" if body_violation else "",
+            unsafe_suggestion_indexes=(),
+            body_violations=("scene_boundary",) if scene_violation else ("player_action", "author_boundary") if body_violation else (),
+        )
+
+    async def no_suggestions(*args, **kwargs):
+        pytest.fail("Guard 之后不能再调用补推荐")
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_current_scene_suggestions", no_suggestions, raising=False)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+    session_path = tmp_path / "theater" / "numeric_v2" / "sessions" / "failed_update_removal.json"
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "failed_update_removal"},
+        )
+        assert started.status_code == 200
+        before_bytes = session_path.read_bytes()
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "failed_update_removal",
+                "client_turn_id": "failed_update_removal_1",
+                "base_revision": 0,
+                "message": "（举起相机对焦）这个角度可以吗？",
+            },
+        )
+
+    assert actor_calls == 2
+    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    assert review_calls == 3
+    assert unsafe_body_only_reviews == 0
+    assert submitted.status_code == 200
+    if remaining_violation:
+        assert session_path.read_bytes() != before_bytes
+        saved = json.loads(session_path.read_text())["session"]["performance_history"][-1]
+        assert saved["performance"] == submitted.json()["performance"]["performance"]
+        assert saved["transition_offered"] is (remaining_violation == "invalid_offer")
+    else:
+        assert submitted.status_code == 200
+        assert submitted.json()["performance"]["performance"] == safe_performance
+        assert "scene_narration" not in submitted.json()["performance"]
+
+
+def test_numeric_v2_boundary_repair_receives_rejected_candidate(
+    tmp_path,
+    monkeypatch,
+):
+    """唯一一次边界修复会收到未提交候选和具体失败原因。"""
+
+    actor_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        retry_hint = str(kwargs.get("retry_hint") or "")
+        if actor_calls == 1:
+            return {"performance": "第一版包含受保护事实。", "transition_offered": False}
+        assert "第一版包含受保护事实" in retry_hint
+        assert "正文包含尚未获准公开的事实" in retry_hint
+        assert "唯一一次正文与提议修复" in retry_hint
+        return {"performance": "（保持边界）只能确认眼前已知情况。", "transition_offered": False}
+
+    async def review(*args, **kwargs):
+        text = str(kwargs["actor_performance"].get("performance") or "")
+        safe = "保持边界" in text
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            failure_reason="正文包含尚未获准公开的事实。" if not safe else "",
+            body_violations=(() if safe else ("author_boundary",)),
+            unsafe_suggestion_indexes=(),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "candidate_boundary_repair"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "candidate_boundary_repair",
+                "client_turn_id": "candidate_boundary_repair_1",
+                "base_revision": 0,
+                "message": "先确认眼前情况。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 2
+    assert submitted.json()["performance"]["performance"] == "（保持边界）只能确认眼前已知情况。"
+
+
+@pytest.mark.parametrize("remove_conflict", [True, False])
+def test_numeric_v2_boundary_repair_commits_last_reply_after_correction_budget(
+    tmp_path,
+    monkeypatch,
+    remove_conflict,
+):
+    """修稿要求删除冲突；持续否定则正式采用末稿，显示、历史及数值不能分叉。"""
+
+    actor_calls = 0
+    review_calls = 0
+    client = _client(tmp_path, monkeypatch)
+    player_input = "（举起相机对焦）这个角度可以吗？"
+    performance = "（站稳在窗边）这样就可以，我先保持这个姿势。"
+    rejected_update = "玩家已经按下快门，新的照片已经生成。"
+    failure_reason = "scene_update 把玩家尚未实施的按下快门写成完成，并生成了新照片。"
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(MetricChangeV2("trust", 1, "玩家兑现承诺", player_input),),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        candidate = {
+            "performance": performance,
+            "suggested_inputs": ["（按下快门）拍好了。", "（放下相机）先休息一下。"],
+            "transition_offered": False,
+        }
+        if actor_calls == 1:
+            candidate["scene_narration"] = rejected_update
+        else:
+            assert actor_calls == 2
+            assert kwargs["player_input"] == player_input
+            hint = str(kwargs.get("retry_hint") or "")
+            assert performance in hint
+            assert rejected_update in hint
+            assert '"scene_narration"' in hint
+            assert failure_reason in hint
+            assert "尚未提交、必须修正的上一版输出" in hint
+            if not remove_conflict:
+                candidate["scene_narration"] = "手机屏幕上已出现刚拍好的照片。"
+        return candidate
+
+    async def review(*args, **kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        candidate = kwargs["actor_performance"]
+        assert candidate["performance"] == performance
+        # 仅未来推荐中按快门不是已发生事实；违规来自场景更新的成片结果。
+        unsafe = bool(candidate.get("scene_narration"))
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            failure_reason=failure_reason if unsafe else "",
+            unsafe_suggestion_indexes=(),
+            body_violations=("player_action", "author_boundary") if unsafe else (),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+    session_path = tmp_path / "theater" / "numeric_v2" / "sessions" / "result_repair.json"
+    with client:
+        started = client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "result_repair"},
+        )
+        assert started.status_code == 200
+        before_bytes = session_path.read_bytes()
+        before = json.loads(before_bytes)
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "result_repair",
+                "client_turn_id": "result_repair_1",
+                "base_revision": 0,
+                "message": player_input,
+            },
+        )
+    assert actor_calls == 2
+    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    assert review_calls == 3
+    after = json.loads(session_path.read_bytes())
+    assert submitted.status_code == 200
+    assert after["session"]["revision"] == before["session"]["revision"] + 1
+    assert after["session"]["metrics"]["trust"] == before["session"]["metrics"]["trust"] + 1
+    assert len(after["ledger_events"]) == len(before["ledger_events"]) + 1
+    if remove_conflict:
+        assert submitted.status_code == 200
+        assert submitted.json()["performance"]["performance"] == performance
+        assert "scene_narration" not in submitted.json()["performance"]
+        assert after["session"]["revision"] == before["session"]["revision"] + 1
+        assert after["session"]["metrics"]["trust"] == before["session"]["metrics"]["trust"] + 1
+        assert len(after["ledger_events"]) == len(before["ledger_events"]) + 1
+        assert rejected_update not in session_path.read_text(encoding="utf-8")
+    else:
+        last_update = "手机屏幕上已出现刚拍好的照片。"
+        assert submitted.json()["performance"]["scene_narration"] == last_update
+        assert after["session"]["performance_history"][-1]["scene_narration"] == last_update
+        assert rejected_update not in session_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("offer_valid", [True, False])
+def test_numeric_v2_unsafe_button_does_not_override_body_offer_validity(
+    tmp_path,
+    monkeypatch,
+    offer_valid,
+):
+    """坏按钮独立删除；合法正文邀约仍锁存，无效正文邀约仍须改写。"""
+
+    actor_calls = 0
+    review_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        if actor_calls == 2:
+            assert not offer_valid
+            assert "正文邀请的目的地不符合当前获准方向" in kwargs["retry_hint"]
+            return {
+                "performance": "（停在原地）我们先把眼前的事说清楚。",
+                "suggested_inputs": ["先说说现在的情况。"],
+                "transition_offered": False,
+            }
+        assert not kwargs.get("retry_hint")
+        return {
+            "performance": "（指向楼梯）要和人家一起下去查看吗？",
+            "suggested_inputs": [
+                "（走向楼梯）我自己下去，你留在这里。",
+                "（退后一步）先不下去。",
+            ],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        # 复查不改变首稿的无效邀请；只有真实改写后才返回安全。
+        if actor_calls == 2:
+            return NumericV2TransitionOfferReview(
+                offer_present=False,
+                valid=False,
+                body_violations=(),
+                unsafe_suggestion_indexes=(),
+            )
+        return NumericV2TransitionOfferReview(
+            offer_present=True,
+            valid=offer_valid,
+            failure_reason=(
+                "推荐要求玩家独自离开，与正文和下一幕的共同行动冲突。"
+                if offer_valid else
+                "正文邀请的目的地不符合当前获准方向，推荐也不符合共同前往的要求。"
+            ),
+            body_violations=(),
+            unsafe_suggestion_indexes=(0,),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "unflagged_offer_repair"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "unflagged_offer_repair",
+                "client_turn_id": "unflagged_offer_repair_1",
+                "base_revision": 0,
+                "message": "入口已经打开了，我们接下来怎么办？",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == (1 if offer_valid else 2)
+    assert review_calls == (1 if offer_valid else 3)
+    assert submitted.json()["performance"]["transition_offered"] is offer_valid
+    assert submitted.json()["suggested_inputs"] == (
+        ["（退后一步）先不下去。"] if offer_valid else ["先说说现在的情况。"]
+    )
+
+
+def test_numeric_v2_clears_phantom_transition_flag_without_actor_retry(
+    tmp_path,
+    monkeypatch,
+):
+    """可见内容没有提议时只清内部误标，不能重采样合法正文。"""
+
+    actor_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        return {
+            "performance": "（看了一眼焊点）只能确认它经过人为处理，时间仍不清楚。",
+            "suggested_inputs": [
+                "（收回手）那先记录现有线索。",
+                "（看向终端）还有别的已知异常吗？",
+            ],
+            "transition_offered": True,
+        }
+
+    async def review(*args, **kwargs):
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            body_violations=(),
+            unsafe_suggestion_indexes=(),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "phantom_transition"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "phantom_transition",
+                "client_turn_id": "phantom_transition_1",
+                "base_revision": 0,
+                "message": "这个焊点能看出是什么时候处理的吗？",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 1
+    assert submitted.json()["performance"]["transition_offered"] is False
+    assert submitted.json()["suggested_inputs"] == [
+        "（收回手）那先记录现有线索。",
+        "（看向终端）还有别的已知异常吗？",
+    ]
+
+
+@pytest.mark.parametrize("actor_flag", [False, True])
+@pytest.mark.parametrize("review_failed", [False, True])
+def test_numeric_v2_offer_uses_one_guard_and_never_rewrites_service_failure(
+    tmp_path,
+    monkeypatch,
+    actor_flag,
+    review_failed,
+):
+    """合法提议不依赖 Actor 布尔；Guard 服务故障只撤销信号，不能重采样正文。"""
+
+    actor_calls = 0
+    review_calls = 0
+    first_performance = "（看向门外）眼前的事已经处理好，要和我一起出发吗？"
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=True,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        return {
+            "performance": first_performance,
+            "suggested_inputs": ["（点头）好，我们一起出发。", "（摇头）我再留一会儿。"],
+            "transition_offered": actor_flag,
+        }
+
+    async def review(*args, **kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        if review_failed:
+            raise NumericV2EvaluatorError("numeric_v2_transition_judge_unavailable")
+        return NumericV2TransitionOfferReview(
+            offer_present=True,
+            valid=True,
+            body_violations=(),
+            unsafe_suggestion_indexes=(),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "actor_offer"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "actor_offer",
+                "client_turn_id": "actor_offer_1",
+                "base_revision": 0,
+                "message": "眼前的事已经处理好了。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 1
+    assert review_calls == 1
+    assert submitted.json()["performance"]["performance"] == first_performance
+    assert submitted.json()["performance"]["transition_offered"] is (not review_failed)
+    persisted = json.loads(
+        (
+            tmp_path
+            / "theater"
+            / "numeric_v2"
+            / "sessions"
+            / "actor_offer.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted["session"]["transition_offered"] is (not review_failed)
+    assert persisted["session"]["revision"] == 1
+    assert persisted["session"]["current_node_id"] == "start"
+
+
+def test_numeric_v2_premature_scene_update_requires_the_single_actor_rewrite(
+    tmp_path,
+    monkeypatch,
+):
+    """场景更新越幕也属于正文违规，必须交由唯一改稿处理，不得先删字段重判。"""
+
+    actor_calls = 0
+    review_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        candidate = {
+            "performance": "（把毛毯递给你）要现在休息到天亮吗？",
+            "scene_narration": "时间已经推进到第二天清晨。",
+            "suggested_inputs": [
+                "（接过毛毯躺下）好，今晚就休息吧。",
+                "（摇摇头）我还想再坐一会儿。",
+            ],
+            "transition_offered": True,
+        }
+        if actor_calls == 2:
+            assert "scene_narration 提前写成天亮" in kwargs["retry_hint"]
+            candidate.pop("scene_narration")
+        return candidate
+
+    async def review(*args, **kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        candidate = kwargs["actor_performance"]
+        # 首稿复查保持原旁白；不能先删掉违规字段再要求放行。
+        assert review_calls == (actor_calls + 1 if review_calls > 1 else 1)
+        if actor_calls == 1:
+            assert candidate["scene_narration"] == "时间已经推进到第二天清晨。"
+        return NumericV2TransitionOfferReview(
+            offer_present=True,
+            valid="scene_narration" not in candidate,
+            failure_reason="scene_narration 提前写成天亮。" if "scene_narration" in candidate else "",
+            unsafe_suggestion_indexes=(),
+            body_violations=("scene_boundary",) if "scene_narration" in candidate else (),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "drop_scene_update"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "drop_scene_update",
+                "client_turn_id": "drop_scene_update_1",
+                "base_revision": 0,
+                "message": "（在角落坐下）今晚就在这里休息。",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 2
+    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    assert review_calls == 3
+    assert submitted.json()["performance"]["performance"].startswith("（把毛毯递给你）")
+    assert "scene_narration" not in submitted.json()["performance"]
+    assert submitted.json()["performance"]["transition_offered"] is True
+
+
+def test_numeric_v2_rewrites_fact_boundary_without_structured_field_scope(
+    tmp_path,
+    monkeypatch,
+):
+    """作者事实违规不能靠诊断文案删字段，必须只改写一次。"""
+
+    actor_calls = 0
+    review_calls = 0
+    client = _client(tmp_path, monkeypatch)
+
+    async def evaluate(*args, **kwargs):
+        return NumericV2EvaluationResult(
+            metric_changes=(),
+            scene_complete=False,
+            interaction_intent="scene_action",
+        )
+
+    async def turn(*args, **kwargs):
+        nonlocal actor_calls
+        actor_calls += 1
+        if actor_calls > 1:
+            return {
+                "performance": "（收回视线）目前只能确认外面仍有不明嗡鸣。",
+                "suggested_inputs": ["（继续倾听）声音有变化吗？", "（保持安静）先别行动。"],
+                "transition_offered": False,
+            }
+        return {
+            "performance": "（侧耳倾听）目前只能确认外面仍有嗡鸣声。",
+            "scene_narration": "她已经确认了无人机的具体方位与距离。",
+            "suggested_inputs": ["（继续倾听）声音有变化吗？", "（保持安静）先别行动。"],
+            "transition_offered": False,
+        }
+
+    async def review(*args, **kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        candidate = kwargs["actor_performance"]
+        unsafe = "scene_narration" in candidate
+        return NumericV2TransitionOfferReview(
+            offer_present=False,
+            valid=False,
+            failure_reason="scene_update 虚构了无人机的具体方位与距离。" if unsafe else "",
+            unsafe_suggestion_indexes=(),
+            body_violations=("author_boundary",) if unsafe else (),
+        )
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", turn)
+    monkeypatch.setattr(
+        numeric_theater_router.NumericV2MetricEvaluator,
+        "validate_transition_offer",
+        review,
+    )
+
+    with client:
+        client.post(
+            "/api/theater-numeric/session/start",
+            json={"story_id": "numeric_v2_contract", "session_id": "drop_fact_scene_update"},
+        )
+        submitted = client.post(
+            "/api/theater-numeric/session/input",
+            json={
+                "story_id": "numeric_v2_contract",
+                "session_id": "drop_fact_scene_update",
+                "client_turn_id": "drop_fact_scene_update_1",
+                "base_revision": 0,
+                "message": "外面的声音有变化吗？",
+            },
+        )
+
+    assert submitted.status_code == 200
+    assert actor_calls == 2
+    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    assert review_calls == 3
+    assert "scene_narration" not in submitted.json()["performance"]
+    assert "只能确认外面仍有不明嗡鸣" in submitted.json()["performance"]["performance"]
 
 
 def test_numeric_v2_router_rejects_unknown_actor_budget_before_opening(tmp_path, monkeypatch):
@@ -3300,3 +5192,62 @@ def test_numeric_turn_preserves_player_address_fact_during_model_wait(
     )
     persisted = json.loads(session_path.read_text(encoding="utf-8"))
     assert persisted["session"]["catgirl_binding"]["player_address"] == "你"
+
+
+def test_numeric_v2_review_fallback_replay_and_next_turn_keep_same_history(tmp_path, monkeypatch):
+    """兜底回复经HTTP正式提交：重试不多计分/调用，下一轮演员和判定器都看到末稿。"""
+    client = _client(tmp_path, monkeypatch)
+    calls = {"actor": 0, "review": 0, "evaluator": 0}
+    last_reply = "（指向窗外）雨已经停了，我们可以继续聊天。"
+
+    async def evaluate(*args, **kwargs):
+        calls["evaluator"] += 1
+        if kwargs["session"].revision == 1:
+            assert kwargs["session"].performance_history[-1]["performance"] == last_reply
+        return NumericV2EvaluationResult(
+            (MetricChangeV2("trust", 2, "玩家兑现承诺", "我把毛巾递给你。"),), False)
+
+    async def generate(*args, **kwargs):
+        calls["actor"] += 1
+        if kwargs["session"].revision == 1:
+            assert kwargs["session"].performance_history[-1]["performance"] == last_reply
+            return {"performance": "（望着窗外）对，刚才雨停了。", "suggested_inputs": []}
+        return {"performance": last_reply if calls["actor"] == 2 else "这一版会被改写。", "suggested_inputs": []}
+
+    async def review(*args, **kwargs):
+        calls["review"] += 1
+        # 精确模拟第一回合持续误拦；第二回合正常，避免把概率采样冒充流程覆盖。
+        bad = kwargs["message"] == "我把毛巾递给你。"
+        return NumericV2TransitionOfferReview(False, False, ("author_boundary",) if bad else (), (),
+                                             "待修正的语义问题。" if bad else "")
+
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "validate_transition_offer", review)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", generate)
+    body = dict(story_id="numeric_v2_contract", session_id="fallback_replay", client_turn_id="first",
+                base_revision=0, message="我把毛巾递给你。")
+    path = tmp_path / "theater/numeric_v2/sessions/fallback_replay.json"
+    with client:
+        assert client.post("/api/theater-numeric/session/start", json={
+            "story_id": body["story_id"], "session_id": body["session_id"]}).status_code == 200
+        initial = json.loads(path.read_text())
+        submitted = client.post("/api/theater-numeric/session/input", json=body)
+        assert submitted.status_code == 200
+        assert submitted.json()["performance"]["performance"] == last_reply
+        committed = path.read_bytes()
+        stored = json.loads(committed)
+        assert stored["session"]["metrics"]["trust"] == initial["session"]["metrics"]["trust"] + 2
+        assert len(stored["ledger_events"]) == 1
+        assert calls == {"actor": 2, "review": 3, "evaluator": 1}
+        replay = client.post("/api/theater-numeric/session/input", json=body)
+        assert replay.status_code == 200 and replay.json()["idempotent_replay"]
+        assert replay.json()["session"] == submitted.json()["session"]
+        assert path.read_bytes() == committed
+        assert calls == {"actor": 2, "review": 3, "evaluator": 1}
+        resumed = client.get("/api/theater-numeric/session/fallback_replay", params={"story_id": body["story_id"]})
+        assert resumed.json()["session"] == submitted.json()["session"]
+        following = client.post("/api/theater-numeric/session/input", json={
+            **body, "client_turn_id": "second", "base_revision": 1, "message": "你刚才说雨停了？"})
+        assert following.status_code == 200
+        assert following.json()["session"]["revision"] == 2
+        assert calls == {"actor": 3, "review": 4, "evaluator": 2}

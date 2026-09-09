@@ -108,6 +108,8 @@ const theaterPresentationSchema = z.object({
   busy: z.boolean().optional(),
   sessionEnded: z.boolean().optional(),
   errorMessage: z.string().optional(),
+  // 用量提示独立于历史消息，刷新后不伪造上一轮账单。
+  tokenUsage: z.object({ summary: z.string(), detail: z.string() }).nullable().optional(),
   draftRestore: z.object({ id: z.string().min(1), text: z.string() }).nullable().optional(),
   ordinaryDraftRestore: z.object({ id: z.string().min(1), text: z.string() }).nullable().optional(),
   presentationSeq: z.number().int().nonnegative().optional(),

@@ -1095,6 +1095,10 @@ class NumericV2SessionStore:
                 scene_complete = event.get("scene_complete")
                 if not isinstance(scene_complete, bool):
                     raise ValueError("scene_complete_shape")
+                # 重放必须使用当时记录的结局授权；旧 Ledger 缺省关闭，不能由完成信号推导。
+                natural_ending_ready = event.get("natural_ending_ready", False)
+                if not isinstance(natural_ending_ready, bool):
+                    raise ValueError("natural_ending_ready_shape")
                 request = TurnRequestV2.from_mapping(
                     {
                         "client_turn_id": turn_id,
@@ -1108,6 +1112,7 @@ class NumericV2SessionStore:
                     changes,
                     scene_complete=scene_complete,
                     transition_intent=str(event.get("transition_intent") or "unclear"),
+                    natural_ending_ready=natural_ending_ready,
                 )
                 performance = stored.session.performance_history[event_index]
                 if not isinstance(performance, Mapping):

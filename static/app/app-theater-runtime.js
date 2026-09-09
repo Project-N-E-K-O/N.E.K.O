@@ -24,7 +24,7 @@
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
         draftRestore: null, ordinaryDraftRestore: null, presentationSeq: 0, composerVisibilityRestore: null,
         chatSurfaceModeRestore: null,
-        errorMessage: ''
+        errorMessage: '', tokenUsage: null
     };
     var launchRequests = Object.create(null);
     var launchRequestOrder = [];
@@ -345,6 +345,30 @@
         }
         return result;
     }
+    // 用量只属于最近一次请求，不混入可导出的剧情历史；缺报时明确显示已知部分。
+    function usagePresentation() {
+        var usage = state.tokenUsage;
+        if (!usage || !Array.isArray(usage.calls)) return null;
+        function line(key, fallback, values) {
+            return t(key, fallback).replace(/\{(\w+)\}/g, function (_, name) { return String(values[name]); });
+        }
+        var summary = line('theater.tokenUsageSummary', 'This request · input {input} · output {output} tokens · {calls} calls', {
+            input: usage.input_tokens, output: usage.output_tokens, calls: usage.calls.length
+        });
+        if (!usage.complete) summary += ' · ' + t('theater.tokenUsagePartial', 'Partial usage; some calls were not reported');
+        var detail = usage.calls.map(function (call, index) {
+            // 按需查原文有独立费用，不能落入默认分支而被显示成演员调用。
+            var stage = ['actor', 'suggestions', 'evaluator', 'review', 'dispute', 'history_lookup'].indexOf(call.stage) >= 0 ? call.stage : 'actor';
+            return line('theater.tokenUsageCall', '{number}. {stage} · input {input} · output {output}', {
+                number: index + 1, stage: t('theater.tokenStage_' + stage, stage),
+                input: call.input_tokens == null ? '?' : call.input_tokens,
+                output: call.output_tokens == null ? '?' : call.output_tokens
+            });
+        });
+        detail.push(t('theater.tokenUsageHint', 'Provider usage includes cached input and reasoning output when reported. Extra calls are included; this is not a price estimate.'));
+        return { summary: summary, detail: detail.join('\n') };
+    }
+
     function presentation() {
         return {
             active: state.active,
@@ -356,6 +380,7 @@
             busy: ['loading', 'evaluating', 'ending', 'returning_selector'].indexOf(state.phase) >= 0,
             sessionEnded: state.sessionStatus === 'ended',
             errorMessage: state.errorMessage,
+            tokenUsage: usagePresentation(),
             draftRestore: state.draftRestore,
             ordinaryDraftRestore: state.ordinaryDraftRestore,
             presentationSeq: ++state.presentationSeq
@@ -377,10 +402,18 @@
         return true;
     }
     function submitFromHost(text) {
-        void submit(text).catch(function () {
+        void submit(text, 'freeform').catch(function () {
             if (!state.active) return;
             state.phase = 'awaiting_player';
-            state.errorMessage = t('theater.inputFailed', '演绎提交失败，请重试。');
+            state.errorMessage = t('theater.inputFailed', '暂时未能取得演绎回复，请重试。');
+            render();
+        });
+    }
+    function submitSuggestedFromHost(text) {
+        void submit(text, 'suggestion').catch(function () {
+            if (!state.active) return;
+            state.phase = 'awaiting_player';
+            state.errorMessage = t('theater.inputFailed', '暂时未能取得演绎回复，请重试。');
             render();
         });
     }
@@ -393,7 +426,7 @@
         }
         if (typeof chatHost.setOnTheaterSuggestedInputSelect === 'function') {
             // 推荐输入直接进入 Runtime 提交流程，不借用输入框草稿或普通 Galgame 回填链路。
-            chatHost.setOnTheaterSuggestedInputSelect(submitFromHost);
+            chatHost.setOnTheaterSuggestedInputSelect(submitSuggestedFromHost);
         }
         if (typeof chatHost.setOnTheaterEnd === 'function') chatHost.setOnTheaterEnd(function () { runtime.requestEnd(); });
         render();
@@ -579,6 +612,9 @@
             state.pendingTurn = null;
             state.currentBlock = null;
         }
+        // 新快照已获准接管，旧提交的失败提示不再属于当前展示。
+        state.errorMessage = '';
+        state.tokenUsage = message.token_usage || null;
         state.active = true; state.phase = 'loading'; state.storyId = nextStoryId; state.sessionId = nextSessionId; render();
         applySnapshot(snapshot);
         state.history = buildCommittedHistory(snapshot);
@@ -624,8 +660,9 @@
         if (launchRequestOrder.length > 64) delete launchRequests[launchRequestOrder.shift()];
         return request;
     }
-    async function submit(text) {
+    async function submit(text, inputSource) {
         var message = String(text || '').trim();
+        var normalizedInputSource = inputSource === 'suggestion' ? 'suggestion' : 'freeform';
         if (!state.active || state.phase !== 'awaiting_player' || !message) return false;
         var signature = state.sessionId + '\u001f' + state.revision + '\u001f' + message;
         if (!state.pendingTurn || state.pendingTurn.signature !== signature) state.pendingTurn = { signature: signature, id: createId('theater_turn_') };
@@ -634,6 +671,7 @@
         var submittedSessionId = state.sessionId;
         var submittedLaunchEpoch = launchEpoch;
         var submittedTurnId = state.pendingTurn.id;
+        var submittedSuggestedInputs = state.suggestedInputs.slice();
         var optimisticHistoryId = 'player-pending-' + state.pendingTurn.id;
         // 玩家行动先进入历史区，让推荐输入和手动提交都立即得到可见反馈。
         if (!state.history.some(function (entry) { return entry.id === optimisticHistoryId; })) {
@@ -644,7 +682,7 @@
         try {
             result = await requestJson(api.input, { method: 'POST', body: {
                 story_id: state.storyId, session_id: state.sessionId, client_turn_id: state.pendingTurn.id,
-                base_revision: state.revision, message: message
+                base_revision: state.revision, message: message, input_source: normalizedInputSource
             }});
         } catch (_) {
             result = { ok: false, reason: 'numeric_input_request_failed' };
@@ -658,32 +696,51 @@
             return false;
         }
         if (!state.pendingTurn || state.pendingTurn.id !== submittedTurnId) return false;
+        // 先过滤迟到请求，再呈现本次成功或失败的真实用量；网络断线时不能显示上一轮。
+        state.tokenUsage = result.token_usage || null;
         if (!result.ok) {
-            // 未提交的玩家行动不能伪装成已发生事实；失败时撤回气泡并恢复原输入。
-            state.history = state.history.filter(function (entry) { return entry.id !== optimisticHistoryId; });
-            state.phase = 'awaiting_player';
-            state.draftRestore = { id: createId('theater_draft_restore_'), text: message };
-            if (result.reason === 'numeric_base_revision_mismatch') {
-                var refreshed = null;
+            // 退出流程已经接管时，迟到失败不能重新打开输入区。
+            if (state.phase !== 'evaluating') return false;
+            var refreshed = null;
+            if (result.reason === 'numeric_base_revision_mismatch'
+                || result.reason === 'numeric_suggested_input_not_current'
+                || result.reason === 'numeric_duplicate_client_turn_id'
+                || result.reason === 'session_already_ended') {
                 try {
                     refreshed = await requestJson(api.session + '/' + encodeURIComponent(submittedSessionId) + '?story_id=' + encodeURIComponent(submittedStoryId));
                 } catch (_) {
-                    if (isCurrentLaunch(submittedLaunchEpoch, submittedStoryId, submittedSessionId)) {
-                        state.errorMessage = t('theater.inputFailed', '演绎提交失败，请重试。');
-                    }
-                }
-                // 冲突刷新期间可能启动了另一个 Session；旧快照只能回写原提交世代。
-                if (
-                    isCurrentLaunch(submittedLaunchEpoch, submittedStoryId, submittedSessionId)
-                    && state.pendingTurn
-                    && state.pendingTurn.id === submittedTurnId
-                    && refreshed
-                    && refreshed.ok
-                ) {
-                    applySnapshot(refreshed);
-                    state.history = buildCommittedHistory(refreshed);
+                    // 刷新失败统一交给下方提示，不恢复已知过期的按钮。
                 }
             }
+            // 刷新期间继续保持忙碌；返回后再次确认交互归属，避免污染新演绎或退出阶段。
+            if (!state.active || state.storyId !== submittedStoryId || state.sessionId !== submittedSessionId
+                || !state.pendingTurn || state.pendingTurn.id !== submittedTurnId || state.phase !== 'evaluating') return false;
+            state.history = state.history.filter(function (entry) { return entry.id !== optimisticHistoryId; });
+            state.draftRestore = { id: createId('theater_draft_restore_'), text: message };
+            state.errorMessage = t('theater.inputFailed', '暂时未能取得演绎回复，请重试。');
+            // 只有当前接口明确在提交前返回的模型失败才恢复旧按钮；断网仍保留原输入与幂等编号。
+            if (['numeric_v2_actor_failed', 'numeric_v2_actor_unavailable',
+                'numeric_v2_evaluator_failed', 'numeric_v2_evaluator_unavailable'].indexOf(result.reason) >= 0) {
+                state.suggestedInputs = submittedSuggestedInputs;
+                // 推荐点击前草稿为空；回填按钮文字会再次把推荐隐藏。
+                if (normalizedInputSource === 'suggestion') state.draftRestore.text = '';
+            }
+            // 冲突快照仍只回写原提交世代；不能用提交前按钮覆盖新的进度。
+            if (isCurrentLaunch(submittedLaunchEpoch, submittedStoryId, submittedSessionId)
+                && state.pendingTurn.id === submittedTurnId && refreshed && refreshed.ok) {
+                applySnapshot(refreshed);
+                state.history = buildCommittedHistory(refreshed);
+                if (refreshed.end_receipt_id) {
+                    state.pendingEnd = {
+                        story_id: state.storyId, session_id: state.sessionId, revision: state.revision,
+                        end_receipt_id: refreshed.end_receipt_id, archive_request_id: refreshed.archive_request_id || ''
+                    };
+                }
+                state.errorMessage = state.sessionStatus === 'ended'
+                    ? t('theater.ended', '已结束')
+                    : t('theater.numericSessionUpdated', '演出状态已更新，已保留你的输入，请确认后重试。');
+            }
+            state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player';
             render();
             return false;
         }

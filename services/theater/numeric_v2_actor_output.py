@@ -380,13 +380,15 @@ def _parse_output(
         )
         return result
     if transition_required and deterministic_transition:
-        # v2.1 作者桥段由 Runtime 持有，Actor 只生成两侧角色正文。
-        # 这样模型不再承担三段数组、phase 标签和作者旁白复写，降低格式波动导致的整轮失败。
-        expected_fields = {"source_performance", "target_performance"}
+        # Runtime 仍确定段位和顺序；旁白按真实历史生成，缺字段不能退回会复演的作者原文。
+        expected_fields = {"source_performance", "target_performance",
+                           "bridge_scene_narration", "target_scene_narration"}
         tolerated_fields = {*expected_fields, "suggested_inputs"}
         if set(payload) not in {frozenset(expected_fields), frozenset(tolerated_fields)}:
             raise NumericV2ActorOutputError("numeric_v2_actor_transition_required")
         result = {
+            "bridge_scene_narration": _parse_scene_narration(payload.get("bridge_scene_narration")),
+            "target_scene_narration": _parse_scene_narration(payload.get("target_scene_narration")),
             "source_performance": _parse_transition_performance(
                 payload.get("source_performance"),
                 dialogue_policy=source_dialogue_policy,

@@ -380,35 +380,6 @@ color:var(--theater-muted);
 font-size:.82rem;
 line-height:1.5}
 
-.theater-budget-control{
-grid-column:1/-1;
-display:grid;
-grid-template-columns:auto minmax(220px,320px) 1fr;
-align-items:center;
-gap:8px 12px;
-padding:10px 12px;
-border:1px solid var(--theater-line);
-border-radius:14px;
-background:rgba(255,255,255,.52)}
-
-.theater-budget-control label{
-font-weight:700;
-font-size:.84rem}
-
-.theater-budget-control select{
-min-height:38px;
-padding:0 34px 0 11px;
-border:1px solid var(--theater-line);
-border-radius:10px;
-color:var(--theater-ink);
-background:var(--theater-panel)}
-
-.theater-budget-control p{
-margin:0;
-color:var(--theater-muted);
-font-size:.76rem;
-line-height:1.45}
-
 .theater-detail-actions button{
 min-height:46px;
 border-radius:14px}
@@ -498,9 +469,6 @@ grid-template-rows:minmax(220px,40%) minmax(0,1fr)}
 
 .theater-role-grid,.theater-detail-actions{
 grid-template-columns:1fr 1fr}
-
-.theater-budget-control{
-grid-template-columns:1fr}
 
 }
 

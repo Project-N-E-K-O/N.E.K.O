@@ -124,6 +124,10 @@ def test_capsule_runtime_separates_narration_and_dialogue_tts():
     assert "theaterRuntime.isActive()" in buttons
     assert "handleComposerSubmit" in buttons
     assert "setOnTheaterSubmit" in runtime
+    assert "submit(text, 'freeform')" in runtime
+    assert "submit(text, 'suggestion')" in runtime
+    assert "input_source: normalizedInputSource" in runtime
+    assert "setOnTheaterSuggestedInputSelect(submitSuggestedFromHost)" in runtime
     assert "setOnTheaterSubmit" in host_api
     assert "I.handleTheaterSubmit" in host_messages
     theater_branch = buttons[buttons.index("if (theaterRuntime &&"):]
@@ -247,7 +251,7 @@ def test_capsule_runtime_shows_player_action_before_waiting_for_actor():
     """推荐输入和手动输入都应先进入历史，再等待模型返回。"""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
-    submit_start = runtime.index("async function submit(text)")
+    submit_start = runtime.index("async function submit(text, inputSource)")
     optimistic_history = runtime.index(
         "state.history.push(historyEntry(optimisticHistoryId",
         submit_start,
@@ -266,7 +270,7 @@ def test_capsule_runtime_discards_turn_response_after_session_switch():
     """旧 Session 的迟到响应不能覆盖新剧本的胶囊状态。"""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
-    submit_start = runtime.index("async function submit(text)")
+    submit_start = runtime.index("async function submit(text, inputSource)")
     request = runtime.index("result = await requestJson(api.input", submit_start)
     stale_guard = runtime.index("state.storyId !== submittedStoryId", request)
     apply_snapshot = runtime.index("applySnapshot(result);", stale_guard)
@@ -280,7 +284,7 @@ def test_capsule_runtime_invalidates_pending_launch_when_turn_advances():
     """成功回合必须让此前发起的同 Session 启动快照失效。"""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
-    submit_start = runtime.index("async function submit(text)")
+    submit_start = runtime.index("async function submit(text, inputSource)")
     successful_turn = runtime.index("state.pendingTurn = null;", submit_start)
     invalidate_launch = runtime.index("launchEpoch += 1;", successful_turn)
     apply_snapshot = runtime.index("applySnapshot(result);", successful_turn)
@@ -319,7 +323,7 @@ def test_capsule_runtime_revalidates_conflict_refresh_ownership():
     """revision 冲突刷新不能用旧 Session 快照覆盖较新的启动。"""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
-    submit_start = runtime.index("async function submit(text)")
+    submit_start = runtime.index("async function submit(text, inputSource)")
     conflict_start = runtime.index("result.reason === 'numeric_base_revision_mismatch'", submit_start)
     refresh = runtime.index("refreshed = await requestJson(", conflict_start)
     refresh_try = runtime.rindex("try {", conflict_start, refresh)
@@ -336,7 +340,8 @@ def test_capsule_runtime_revalidates_conflict_refresh_ownership():
     assert refresh_try < refresh < refresh_catch < refresh_error < ownership_guard
     assert ownership_guard < pending_guard < apply_snapshot
     assert "chatHost.setOnTheaterSubmit(submitFromHost);" in runtime
-    assert "void submit(text).catch" in runtime
+    assert "void submit(text, 'freeform').catch" in runtime
+    assert "void submit(text, 'suggestion').catch" in runtime
 
 
 def test_selector_binds_session_start_to_displayed_character():
@@ -566,6 +571,7 @@ def test_theater_locales_remain_valid_and_aligned():
             "startAgainConfirmBody",
             "rememberPerformanceTitle",
             "memorySaving",
+            "inputFailed",
             "endConnectionFailed",
             "endStateFailed",
             "performanceHistory",
@@ -579,19 +585,13 @@ def test_theater_locales_remain_valid_and_aligned():
     assert all(keys == theater_keys[0] for keys in theater_keys[1:])
 
 
-def test_theater_budget_copy_matches_runtime_limits():
-    """选择页展示的是输入历史窗口，不能再沿用旧数值或写成剧情硬回合数。"""  # noqa: DOCSTRING_CJK
+def test_theater_selector_no_longer_selects_budget():
+    """固定预算后移除控件及其事件，避免页面初始化访问已删除的元素。"""  # noqa: DOCSTRING_CJK
 
     template = _source("templates/theater.html")
-    zh_cn = json.loads(_source("static/locales/zh-CN.json"))["theater"]
-
-    assert "精简 · 输入 6k · 历史 6 回合" in template
-    assert "标准 · 输入 10k · 历史 12 回合" in template
-    assert "丰富 · 输入 16k · 历史 20 回合" in template
-    assert "本幕最多" not in template
-    assert zh_cn["actorBudgetEconomy"] == "精简 · 输入 6k · 历史 6 回合"
-    assert zh_cn["actorBudgetBalanced"] == "标准 · 输入 10k · 历史 12 回合"
-    assert zh_cn["actorBudgetQuality"] == "丰富 · 输入 16k · 历史 20 回合"
+    selector = _source("static/js/theater_selector.js")
+    assert "theater-token-budget" not in template + selector
+    assert "actor_budget_profile" not in selector
 
 
 def test_theater_popup_entry_opens_story_selector():

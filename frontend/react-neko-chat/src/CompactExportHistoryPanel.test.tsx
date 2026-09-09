@@ -45,6 +45,16 @@ function renderPanel(overrides: Partial<Parameters<typeof CompactExportHistoryPa
 }
 
 describe('CompactExportHistoryPanel', () => {
+  it('shows request usage only in theater and keeps it outside exported messages', () => {
+    // 真实组件验证：账单提示不冒充剧情，也不能出现在普通聊天头部。
+    const usage = { summary: 'Input 123 · output 7', detail: 'Dispute review: usage unavailable' };
+    const { queryByText, rerender } = renderPanel({ mode: 'theater', previewOpen: false, theaterTokenUsage: usage });
+    expect(queryByText(usage.summary)).not.toBeNull();
+    expect(queryByText(usage.detail)).not.toBeNull();
+    rerender(<CompactExportHistoryPanel {...createPanelProps({ mode: 'chat', theaterTokenUsage: usage })} />);
+    expect(queryByText(usage.summary)).toBeNull();
+  });
+
   it('shows the history height resize bar only outside preview and wires its hit-region', () => {
     const { container, rerender } = renderPanel({ previewOpen: false, visibilityState: 'open' });
     const bar = container.querySelector('.compact-export-history-resize-bar');

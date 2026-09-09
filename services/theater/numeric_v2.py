@@ -520,6 +520,25 @@ class NumericV2Compiler:
                 allow_empty=False,
             )
         c.require_text_list(beat.get("must_not_happen"), f"{path}.must_not_happen", allow_empty=True)
+        if "opening_only_boundaries" in beat:
+            opening_boundaries = c.require_text_list(
+                beat.get("opening_only_boundaries"),
+                f"{path}.opening_only_boundaries",
+                allow_empty=True,
+            )
+            if len(opening_boundaries) > 4:
+                c.add(
+                    "too_many_opening_only_boundaries",
+                    f"{path}.opening_only_boundaries",
+                    "每幕最多保留四条仅公开开场生效的边界。",
+                )
+            for index, boundary in enumerate(opening_boundaries):
+                if not boundary.startswith(_NEGATIVE_STATE_BOUNDARY_PREFIXES):
+                    c.add(
+                        "opening_only_boundary_polarity_invalid",
+                        f"{path}.opening_only_boundaries[{index}]",
+                        "开场边界必须以“不得”“禁止”或“不能”开头。",
+                    )
         c.require_text(beat.get("catgirl_situation"), f"{path}.catgirl_situation")
         c.require_text(beat.get("transition_goal"), f"{path}.transition_goal")
         if "character_state" in beat:

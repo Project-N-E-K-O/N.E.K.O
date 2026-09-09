@@ -1227,6 +1227,12 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   font-size: 12px;
 }
 
+/* 历史面板默认穿透鼠标；用量详情需要独立接收点击，不能触发桌面拖窗。 */
+.compact-theater-token-usage {
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
 .compact-theater-history-header-row {
   display: flex;
   align-items: center;
