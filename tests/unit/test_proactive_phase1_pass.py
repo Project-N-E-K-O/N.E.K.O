@@ -338,7 +338,13 @@ def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
         ("／chat你好", "你好", "CHAT"),
         ("CHAT／Hello", "Hello", "CHAT"),
         ("\ufeff\u200bchat/你好", "你好", "CHAT"),
+        ("\ufeff \u200b chat/你好", "你好", "CHAT"),
+        ("chat/ hello", "hello", "CHAT"),
+        ("music／ hello", "hello", "MUSIC"),
+        ("聊天中 你好", "你好", "CHAT"),
+        ("聊天中\t你好", "你好", "CHAT"),
         ("当前屏幕观察\nchat/你好", "你好", "CHAT"),
+        ("当前屏幕观察\n[WEB]\n看这个链接", "看这个链接", "WEB"),
         ("当前屏幕观察", "", "CHAT"),
     ]
 
@@ -352,6 +358,12 @@ def test_strip_proactive_screen_tag_leak_preserves_inline_known_prefix_words():
     for raw in (
         "我刚才看了 /chat 路由",
         "music/chat 模块需要重构",
+        "chat/hello",
+        "screen/share",
+        "window/settings",
+        "vision/api",
+        "/screen/share",
+        "／window／settings",
         "/chatbot 路由",
         "／chatbot 路由",
         "当前屏幕观察到你正在写代码",

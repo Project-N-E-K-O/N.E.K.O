@@ -2155,10 +2155,22 @@ _PROACTIVE_BARE_PREFIX_LABELS = frozenset(
 )
 
 
-_PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS = frozenset({"chat", "music"})
+_PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS = frozenset(
+    label.casefold()
+    for label, _source_tag in _PROACTIVE_SOURCE_PREFIX_LABELS
+    if label.isascii() and " " not in label
+)
+
+
+_PROACTIVE_SPACED_BARE_PREFIX_LABELS = frozenset({"聊天中"})
 
 
 _PROACTIVE_LEADING_INVISIBLES = "\ufeff\u200b\u200c\u200d\u2060"
+
+
+_PROACTIVE_LEADING_IGNORABLE_RE = re.compile(
+    rf"^[\s{re.escape(_PROACTIVE_LEADING_INVISIBLES)}]*"
+)
 
 
 _PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS = frozenset(
@@ -2267,12 +2279,14 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                 rest,
             )
             if slash:
-                after = rest[slash.end() :].lstrip()
-                # ``chat`` / ``music`` are also common route segments. Keep
-                # paths such as ``music/chat`` intact while retaining the
-                # established ``chat/中文`` and ``CHAT/English`` recovery.
+                after_slash = rest[slash.end() :]
+                after = after_slash.lstrip()
+                # A single-word ASCII label may also be a route segment. Keep
+                # ``screen/share`` intact, but treat ``screen/ share`` as an
+                # explicitly separated leaked label.
                 if (
                     folded_label in _PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS
+                    and after_slash == after
                     and after
                     and after[0].isascii()
                     and after[0].islower()
@@ -2292,6 +2306,10 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                 colon = re.match(r"^[ \t]*[：:]", rest)
                 if colon:
                     return rest[colon.end() :].lstrip(), source_tag
+                if folded_label in _PROACTIVE_SPACED_BARE_PREFIX_LABELS:
+                    space = re.match(r"^[ \t]+", rest)
+                    if space:
+                        return rest[space.end() :].lstrip(), source_tag
 
         # ``/label正文`` / ``／label正文``. The leading slash is a strong
         # marker, so preserve the existing glued-CJK recovery while rejecting
@@ -2300,6 +2318,17 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
             folded_label
         ):
             rest = body[1 + len(label) :]
+            if (
+                folded_label in _PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS
+                and rest[:1] in _PROACTIVE_SLASHES
+            ):
+                route_tail = rest[1:]
+                if (
+                    route_tail
+                    and route_tail[0].isascii()
+                    and route_tail[0].islower()
+                ):
+                    continue
             if not (
                 not rest
                 or rest[0].isspace()
@@ -2319,9 +2348,7 @@ def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
     """Strip known leading source-label leaks such as ``/chat`` from Phase 2 text."""
     if not text:
         return "", ""
-    leading_len = len(text) - len(text.lstrip())
-    leading = text[:leading_len]
-    body = text[leading_len:].lstrip(_PROACTIVE_LEADING_INVISIBLES)
+    body = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", text, count=1)
     recovered_tag = ""
 
     # Bounded peeling handles stacked new-line prefixes without allowing a
@@ -2341,13 +2368,13 @@ def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
             source_tag = "CHAT"
         if cleaned is None:
             break
-        body = cleaned
+        body = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", cleaned, count=1)
         if not recovered_tag or source_tag != "CHAT":
             recovered_tag = source_tag
 
     if not recovered_tag:
         return text, ""
-    return leading + body, recovered_tag
+    return body, recovered_tag
 
 
 def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
@@ -2371,24 +2398,27 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     if not text:
         return "", ""
     text, prefix_tag = _strip_proactive_known_prefix_tag_leak(text)
-    if prefix_tag:
-        return text, prefix_tag
     leading_len = len(text) - len(text.lstrip())
     leading = text[:leading_len]
     body = text[leading_len:]
     match = _PROACTIVE_BRACKET_TAG_RE.match(body)
     if not match:
-        return text, ""
+        return text, prefix_tag
     tag = match.group(1).upper()
-    if tag in _PROACTIVE_LEGAL_SOURCE_TAGS or tag not in _PROACTIVE_SCREEN_TAG_LEAKS:
+    if tag in _PROACTIVE_LEGAL_SOURCE_TAGS:
+        if prefix_tag:
+            return leading + body[match.end() :].lstrip(), tag
         return text, ""
+    if tag not in _PROACTIVE_SCREEN_TAG_LEAKS:
+        return text, prefix_tag
     rest = body[match.end() :].lstrip()
+    rest, nested_prefix_tag = _strip_proactive_known_prefix_tag_leak(rest)
     # 兼容 [Screen][CHAT] 组合：泄漏标签后若紧跟合法来源标签，剥掉并采用真实 tag
     # （否则该 [CHAT] 字面会作为正文漏给 TTS）；没有则按 CHAT 兜底。
     legal = _PROACTIVE_LEGAL_TAG_RE.match(rest)
     if legal:
         return leading + rest[legal.end() :].lstrip(), legal.group(1).upper()
-    return leading + rest, "CHAT"
+    return leading + rest, nested_prefix_tag or prefix_tag or "CHAT"
 
 
 # Decoration a model may wrap a leaked label in (markdown bold/heading/bullet,
