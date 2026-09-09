@@ -442,6 +442,8 @@ def test_icebreaker_context_append_does_not_touch_shared_websocket_router():
     assert "ICEBREAKER_API_BASE + path" in runtime
     assert "postIcebreakerRoute('/route/start', session" in runtime
     assert "postIcebreakerRoute('/route/end', session" in runtime
+    assert "function reconcileIcebreakerRouteEnd(session, reason, canRetry)" in runtime
+    assert "ended || reconcileIcebreakerRouteEnd(session, reason, false)" in runtime
     assert "postgameProactive: { enabled: false }" in runtime
     assert "action: 'icebreaker_context_append'" not in runtime
     assert 'action == "icebreaker_context_append"' not in websocket_router
@@ -778,9 +780,12 @@ def test_icebreaker_choice_submission_is_mutexed_and_restores_prompt_on_failure(
     assert "if (activeSession !== session)" in handle_choice_block
     assert "return advanceWithChoice(session, option, choice, label, choiceNodeId);" in handle_choice_block
     assert "if (!session || activeSession !== session || !option) return Promise.resolve(null);" in advance_choice_block
-    assert "return deliverNode(option.next);" in advance_choice_block
+    assert "return Promise.resolve(choiceWritePromise).then(function (recorded)" in advance_choice_block
+    assert "if (recorded !== true || activeSession !== session) return false;" in advance_choice_block
+    assert "return recordChoiceToPool(choicePayload);" in advance_choice_block
+    assert "if (option.next) return deliverNode(option.next);" in advance_choice_block
     assert "return completeWithHandoff(option);" in advance_choice_block
-    assert "return Promise.resolve(false);" in advance_choice_block
+    assert "return false;" in advance_choice_block
     assert "session.choiceInFlight = false;" in handle_choice_block
     assert "setChoicePrompt(node, session.localeData);" in handle_choice_block
 
@@ -824,6 +829,10 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
         "function handleChoice(detail)",
         1,
     )[0]
+    advance_choice_block = runtime.split("function advanceWithChoice", 1)[1].split(
+        "function handleChoice",
+        1,
+    )[0]
 
     assert "var session = activeSession;" in handoff_block
     assert "function speakViaProjectTts(text, voiceKey, signal)" in runtime
@@ -833,30 +842,43 @@ def test_icebreaker_handoff_waits_for_context_append_before_route_end():
     assert "handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');" in handoff_block
     assert "return appendAssistantChatMessage(text" in handoff_block
     assert "if (!didAppendChatMessage(message)) return false;" in handoff_block
-    assert "return endIcebreakerRoute(session, 'icebreaker_handoff');" in handoff_block
+    assert "if (recorded !== true || activeSession !== session) return false;" in advance_choice_block
+    assert advance_choice_block.index("recorded !== true") < advance_choice_block.index(
+        "completeWithHandoff(option)"
+    )
+    assert "return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');" in handoff_block
     assert "return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {" in handoff_block
     assert "}).then(function (completed) {" in handoff_block
     assert "if (!completed) return false;" in handoff_block
     assert handoff_block.index("return appendAssistantChatMessage(text") < handoff_block.index(
-        "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+        "return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');"
     )
     assert handoff_block.index("handoffSpeechPromise = speakLine") < handoff_block.index(
-        "return endIcebreakerRoute(session, 'icebreaker_handoff');"
+        "return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');"
+    )
+    assert handoff_block.index("return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');") < handoff_block.index(
+        "completed: true"
     )
     assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
         "dispatchIcebreakerEnded('handoff');"
     )
-    assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.index(
-        "completed: true"
+    assert handoff_block.index("completed: true") < handoff_block.index(
+        "return Promise.resolve(handoffSpeechPromise)"
     )
-    assert handoff_block.index("return Promise.resolve(handoffSpeechPromise)") < handoff_block.rindex(
-        "if (!completed) return false;"
-    ) < handoff_block.index("completed: true")
     assert handoff_block.index("completed: true") < handoff_block.index("dispatchIcebreakerEnded('handoff');")
     assert "if (activeSession === session) {" in handoff_block
-    assert handoff_block.index("return endIcebreakerRoute(session, 'icebreaker_handoff');") < handoff_block.index(
+    assert handoff_block.index("return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');") < handoff_block.index(
         "activeSession = null;"
     )
+    completion_end = runtime.split("function reconcileIcebreakerRouteEnd(session, reason, canRetry)", 1)[1].split(
+        "function endIcebreakerRouteOnPageExit",
+        1,
+    )[0]
+    assert "loadIcebreakerRouteStateForRestore(resolveSessionLanlanName(session))" in completion_end
+    assert "state && state.icebreaker_active !== true" in completion_end
+    assert "if (!stillActive || !canRetry) return false;" in completion_end
+    assert "ended || reconcileIcebreakerRouteEnd(session, reason, false)" in completion_end
+    assert "ended || reconcileIcebreakerRouteEnd(session, reason, true)" in completion_end
 
 
 def test_icebreaker_unload_ends_active_route_without_completing_day():
@@ -1008,6 +1030,125 @@ def test_icebreaker_does_not_bootstrap_from_persisted_end_state_on_cold_start():
     assert "startFromEndStateWhenTutorialIdle" not in body
 
 
+def test_icebreaker_bootstrap_restores_only_an_incomplete_session_and_rebinds_its_prompt():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    bootstrap = runtime.split("function bootstrapFromRecentEndState()", 1)[1].split(
+        "window.addEventListener('neko:avatar-floating-guide-complete'",
+        1,
+    )[0]
+    restore = runtime.split("function restoreInterruptedSession(startupBarrier)", 1)[1].split(
+        "function makeIcebreakerApiError",
+        1,
+    )[0]
+
+    assert "if (!isManagedDesktopReload() || !hasIncompleteStoredSession()) return false;" in bootstrap
+    assert "if (!isTutorialBlockingIcebreaker()) return true;" in bootstrap
+    assert "return restoreInterruptedSession(tutorialIdlePromise);" in bootstrap
+    assert "restoreSessionPromise = Promise.resolve(startupBarrier)" in restore
+    assert "return waitForStorageStartupDecisionForRestore();" in restore
+    assert "return waitForPageConfigForRestore().then(function (configReady)" in restore
+    assert "!hasIncompleteStoredSession(configuredLanlanName)" in restore
+    assert "loadIcebreakerRouteStateForRestore(configuredLanlanName)" in restore
+    assert "loadScriptsForRestore()" in restore
+    assert "loadLocaleForRestore(currentLocale())" in restore
+    assert "Promise.resolve(configuredLanlanName)" in restore
+    assert "ICEBREAKER_API_BASE + '/route/state'" in runtime
+    assert "findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName)" in restore
+    assert "if (!routeResult.loaded || !scripts || !localeData) return false;" in restore
+    assert "resolveLanlanName() !== configuredLanlanName" in restore
+    assert "icebreaker_restore_missing_locale" in restore
+    assert "sessionId: makeIcebreakerSessionId(snapshot.day)" in restore
+    assert "return startIcebreakerRouteForRestore(session).then(function (started)" in restore
+    assert restore.index("if (!started) return false;") < restore.index(
+        "broadcastIcebreakerClearChoicePromptSource"
+    )
+    assert "activeSession = session;" in restore
+    assert "clearPendingGuideEndStateDay(String(session.day || ''));" in restore
+    assert "var presentationPromise" in restore
+    assert "var presentationPromise = setChoicePrompt(" in restore
+    assert "icebreaker_restore_presentation_failed" in restore
+
+    snapshot_matcher = runtime.split("function findRestorableDaySnapshot", 1)[1].split(
+        "function hasIncompleteStoredSession",
+        1,
+    )[0]
+    assert "if (!currentLanlanName) return null;" in snapshot_matcher
+    assert "if (entryLanlanName && entryLanlanName !== currentLanlanName) return;" in snapshot_matcher
+    assert "if (!entryLanlanName && !matchesActiveRoute) return;" in snapshot_matcher
+    assert "if (routeActive && !matchesActiveRoute) return;" in snapshot_matcher
+    assert "Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS" in snapshot_matcher
+
+
+def test_icebreaker_restore_waits_are_bounded_without_timing_out_the_storage_choice():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    storage_wait = runtime.split("function waitForStorageStartupDecisionForRestore()", 1)[1].split(
+        "function findRestorableDaySnapshot",
+        1,
+    )[0]
+    start_for_day = runtime.split("function startForDay(day, options)", 1)[1].split(
+        "function startFromEndState",
+        1,
+    )[0]
+
+    assert "var RESTORE_READ_TIMEOUT_MS = 12000;" in runtime
+    assert "function waitForRestoreRead(promise, fallback, label)" in runtime
+    assert "waitForRestoreRead(statePromise, { loaded: false, state: null }, 'route state')" in runtime
+    restore_start = runtime.split("function startIcebreakerRouteForRestore(session)", 1)[1].split(
+        "function waitForPageConfigForRestore",
+        1,
+    )[0]
+    assert "return startIcebreakerRoute(session).then(function (started)" in restore_start
+    assert "loadIcebreakerRouteStateForRestore(resolveSessionLanlanName(session))" in restore_start
+    assert "String(state.session_id || '') === String(session.sessionId || '')" in restore_start
+    assert "function loadScriptsForRestore()" in runtime
+    assert "waitForRestoreRead(fetchJson(SCRIPT_URL), null, 'scripts')" in runtime
+    assert "function loadLocaleForRestore(locale)" in runtime
+    assert "return waitForRestoreRead(localePromise, null, 'locale');" in runtime
+    assert "waitForRestoreRead(" in runtime.split("function waitForPageConfigForRestore()", 1)[1].split(
+        "function waitForStorageStartupDecisionForRestore",
+        1,
+    )[0]
+    assert "waitForRestoreRead" not in storage_wait
+    assert "if (restoreSessionPromise)" in start_for_day
+    assert "if (!force && restoreSessionPromise)" not in start_for_day
+
+
+def test_icebreaker_restore_preserves_unowned_active_routes_and_waits_for_tutorial_startup():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    discard = runtime.split("function discardUnrestorableRoute(routeState, reason)", 1)[1].split(
+        "function restoreInterruptedSession",
+        1,
+    )[0]
+    tutorial_blocker = runtime.split("function isTutorialBlockingIcebreaker()", 1)[1].split(
+        "function deliverNode",
+        1,
+    )[0]
+
+    assert "if (state.icebreaker_active === true) return Promise.resolve(false);" in discard
+    assert "endIcebreakerRoute" not in discard
+    assert "window.__NEKO_TUTORIAL_STARTUP_SETTLED__ === false" in tutorial_blocker
+
+
+def test_icebreaker_restore_preserves_session_identity_and_waits_for_choice_writes():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    advance = runtime.split("function advanceWithChoice", 1)[1].split(
+        "function handleChoice",
+        1,
+    )[0]
+
+    assert "function conversationLanguagePayload(session)" in runtime
+    assert "getExplicitConversationLanguagePreference(resolveSessionLanlanName(session))" in runtime
+    assert "pendingNodeId: option.next" not in runtime
+    assert "return Promise.resolve(choiceWritePromise).then(function (recorded)" in advance
+    assert "if (recorded !== true || activeSession !== session) return false;" in advance
+    assert advance.index("recorded !== true") < advance.index("deliverNode(option.next)")
+    assert advance.index("recorded !== true") < advance.index("completeWithHandoff(option)")
+    assert "completed: true" in runtime.split("function completeWithHandoff", 1)[1].split(
+        "function advanceWithChoice",
+        1,
+    )[0]
+
+
 def test_icebreaker_avatar_guide_event_day_wins_over_stale_global_end_state():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
     match = re.search(
@@ -1101,7 +1242,7 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "action: 'icebreaker_append_chat_message'" in runtime
     assert "action: 'icebreaker_set_choice_prompt'" in runtime
     assert "action: 'icebreaker_clear_choice_prompt'" in runtime
-    assert "lanlan_name: resolveLanlanName()" in runtime
+    assert "lanlan_name: resolveSessionLanlanName(activeSession)" in runtime
 
     assert "handleIcebreakerBridgeData" in interpage
     assert "function isIcebreakerBridgeForCurrentLanlan(data)" in interpage
@@ -1449,6 +1590,8 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
             storage_body = store_body + entry_body
         else:
             assert "getActiveSession()" in period_body
+            assert "window.NekoNewUserIcebreakerState" in period_body
+            assert "state.isPeriodActive()" in period_body
             assert "isNewUserIcebreakerEntryBlocking(entry)" in period_body
             entry_body = re.search(
                 r"function isNewUserIcebreakerEntryBlocking\(entry\) \{(?P<body>.*?)\n    \}",
@@ -1487,7 +1630,10 @@ def test_icebreaker_period_suppresses_only_active_or_recent_icebreaker():
     assert "function isTutorialReleaseGreetingReason(reason)" not in app_websocket
     assert "function markPendingStartFromEndState(endState)" in runtime
     assert "pendingGuideEndStateDay" in runtime
-    assert "return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);" in runtime
+    assert (
+        "return !!(activeSession || pendingStartDay || pendingGuideEndStateDay || restoreSessionPromise);"
+        in runtime
+    )
     assert "window.dispatchEvent(new CustomEvent('neko:new-user-icebreaker-ended'" in runtime
 
 

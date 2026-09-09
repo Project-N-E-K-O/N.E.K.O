@@ -49,6 +49,8 @@ from config.prompts.prompts_agent import (
 from config.prompts.prompts_sys import _loc
 from utils.language_utils import language_context
 
+from tests.repo_ast_cache import parse_source_file
+
 # Scripts that prove the prompt really is in the target language rather than
 # English.  Deliberately independent of the template wording: rephrasing a
 # template must not silently turn these assertions into no-ops.
@@ -480,7 +482,7 @@ def test_every_analyze_publish_call_site_passes_a_language():
     offenders: list[str] = []
 
     for path in sorted((repo_root / "main_logic").rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = parse_source_file(path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue

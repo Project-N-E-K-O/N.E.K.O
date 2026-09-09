@@ -10,6 +10,8 @@
     var TRIGGER_WINDOW_MS = 2 * 60 * 1000;
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
     var TUTORIAL_IDLE_RETRY_MS = 500;
+    var RESTORE_READ_TIMEOUT_MS = 12000;
+    var MAX_INTERRUPTED_SESSION_AGE_MS = 2 * 60 * 60 * 1000;
     var CHOICE_PROMPT_REVEAL_MIN_DELAY_MS = 700;
     var CHOICE_PROMPT_REVEAL_MAX_DELAY_MS = 1400;
     var CHOICE_PROMPT_REVEAL_SPEECH_RATIO = 0.18;
@@ -24,6 +26,7 @@
     var pendingGuideEndStateDay = '';
     var pendingGuideEndState = null;
     var pendingGuideEndStartPromise = null;
+    var restoreSessionPromise = null;
     var scriptPromise = null;
     var localePromises = Object.create(null);
     var icebreakerSortKeySeq = 0;
@@ -73,13 +76,37 @@
     }
 
     function isPeriodActive() {
-        return !!(activeSession || pendingStartDay || pendingGuideEndStateDay);
+        return !!(activeSession || pendingStartDay || pendingGuideEndStateDay || restoreSessionPromise);
     }
 
     function fetchJson(url) {
         return fetch(url, { credentials: 'same-origin', cache: 'no-store' }).then(function (response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json();
+        });
+    }
+
+    function waitForRestoreRead(promise, fallback, label) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timeoutId = window.setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                console.warn('[NewUserIcebreaker] restore read timed out:', label);
+                resolve(fallback);
+            }, RESTORE_READ_TIMEOUT_MS);
+            Promise.resolve(promise).then(function (value) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                resolve(value);
+            }, function (error) {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timeoutId);
+                console.warn('[NewUserIcebreaker] restore read failed:', label, error);
+                resolve(fallback);
+            });
         });
     }
 
@@ -130,9 +157,9 @@
     function postIcebreakerRoute(path, session, extraBody) {
         if (!session || !session.sessionId) return Promise.resolve(false);
         var body = Object.assign({
-            lanlan_name: resolveLanlanName(),
+            lanlan_name: resolveSessionLanlanName(session),
             session_id: String(session.sessionId || '')
-        }, conversationLanguagePayload(), extraBody || {});
+        }, conversationLanguagePayload(session), extraBody || {});
 
         function parseRouteResponse(response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -199,6 +226,33 @@
         return postIcebreakerRoute('/route/end', session, {
             reason: reason || 'icebreaker_complete',
             postgameProactive: { enabled: false }
+        }).then(function (ended) {
+            if (!ended) session.routeEnded = false;
+            return ended;
+        });
+    }
+
+    function reconcileIcebreakerRouteEnd(session, reason, canRetry) {
+        return loadIcebreakerRouteStateForRestore(resolveSessionLanlanName(session)).then(function (result) {
+            var state = result && result.state;
+            var stillActive = !!(
+                result
+                && result.loaded
+                && state
+                && state.icebreaker_active === true
+                && String(state.session_id || '') === String(session.sessionId || '')
+            );
+            if (result && result.loaded && state && state.icebreaker_active !== true) return true;
+            if (!stillActive || !canRetry) return false;
+            return endIcebreakerRoute(session, reason).then(function (ended) {
+                return ended || reconcileIcebreakerRouteEnd(session, reason, false);
+            });
+        });
+    }
+
+    function endIcebreakerRouteForCompletion(session, reason) {
+        return endIcebreakerRoute(session, reason).then(function (ended) {
+            return ended || reconcileIcebreakerRouteEnd(session, reason, true);
         });
     }
 
@@ -209,11 +263,11 @@
         session.routeEnded = true;
         clearFreeTextRuntimeStateForSession(session);
         var body = Object.assign({
-            lanlan_name: resolveLanlanName(),
+            lanlan_name: resolveSessionLanlanName(session),
             session_id: String(session.sessionId || ''),
             reason: reason || 'icebreaker_page_exit',
             postgameProactive: { enabled: false }
-        }, conversationLanguagePayload());
+        }, conversationLanguagePayload(session));
         try {
             var security = window.nekoLocalMutationSecurity;
             if (security && typeof security.peekCachedToken === 'function') {
@@ -258,6 +312,10 @@
         return scriptPromise;
     }
 
+    function loadScriptsForRestore() {
+        return waitForRestoreRead(fetchJson(SCRIPT_URL), null, 'scripts');
+    }
+
     function normalizeLocale(locale) {
         var value = String(locale || '').trim();
         if (!value) return 'zh-CN';
@@ -291,19 +349,19 @@
         return 'zh-CN';
     }
 
-    function explicitConversationLocale() {
+    function explicitConversationLocale(session) {
         try {
             if (typeof window.getExplicitConversationLanguagePreference === 'function') {
-                var preferred = window.getExplicitConversationLanguagePreference(resolveLanlanName());
+                var preferred = window.getExplicitConversationLanguagePreference(resolveSessionLanlanName(session));
                 return preferred ? normalizeLocale(preferred) : '';
             }
         } catch (_) {}
         return '';
     }
 
-    function conversationLanguagePayload() {
+    function conversationLanguagePayload(session) {
         var payload = {};
-        var explicitLanguage = explicitConversationLocale();
+        var explicitLanguage = explicitConversationLocale(session);
         var renderLanguage = currentLocale();
         if (explicitLanguage) payload.i18n_language = explicitLanguage;
         if (renderLanguage) payload.render_language = renderLanguage;
@@ -320,6 +378,16 @@
                 });
         }
         return localePromises[normalized];
+    }
+
+    function loadLocaleForRestore(locale) {
+        var normalized = normalizeLocale(locale);
+        var localePromise = fetchJson(LOCALE_BASE_URL + encodeURIComponent(normalized) + '.json')
+            .catch(function (error) {
+                if (normalized === 'zh-CN') throw error;
+                return fetchJson(LOCALE_BASE_URL + 'zh-CN.json');
+            });
+        return waitForRestoreRead(localePromise, null, 'locale');
     }
 
     function getText(localeData, key) {
@@ -358,8 +426,249 @@
         }
     }
 
+    function resolveSessionLanlanName(session) {
+        return String((session && session.lanlanName) || resolveLanlanName() || '');
+    }
+
+    function isManagedDesktopReload() {
+        try {
+            return window.__NEKO_MULTI_WINDOW__ === true
+                && window.__NEKO_MANAGED_WINDOW_REBUILD__ === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     function resolveAuthor() {
         return resolveLanlanName() || 'N.E.K.O';
+    }
+
+    function loadIcebreakerRouteStateForRestore(lanlanName) {
+        var suffix = lanlanName ? ('?lanlan_name=' + encodeURIComponent(lanlanName)) : '';
+        var statePromise = fetchJson(ICEBREAKER_API_BASE + '/route/state' + suffix).then(function (data) {
+            return {
+                loaded: !!(data && data.ok === true),
+                state: data && data.ok === true && data.state && typeof data.state === 'object'
+                    ? data.state
+                    : null
+            };
+        });
+        return waitForRestoreRead(statePromise, { loaded: false, state: null }, 'route state');
+    }
+
+    function startIcebreakerRouteForRestore(session) {
+        return startIcebreakerRoute(session).then(function (started) {
+            if (started) return true;
+            return loadIcebreakerRouteStateForRestore(resolveSessionLanlanName(session)).then(function (result) {
+                var state = result && result.state;
+                return !!(
+                    result
+                    && result.loaded
+                    && state
+                    && state.icebreaker_active === true
+                    && String(state.session_id || '') === String(session.sessionId || '')
+                );
+            });
+        });
+    }
+
+    function waitForPageConfigForRestore() {
+        var ready = window.pageConfigReady;
+        if (!ready || typeof ready.then !== 'function') return Promise.resolve(true);
+        return waitForRestoreRead(
+            Promise.resolve(ready).then(function () { return true; }),
+            false,
+            'page config'
+        );
+    }
+
+    function waitForStorageStartupDecisionForRestore() {
+        var storageLocation = window.appStorageLocation;
+        if (!storageLocation || typeof storageLocation.waitUntilMainUiAllowed !== 'function') {
+            return Promise.resolve(true);
+        }
+        return Promise.resolve(storageLocation.waitUntilMainUiAllowed()).then(function (decision) {
+            return !decision || decision.canContinue !== false;
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] storage startup wait failed:', error);
+            return false;
+        });
+    }
+
+    function findRestorableDaySnapshot(routeState, scripts, lanlanName) {
+        var store = readStore();
+        var days = store && store.days && typeof store.days === 'object' ? store.days : {};
+        var state = routeState && typeof routeState === 'object' ? routeState : {};
+        var routeActive = state.icebreaker_active === true;
+        var routeSessionId = String(state.session_id || '');
+        var currentLanlanName = String(lanlanName || '');
+        var best = null;
+
+        if (!currentLanlanName) return null;
+
+        Object.keys(days).forEach(function (day) {
+            var entry = days[day];
+            var dayConfig = scripts && scripts.days ? scripts.days[day] : null;
+            var nodeId = String((entry && entry.nodeId) || '');
+            var entryLanlanName = String((entry && entry.lanlanName) || '');
+            var updatedAt = Number((entry && entry.updatedAt) || 0);
+            if (!entry || entry.started !== true || entry.completed === true) return;
+            if (!dayConfig || !dayConfig.nodes || !dayConfig.nodes[nodeId]) return;
+            if (entryLanlanName && entryLanlanName !== currentLanlanName) return;
+            var matchesActiveRoute = routeActive
+                && !!routeSessionId
+                && String(entry.sessionId || '') === routeSessionId;
+            if (!entryLanlanName && !matchesActiveRoute) return;
+            if (routeActive && !matchesActiveRoute) return;
+            if (!matchesActiveRoute && (
+                !Number.isFinite(updatedAt)
+                || updatedAt <= 0
+                || Date.now() - updatedAt > MAX_INTERRUPTED_SESSION_AGE_MS
+            )) return;
+            var candidate = {
+                day: day,
+                dayConfig: dayConfig,
+                entry: entry,
+                nodeId: nodeId,
+                matchesActiveRoute: matchesActiveRoute
+            };
+            if (
+                !best
+                || (candidate.matchesActiveRoute && !best.matchesActiveRoute)
+                || (
+                    candidate.matchesActiveRoute === best.matchesActiveRoute
+                    && Number(entry.updatedAt || 0) > Number(best.entry.updatedAt || 0)
+                )
+            ) {
+                best = candidate;
+            }
+        });
+        return best;
+    }
+
+    function hasIncompleteStoredSession(lanlanName) {
+        var store = readStore();
+        var days = store && store.days && typeof store.days === 'object' ? store.days : {};
+        var expectedLanlanName = String(lanlanName || '');
+        return Object.keys(days).some(function (day) {
+            var entry = days[day];
+            return !!(
+                entry
+                && entry.started === true
+                && entry.completed !== true
+                && entry.sessionId
+                && entry.nodeId
+                && (!expectedLanlanName || !entry.lanlanName || String(entry.lanlanName) === expectedLanlanName)
+            );
+        });
+    }
+
+    function makeIcebreakerSessionId(day) {
+        return 'icebreaker-day' + String(day || '') + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    function discardUnrestorableRoute(routeState, reason) {
+        var state = routeState && typeof routeState === 'object' ? routeState : {};
+        var lanlanName = String(state.lanlan_name || resolveLanlanName() || '');
+        // An active route without a matching local snapshot may belong to a newer
+        // renderer. Its ownership cannot be proven here, so do not clear or end it.
+        if (state.icebreaker_active === true) return Promise.resolve(false);
+        broadcastIcebreakerClearChoicePromptSource(SOURCE, reason || 'icebreaker_restore_unavailable', lanlanName);
+        return Promise.resolve(false);
+    }
+
+    function restoreInterruptedSession(startupBarrier) {
+        if (!isManagedDesktopReload()) return Promise.resolve(false);
+        if (activeSession) return Promise.resolve(true);
+        if (restoreSessionPromise) return restoreSessionPromise;
+        restoreSessionPromise = Promise.resolve(startupBarrier).then(function (barrierReady) {
+            if (barrierReady === false || activeSession) return false;
+            return waitForStorageStartupDecisionForRestore();
+        }).then(function (canContinue) {
+            if (!canContinue || activeSession) return null;
+            return waitForPageConfigForRestore().then(function (configReady) {
+                if (!configReady || activeSession) return null;
+                var configuredLanlanName = resolveLanlanName();
+                if (!configuredLanlanName || !hasIncompleteStoredSession(configuredLanlanName)) return null;
+                return Promise.all([
+                    loadIcebreakerRouteStateForRestore(configuredLanlanName),
+                    loadScriptsForRestore(),
+                    loadLocaleForRestore(currentLocale()),
+                    Promise.resolve(configuredLanlanName)
+                ]);
+            });
+        }).then(function (results) {
+            if (!results) return !!activeSession;
+            var routeResult = results[0];
+            var scripts = results[1];
+            var localeData = results[2];
+            if (!routeResult.loaded || !scripts || !localeData) return false;
+            var configuredLanlanName = String(results[3] || '');
+            if (!configuredLanlanName || resolveLanlanName() !== configuredLanlanName) return false;
+            var restoreLanlanName = configuredLanlanName;
+            var snapshot = findRestorableDaySnapshot(routeResult.state, scripts, restoreLanlanName);
+            if (!snapshot) {
+                return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_unavailable');
+            }
+
+            var lanlanName = String(
+                restoreLanlanName
+                || snapshot.entry.lanlanName
+                || ''
+            );
+            if (!lanlanName) {
+                return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_missing_lanlan');
+            }
+            if (!buildPromptOptions(snapshot.dayConfig.nodes[snapshot.nodeId], localeData).length) {
+                return discardUnrestorableRoute(routeResult.state, 'icebreaker_restore_missing_locale');
+            }
+
+            // 恢复时换一个 session id 并重新激活 route。浏览器普通 reload 的旧页面可能
+            // 还有迟到的 /route/end；新 id 能让后端把它判为 stale，避免刚恢复就被旧请求关掉。
+            var session = {
+                day: snapshot.day,
+                dayConfig: snapshot.dayConfig,
+                localeData: localeData,
+                nodeId: snapshot.nodeId,
+                lanlanName: lanlanName,
+                sessionId: makeIcebreakerSessionId(snapshot.day)
+            };
+            return startIcebreakerRouteForRestore(session).then(function (started) {
+                if (!started) return false;
+                broadcastIcebreakerClearChoicePromptSource(SOURCE, 'icebreaker_session_restore', lanlanName);
+                activeSession = session;
+                clearPendingGuideEndStateDay(String(session.day || ''));
+                markDay(session.day, {
+                    started: true,
+                    completed: false,
+                    lanlanName: session.lanlanName,
+                    sessionId: session.sessionId,
+                    nodeId: session.nodeId,
+                    pendingNodeId: '',
+                    updatedAt: Date.now()
+                });
+                var presentationPromise = setChoicePrompt(
+                    session.dayConfig.nodes[session.nodeId],
+                    session.localeData,
+                    0
+                );
+                return presentationPromise.then(function (presented) {
+                    if (presented) return true;
+                    clearChoicePrompt();
+                    if (activeSession === session) activeSession = null;
+                    return endIcebreakerRoute(session, 'icebreaker_restore_presentation_failed').then(function () {
+                        return false;
+                    });
+                });
+            });
+        }).catch(function (error) {
+            console.warn('[NewUserIcebreaker] session restore failed:', error);
+            return false;
+        }).then(function (restored) {
+            restoreSessionPromise = null;
+            return restored;
+        });
+        return restoreSessionPromise;
     }
 
     function makeIcebreakerApiError(reason, payload) {
@@ -443,7 +752,7 @@
     function broadcastIcebreaker(action, payload) {
         var message = Object.assign({
             action: action,
-            lanlan_name: resolveLanlanName(),
+            lanlan_name: resolveSessionLanlanName(activeSession),
             timestamp: nextIcebreakerBridgeTimestamp()
         }, payload || {});
         var channel = getBroadcastChannel();
@@ -495,11 +804,12 @@
         });
     }
 
-    function broadcastIcebreakerClearChoicePromptSource(source, reason) {
+    function broadcastIcebreakerClearChoicePromptSource(source, reason, lanlanName) {
         broadcastIcebreaker(null, {
             action: 'icebreaker_clear_choice_prompt_source',
             source: source || SOURCE,
-            reason: reason || 'icebreaker_source_reset'
+            reason: reason || 'icebreaker_source_reset',
+            lanlan_name: String(lanlanName || resolveSessionLanlanName(activeSession))
         });
     }
 
@@ -510,7 +820,7 @@
         var currentSession = activeSession || {};
         var extra = meta && typeof meta === 'object' ? meta : {};
         var body = Object.assign({
-            lanlan_name: resolveLanlanName(),
+            lanlan_name: resolveSessionLanlanName(currentSession),
             role: cleanRole,
             text: cleanText,
             session_id: String(currentSession.sessionId || ''),
@@ -527,7 +837,7 @@
                 free_text: extra.freeText === true,
                 request_id: String(extra.requestId || '')
             }
-        }, conversationLanguagePayload());
+        }, conversationLanguagePayload(currentSession));
         function parseContextResponse(response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json().then(function (data) {
@@ -801,7 +1111,7 @@
         if (!line) return Promise.resolve(false);
         var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
         var body = Object.assign({
-            lanlan_name: resolveLanlanName(),
+            lanlan_name: resolveSessionLanlanName(activeSession),
             line: line,
             request_id: makeMessageId('icebreaker-tts'),
             session_id: sessionId,
@@ -813,7 +1123,7 @@
                 source: SOURCE,
                 voice_key: String(voiceKey || '')
             }
-        }, conversationLanguagePayload());
+        }, conversationLanguagePayload(activeSession));
         return getLocalMutationHeaders().then(function (headers) {
             var requestOptions = {
                 method: 'POST',
@@ -998,7 +1308,7 @@
             free_text_derail_streak: getFreeTextDerailStreak(session, bodyNodeId),
             recent_free_text_turns: getRecentFreeTextTurns(session, bodyNodeId),
             request_id: String(info.requestId || '')
-        }, conversationLanguagePayload());
+        }, conversationLanguagePayload(session));
         return postIcebreakerJson('/free-text/interpret', body).then(function (data) {
             if (data && data.skipped === 'stale_session') {
                 throw makeIcebreakerApiError('stale_session', data);
@@ -1030,7 +1340,7 @@
         };
         broadcastIcebreakerChoicePrompt(prompt);
         if (!shouldRenderIcebreakerOnLocalChatHost()) {
-            return Promise.resolve(false);
+            return Promise.resolve(window.__NEKO_MULTI_WINDOW__ === true);
         }
         return waitForChatHost(30000).then(function (host) {
             if (!host || typeof host.setIcebreakerChoicePrompt !== 'function') return false;
@@ -1100,7 +1410,8 @@
 
     function isTutorialBlockingIcebreaker() {
         try {
-            if (window.isInTutorial) return true;
+            if (window.__NEKO_TUTORIAL_STARTUP_SETTLED__ === false) return true;
+            if (window.isInTutorial || window.isNekoHomeTutorialPending === true) return true;
         } catch (_) {}
         try {
             var manager = window.universalTutorialManager;
@@ -1147,8 +1458,10 @@
             markDay(session.day, {
                 started: true,
                 completed: false,
+                lanlanName: session.lanlanName,
                 sessionId: session.sessionId,
                 nodeId: nodeId,
+                pendingNodeId: '',
                 updatedAt: Date.now()
             });
             applyAssistantTextEmotion(text);
@@ -1168,6 +1481,7 @@
         var nodeId = session.nodeId;
         var sessionId = session.sessionId;
         var handoffSpeechPromise = Promise.resolve(false);
+        var handoffDelivered = false;
         return appendAssistantChatMessage(text, {
             day: day,
             nodeId: nodeId,
@@ -1175,31 +1489,27 @@
             handoff: true
         }, session).then(function (message) {
             if (!didAppendChatMessage(message)) return false;
+            handoffDelivered = true;
             clearChoicePrompt();
             applyAssistantTextEmotion(text);
             handoffSpeechPromise = speakLine(text, option.handoffVoiceKey || '');
-            // 关 route 前 await 本 session 全部未决池写入（中间+收尾）：严格后端 route 一关就
-            // 拒收，迟到的写入会丢。绝大多数早已 resolve，Promise.all 实际几乎立即完成。
-            var pendingWrites = (session.pendingChoiceWrites || []).map(function (p) {
-                return Promise.resolve(p).catch(function () {});
+            return endIcebreakerRouteForCompletion(session, 'icebreaker_handoff');
+        }).then(function (routeEnded) {
+            if (!handoffDelivered || routeEnded !== true) return false;
+            markDay(day, {
+                started: true,
+                completed: true,
+                completedAt: Date.now(),
+                lanlanName: session.lanlanName,
+                sessionId: sessionId,
+                nodeId: nodeId,
+                pendingNodeId: ''
             });
-            return Promise.all(pendingWrites).then(function () {
-                return endIcebreakerRoute(session, 'icebreaker_handoff');
-            });
-        }).then(function (completed) {
-            if (!completed) return false;
             return Promise.resolve(handoffSpeechPromise).catch(function () {}).then(function () {
                 return true;
             });
         }).then(function (completed) {
             if (!completed) return false;
-            markDay(day, {
-                started: true,
-                completed: true,
-                completedAt: Date.now(),
-                sessionId: sessionId,
-                nodeId: nodeId
-            });
             if (activeSession === session) {
                 activeSession = null;
             }
@@ -1214,7 +1524,7 @@
         setFreeTextDerailStreak(session, choiceNodeId, 0);
         // seq 是 session 内自增步序，让消费侧按点击顺序还原路径，不受 fire-and-forget
         // 写入到达顺序被网络打乱的影响；收尾前 completeWithHandoff 会 await 这些写入。
-        var choiceWritePromise = recordChoiceToPool({
+        var choicePayload = {
             day: session.day,
             sessionId: session.sessionId,
             nodeId: choiceNodeId,
@@ -1223,15 +1533,19 @@
             handoff: isHandoffChoice,
             completed: isHandoffChoice,
             seq: (session.choiceSeq = (session.choiceSeq || 0) + 1)
+        };
+        var choiceWritePromise = recordChoiceToPool(choicePayload).then(function (recorded) {
+            if (recorded === true || activeSession !== session) return recorded;
+            // 同一 session/node/choice 在后端按身份去重；重试同一 payload 不会重复落池，
+            // 也避免让用户为了暂态写入失败再次发送同一条聊天消息。
+            return recordChoiceToPool(choicePayload);
         });
-        (session.pendingChoiceWrites || (session.pendingChoiceWrites = [])).push(choiceWritePromise);
-        if (option.next) {
-            return deliverNode(option.next);
-        }
-        if (option.handoffKey) {
-            return completeWithHandoff(option);
-        }
-        return Promise.resolve(false);
+        return Promise.resolve(choiceWritePromise).then(function (recorded) {
+            if (recorded !== true || activeSession !== session) return false;
+            if (option.next) return deliverNode(option.next);
+            if (option.handoffKey) return completeWithHandoff(option);
+            return false;
+        });
     }
 
     function handleChoice(detail) {
@@ -1576,6 +1890,13 @@
         var force = !!(options && options.force);
         var dayKey = String(day || '');
         if (!force && pendingStartDay === dayKey) return Promise.resolve(false);
+        if (restoreSessionPromise) {
+            return restoreSessionPromise.then(function (restored) {
+                if (!force && restored && activeSession && String(activeSession.day || '') === dayKey) return true;
+                if (!force && activeSession) return false;
+                return startForDay(dayKey, options);
+            });
+        }
         pendingStartDay = dayKey;
         return Promise.all([loadScripts(), loadLocale(currentLocale())]).then(function (results) {
             if (activeSession && !force) return false;
@@ -1591,7 +1912,7 @@
                 nodeId: dayConfig.root,
                 // 钉死本 session 的角色：后续选项写入用这个快照而非现取，避免中途换角色串味。
                 lanlanName: resolveLanlanName(),
-                sessionId: 'icebreaker-day' + dayKey + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
+                sessionId: makeIcebreakerSessionId(dayKey)
             };
             return startIcebreakerRoute(nextSession).then(function (started) {
                 if (!started) return false;
@@ -1721,9 +2042,19 @@
     }
 
     function bootstrapFromRecentEndState() {
-        // Cold starts must wait for an explicit tutorial end event; persisted
-        // guide history can otherwise steal the first tutorial before it opens.
-        return false;
+        // 不从「教程已经结束」的历史启动新破冰；只恢复本地明确保存为
+        // started-but-incomplete 的破冰节点。旧 route 可能已被 pagehide 提前结束，
+        // 因此它只用于优先匹配节点，不能作为是否恢复的硬前提。
+        if (!isManagedDesktopReload() || !hasIncompleteStoredSession()) return false;
+        var tutorialIdlePromise = new Promise(function (resolve) {
+            window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
+        }).then(function waitForTutorialIdle() {
+            if (!isTutorialBlockingIcebreaker()) return true;
+            return new Promise(function (resolve) {
+                window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
+            }).then(waitForTutorialIdle);
+        });
+        return restoreInterruptedSession(tutorialIdlePromise);
     }
 
     window.addEventListener('neko:avatar-floating-guide-complete', handleGuideEndEvent);
@@ -1750,11 +2081,8 @@
     window.addEventListener('neko:new-user-icebreaker-reset', function () {
         broadcastIcebreakerClearChoicePromptSource(SOURCE, 'new-user-icebreaker-reset');
     });
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', bootstrapFromRecentEndState, { once: true });
-    } else {
-        bootstrapFromRecentEndState();
-    }
+    // 立即占用恢复协调槽；真正读取/展示仍会等待教程空闲和页面配置。
+    bootstrapFromRecentEndState();
 
     window.newUserIcebreaker = {
         start: function (day) {

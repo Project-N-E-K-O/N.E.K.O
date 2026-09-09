@@ -262,6 +262,12 @@ def test_plugin_server_redirects_model_settings_to_main_server(monkeypatch):
             "DOCX endpoint",
         ),
     ],
+    # Explicit ids: the fixture bytes are OOXML archives, and a zip carries a
+    # second-resolution timestamp, so pytest's auto-generated id changes from
+    # run to run (and between two workers started a second apart). That breaks
+    # --lf, breaks selecting a case by id, and made -p xdist abort outright with
+    # "different tests were collected".
+    ids=["pdf", "docx"],
 )
 def test_documents_parse_returns_neutral_document_shape(
     filename,
@@ -316,6 +322,17 @@ def test_documents_parse_returns_neutral_document_shape(
             _encrypted_pdf_bytes(),
             "encrypted_pdf_unsupported",
         ),
+    ],
+    # Same reason as above: the xlsx/pptx payloads are timestamped zips.
+    ids=[
+        "legacy_doc",
+        "macro_docm",
+        "xlsx",
+        "pptx",
+        "broken_pdf",
+        "broken_docx",
+        "scan_pdf",
+        "encrypted_pdf",
     ],
 )
 def test_documents_parse_rejects_out_of_scope_or_invalid_documents(

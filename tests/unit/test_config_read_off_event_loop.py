@@ -19,6 +19,8 @@ from tests.fake_clock import patch_module_clock
 from utils.config_manager import core_config as core_config_module
 from utils.config_manager.core_config import CoreConfigMixin
 
+from tests.repo_ast_cache import parse_source_file
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -212,7 +214,7 @@ def _sync_config_reads_inside_async_defs(path: Path) -> list[tuple[int, str, str
     it. The one exception is a callable handed to ``to_thread`` / ``run_in_executor``:
     that one genuinely runs on a worker thread, and a sync read inside it is correct.
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    tree = parse_source_file(path)
     hits: list[tuple[int, str, str]] = []
 
     def walk(node: ast.AST, on_loop: bool, enclosing: str, exempt: frozenset[str]) -> None:

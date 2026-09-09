@@ -40,6 +40,8 @@ from main_logic.core import LLMSessionManager
 from main_logic.core import tts_runtime as tts_runtime_module
 from main_logic.core.game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
 
+from tests.repo_ast_cache import parse_source_file
+
 MAIN_LOGIC_DIR = Path(__file__).resolve().parents[2] / "main_logic"
 
 
@@ -473,7 +475,7 @@ def test_no_call_site_schedules_audio_done_fire_and_forget():
     ordered_calls = {"send_audio_done", "on_audio_done", "emit_audio_done"}
     offenders = []
     for path in sorted(MAIN_LOGIC_DIR.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = parse_source_file(path)
         for call in _fire_and_forget_calls(tree):
             mentions = any(
                 (isinstance(sub, ast.Attribute) and sub.attr in ordered_calls)

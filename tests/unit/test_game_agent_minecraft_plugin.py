@@ -1872,3 +1872,205 @@ async def test_autonomous_status_rearms_busy_without_pending():
     )
 
     assert service._agent_busy is True
+
+
+# ---------------------------------------------------------------------------
+# duplicate frames — "same instruction already running" is not a completion
+# ---------------------------------------------------------------------------
+
+
+async def _dispatch_and_get_id(service, task: str) -> tuple[asyncio.Task, str]:
+    runner = asyncio.create_task(service.execute_minecraft_task(task=task))
+    for _ in range(50):
+        if service._pending is not None and service._pending.task_text == task:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("_pending was never set")
+    return runner, service._pending.task_id
+
+
+@pytest.mark.asyncio
+async def test_duplicate_frame_keeps_pending_and_resolves_via_original_id():
+    """Regression for the 2026-09-07 resend loop: a re-dispatch of text that
+    mc-agent is still running gets ``status=duplicate``. That frame must NOT
+    clear the slot nor wake the handler as a failure; the eventual
+    ``task_finished`` for the ORIGINAL dispatch id resolves the new slot."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    runner1, first_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    # First dispatch drops out of the slot (e.g. plugin-side timeout) while
+    # mc-agent keeps running it. Simulate by timing the wait out directly.
+    service._pending.result = {"status": "timeout", "query": "mine 10 logs"}
+    service._pending.event.set()
+    service._pending = None
+    await asyncio.wait_for(runner1, timeout=2.0)
+
+    runner2, second_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    assert second_id != first_id
+
+    await service._on_task_finished({
+        "status": "duplicate",
+        "task_id": second_id,
+        "message": "收到。相同指令已在执行中（已运行20秒），请勿重发。",
+    })
+    await asyncio.sleep(0.05)
+
+    assert not runner2.done(), "duplicate frame must not resolve the handler"
+    assert service._pending is not None
+    assert service._pending.task_id == second_id
+    assert service._pending.alias_task_id == first_id
+    assert any("相同指令已在执行中" in line for line in service._log_cache)
+
+    await service._on_task_finished(
+        {"status": "ok", "task_id": first_id, "text": "done"}
+    )
+    out = await asyncio.wait_for(runner2, timeout=2.0)
+    assert out["status"] == "ok"
+    assert service._pending is None
+
+
+@pytest.mark.asyncio
+async def test_duplicate_chain_aliases_root_not_sibling_duplicate():
+    """Three dispatches of one long task: the first really runs, the second
+    and third both get ``duplicate``. The third must alias the FIRST id (the
+    running one), not the second (which never ran and whose id no completion
+    frame will ever carry) — otherwise the root's completion routes to the
+    retroactive bucket and the third slot waits until timeout."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    async def _drop_slot_as_timeout(runner):
+        service._pending.result = {"status": "timeout", "query": "mine 10 logs"}
+        service._pending.event.set()
+        service._pending = None
+        await asyncio.wait_for(runner, timeout=2.0)
+
+    runner1, first_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    await _drop_slot_as_timeout(runner1)
+
+    runner2, second_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    await service._on_task_finished({"status": "duplicate", "task_id": second_id})
+    await asyncio.sleep(0.02)
+    assert service._pending.alias_task_id == first_id
+    await _drop_slot_as_timeout(runner2)
+
+    runner3, third_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    await service._on_task_finished({"status": "duplicate", "task_id": third_id})
+    await asyncio.sleep(0.02)
+    assert service._pending.alias_task_id == first_id, (
+        "third slot aliased a sibling duplicate instead of the running root"
+    )
+
+    await service._on_task_finished({"status": "ok", "task_id": first_id})
+    out = await asyncio.wait_for(runner3, timeout=2.0)
+    assert out["status"] == "ok"
+    assert service._pending is None
+
+
+@pytest.mark.asyncio
+async def test_duplicate_frame_without_prior_dispatch_keeps_pending():
+    """No earlier dispatch of the same text in history (mc-agent is running
+    its own task, or the history rolled over): still hold the slot; the
+    slot's own id resolves it later."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    runner, task_id = await _dispatch_and_get_id(service, "go to the village")
+    await service._on_task_finished({"status": "duplicate", "task_id": task_id})
+    await asyncio.sleep(0.05)
+
+    assert not runner.done()
+    assert service._pending is not None
+    assert service._pending.alias_task_id == ""
+
+    await service._on_task_finished({"status": "ok", "task_id": task_id})
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_frame_for_historical_id_stays_retroactive():
+    """A duplicate echoing an id that is no longer pending is not our slot's
+    business — it must not disturb the current pending task."""
+    service, push_calls = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    runner, task_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    await service._on_task_finished({"status": "duplicate", "task_id": "ghost-id"})
+    await asyncio.sleep(0.05)
+
+    assert not runner.done()
+    assert service._pending is not None and service._pending.task_id == task_id
+
+    await service._on_task_finished({"status": "ok", "task_id": task_id})
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# identifier-shaped task text is refused at the entry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "mine_block",
+        "query_inventory",
+        "GET_DIAMOND",
+        "mineDiamonds",
+        "goToCoordinates(118,64,-115,1)",
+        "  mine_block  ",
+    ],
+)
+def test_task_looks_like_identifier_true(text):
+    from plugin.plugins.game_agent_minecraft.service import task_looks_like_identifier
+
+    assert task_looks_like_identifier(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "mine 4 oak logs nearby",
+        "挖钻石",
+        "stop",
+        "mine",
+        "Mine diamonds",
+        "walk to 120 64 -50",
+        "come here",
+        "",
+    ],
+)
+def test_task_looks_like_identifier_false(text):
+    from plugin.plugins.game_agent_minecraft.service import task_looks_like_identifier
+
+    assert task_looks_like_identifier(text) is False
+
+
+@pytest.mark.asyncio
+async def test_execute_rejects_identifier_task_before_claiming():
+    service, _ = _make_service()
+    service._client = _FakeClient()
+
+    out = await service.execute_minecraft_task(task="mine_block")
+
+    assert out["is_error"] is True
+    assert out["error"] == "INVALID_TASK"
+    assert service._pending is None
+    assert service._client.sent == []
+
+
+def test_task_tool_description_does_not_name_other_entries():
+    """The description must not contain identifier-shaped entry names the
+    model could copy into ``task`` (observed: ``query_inventory``)."""
+    from plugin.plugins.game_agent_minecraft import MINECRAFT_TASK_DESCRIPTION
+
+    assert "query_inventory" not in MINECRAFT_TASK_DESCRIPTION
+    assert "inventory" in MINECRAFT_TASK_DESCRIPTION

@@ -18,12 +18,13 @@ import signal
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 
 import psutil
 
+from plugin._types.entry_metadata import entry_contract_fields
 from plugin._types.events import EventHandler, EventMeta
 from plugin.core import registry as registry_module
 from plugin.core.state import state
@@ -43,6 +44,27 @@ _WORKER_BOOTSTRAP = (
     "from plugin.server.application.plugins.metadata_scanner "
     "import _worker_main;_worker_main(_protocol_fd)"
 )
+
+
+# 单个插件扫描的上限。
+#
+# 从 30s 降下来：实测本机 17 个真实插件里最慢的 1.41s、中位 0.97s，所以 10s 仍有
+# 约 7 倍余量，冷盘或杀软首次逐个扫解释器时也够。30s 的问题是它乘以插件数——
+# 一个卡住的插件能把整轮 discovery 拖到分钟级，而前端只等 30s。
+#
+# 注意单项上限本身不足以封顶：17 个插件按 5 并发是 4 波，4×10s 仍然超前端预算。
+# 真正封顶的是 registry_service 那边的总预算，这里只负责让单个坏插件早点放手。
+# Env: NEKO_PLUGIN_METADATA_SCAN_TIMEOUT
+from plugin.server.application.plugins._env_budgets import env_seconds
+
+_DEFAULT_SCAN_TIMEOUT_SECONDS = env_seconds("NEKO_PLUGIN_METADATA_SCAN_TIMEOUT", 10.0)
+
+# 这里曾经有一个全局信号量，限制同时活着的元数据解释器数量，因为 discovery 会
+# 并行强扫十几个插件、每个常驻约 66 MB。discovery 不再扫描之后扇出没有了：唯一
+# 的调用方是 start_plugin，而它跑在插件操作锁里，一次只可能有一个。
+#
+# 连带删掉的还有"等槽位超过 50ms 就把超时改判成预算问题"那条判据——它的存在
+# 前提就是有人要排队等槽位。
 
 
 def _metadata_worker_command() -> list[str]:
@@ -113,6 +135,8 @@ def _terminate_worker_tree(
             try:
                 process.kill()
             except OSError:
+                # 进程在 poll() 和 kill() 之间自己退了，或者句柄已经无效——
+                # 目的（它不再运行）已经达成，没有可补救的。
                 pass
 
 
@@ -126,7 +150,52 @@ def _terminate_and_reap_worker(
             process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.wait()
+            try:
+                # 同理：已经 kill 过的进程通常立刻可收，但这一步无界等待没有
+                # 任何东西护着，收不掉就放手，别把关停卡在这儿。
+                process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                pass
+
+
+_STDERR_TAIL_BYTES = 1000
+_STDERR_READ_TIMEOUT_SECONDS = 2.0
+
+
+def _read_worker_stderr(process: subprocess.Popen[bytes]) -> str:
+    """Read whatever diagnostics the worker left, without trusting the pipe.
+
+    ``stream.read(n)`` on a pipe returns only at n bytes or EOF, and EOF needs
+    every write handle closed — including any a grandchild inherited. Today the
+    worker redirects fd 2 to devnull before it imports plugin code, in both the
+    ``-c`` bootstrap and the frozen ``--neko-plugin-metadata-worker`` path, so
+    plugin-spawned processes never hold this pipe and the read returns promptly
+    (verified against a plugin that spawns a 30 s child at import: 0.75 s).
+
+    That makes this read safe by an invariant maintained in two other places,
+    which is a thin thing for an unbounded blocking call to rest on — and it
+    sits after every timeout timer has been cancelled, so nothing would
+    interrupt it. Bounded here instead: a background thread, and after the
+    deadline we give up on the diagnostics rather than on the scan.
+    """
+    stream = process.stderr
+    if stream is None:
+        return ""
+
+    collected: list[bytes] = []
+
+    def _drain() -> None:
+        try:
+            collected.append(stream.read(_STDERR_TAIL_BYTES))
+        except Exception:  # noqa: BLE001 - diagnostics only
+            pass
+
+    reader = threading.Thread(target=_drain, daemon=True, name="plugin-scan-stderr")
+    reader.start()
+    reader.join(timeout=_STDERR_READ_TIMEOUT_SECONDS)
+    if reader.is_alive() or not collected:
+        return ""
+    return collected[0].decode("utf-8", errors="replace")
 
 
 def _read_protocol_output_blocking(stream: BinaryIO) -> tuple[bytes, bool]:
@@ -251,22 +320,29 @@ def _json_safe(value: Any) -> Any:
 def _event_meta_payload(meta: object) -> dict[str, object]:
     raw = getattr(meta, "__dict__", None)
     if isinstance(raw, dict):
-        normalized = _json_safe(raw)
-        if isinstance(normalized, dict):
-            return normalized
-
-    return {
-        "event_type": str(getattr(meta, "event_type", "plugin_entry") or "plugin_entry"),
-        "id": str(getattr(meta, "id", "") or ""),
-        "name": _json_safe(getattr(meta, "name", "")),
-        "description": _json_safe(getattr(meta, "description", "")),
-        "input_schema": _json_safe(getattr(meta, "input_schema", None)),
-        "kind": str(getattr(meta, "kind", "action") or "action"),
-        "auto_start": bool(getattr(meta, "auto_start", False)),
-        "enabled": bool(getattr(meta, "enabled", True)),
-        "dynamic": bool(getattr(meta, "dynamic", False)),
-        "metadata": _json_safe(getattr(meta, "metadata", None)),
-    }
+        payload = dict(raw)
+    else:
+        # SDK v2 EventMeta is slotted. Only its identity and display fields are
+        # read by name here; every control comes from the shared contract below,
+        # so a control added to the SDK is transported by adding it there once.
+        # ``enabled`` / ``dynamic`` exist on the legacy EventMeta only, so the
+        # contract cannot supply them for an SDK meta: write their defaults.
+        payload = {
+            "event_type": str(getattr(meta, "event_type", "plugin_entry") or "plugin_entry"),
+            "id": str(getattr(meta, "id", "") or ""),
+            "name": getattr(meta, "name", ""),
+            "description": getattr(meta, "description", ""),
+            "input_schema": getattr(meta, "input_schema", None),
+            "enabled": True,
+            "dynamic": False,
+        }
+    payload.update(entry_contract_fields(meta))
+    quick_action_config = payload.get("quick_action_config")
+    if is_dataclass(quick_action_config) and not isinstance(quick_action_config, type):
+        # This SDK field has a structured wire contract. Do not change how the
+        # general JSON adapter handles unrelated custom dataclass values.
+        payload["quick_action_config"] = asdict(quick_action_config)
+    return _json_safe(payload)
 
 
 def _scan_in_worker(request: Mapping[str, object]) -> dict[str, object]:
@@ -409,7 +485,7 @@ def _worker_main(protocol_fd: int | None = None) -> None:
     immediate_exit(0)
 
 
-def scan_plugin_metadata_isolated(
+def _scan_plugin_metadata_uncached(
     *,
     plugin_id: str,
     module_path: str,
@@ -418,8 +494,15 @@ def scan_plugin_metadata_isolated(
     conf: Mapping[str, object],
     pdata: Mapping[str, object],
     python_requirement_paths: list[Path] | tuple[Path, ...] = (),
-    timeout: float = 30.0,
+    timeout: float = _DEFAULT_SCAN_TIMEOUT_SECONDS,
 ) -> IsolatedPluginMetadata:
+    if timeout <= 0:
+        # 总预算已经用完：连进程都不要起。调用方拿到的是和"扫描超时"同一种
+        # 错误，于是插件照样出现在列表里（标成扫描失败），而不是整批中断。
+        raise PluginMetadataScanError(
+            "ScanBudgetExhausted",
+            "Plugin metadata scan skipped: discovery time budget exhausted",
+        )
     request = {
         "plugin_id": plugin_id,
         "module_path": module_path,
@@ -502,9 +585,7 @@ def scan_plugin_metadata_isolated(
         )
 
     stdout = stdout_bytes.decode("utf-8", errors="replace")
-    stderr = ""
-    if process.stderr is not None:
-        stderr = process.stderr.read(1000).decode("utf-8", errors="replace")
+    stderr = _read_worker_stderr(process)
 
     payload: dict[str, object] | None = None
     for line in reversed(stdout.splitlines()):
@@ -639,3 +720,38 @@ def install_isolated_plugin_metadata(
     for entry_id, method_name in metadata.entry_methods.items():
         registry_module.plugin_entry_method_map[(plugin_id, entry_id)] = method_name
     state.invalidate_snapshot_cache("handlers")
+
+
+def scan_plugin_metadata_isolated(
+    *,
+    plugin_id: str,
+    module_path: str,
+    class_name: str,
+    config_path: Path,
+    conf: Mapping[str, object],
+    pdata: Mapping[str, object],
+    python_requirement_paths: list[Path] | tuple[Path, ...] = (),
+    timeout: float = _DEFAULT_SCAN_TIMEOUT_SECONDS,
+) -> IsolatedPluginMetadata:
+    """Import one plugin in a throwaway worker and read its metadata back.
+
+    On-demand only. The sole caller is ``start_plugin``, for the one plugin the
+    user just asked to run. Registry discovery reads packaged metadata off disk
+    and imports nothing — see
+    :mod:`plugin.server.infrastructure.packaged_metadata`.
+
+    There is no result cache and no concurrency gate here any more. Both existed
+    to make a fan-out of seventeen simultaneous scans survivable; discovery no
+    longer scans, and ``start_plugin`` runs under the plugin operation lock, so
+    scans are serialised by construction.
+    """
+    return _scan_plugin_metadata_uncached(
+        plugin_id=plugin_id,
+        module_path=module_path,
+        class_name=class_name,
+        config_path=config_path,
+        conf=conf,
+        pdata=pdata,
+        python_requirement_paths=python_requirement_paths,
+        timeout=timeout,
+    )

@@ -82,3 +82,22 @@ def test_register_dynamic_entry_preserves_timeout_in_meta() -> None:
     event_handler = plugin.collect_entries()["dyn"]
     assert event_handler.meta.timeout == 42.0
     assert event_handler.meta.extra["timeout"] == 42.0
+
+
+def test_register_dynamic_entry_sends_its_controls_to_the_host() -> None:
+    ctx = _Ctx(Path(tempfile.mkdtemp()) / "plugin.toml")
+    plugin = _Plugin(ctx)
+
+    plugin.register_dynamic_entry(
+        "dyn", lambda **_: {"ok": True}, name="Dyn", timeout=42.0, llm_result_fields=["ok"],
+    )
+
+    register = next(
+        item for item in ctx.message_queue.items
+        if item.get("type") == "ENTRY_UPDATE" and item.get("action") == "register"
+    )
+    assert register["meta"]["timeout"] == 42.0
+    assert register["meta"]["model_validate"] is True
+    assert register["meta"]["llm_result_fields"] == ["ok"]
+    assert "llm_result_schema" not in register["meta"]
+    assert "persist" not in register["meta"]

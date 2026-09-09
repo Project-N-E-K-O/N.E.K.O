@@ -17,6 +17,7 @@ import asyncio
 import threading
 import time
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from unittest.mock import patch
 
@@ -38,6 +39,8 @@ from utils.cloudsave_runtime import fence as fence_module
 from utils.config_manager import ConfigManager
 from utils.storage_migration import get_storage_migration_path, save_storage_migration
 from utils.storage_policy import get_storage_policy_path, save_storage_policy
+
+from tests.repo_ast_cache import parse_source_file
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -167,14 +170,15 @@ def _iter_project_python_files():
         yield path
 
 
-def _project_python_files() -> list[Path]:
+@lru_cache(maxsize=None)
+def _project_python_files() -> tuple[Path, ...]:
     """``_iter_project_python_files`` plus the "did we actually scan anything" check."""
     paths = list(_iter_project_python_files())
     assert len(paths) >= _MIN_SCANNED_FILES, (
         f"只扫到 {len(paths)} 个文件（下界 {_MIN_SCANNED_FILES}）——发现逻辑坏了，"
         "下面所有 AST 护栏都会假绿"
     )
-    return paths
+    return tuple(paths)
 
 
 # ── 1. 写者拿锁 / 读者不拿锁（对偶） ──────────────────────────────────
@@ -387,7 +391,7 @@ def test_persist_reconcile_opt_in_only_happens_behind_the_mutation_lock():
     offenders: list[str] = []
     for path in _project_python_files():
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_source_file(path)
         except (SyntaxError, UnicodeDecodeError):
             continue
 
@@ -516,7 +520,7 @@ def test_every_locked_write_reloads_root_state_inside_the_block():
 
     for path in _project_python_files():
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_source_file(path)
         except (SyntaxError, UnicodeDecodeError):
             continue
 
@@ -567,7 +571,7 @@ def test_read_modify_write_of_root_state_happens_inside_one_transaction():
 
     for path in _project_python_files():
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_source_file(path)
         except (SyntaxError, UnicodeDecodeError):
             continue
 
@@ -632,7 +636,7 @@ def test_startup_marker_keeps_its_eligibility_check_in_the_writing_scope():
 
     for path in _project_python_files():
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_source_file(path)
         except (SyntaxError, UnicodeDecodeError):
             continue
 
@@ -695,7 +699,7 @@ def test_rollback_on_exception_also_rolls_back_on_cancellation():
 
     for path in _project_python_files():
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_source_file(path)
         except (SyntaxError, UnicodeDecodeError):
             continue
 
@@ -931,7 +935,7 @@ def test_storage_write_primitives_never_sit_directly_in_an_async_body():
     admit the unrelated coroutine as if it were the lifecycle owner.
     """
     source_path = _REPO_ROOT / "main_routers" / "storage_location_router.py"
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    tree = parse_source_file(source_path)
     offenders: list[str] = []
 
     def _walk(node: ast.AST, *, async_owner: str | None, in_except: bool) -> None:

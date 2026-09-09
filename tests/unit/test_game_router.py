@@ -9080,6 +9080,11 @@ async def test_postgame_text_publish_timeout_releases_takeover_lock(monkeypatch)
     _gr_patch_all(monkeypatch, "_run_game_chat", completed_run_game_chat)
     mgr.feed_tts_chunk = blocking_feed_tts
     monkeypatch.setattr(gr_postgame, "_POSTGAME_DELIVERY_LOCK_TIMEOUT_SECONDS", 0.01)
+    # The blocking feed hangs inside the delivery BODY, not lock acquisition, so
+    # the body budget is the one this test actually trips. Left unpatched it sits
+    # on the real 45s production value — 45 wall-clock seconds for an assertion
+    # that only needs the timeout to fire at all.
+    monkeypatch.setattr(gr_postgame, "_POSTGAME_DELIVERY_BODY_TIMEOUT_SECONDS", 0.01)
     source_state = {
         "game_route_active": False,
         "game_type": "example-game",

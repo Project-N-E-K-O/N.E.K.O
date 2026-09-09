@@ -239,6 +239,16 @@ PROMPTS: Dict[str, Dict[str, str]] = {
         "es": "Llamada fallida — falta una descripción concreta de la acción. Define qué quieres hacer exactamente (p. ej. 'mine 4 oak logs nearby', 'walk to 120 64 -50') y vuelve a llamar.",
         "pt": "Chamada falhou — falta uma descrição concreta da ação. Pense no que você quer fazer (ex.: 'mine 4 oak logs nearby', 'walk to 120 64 -50') e chame de novo.",
     },
+    "TASK_IDENTIFIER_ERROR": {
+        "zh": "调用没成功——task 里填的是一个内部标识符，不是动作描述。用一句大白话说清要做什么（比如 'mine 4 oak logs nearby'、'walk to 120 64 -50'），再重新调用。",
+        "zh-TW": "呼叫沒成功——task 裡填的是一個內部識別字，不是動作描述。用一句白話說清楚要做什麼（例如 'mine 4 oak logs nearby'、'walk to 120 64 -50'），再重新呼叫一次。",
+        "en": "Call failed — task is an internal identifier, not an action description. Say what to do in a plain sentence (e.g. 'mine 4 oak logs nearby', 'walk to 120 64 -50') and call again.",
+        "ja": "呼び出し失敗——task に入っているのは内部の識別子で、動作の説明じゃない。何をするか普通の一文で書いて（例: 'mine 4 oak logs nearby'、'walk to 120 64 -50'）もう一度呼んで。",
+        "ko": "호출 실패——task에 들어간 건 내부 식별자지 동작 설명이 아니야. 뭘 할지 평범한 한 문장으로 적고 (예: 'mine 4 oak logs nearby', 'walk to 120 64 -50') 다시 호출해.",
+        "ru": "Вызов не удался — в task стоит внутренний идентификатор, а не описание действия. Опиши, что сделать, обычным предложением (например, 'mine 4 oak logs nearby', 'walk to 120 64 -50'), и вызови снова.",
+        "es": "Llamada fallida — task contiene un identificador interno, no una descripción de la acción. Di qué hacer en una frase normal (p. ej. 'mine 4 oak logs nearby', 'walk to 120 64 -50') y vuelve a llamar.",
+        "pt": "Chamada falhou — task contém um identificador interno, não uma descrição da ação. Diga o que fazer em uma frase normal (ex.: 'mine 4 oak logs nearby', 'walk to 120 64 -50') e chame de novo.",
+    },
     "TASK_NOT_CONNECTED": {
         "zh": "你刚连上游戏还没就位，没法立刻动。稍等再来一次。",
         "zh-TW": "你剛連上遊戲還沒就位，沒辦法立刻動。稍等再試一次。",

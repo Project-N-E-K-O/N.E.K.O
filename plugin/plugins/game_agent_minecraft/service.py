@@ -98,6 +98,32 @@ def text_signals_blocked(text: str) -> bool:
     return any(m in low for m in _BLOCKED_TEXT_MARKERS)
 
 
+# [ANTI-PARROT] A task that is a bare identifier rather than a sentence.
+# Observed 2026-09-07: the dialog LLM dispatched ``query_inventory`` (an entry
+# name it saw in the tool description) and ``mine_block`` (invented) as the
+# task text. mc-agent runs them literally, the in-progress cue echoes
+# ``You're doing: "mine_block"`` back, and the model re-sends the same token
+# forever. Three shapes cover every leak seen so far: snake_case, camelCase,
+# and single-token function-call syntax. A plain word ("stop", "mine") or any
+# text with a space / CJK stays allowed — those are real instructions.
+_IDENTIFIER_TASK_RE = re.compile(
+    r"^(?:"
+    r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+"          # mine_block, GET_DIAMOND
+    r"|[a-z]+(?:[A-Z][a-z0-9]*)+"                       # mineDiamonds, goToCoordinates
+    r"|[A-Za-z_][A-Za-z0-9_]*[(][^)]*[)]"               # goToCoordinates(1,2,3)
+    r")$"
+)
+
+
+def task_looks_like_identifier(text: str) -> bool:
+    """True when ``text`` is an internal identifier / command token rather
+    than a plain-language instruction. Shared by the facade handler and
+    ``execute_minecraft_task`` so both entry points refuse the same shapes."""
+    if not text:
+        return False
+    return bool(_IDENTIFIER_TASK_RE.match(text.strip()))
+
+
 @dataclass
 class PendingTask:
     """State for a single in-flight ``minecraft_task`` invocation.
@@ -116,6 +142,12 @@ class PendingTask:
     # pending slot (normal wake), a known previously-dispatched task
     # (emit retroactive completion cue), or unknown (FIFO fallback).
     task_id: str = ""
+    # Set when mc-agent answered this dispatch with ``status=duplicate``
+    # ("same instruction already running"): the id of the earlier dispatch
+    # of the same text that is actually running. The eventual
+    # ``task_finished`` arrives under THAT id, so ``_on_task_finished``
+    # treats a frame echoing ``alias_task_id`` as this slot's completion.
+    alias_task_id: str = ""
     # Filled in by the WebSocket callback (or by overwrite/timeout
     # paths) right before ``event`` is set.
     result: Dict[str, Any] = field(default_factory=dict)
@@ -198,6 +230,12 @@ class GameAgentService:
         # overwrites.
         self._dispatched_history: "collections.OrderedDict[str, str]" = collections.OrderedDict()
         self._dispatched_history_max: int = 32
+        # task_id → root task_id for dispatches mc-agent answered with
+        # ``duplicate`` (they never ran; the root is the one executing).
+        # ``_find_prior_dispatch_id`` resolves through this so a chain of
+        # re-dispatches of one long task all alias the root, never a sibling
+        # duplicate whose id no completion frame will ever carry.
+        self._duplicate_root: Dict[str, str] = {}
         # One-way latch: flips True the first time mc-agent echoes a
         # task_id on task_finished. Used by ``_on_task_finished`` to
         # disable the FIFO fallback once we know the agent is modern —
@@ -759,7 +797,22 @@ class GameAgentService:
             return
         self._dispatched_history[task_id] = task_text
         while len(self._dispatched_history) > self._dispatched_history_max:
-            self._dispatched_history.popitem(last=False)
+            evicted, _ = self._dispatched_history.popitem(last=False)
+            self._duplicate_root.pop(evicted, None)
+
+    def _find_prior_dispatch_id(self, task_text: str, *, exclude: str) -> str:
+        """Id of the dispatch really running ``task_text``, other than
+        ``exclude`` (the current slot's own id). Walks history newest-first
+        and resolves any dispatch that itself got ``duplicate`` to its root,
+        so a chain of re-dispatches never aliases a sibling that never ran."""
+        for task_id, text in reversed(self._dispatched_history.items()):
+            if task_id == exclude or text != task_text:
+                continue
+            root = self._duplicate_root.get(task_id, task_id)
+            if root == exclude:
+                continue
+            return root
+        return ""
 
     async def try_claim_pending(
         self, task: str, *, overwrite: bool
@@ -943,6 +996,12 @@ class GameAgentService:
         if not isinstance(task, str) or not task.strip():
             return {
                 "output": {"error": "task must be a non-empty string"},
+                "is_error": True,
+                "error": "INVALID_TASK",
+            }
+        if task_looks_like_identifier(task):
+            return {
+                "output": {"error": "task must be a plain-language instruction, not an identifier"},
                 "is_error": True,
                 "error": "INVALID_TASK",
             }
@@ -1602,7 +1661,9 @@ class GameAgentService:
             pending = self._pending
             historical_text: Optional[str] = None
             if echoed_task_id is not None:
-                if pending is not None and pending.task_id == echoed_task_id:
+                if pending is not None and echoed_task_id in (
+                    pending.task_id, pending.alias_task_id or None
+                ):
                     bucket = "current"
                     # Only flip the latch once the id has been proven to
                     # belong to OUR dispatch (current pending or recent
@@ -1644,6 +1705,29 @@ class GameAgentService:
             if parsed_inv is not None and bucket in ("current", "fifo", "retroactive"):
                 self._last_inventory = parsed_inv
                 self._last_inventory_at = time.time()
+
+            # ``duplicate`` is NOT a terminal frame. mc-agent sends it when the
+            # same instruction is already running ("继续当前任务、不重新开始…
+            # 请勿重发"). Treating it as a completion (observed 2026-09-07)
+            # cleared the slot AND told the dialog LLM the action "couldn't
+            # finish" → it re-sent the same text → duplicate again, forever.
+            # Keep the slot claimed and don't wake the handler; remember the
+            # id of the earlier dispatch that is really running so its
+            # eventual ``task_finished`` resolves this slot.
+            if status.strip().lower() == "duplicate" and bucket in ("current", "fifo"):
+                prior_id = self._find_prior_dispatch_id(
+                    pending.task_text, exclude=pending.task_id
+                )
+                if prior_id:
+                    pending.alias_task_id = prior_id
+                    self._duplicate_root[pending.task_id] = prior_id
+                if text:
+                    self._log_cache.append(text)
+                self._log_info(
+                    "task_finished duplicate: keeping pending {!r} (alias={})",
+                    pending.task_text[:40], prior_id or "-",
+                )
+                return
 
             if bucket == "current":
                 self._pending = None

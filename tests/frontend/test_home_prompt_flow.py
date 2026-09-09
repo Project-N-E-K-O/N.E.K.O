@@ -5510,6 +5510,492 @@ def test_tutorial_skip_and_angry_exit_do_not_start_new_user_icebreaker(mock_page
 
 
 @pytest.mark.frontend
+def test_interrupted_icebreaker_restores_choices_after_old_route_already_ended(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { lanlan_name: '' };
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.__NEKO_MANAGED_WINDOW_REBUILD__ = true;
+            window.__icebreakerBridgeEvents = [];
+            window.__icebreakerRouteStarts = [];
+            window.__icebreakerRouteStateUrls = [];
+            window.nekoElectronIcebreakerBridge = {
+                send: function(message) {
+                    window.__icebreakerBridgeEvents.push(message);
+                },
+            };
+            window.appStorageLocation = {
+                waitUntilMainUiAllowed: function() {
+                    return new Promise(function(resolve) {
+                        window.__resolveIcebreakerStorageGate = function() {
+                            resolve({ canContinue: true });
+                        };
+                    });
+                },
+            };
+            window.pageConfigReady = new Promise(function(resolve) {
+                window.__resolveIcebreakerPageConfig = function() {
+                    window.appState.lanlan_name = 'yui';
+                    resolve({ success: true, lanlan_name: 'yui' });
+                };
+            });
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async function() {
+                    return { 'X-CSRF-Token': 'test-token' };
+                },
+            };
+            localStorage.setItem('i18nextLng', 'en');
+            localStorage.setItem('neko.new_user_icebreaker.v1', JSON.stringify({
+                version: 1,
+                days: {
+                    '1': {
+                        started: true,
+                        completed: false,
+                        lanlanName: 'yui',
+                        sessionId: 'icebreaker-before-reload',
+                        nodeId: 'root',
+                        updatedAt: Date.now(),
+                    },
+                },
+            }));
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/icebreaker/route/state?lanlan_name=yui') {
+                window.__icebreakerRouteStateUrls.push(requestUrl);
+                return jsonResponse({
+                    ok: true,
+                    state: { icebreaker_active: false },
+                });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/icebreaker_scripts.json') {
+                return jsonResponse({
+                    days: {
+                        '1': {
+                            root: 'root',
+                            nodes: {
+                                root: {
+                                    lineKey: 'root.line',
+                                    options: [
+                                        { id: 'A', labelKey: 'root.A', next: 'next' },
+                                        { id: 'B', labelKey: 'root.B', next: 'next' },
+                                    ],
+                                },
+                                next: {
+                                    lineKey: 'next.line',
+                                    options: [
+                                        { id: 'A', labelKey: 'next.A', handoffKey: 'next.done' },
+                                        { id: 'B', labelKey: 'next.B', handoffKey: 'next.done' },
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/locales/en.json') {
+                return jsonResponse({
+                    'root.line': 'Welcome back.',
+                    'root.A': 'Continue A',
+                    'root.B': 'Continue B',
+                    'next.line': 'The next question.',
+                    'next.A': 'Finish A',
+                    'next.B': 'Finish B',
+                    'next.done': 'Done.',
+                });
+            }
+            if (requestUrl === '/api/icebreaker/route/start' && method === 'POST') {
+                window.__icebreakerRouteStarts.push(body);
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/context' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/choice' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/speak' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    assert mock_page.evaluate("() => window.NekoNewUserIcebreakerState.isPeriodActive()") is True
+    assert mock_page.evaluate("() => window.__icebreakerRouteStateUrls") == []
+    mock_page.evaluate("() => window.__resolveIcebreakerPageConfig()")
+    mock_page.wait_for_timeout(600)
+    assert mock_page.evaluate("() => window.__icebreakerRouteStateUrls") == []
+    mock_page.evaluate("() => window.__resolveIcebreakerStorageGate()")
+    mock_page.wait_for_function(
+        """() => {
+            const session = window.newUserIcebreaker.getActiveSession();
+            const prompts = window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            );
+            return session && session.nodeId === 'root' && prompts.length === 1;
+        }"""
+    )
+    restored = mock_page.evaluate(
+        """() => ({
+            session: window.newUserIcebreaker.getActiveSession(),
+            prompt: window.__icebreakerBridgeEvents.find(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            ).prompt,
+            routeStarts: window.__icebreakerRouteStarts,
+        })"""
+    )
+
+    assert restored["session"]["sessionId"] != "icebreaker-before-reload"
+    assert restored["session"]["lanlanName"] == "yui"
+    assert restored["prompt"]["sessionId"] == restored["session"]["sessionId"]
+    assert [option["choice"] for option in restored["prompt"]["options"]] == ["A", "B"]
+    assert restored["routeStarts"] == [
+        {
+            "lanlan_name": "yui",
+            "session_id": restored["session"]["sessionId"],
+            "render_language": "en",
+            "source": "new_user_icebreaker",
+        }
+    ]
+
+    mock_page.evaluate(
+        """() => {
+            const prompt = window.__icebreakerBridgeEvents.find(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            ).prompt;
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
+                detail: {
+                    sessionId: prompt.sessionId,
+                    choice: 'A',
+                    option: prompt.options[0],
+                },
+            }));
+        }"""
+    )
+    mock_page.wait_for_function(
+        """() => {
+            const session = window.newUserIcebreaker.getActiveSession();
+            const prompts = window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            );
+            return session && session.nodeId === 'next' && prompts.length === 2;
+        }"""
+    )
+
+    advanced = mock_page.evaluate(
+        """() => ({
+            session: window.newUserIcebreaker.getActiveSession(),
+            prompt: window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_set_choice_prompt'
+            ).at(-1).prompt,
+            messages: window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_append_chat_message'
+            ).map((event) => ({
+                role: event.message.role,
+                text: event.message.blocks[0].text,
+            })),
+        })"""
+    )
+    assert advanced["session"]["nodeId"] == "next"
+    assert [option["label"] for option in advanced["prompt"]["options"]] == ["Finish A", "Finish B"]
+    assert advanced["messages"] == [
+        {"role": "user", "text": "Continue A"},
+        {"role": "assistant", "text": "The next question."},
+    ]
+
+
+@pytest.mark.frontend
+def test_interrupted_icebreaker_does_not_restore_without_managed_rebuild_marker(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { lanlan_name: 'yui' };
+            window.__icebreakerFetchCount = 0;
+            localStorage.setItem('neko.new_user_icebreaker.v1', JSON.stringify({
+                version: 1,
+                days: {
+                    '1': {
+                        started: true,
+                        completed: false,
+                        lanlanName: 'yui',
+                        sessionId: 'ordinary-page-session',
+                        nodeId: 'root',
+                        updatedAt: Date.now(),
+                    },
+                },
+            }));
+        """,
+        fetch_js="""
+            window.__icebreakerFetchCount += 1;
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    mock_page.wait_for_timeout(700)
+    assert mock_page.evaluate(
+        """() => ({
+            fetchCount: window.__icebreakerFetchCount,
+            activeSession: window.newUserIcebreaker.getActiveSession(),
+        })"""
+    ) == {"fetchCount": 0, "activeSession": None}
+
+
+@pytest.mark.frontend
+def test_interrupted_icebreaker_does_not_take_over_when_route_state_is_unknown(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { lanlan_name: 'yui' };
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.__NEKO_MANAGED_WINDOW_REBUILD__ = true;
+            window.__icebreakerRouteStarts = 0;
+            window.__icebreakerBridgeEvents = [];
+            window.nekoElectronIcebreakerBridge = {
+                send: (message) => window.__icebreakerBridgeEvents.push(message),
+            };
+            localStorage.setItem('neko.new_user_icebreaker.v1', JSON.stringify({
+                version: 1,
+                days: {
+                    '1': {
+                        started: true,
+                        completed: false,
+                        lanlanName: 'yui',
+                        sessionId: 'unknown-route-session',
+                        nodeId: 'root',
+                        updatedAt: Date.now(),
+                    },
+                },
+            }));
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/icebreaker/route/state?lanlan_name=yui') {
+                return jsonResponse({ ok: false });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/icebreaker_scripts.json') {
+                return jsonResponse({
+                    days: {
+                        '1': {
+                            root: 'root',
+                            nodes: {
+                                root: {
+                                    lineKey: 'root.line',
+                                    options: [{ id: 'A', labelKey: 'root.A', handoffKey: 'root.done' }],
+                                },
+                            },
+                        },
+                    },
+                });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/locales/en.json') {
+                return jsonResponse({
+                    'root.line': 'Question',
+                    'root.A': 'Answer',
+                    'root.done': 'Done',
+                });
+            }
+            if (requestUrl === '/api/icebreaker/route/start' && method === 'POST') {
+                window.__icebreakerRouteStarts += 1;
+                return jsonResponse({ ok: true });
+            }
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    mock_page.wait_for_timeout(900)
+    result = mock_page.evaluate(
+        """() => ({
+            activeSession: window.newUserIcebreaker.getActiveSession(),
+            routeStarts: window.__icebreakerRouteStarts,
+            clearEvents: window.__icebreakerBridgeEvents.filter(
+                (event) => event.action === 'icebreaker_clear_choice_prompt_source'
+            ).length,
+        })"""
+    )
+
+    assert result == {"activeSession": None, "routeStarts": 0, "clearEvents": 0}
+
+
+@pytest.mark.frontend
+def test_interrupted_icebreaker_ignores_another_characters_snapshot(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { lanlan_name: 'yui' };
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.__NEKO_MANAGED_WINDOW_REBUILD__ = true;
+            window.__icebreakerFetchCount = 0;
+            window.__icebreakerBridgeEvents = [];
+            window.nekoElectronIcebreakerBridge = {
+                send: (message) => window.__icebreakerBridgeEvents.push(message),
+            };
+            localStorage.setItem('neko.new_user_icebreaker.v1', JSON.stringify({
+                version: 1,
+                days: {
+                    '1': {
+                        started: true,
+                        completed: false,
+                        lanlanName: 'other-character',
+                        sessionId: 'other-session',
+                        nodeId: 'root',
+                        updatedAt: Date.now(),
+                    },
+                },
+            }));
+        """,
+        fetch_js="""
+            window.__icebreakerFetchCount += 1;
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    mock_page.wait_for_timeout(900)
+    result = mock_page.evaluate(
+        """() => ({
+            activeSession: window.newUserIcebreaker.getActiveSession(),
+            fetchCount: window.__icebreakerFetchCount,
+            bridgeEventCount: window.__icebreakerBridgeEvents.length,
+        })"""
+    )
+
+    assert result == {"activeSession": None, "fetchCount": 0, "bridgeEventCount": 0}
+
+
+@pytest.mark.frontend
+def test_icebreaker_marks_terminal_complete_only_after_choice_and_route_end_succeed(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { lanlan_name: 'yui' };
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.__terminalChoiceAttempts = 0;
+            window.__routeEndCount = 0;
+            window.__routeStateCount = 0;
+            window.__routeActive = true;
+            window.__icebreakerBridgeEvents = [];
+            window.nekoElectronIcebreakerBridge = {
+                send: (message) => window.__icebreakerBridgeEvents.push(message),
+            };
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async () => ({ 'X-CSRF-Token': 'test-token' }),
+            };
+            localStorage.setItem('i18nextLng', 'en');
+        """,
+        fetch_js="""
+            if (requestUrl === '/static/tutorial/icebreaker/icebreaker_scripts.json') {
+                return jsonResponse({
+                    days: {
+                        '1': {
+                            root: 'root',
+                            nodes: {
+                                root: {
+                                    lineKey: 'root.line',
+                                    options: [{
+                                        id: 'A',
+                                        labelKey: 'root.A',
+                                        handoffKey: 'root.done',
+                                        handoffVoiceKey: 'root.done.voice',
+                                    }],
+                                },
+                            },
+                        },
+                    },
+                });
+            }
+            if (requestUrl === '/static/tutorial/icebreaker/locales/en.json') {
+                return jsonResponse({
+                    'root.line': 'Question',
+                    'root.A': 'Answer',
+                    'root.done': 'Done',
+                });
+            }
+            if (requestUrl === '/api/icebreaker/route/start' && method === 'POST') {
+                window.__routeSessionId = body.session_id;
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/context' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+            if (requestUrl === '/api/icebreaker/choice' && method === 'POST') {
+                window.__terminalChoiceAttempts += 1;
+                if (window.__terminalChoiceAttempts === 1) {
+                    return jsonResponse({ ok: false });
+                }
+                return new Promise((resolve) => {
+                    window.__resolveTerminalChoice = () => {
+                        resolve(jsonResponse({ ok: true }));
+                    };
+                });
+            }
+            if (requestUrl === '/api/icebreaker/route/end' && method === 'POST') {
+                window.__routeEndCount += 1;
+                if (window.__routeEndCount > 1) window.__routeActive = false;
+                return jsonResponse({ ok: false });
+            }
+            if (requestUrl === '/api/icebreaker/route/state?lanlan_name=yui') {
+                window.__routeStateCount += 1;
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        icebreaker_active: window.__routeActive,
+                        session_id: window.__routeSessionId,
+                    },
+                });
+            }
+            if (requestUrl === '/api/icebreaker/speak' && method === 'POST') {
+                return jsonResponse({ ok: true });
+            }
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    mock_page.evaluate("() => window.newUserIcebreaker.start(1)")
+    mock_page.wait_for_function("() => !!window.newUserIcebreaker.getActiveSession()")
+    session_id = mock_page.evaluate("() => window.newUserIcebreaker.getActiveSession().sessionId")
+    mock_page.evaluate(
+        """(sessionId) => window.dispatchEvent(new CustomEvent(
+            'neko:icebreaker-choice-selected',
+            { detail: { sessionId, choice: 'A', option: { label: 'Answer' } } }
+        ))""",
+        session_id,
+    )
+    mock_page.wait_for_function(
+        """() => window.__terminalChoiceAttempts === 2
+            && typeof window.__resolveTerminalChoice === 'function'"""
+    )
+
+    pending = mock_page.evaluate(
+        """() => ({
+            completed: JSON.parse(localStorage.getItem('neko.new_user_icebreaker.v1')).days['1'].completed,
+            routeEndCount: window.__routeEndCount,
+        })"""
+    )
+    assert pending == {"completed": False, "routeEndCount": 0}
+    assert mock_page.evaluate("() => window.__terminalChoiceAttempts") == 2
+
+    mock_page.evaluate("() => window.__resolveTerminalChoice()")
+    mock_page.wait_for_function(
+        """() => JSON.parse(
+            localStorage.getItem('neko.new_user_icebreaker.v1')
+        ).days['1'].completed === true"""
+    )
+    completed = mock_page.evaluate(
+        """() => ({
+            routeEndCount: window.__routeEndCount,
+            routeStateCount: window.__routeStateCount,
+            messages: window.__icebreakerBridgeEvents
+                .filter((event) => event.action === 'icebreaker_append_chat_message')
+                .map((event) => event.message.role),
+        })"""
+    )
+    assert completed == {
+        "routeEndCount": 2,
+        "routeStateCount": 2,
+        "messages": ["assistant", "user", "assistant"],
+    }
+
+
+@pytest.mark.frontend
 def test_yui_overlay_lifecycle_epoch_blocks_late_dom_recreation(mock_page: Page):
     _bootstrap_page(
         mock_page,

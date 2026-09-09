@@ -141,16 +141,20 @@ def test_owner_identity_is_never_reused_across_owner_lifetimes():
     short-lived, same-sized allocations that get recycled -- at which point a
     fresh owner inherits the previous one's still-live captures and its audio
     is appended to someone else's utterance.
-    """
-    import gc
 
+    No ``gc.collect()`` in the loop on purpose. ``del owner`` drops the last
+    strong reference, so CPython frees the object immediately and the next
+    same-sized allocation lands on the same address -- verified by running this
+    loop against a plain ``id(owner)``, which collides well inside 50 rounds.
+    Collecting after every round cost ~0.4s each (22s for this one test) and
+    bought the guard nothing.
+    """
     cache = GameSpeechAudioCache()
     tokens = []
     for _ in range(50):
         owner = GameSpeechCaptureOwner()
         tokens.append(cache._owner_token(owner))
         del owner
-        gc.collect()
 
     assert len(set(tokens)) == len(tokens), (
         "owner identity was recycled across owner lifetimes"
