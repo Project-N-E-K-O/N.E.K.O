@@ -102,6 +102,20 @@ def _elevenlabs_dialogue_input_payload(voice_id: str, text: str) -> dict:
         }],
     }
 
+def _elevenlabs_dialogue_event_flags(payload: dict) -> tuple[bool, bool, bool]:
+    """Return (has_error, turn_audio_finished, session_finished)."""
+    event_type = payload.get("type")
+    return (
+        bool(payload.get("error") or event_type == "error"),
+        bool(payload.get("is_final_audio_for_turn")),
+        bool(
+            payload.get("isFinal")
+            or payload.get("is_final")
+            or payload.get("final")
+            or event_type in {"final", "audio.done"}
+        ),
+    )
+
 def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
     """ElevenLabs V3 worker using Text-to-Dialogue WebSocket PCM output."""
     normalized_voice_id = _normalize_elevenlabs_voice_id(voice_id)
@@ -224,6 +238,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 async for message in ws:
                     audio_bytes = None
                     is_final = False
+                    is_turn_final = False
                     payload = None
 
                     if isinstance(message, bytes):
@@ -244,6 +259,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
 
                     if payload is not None:
                         event_type = payload.get("type")
+                        has_error, is_turn_final, is_final = _elevenlabs_dialogue_event_flags(payload)
                         audio_b64 = payload.get("audio") or payload.get("data") or payload.get("delta") or ""
                         if audio_b64:
                             try:
@@ -251,20 +267,14 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             except Exception as exc:
                                 logger.warning("ElevenLabs WS audio decode failed: %s", exc)
                                 audio_bytes = None
-                        is_final = bool(
-                            payload.get("isFinal")
-                            or payload.get("is_final")
-                            or payload.get("final")
-                            or event_type in {"final", "audio.done"}
-                        )
-                        if payload.get("error") or event_type == "error":
+                        if has_error:
                             _enqueue_error(response_queue, {
                                 "code": "API_REQUEST_FAILED",
                                 "provider": "elevenlabs",
                                 "message": f"ElevenLabs V3 dialogue API error: {payload}",
                             })
                             continue
-                        if not audio_bytes and not is_final:
+                        if not audio_bytes and not is_turn_final and not is_final:
                             preview = message if isinstance(message, str) else repr(message[:200])
                             logger.debug(
                                 "ElevenLabs WS recv unknown event type=%r raw=%s",
@@ -281,6 +291,11 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             audio_bytes = audio_bytes[:usable_len]
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
                         audio_jitter.append(_resample_audio(audio_array, pcm_sample_rate, 48000, resampler))
+                    if is_turn_final:
+                        # V3 emits a turn boundary before the session-level is_final that follows
+                        # close_socket. PCM has exact turn boundaries, so release the buffered tail
+                        # now, but keep receiving until is_final before publishing audio_done.
+                        audio_jitter.flush()
                     if is_final:
                         audio_jitter.flush()  # 本轮音频结束，放掉缓冲区里不足 steady 阈值的尾音
                         # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭

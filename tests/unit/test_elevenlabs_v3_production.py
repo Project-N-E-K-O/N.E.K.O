@@ -78,3 +78,17 @@ def test_worker_uses_v3_text_to_dialogue_protocol():
             "new_turn": False,
         }],
     }
+
+
+def test_worker_classifies_v3_audio_turn_final_and_session_final_sequence():
+    assert elevenlabs_worker._elevenlabs_dialogue_event_flags({"audio": "cGNt"}) == (
+        False,
+        False,
+        False,
+    )
+    assert elevenlabs_worker._elevenlabs_dialogue_event_flags({
+        "is_final_audio_for_turn": True,
+    }) == (False, True, False)
+    assert elevenlabs_worker._elevenlabs_dialogue_event_flags({
+        "is_final": True,
+    }) == (False, False, True)
