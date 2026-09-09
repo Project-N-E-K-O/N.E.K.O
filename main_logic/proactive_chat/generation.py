@@ -2215,6 +2215,17 @@ def _label_prefix_boundary_ok(label: str, rest: str) -> bool:
     return (not label.isascii()) and (not ch.isascii())
 
 
+def _strip_proactive_leading_label_tail(rest: str) -> str:
+    """Strip label punctuation without consuming a spaced reply path."""
+    adjacent_separator = rest[:1] in _PROACTIVE_SLASHES + "：:"
+    body = rest.lstrip()
+    # A spaced colon still belongs to the label; a spaced slash may be the
+    # reply itself (for example ``/chat /api``) and must be preserved.
+    if adjacent_separator or body[:1] in "：:":
+        body = body[1:]
+    return body.lstrip()
+
+
 def _strip_proactive_label_slash_prefix(
     body: str,
     labels: frozenset[str],
@@ -2236,11 +2247,7 @@ def _strip_proactive_label_slash_prefix(
         ):
             rest = body[1 + len(label) :]
             if _label_prefix_boundary_ok(label, rest):
-                adjacent_separator = rest[:1] in _PROACTIVE_SLASHES + "：:"
-                rest = rest.lstrip()
-                if adjacent_separator:
-                    rest = rest[1:]
-                return rest.lstrip()
+                return _strip_proactive_leading_label_tail(rest)
     return None
 
 
@@ -2348,11 +2355,7 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                 or not rest[0].isascii()
             ):
                 continue
-            adjacent_separator = rest[:1] in _PROACTIVE_SLASHES + "：:"
-            rest = rest.lstrip()
-            if adjacent_separator:
-                rest = rest[1:]
-            return rest.lstrip(), source_tag
+            return _strip_proactive_leading_label_tail(rest), source_tag
     return None
 
 
