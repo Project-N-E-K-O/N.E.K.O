@@ -157,9 +157,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 self._agg_buffer.clear()
                 self.finish_requested_speech_id = None
 
-        def on_open(self): 
-            self.connection_lost = False
-            self._muted = False
+        def on_open(self):
+            with self._lock:
+                self.connection_lost = False
+                self._muted = False
             elapsed = time.time() - self.construct_start_time if hasattr(self, 'construct_start_time') else -1
             logger.debug(f"TTS 连接已建立 (构造到open耗时: {elapsed:.2f}s)")
             
@@ -201,6 +202,12 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 self.completed_generation = generation
 
         def on_error(self, message: str, generation=None):
+            # 代际检查和它的副作用（标断开）必须在同一临界区：过了检查再被调度
+            # 出去、退役后醒来写 connection_lost，写的就是新流的状态。
+            with self._lock:
+                self._on_error_locked(message, generation)
+
+        def _on_error_locked(self, message: str, generation):
             # 旧 synthesizer（软 flush 后已放干净、或重建时被换掉的那个）的报错
             # 描述的是别人的连接：既不能把当代标成断开，也不该当成本轮出错上报。
             if generation is not None and generation != self.current_generation:
@@ -221,9 +228,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             # 只有当代连接的关闭才算「断开」。软 flush 之后服务端会在放完尾包后
             # 关掉旧连接，那时新 synthesizer 可能已经在说下一段——把它标成断开，
             # 下一次收尾就会跳过 FINISH 并丢掉 synthesizer，新一段的尾句直接消失。
-            if generation is not None and generation != self.current_generation:
-                return
-            self.connection_lost = True
+            with self._lock:
+                if generation is not None and generation != self.current_generation:
+                    return
+                self.connection_lost = True
 
         def on_event(self, message):
             pass
