@@ -203,14 +203,19 @@ def test_realtime_workers_flush_jitter_on_non_cancelled_receiver_exit():
         "elevenlabs": 1,
     }
     pattern = re.compile(
+        r"finally:\s+if not cancelled:\s+(?:qwen_)?audio_jitter\.flush\(\)",
+        re.MULTILINE,
+    )
+    elevenlabs_pattern = re.compile(
         r"finally:\s+if not cancelled:\s+"
-        r"(?:_flush_resampler_tail\(\)\s+)?(?:qwen_)?audio_jitter\.flush\(\)",
+        r"_flush_resampler_tail\(\)\s+audio_jitter\.flush\(\)",
         re.MULTILINE,
     )
 
     for provider, expected_count in expected_flush_guards.items():
         source = REALTIME_WORKERS[provider].read_text(encoding="utf-8")
-        assert len(pattern.findall(source)) >= expected_count, provider
+        provider_pattern = elevenlabs_pattern if provider == "elevenlabs" else pattern
+        assert len(provider_pattern.findall(source)) >= expected_count, provider
 
 
 def test_realtime_workers_flush_tail_before_normal_receiver_cancel():
