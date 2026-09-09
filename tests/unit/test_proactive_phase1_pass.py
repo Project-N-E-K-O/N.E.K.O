@@ -353,6 +353,8 @@ def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
         ("\ufeff[CHAT]\n你好", "你好", "CHAT"),
         ("\u200b [WEB]\n看这个链接", "看这个链接", "WEB"),
         ("\ufeff[Screen]\n你好", "你好", "CHAT"),
+        ("[Screen]\u200b[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("[Screen]\ufeff[WEB]\n你好", "你好", "WEB"),
         ("当前屏幕观察", "", "CHAT"),
     ]
 
@@ -380,6 +382,9 @@ def test_strip_proactive_screen_tag_leak_preserves_inline_known_prefix_words():
         "／chatbot 路由",
         "当前屏幕观察到你正在写代码",
         "current screen observation shows a text editor",
+        "Music: I think you'd like this band",
+        "Screen: the colors look unusual",
+        "Chat: let's keep working on this",
         "\ufeffordinary text",
         "\ufeff[Foo] literal text",
     ):

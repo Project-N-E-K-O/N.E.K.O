@@ -2294,10 +2294,16 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                     continue
                 return after, source_tag
 
-            # A colon makes every known source label unambiguous, including
-            # otherwise route-like English labels such as ``screen``.
+            # A colon is a strong separator for known source labels, including
+            # otherwise route-like lowercase ``screen``. Preserve title-cased
+            # single-word English prose such as
+            # ``Screen: the colors look unusual``.
             colon = re.match(r"^[ \t]*[：:]", rest)
-            if colon:
+            matched_label = body[: len(label)]
+            if colon and (
+                folded_label not in _PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS
+                or matched_label == label
+            ):
                 return rest[colon.end() :].lstrip(), source_tag
 
             # Only the conservative bare-label subset may stand alone or as
@@ -2434,11 +2440,15 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
         return text, prefix_tag
     rest = body[match.end() :].lstrip()
     rest, nested_prefix_tag = _strip_proactive_known_prefix_tag_leak(rest)
+    normalized_rest = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", rest, count=1)
     # 兼容 [Screen][CHAT] 组合：泄漏标签后若紧跟合法来源标签，剥掉并采用真实 tag
     # （否则该 [CHAT] 字面会作为正文漏给 TTS）；没有则按 CHAT 兜底。
-    legal = _PROACTIVE_LEGAL_TAG_RE.match(rest)
+    legal = _PROACTIVE_LEGAL_TAG_RE.match(normalized_rest)
     if legal:
-        return leading + rest[legal.end() :].lstrip(), legal.group(1).upper()
+        return (
+            leading + normalized_rest[legal.end() :].lstrip(),
+            legal.group(1).upper(),
+        )
     return leading + rest, nested_prefix_tag or prefix_tag or "CHAT"
 
 
