@@ -2228,7 +2228,7 @@ def _strip_proactive_label_slash_prefix(
             continue
         if folded.startswith(label):
             rest = body[len(label) :]
-            sep = re.match(rf"\s*[{re.escape(_PROACTIVE_SLASHES)}]", rest)
+            sep = re.match(rf"[ \t]*[{re.escape(_PROACTIVE_SLASHES)}]", rest)
             if sep:
                 return rest[sep.end() :].lstrip()
         if body.startswith(tuple(_PROACTIVE_SLASHES)) and folded[1:].startswith(
@@ -2275,7 +2275,7 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
         if folded.startswith(folded_label):
             rest = body[len(label) :]
             slash = re.match(
-                rf"\s*[{re.escape(_PROACTIVE_SLASHES)}]",
+                rf"[ \t]*[{re.escape(_PROACTIVE_SLASHES)}]",
                 rest,
             )
             if slash:
@@ -2289,7 +2289,7 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                     and after_slash == after
                     and after
                     and after[0].isascii()
-                    and after[0].islower()
+                    and not after[0].isupper()
                 ):
                     continue
                 return after, source_tag
@@ -2326,7 +2326,7 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                 if (
                     route_tail
                     and route_tail[0].isascii()
-                    and route_tail[0].islower()
+                    and not route_tail[0].isupper()
                 ):
                     continue
             if not (
