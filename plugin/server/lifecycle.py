@@ -131,7 +131,28 @@ class ServerLifecycleService:
         with state.acquire_event_handlers_write_lock():
             state.event_handlers.clear()
 
-    async def _start_message_plane(self) -> None:
+    async def _check_message_plane_health(self) -> bool:
+        """Probe the current runner. Never raises; a failed probe is ``False``."""
+        runner = self._message_plane_runner
+        if runner is None:
+            return False
+        try:
+            health_check_async = getattr(runner, "health_check_async", None)
+            if health_check_async is not None and asyncio.iscoroutinefunction(health_check_async):
+                return bool(await health_check_async(timeout_s=1.0))
+            # Fallback: runner only exposes the sync API — offload to a worker thread so we
+            # never block the event loop on the ~1s TCP probe + RPC round-trip.
+            return bool(await asyncio.to_thread(runner.health_check, timeout_s=1.0))
+        except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
+            logger.warning(
+                "message_plane health check failed: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            return False
+
+    async def _start_message_plane(self) -> bool:
+        """Start the plane, or verify the one already standing. Returns usability."""
         if self._message_plane_runner is not None:
             # An earlier attempt in this run already stood the plane up and only
             # a later step (endpoint refresh, or a bridge) failed. Building a
@@ -140,36 +161,38 @@ class ServerLifecycleService:
             # replacement's port fallback picks DIFFERENT ones and the bridge
             # ends up refreshed onto a plane that is not the one running. Both
             # bridges guard on their own thread being alive, so reusing here
-            # makes a retry re-run exactly the parts that failed and nothing
-            # else. A plane that genuinely failed to start is cleared by the
-            # caller, so this never masks one.
+            # makes a retry re-run exactly the parts that failed and nothing else.
+            #
+            # Re-probed, not assumed: a non-null runner only means ``start()``
+            # did not raise. The first attempt's probe may have failed or come
+            # back false, and that path deliberately leaves the runner assigned
+            # ("it may still be starting"). Reusing it unverified would let the
+            # bridges come up against a plane that never arrived and latch the
+            # whole path as ready -- push_message would keep answering
+            # submitted=True with nothing behind it, which is the exact failure
+            # this branch exists to prevent.
+            if not await self._check_message_plane_health():
+                logger.warning(
+                    "message_plane is still not healthy; not reusing it yet "
+                    "(kept for the next retry rather than rebuilt, so its ports "
+                    "are not handed to a second runner)"
+                )
+                return False
             logger.debug("message_plane already running; reusing it for this retry")
-            return
+            return True
         # Same process mints the credential and starts the plane that must
         # accept it; start_bridge() below is the only writer.
         self._message_plane_runner = build_message_plane_runner(
             auth_token=ingest_auth_token(),
         )
         self._message_plane_runner.start()
-        try:
-            health_check_async = getattr(self._message_plane_runner, "health_check_async", None)
-            if health_check_async is not None and asyncio.iscoroutinefunction(health_check_async):
-                healthy = await health_check_async(timeout_s=1.0)
-            else:
-                # Fallback: runner only exposes the sync API — offload to a worker thread so we
-                # never block the event loop on the ~1s TCP probe + RPC round-trip.
-                healthy = await asyncio.to_thread(
-                    self._message_plane_runner.health_check, timeout_s=1.0
-                )
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
-            logger.warning(
-                "message_plane health check failed: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
-            return
-        if not healthy:
+        if not await self._check_message_plane_health():
+            # Non-fatal on a FRESH start, as it has always been: the probe is a
+            # 1s bound and the plane commonly needs a moment more. The runner
+            # stays assigned, and the reuse branch above re-probes it rather
+            # than trusting this outcome.
             logger.warning("message_plane health check returned false; it may still be starting")
+        return True
 
     async def _refresh_registry_and_start_autostart_plugins(self) -> None:
         try:
@@ -345,7 +368,8 @@ class ServerLifecycleService:
         """Returns whether the path is usable. See the caller for why that matters."""
         ok = True
         try:
-            await self._start_message_plane()
+            if not await self._start_message_plane():
+                ok = False
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
             logger.warning(
                 "message_plane start failed: err_type={}, err={}",

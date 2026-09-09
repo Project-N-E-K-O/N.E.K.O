@@ -111,8 +111,14 @@ async def test_startup_reconciles_existing_install_source_after_migration_before
 
         monkeypatch.setattr(module.ServerLifecycleService, "_clear_runtime_state", staticmethod(lambda: None))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+        async def _plane_ok(*args, **kwargs) -> bool:
+            # ``_start_message_plane`` reports usability now; a ``None`` stub
+            # would read as "the plane failed" and quietly change what this
+            # test's startup() exercises.
+            return True
+
         monkeypatch.setattr(module.plugin_router, "start", _noop_async)
-        monkeypatch.setattr(service, "_start_message_plane", _noop_async)
+        monkeypatch.setattr(service, "_start_message_plane", _plane_ok)
         monkeypatch.setattr(module.bus_subscription_manager, "start", _noop_async)
         monkeypatch.setattr(module.status_manager, "start_status_consumer", _noop_async)
         monkeypatch.setattr(module.metrics_collector, "start", _noop_async)
@@ -249,9 +255,10 @@ async def test_ensure_delivery_path_started_is_idempotent_under_concurrency(
     service = module.ServerLifecycleService()
     started: list[str] = []
 
-    async def _start_plane() -> None:
+    async def _start_plane() -> bool:
         started.append("plane")
         await asyncio.sleep(0)  # a real await, so a second caller can interleave
+        return True
 
     monkeypatch.setattr(service, "_start_message_plane", _start_plane)
     monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: started.append("ingest_ep"))
@@ -289,10 +296,11 @@ async def test_a_failed_delivery_path_is_not_latched_and_retries(
     attempts: list[str] = []
     fail = True
 
-    async def _start_plane() -> None:
+    async def _start_plane() -> bool:
         attempts.append("plane")
         if fail:
             raise RuntimeError("port busy")
+        return True
 
     monkeypatch.setattr(service, "_start_message_plane", _start_plane)
     monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
@@ -324,8 +332,8 @@ async def test_a_failed_bridge_also_leaves_the_path_retryable(
     """Not just the plane: a bridge that failed to start is equally undelivered."""
     service = module.ServerLifecycleService()
 
-    async def _noop() -> None:
-        return None
+    async def _noop() -> bool:
+        return True
 
     monkeypatch.setattr(service, "_start_message_plane", _noop)
     monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
@@ -396,6 +404,60 @@ async def test_partial_retry_reuses_the_running_plane_instead_of_building_a_seco
 
 
 @pytest.mark.asyncio
+async def test_reuse_reprobes_health_and_refuses_an_unhealthy_plane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-null runner only means ``start()`` did not raise.
+
+    The fresh-start path deliberately treats a false probe as non-fatal ("it may
+    still be starting") and keeps the runner assigned. Reusing that unverified
+    runner would let the bridges come up against a plane that never arrived and
+    latch the path as ready -- push_message answering submitted=True with
+    nothing behind it, the exact failure this PR exists to end.
+    """
+    service = module.ServerLifecycleService()
+    built: list[object] = []
+    healthy = False
+
+    class _Runner:
+        def start(self) -> None:
+            return None
+
+        async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
+            return healthy
+
+    def _build(*, auth_token: str) -> object:
+        runner = _Runner()
+        built.append(runner)
+        return runner
+
+    monkeypatch.setattr(module, "build_message_plane_runner", _build)
+    monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+
+    # Fresh start with a false probe: non-fatal, runner kept, path latches as
+    # before -- that behaviour predates this PR and is deliberate.
+    await service.ensure_delivery_path_started()
+    assert service._delivery_path_started is True
+    assert len(built) == 1
+
+    # Now force the reuse branch with the plane still unhealthy.
+    service._delivery_path_started = False
+    await service.ensure_delivery_path_started()
+    assert service._delivery_path_started is False, "an unverified plane was latched"
+    assert len(built) == 1, "the unhealthy plane was rebuilt, splitting its ports"
+
+    # It comes up late: the next retry re-probes, sees it, and latches.
+    healthy = True
+    await service.ensure_delivery_path_started()
+    assert service._delivery_path_started is True
+    assert len(built) == 1
+
+
+@pytest.mark.asyncio
 async def test_a_plane_that_failed_to_start_is_rebuilt_on_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -448,8 +510,9 @@ async def test_shutdown_closes_the_gate_so_a_late_start_cannot_orphan_a_plane(
     service = module.ServerLifecycleService()
     starts: list[str] = []
 
-    async def _start_plane() -> None:
+    async def _start_plane() -> bool:
         starts.append("plane")
+        return True
 
     monkeypatch.setattr(service, "_start_message_plane", _start_plane)
     monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
