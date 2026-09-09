@@ -352,10 +352,20 @@ async def test_voice_callback_defers_when_microphone_activity_arrived_first():
     assert mgr.pending_agent_callbacks == [cb]
 
 
-async def test_recent_voice_activity_arms_retry_without_turn_end_signal():
+async def test_recent_voice_activity_arms_retry_without_turn_end_signal(monkeypatch):
+    import main_logic.core.proactive as proactive_module
+
+    # Keep setup/logging/runner delays outside the activity window. Exercise
+    # the real retry scheduler, but advance its clock and timer explicitly.
+    now = [1000.0]
+    monkeypatch.setattr(proactive_module, "time", SimpleNamespace(time=lambda: now[0]))
+    timer_loop = SimpleNamespace(call_later=MagicMock())
+    controlled_asyncio = SimpleNamespace(**vars(asyncio))
+    controlled_asyncio.get_running_loop = lambda: timer_loop
+    monkeypatch.setattr(proactive_module, "asyncio", controlled_asyncio)
     sess = _make_voice_sess()
     sess._user_recent_activity_window = 0.02
-    sess._user_recent_activity_time = time.time()
+    sess._user_recent_activity_time = now[0]
     mgr = _make_mgr(session=sess)
     cb = {
         "_callback_delivery_id": "id-recent-activity-retry",
@@ -376,7 +386,19 @@ async def test_recent_voice_activity_arms_retry_without_turn_end_signal():
 
     assert delivered is False
     assert mgr.pending_agent_callbacks == [cb]
-    await asyncio.wait_for(retry_fired.wait(), timeout=0.2)
+    assert sess.inject_calls == 0
+    assert not retry_fired.is_set()
+    timer_loop.call_later.assert_called_once()
+    delay, wake_up = timer_loop.call_later.call_args.args
+    assert delay == pytest.approx(sess._user_recent_activity_window)
+
+    now[0] += delay
+    fired_tasks = []
+    mgr._fire_task = lambda coro: fired_tasks.append(asyncio.create_task(coro))
+    wake_up()
+    assert len(fired_tasks) == 1
+    await fired_tasks[0]
+    assert retry_fired.is_set()
 
 
 async def test_voice_nudge_waits_for_callback_inject_lock():
