@@ -230,6 +230,12 @@ class GameAgentService:
         # overwrites.
         self._dispatched_history: "collections.OrderedDict[str, str]" = collections.OrderedDict()
         self._dispatched_history_max: int = 32
+        # task_id → root task_id for dispatches mc-agent answered with
+        # ``duplicate`` (they never ran; the root is the one executing).
+        # ``_find_prior_dispatch_id`` resolves through this so a chain of
+        # re-dispatches of one long task all alias the root, never a sibling
+        # duplicate whose id no completion frame will ever carry.
+        self._duplicate_root: Dict[str, str] = {}
         # One-way latch: flips True the first time mc-agent echoes a
         # task_id on task_finished. Used by ``_on_task_finished`` to
         # disable the FIFO fallback once we know the agent is modern —
@@ -791,15 +797,21 @@ class GameAgentService:
             return
         self._dispatched_history[task_id] = task_text
         while len(self._dispatched_history) > self._dispatched_history_max:
-            self._dispatched_history.popitem(last=False)
+            evicted, _ = self._dispatched_history.popitem(last=False)
+            self._duplicate_root.pop(evicted, None)
 
     def _find_prior_dispatch_id(self, task_text: str, *, exclude: str) -> str:
-        """Most recent dispatched id carrying exactly ``task_text``, other
-        than ``exclude`` (the current slot's own id). Used to alias a
-        ``duplicate`` answer back to the dispatch that is really running."""
+        """Id of the dispatch really running ``task_text``, other than
+        ``exclude`` (the current slot's own id). Walks history newest-first
+        and resolves any dispatch that itself got ``duplicate`` to its root,
+        so a chain of re-dispatches never aliases a sibling that never ran."""
         for task_id, text in reversed(self._dispatched_history.items()):
-            if task_id != exclude and text == task_text:
-                return task_id
+            if task_id == exclude or text != task_text:
+                continue
+            root = self._duplicate_root.get(task_id, task_id)
+            if root == exclude:
+                continue
+            return root
         return ""
 
     async def try_claim_pending(
@@ -1708,6 +1720,7 @@ class GameAgentService:
                 )
                 if prior_id:
                     pending.alias_task_id = prior_id
+                    self._duplicate_root[pending.task_id] = prior_id
                 if text:
                     self._log_cache.append(text)
                 self._log_info(

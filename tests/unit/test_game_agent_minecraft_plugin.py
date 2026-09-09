@@ -1933,6 +1933,45 @@ async def test_duplicate_frame_keeps_pending_and_resolves_via_original_id():
 
 
 @pytest.mark.asyncio
+async def test_duplicate_chain_aliases_root_not_sibling_duplicate():
+    """Three dispatches of one long task: the first really runs, the second
+    and third both get ``duplicate``. The third must alias the FIRST id (the
+    running one), not the second (which never ran and whose id no completion
+    frame will ever carry) — otherwise the root's completion routes to the
+    retroactive bucket and the third slot waits until timeout."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    async def _drop_slot_as_timeout(runner):
+        service._pending.result = {"status": "timeout", "query": "mine 10 logs"}
+        service._pending.event.set()
+        service._pending = None
+        await asyncio.wait_for(runner, timeout=2.0)
+
+    runner1, first_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    await _drop_slot_as_timeout(runner1)
+
+    runner2, second_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    await service._on_task_finished({"status": "duplicate", "task_id": second_id})
+    await asyncio.sleep(0.02)
+    assert service._pending.alias_task_id == first_id
+    await _drop_slot_as_timeout(runner2)
+
+    runner3, third_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    await service._on_task_finished({"status": "duplicate", "task_id": third_id})
+    await asyncio.sleep(0.02)
+    assert service._pending.alias_task_id == first_id, (
+        "third slot aliased a sibling duplicate instead of the running root"
+    )
+
+    await service._on_task_finished({"status": "ok", "task_id": first_id})
+    out = await asyncio.wait_for(runner3, timeout=2.0)
+    assert out["status"] == "ok"
+    assert service._pending is None
+
+
+@pytest.mark.asyncio
 async def test_duplicate_frame_without_prior_dispatch_keeps_pending():
     """No earlier dispatch of the same text in history (mc-agent is running
     its own task, or the history rolled over): still hold the slot; the
