@@ -111,6 +111,96 @@ async def test_remote_all_with_development_sources_remains_denied(workspace):
     assert not list((workspace / "packages").glob("*.neko-plugin"))
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["/plugin-cli/build", "/plugin-cli/pack"])
+@pytest.mark.parametrize("repair_later", [False, True])
+async def test_corrupt_store_all_builds_only_managed_sources(workspace, monkeypatch, endpoint, repair_later):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from plugin.server.routes import plugin_cli as route
+
+    ordinary = register(workspace, "ordinary_demo")
+    dev.remove_registration_sync(ordinary)
+    shutil.copytree(ordinary.source_dir, workspace / "installed" / "ordinary_demo")
+    builtin = register(workspace, "builtin_demo")
+    dev.remove_registration_sync(builtin)
+    shutil.copytree(builtin.source_dir, workspace / "builtin" / "builtin_demo")
+    external = register(workspace, "external_demo")
+    store_path = dev._store_path()
+    healthy_store = store_path.read_bytes()
+    store_path.write_bytes(b'{')
+    original = route.service.build
+
+    async def dispatch(**kwargs):
+        assert kwargs["allow_development"] is False
+        if repair_later:
+            store_path.write_bytes(healthy_store)
+        return await original(**kwargs)
+
+    monkeypatch.setattr(route.service, "build", dispatch)
+    app = FastAPI()
+    app.include_router(route.router)
+    async with AsyncClient(transport=ASGITransport(app=app, client=("192.168.1.2", 1234)),
+                           base_url="http://127.0.0.1") as client:
+        response = await client.post(endpoint, json={"mode": "all"})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    artifacts = result["packed" if endpoint.endswith("/pack") else "built"]
+    assert sorted(item["plugin_id"] for item in artifacts) == ["builtin_demo", "ordinary_demo"]
+    assert all(inspect_package(item["package_path"]).payload_hash_verified is True for item in artifacts)
+    assert result["ok"] is False and result["failed_count"] == 1
+    assert result["failed"][0]["plugin"] == "development"
+    assert str(external.source_dir) not in response.text
+    assert external.registration_id not in response.text
+    assert store_path.read_bytes() == (healthy_store if repair_later else b'{')
+    assert len(list((workspace / "packages").glob("*.neko-plugin"))) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["single", "selected", "bundle"])
+async def test_corrupt_store_explicit_development_build_still_fails(workspace, mode):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from plugin.server.routes.plugin_cli import router
+
+    snapshot = register(workspace)
+    dev._store_path().write_bytes(b'{')
+    ref = {"registration_id": snapshot.registration_id, "revision": snapshot.revision}
+    payload = {"mode": mode, **({"development_ref": ref} if mode == "single" else {"development_refs": [ref]})}
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1",
+                           headers={"X-Neko-Development": "1"}) as client:
+        response = await client.post("/plugin-cli/build", json=payload)
+    assert response.status_code == 500
+    assert response.headers["X-Error-Code"] == "DEVELOPMENT_STORE_INVALID"
+    assert dev._store_path().read_bytes() == b'{'
+    assert not list((workspace / "packages").glob("*.neko-plugin"))
+
+
+@pytest.mark.asyncio
+async def test_all_probe_does_not_swallow_other_domain_errors(workspace, monkeypatch):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from unittest.mock import AsyncMock
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.routes import plugin_cli as route
+
+    def conflicting_sources(*args):
+        raise ServerDomainError(code="DEVELOPMENT_CONFLICT", message="Source conflict", status_code=409)
+
+    monkeypatch.setattr(build, "resolve_development_sources", conflicting_sources)
+    dispatch = AsyncMock()
+    monkeypatch.setattr(route.service, "build", dispatch)
+    app = FastAPI()
+    app.include_router(route.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as client:
+        response = await client.post("/plugin-cli/build", json={"mode": "all"})
+    assert response.status_code == 409
+    assert response.headers["X-Error-Code"] == "DEVELOPMENT_CONFLICT"
+    dispatch.assert_not_awaited()
+
+
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(dev, "_store_path", lambda: tmp_path / "state" / "development.json")

@@ -435,14 +435,17 @@ def _append_plugin_fallback(
         type(exc).__name__,
         str(exc),
     )
-    result.append(
-        {
-            "id": plugin_id,
-            "name": fallback_name,
-            "description": fallback_description,
-            "entries": [],
-        }
-    )
+    card: dict[str, object] = {
+        "id": plugin_id,
+        "name": fallback_name,
+        "description": fallback_description,
+        "entries": [],
+    }
+    if isinstance(plugin_meta_obj, Mapping) and (
+        plugin_meta_obj.get("source") == "development" or "development_ref" in plugin_meta_obj
+    ):
+        card["source"] = "development"
+    result.append(card)
 
 
 def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]]:

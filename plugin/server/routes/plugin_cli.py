@@ -298,12 +298,20 @@ async def plugin_cli_build(
         from plugin.server.application.plugin_cli.development_build import resolve_development_sources
         from plugin.server.infrastructure.development_access import require_development_access
 
-        allow_development = bool(payload.development_ref or payload.development_refs) or (
-            payload.mode == "all" and bool(await asyncio.to_thread(resolve_development_sources, "all", None, []))
-        )
+        allow_development = bool(payload.development_ref or payload.development_refs)
+        development_unavailable = False
+        if payload.mode == "all":
+            try:
+                allow_development = bool(await asyncio.to_thread(resolve_development_sources, "all", None, []))
+            except ServerDomainError as error:
+                if error.code != "DEVELOPMENT_STORE_INVALID":
+                    raise
+                # Keep this dispatch confined to managed roots, even if the
+                # optional store is repaired before the worker starts.
+                development_unavailable = True
         if allow_development:
             require_development_access(request)
-        return await service.build(
+        result = await service.build(
             mode=payload.mode,
             plugin=payload.plugin,
             plugins=payload.plugins,
@@ -320,6 +328,13 @@ async def plugin_cli_build(
             package_description=payload.package_description,
             version=payload.version,
         )
+        if development_unavailable:
+            failed = [*result["failed"], {
+                "plugin": "development",
+                "error": "Development registrations are unavailable; development sources were skipped",
+            }]
+            result = {**result, "failed": failed, "failed_count": len(failed), "ok": False}
+        return result
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 

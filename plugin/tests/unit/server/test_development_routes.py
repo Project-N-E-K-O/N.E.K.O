@@ -67,7 +67,8 @@ async def test_public_list_omits_development_provenance_but_local_details_remain
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure_kind", ["invalid_key", "io"])
-async def test_public_list_keeps_install_source_and_isolates_broken_development_metadata(app, monkeypatch, failure_kind):
+@pytest.mark.parametrize("source_marker", ["source", "development_ref", None])
+async def test_public_list_keeps_install_source_and_isolates_broken_development_metadata(app, monkeypatch, failure_kind, source_marker):
     from types import SimpleNamespace
     from plugin.core.state import state
     from plugin.server.application.plugins import query_service as query
@@ -81,8 +82,12 @@ async def test_public_list_keeps_install_source_and_isolates_broken_development_
     )
     manager = SimpleNamespace(snapshot=lambda: SimpleNamespace(entries=(installed,)))
     monkeypatch.setattr(query, "get_install_source_manager", lambda: manager)
-    broken = {"id": "demo", "name": "Demo", "source": "development", "source_dir": "/private/source",
-              "config_path": "/private/source/plugin.toml", "development_ref": {"registration_id": "private-registration"}}
+    broken = {"id": "demo", "name": "Demo", "source_dir": "/private/source",
+              "config_path": "/private/source/plugin.toml"}
+    if source_marker == "source":
+        broken["source"] = "development"
+    elif source_marker == "development_ref":
+        broken["development_ref"] = {"registration_id": "private-registration"}
     if failure_kind == "invalid_key":
         broken[42] = "invalid metadata key"
     else:
@@ -102,7 +107,10 @@ async def test_public_list_keeps_install_source_and_isolates_broken_development_
         response = await http.get("/plugins")
     assert response.status_code == 200
     cards = {item["id"]: item for item in response.json()["plugins"]}
-    assert cards["demo"] == {"id": "demo", "name": "Demo", "description": "", "entries": []}
+    expected = {"id": "demo", "name": "Demo", "description": "", "entries": []}
+    if source_marker is not None:
+        expected["source"] = "development"
+    assert cards["demo"] == expected
     assert cards["ordinary"]["status"] == "stopped"
     assert cards["ordinary"]["install_source"] == {
         "source": "imported", "reason": "user_requested", "installed_at": "2026-09-09T00:00:00Z",
