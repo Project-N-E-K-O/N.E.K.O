@@ -47,6 +47,108 @@ def _register(tmp_path):
     return store.register_directory_sync(str(_source(tmp_path / "中文 developer folder")))
 
 
+@pytest.mark.parametrize("single", [False, True])
+def test_discovery_rejects_manifest_id_changed_between_reads(tmp_path, monkeypatch, single):
+    from plugin.server.application.plugins import registry_service as registry
+    record = _register(tmp_path)
+    original_view = registry.registration_view_sync
+
+    def replace_manifest_after_validation(registration):
+        view = original_view(registration)
+        manifest = registration.source_dir / "plugin.toml"
+        manifest.write_text(manifest.read_text(encoding="utf-8").replace('id="demo"', 'id="unexpected"'), encoding="utf-8")
+        return view
+
+    monkeypatch.setattr(registry, "registration_view_sync", replace_manifest_after_validation)
+    manager = registry.PluginRegistryService()
+    if single:
+        manager._refresh_plugin_sync(record.plugin_id)
+    else:
+        manager._refresh_registry_sync()
+    assert "unexpected" not in service.state.plugins
+    meta = service.state.plugins[record.plugin_id]
+    assert meta["runtime_load_state"] == "failed"
+    assert "ID changed" in meta["runtime_load_error_message"]
+    assert meta["development_ref"]["registration_id"] == record.registration_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", ['{', '{"enabled":true,"registrations":{}}'])
+async def test_corrupt_store_preserves_ordinary_startup_discovery(tmp_path, monkeypatch, corruption):
+    from plugin.server.application.plugins import registry_service as registry
+    from plugin.server.lifecycle import ServerLifecycleService
+    source = _source(store.settings.PLUGIN_CONFIG_ROOTS[0], "ordinary", "ordinary")
+    store._store_path().parent.mkdir(parents=True, exist_ok=True)
+    store._store_path().write_text(corruption, encoding="utf-8")
+    manager = registry.PluginRegistryService()
+    result = await manager.refresh_registry()
+    assert "ordinary" in service.state.plugins
+    assert result["failed"] and "Cannot read development registrations" in result["failed"][0]["error"]
+    assert store.registration_for_plugin_sync("ordinary") is None
+    assert "ordinary" in await manager.list_autostart_plugin_ids()
+    # Execute startup orchestration with real discovery and autostart selection.
+    started = []
+    async def start(plugin_id, **kwargs):
+        assert store.registration_for_plugin_sync(plugin_id) is None
+        started.append(plugin_id)
+    lifecycle = ServerLifecycleService()
+    lifecycle._plugin_registry_service = manager
+    lifecycle._plugin_lifecycle_service = SimpleNamespace(start_plugin=start)
+    await lifecycle._refresh_registry_and_start_autostart_plugins()
+    assert started == ["ordinary"]
+    assert store._store_path().read_text(encoding="utf-8") == corruption
+    assert (source / "plugin.toml").exists()
+    with pytest.raises(ServerDomainError, match="Cannot read development registrations"):
+        store.development_view_sync()
+
+
+@pytest.mark.parametrize("kind", ["external", "unknown", "development"])
+def test_corrupt_store_does_not_downgrade_untrusted_sources(tmp_path, monkeypatch, kind):
+    store._store_path().parent.mkdir(parents=True, exist_ok=True)
+    store._store_path().write_text('{', encoding="utf-8")
+    if kind != "unknown":
+        root = tmp_path / "external" if kind == "external" else store.settings.PLUGIN_CONFIG_ROOTS[0]
+        source = _source(root)
+        monkeypatch.setitem(service.state.plugins, "demo", {"config_path": str(source / "plugin.toml"), "source": kind})
+    with pytest.raises(ServerDomainError) as error:
+        store.registration_for_plugin_sync("demo")
+    assert error.value.code == "DEVELOPMENT_STORE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_lifecycle_can_start_after_corrupt_development_store(tmp_path, monkeypatch):
+    from plugin.server.application.plugins import lifecycle_service as lifecycle, registry_service as registry
+    from plugin.server.application.plugins.metadata_scanner import IsolatedPluginMetadata
+    _source(store.settings.PLUGIN_CONFIG_ROOTS[0], "ordinary", "ordinary")
+    store._store_path().parent.mkdir(parents=True, exist_ok=True)
+    store._store_path().write_text('{', encoding="utf-8")
+    await registry.PluginRegistryService().refresh_registry()
+    hosts = []
+
+    class Host:
+        def __init__(self, plugin_id, entry_point, config_path):
+            self.process = SimpleNamespace(is_alive=lambda: True, exitcode=None)
+            self.started = False
+            hosts.append(self)
+
+        async def start(self, message_target_queue, startup_timeout=None):
+            self.started = True
+
+        async def shutdown(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return self.started
+
+    monkeypatch.setattr(lifecycle, "PluginProcessHost", Host)
+    monkeypatch.setattr(lifecycle, "scan_plugin_metadata_isolated", lambda **kwargs: IsolatedPluginMetadata(
+        entries_preview=[], handlers={}, entry_methods={}))
+    result = await lifecycle.PluginLifecycleService().start_plugin("ordinary", refresh_registry=False)
+    assert result["success"]
+    assert hosts[0].started
+    assert service.state.plugin_hosts["ordinary"] is hosts[0]
+
+
 @pytest.mark.parametrize("failure", ["missing_directory", "invalid_manifest", "changed_id"])
 def test_registration_keeps_live_process_visible_when_source_invalid(tmp_path, monkeypatch, failure):
     record = _register(tmp_path)

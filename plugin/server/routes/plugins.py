@@ -101,6 +101,29 @@ async def _dispatch_reload_all(request: Request) -> dict[str, object]:
     return await lifecycle_service.reload_all_plugins()
 
 
+@serialized_plugin_operation
+async def _dispatch_refresh(request: Request, plugin_id: str | None = None,
+                            registration_id: str | None = None, revision: int | None = None) -> dict[str, object]:
+    if plugin_id is None:
+        try:
+            registrations = await asyncio.to_thread(list_registration_records_sync)
+        except ServerDomainError as exc:
+            if exc.code != "DEVELOPMENT_STORE_INVALID":
+                raise
+            # Registry discovery reports the damaged store and skips external
+            # sources, while continuing to publish ordinary managed plugins.
+            registrations = []
+        if registrations:
+            require_development_access(request)
+        return await registry_service.refresh_registry()
+    registration = await asyncio.to_thread(registration_for_plugin_sync, plugin_id)
+    if registration is not None or registration_id is not None:
+        require_development_access(request)
+        if registration is None or registration.registration_id != registration_id or registration.revision != revision:
+            raise ServerDomainError(code="DEVELOPMENT_STALE", message="Development registration changed; refresh and retry", status_code=409)
+    return await registry_service.refresh_plugin(plugin_id)
+
+
 @router.post("/plugin/{plugin_id}/start")
 async def start_plugin_endpoint(plugin_id: str, request: Request, _: str = require_admin,
                                 registration_id: str | None = None, revision: int | None = Query(default=None, ge=1)) -> dict[str, object]:
@@ -132,9 +155,13 @@ async def start_plugin_endpoint(plugin_id: str, request: Request, _: str = requi
 
 
 @router.post("/plugin/{plugin_id}/refresh")
-async def refresh_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+async def refresh_plugin_endpoint(plugin_id: str, request: Request, _: str = require_admin,
+                                  registration_id: str | None = None, revision: int | None = Query(default=None, ge=1)) -> dict[str, object]:
     try:
-        return await registry_service.refresh_plugin(plugin_id)
+        with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
+            return await _dispatch_refresh(request, plugin_id, registration_id, revision)
+    except PluginOperationBusy:
+        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -163,9 +190,12 @@ async def delete_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict
 
 
 @router.post("/plugins/refresh")
-async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
+async def refresh_plugins_endpoint(request: Request, _: str = require_admin) -> dict[str, object]:
     try:
-        return await registry_service.refresh_registry()
+        with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
+            return await _dispatch_refresh(request)
+    except PluginOperationBusy:
+        raise _busy_response()
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 

@@ -27,6 +27,120 @@ def client(app, *, peer="127.0.0.1", host="127.0.0.1", headers=None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("peer,headers", [
+    ("192.168.1.2", {"X-Neko-Development": "1"}),
+    ("127.0.0.1", {}),
+    ("127.0.0.1", {"X-Neko-Development": "1", "Origin": "https://evil.example"}),
+])
+async def test_refresh_development_requires_local_provenance(app, tmp_path, monkeypatch, peer, headers):
+    from types import SimpleNamespace
+    record = SimpleNamespace(plugin_id="demo", registration_id="reg", revision=1)
+    monkeypatch.setattr(routes, "registration_for_plugin_sync", lambda _: record)
+    monkeypatch.setattr(routes, "list_registration_records_sync", lambda: [record])
+    one, all_plugins = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(routes.registry_service, "refresh_plugin", one)
+    monkeypatch.setattr(routes.registry_service, "refresh_registry", all_plugins)
+    async with client(app, peer=peer, headers=headers) as http:
+        assert (await http.post("/plugin/demo/refresh", params={"registration_id": "reg", "revision": 1})).status_code == 403
+        assert (await http.post("/plugins/refresh")).status_code == 403
+    one.assert_not_awaited()
+    all_plugins.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refresh_checks_revision_after_waiting_for_registration_operation(app, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    record = SimpleNamespace(plugin_id="demo", registration_id="reg", revision=1)
+    monkeypatch.setattr(routes, "registration_for_plugin_sync", lambda _: record)
+    refresh = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(routes.registry_service, "refresh_plugin", refresh)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    @operation_lock.serialized_plugin_operation
+    async def rebind():
+        entered.set()
+        await release.wait()
+        record.revision = 2
+
+    writer = asyncio.create_task(rebind())
+    await asyncio.wait_for(entered.wait(), 3)
+    async with client(app, headers={"X-Neko-Development": "1"}) as http:
+        waiting = asyncio.create_task(http.post("/plugin/demo/refresh", params={"registration_id": "reg", "revision": 1}))
+        await asyncio.sleep(0)
+        assert not waiting.done()
+        release.set()
+        await writer
+        response = await asyncio.wait_for(waiting, 3)
+        assert response.status_code == 409
+        assert response.headers["X-Error-Code"] == "DEVELOPMENT_STALE"
+        refresh.assert_not_awaited()
+        assert (await http.post("/plugin/demo/refresh")).status_code == 409
+        assert (await http.post("/plugin/demo/refresh", params={"registration_id": "reg", "revision": 2})).status_code == 200
+        refresh.assert_awaited_once_with("demo")
+
+
+@pytest.mark.asyncio
+async def test_ordinary_refresh_still_allows_lan_without_development_records(app, monkeypatch):
+    monkeypatch.setattr(routes, "registration_for_plugin_sync", lambda _: None)
+    monkeypatch.setattr(routes, "list_registration_records_sync", lambda: [])
+    monkeypatch.setattr(routes.registry_service, "refresh_plugin", AsyncMock(return_value={"success": True}))
+    monkeypatch.setattr(routes.registry_service, "refresh_registry", AsyncMock(return_value={"success": True}))
+    async with client(app, peer="192.168.1.2") as http:
+        assert (await http.post("/plugin/ordinary/refresh")).status_code == 200
+        assert (await http.post("/plugins/refresh")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_corrupt_store_bulk_refresh_reports_failure_but_keeps_ordinary_plugins(app, tmp_path, monkeypatch):
+    from plugin.core.state import state
+    from plugin.server.application.plugins import registry_service as registry
+    root = store.settings.PLUGIN_CONFIG_ROOTS[0]
+    monkeypatch.setattr(registry, "PLUGIN_CONFIG_ROOTS", (root,))
+    monkeypatch.setattr(state, "plugins", {})
+    monkeypatch.setattr(state, "plugin_hosts", {})
+    directory = root / "ordinary"
+    directory.mkdir(parents=True)
+    (directory / "plugin.toml").write_text('[plugin]\nid="ordinary"\nentry="plugins.ordinary:Demo"\n', encoding="utf-8")
+    (directory / "__init__.py").write_text('class Demo: pass\n', encoding="utf-8")
+    store._store_path().parent.mkdir(parents=True, exist_ok=True)
+    store._store_path().write_text('{', encoding="utf-8")
+    async with client(app, peer="192.168.1.2") as http:
+        response = await http.post("/plugins/refresh")
+        assert response.status_code == 200
+        assert response.json()["success"] is False
+        assert response.json()["failed"]
+        assert "ordinary" in state.plugins
+        assert (await http.post("/plugin/ordinary/refresh")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_refresh_lock_timeout_does_not_publish_late(app, monkeypatch):
+    import asyncio
+    monkeypatch.setattr(routes, "_OPERATION_WAIT_BUDGET_SECONDS", 0.01)
+    refresh = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(routes.registry_service, "refresh_registry", refresh)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hold():
+        async with operation_lock.plugin_operation_lock.hold():
+            entered.set()
+            await release.wait()
+
+    holder = asyncio.create_task(hold())
+    await asyncio.wait_for(entered.wait(), 3)
+    try:
+        async with client(app) as http:
+            response = await http.post("/plugins/refresh")
+            assert response.status_code == 409
+            assert response.headers["X-Error-Code"] == "PLUGIN_OPERATION_BUSY"
+    finally:
+        release.set()
+        await holder
+    refresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("peer,host,headers", [
     ("127.0.0.1", "127.0.0.1", {}),
     ("192.168.1.2", "127.0.0.1", {"X-Neko-Development": "1"}),

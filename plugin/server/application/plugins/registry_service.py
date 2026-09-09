@@ -43,7 +43,7 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS
 from plugin.server.application.plugins.development import (
     development_registry_lock, list_registration_records_sync,
-    registration_for_plugin_sync, registration_view_sync,
+    registration_for_plugin_sync, registration_view_sync, _store_path as development_store_path,
 )
 
 logger = get_logger("server.application.plugins.registry")
@@ -553,7 +553,14 @@ def _discover_registry_snapshot_sync(
 
     effective_records, shadowed = _select_effective_records(records, roots)
     installed_ids = {item.plugin_id for item in effective_records}
-    for registration in list_registration_records_sync():
+    try:
+        registrations = list_registration_records_sync()
+    except ServerDomainError as exc:
+        if exc.code != "DEVELOPMENT_STORE_INVALID":
+            raise
+        failures.append(PluginDiscoveryFailure(None, development_store_path(), exc.message))
+        registrations = []
+    for registration in registrations:
         if registration.plugin_id in installed_ids:
             # Never rename or replace another source to make development fit.
             failures.append(PluginDiscoveryFailure(registration.plugin_id,
@@ -575,8 +582,10 @@ def _development_discovery_record_sync(registration) -> PluginDiscoveryRecord:
     record = None
     if not error:
         ctx = _parse_single_plugin_config(config_path, set(), logger)
-        if ctx is not None:
+        if ctx is not None and ctx.pid == registration.plugin_id:
             record = _build_discovery_record_from_context(ctx)
+        elif ctx is not None:
+            error = "Development plugin ID changed; register the source again"
         else:
             error = "Development plugin configuration could not be parsed or validated"
     if record is None:

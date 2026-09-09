@@ -101,7 +101,22 @@ def list_registration_records_sync() -> list[DevelopmentSnapshot]:
 
 
 def registration_for_plugin_sync(plugin_id: str) -> DevelopmentSnapshot | None:
-    return next((item for item in list_registration_records_sync() if item.plugin_id == plugin_id), None)
+    try:
+        return next((item for item in list_registration_records_sync() if item.plugin_id == plugin_id), None)
+    except ServerDomainError as exc:
+        if exc.code != "DEVELOPMENT_STORE_INVALID":
+            raise
+        # A broken optional store must not disable known managed plugins, but
+        # must never make an external/unknown source look like an ordinary one.
+        with state.acquire_plugins_read_lock():
+            meta = state.plugins.get(plugin_id)
+            config_path = meta.get("config_path") if isinstance(meta, dict) else None
+            is_development = isinstance(meta, dict) and (meta.get("source") == "development" or meta.get("development_ref"))
+        if config_path and not is_development:
+            path = Path(config_path).resolve()
+            if path.name == "plugin.toml" and any(path.parent.parent == Path(root).resolve() for root in settings.PLUGIN_CONFIG_ROOTS):
+                return None
+        raise
 
 
 def validate_directory_sync(source_dir: str | Path, *, expected_id: str | None = None) -> dict:
