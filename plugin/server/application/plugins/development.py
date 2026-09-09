@@ -56,6 +56,8 @@ def _read_sync() -> dict:
         for item in records:
             if not isinstance(item, dict):
                 raise ValueError("invalid registration")
+            if item.keys() - {"registration_id", "revision", "plugin_id", "source_dir"}:
+                raise ValueError("unknown registration fields")
             for key in ("registration_id", "plugin_id", "source_dir"):
                 if not isinstance(item.get(key), str) or not item[key]:
                     raise ValueError(f"invalid {key}")

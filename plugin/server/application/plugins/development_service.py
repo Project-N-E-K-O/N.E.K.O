@@ -118,10 +118,34 @@ def preflight_development_sync(snapshot: store.DevelopmentSnapshot) -> None:
                 raise store._error(str(exc)) from exc
 
 
-async def _stop_if_present(plugin_id: str) -> None:
-    from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService, _get_plugin_host_sync
-    if await asyncio.to_thread(_get_plugin_host_sync, plugin_id) is not None:
-        result = await PluginLifecycleService().stop_plugin(plugin_id)
+def _has_owned_host_sync(record: store.DevelopmentSnapshot) -> bool:
+    """Called under the operation lock; registry metadata may describe a new source."""
+    from plugin.server.application.plugins.lifecycle_service import _get_plugin_host_sync
+    host = _get_plugin_host_sync(record.plugin_id)
+    if host is None:
+        return False
+    try:
+        path = Path(host.config_path)
+        if not path.is_absolute():
+            raise ValueError("host path is not absolute")
+        path = path.resolve()
+        # Registrations already store canonical directories. Do not reinterpret
+        # the saved source through a newly introduced directory symlink.
+        if path == record.source_dir / "plugin.toml":
+            return True
+        if path.name == "plugin.toml" and any(path.parent.parent == Path(root).resolve()
+                                              for root in store.settings.PLUGIN_CONFIG_ROOTS):
+            return False
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+    raise store._error("Cannot verify plugin host source; association was retained", "DEVELOPMENT_STOP_FAILED", 409)
+
+
+async def _stop_if_present(record: store.DevelopmentSnapshot) -> None:
+    from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService
+    # All callers hold the same lifecycle lock through this check and stop.
+    if await asyncio.to_thread(_has_owned_host_sync, record):
+        result = await PluginLifecycleService().stop_plugin(record.plugin_id)
         if not result.get("success"):
             raise store._error("Plugin did not stop; association was retained", "DEVELOPMENT_STOP_FAILED", 409)
 
@@ -138,7 +162,7 @@ def _forget_metadata_sync(record: store.DevelopmentSnapshot) -> None:
 async def set_development_enabled(enabled: bool) -> dict:
     if not enabled:
         for record in await asyncio.to_thread(store.list_registration_records_sync):
-            await _stop_if_present(record.plugin_id)
+            await _stop_if_present(record)
             await asyncio.to_thread(store.require_registration_sync, record.registration_id, record.revision)
     await asyncio.to_thread(store.set_enabled_sync, enabled)
     from plugin.server.application.plugins.registry_service import PluginRegistryService
@@ -168,7 +192,7 @@ async def register_development(source_dir: str) -> dict:
 @serialized_plugin_operation
 async def remove_development(registration_id: str, revision: int) -> dict:
     record = await asyncio.to_thread(store.require_registration_sync, registration_id, revision)
-    await _stop_if_present(record.plugin_id)
+    await _stop_if_present(record)
     await asyncio.to_thread(store.remove_registration_sync, record)
     await asyncio.to_thread(_forget_metadata_sync, record)
     return {"success": True, "registration_id": registration_id}
@@ -178,7 +202,7 @@ async def remove_development(registration_id: str, revision: int) -> dict:
 async def rebind_development(registration_id: str, revision: int, source_dir: str) -> dict:
     record = await asyncio.to_thread(store.require_registration_sync, registration_id, revision)
     await asyncio.to_thread(preview_development_sync, source_dir, record.registration_id, record.revision)
-    await _stop_if_present(record.plugin_id)
+    await _stop_if_present(record)
     updated = await asyncio.to_thread(store.rebind_registration_sync, record, source_dir)
     from plugin.server.application.plugins.registry_service import PluginRegistryService
     await PluginRegistryService().refresh_plugin(updated.plugin_id)
@@ -204,7 +228,7 @@ async def development_lifecycle_action(plugin_id: str, action: str,
         raise store._error("Development registration changed; refresh and retry", "DEVELOPMENT_STALE", 409)
     service = PluginLifecycleService()
     if action == "stop":
-        await _stop_if_present(plugin_id)
+        await _stop_if_present(record)
         return {"success": True, "plugin_id": plugin_id}
     try:
         await asyncio.to_thread(store.validate_development_snapshot_sync, record)

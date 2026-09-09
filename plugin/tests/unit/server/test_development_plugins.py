@@ -47,6 +47,191 @@ def _register(tmp_path):
     return store.register_directory_sync(str(_source(tmp_path / "中文 developer folder")))
 
 
+@pytest.mark.asyncio
+async def test_extra_registration_field_preserves_ordinary_startup(tmp_path, monkeypatch):
+    _register(tmp_path)
+    data = json.loads(store._store_path().read_text(encoding="utf-8"))
+    data["registrations"][0]["future_setting"] = {"enabled": True}
+    corruption = json.dumps(data)
+    await test_corrupt_store_preserves_ordinary_startup_discovery(tmp_path, monkeypatch, corruption)
+
+
+def test_extra_registration_field_is_rejected_before_mutation(tmp_path):
+    record = _register(tmp_path)
+    data = json.loads(store._store_path().read_text(encoding="utf-8"))
+    data["registrations"][0]["future_setting"] = "private value"
+    original = json.dumps(data)
+    store._store_path().write_text(original, encoding="utf-8")
+    for operation in (
+        store.list_registration_records_sync,
+        lambda: store.set_enabled_sync(False),
+        lambda: store.remove_registration_sync(record),
+    ):
+        with pytest.raises(ServerDomainError) as error:
+            operation()
+        assert error.value.code == "DEVELOPMENT_STORE_INVALID"
+        assert "private value" not in error.value.message
+        assert store._store_path().read_text(encoding="utf-8") == original
+
+
+class _SourceHost:
+    def __init__(self, config_path):
+        self.config_path = config_path
+        self.stops = 0
+
+    async def start(self, **kwargs):
+        pass
+
+    async def shutdown(self, **kwargs):
+        self.stops += 1
+
+    def is_alive(self):
+        return self.stops == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path_kind", ["missing", "external", "invalid"])
+async def test_unconfirmed_host_source_retains_development_association(tmp_path, path_kind):
+    record = _register(tmp_path)
+    paths = {"missing": None, "external": tmp_path / "other" / "plugin.toml", "invalid": object()}
+    host = _SourceHost(paths[path_kind])
+    service.state.plugin_hosts[record.plugin_id] = host
+    with pytest.raises(ServerDomainError) as error:
+        await service.remove_development(record.registration_id, record.revision)
+    assert error.value.code == "DEVELOPMENT_STOP_FAILED"
+    assert host.stops == 0
+    assert service.state.plugin_hosts[record.plugin_id] is host
+    assert store.list_registration_records_sync() == [record]
+
+
+@pytest.mark.asyncio
+async def test_waiting_removal_rechecks_host_source_after_lock(tmp_path, monkeypatch):
+    from plugin.server.application.plugins import lifecycle_service
+    from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+    record = _register(tmp_path)
+    service.state.plugin_hosts[record.plugin_id] = _SourceHost(record.source_dir / "plugin.toml")
+    replacement = _SourceHost(store.settings.PLUGIN_CONFIG_ROOTS[0] / "demo" / "plugin.toml")
+    entered, release = asyncio.Event(), asyncio.Event()
+    @serialized_plugin_operation
+    async def switch_source():
+        entered.set()
+        await release.wait()
+        service.state.plugin_hosts[record.plugin_id] = replacement
+    monkeypatch.setattr(lifecycle_service, "clear_plugin_llm_tools", AsyncMock())
+    switch_task = asyncio.create_task(switch_source())
+    await asyncio.wait_for(entered.wait(), 3)
+    remove_task = asyncio.create_task(service.remove_development(record.registration_id, record.revision))
+    try:
+        await asyncio.sleep(0)
+        assert not remove_task.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(switch_task, remove_task), 3)
+    assert replacement.stops == 0
+    assert service.state.plugin_hosts[record.plugin_id] is replacement
+    assert store.list_registration_records_sync() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["remove", "disable", "stop", "rebind"])
+async def test_stale_association_does_not_stop_installed_host(tmp_path, monkeypatch, operation):
+    from plugin.server.application.plugins import lifecycle_service, registry_service
+    record = _register(tmp_path)
+    installed = _source(store.settings.PLUGIN_CONFIG_ROOTS[0])
+    await registry_service.PluginRegistryService().refresh_registry()
+    metadata = dict(service.state.plugins[record.plugin_id])
+    assert Path(metadata["config_path"]) == installed / "plugin.toml"
+    host = _SourceHost(installed / "plugin.toml")
+    service.state.plugin_hosts[record.plugin_id] = host
+    handler = object()
+    service.state.event_handlers[record.plugin_id] = handler
+    cleanup = AsyncMock()
+    monkeypatch.setattr(lifecycle_service, "clear_plugin_llm_tools", cleanup)
+    if operation == "remove":
+        assert (await service.remove_development(record.registration_id, record.revision))["success"]
+        assert store.list_registration_records_sync() == []
+    elif operation == "disable":
+        await service.set_development_enabled(False)
+        assert not store.development_enabled_sync()
+        assert len(store.list_registration_records_sync()) == 1
+    elif operation == "stop":
+        assert (await service.development_lifecycle_action(record.plugin_id, "stop", record.registration_id, record.revision))["success"]
+    else:
+        with pytest.raises(ServerDomainError) as error:
+            await service.rebind_development(record.registration_id, record.revision, str(_source(tmp_path / "replacement")))
+        assert error.value.code == "DEVELOPMENT_CONFLICT"
+        assert store.list_registration_records_sync() == [record]
+    assert host.stops == 0 and host.is_alive()
+    assert service.state.plugin_hosts[record.plugin_id] is host
+    assert service.state.event_handlers[record.plugin_id] is handler
+    assert service.state.plugins[record.plugin_id]["config_path"] == metadata["config_path"]
+    assert service.state.plugins[record.plugin_id].get("source") != "development"
+    cleanup.assert_not_awaited()
+    assert (record.source_dir / "plugin.toml").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", [False, True])
+async def test_owned_development_host_is_stopped_even_with_missing_source(tmp_path, monkeypatch, missing):
+    from plugin.server.application.plugins import lifecycle_service
+    record = _register(tmp_path)
+    host = _SourceHost(record.source_dir / "plugin.toml")
+    service.state.plugin_hosts[record.plugin_id] = host
+    if missing:
+        record.source_dir.rename(record.source_dir.with_name("moved"))
+    monkeypatch.setattr(lifecycle_service, "clear_plugin_llm_tools", AsyncMock())
+    assert (await service.remove_development(record.registration_id, record.revision))["success"]
+    assert host.stops == 1
+    assert record.plugin_id not in service.state.plugin_hosts
+    assert store.list_registration_records_sync() == []
+
+
+@pytest.mark.asyncio
+async def test_restored_association_does_not_stop_ordinary_host_started_during_store_failure(tmp_path, monkeypatch):
+    from plugin.server.application.plugins import lifecycle_service, registry_service
+    from plugin.server.application.plugins.metadata_scanner import IsolatedPluginMetadata
+    record = _register(tmp_path)
+    saved = store._store_path().read_bytes()
+    installed = _source(store.settings.PLUGIN_CONFIG_ROOTS[0])
+    registry = registry_service.PluginRegistryService()
+    lifecycle = lifecycle_service.PluginLifecycleService()
+    await registry.refresh_registry()
+    # Discovery preference alone does not bypass the valid-registration fence.
+    with pytest.raises(ServerDomainError) as error:
+        await lifecycle.start_plugin(record.plugin_id, refresh_registry=False)
+    assert error.value.code == "DEVELOPMENT_CONFLICT"
+
+    class Host(_SourceHost):
+        def __init__(self, plugin_id, entry_point, config_path):
+            super().__init__(config_path)
+            self.started = False
+            self.process = SimpleNamespace(is_alive=self.is_alive, exitcode=None)
+
+        async def start(self, **kwargs):
+            self.started = True
+
+        def is_alive(self):
+            return self.started and super().is_alive()
+
+    monkeypatch.setattr(lifecycle_service, "PluginProcessHost", Host)
+    monkeypatch.setattr(lifecycle_service, "scan_plugin_metadata_isolated", lambda **kwargs: IsolatedPluginMetadata(
+        entries_preview=[], handlers={}, entry_methods={}))
+    cleanup = AsyncMock()
+    monkeypatch.setattr(lifecycle_service, "clear_plugin_llm_tools", cleanup)
+    store._store_path().write_text("{", encoding="utf-8")
+    await registry.refresh_registry()
+    assert (await lifecycle.start_plugin(record.plugin_id, refresh_registry=False))["success"]
+    host = service.state.plugin_hosts[record.plugin_id]
+    assert host.is_alive() and host.config_path == installed / "plugin.toml"
+    # Restoring the optional file must not grant the old association this host.
+    store._store_path().write_bytes(saved)
+    await service.remove_development(record.registration_id, record.revision)
+    assert host.is_alive() and host.stops == 0
+    assert service.state.plugin_hosts[record.plugin_id] is host
+    cleanup.assert_not_awaited()
+    assert store.list_registration_records_sync() == []
+
+
 @pytest.mark.parametrize("single", [False, True])
 def test_discovery_rejects_manifest_id_changed_between_reads(tmp_path, monkeypatch, single):
     from plugin.server.application.plugins import registry_service as registry
@@ -358,8 +543,10 @@ def test_mode_switch_retains_records_and_invalidates_snapshots(tmp_path):
 async def test_stop_failure_retains_association_and_mode(monkeypatch, tmp_path, operation):
     from plugin.server.application.plugins import lifecycle_service
     record = _register(tmp_path)
-    monkeypatch.setattr(lifecycle_service, "_get_plugin_host_sync", lambda plugin_id: object())
-    monkeypatch.setattr(lifecycle_service.PluginLifecycleService, "stop_plugin", AsyncMock(return_value={"success": False}))
+    host = _SourceHost(record.source_dir / "plugin.toml")
+    monkeypatch.setattr(lifecycle_service, "_get_plugin_host_sync", lambda plugin_id: host)
+    stop = AsyncMock(return_value={"success": False})
+    monkeypatch.setattr(lifecycle_service.PluginLifecycleService, "stop_plugin", stop)
     with pytest.raises(ServerDomainError) as error:
         if operation == "remove":
             await service.remove_development(record.registration_id, record.revision)
@@ -368,6 +555,7 @@ async def test_stop_failure_retains_association_and_mode(monkeypatch, tmp_path, 
         else:
             await service.rebind_development(record.registration_id, record.revision, str(_source(tmp_path / "replacement")))
     assert error.value.code == "DEVELOPMENT_STOP_FAILED"
+    stop.assert_awaited_once_with(record.plugin_id)
     assert store.list_registration_records_sync() == [record]
     assert store.development_enabled_sync()
 
