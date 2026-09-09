@@ -2119,6 +2119,16 @@ _PROACTIVE_LEGAL_TAG_RE = re.compile(
 _PROACTIVE_SLASHES = "/／"
 
 
+# Unicode White_Space characters that are horizontal layout only. Keep CR/LF,
+# vertical tab, form feed, NEL and Unicode line/paragraph separators excluded
+# so a separator on the reply's next line can never be consumed here.
+_PROACTIVE_HORIZONTAL_SPACES = (
+    " \t\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u202f\u205f\u3000"
+)
+_PROACTIVE_HSPACE_PATTERN = rf"[{re.escape(_PROACTIVE_HORIZONTAL_SPACES)}]"
+
+
 # Source-ish prefixes observed from weaker models. Matching is longest-first in
 # ``_strip_proactive_source_prefix`` so ``屏幕`` can never partially consume
 # ``屏幕观察`` / ``当前屏幕观察``.
@@ -2219,12 +2229,18 @@ def _strip_proactive_label_tail(rest: str) -> str:
     """Strip label punctuation without consuming a spaced reply path."""
     adjacent_separator = rest[:1] in _PROACTIVE_SLASHES + "：:"
     body = rest.lstrip()
+    slash_tail = body[1:2]
     spaced_slash_separator = (
-        body[:1] in _PROACTIVE_SLASHES and body[1:2].isspace()
+        body[:1] in _PROACTIVE_SLASHES
+        and (
+            not slash_tail
+            or slash_tail.isspace()
+            or not slash_tail.isascii()
+        )
     )
     # A spaced colon still belongs to the label. A spaced slash is a separator
-    # only when whitespace also follows it; otherwise it may begin the reply's
-    # path (for example ``/chat /api``) and must be preserved.
+    # unless it begins an ASCII reply path (for example ``/chat /api``), which
+    # must be preserved.
     if adjacent_separator or body[:1] in "：:" or spaced_slash_separator:
         body = body[1:]
     return body.lstrip()
@@ -2243,7 +2259,11 @@ def _strip_proactive_label_slash_prefix(
             continue
         if folded.startswith(label):
             rest = body[len(label) :]
-            sep = re.match(rf"[ \t]*[{re.escape(_PROACTIVE_SLASHES)}]", rest)
+            sep = re.match(
+                rf"{_PROACTIVE_HSPACE_PATTERN}*"
+                rf"[{re.escape(_PROACTIVE_SLASHES)}]",
+                rest,
+            )
             if sep:
                 return _strip_proactive_label_tail(rest)
         if body.startswith(tuple(_PROACTIVE_SLASHES)) and folded[1:].startswith(
@@ -2260,7 +2280,9 @@ def _strip_proactive_orphan_slash_prefix(body: str) -> str | None:
     if not body:
         return None
     match = re.match(
-        rf"^[{re.escape(_PROACTIVE_SLASHES)}](?:[ \t]+|\r?\n[ \t]*|$)",
+        rf"^[{re.escape(_PROACTIVE_SLASHES)}]"
+        rf"(?:{_PROACTIVE_HSPACE_PATTERN}+|"
+        rf"\r?\n{_PROACTIVE_HSPACE_PATTERN}*|$)",
         body,
     )
     if not match:
@@ -2287,7 +2309,8 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
         if folded.startswith(folded_label):
             rest = body[len(label) :]
             slash = re.match(
-                rf"[ \t]*[{re.escape(_PROACTIVE_SLASHES)}]",
+                rf"{_PROACTIVE_HSPACE_PATTERN}*"
+                rf"[{re.escape(_PROACTIVE_SLASHES)}]",
                 rest,
             )
             if slash:
@@ -2311,7 +2334,10 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
             # A colon is a strong separator for lowercase / all-caps internal
             # source labels. Preserve title-cased single-word English prose
             # such as ``Screen: the colors look unusual``.
-            colon = re.match(r"^[ \t]*[：:]", rest)
+            colon = re.match(
+                rf"^{_PROACTIVE_HSPACE_PATTERN}*[：:]",
+                rest,
+            )
             matched_label = body[: len(label)]
             if colon and (
                 folded_label not in _PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS
@@ -2326,11 +2352,18 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
             if folded_label in _PROACTIVE_BARE_PREFIX_LABELS:
                 if not rest:
                     return "", source_tag
-                newline = re.match(r"^[ \t]*\r?\n[ \t]*", rest)
+                newline = re.match(
+                    rf"^{_PROACTIVE_HSPACE_PATTERN}*\r?\n"
+                    rf"{_PROACTIVE_HSPACE_PATTERN}*",
+                    rest,
+                )
                 if newline:
                     return rest[newline.end() :].lstrip(), source_tag
                 if folded_label in _PROACTIVE_SPACED_BARE_PREFIX_LABELS:
-                    space = re.match(r"^[ \t]+", rest)
+                    space = re.match(
+                        rf"^{_PROACTIVE_HSPACE_PATTERN}+",
+                        rest,
+                    )
                     if space:
                         return rest[space.end() :].lstrip(), source_tag
 
