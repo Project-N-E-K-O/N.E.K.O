@@ -73,7 +73,19 @@ def _busy_response() -> HTTPException:
 async def start_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
-            await ensure_plugin_messaging_started()
+            if not await ensure_plugin_messaging_started():
+                # Start it anyway: entry triggers and @llm_tool calls travel the
+                # request router and work fine, so refusing would break more than
+                # it fixes. But say so. This plugin's push_message() is about to
+                # answer submitted=True while its messages go nowhere, and having
+                # to reconstruct that afterwards from ABSENT log lines is what
+                # made the original bug take three sessions to find.
+                logger.warning(
+                    "starting plugin {} with no working message delivery path: "
+                    "its tool calls will work, but push_message() will report "
+                    "success while the messages go nowhere",
+                    plugin_id,
+                )
             return await lifecycle_service.start_plugin(plugin_id, persist_user_intent=True)
     except PluginOperationBusy:
         raise _busy_response()

@@ -325,8 +325,15 @@ class ServerLifecycleService:
         except Exception as exc:
             logger.warning("failed to emit server_startup_ready event: {}", exc)
 
-    async def ensure_delivery_path_started(self) -> None:
+    async def ensure_delivery_path_started(self) -> bool:
         """Bring up message plane + both bridges. Idempotent; safe to call twice.
+
+        Returns whether plugin messages can actually be delivered. Callers start
+        plugins either way -- refusing would break tool calls, which travel the
+        router and work fine -- but they must not do it silently: a plugin
+        brought up over a dead path pushes alerts that go nowhere while
+        ``push_message()`` answers ``submitted=True``, which is the failure this
+        whole mechanism exists to end.
 
         Everything a plugin says to the character -- ``push_message``, alerts,
         screenshots -- travels this path. The request router does NOT: it carries
@@ -348,9 +355,9 @@ class ServerLifecycleService:
                 # would leak it past ``_shutdown_internal``, which has already
                 # decided what there was to stop.
                 logger.debug("delivery path start skipped: shutting down")
-                return
+                return False
             if self._delivery_path_started:
-                return
+                return True
             # Latch only a path that actually came up. Every step below swallows
             # its own failure so one broken component cannot abort startup -- but
             # latching a failed attempt would make the SECOND entry point useless,
@@ -363,6 +370,7 @@ class ServerLifecycleService:
                     "delivery path did not come up; plugin messages will not "
                     "reach the character until a later start retries it"
                 )
+            return self._delivery_path_started
 
     async def _start_delivery_path_locked(self) -> bool:
         """Returns whether the path is usable. See the caller for why that matters."""
@@ -627,7 +635,7 @@ class ServerLifecycleService:
             logger.debug("server shutdown completed")
 
 
-async def ensure_plugin_messaging_started() -> None:
+async def ensure_plugin_messaging_started() -> bool:
     """Start plugin messaging without running the full plugin lifecycle.
 
     Both halves, not just the router. A plugin started through this path (the
@@ -635,6 +643,10 @@ async def ensure_plugin_messaging_started() -> None:
     comes up, and the router does not carry those -- see
     ``ServerLifecycleService.ensure_delivery_path_started`` for what a
     router-only start actually looked like in production.
+
+    Returns whether the delivery half is usable, so the caller can say which
+    plugin it is about to start over a dead path instead of leaving that to be
+    reconstructed from missing log lines afterwards.
     """
     try:
         _ = state.plugin_response_map
@@ -651,7 +663,7 @@ async def ensure_plugin_messaging_started() -> None:
     # Idempotent: the startup lifecycle calls the same method and whichever runs
     # first wins. Never skipped on the grounds that "startup will do it" -- that
     # assumption is exactly what left a hand-started plugin mute.
-    await _service.ensure_delivery_path_started()
+    return await _service.ensure_delivery_path_started()
 
 
 _service = ServerLifecycleService()

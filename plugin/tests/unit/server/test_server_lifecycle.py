@@ -27,8 +27,9 @@ async def test_ensure_plugin_messaging_started_initializes_response_map_and_rout
     async def _start_router() -> None:
         calls.append("router_start")
 
-    async def _start_delivery_path() -> None:
+    async def _start_delivery_path() -> bool:
         calls.append("delivery_path")
+        return True
 
     monkeypatch.setattr(module, "state", _State())
     monkeypatch.setattr(module.plugin_router, "start", _start_router)
@@ -37,7 +38,9 @@ async def test_ensure_plugin_messaging_started_initializes_response_map_and_rout
     ensure = getattr(module, "ensure_plugin_messaging_started", None)
     assert callable(ensure)
 
-    await ensure()
+    # The result is the contract: the caller starts the plugin either way but has
+    # to be able to say it is doing so over a dead path.
+    assert await ensure() is True
 
     # The delivery path is not optional here. This entry point is what
     # ``POST /plugin/{id}/start`` calls, and a plugin started through it pushes
@@ -72,15 +75,18 @@ async def test_ensure_plugin_messaging_started_starts_router_when_response_map_i
         def debug(self, *_args: object, **_kwargs: object) -> None:
             return None
 
-    async def _start_delivery_path() -> None:
+    async def _start_delivery_path() -> bool:
         calls.append("delivery_path")
+        return False
 
     monkeypatch.setattr(module, "state", _State())
     monkeypatch.setattr(module.plugin_router, "start", _start_router)
     monkeypatch.setattr(module._service, "ensure_delivery_path_started", _start_delivery_path)
     monkeypatch.setattr(module, "logger", _Logger())
 
-    await module.ensure_plugin_messaging_started()
+    # A dead delivery path is reported, not swallowed -- the caller decides what
+    # to do about it and has to be able to name the plugin in its warning.
+    assert await module.ensure_plugin_messaging_started() is False
 
     # A response-map failure must not cost the delivery path either.
     assert calls == ["response_map", "router_start", "delivery_path"]
