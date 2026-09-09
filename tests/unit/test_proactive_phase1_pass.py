@@ -325,6 +325,21 @@ def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
             "CHAT",
         ),
         ("屏幕观察/这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("/屏幕观察/这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("当前屏幕观察\n这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("当前屏幕观察：这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("当前屏幕观察/这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("/当前屏幕观察这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("当前屏幕观察／这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("／当前屏幕观察这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("current screen observation/hello", "hello", "CHAT"),
+        ("／current screen observation／hello", "hello", "CHAT"),
+        ("chat／你好", "你好", "CHAT"),
+        ("／chat你好", "你好", "CHAT"),
+        ("CHAT／Hello", "Hello", "CHAT"),
+        ("\ufeff\u200bchat/你好", "你好", "CHAT"),
+        ("当前屏幕观察\nchat/你好", "你好", "CHAT"),
+        ("当前屏幕观察", "", "CHAT"),
     ]
 
     for raw, expected_text, expected_tag in cases:
@@ -334,7 +349,14 @@ def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
 
 
 def test_strip_proactive_screen_tag_leak_preserves_inline_known_prefix_words():
-    for raw in ("我刚才看了 /chat 路由", "music/chat 模块需要重构", "/chatbot 路由"):
+    for raw in (
+        "我刚才看了 /chat 路由",
+        "music/chat 模块需要重构",
+        "/chatbot 路由",
+        "／chatbot 路由",
+        "当前屏幕观察到你正在写代码",
+        "current screen observation shows a text editor",
+    ):
         cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak(raw)
         assert cleaned == raw
         assert tag == ""
