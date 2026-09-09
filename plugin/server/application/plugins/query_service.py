@@ -538,6 +538,15 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
                 by_plugin_id=install_source_by_plugin_id,
                 by_directory_name=install_source_by_directory_name,
             )
+            if plugin_meta.get("source") == "development" or "development_ref" in plugin_meta:
+                # Public cards carry display/status data, not local directory
+                # provenance or detailed runtime errors containing source paths.
+                # The guarded development endpoint provides those details.
+                for field in (
+                    "source_dir", "development_ref", "config_path",
+                    "runtime_load_error_message", "runtime_startup_error",
+                ):
+                    plugin_info.pop(field, None)
             result.append(plugin_info)
         except ServerDomainError as exc:
             _append_plugin_fallback(

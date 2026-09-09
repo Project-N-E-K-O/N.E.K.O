@@ -95,7 +95,15 @@ async def _dispatch_lifecycle(request: Request, plugin_id: str, action: str,
 @serialized_plugin_operation
 async def _dispatch_reload_all(request: Request) -> dict[str, object]:
     running_ids = set(await asyncio.to_thread(_list_running_plugin_ids_sync))
-    registrations = await asyncio.to_thread(list_registration_records_sync)
+    try:
+        registrations = await asyncio.to_thread(list_registration_records_sync)
+    except ServerDomainError as exc:
+        if exc.code != "DEVELOPMENT_STORE_INVALID":
+            raise
+        # Provenance is uncertain: keep local access mandatory, then let the
+        # lifecycle path reload known managed hosts and retain unverifiable ones.
+        require_development_access(request)
+        return await lifecycle_service.reload_all_plugins()
     if any(record.plugin_id in running_ids for record in registrations):
         require_development_access(request)
     return await lifecycle_service.reload_all_plugins()

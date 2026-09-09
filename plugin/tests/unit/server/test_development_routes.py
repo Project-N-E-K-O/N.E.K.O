@@ -27,6 +27,141 @@ def client(app, *, peer="127.0.0.1", host="127.0.0.1", headers=None):
 
 
 @pytest.mark.asyncio
+async def test_public_list_omits_development_provenance_but_local_details_remain(app, tmp_path, monkeypatch):
+    from plugin.core.state import state
+    from plugin.server.application.plugins import registry_service as registry
+    source = tmp_path / "private source" / "demo"
+    source.mkdir(parents=True)
+    (source / "plugin.toml").write_text('[plugin]\nid="demo"\nname="Demo"\nentry="plugins.demo:Demo"\n', encoding="utf-8")
+    (source / "__init__.py").write_text('class Demo: pass\n', encoding="utf-8")
+    monkeypatch.setattr(state, "plugins", {})
+    monkeypatch.setattr(state, "plugin_hosts", {})
+    monkeypatch.setattr(state, "event_handlers", {})
+    store.set_enabled_sync(True)
+    record = store.register_directory_sync(str(source))
+    registry.PluginRegistryService()._refresh_plugin_sync("demo")
+    meta = state.plugins["demo"]
+    meta.update(runtime_load_error_message=f"Failed at {source}", runtime_startup_error=f"Error in {source}")
+    state.plugins["ordinary"] = {"id": "ordinary", "name": "Ordinary", "config_path": "ordinary.toml", "source": "user"}
+    state.invalidate_snapshot_cache("plugins")
+    async with client(app, peer="192.168.1.2") as http:
+        response = await http.get("/plugins")
+        assert response.status_code == 200
+        cards = {item["id"]: item for item in response.json()["plugins"]}
+        assert cards["demo"]["name"] == "Demo"
+        assert cards["demo"]["source"] == "development"
+        assert "entries" in cards["demo"] and "status" in cards["demo"]
+        for field in ("source_dir", "config_path", "development_ref", "runtime_load_error_message", "runtime_startup_error"):
+            assert field not in cards["demo"]
+        assert cards["ordinary"]["config_path"] == "ordinary.toml"
+        assert record.registration_id not in response.text
+        assert "private source" not in response.text
+        assert (await http.get("/plugins/development")).status_code == 403
+    async with client(app, headers={"X-Neko-Development": "1"}) as http:
+        details = (await http.get("/plugins/development")).json()["registrations"][0]
+        assert details["source_dir"] == str(source.resolve())
+        assert details["registration_id"] == record.registration_id
+    assert meta["development_ref"]["registration_id"] == record.registration_id
+    assert meta["config_path"] == str(source / "plugin.toml")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_kind", ["invalid_key", "io"])
+async def test_public_list_keeps_install_source_and_isolates_broken_development_metadata(app, monkeypatch, failure_kind):
+    from types import SimpleNamespace
+    from plugin.core.state import state
+    from plugin.server.application.plugins import query_service as query
+    from plugin.server.application.install_source import LockEntry, SourceDetailImported
+
+    installed = LockEntry(
+        root_id="user", directory_name="ordinary", plugin_id="ordinary", channel="imported",
+        reason="user_requested", installed_at="2026-09-09T00:00:00Z",
+        updated_at="2026-09-09T00:00:00Z", last_seen_at="2026-09-09T00:00:00Z",
+        source_detail=SourceDetailImported(package_filename="ordinary.neko-plugin", package_sha256="a" * 64),
+    )
+    manager = SimpleNamespace(snapshot=lambda: SimpleNamespace(entries=(installed,)))
+    monkeypatch.setattr(query, "get_install_source_manager", lambda: manager)
+    broken = {"id": "demo", "name": "Demo", "source": "development", "source_dir": "/private/source",
+              "config_path": "/private/source/plugin.toml", "development_ref": {"registration_id": "private-registration"}}
+    if failure_kind == "invalid_key":
+        broken[42] = "invalid metadata key"
+    else:
+        original_loader = query.load_plugin_i18n_from_meta
+
+        def load_metadata(meta):
+            if meta.get("id") == "demo":
+                raise OSError("Cannot read /private/source/plugin.toml")
+            return original_loader(meta)
+
+        monkeypatch.setattr(query, "load_plugin_i18n_from_meta", load_metadata)
+    monkeypatch.setattr(state, "plugins", {"demo": broken, "ordinary": {"id": "ordinary", "name": "Ordinary"}})
+    monkeypatch.setattr(state, "plugin_hosts", {})
+    monkeypatch.setattr(state, "event_handlers", {})
+    state.invalidate_snapshot_cache("plugins")
+    async with client(app, peer="192.168.1.2") as http:
+        response = await http.get("/plugins")
+    assert response.status_code == 200
+    cards = {item["id"]: item for item in response.json()["plugins"]}
+    assert cards["demo"] == {"id": "demo", "name": "Demo", "description": "", "entries": []}
+    assert cards["ordinary"]["status"] == "stopped"
+    assert cards["ordinary"]["install_source"] == {
+        "source": "imported", "reason": "user_requested", "installed_at": "2026-09-09T00:00:00Z",
+        "source_detail": {"package_filename": "ordinary.neko-plugin", "package_sha256": "a" * 64},
+    }
+    assert "/private/source" not in response.text
+    assert "private-registration" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_corrupt_store_reload_all_reloads_only_verifiable_hosts(app, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from plugin.core.state import state
+    from plugin.server.application.plugins import registry_service as registry, lifecycle_service as lifecycle
+    root = store.settings.PLUGIN_CONFIG_ROOTS[0]
+    monkeypatch.setattr(registry, "PLUGIN_CONFIG_ROOTS", (root,))
+    monkeypatch.setattr(state, "plugins", {})
+    monkeypatch.setattr(state, "plugin_hosts", {})
+    monkeypatch.setattr(state, "event_handlers", {})
+    ordinary = root / "ordinary"
+    external = tmp_path / "external" / "demo"
+    for directory in (ordinary, external):
+        directory.mkdir(parents=True)
+        (directory / "plugin.toml").write_text(f'[plugin]\nid="{directory.name}"\nentry="plugins.{directory.name}:Demo"\n', encoding="utf-8")
+        (directory / "__init__.py").write_text('class Demo: pass\n', encoding="utf-8")
+    store.set_enabled_sync(True)
+    store.register_directory_sync(str(external))
+    await registry.PluginRegistryService().refresh_registry()
+    for plugin_id in ("ordinary", "demo"):
+        state.plugin_hosts[plugin_id] = SimpleNamespace(is_alive=lambda: True)
+    store._store_path().write_text('{', encoding="utf-8")
+    stopped, started = [], []
+
+    async def stop(plugin_id, **kwargs):
+        stopped.append(plugin_id)
+        return lifecycle._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    async def start(plugin_id, **kwargs):
+        started.append(plugin_id)
+        return lifecycle._ReloadOutcome(plugin_id=plugin_id, success=True)
+
+    monkeypatch.setattr(routes.lifecycle_service, "_safe_stop_for_reload", stop)
+    monkeypatch.setattr(routes.lifecycle_service, "_safe_start_for_reload", start)
+    async with client(app, peer="192.168.1.2", headers={"X-Neko-Development": "1"}) as http:
+        assert (await http.post("/plugins/reload")).status_code == 403
+    async with client(app) as http:
+        assert (await http.post("/plugins/reload")).status_code == 403
+    assert not stopped and not started
+    async with client(app, headers={"X-Neko-Development": "1"}) as http:
+        response = await http.post("/plugins/reload")
+        assert response.status_code == 200
+        assert response.json()["reloaded"] == ["ordinary"]
+        assert any(item["plugin_id"] == "demo" for item in response.json()["failed"])
+    assert stopped == started == ["ordinary"]
+    assert state.plugin_hosts["demo"].is_alive()
+    assert store._store_path().read_text(encoding="utf-8") == '{'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("peer,headers", [
     ("192.168.1.2", {"X-Neko-Development": "1"}),
     ("127.0.0.1", {}),
