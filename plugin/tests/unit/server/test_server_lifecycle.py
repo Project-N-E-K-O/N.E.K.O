@@ -514,6 +514,54 @@ async def test_a_plane_that_failed_to_start_is_rebuilt_on_retry(
 
 
 @pytest.mark.asyncio
+async def test_startup_starts_the_delivery_path_on_itself_not_the_singleton(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``startup()`` must not reach the module singleton's delivery path.
+
+    It used to call ``ensure_plugin_messaging_started()``, which starts the path
+    on ``_service``, and then start it again on ``self``. In production those are
+    the same object and the second call latches out. On any other instance it
+    builds TWO message planes: the first holds the configured ports, the second
+    falls back to different ones, and the caller's ``shutdown()`` owns neither.
+    """
+    service = module.ServerLifecycleService()
+    assert service is not module._service
+
+    touched: list[str] = []
+
+    async def _singleton_path() -> bool:
+        touched.append("singleton")
+        return True
+
+    async def _own_path() -> bool:
+        touched.append("self")
+        return True
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(module._service, "ensure_delivery_path_started", _singleton_path)
+    monkeypatch.setattr(service, "ensure_delivery_path_started", _own_path)
+    monkeypatch.setattr(module.ServerLifecycleService, "_clear_runtime_state", staticmethod(lambda: None))
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+    monkeypatch.setattr(module.plugin_router, "start", _noop)
+    monkeypatch.setattr(module, "migrate_legacy_plugin_layout", _noop)
+    monkeypatch.setattr(module.bus_subscription_manager, "start", _noop)
+    monkeypatch.setattr(module.status_manager, "start_status_consumer", _noop)
+    monkeypatch.setattr(module.metrics_collector, "start", _noop)
+    monkeypatch.setattr(service, "_migrate_layout_and_reconcile_install_sources", _noop)
+    monkeypatch.setattr(service, "_refresh_registry_and_start_autostart_plugins", _noop)
+    monkeypatch.setattr(
+        service._plugin_lifecycle_service, "retry_deferred_profile_cleanup", _noop
+    )
+
+    await service.startup()
+
+    assert touched == ["self"], "startup() started the delivery path on the singleton"
+
+
+@pytest.mark.asyncio
 async def test_failure_report_names_the_stage_that_did_not_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -304,7 +304,11 @@ class ServerLifecycleService:
 
         await self._migrate_layout_and_reconcile_install_sources()
 
-        await ensure_plugin_messaging_started()
+        # Router only. The delivery path is started below on ``self`` -- going
+        # through ``ensure_plugin_messaging_started`` here would start it on the
+        # module singleton instead, which is the same object in production and a
+        # second message plane anywhere else.
+        await _ensure_plugin_router_started()
 
         try:
             cleaned_profiles = await self._plugin_lifecycle_service.retry_deferred_profile_cleanup()
@@ -689,6 +693,26 @@ async def ensure_plugin_messaging_started() -> bool:
     plugin it is about to start over a dead path instead of leaving that to be
     reconstructed from missing log lines afterwards.
     """
+    await _ensure_plugin_router_started()
+
+    # Idempotent, and bound to the module singleton on purpose: this entry has no
+    # instance of its own. ``ServerLifecycleService.startup`` deliberately does
+    # NOT come through here -- see ``_ensure_plugin_router_started``.
+    return await _service.ensure_delivery_path_started()
+
+
+async def _ensure_plugin_router_started() -> None:
+    """Start the request router. Process-global, so instance-independent.
+
+    Split out from ``ensure_plugin_messaging_started`` because the delivery half
+    is NOT instance-independent. ``startup()`` used to call the full function and
+    then start the path again on ``self``: identical in production, where ``self``
+    is ``_service`` and the second call latches out, but on any other instance it
+    builds TWO message planes. The first holds the configured ports, the second
+    falls back to different ones, and the caller's ``shutdown()`` owns neither --
+    the port split and orphaned runner this PR already fixed twice, reachable
+    through a door the delivery-path call opened.
+    """
     try:
         _ = state.plugin_response_map
     except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
@@ -700,11 +724,6 @@ async def ensure_plugin_messaging_started() -> bool:
 
     await plugin_router.start()
     logger.debug("plugin router started")
-
-    # Idempotent: the startup lifecycle calls the same method and whichever runs
-    # first wins. Never skipped on the grounds that "startup will do it" -- that
-    # assumption is exactly what left a hand-started plugin mute.
-    return await _service.ensure_delivery_path_started()
 
 
 _service = ServerLifecycleService()
