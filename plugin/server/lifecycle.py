@@ -174,6 +174,16 @@ class ServerLifecycleService:
         with state.acquire_event_handlers_write_lock():
             state.event_handlers.clear()
 
+    def _delivery_path_threads_alive(self) -> bool:
+        """Whether the components a latched path promises are still running.
+
+        Cheap by construction: both are thread checks, so this can sit on the
+        per-plugin-start fast path. A bridge that never started cannot reach here
+        -- the path would not have latched in the first place, because
+        ``_start_delivery_path_locked`` reports it as a failed stage.
+        """
+        return self._message_plane_runner_is_alive() and proactive_bridge_is_alive()
+
     def _message_plane_runner_is_alive(self) -> bool:
         """Whether the runner's own threads are up. Unknown counts as alive."""
         runner = self._message_plane_runner
@@ -519,7 +529,29 @@ class ServerLifecycleService:
                 logger.debug("delivery path start skipped: shutting down")
                 return False
             if self._delivery_path_started:
-                return True
+                # Revalidated, not trusted. Everything else in this file makes a
+                # failure visible; a latch that is never re-read would quietly
+                # become the last lie left: a thread that dies AFTER the probe
+                # that latched it is never noticed, because this fast path never
+                # reaches ``_start_message_plane`` where the liveness check
+                # lives. Manual plugin starts keep answering "path is fine" and
+                # nothing ever retires the corpse.
+                #
+                # Liveness only -- thread checks, essentially free. A full RPC
+                # probe here would put a 1s round-trip on every plugin start to
+                # catch the narrower "alive but wedged" case, which the unlatched
+                # path already probes for.
+                if self._delivery_path_threads_alive():
+                    return True
+                logger.warning(
+                    "delivery path was marked ready but its threads are gone; "
+                    "retiring and rebuilding it"
+                )
+                self._delivery_path_started = False
+                # Retire here rather than letting the reuse branch discover it,
+                # so this single entry recovers instead of spending one call to
+                # notice and another to rebuild.
+                await self._retire_message_plane()
             # Latch only a path that actually came up. Every step below swallows
             # its own failure so one broken component cannot abort startup -- but
             # latching a failed attempt would make the SECOND entry point useless,

@@ -20,6 +20,19 @@ pytestmark = pytest.mark.plugin_unit
 _PLANE_STUB = object()
 
 
+@pytest.fixture(autouse=True)
+def _assume_proactive_bridge_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The module-global ``ProactiveBridge`` is never started in these tests.
+
+    ``ensure_delivery_path_started`` revalidates a latched path against thread
+    liveness, so without this default every test that latches would consult the
+    real (never started) bridge, unlatch, and end up exercising the retirement
+    path instead of whatever it is actually about. Tests whose subject IS bridge
+    liveness set their own value afterwards and win.
+    """
+    monkeypatch.setattr(module, "proactive_bridge_is_alive", lambda: True)
+
+
 @pytest.mark.asyncio
 async def test_ensure_plugin_messaging_started_initializes_response_map_and_router(
     monkeypatch: pytest.MonkeyPatch,
@@ -819,6 +832,103 @@ async def test_an_unhealthy_plane_is_eventually_retired_and_rebuilt(
     assert await service._start_delivery_path_locked() == ["message_plane"]
     assert stopped == [built[0], built[1]]
     assert service._message_plane_runner is None
+
+
+@pytest.mark.asyncio
+async def test_a_latched_path_is_revalidated_not_trusted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A latch that is never re-read becomes the last lie in this file.
+
+    Once ``_delivery_path_started`` is set, the fast path returns True without
+    reaching ``_start_message_plane`` -- where the liveness check lives. A thread
+    that dies AFTER the probe that latched it is therefore never noticed: manual
+    plugin starts keep answering "path is fine" and nothing retires the corpse.
+    """
+    service = module.ServerLifecycleService()
+    built: list[object] = []
+    stopped: list[str] = []
+    plane_alive = True
+
+    class _Runner:
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            stopped.append("runner")
+
+        def is_alive(self) -> bool:
+            return plane_alive
+
+        async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
+            return plane_alive
+
+    def _build(*, auth_token: str) -> object:
+        runner = _Runner()
+        built.append(runner)
+        return runner
+
+    monkeypatch.setattr(module, "build_message_plane_runner", _build)
+    monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "stop_bridge", lambda: stopped.append("plane_bridge"))
+    monkeypatch.setattr(module, "stop_proactive_bridge", lambda: stopped.append("proactive"))
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+
+    assert await service.ensure_delivery_path_started() is True
+    assert len(built) == 1
+
+    # Latched and healthy: the fast path stays fast, nothing is rebuilt.
+    assert await service.ensure_delivery_path_started() is True
+    assert len(built) == 1
+    assert stopped == []
+
+    # A serving thread dies afterwards. The very next entry must notice and
+    # recover in ONE call -- retiring on the spot rather than spending one entry
+    # to notice and another to rebuild.
+    plane_alive = False
+    assert await service.ensure_delivery_path_started() is False
+    assert stopped == ["runner", "plane_bridge", "proactive"]
+    assert service._delivery_path_started is False
+
+    plane_alive = True
+    assert await service.ensure_delivery_path_started() is True
+    assert len(built) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_latched_path_notices_a_dead_proactive_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same revalidation, other component: a dead bridge is a dead path too."""
+    service = module.ServerLifecycleService()
+    bridge_alive = True
+
+    async def _plane_ok() -> bool:
+        service._message_plane_runner = _PLANE_STUB
+        return True
+
+    monkeypatch.setattr(service, "_start_message_plane", _plane_ok)
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "stop_bridge", lambda: None)
+    monkeypatch.setattr(module, "stop_proactive_bridge", lambda: None)
+    # Driven by one flag, because the real pair is not independent: a bridge with
+    # no live thread makes ``wait_until_subscribed`` return the un-set event
+    # immediately. Stubbing "not alive" alongside "subscribed" would describe a
+    # state production cannot reach, and the rebuild would look successful.
+    monkeypatch.setattr(module, "proactive_bridge_is_alive", lambda: bridge_alive)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: bridge_alive)
+
+    assert await service.ensure_delivery_path_started() is True
+    assert await service.ensure_delivery_path_started() is True
+
+    bridge_alive = False
+    assert await service.ensure_delivery_path_started() is False
+    assert service._delivery_path_started is False
 
 
 @pytest.mark.asyncio
