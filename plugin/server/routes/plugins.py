@@ -6,7 +6,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 import asyncio
 from plugin.server.routes.development import router as development_router
-from plugin.server.application.plugins.development import registration_for_plugin_sync, development_enabled_sync
+from plugin.server.application.plugins.development import registration_for_plugin_sync, list_registration_records_sync
+from plugin.server.application.plugins.lifecycle_service import _list_running_plugin_ids_sync
 from plugin.server.application.plugins.development_service import development_lifecycle_action
 from plugin.server.infrastructure.development_access import require_development_access
 
@@ -93,7 +94,9 @@ async def _dispatch_lifecycle(request: Request, plugin_id: str, action: str,
 
 @serialized_plugin_operation
 async def _dispatch_reload_all(request: Request) -> dict[str, object]:
-    if await asyncio.to_thread(development_enabled_sync):
+    running_ids = set(await asyncio.to_thread(_list_running_plugin_ids_sync))
+    registrations = await asyncio.to_thread(list_registration_records_sync)
+    if any(record.plugin_id in running_ids for record in registrations):
         require_development_access(request)
     return await lifecycle_service.reload_all_plugins()
 

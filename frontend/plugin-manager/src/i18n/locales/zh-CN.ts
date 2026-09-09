@@ -721,6 +721,7 @@ export default {
     cancelSuccess: '已发送取消请求'
   },
   status: {
+    sourceMissing: '源码目录不可用',
     running: '运行中',
     stopped: '已停止',
     crashed: '已崩溃',

@@ -17,6 +17,7 @@ from uuid import uuid4
 from plugin.core.entry_points import (
     describe_plugin_entry_directory_mismatch, normalize_plugin_entry_point,
 )
+from plugin.core.state import state
 from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
 from plugin.server.domain.errors import ServerDomainError
 from plugin import settings
@@ -149,6 +150,20 @@ def validate_directory_sync(source_dir: str | Path, *, expected_id: str | None =
 def _check_conflicts_sync(metadata: dict, *, excluding: str | None = None) -> None:
     path = Path(metadata["source_dir"])
     plugin_id = metadata["plugin_id"]
+    # A new association cannot take ownership of an existing runtime ID,
+    # even when its manifest is unreadable or lives outside managed roots.
+    # Existing associations keep their identity while rebinding/refreshing.
+    if excluding is None:
+        with state.acquire_plugins_read_lock():
+            registered = plugin_id in state.plugins
+            meta = state.plugins.get(plugin_id)
+            owner = meta.get("config_path", plugin_id) if isinstance(meta, dict) else plugin_id
+        if registered:
+            raise _error(f"Plugin ID already registered in runtime at {owner}", "DEVELOPMENT_CONFLICT", 409)
+        with state.acquire_plugin_hosts_read_lock():
+            has_host = plugin_id in state.plugin_hosts
+        if has_host:
+            raise _error(f"Plugin ID already has a runtime host: {plugin_id}", "DEVELOPMENT_CONFLICT", 409)
     for record in list_registration_records_sync():
         if record.registration_id != excluding and (
             record.plugin_id == plugin_id or record.source_dir == path

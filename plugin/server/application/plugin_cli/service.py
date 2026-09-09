@@ -2123,8 +2123,7 @@ class PluginCliService:
                         ),
                     )
             from plugin.server.application.plugins.development import list_registration_records_sync
-            incoming_ids = set(getattr(plan, "bundle_plugin_ids", ()) or ())
-            incoming_ids.add(plan.plugin_id)
+            incoming_ids = set(getattr(plan, "bundle_plugin_ids", ()) or (plan.plugin_id,))
             conflicts = [item for item in list_registration_records_sync() if item.plugin_id in incoming_ids]
             if conflicts:
                 plan = replace(plan, action="blocked", confirmation_token="", reason="development_registration_conflict")

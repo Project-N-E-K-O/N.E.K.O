@@ -721,6 +721,7 @@ export default {
     cancelSuccess: 'Cancel requested'
   },
   status: {
+    sourceMissing: 'Source directory unavailable',
     running: 'Running',
     stopped: 'Stopped',
     crashed: 'Crashed',

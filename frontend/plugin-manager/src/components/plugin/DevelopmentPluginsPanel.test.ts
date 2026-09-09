@@ -46,6 +46,19 @@ beforeEach(() => {
 })
 afterEach(() => teardown())
 describe('development plugin workflow', () => {
+  it('uses the translated source-missing label instead of the raw backend status', async () => {
+    usePluginStore().pluginsWithStatus[0]!.status = 'source_missing'
+    const root = mount()
+    await settle()
+    expect(root.querySelector('article')?.textContent).toContain('status.sourceMissing')
+    expect(root.querySelector('article')?.textContent).not.toContain('status.source_missing')
+    const locales = import.meta.glob('../../i18n/locales/*.ts', { eager: true, import: 'default' }) as Record<string, { status: Record<string, string> }>
+    expect(Object.keys(locales)).toHaveLength(8)
+    for (const locale of Object.values(locales)) {
+      expect(locale.status.sourceMissing).toBeTruthy()
+      expect(locale.status.sourceMissing).not.toContain('status.')
+    }
+  })
   it('can stop a live process after its source becomes unavailable', async () => {
     usePluginStore().pluginsWithStatus[0]!.status = 'source_missing'
     const missing = { ...record, runtime_alive: true, error: 'directory unavailable' }

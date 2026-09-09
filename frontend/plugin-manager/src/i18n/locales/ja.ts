@@ -721,6 +721,7 @@ export default {
     cancelSuccess: 'キャンセルリクエストを送信しました'
   },
   status: {
+    sourceMissing: 'ソースディレクトリを利用できません',
     running: '実行中',
     stopped: '停止',
     crashed: 'クラッシュ',

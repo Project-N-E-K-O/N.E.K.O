@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+import os
+from pathlib import Path
 
 from plugin.core.state import state
 from plugin.server.application.plugins import development as store
@@ -89,16 +91,22 @@ def preflight_development_sync(snapshot: store.DevelopmentSnapshot) -> None:
         raise store._error(str(payload.get("runtime_load_error_message")))
     # Syntax errors in plugin-owned modules should not kill the old instance.
     # Vendor dependencies keep their existing loader/validation policy.
-    for path in snapshot.source_dir.rglob("*.py"):
-        relative = path.relative_to(snapshot.source_dir)
-        if any(part in {"vendor", ".venv", ".git", "__pycache__"} for part in relative.parts):
-            continue
-        if not path.resolve().is_relative_to(snapshot.source_dir):
-            raise store._error(f"Python source escapes the registered directory: {relative}")
-        try:
-            compile(path.read_bytes(), str(path), "exec")
-        except (SyntaxError, OSError) as exc:
-            raise store._error(str(exc)) from exc
+    def walk_error(exc):
+        raise store._error(str(exc)) from exc
+
+    for root, directories, files in os.walk(snapshot.source_dir, onerror=walk_error, followlinks=False):
+        directories[:] = [name for name in directories if name not in {"vendor", ".venv", ".git", "__pycache__"}]
+        for name in files:
+            if not name.lower().endswith(".py"):
+                continue
+            path = Path(root) / name
+            relative = path.relative_to(snapshot.source_dir)
+            if not path.resolve().is_relative_to(snapshot.source_dir):
+                raise store._error(f"Python source escapes the registered directory: {relative}")
+            try:
+                compile(path.read_bytes(), str(path), "exec")
+            except (SyntaxError, OSError) as exc:
+                raise store._error(str(exc)) from exc
 
 
 async def _stop_if_present(plugin_id: str) -> None:

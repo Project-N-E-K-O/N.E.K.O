@@ -721,6 +721,7 @@ export default {
     cancelSuccess: 'Cancelación solicitada'
   },
   status: {
+    sourceMissing: 'Directorio de código no disponible',
     running: 'En ejecución',
     stopped: 'Detenido',
     crashed: 'Con fallos',

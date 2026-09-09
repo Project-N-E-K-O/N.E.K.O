@@ -91,6 +91,9 @@ async def test_development_lifecycle_requires_current_reference_and_local_guard(
 @pytest.mark.asyncio
 async def test_reload_all_cannot_bypass_development_origin_guard(app, monkeypatch):
     store.set_enabled_sync(True)
+    from types import SimpleNamespace
+    monkeypatch.setattr(routes, "_list_running_plugin_ids_sync", lambda: ["demo", "ordinary"])
+    monkeypatch.setattr(routes, "list_registration_records_sync", lambda: [SimpleNamespace(plugin_id="demo")])
     action = AsyncMock(return_value={"success": True})
     monkeypatch.setattr(routes.lifecycle_service, "reload_all_plugins", action)
     async with client(app) as http:
@@ -99,3 +102,34 @@ async def test_reload_all_cannot_bypass_development_origin_guard(app, monkeypatc
     async with client(app, headers={"X-Neko-Development": "1"}) as http:
         assert (await http.post("/plugins/reload")).status_code == 200
     action.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registered", [False, True])
+async def test_ordinary_bulk_reload_remains_available_remotely(app, monkeypatch, registered):
+    from types import SimpleNamespace
+    store.set_enabled_sync(True)
+    monkeypatch.setattr(routes, "_list_running_plugin_ids_sync", lambda: ["ordinary"])
+    monkeypatch.setattr(routes, "list_registration_records_sync",
+                        lambda: [SimpleNamespace(plugin_id="stopped_development")] if registered else [])
+    action = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(routes.lifecycle_service, "reload_all_plugins", action)
+    async with client(app, peer="192.168.1.2") as http:
+        assert (await http.post("/plugins/reload")).status_code == 200
+    action.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_development_routes_reuse_administrator_dependency(app):
+    from fastapi import HTTPException
+    from plugin.server.infrastructure.auth import verify_admin_code
+    async def denied():
+        raise HTTPException(status_code=403, detail="admin authorization required")
+    app.dependency_overrides[verify_admin_code] = denied
+    async with client(app, headers={"X-Neko-Development": "1"}) as http:
+        response = await http.get("/plugins/development")
+        assert response.status_code == 403
+        assert response.json()["detail"] == "admin authorization required"
+        response = await http.put("/plugins/development/settings", json={"enabled": True})
+        assert response.status_code == 403
+    assert not store.development_enabled_sync()

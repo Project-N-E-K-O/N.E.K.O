@@ -10,8 +10,9 @@ from plugin.server.application.plugins.operation_lock import PluginOperationBusy
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.development_access import require_development_access
+from plugin.server.infrastructure.auth import require_admin
 
-router = APIRouter(dependencies=[Depends(require_development_access)])
+router = APIRouter(dependencies=[Depends(require_development_access), require_admin])
 
 
 class DevelopmentSettings(BaseModel):

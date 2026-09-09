@@ -11,7 +11,7 @@
     <div class="development-grid">
       <article v-for="record in records" :key="record.registration_id" class="development-card">
         <header><strong>{{ record.name || record.plugin_id }}</strong><el-tag>{{ t('development.badge') }}</el-tag></header>
-        <p>{{ record.plugin_id }} · {{ record.version || '—' }} · {{ t(status(record.plugin_id) === 'load_failed' ? 'status.loadFailed' : `status.${status(record.plugin_id)}`) }}</p>
+        <p>{{ record.plugin_id }} · {{ record.version || '—' }} · {{ t(statusLabel(record.plugin_id)) }}</p>
         <p class="development-path">{{ record.source_dir }}</p>
         <details v-if="record.entry"><summary>{{ t('development.entry') }}</summary><code>{{ record.entry }}</code></details>
         <details class="development-entries" open>
@@ -111,6 +111,8 @@ const rebinding = ref<DevelopmentRegistration | null>(null)
 const statuses = computed(() => new Map(store.pluginsWithStatus.map((plugin) => [plugin.id, plugin.status])))
 const entriesByPlugin = computed(() => new Map(store.pluginsWithStatus.map((plugin) => [plugin.id, plugin.entries || []])))
 const status = (id: string) => statuses.value.get(id) || 'stopped'
+const statusKeys: Record<string, string> = { load_failed: 'status.loadFailed', source_missing: 'status.sourceMissing' }
+const statusLabel = (id: string) => statusKeys[status(id)] || `status.${status(id)}`
 const isRunning = (record: DevelopmentRegistration) => record.runtime_alive ?? status(record.plugin_id) === 'running'
 const message = (err: unknown) => formatHttpError(err) || String(err)
 async function refresh() {

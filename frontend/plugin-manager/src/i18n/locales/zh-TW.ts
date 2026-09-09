@@ -721,6 +721,7 @@ export default {
     cancelSuccess: '已傳送取消請求'
   },
   status: {
+    sourceMissing: '原始碼目錄無法使用',
     running: '執行中',
     stopped: '已停止',
     crashed: '已崩潰',

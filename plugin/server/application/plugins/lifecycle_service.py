@@ -1615,6 +1615,7 @@ class PluginLifecycleService:
         # 写成顺序循环是为了让代码说实话：它本来就是顺序的。同时顺带能在中途
         # 检查预算，gather 做不到这件事。
         stop_outcomes = []
+        development_snapshots: dict[str, development_store.DevelopmentSnapshot] = {}
         skipped_over_budget: list[str] = []
         stop_deadline = time_module.monotonic() + _RELOAD_ALL_BUDGET_SECONDS
         for index, plugin_id in enumerate(running_plugin_ids):
@@ -1629,6 +1630,17 @@ class PluginLifecycleService:
                     len(skipped_over_budget),
                 )
                 break
+            try:
+                snapshot = await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id)
+                if snapshot is not None:
+                    from plugin.server.application.plugins.development_service import preflight_development_sync
+                    await asyncio.to_thread(preflight_development_sync, snapshot)
+                    development_snapshots[plugin_id] = snapshot
+            except ServerDomainError as exc:
+                # Keep the last working development instance when edits are
+                # invalid, just like the single-plugin reload path.
+                stop_outcomes.append(_ReloadOutcome(plugin_id=plugin_id, success=False, error=exc.message))
+                continue
             # 这一次 stop 也要受剩余预算约束：只在开始前检查的话，一个慢关停
             # （或者调大了的 NEKO_PLUGIN_SHUTDOWN_TIMEOUT）就能让整个阶段冲破
             # 对外承诺的墙钟上限（codex）。
@@ -1698,6 +1710,13 @@ class PluginLifecycleService:
         # 一个硬预算。健康路径根本碰不到——实测启动很快，预算压根用不完。
         start_deadline = time_module.monotonic() + _RELOAD_ALL_BUDGET_SECONDS
         for plugin_id in ordered_plugin_ids:
+            snapshot = development_snapshots.get(plugin_id)
+            if snapshot is not None:
+                try:
+                    await asyncio.to_thread(development_store.validate_development_snapshot_sync, snapshot)
+                except ServerDomainError as exc:
+                    failed.append({"plugin_id": plugin_id, "error": exc.message})
+                    continue
             # 启动这半边同样把等锁和启动本身都封在剩余预算里——和上面的 stop
             # 对称，否则预算只管住了两个阶段中的一个。
             #

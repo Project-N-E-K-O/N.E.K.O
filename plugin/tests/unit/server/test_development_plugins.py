@@ -118,6 +118,31 @@ def test_same_id_conflicts_report_source_and_preserve_registration(tmp_path, ins
     assert store.list_registration_records_sync() == [existing]
 
 
+@pytest.mark.parametrize("owner", ["broken_manifest", "external_registry", "host_only"])
+def test_new_registration_cannot_claim_runtime_id(tmp_path, owner):
+    store.set_enabled_sync(True)
+    source = _source(tmp_path / "development")
+    if owner == "host_only":
+        host = SimpleNamespace(is_alive=lambda: True)
+        service.state.plugin_hosts["demo"] = host
+    else:
+        existing = _source(store.settings.PLUGIN_CONFIG_ROOTS[0] if owner == "broken_manifest" else tmp_path / "external")
+        service.state.plugins["demo"] = {"config_path": str(existing / "plugin.toml"), "source": "user"}
+        if owner == "broken_manifest":
+            (existing / "plugin.toml").write_text("[invalid", encoding="utf-8")
+    before = store._store_path().read_bytes()
+    for operation in (store.inspect_directory_sync, store.register_directory_sync):
+        with pytest.raises(ServerDomainError) as error:
+            operation(str(source))
+        assert error.value.code == "DEVELOPMENT_CONFLICT"
+        assert store._store_path().read_bytes() == before
+    assert store.registration_for_plugin_sync("demo") is None
+    if owner == "host_only":
+        assert service.state.plugin_hosts["demo"] is host
+    else:
+        assert service.state.plugins["demo"]["config_path"] == str(existing / "plugin.toml")
+
+
 def test_missing_directory_remains_visible_and_rebind_fences_old_operations(tmp_path):
     record = _register(tmp_path)
     moved = record.source_dir.with_name("moved")
@@ -302,6 +327,114 @@ def test_preflight_reports_syntax_error_before_lifecycle_mutation(tmp_path):
         service.preflight_development_sync(record)
     assert "child.py" in error.value.message
     assert store.list_registration_records_sync() == [record]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["manifest", "syntax", "dependency"])
+async def test_bulk_reload_preserves_invalid_development_and_reloads_healthy(monkeypatch, tmp_path, invalid):
+    from plugin.server.application.plugins import lifecycle_service as lifecycle
+    record = _register(tmp_path)
+    healthy = store.register_directory_sync(str(_source(tmp_path / "healthy", "healthy", "healthy")))
+    if invalid == "manifest":
+        (record.source_dir / "plugin.toml").write_text("[invalid", encoding="utf-8")
+    elif invalid == "syntax":
+        (record.source_dir / "child.py").write_text("def invalid(\n", encoding="utf-8")
+    else:
+        (record.source_dir / "pyproject.toml").write_text(
+            '[project]\ndependencies = ["neko_missing_review_dependency_123"]\n', encoding="utf-8",
+        )
+    running = {record.plugin_id, healthy.plugin_id, "ordinary"}
+    stopped, started = [], []
+    monkeypatch.setattr(lifecycle, "_list_running_plugin_ids_sync", lambda: sorted(running))
+    monkeypatch.setattr(lifecycle.plugin_registry_service, "refresh_registry", AsyncMock())
+    monkeypatch.setattr(lifecycle.plugin_registry_service, "order_plugin_ids", AsyncMock(side_effect=lambda ids: ids))
+    async def stop(plugin_id, **kwargs):
+        stopped.append(plugin_id)
+        running.remove(plugin_id)
+        return lifecycle._ReloadOutcome(plugin_id=plugin_id, success=True)
+    async def start(plugin_id, **kwargs):
+        started.append(plugin_id)
+        running.add(plugin_id)
+        return lifecycle._ReloadOutcome(plugin_id=plugin_id, success=True)
+    manager = lifecycle.PluginLifecycleService()
+    monkeypatch.setattr(manager, "_safe_stop_for_reload", stop)
+    monkeypatch.setattr(manager, "_safe_start_for_reload", start)
+    result = await manager.reload_all_plugins()
+    assert record.plugin_id not in stopped
+    assert record.plugin_id not in started
+    assert record.plugin_id in running
+    assert set(result["reloaded"]) == {"healthy", "ordinary"}
+    assert [item["plugin_id"] for item in result["failed"]] == [record.plugin_id]
+    assert not result["success"]
+
+
+@pytest.mark.asyncio
+async def test_bundle_package_id_does_not_conflict_with_development_plugin(monkeypatch, tmp_path):
+    from plugin.neko_plugin_cli.public.build import build_bundle
+    from plugin.server.application.plugin_cli import service as cli
+    from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+    record = _register(tmp_path)
+    incoming = _source(tmp_path / "incoming", "other", "other")
+    second = _source(tmp_path / "incoming", "second", "second")
+    packages = tmp_path / "packages"
+    packages.mkdir()
+    package = packages / "incoming.neko-bundle"
+    await asyncio.to_thread(build_bundle, [incoming, second], package, bundle_id=record.plugin_id)
+    policy = PluginCliPathPolicy(store.settings.PLUGIN_CONFIG_ROOTS[1], store.settings.PLUGIN_CONFIG_ROOTS[0],
+                                 packages, tmp_path / "profiles", store.settings.get_plugin_state_root())
+    monkeypatch.setattr(cli.PluginCliService, "_path_policy", staticmethod(lambda: policy))
+    monkeypatch.setattr(cli, "get_install_source_manager", lambda: SimpleNamespace())
+    plan = await cli.PluginCliService().plan_install(package=str(package))
+    assert plan["action"] != "blocked", plan
+    assert set(plan["bundle_plugin_ids"]) == {"other", "second"}
+
+
+def test_preflight_prunes_dependency_directories_before_visiting(monkeypatch, tmp_path):
+    import os
+    record = _register(tmp_path)
+    excluded = {"vendor", ".venv", ".git", "__pycache__"}
+    for name in excluded:
+        directory = record.source_dir / name / "deep"
+        directory.mkdir(parents=True)
+        (directory / "invalid.py").write_text("broken syntax !", encoding="utf-8")
+    original = os.scandir
+    def checked_scandir(path):
+        relative = Path(path).relative_to(record.source_dir) if Path(path).is_relative_to(record.source_dir) else Path()
+        assert not excluded.intersection(relative.parts), f"Visited excluded directory: {relative}"
+        return original(path)
+    monkeypatch.setattr(os, "scandir", checked_scandir)
+    service.preflight_development_sync(record)
+
+
+def test_preflight_still_checks_runtime_source_excluded_from_packaging(tmp_path):
+    record = _register(tmp_path)
+    (record.source_dir / "pyproject.toml").write_text('[tool.neko.build]\nexclude = ["generated/**"]\n', encoding="utf-8")
+    generated = record.source_dir / "generated"
+    generated.mkdir()
+    (generated / "module.py").write_text("broken syntax !", encoding="utf-8")
+    with pytest.raises(ServerDomainError, match="invalid syntax"):
+        service.preflight_development_sync(record)
+
+
+@pytest.mark.asyncio
+async def test_bulk_reload_rechecks_registration_after_stop(monkeypatch, tmp_path):
+    from plugin.server.application.plugins import lifecycle_service as lifecycle
+    record = _register(tmp_path)
+    replacement = _source(tmp_path / "replacement")
+    monkeypatch.setattr(lifecycle, "_list_running_plugin_ids_sync", lambda: [record.plugin_id])
+    monkeypatch.setattr(lifecycle.plugin_registry_service, "refresh_registry", AsyncMock())
+    monkeypatch.setattr(lifecycle.plugin_registry_service, "order_plugin_ids", AsyncMock(side_effect=lambda ids: ids))
+    async def stop(plugin_id, **kwargs):
+        store.rebind_registration_sync(record, str(replacement))
+        return lifecycle._ReloadOutcome(plugin_id=plugin_id, success=True)
+    manager = lifecycle.PluginLifecycleService()
+    monkeypatch.setattr(manager, "_safe_stop_for_reload", stop)
+    start = AsyncMock()
+    monkeypatch.setattr(manager, "_safe_start_for_reload", start)
+    result = await manager.reload_all_plugins()
+    start.assert_not_awaited()
+    assert not result["success"]
+    assert result["failed"][0]["plugin_id"] == record.plugin_id
 
 
 @pytest.mark.parametrize("missing", [False, True], ids=["disabled", "missing"])

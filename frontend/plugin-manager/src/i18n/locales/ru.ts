@@ -721,6 +721,7 @@ export default {
     cancelSuccess: 'Запрос на отмену отправлен'
   },
   status: {
+    sourceMissing: 'Каталог исходников недоступен',
     running: 'Запущен',
     stopped: 'Остановлен',
     crashed: 'Ошибка',

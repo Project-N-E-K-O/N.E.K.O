@@ -14,7 +14,7 @@ export default {
     guideReloadBody: "Salve as alterações no seu editor e clique em Recarregar. A lista de pontos de entrada mostrará as descrições atualizadas. Após reiniciar o aplicativo, inicie os plugins de desenvolvimento manualmente.",
     guideBuildTitle: "Empacote e compartilhe",
     guideBuildBody: "Gere um pacote .neko-plugin mesmo com o plugin parado. Importe e verifique em outro ambiente antes de compartilhar.",
-    guideData: "Remover a associação para o plugin e exclui o registro, mantendo o código e os dados de execução. Desativar o modo de desenvolvimento para os plugins, mas mantém as associações.",
+    guideData: "Remover a associação interrompe o plugin e exclui o registro, mantendo o código e os dados de execução. Desativar o modo de desenvolvimento interrompe os plugins, mas mantém as associações.",
     guideReopen: "Você pode reabrir este guia pelo botão Guia de uso no canto superior direito da página.",
     guideDismiss: "Entendi",
     sourcePlaceholder: "Escolha uma pasta de plugin que contenha plugin.toml",
@@ -721,6 +721,7 @@ export default {
     cancelSuccess: 'Cancelamento solicitado'
   },
   status: {
+    sourceMissing: 'Diretório de código indisponível',
     running: 'Em execução',
     stopped: 'Parado',
     crashed: 'Com falhas',

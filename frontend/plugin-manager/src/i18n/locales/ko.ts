@@ -721,6 +721,7 @@ export default {
     cancelSuccess: '취소 요청을 전송했습니다'
   },
   status: {
+    sourceMissing: '소스 폴더를 사용할 수 없음',
     running: '실행 중',
     stopped: '정지됨',
     crashed: '충돌',
