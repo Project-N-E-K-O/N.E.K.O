@@ -548,6 +548,7 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
                 for field in (
                     "source_dir", "development_ref", "config_path",
                     "runtime_load_error_message", "runtime_startup_error",
+                    "static_ui_config",
                 ):
                     plugin_info.pop(field, None)
             result.append(plugin_info)

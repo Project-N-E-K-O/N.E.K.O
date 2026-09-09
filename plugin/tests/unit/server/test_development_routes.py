@@ -27,6 +27,110 @@ def client(app, *, peer="127.0.0.1", host="127.0.0.1", headers=None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_registered", [False, True])
+async def test_public_ui_metadata_hides_development_directory(app, tmp_path, monkeypatch, runtime_registered):
+    from types import SimpleNamespace
+    from plugin.core.state import state
+    from plugin.core.communication import PluginCommunicationResourceManager
+    from plugin.logging_config import get_logger
+    from plugin.server.routes import plugin_ui
+
+    source = tmp_path / "private checkout" / "demo"
+    static = source / "static"
+    static.mkdir(parents=True)
+    (static / "index.html").write_text("<p>hello</p>", encoding="utf-8")
+    meta = {"id": "demo", "name": "Demo", "source": "development",
+            "config_path": str(source / "plugin.toml")}
+    ordinary = {"id": "ordinary", "name": "Ordinary", "config_path": str(source / "plugin.toml")}
+    monkeypatch.setattr(state, "plugins", {"demo": meta, "ordinary": ordinary})
+    monkeypatch.setattr(state, "plugin_hosts", {})
+    monkeypatch.setattr(state, "event_handlers", {})
+    if runtime_registered:
+        manager = SimpleNamespace(plugin_id="demo", logger=get_logger("test.static-ui"))
+        await PluginCommunicationResourceManager._handle_static_ui_register(manager,
+            {"config": {"enabled": True, "directory": str(static), "index_file": "index.html"}})
+    state.invalidate_snapshot_cache("plugins")
+    app.include_router(plugin_ui.router)
+    async with client(app, peer="192.168.1.2") as http:
+        cards = (await http.get("/plugins")).json()["plugins"]
+        card = next(item for item in cards if item["id"] == "demo")
+        assert "static_ui_config" not in card
+        info = await http.get("/plugin/demo/ui-info")
+        assert info.status_code == 200
+        assert info.json()["has_ui"] is True
+        assert info.json()["static_dir"] is None
+        assert info.json()["static_files"] == ["index.html"]
+        assert "private checkout" not in info.text
+        ordinary_info = await http.get("/plugin/ordinary/ui-info")
+        assert ordinary_info.json()["static_dir"] == str(static)
+    assert meta["config_path"] == str(source / "plugin.toml")
+    if runtime_registered:
+        assert meta["static_ui_config"]["directory"] == str(static)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["get_static_dir", "get_static_ui_config", "get_ui_info"])
+async def test_static_ui_metadata_read_failure_does_not_expose_source(method, monkeypatch):
+    from plugin.server.application.plugins import ui_query_service
+    from plugin.server.domain.errors import ServerDomainError
+
+    def unavailable(_plugin_id):
+        raise OSError("metadata unavailable at /private/developer/checkout")
+
+    monkeypatch.setattr(ui_query_service, "_get_plugin_meta_sync", unavailable)
+    service = ui_query_service.PluginUiQueryService()
+    with pytest.raises(ServerDomainError) as failure:
+        await getattr(service, method)("demo")
+    assert failure.value.code == "PLUGIN_UI_QUERY_FAILED"
+    assert failure.value.status_code == 500
+    assert "/private" not in failure.value.message
+    assert "/private" not in str(failure.value.details)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["get_static_dir", "get_static_ui_config", "get_ui_info"])
+async def test_static_ui_queries_reject_malformed_metadata_without_echoing_it(method, monkeypatch):
+    from plugin.core.state import state
+    from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
+    from plugin.server.domain.errors import ServerDomainError
+
+    monkeypatch.setattr(state, "plugins", {"demo": {42: "/private/developer/checkout"}})
+    with pytest.raises(ServerDomainError) as failure:
+        await getattr(PluginUiQueryService(), method)("demo")
+    assert failure.value.code == "INVALID_DATA_SHAPE"
+    assert "/private" not in failure.value.message
+    assert "/private" not in str(failure.value.details)
+
+
+@pytest.mark.asyncio
+async def test_development_static_files_keep_internal_source_resolution(app, tmp_path, monkeypatch):
+    from plugin.core.state import state
+    from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
+    from plugin.server.routes import plugin_ui
+
+    source = tmp_path / "private checkout" / "demo"
+    static = source / "static"
+    static.mkdir(parents=True)
+    (static / "index.html").write_text("<p>development UI</p>", encoding="utf-8")
+    monkeypatch.setattr(state, "plugins", {"demo": {"id": "demo", "source": "development", "config_path": str(source / "plugin.toml")}})
+    service = PluginUiQueryService()
+    assert await service.get_static_dir("demo") == static
+    assert (await service.get_static_ui_config("demo"))["directory"] == str(static)
+    assert await service.get_static_dir("unknown") is None
+    assert await service.get_static_ui_config("unknown") is None
+    app.include_router(plugin_ui.router)
+    async with client(app, peer="192.168.1.2") as http:
+        response = await http.get("/plugin/demo/ui/index.html")
+        assert response.status_code == 200, response.text
+        assert "development UI" in response.text
+        assert (await http.get("/plugin/unknown/ui-info")).status_code == 404
+    # No UI directory is also an ordinary, non-error result.
+    monkeypatch.setattr(state, "plugins", {"demo": {"source": "development"}})
+    assert await service.get_static_dir("demo") is None
+    assert await service.get_static_ui_config("demo") is None
+
+
+@pytest.mark.asyncio
 async def test_public_list_omits_development_provenance_but_local_details_remain(app, tmp_path, monkeypatch):
     from plugin.core.state import state
     from plugin.server.application.plugins import registry_service as registry

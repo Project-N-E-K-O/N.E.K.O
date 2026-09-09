@@ -5,15 +5,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from plugin.logging_config import get_logger
+from plugin.core.state import state
+from plugin import settings
 from plugin.server.application.config import ConfigCommandService, ConfigQueryService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.config_paths import get_plugin_config_path
+from plugin.server.infrastructure.config_access import ConfigAccessSnapshot, bind_config_access
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 from plugin.server.infrastructure.development_access import require_development_access
 from plugin.server.application.plugins.development import registration_for_plugin_sync
@@ -28,6 +32,19 @@ config_query_service = ConfigQueryService()
 config_command_service = ConfigCommandService()
 
 
+def _ordinary_config_snapshot_sync(plugin_id: str) -> ConfigAccessSnapshot | None:
+    if registration_for_plugin_sync(plugin_id) is not None:
+        return None
+    path = get_plugin_config_path(plugin_id).resolve()
+    if not any(path.parent.parent == Path(root).resolve() for root in settings.PLUGIN_CONFIG_ROOTS):
+        return None
+    with state.acquire_plugin_hosts_read_lock():
+        host = state.plugin_hosts.get(plugin_id)
+        if host is not None and Path(getattr(host, "config_path", "")).resolve() != path:
+            return None
+    return ConfigAccessSnapshot(plugin_id=plugin_id, manifest_path=path, host=host)
+
+
 @serialized_plugin_operation
 async def _dispatch_config_locked(request: Request, action: Callable[..., Awaitable[dict[str, object]]],
                                   *, plugin_id: str, **kwargs: object) -> dict[str, object]:
@@ -35,23 +52,29 @@ async def _dispatch_config_locked(request: Request, action: Callable[..., Awaita
     # including config writers that finish in a worker after cancellation.
     registration = await asyncio.to_thread(registration_for_plugin_sync, plugin_id)
     supplied_id = request.query_params.get("registration_id")
-    if registration is not None or supplied_id is not None:
-        require_development_access(request)
-        if (registration is None or registration.registration_id != supplied_id
-                or str(registration.revision) != request.query_params.get("revision")):
-            raise ServerDomainError(code="DEVELOPMENT_STALE", status_code=409,
-                message="Development registration changed; refresh and retry")
-        source_matches = await asyncio.to_thread(
-            lambda: get_plugin_config_path(plugin_id) == (registration.source_dir / "plugin.toml").resolve()
-        )
-        if not source_matches:
-            raise ServerDomainError(code="DEVELOPMENT_STALE", status_code=409,
-                message="Development metadata changed; refresh and retry")
+    require_development_access(request)
+    if (registration is None or registration.registration_id != supplied_id
+            or str(registration.revision) != request.query_params.get("revision")):
+        raise ServerDomainError(code="DEVELOPMENT_STALE", status_code=409,
+            message="Development registration changed; refresh and retry")
+    source_matches = await asyncio.to_thread(
+        lambda: get_plugin_config_path(plugin_id) == (registration.source_dir / "plugin.toml").resolve()
+    )
+    if not source_matches:
+        raise ServerDomainError(code="DEVELOPMENT_STALE", status_code=409,
+            message="Development metadata changed; refresh and retry")
     return await action(plugin_id=plugin_id, **kwargs)
 
 
 async def _dispatch_config(request: Request, action: Callable[..., Awaitable[dict[str, object]]],
                            *, plugin_id: str, **kwargs: object) -> dict[str, object]:
+    if request.query_params.get("registration_id") is None:
+        snapshot = await asyncio.to_thread(_ordinary_config_snapshot_sync, plugin_id)
+        if snapshot is not None:
+            # Keep every worker on this managed source/host even if an uninstall
+            # and development registration reuse the ID across an await.
+            with bind_config_access(snapshot):
+                return await action(plugin_id=plugin_id, **kwargs)
     try:
         with bounded_operation_wait(env_seconds("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", 20.0)):
             return await _dispatch_config_locked(request, action, plugin_id=plugin_id, **kwargs)

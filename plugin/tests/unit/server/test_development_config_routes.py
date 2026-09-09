@@ -48,6 +48,75 @@ def source_bytes(path):
 
 
 @pytest.mark.asyncio
+async def test_ordinary_config_does_not_wait_for_development_operation(workspace, monkeypatch):
+    app, _ = workspace
+    ordinary = store.settings.PLUGIN_CONFIG_ROOTS[0] / "ordinary"
+    ordinary.mkdir()
+    (ordinary / "plugin.toml").write_text('[plugin]\nid="ordinary"\n', encoding="utf-8")
+    state.plugins["ordinary"] = {"config_path": str(ordinary / "plugin.toml")}
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", "1")
+    async with client(app, peer="192.168.1.2") as http:
+        async with operation_lock.plugin_operation_lock.hold():
+            response = await asyncio.wait_for(http.put("/plugin/ordinary/config/profiles/default",
+                json={"config": {"settings": {"value": "ordinary"}}}), 3)
+            assert response.status_code == 200, response.text
+            response = await asyncio.wait_for(http.get("/plugin/ordinary/config/profiles/default"), 3)
+            assert response.status_code == 200, response.text
+            assert response.json()["config"]["settings"]["value"] == "ordinary"
+    assert 'ordinary' in (ordinary / "profiles/default.toml").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hot_update", [False, True])
+async def test_ordinary_request_keeps_source_and_host_after_metadata_takeover(workspace, monkeypatch, hot_update):
+    from types import SimpleNamespace
+
+    app, record = workspace
+    ordinary = store.settings.PLUGIN_CONFIG_ROOTS[0] / "ordinary"
+    ordinary.mkdir()
+    manifest = ordinary / "plugin.toml"
+    manifest.write_text('[plugin]\nid="ordinary"\n', encoding="utf-8")
+    state.plugins["ordinary"] = {"config_path": str(manifest)}
+    old_host = SimpleNamespace(config_path=str(manifest), send_config_update=AsyncMock(return_value={"handler_called": True}))
+    new_host = SimpleNamespace(config_path=str(record.source_dir / "plugin.toml"), send_config_update=AsyncMock())
+    state.plugin_hosts["ordinary"] = old_host
+    before = source_bytes(record.source_dir)
+    entered, release = asyncio.Event(), asyncio.Event()
+    method = "hot_update_plugin_config" if hot_update else "upsert_plugin_profile_config"
+    original = getattr(routes.config_command_service, method)
+
+    async def delayed(**kwargs):
+        entered.set()
+        await release.wait()
+        return await original(**kwargs)
+
+    monkeypatch.setattr(routes.config_command_service, method, delayed)
+    async with client(app, peer="192.168.1.2") as http:
+        async with operation_lock.plugin_operation_lock.hold():
+            request = http.post("/plugin/ordinary/config/hot-update",
+                json={"config": {"settings": {"value": "captured"}}, "mode": "permanent"}) if hot_update else http.put(
+                    "/plugin/ordinary/config/profiles/default", json={"config": {"settings": {"value": "captured"}}})
+            pending = asyncio.create_task(request)
+            try:
+                await asyncio.wait_for(entered.wait(), 3)
+                state.plugins["ordinary"] = {"source": "development", "config_path": str(record.source_dir / "plugin.toml")}
+                state.plugin_hosts["ordinary"] = new_host
+            finally:
+                release.set()
+            response = await asyncio.wait_for(pending, 3)
+            assert response.status_code == 200, response.text
+        # The request-local binding must not authorize the next request.
+        assert (await http.get("/plugin/ordinary/config")).status_code == 403
+    new_host.send_config_update.assert_not_awaited()
+    if hot_update:
+        old_host.send_config_update.assert_awaited_once()
+        assert old_host.send_config_update.call_args.kwargs["config"]["settings"]["value"] == "captured"
+    else:
+        assert 'captured' in (ordinary / "profiles/default.toml").read_text(encoding="utf-8")
+    assert source_bytes(record.source_dir) == before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("method,suffix,body", [
     ("GET", "", None), ("GET", "/toml", None), ("GET", "/base", None),
     ("GET", "/base/effective", None), ("GET", "/profiles", None),
