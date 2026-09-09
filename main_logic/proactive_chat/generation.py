@@ -900,6 +900,7 @@ async def _generate_phase2_stream(
     set_call_type("proactive")
     buffer = ""
     tag_parsed = False
+    prefix_pending = False
     source_tag = ""
     full_text = ""
     pipe_count = 0
@@ -975,7 +976,8 @@ async def _generate_phase2_stream(
                     if not tag_parsed:
                         buffer += content
                         if (
-                            len(buffer) < 80
+                            not prefix_pending
+                            and len(buffer) < 80
                             and "\n" not in buffer[min(len(buffer) - 1, 10) :]
                         ):
                             continue
@@ -993,19 +995,18 @@ async def _generate_phase2_stream(
                             source_tag = tag_match.group(1).upper()
                             cleaned = cleaned[tag_match.end() :]
                         else:
-                            prefix_body, prefix_tag = (
-                                _strip_proactive_known_prefix_tag_leak(cleaned)
-                            )
-                            if prefix_tag and not prefix_body.strip():
-                                # A leaked label-only chunk is provisional: a
-                                # legal source tag may arrive in the next chunk.
-                                continue
                             cleaned, leak_tag = _strip_proactive_screen_tag_leak(
                                 cleaned
                             )
                             if leak_tag:
                                 source_tag = leak_tag
+                                if leak_tag != "PASS" and not cleaned.strip():
+                                    # A leak-only chunk is provisional: another
+                                    # source tag or the body may arrive next.
+                                    prefix_pending = True
+                                    continue
                         tag_parsed = True
+                        prefix_pending = False
 
                         if (
                             source_tag == "PASS"
@@ -2376,15 +2377,15 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                 return _strip_proactive_label_tail(rest), source_tag
 
             # A colon is a strong separator for lowercase / all-caps internal
-            # source labels. Preserve title-cased single-word English prose
-            # such as ``Screen: the colors look unusual``.
+            # source labels. Preserve title-cased English prose such as
+            # ``Current screen: the colors look unusual``.
             colon = re.match(
                 rf"^{_PROACTIVE_HSPACE_PATTERN}*[：:]",
                 rest,
             )
             matched_label = body[: len(label)]
             if colon and (
-                folded_label not in _PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS
+                not label.isascii()
                 or matched_label == label
                 or matched_label.isupper()
             ):
@@ -2394,7 +2395,7 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
             # an entire line. A glued phrase such as ``当前屏幕观察到……``
             # deliberately does not match this branch.
             if folded_label in _PROACTIVE_BARE_PREFIX_LABELS:
-                if not rest:
+                if not rest.strip(_PROACTIVE_HORIZONTAL_SPACES):
                     return "", source_tag
                 newline = re.match(
                     rf"^{_PROACTIVE_HSPACE_PATTERN}*\r?\n"
