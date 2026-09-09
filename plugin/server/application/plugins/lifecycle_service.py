@@ -1662,7 +1662,8 @@ class PluginLifecycleService:
             with bounded_operation_wait(remaining):
                 stop_outcomes.append(
                     await self._safe_stop_for_reload(
-                        plugin_id, stop_deadline=stop_deadline
+                        plugin_id, stop_deadline=stop_deadline,
+                        development_snapshot=development_snapshots.get(plugin_id),
                     )
                 )
 
@@ -1829,13 +1830,12 @@ class PluginLifecycleService:
         return cleaned_profiles
 
     async def _safe_stop_for_reload(
-        self, plugin_id: str, *, stop_deadline: float | None = None
+        self, plugin_id: str, *, stop_deadline: float | None = None,
+        development_snapshot: development_store.DevelopmentSnapshot | None = None,
     ) -> _ReloadOutcome:
         try:
-            development_snapshot = await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id)
             if development_snapshot is not None:
-                from plugin.server.application.plugins.development_service import preflight_development_sync
-                await asyncio.to_thread(preflight_development_sync, development_snapshot)
+                await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)
             await self.stop_plugin(plugin_id, stop_deadline=stop_deadline)
             return _ReloadOutcome(plugin_id=plugin_id, success=True)
         except PluginOperationBusy as error:

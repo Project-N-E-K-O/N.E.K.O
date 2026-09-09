@@ -88,11 +88,12 @@ def _require_output(path: Path, target_root: Path, source_dirs: list[Path]) -> P
 
 
 async def _publish_with_operation_lock(publish) -> None:
+    from plugin.server.application.plugins._env_budgets import env_seconds
     from plugin.server.application.plugins.operation_lock import (
         bounded_operation_wait, plugin_operation_lock,
     )
 
-    with bounded_operation_wait(20):
+    with bounded_operation_wait(env_seconds("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", 20.0)):
         async with plugin_operation_lock.hold():
             await asyncio.to_thread(publish)
 

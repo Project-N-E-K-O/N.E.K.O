@@ -3,19 +3,61 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+import asyncio
+from collections.abc import Awaitable, Callable
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from plugin.logging_config import get_logger
 from plugin.server.application.config import ConfigCommandService, ConfigQueryService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
+from plugin.server.infrastructure.config_paths import get_plugin_config_path
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.development_access import require_development_access
+from plugin.server.application.plugins.development import registration_for_plugin_sync
+from plugin.server.application.plugins._env_budgets import env_seconds
+from plugin.server.application.plugins.operation_lock import (
+    PluginOperationBusy, bounded_operation_wait, serialized_plugin_operation,
+)
 
 router = APIRouter()
 logger = get_logger("server.routes.config")
 config_query_service = ConfigQueryService()
 config_command_service = ConfigCommandService()
+
+
+@serialized_plugin_operation
+async def _dispatch_config_locked(request: Request, action: Callable[..., Awaitable[dict[str, object]]],
+                                  *, plugin_id: str, **kwargs: object) -> dict[str, object]:
+    # Fence source selection and the complete operation against rebinding,
+    # including config writers that finish in a worker after cancellation.
+    registration = await asyncio.to_thread(registration_for_plugin_sync, plugin_id)
+    supplied_id = request.query_params.get("registration_id")
+    if registration is not None or supplied_id is not None:
+        require_development_access(request)
+        if (registration is None or registration.registration_id != supplied_id
+                or str(registration.revision) != request.query_params.get("revision")):
+            raise ServerDomainError(code="DEVELOPMENT_STALE", status_code=409,
+                message="Development registration changed; refresh and retry")
+        source_matches = await asyncio.to_thread(
+            lambda: get_plugin_config_path(plugin_id) == (registration.source_dir / "plugin.toml").resolve()
+        )
+        if not source_matches:
+            raise ServerDomainError(code="DEVELOPMENT_STALE", status_code=409,
+                message="Development metadata changed; refresh and retry")
+    return await action(plugin_id=plugin_id, **kwargs)
+
+
+async def _dispatch_config(request: Request, action: Callable[..., Awaitable[dict[str, object]]],
+                           *, plugin_id: str, **kwargs: object) -> dict[str, object]:
+    try:
+        with bounded_operation_wait(env_seconds("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", 20.0)):
+            return await _dispatch_config_locked(request, action, plugin_id=plugin_id, **kwargs)
+    except PluginOperationBusy as exc:
+        raise HTTPException(409, "Another plugin operation is in progress; retry shortly",
+                            headers={"X-Error-Code": "PLUGIN_OPERATION_BUSY"}) from exc
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -46,17 +88,17 @@ class HotUpdateConfigRequest(BaseModel):
 
 
 @router.get("/plugin/{plugin_id}/config")
-async def get_plugin_config_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+async def get_plugin_config_endpoint(plugin_id: str, request: Request, _: str = require_admin) -> dict[str, object]:
     try:
-        return await config_query_service.get_plugin_config(plugin_id=plugin_id)
+        return await _dispatch_config(request, config_query_service.get_plugin_config, plugin_id=plugin_id)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
 
 @router.get("/plugin/{plugin_id}/config/toml")
-async def get_plugin_config_toml_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+async def get_plugin_config_toml_endpoint(plugin_id: str, request: Request, _: str = require_admin) -> dict[str, object]:
     try:
-        return await config_query_service.get_plugin_config_toml(plugin_id=plugin_id)
+        return await _dispatch_config(request, config_query_service.get_plugin_config_toml, plugin_id=plugin_id)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -65,10 +107,11 @@ async def get_plugin_config_toml_endpoint(plugin_id: str, _: str = require_admin
 async def update_plugin_config_endpoint(
     plugin_id: str,
     payload: ConfigUpdateRequest,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await config_command_service.replace_plugin_config(
+        return await _dispatch_config(request, config_command_service.replace_plugin_config,
             plugin_id=plugin_id,
             config=payload.config,
         )
@@ -110,10 +153,11 @@ async def render_config_to_toml_endpoint(
 async def update_plugin_config_toml_endpoint(
     plugin_id: str,
     payload: ConfigTomlUpdateRequest,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await config_command_service.update_plugin_config_toml(
+        return await _dispatch_config(request, config_command_service.update_plugin_config_toml,
             plugin_id=plugin_id,
             toml=payload.toml,
         )
@@ -122,9 +166,9 @@ async def update_plugin_config_toml_endpoint(
 
 
 @router.get("/plugin/{plugin_id}/config/base")
-async def get_plugin_base_config_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+async def get_plugin_base_config_endpoint(plugin_id: str, request: Request, _: str = require_admin) -> dict[str, object]:
     try:
-        return await config_query_service.get_plugin_base_config(plugin_id=plugin_id)
+        return await _dispatch_config(request, config_query_service.get_plugin_base_config, plugin_id=plugin_id)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -132,19 +176,20 @@ async def get_plugin_base_config_endpoint(plugin_id: str, _: str = require_admin
 @router.get("/plugin/{plugin_id}/config/base/effective")
 async def get_plugin_effective_base_config_endpoint(
     plugin_id: str,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     """Return manifest defaults merged with runtime config, without a profile overlay."""
     try:
-        return await config_query_service.get_plugin_effective_base_config(plugin_id=plugin_id)
+        return await _dispatch_config(request, config_query_service.get_plugin_effective_base_config, plugin_id=plugin_id)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
 
 @router.get("/plugin/{plugin_id}/config/profiles")
-async def get_plugin_profiles_state_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+async def get_plugin_profiles_state_endpoint(plugin_id: str, request: Request, _: str = require_admin) -> dict[str, object]:
     try:
-        return await config_query_service.get_plugin_profiles_state(plugin_id=plugin_id)
+        return await _dispatch_config(request, config_query_service.get_plugin_profiles_state, plugin_id=plugin_id)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -153,10 +198,11 @@ async def get_plugin_profiles_state_endpoint(plugin_id: str, _: str = require_ad
 async def get_plugin_profile_config_endpoint(
     plugin_id: str,
     profile_name: str,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await config_query_service.get_plugin_profile_config(
+        return await _dispatch_config(request, config_query_service.get_plugin_profile_config,
             plugin_id=plugin_id,
             profile_name=profile_name,
         )
@@ -169,10 +215,11 @@ async def upsert_plugin_profile_config_endpoint(
     plugin_id: str,
     profile_name: str,
     payload: ProfileConfigUpsertRequest,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await config_command_service.upsert_plugin_profile_config(
+        return await _dispatch_config(request, config_command_service.upsert_plugin_profile_config,
             plugin_id=plugin_id,
             profile_name=profile_name,
             config=payload.config,
@@ -186,10 +233,11 @@ async def upsert_plugin_profile_config_endpoint(
 async def delete_plugin_profile_config_endpoint(
     plugin_id: str,
     profile_name: str,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await config_command_service.delete_plugin_profile_config(
+        return await _dispatch_config(request, config_command_service.delete_plugin_profile_config,
             plugin_id=plugin_id,
             profile_name=profile_name,
         )
@@ -201,10 +249,11 @@ async def delete_plugin_profile_config_endpoint(
 async def set_plugin_active_profile_endpoint(
     plugin_id: str,
     profile_name: str,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await config_command_service.set_plugin_active_profile(
+        return await _dispatch_config(request, config_command_service.set_plugin_active_profile,
             plugin_id=plugin_id,
             profile_name=profile_name,
         )
@@ -216,10 +265,11 @@ async def set_plugin_active_profile_endpoint(
 async def hot_update_plugin_config_endpoint(
     plugin_id: str,
     payload: HotUpdateConfigRequest,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await config_command_service.hot_update_plugin_config(
+        return await _dispatch_config(request, config_command_service.hot_update_plugin_config,
             plugin_id=plugin_id,
             updates=payload.config,
             mode=payload.mode,

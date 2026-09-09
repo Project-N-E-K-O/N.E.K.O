@@ -506,6 +506,41 @@ async def test_bulk_reload_preserves_invalid_development_and_reloads_healthy(mon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("rebind_after_preflight", [False, True])
+async def test_bulk_reload_preflights_once_and_fences_snapshot(monkeypatch, tmp_path, rebind_after_preflight):
+    from plugin.server.application.plugins import lifecycle_service as lifecycle
+
+    record = _register(tmp_path)
+    monkeypatch.setattr(lifecycle, "_list_running_plugin_ids_sync", lambda: [record.plugin_id])
+    monkeypatch.setattr(lifecycle.plugin_registry_service, "refresh_registry", AsyncMock())
+    monkeypatch.setattr(lifecycle.plugin_registry_service, "order_plugin_ids", AsyncMock(side_effect=lambda ids: ids))
+    original = service.preflight_development_sync
+    calls = []
+
+    def preflight(snapshot):
+        calls.append(snapshot)
+        original(snapshot)
+        if rebind_after_preflight:
+            store.rebind_registration_sync(snapshot, str(snapshot.source_dir))
+
+    monkeypatch.setattr(service, "preflight_development_sync", preflight)
+    manager = lifecycle.PluginLifecycleService()
+    stop, start = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(manager, "stop_plugin", stop)
+    monkeypatch.setattr(manager, "start_plugin", start)
+    result = await manager.reload_all_plugins()
+    assert calls == [record]
+    if rebind_after_preflight:
+        stop.assert_not_awaited()
+        start.assert_not_awaited()
+        assert not result["success"]
+    else:
+        stop.assert_awaited_once()
+        start.assert_awaited_once()
+        assert result["reloaded"] == [record.plugin_id]
+
+
+@pytest.mark.asyncio
 async def test_bundle_package_id_does_not_conflict_with_development_plugin(monkeypatch, tmp_path):
     from plugin.neko_plugin_cli.public.build import build_bundle
     from plugin.server.application.plugin_cli import service as cli

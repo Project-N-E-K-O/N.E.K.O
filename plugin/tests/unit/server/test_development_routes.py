@@ -250,10 +250,17 @@ async def test_corrupt_store_bulk_refresh_reports_failure_but_keeps_ordinary_plu
     store._store_path().write_text('{', encoding="utf-8")
     async with client(app, peer="192.168.1.2") as http:
         response = await http.post("/plugins/refresh")
+        assert response.status_code == 403
+        assert response.headers["X-Error-Code"] == "DEVELOPMENT_ACCESS_DENIED"
+        assert str(store._store_path()) not in response.text
+        assert "ordinary" not in state.plugins
+    async with client(app, headers={"X-Neko-Development": "1"}) as http:
+        response = await http.post("/plugins/refresh")
         assert response.status_code == 200
         assert response.json()["success"] is False
         assert response.json()["failed"]
         assert "ordinary" in state.plugins
+    async with client(app, peer="192.168.1.2") as http:
         assert (await http.post("/plugin/ordinary/refresh")).status_code == 200
 
 

@@ -201,6 +201,18 @@ async def test_all_probe_does_not_swallow_other_domain_errors(workspace, monkeyp
     dispatch.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_publication_honors_configured_operation_wait_budget(workspace, monkeypatch):
+    from plugin.server.application.plugins.operation_lock import PluginOperationBusy, plugin_operation_lock
+
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", "1")
+    published = []
+    async with plugin_operation_lock.hold():
+        with pytest.raises(PluginOperationBusy):
+            await asyncio.wait_for(build._publish_with_operation_lock(lambda: published.append(True)), 3)
+    assert published == []
+
+
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(dev, "_store_path", lambda: tmp_path / "state" / "development.json")

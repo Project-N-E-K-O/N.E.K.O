@@ -120,6 +120,7 @@ async def _dispatch_refresh(request: Request, plugin_id: str | None = None,
                 raise
             # Registry discovery reports the damaged store and skips external
             # sources, while continuing to publish ordinary managed plugins.
+            require_development_access(request)
             registrations = []
         if registrations:
             require_development_access(request)
