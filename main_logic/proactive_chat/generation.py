@@ -2294,15 +2294,15 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                     continue
                 return after, source_tag
 
-            # A colon is a strong separator for known source labels, including
-            # otherwise route-like lowercase ``screen``. Preserve title-cased
-            # single-word English prose such as
-            # ``Screen: the colors look unusual``.
+            # A colon is a strong separator for lowercase / all-caps internal
+            # source labels. Preserve title-cased single-word English prose
+            # such as ``Screen: the colors look unusual``.
             colon = re.match(r"^[ \t]*[：:]", rest)
             matched_label = body[: len(label)]
             if colon and (
                 folded_label not in _PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS
                 or matched_label == label
+                or matched_label.isupper()
             ):
                 return rest[colon.end() :].lstrip(), source_tag
 
@@ -2334,6 +2334,7 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                 route_tail = rest[1:]
                 if (
                     route_tail
+                    and not route_tail[0].isspace()
                     and route_tail[0].isascii()
                     and not route_tail[0].isupper()
                 ):
