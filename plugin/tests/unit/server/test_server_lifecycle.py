@@ -444,16 +444,19 @@ async def test_reuse_reprobes_health_and_refuses_an_unhealthy_plane(
     monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
     monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
 
-    # Fresh start with a false probe: non-fatal, runner kept, path latches as
-    # before -- that behaviour predates this PR and is deliberate.
-    await service.ensure_delivery_path_started()
-    assert service._delivery_path_started is True
+    # Fresh start with a false probe: the runner is kept and the bridges still
+    # come up, but the path is NOT latched. Latching here would be permanent --
+    # nothing re-probes a path already marked started, so a plane that never
+    # arrived would answer submitted=True for the life of the process.
+    assert await service.ensure_delivery_path_started() is False
+    assert service._delivery_path_started is False, "an unverified plane was latched"
+    assert service._message_plane_runner is not None, "the runner was discarded"
     assert len(built) == 1
 
-    # Now force the reuse branch with the plane still unhealthy.
-    service._delivery_path_started = False
-    await service.ensure_delivery_path_started()
-    assert service._delivery_path_started is False, "an unverified plane was latched"
+    # Still unhealthy on the next entry: reuse branch re-probes, still refuses,
+    # and does not rebuild (rebuilding would hand its ports to a second runner).
+    assert await service.ensure_delivery_path_started() is False
+    assert service._delivery_path_started is False
     assert len(built) == 1, "the unhealthy plane was rebuilt, splitting its ports"
 
     # It comes up late: the next retry re-probes, sees it, and latches.
@@ -500,6 +503,29 @@ async def test_a_plane_that_failed_to_start_is_rebuilt_on_retry(
     await service.ensure_delivery_path_started()
     assert service._delivery_path_started is True
     assert len(built) == 2
+
+
+@pytest.mark.asyncio
+async def test_shutdown_itself_closes_the_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The producer side of the gate contract.
+
+    The consumer-side test below sets ``_delivery_path_shutting_down`` by hand,
+    so on its own it would stay green if someone deleted the two lines in
+    ``shutdown()`` that close the gate -- and the race this PR closes would be
+    back with a passing test attached. This pins the lines themselves.
+    """
+    service = module.ServerLifecycleService()
+    service._delivery_path_started = True
+
+    async def _noop_internal() -> object:
+        return module._ShutdownResult(had_errors=False)
+
+    monkeypatch.setattr(service, "_shutdown_internal", _noop_internal)
+
+    await service.shutdown()
+
+    assert service._delivery_path_shutting_down is True
+    assert service._delivery_path_started is False
 
 
 @pytest.mark.asyncio

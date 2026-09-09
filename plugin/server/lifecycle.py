@@ -187,11 +187,23 @@ class ServerLifecycleService:
         )
         self._message_plane_runner.start()
         if not await self._check_message_plane_health():
-            # Non-fatal on a FRESH start, as it has always been: the probe is a
-            # 1s bound and the plane commonly needs a moment more. The runner
-            # stays assigned, and the reuse branch above re-probes it rather
-            # than trusting this outcome.
-            logger.warning("message_plane health check returned false; it may still be starting")
+            # Symmetric with the reuse branch, and for the same reason. Latching
+            # here would be permanent: nothing re-probes a path already marked
+            # started, so a plane that never arrived would keep answering
+            # ``submitted=True`` for the life of the process.
+            #
+            # Reporting failure costs nothing the old tolerance was buying. The
+            # runner stays assigned and both bridges still come up -- the next
+            # entry takes the reuse branch above, re-probes, and latches as soon
+            # as the plane is actually there. A plane that was merely slow (the
+            # probe is a 1s bound) recovers on its own; one that never arrives
+            # keeps saying so.
+            logger.warning(
+                "message_plane health check returned false; it may still be "
+                "starting, so the path is left unlatched for the next entry to "
+                "re-probe rather than marked ready"
+            )
+            return False
         return True
 
     async def _refresh_registry_and_start_autostart_plugins(self) -> None:
