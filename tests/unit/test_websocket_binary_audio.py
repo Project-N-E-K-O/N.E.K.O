@@ -95,6 +95,9 @@ class _ProtocolManager:
     async def end_session(self, *_args, **_kwargs) -> None:
         self.calls.append(("end_session", None))
 
+    def request_end_session(self, **kwargs):
+        return asyncio.create_task(self.end_session(**kwargs))
+
     async def send_status(self, payload: str) -> None:
         self.statuses.append(json.loads(payload))
 

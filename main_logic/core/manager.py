@@ -71,6 +71,8 @@ class LLMSessionManager(
         self.websocket = None
         self.sync_message_queue = sync_message_queue
         self.session = None
+        self._init_session_lifecycle_state()
+        self._init_tts_lifecycle_state()
         self._init_asr_runtime_state()
         self.last_time = None
         self.is_active = False
