@@ -110,6 +110,25 @@ async def test_chat_tag_returns_clean_generated_text(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_label_only_chunk_defers_to_following_legal_tag(monkeypatch) -> None:
+    _patch_runtime_guards(monkeypatch)
+    mgr = _FakeManager()
+
+    generated = await _generate(
+        mgr,
+        ["当前屏幕观察\n", "[WEB]\n", "看这个链接"],
+    )
+
+    assert generated == generation.Phase2Generation(
+        result=None,
+        full_text="看这个链接",
+        response_text="看这个链接",
+        source_tag="WEB",
+    )
+    mgr.handle_new_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_label_only_output_becomes_generation_empty(monkeypatch) -> None:
     _patch_runtime_guards(monkeypatch)
     mgr = _FakeManager()

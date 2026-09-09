@@ -993,6 +993,13 @@ async def _generate_phase2_stream(
                             source_tag = tag_match.group(1).upper()
                             cleaned = cleaned[tag_match.end() :]
                         else:
+                            prefix_body, prefix_tag = (
+                                _strip_proactive_known_prefix_tag_leak(cleaned)
+                            )
+                            if prefix_tag and not prefix_body.strip():
+                                # A leaked label-only chunk is provisional: a
+                                # legal source tag may arrive in the next chunk.
+                                continue
                             cleaned, leak_tag = _strip_proactive_screen_tag_leak(
                                 cleaned
                             )
@@ -2225,24 +2232,60 @@ def _label_prefix_boundary_ok(label: str, rest: str) -> bool:
     return (not label.isascii()) and (not ch.isascii())
 
 
+def _normalize_proactive_label_gap(rest: str) -> str:
+    """Drop invisibles in a known label's same-line horizontal gap."""
+    gap_end = 0
+    horizontal: list[str] = []
+    for char in rest:
+        if char in _PROACTIVE_HORIZONTAL_SPACES:
+            horizontal.append(char)
+            gap_end += 1
+            continue
+        if char in _PROACTIVE_LEADING_INVISIBLES:
+            gap_end += 1
+            continue
+        break
+    if not gap_end:
+        return rest
+    return "".join(horizontal) + rest[gap_end:]
+
+
+def _starts_with_proactive_source_tag(text: str) -> bool:
+    """Return whether text begins with a legal or known screen source tag."""
+    match = _PROACTIVE_BRACKET_TAG_RE.match(text)
+    if not match:
+        return False
+    tag = match.group(1).upper()
+    return tag in _PROACTIVE_LEGAL_SOURCE_TAGS or tag in _PROACTIVE_SCREEN_TAG_LEAKS
+
+
 def _strip_proactive_label_tail(rest: str) -> str:
     """Strip label punctuation without consuming a spaced reply path."""
-    adjacent_separator = rest[:1] in _PROACTIVE_SLASHES + "：:"
-    body = rest.lstrip()
-    slash_tail = body[1:2]
-    spaced_slash_separator = (
-        body[:1] in _PROACTIVE_SLASHES
-        and (
-            not slash_tail
+    body = rest
+    first_separator = True
+    # Bounded consumption handles malformed combinations such as ``/ :``
+    # without turning arbitrary reply punctuation into an unbounded rewrite.
+    for _ in range(4):
+        same_line = body.lstrip(_PROACTIVE_HORIZONTAL_SPACES)
+        had_spacing = same_line != body
+        marker = same_line[:1]
+        if marker in "：:":
+            body = same_line[1:]
+            first_separator = False
+            continue
+        if marker not in _PROACTIVE_SLASHES:
+            break
+        slash_tail = same_line[1:2]
+        slash_is_separator = (
+            (first_separator and not had_spacing)
+            or not slash_tail
             or slash_tail.isspace()
             or not slash_tail.isascii()
         )
-    )
-    # A spaced colon still belongs to the label. A spaced slash is a separator
-    # unless it begins an ASCII reply path (for example ``/chat /api``), which
-    # must be preserved.
-    if adjacent_separator or body[:1] in "：:" or spaced_slash_separator:
-        body = body[1:]
+        if not slash_is_separator:
+            break
+        body = same_line[1:]
+        first_separator = False
     return body.lstrip()
 
 
@@ -2258,7 +2301,7 @@ def _strip_proactive_label_slash_prefix(
         if not label:
             continue
         if folded.startswith(label):
-            rest = body[len(label) :]
+            rest = _normalize_proactive_label_gap(body[len(label) :])
             sep = re.match(
                 rf"{_PROACTIVE_HSPACE_PATTERN}*"
                 rf"[{re.escape(_PROACTIVE_SLASHES)}]",
@@ -2269,7 +2312,7 @@ def _strip_proactive_label_slash_prefix(
         if body.startswith(tuple(_PROACTIVE_SLASHES)) and folded[1:].startswith(
             label
         ):
-            rest = body[1 + len(label) :]
+            rest = _normalize_proactive_label_gap(body[1 + len(label) :])
             if _label_prefix_boundary_ok(label, rest):
                 return _strip_proactive_label_tail(rest)
     return None
@@ -2307,7 +2350,7 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
 
         # ``label/正文`` / ``label／正文``.
         if folded.startswith(folded_label):
-            rest = body[len(label) :]
+            rest = _normalize_proactive_label_gap(body[len(label) :])
             slash = re.match(
                 rf"{_PROACTIVE_HSPACE_PATTERN}*"
                 rf"[{re.escape(_PROACTIVE_SLASHES)}]",
@@ -2327,6 +2370,7 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                     and after
                     and after[0].isascii()
                     and not after[0].isupper()
+                    and not _starts_with_proactive_source_tag(after)
                 ):
                     continue
                 return _strip_proactive_label_tail(rest), source_tag
@@ -2373,7 +2417,7 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
         if body.startswith(tuple(_PROACTIVE_SLASHES)) and folded[1:].startswith(
             folded_label
         ):
-            rest = body[1 + len(label) :]
+            rest = _normalize_proactive_label_gap(body[1 + len(label) :])
             if (
                 folded_label in _PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS
                 and rest[:1] in _PROACTIVE_SLASHES
@@ -2384,6 +2428,7 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                     and not route_tail[0].isspace()
                     and route_tail[0].isascii()
                     and not route_tail[0].isupper()
+                    and not _starts_with_proactive_source_tag(route_tail)
                 ):
                     continue
             if not (
