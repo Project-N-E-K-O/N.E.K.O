@@ -132,6 +132,19 @@ class ServerLifecycleService:
             state.event_handlers.clear()
 
     async def _start_message_plane(self) -> None:
+        if self._message_plane_runner is not None:
+            # An earlier attempt in this run already stood the plane up and only
+            # a later step (endpoint refresh, or a bridge) failed. Building a
+            # second runner would strand the first one's threads and sockets --
+            # and worse, the first still holds the configured ports, so the
+            # replacement's port fallback picks DIFFERENT ones and the bridge
+            # ends up refreshed onto a plane that is not the one running. Both
+            # bridges guard on their own thread being alive, so reusing here
+            # makes a retry re-run exactly the parts that failed and nothing
+            # else. A plane that genuinely failed to start is cleared by the
+            # caller, so this never masks one.
+            logger.debug("message_plane already running; reusing it for this retry")
+            return
         # Same process mints the credential and starts the plane that must
         # accept it; start_bridge() below is the only writer.
         self._message_plane_runner = build_message_plane_runner(

@@ -345,6 +345,96 @@ async def test_a_failed_bridge_also_leaves_the_path_retryable(
 
 
 @pytest.mark.asyncio
+async def test_partial_retry_reuses_the_running_plane_instead_of_building_a_second(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry after a partial failure must not stand up a second plane.
+
+    When the plane started but a later step failed, the path stays unlatched and
+    a later start retries the whole sequence. Rebuilding the runner there would
+    strand the first one's threads and sockets -- and the first still holds the
+    configured ports, so the replacement's fallback picks different ones and the
+    bridge gets refreshed onto a plane that is not the one running.
+    """
+    service = module.ServerLifecycleService()
+    built: list[object] = []
+
+    class _Runner:
+        def start(self) -> None:
+            return None
+
+        async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
+            return True
+
+    def _build(*, auth_token: str) -> object:
+        runner = _Runner()
+        built.append(runner)
+        return runner
+
+    monkeypatch.setattr(module, "build_message_plane_runner", _build)
+    monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+
+    def _bridge_boom() -> None:
+        raise OSError("no socket")
+
+    monkeypatch.setattr(module, "start_proactive_bridge", _bridge_boom)
+    await service.ensure_delivery_path_started()
+    assert service._delivery_path_started is False
+    assert len(built) == 1
+    first = service._message_plane_runner
+    assert first is built[0]
+
+    # Retry: the failed bridge re-runs, the healthy plane is reused as-is.
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    await service.ensure_delivery_path_started()
+    assert service._delivery_path_started is True
+    assert len(built) == 1, "a second MessagePlaneRunner was built on retry"
+    assert service._message_plane_runner is first
+
+
+@pytest.mark.asyncio
+async def test_a_plane_that_failed_to_start_is_rebuilt_on_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reuse above must not mask a plane that never came up."""
+    service = module.ServerLifecycleService()
+    built: list[object] = []
+    fail = True
+
+    class _Runner:
+        def start(self) -> None:
+            if fail:
+                raise OSError("port busy")
+
+        async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
+            return True
+
+    def _build(*, auth_token: str) -> object:
+        runner = _Runner()
+        built.append(runner)
+        return runner
+
+    monkeypatch.setattr(module, "build_message_plane_runner", _build)
+    monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+
+    await service.ensure_delivery_path_started()
+    assert service._delivery_path_started is False
+    assert service._message_plane_runner is None
+
+    fail = False
+    await service.ensure_delivery_path_started()
+    assert service._delivery_path_started is True
+    assert len(built) == 2
+
+
+@pytest.mark.asyncio
 async def test_shutdown_closes_the_gate_so_a_late_start_cannot_orphan_a_plane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
