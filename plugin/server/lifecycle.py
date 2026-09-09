@@ -376,31 +376,49 @@ class ServerLifecycleService:
             # and recovery is the whole reason that entry point exists: a later
             # manual plugin start would skip the retry and the plugin would stay
             # mute until the process restarts.
-            self._delivery_path_started = await self._start_delivery_path_locked()
-            if not self._delivery_path_started:
-                # Worded for what is actually known, which is less than "broken".
-                # Both bridges came up regardless of this outcome (nothing above
-                # returns early), and their sockets reconnect on their own once
-                # the plane binds -- so a plane that was merely slow needs no
-                # further entry and heals silently. Calling that a delivery
-                # outage would send an operator hunting a fault that is not
-                # there, and would dull the one signal that does mean messages
-                # are being dropped: the per-message "message NOT delivered"
-                # warnings from the plugin's own push path.
-                logger.warning(
-                    "delivery path not verified: the bridges are up and will "
-                    "attach on their own if the plane is merely slow, and the "
-                    "next entry re-probes it. If it never arrives, pushes are "
-                    "accepted and dropped -- look for 'message NOT delivered'"
-                )
+            failed = await self._start_delivery_path_locked()
+            self._delivery_path_started = not failed
+            if failed:
+                # Worded from WHICH stage failed, because the two cases have
+                # opposite prognoses and a single sentence lies about one of
+                # them. Only the plane failing its probe is self-healing: both
+                # bridges are up either way (nothing above returns early) and
+                # their sockets reattach once the plane binds. A bridge that
+                # raised is simply not running, and nothing reattaches it until
+                # something calls in again.
+                #
+                # Both branches point at the same definitive signal instead of
+                # asserting an outcome we cannot see from here: the per-message
+                # "message NOT delivered" warnings on the plugin's push path.
+                if failed == ["message_plane"]:
+                    logger.warning(
+                        "delivery path not verified: both bridges are up and "
+                        "will attach on their own if the plane is merely slow, "
+                        "and the next entry re-probes it. If it never arrives, "
+                        "pushes are accepted and dropped -- look for "
+                        "'message NOT delivered'"
+                    )
+                else:
+                    logger.warning(
+                        "delivery path incomplete: {} did not start. Nothing "
+                        "reattaches these on their own; the next entry retries "
+                        "them. Until then pushes are accepted and dropped -- "
+                        "look for 'message NOT delivered'",
+                        ", ".join(failed),
+                    )
             return self._delivery_path_started
 
-    async def _start_delivery_path_locked(self) -> bool:
-        """Returns whether the path is usable. See the caller for why that matters."""
-        ok = True
+    async def _start_delivery_path_locked(self) -> list[str]:
+        """Names the stages that did not come up; empty means the path is usable.
+
+        A list rather than a bool because the caller words its warning from it:
+        a plane that failed its probe self-heals, a bridge that raised does not,
+        and one sentence covering both is false about whichever it is not.
+        """
+        failed: list[str] = []
         try:
             if not await self._start_message_plane():
-                ok = False
+                failed.append("message_plane")
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
             logger.warning(
                 "message_plane start failed: err_type={}, err={}",
@@ -408,7 +426,7 @@ class ServerLifecycleService:
                 str(exc),
             )
             self._message_plane_runner = None
-            ok = False
+            failed.append("message_plane")
 
         # 两条 bridge 先于任何插件起来。autostart 插件可以在自己的 startup 钩
         # 子里调 push_message()，而 ProactiveBridge 的 SUB 要在它自己的线程里
@@ -444,7 +462,7 @@ class ServerLifecycleService:
             # Counts as a failure: an un-refreshed bridge publishes to whatever
             # endpoint was frozen at import, which is the silent non-delivery the
             # comment above describes.
-            ok = False
+            failed.append("ingest_endpoint")
 
         try:
             start_bridge()
@@ -454,7 +472,7 @@ class ServerLifecycleService:
                 type(exc).__name__,
                 str(exc),
             )
-            ok = False
+            failed.append("message_bridge")
 
         try:
             start_proactive_bridge()
@@ -464,7 +482,7 @@ class ServerLifecycleService:
                 type(exc).__name__,
                 str(exc),
             )
-            ok = False
+            failed.append("proactive_bridge")
 
         # 等订阅方真正连上再放插件进来。bridge 的线程自己要先睡约一秒等
         # message_plane 的 PUB bind，那一秒正好是窗口本身——只把 start 挪到
@@ -483,7 +501,7 @@ class ServerLifecycleService:
                 _PROACTIVE_SUBSCRIBER_WAIT_SECONDS,
             )
 
-        return ok
+        return failed
 
     async def _shutdown_hosts(self) -> bool:
         hosts_snapshot = self._get_plugin_hosts_snapshot()

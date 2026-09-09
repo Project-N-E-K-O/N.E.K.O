@@ -51,10 +51,13 @@ def _startup_source() -> str:
     appending would put ``start_bridge()`` after the autostart call and quietly
     inflate the very ordering these tests exist to pin.
     """
-    startup = _method_source("    async def startup(self) -> None:")
-    delegate = _method_source(
-        "    async def _start_delivery_path_locked(self) -> bool:"
-    )
+    # Anchored WITHOUT the return annotation. These two have changed return type
+    # three times while this PR tightened the contract (None -> bool ->
+    # list[str]), and each time the anchor broke a test that has nothing to do
+    # with return types. What this file pins is call ORDER; keep the anchor on
+    # the part that expresses identity.
+    startup = _method_source("    async def startup(self)")
+    delegate = _method_source("    async def _start_delivery_path_locked(self)")
     call = "await self.ensure_delivery_path_started()"
     assert call in startup, "startup() 不再委托给 ensure_delivery_path_started()"
     return startup.replace(call, delegate, 1)

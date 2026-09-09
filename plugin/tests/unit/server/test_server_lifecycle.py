@@ -514,6 +514,59 @@ async def test_a_plane_that_failed_to_start_is_rebuilt_on_retry(
 
 
 @pytest.mark.asyncio
+async def test_failure_report_names_the_stage_that_did_not_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two failure kinds have opposite prognoses, so they cannot share wording.
+
+    A plane that failed its probe self-heals: both bridges are up either way and
+    their sockets reattach once it binds. A bridge that raised is simply not
+    running and nothing reattaches it. Collapsing both into one bool forced a
+    single sentence that was false about whichever case it was not -- first
+    calling a slow plane a delivery outage, then calling a dead bridge a slow
+    plane. The stage list is what lets the caller say the true one.
+    """
+    service = module.ServerLifecycleService()
+
+    async def _plane_ok() -> bool:
+        return True
+
+    async def _plane_unhealthy() -> bool:
+        return False
+
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+
+    # Everything up.
+    monkeypatch.setattr(service, "_start_message_plane", _plane_ok)
+    assert await service._start_delivery_path_locked() == []
+
+    # Plane only -- the self-healing case.
+    monkeypatch.setattr(service, "_start_message_plane", _plane_unhealthy)
+    assert await service._start_delivery_path_locked() == ["message_plane"]
+
+    # A bridge that raised is named, and is NOT reported as the plane case.
+    monkeypatch.setattr(service, "_start_message_plane", _plane_ok)
+
+    def _boom() -> None:
+        raise OSError("no socket")
+
+    monkeypatch.setattr(module, "start_proactive_bridge", _boom)
+    failed = await service._start_delivery_path_locked()
+    assert failed == ["proactive_bridge"]
+    assert failed != ["message_plane"], "a dead bridge would be described as a slow plane"
+
+    # Both, in the order they are attempted.
+    monkeypatch.setattr(service, "_start_message_plane", _plane_unhealthy)
+    assert await service._start_delivery_path_locked() == [
+        "message_plane",
+        "proactive_bridge",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_shutdown_itself_closes_the_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """The producer side of the gate contract.
 
