@@ -88,6 +88,13 @@ _BLOCKED_TEXT_MARKERS = (
 )
 
 
+# How long an already-sent log line keeps riding along in later state
+# bursts. Matched to the host delivery manager's cue TTL (90s): a queued
+# cue older than that is dropped there, so a line past it was never going
+# to arrive as news. See ``GameAgentService._fire_system_prompt``.
+_LOG_CARRY_TTL_SECONDS = 90.0
+
+
 def text_signals_blocked(text: str) -> bool:
     """True when free-text feedback indicates the action was actually
     blocked / unsuccessful despite a status that claims otherwise. Shared
@@ -252,10 +259,11 @@ class GameAgentService:
         # and we'd never drain. ``deque(maxlen=...)`` drops oldest on
         # overflow which is fine — the LLM only needs recent context.
         self._log_cache: collections.deque[str] = collections.deque(maxlen=200)
-        # Lines drained into the PREVIOUS state burst. Re-sent once so a burst
-        # that coalesces away does not take the game's recent events with it.
-        # See ``_fire_system_prompt``.
-        self._log_carry: list[str] = []
+        # ``(timestamp, line)`` for lines already sent in a recent state burst.
+        # Re-sent while inside ``_LOG_CARRY_TTL_SECONDS`` so a burst that
+        # coalesces away does not take the game's recent events with it.
+        # Bounded by both that window and ``maxlen``. See ``_fire_system_prompt``.
+        self._log_carry: collections.deque[tuple[float, str]] = collections.deque(maxlen=200)
         # Bounded ring buffer of (image_bytes, mime). We carry the mime
         # alongside the bytes because the JPEG→PNG conversion in
         # ``_on_screenshot`` can fall through to "ship as-is" on Pillow
@@ -382,6 +390,7 @@ class GameAgentService:
     # thrashing mc-agent between goals. A genuine {MASTER_NAME} correction of a
     # <2s-old task is implausible; sub-2s overwrites are the runaway signature.
     _OVERWRITE_MIN_SURVIVAL_S = 2.0
+
 
     def set_lang(self, lang: str) -> None:
         """Set the locale used for every push_message cue + result
@@ -2076,23 +2085,35 @@ class GameAgentService:
         "task running — comment if you like" tail.
         """
         log_text = ""
-        # Carry the previous burst's lines forward one generation. These bursts
-        # coalesce on ``mc_state`` (latest wins), and a coalesced burst is dropped
-        # whole -- so lines drained into it would be gone before the model ever
-        # saw them. They are not snapshot data like the inventory or a screenshot;
-        # they are the game's incremental events, and losing them silently is the
-        # class of bug this plugin keeps getting bitten by.
+        # Re-send recent lines rather than draining them into one burst. These
+        # bursts coalesce on ``mc_state`` (latest wins) and a coalesced burst is
+        # dropped whole, so lines drained into it would be gone before the model
+        # ever saw them. They are not snapshot data like the inventory or a
+        # screenshot; they are the game's incremental events.
         #
-        # One generation, not a growing buffer: it makes a single coalescing step
-        # lossless, which is the case that actually happens (a burst collapses
-        # into the very next one), at the cost of repeating at most one window's
-        # lines when both are delivered. The burst is ``ai_behavior="read"``
-        # context rather than a speak cue, so a repeated line costs context, not
-        # a repeated sentence.
+        # The window is the host's own cue TTL, not a generation count. Carrying
+        # exactly one generation only survives ONE coalescing step, and the
+        # playback gate routinely stays shut for several burst intervals -- the
+        # queue has been observed at depth 25 -- so three bursts collapsing in a
+        # row is the normal case, not an edge one, and the older two would still
+        # vanish. Anything older than the TTL is dropped here because the host
+        # drops it too ("dropping stale cue ... reason=ttl"): it was never going
+        # to arrive as news, so keeping it would only pad the context.
+        #
+        # The plugin cannot do better than a window: ``push_message`` answers
+        # ``Submitted | Rejected`` and no delivery ack is plumbed back to it, so
+        # "keep until confirmed" has nothing to confirm against. The cost is that
+        # a line repeats across the bursts inside its window; the burst is
+        # ``ai_behavior="read"`` context rather than a speak cue, so that costs
+        # context, not a repeated sentence.
+        now = time.time()
         fresh_lines = list(self._log_cache)
         self._log_cache.clear()
-        combined = self._log_carry + fresh_lines
-        self._log_carry = fresh_lines
+        while self._log_carry and (now - self._log_carry[0][0]) > _LOG_CARRY_TTL_SECONDS:
+            self._log_carry.popleft()
+        combined = [line for _ts, line in self._log_carry] + fresh_lines
+        for line in fresh_lines:
+            self._log_carry.append((now, line))
         if combined:
             log_text = _ANSI_RE.sub("", "\n".join(combined))
 

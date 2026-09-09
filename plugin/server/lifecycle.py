@@ -464,6 +464,20 @@ class ServerLifecycleService:
             )
             self._message_plane_runner = None
             failed.append("message_plane")
+            # Return BEFORE the bridges. ``ProactiveBridge._run`` reads
+            # ``NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT`` once, at thread start, and
+            # ``start()`` reuses a live thread -- so starting it now would bind it
+            # to the endpoint this failed attempt published. If the retry's
+            # ``build_message_plane_runner`` then falls back to a different port,
+            # the bridge stays subscribed to a plane that is not the one running
+            # and every proactive message goes nowhere, with the bridge looking
+            # perfectly healthy. Nothing was started yet, so the next entry gets
+            # to build both cleanly.
+            #
+            # Only on the EXCEPTION path: a probe that merely returned False left
+            # a real runner assigned at the endpoint the bridges are about to
+            # read, which is why that case still starts them.
+            return failed
 
         # 两条 bridge 先于任何插件起来。autostart 插件可以在自己的 startup 钩
         # 子里调 push_message()，而 ProactiveBridge 的 SUB 要在它自己的线程里

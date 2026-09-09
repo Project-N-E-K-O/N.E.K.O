@@ -695,15 +695,21 @@ async def test_state_burst_body_matches_who_is_actually_acting():
 
 
 @pytest.mark.asyncio
-async def test_state_burst_carries_log_lines_forward_one_generation():
+async def test_state_burst_resends_log_lines_for_the_delivery_ttl():
     """A coalesced burst must not take the game's recent events with it.
 
-    These bursts collapse on ``mc_state`` (latest wins), and a collapsed burst is
-    dropped whole -- so lines drained into it would never reach the model. They
-    are not snapshot data like the inventory; they are incremental events.
-    Carrying one generation makes a single coalescing step lossless, which is the
-    case that happens: a burst collapses into the very next one.
+    These bursts collapse on ``mc_state`` (latest wins) and a collapsed burst is
+    dropped whole, so lines drained into it would never reach the model. They are
+    not snapshot data like the inventory; they are incremental events.
+
+    The window is the host's cue TTL rather than a generation count: the playback
+    gate routinely stays shut across several bursts (the queue has been seen at
+    depth 25), so three collapsing in a row is normal and a one-generation carry
+    would still lose the older two. Past the TTL the host would have dropped the
+    cue anyway, so the line stops riding along.
     """
+    from plugin.plugins.game_agent_minecraft import service as service_mod
+
     service, push_calls = _make_service()
     service.configure({})
     service._lang = "en"
@@ -715,21 +721,31 @@ async def test_state_burst_carries_log_lines_forward_one_generation():
     await service._fire_system_prompt()
     assert "chopped an oak log" in _body_of(push_calls[-1])
 
-    # Next burst: the previous line rides along, so if the first one coalesced
-    # away the model still sees it.
+    # Three bursts in a row: whichever one survives coalescing carries them all.
     await service._on_log("picked up a sapling")
+    await service._fire_system_prompt()
+    await service._on_log("crafted planks")
     await service._fire_system_prompt()
     body = _body_of(push_calls[-1])
     assert "chopped an oak log" in body
     assert "picked up a sapling" in body
+    assert "crafted planks" in body
 
-    # Bounded at one generation -- the oldest drops out rather than accumulating.
-    await service._on_log("crafted planks")
+    # Past the TTL they stop riding along -- the host drops a cue that old too,
+    # so they were never going to arrive as news. Age the entries directly rather
+    # than leaning on the clock: these bursts all land inside one tick of
+    # ``time.time()`` on Windows, so a zero TTL would not expire anything.
+    assert service_mod._LOG_CARRY_TTL_SECONDS > 0
+    aged = [(ts - service_mod._LOG_CARRY_TTL_SECONDS - 1.0, line) for ts, line in service._log_carry]
+    service._log_carry.clear()
+    service._log_carry.extend(aged)
+
+    await service._on_log("mined iron ore")
     await service._fire_system_prompt()
     body = _body_of(push_calls[-1])
     assert "chopped an oak log" not in body
-    assert "picked up a sapling" in body
-    assert "crafted planks" in body
+    assert "crafted planks" not in body
+    assert "mined iron ore" in body
 
 
 @pytest.mark.asyncio

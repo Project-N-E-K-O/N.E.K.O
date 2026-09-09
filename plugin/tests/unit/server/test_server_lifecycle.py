@@ -664,6 +664,47 @@ def test_delivery_path_lock_hands_off_across_event_loops() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_raising_plane_start_does_not_start_the_bridges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plane that raised leaves nothing for the bridges to attach to.
+
+    ``ProactiveBridge._run`` reads the PUB endpoint once at thread start and
+    ``start()`` reuses a live thread, so a bridge started during a failed attempt
+    is pinned to that attempt's endpoint. If the retry's
+    ``build_message_plane_runner`` falls back to a different port, the bridge
+    stays subscribed to a plane that is not the one running -- and it looks
+    perfectly healthy while every proactive message goes nowhere.
+
+    A probe that merely returned False is different: a real runner is assigned at
+    the endpoint the bridges are about to read, so that path still starts them.
+    """
+    service = module.ServerLifecycleService()
+    started: list[str] = []
+
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: started.append("ingest_ep"))
+    monkeypatch.setattr(module, "start_bridge", lambda: started.append("plane_bridge"))
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: started.append("proactive"))
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+    monkeypatch.setattr(module, "proactive_bridge_is_alive", lambda: True)
+
+    async def _raises() -> bool:
+        raise OSError("port busy")
+
+    monkeypatch.setattr(service, "_start_message_plane", _raises)
+    assert await service._start_delivery_path_locked() == ["message_plane"]
+    assert started == [], "bridges were pinned to a failed attempt's endpoint"
+
+    # The probe-false path keeps its existing behaviour.
+    async def _unhealthy() -> bool:
+        return False
+
+    monkeypatch.setattr(service, "_start_message_plane", _unhealthy)
+    assert await service._start_delivery_path_locked() == ["message_plane"]
+    assert started == ["ingest_ep", "plane_bridge", "proactive"]
+
+
+@pytest.mark.asyncio
 async def test_a_dead_proactive_bridge_is_a_failure_but_a_slow_one_is_not(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
