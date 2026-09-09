@@ -272,3 +272,114 @@ async def test_ensure_delivery_path_started_is_idempotent_under_concurrency(
     service._delivery_path_started = False
     await service.ensure_delivery_path_started()
     assert started.count("plane") == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_delivery_path_is_not_latched_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed attempt must stay retryable, or the recovery entry point is dead.
+
+    Every step swallows its own failure so one broken component cannot abort
+    server startup. Latching that outcome would mean a later manual plugin start
+    skips the retry and the plugin stays mute until the process restarts --
+    which is precisely the failure this whole mechanism exists to end.
+    """
+    service = module.ServerLifecycleService()
+    attempts: list[str] = []
+    fail = True
+
+    async def _start_plane() -> None:
+        attempts.append("plane")
+        if fail:
+            raise RuntimeError("port busy")
+
+    monkeypatch.setattr(service, "_start_message_plane", _start_plane)
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+
+    await service.ensure_delivery_path_started()
+    assert service._delivery_path_started is False
+    assert attempts == ["plane"]
+
+    # Second caller retries rather than short-circuiting on a failed latch.
+    await service.ensure_delivery_path_started()
+    assert attempts == ["plane", "plane"]
+
+    # Once it succeeds it latches and stops retrying.
+    fail = False
+    await service.ensure_delivery_path_started()
+    assert service._delivery_path_started is True
+    assert attempts == ["plane", "plane", "plane"]
+    await service.ensure_delivery_path_started()
+    assert attempts == ["plane", "plane", "plane"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_bridge_also_leaves_the_path_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Not just the plane: a bridge that failed to start is equally undelivered."""
+    service = module.ServerLifecycleService()
+
+    async def _noop() -> None:
+        return None
+
+    monkeypatch.setattr(service, "_start_message_plane", _noop)
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+
+    def _boom() -> None:
+        raise OSError("no socket")
+
+    monkeypatch.setattr(module, "start_proactive_bridge", _boom)
+    await service.ensure_delivery_path_started()
+    assert service._delivery_path_started is False
+
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    await service.ensure_delivery_path_started()
+    assert service._delivery_path_started is True
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_the_gate_so_a_late_start_cannot_orphan_a_plane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A manual plugin start racing teardown must not stand a new plane up.
+
+    ``shutdown`` clears the latch, so without a gate the very next
+    ``ensure_delivery_path_started`` would take the lock, see a cleared flag, and
+    build a plane that ``_shutdown_internal`` has already walked past -- orphan
+    threads and sockets, and a ``True`` flag describing a plane nobody owns.
+    """
+    service = module.ServerLifecycleService()
+    starts: list[str] = []
+
+    async def _start_plane() -> None:
+        starts.append("plane")
+
+    monkeypatch.setattr(service, "_start_message_plane", _start_plane)
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+
+    # Simulate what shutdown() does to the gate, without driving real teardown.
+    async with service._delivery_path_lock:
+        service._delivery_path_shutting_down = True
+        service._delivery_path_started = False
+
+    await service.ensure_delivery_path_started()
+    assert starts == []
+    assert service._delivery_path_started is False
+
+    # startup() reopens it: the same service instance is reused across a restart
+    # in the same process, and a gate latched closed would mute the new run.
+    async with service._delivery_path_lock:
+        service._delivery_path_shutting_down = False
+    await service.ensure_delivery_path_started()
+    assert starts == ["plane"]
+    assert service._delivery_path_started is True

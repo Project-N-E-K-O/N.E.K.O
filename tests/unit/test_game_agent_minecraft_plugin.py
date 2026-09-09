@@ -659,7 +659,11 @@ async def test_state_burst_body_matches_who_is_actually_acting():
     idle = prompts.t("SYSTEM_PROMPT_IDLE_BODY", lang="en")
     busy = prompts.t("SYSTEM_PROMPT_BUSY_BODY", lang="en")
     autonomous = prompts.t("SYSTEM_PROMPT_AUTONOMOUS_BODY", lang="en")
-    assert idle != busy != autonomous
+    # A set, not a chain: ``idle != busy != autonomous`` is
+    # ``idle != busy and busy != autonomous``, which never compares idle with
+    # autonomous -- the one pair whose collapse would make the assertions below
+    # pass while the autonomous branch silently served the idle body.
+    assert len({idle, busy, autonomous}) == 3
 
     # 1. Nothing running anywhere → invite her to dispatch.
     service, push_calls = _make_service()

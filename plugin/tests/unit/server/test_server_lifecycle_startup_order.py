@@ -53,7 +53,7 @@ def _startup_source() -> str:
     """
     startup = _method_source("    async def startup(self) -> None:")
     delegate = _method_source(
-        "    async def _start_delivery_path_locked(self) -> None:"
+        "    async def _start_delivery_path_locked(self) -> bool:"
     )
     call = "await self.ensure_delivery_path_started()"
     assert call in startup, "startup() 不再委托给 ensure_delivery_path_started()"

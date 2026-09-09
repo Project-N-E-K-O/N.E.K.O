@@ -68,6 +68,11 @@ class ServerLifecycleService:
         # concurrent manual plugin start cannot both bring the plane up.
         self._delivery_path_lock = asyncio.Lock()
         self._delivery_path_started = False
+        # Closed by ``shutdown`` under the same lock. Without it, a manual plugin
+        # start could win the lock after shutdown reset the flag and stand a fresh
+        # plane up that teardown has already walked past -- orphan threads and
+        # sockets, plus a ``True`` flag describing a plane nobody owns.
+        self._delivery_path_shutting_down = False
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -236,6 +241,12 @@ class ServerLifecycleService:
             )
 
     async def startup(self) -> None:
+        # Reopen the gate a previous shutdown closed: this service instance is
+        # reused across a restart in the same process, and a latched-closed gate
+        # would make every delivery-path start a no-op for the new run.
+        async with self._delivery_path_lock:
+            self._delivery_path_shutting_down = False
+
         try:
             emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:
@@ -296,12 +307,30 @@ class ServerLifecycleService:
         Both entry points funnel through here now.
         """
         async with self._delivery_path_lock:
+            if self._delivery_path_shutting_down:
+                # Teardown owns the plane from here on. Standing a new one up now
+                # would leak it past ``_shutdown_internal``, which has already
+                # decided what there was to stop.
+                logger.debug("delivery path start skipped: shutting down")
+                return
             if self._delivery_path_started:
                 return
-            await self._start_delivery_path_locked()
-            self._delivery_path_started = True
+            # Latch only a path that actually came up. Every step below swallows
+            # its own failure so one broken component cannot abort startup -- but
+            # latching a failed attempt would make the SECOND entry point useless,
+            # and recovery is the whole reason that entry point exists: a later
+            # manual plugin start would skip the retry and the plugin would stay
+            # mute until the process restarts.
+            self._delivery_path_started = await self._start_delivery_path_locked()
+            if not self._delivery_path_started:
+                logger.warning(
+                    "delivery path did not come up; plugin messages will not "
+                    "reach the character until a later start retries it"
+                )
 
-    async def _start_delivery_path_locked(self) -> None:
+    async def _start_delivery_path_locked(self) -> bool:
+        """Returns whether the path is usable. See the caller for why that matters."""
+        ok = True
         try:
             await self._start_message_plane()
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
@@ -311,6 +340,7 @@ class ServerLifecycleService:
                 str(exc),
             )
             self._message_plane_runner = None
+            ok = False
 
         # 两条 bridge 先于任何插件起来。autostart 插件可以在自己的 startup 钩
         # 子里调 push_message()，而 ProactiveBridge 的 SUB 要在它自己的线程里
@@ -343,6 +373,10 @@ class ServerLifecycleService:
                 type(exc).__name__,
                 str(exc),
             )
+            # Counts as a failure: an un-refreshed bridge publishes to whatever
+            # endpoint was frozen at import, which is the silent non-delivery the
+            # comment above describes.
+            ok = False
 
         try:
             start_bridge()
@@ -352,6 +386,7 @@ class ServerLifecycleService:
                 type(exc).__name__,
                 str(exc),
             )
+            ok = False
 
         try:
             start_proactive_bridge()
@@ -361,11 +396,16 @@ class ServerLifecycleService:
                 type(exc).__name__,
                 str(exc),
             )
+            ok = False
 
         # 等订阅方真正连上再放插件进来。bridge 的线程自己要先睡约一秒等
         # message_plane 的 PUB bind，那一秒正好是窗口本身——只把 start 挪到
         # 前面并不能让它变窄。有界等待：bridge 被禁用或已经死了就立刻返回，
         # 起不来也不能把整个启动挂在这儿。
+        #
+        # NOT counted as a failure: the SUB may still connect after this bounded
+        # wait, and the components themselves are up. Retrying the whole path on
+        # a slow subscriber would tear down a working plane to rebuild it.
         if not await asyncio.to_thread(
             wait_for_proactive_subscriber, _PROACTIVE_SUBSCRIBER_WAIT_SECONDS
         ):
@@ -374,6 +414,8 @@ class ServerLifecycleService:
                 "pushing from their startup hook may go unheard",
                 _PROACTIVE_SUBSCRIBER_WAIT_SECONDS,
             )
+
+        return ok
 
     async def _shutdown_hosts(self) -> bool:
         hosts_snapshot = self._get_plugin_hosts_snapshot()
@@ -519,10 +561,14 @@ class ServerLifecycleService:
         return _ShutdownResult(had_errors=had_errors)
 
     async def shutdown(self) -> None:
-        # Re-arm before tearing anything down: a restart in the same process must
-        # get the plane back, and leaving this latched would make
-        # ``ensure_delivery_path_started`` a silent no-op forever after.
-        self._delivery_path_started = False
+        # Close the gate under the same lock the starter takes, so an
+        # ``ensure_delivery_path_started`` already in flight finishes before
+        # teardown proceeds and no later one can start a plane behind it. The
+        # flag is cleared here too -- leaving it latched would make the starter a
+        # silent no-op for the rest of the process. ``startup`` reopens the gate.
+        async with self._delivery_path_lock:
+            self._delivery_path_shutting_down = True
+            self._delivery_path_started = False
         try:
             result = await asyncio.wait_for(self._shutdown_internal(), timeout=PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
         except asyncio.TimeoutError:

@@ -55,6 +55,13 @@ def _resolve_plugin_server_base_url() -> str:
     return resolve_user_plugin_base()
 
 
+# One "message NOT delivered" warning per minute per reason, per plugin. Same
+# value and same reasoning as ``plane_bridge._FRAME_WARN_THROTTLE_SECONDS``: a
+# broken plane would otherwise turn a per-message diagnostic into a log flood
+# that buries the first occurrence.
+_PLANE_DROP_WARN_THROTTLE_SECONDS = 60.0
+
+
 @dataclass
 class PluginCommunicationResourceManager:
     """Host-side communication manager backed by ZMQ transport.
@@ -80,6 +87,13 @@ class PluginCommunicationResourceManager:
     _last_forward_log_key: Optional[tuple] = field(default=None, init=False, repr=False)
     _last_forward_log_time: float = field(default=0.0, init=False, repr=False)
     _last_forward_log_repeat_count: int = field(default=0, init=False, repr=False)
+    # Throttle state for the "message NOT delivered" warnings, keyed by reason.
+    # A plugin that pushes a frame every few seconds would otherwise emit one
+    # warning (plus a traceback) per message for as long as the plane is down,
+    # burying the first one -- the same reason plane_bridge throttles its own
+    # terminal frame-drop warnings.
+    _plane_drop_warn_last: dict = field(default_factory=dict, init=False, repr=False)
+    _plane_drop_warn_suppressed: dict = field(default_factory=dict, init=False, repr=False)
 
     # ── lifecycle ────────────────────────────────────────────────
 
@@ -741,22 +755,45 @@ class PluginCommunicationResourceManager:
             # delivered message unless it says otherwise. (2026-09-10: a whole
             # session's alerts, the character's own death included, died here and
             # the only trace was the absence of the downstream lines.)
-            self.logger.warning(
-                "Plugin {} message NOT delivered: message plane write raised",
-                self.plugin_id,
-                exc_info=True,
-            )
+            self._warn_plane_drop("raised", "message plane write raised", exc_info=True)
             return False
         if not queued:
             # Refused, not crashed: the bridge is disabled or its queue is full.
             # Same reasoning as above -- the plugin was already told ``submitted``,
             # so the refusal has to be visible at the default level.
-            self.logger.warning(
-                "Plugin {} message NOT delivered: refused by the message plane "
-                "bridge (disabled, or queue full)",
-                self.plugin_id,
+            self._warn_plane_drop(
+                "refused",
+                "refused by the message plane bridge (disabled, or queue full)",
             )
         return queued
+
+    def _warn_plane_drop(self, reason: str, detail: str, *, exc_info: bool = False) -> None:
+        """Warn that a message did not reach the plane, at most once a minute
+        per reason.
+
+        Unthrottled this floods: a plugin streaming screenshots and status pushes
+        emits one warning -- with a traceback, on the exception branch -- per
+        message for as long as the plane stays down, which buries the first and
+        most informative one. Suppressed occurrences are counted and reported on
+        the next emission, so a silent gap never means "it stopped happening".
+        Mirrors ``plane_bridge._warn_frame_drop``.
+        """
+        now = time.time()
+        last = float(self._plane_drop_warn_last.get(reason, 0.0))
+        if last and (now - last) < _PLANE_DROP_WARN_THROTTLE_SECONDS:
+            self._plane_drop_warn_suppressed[reason] = (
+                int(self._plane_drop_warn_suppressed.get(reason, 0)) + 1
+            )
+            return
+        suppressed = int(self._plane_drop_warn_suppressed.pop(reason, 0))
+        self._plane_drop_warn_last[reason] = now
+        self.logger.warning(
+            "Plugin {} message NOT delivered: {}{}",
+            self.plugin_id,
+            detail,
+            f" (+{suppressed} more since the last warning)" if suppressed else "",
+            exc_info=exc_info,
+        )
 
     async def _forward_message(self, msg: Dict[str, Any]) -> None:
         if isinstance(msg, dict) and not msg.get("_bus_stored"):
