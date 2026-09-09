@@ -299,6 +299,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     # 软 flush 期间收到 (None, None)：等旧流放干净再决定是补发 audio_done 还是
     # 起新流把攒着的文本说完再收尾。
     round_end_pending = False
+    # 排空期间又来了 core 的软 flush 哨兵（针对排空期间攒下的续接文本）：不能
+    # 丢——续接流起来之后没人再给它 FINISH，尾句又会回到等 done。记下来，续接
+    # 流一起来就补做；期间再来文本就作废（core 会为新文本重新武装定时器）。
+    soft_flush_pending = False
 
     def _create_synthesizer(lang_hint=None):
         """Create a new SpeechSynthesizer, with an optional language hint.
@@ -439,6 +443,9 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         # on_close，没有当代可比对时它们一律按过期丢弃，不会混进接下来同一
         # speech_id 的新流。新 synthesizer 建出来会盖上自己的代号。
         callback.current_generation = None
+        # 「断开」是这条连接的状态，随它一起退役；不然新流建起来之前它一直是
+        # True，谁在这个窗口里问 connection_lost 都会跳过 FINISH。
+        callback.connection_lost = False
         if synthesizer is not None:
             try:
                 synthesizer.close()
@@ -465,7 +472,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         pending round end either finishes that new stream or, with nothing
         left to say, closes the audio stream directly.
         """
-        nonlocal char_buffer, round_end_pending, soft_finished, soft_finish_deadline
+        nonlocal char_buffer, round_end_pending, soft_finished, soft_finish_deadline, soft_flush_pending
         if not soft_finished:
             return
         drained = callback.completed_generation == synth_generation
@@ -481,6 +488,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 char_buffer = ""
             if round_end_pending:
                 _do_streaming_complete(round_end=True)
+            elif soft_flush_pending:
+                # 排空期间 core 已经判定这段续接文本停了：续接流一起来就把它
+                # 也软 flush 掉，否则它的尾句要等 done
+                _soft_finish()
         elif round_end_pending:
             if drained:
                 # 旧流的尾包早已投进队列，这里补的收尾排在它们后面
@@ -495,6 +506,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             # 放干净了但本轮没结束、也没新文本：保持软完成态，等下一个信号
             return
         round_end_pending = False
+        soft_flush_pending = False
 
     while True:
         # 非阻塞检查队列，优先处理打断
@@ -545,6 +557,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 soft_finished = False
                 soft_finish_deadline = None
                 round_end_pending = False
+                soft_flush_pending = False
             finally:
                 audio_done.end_interrupt()
             continue
@@ -553,7 +566,12 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             # core 的文本空闲哨兵：只对仍在说的这一轮有效。迟到的（sid 已经换了、
             # 或本轮已经正常收尾）直接忽略，不然会把别的轮次的流截断。
             if tts_text is not None and tts_text == current_speech_id:
-                _soft_finish()
+                if soft_finished:
+                    # 旧流还在排空：这条是给排空期间攒下的续接文本的，续接流
+                    # 起来后再补做，不能就地丢掉
+                    soft_flush_pending = bool(char_buffer.strip())
+                else:
+                    _soft_finish()
             continue
 
         if sid is None:
@@ -602,6 +620,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             soft_finished = False
             soft_finish_deadline = None
             round_end_pending = False
+            soft_flush_pending = False
 
         if tts_text is None or not tts_text.strip():
             time.sleep(0.01)
@@ -615,6 +634,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             hint = detect_tts_language_hint(tts_text)
             if hint and detected_lang != hint:
                 detected_lang = hint
+            # 之前记下的软 flush 是针对更早的文本的；core 会为这一片重新武装定时器
+            soft_flush_pending = False
             _service_soft_finished()
             continue
 

@@ -177,6 +177,52 @@ def test_late_pages_from_the_retired_stream_do_not_reach_the_continuation(worker
     assert leaked == [], "a retired stream's pages must not be spliced into the new stream"
 
 
+def test_soft_flush_arriving_during_the_drain_is_applied_to_the_continuation(worker):
+    """core re-arms its timer for text buffered during the drain; that flush must not be lost."""
+    request_queue, _response_queue, _thread = worker
+
+    request_queue.put(("speech-a", _LONG_ENOUGH + "第一段。"))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "first synthesizer")
+    first = _FakeSynthesizer.instances[0]
+    request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
+    _wait_for(lambda: first.finish_payloads, "FINISH from the soft flush")
+
+    # 排空期间：续接文本到达，随后 core 为它武装的定时器也到了
+    request_queue.put(("speech-a", "同一轮后面还有话。"))
+    request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
+    _settle()
+    assert len(_FakeSynthesizer.instances) == 1
+
+    first.callback.on_complete()
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "continuation synthesizer")
+    second = _FakeSynthesizer.instances[1]
+    assert second.spoken == ["同一轮后面还有话。"]
+    # 没有 (None, None)：续接流的尾句靠排空期间记下的软 flush 释放
+    _wait_for(lambda: second.finish_payloads, "FINISH carried over to the continuation stream")
+
+
+def test_text_after_a_pending_soft_flush_supersedes_it(worker):
+    """Newer text during the drain voids the earlier flush; core will re-arm for it."""
+    request_queue, _response_queue, _thread = worker
+
+    request_queue.put(("speech-a", _LONG_ENOUGH + "第一段。"))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "first synthesizer")
+    first = _FakeSynthesizer.instances[0]
+    request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
+    _wait_for(lambda: first.finish_payloads, "FINISH from the soft flush")
+
+    request_queue.put(("speech-a", "第二段"))
+    request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
+    request_queue.put(("speech-a", "，还没说完"))
+    _settle()  # 三条都要在旧流放干净之前被 worker 消化掉，顺序才是这条用例要钉的
+    first.callback.on_complete()
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "continuation synthesizer")
+    second = _FakeSynthesizer.instances[1]
+    _settle()
+    assert second.spoken == ["第二段，还没说完"]
+    assert second.finish_payloads == [], "the flush predates the newest text; wait for core's next one"
+
+
 def test_soft_flush_whose_finish_fails_to_send_drops_the_dead_stream(worker):
     """No FINISH on the wire means no completion will ever come; do not wait for it."""
     request_queue, _response_queue, _thread = worker
