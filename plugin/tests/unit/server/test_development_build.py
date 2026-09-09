@@ -18,6 +18,99 @@ from plugin.server.application.plugins import development as dev
 pytestmark = pytest.mark.plugin_unit
 
 
+@pytest.mark.parametrize("plugin_id", ["my-plugin", "123plugin"])
+@pytest.mark.parametrize("prefix", ["plugins", "plugin.plugins"])
+def test_package_valid_ids_register_load_build_and_install(workspace, plugin_id, prefix):
+    import subprocess
+    import sys
+    from plugin.server.application.plugins.metadata_scanner import scan_plugin_metadata_isolated
+
+    source = workspace / "source" / plugin_id
+    source.mkdir(parents=True)
+    manifest = source / "plugin.toml"
+    manifest.write_text(
+        f'[plugin]\nid="{plugin_id}"\nname="Demo"\nversion="1.0.0"\n'
+        f'entry="{prefix}.{plugin_id}:Demo"\n', encoding="utf-8",
+    )
+    (source / "child.py").write_text('VALUE = "relative import works"\n', encoding="utf-8")
+    (source / "__init__.py").write_text(
+        'from .child import VALUE\nfrom plugin.sdk.plugin.decorators import plugin_entry\n'
+        'class Demo:\n    @plugin_entry(id="hello", name=VALUE)\n    def hello(self): return VALUE\n',
+        encoding="utf-8",
+    )
+    snapshot = dev.register_directory_sync(str(source))
+    metadata = scan_plugin_metadata_isolated(
+        plugin_id=plugin_id, module_path=f"plugins.{plugin_id}", class_name="Demo",
+        config_path=manifest, conf={}, pdata={}, source_only=True,
+    )
+    assert any(entry.get("name") == "relative import works" for entry in metadata.entries_preview)
+    result = run_build(snapshot, workspace)
+    assert result["ok"], result
+    installed = install_package(result["built"][0]["package_path"],
+                                plugins_root=workspace / "clean", profiles_root=workspace / "clean-profiles")
+    target = installed.installed_plugins[0]
+    assert target.target_plugin_id == plugin_id
+    code = """
+import sys
+from pathlib import Path
+from plugin.core.host import _import_plugin_module
+from plugin.logging_config import get_logger
+module = _import_plugin_module(sys.argv[1], Path(sys.argv[2]), get_logger('id-test'), source_only=sys.argv[3]=='true')
+assert module.Demo().hello() == 'relative import works'
+"""
+    for directory, source_only in [(source, "true"), (target.target_dir, "false")]:
+        process = subprocess.run([sys.executable, "-c", code, f"plugins.{plugin_id}",
+                                  str(directory / "plugin.toml"), source_only],
+                                 capture_output=True, text=True, timeout=30)
+        assert process.returncode == 0, process.stderr
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("register_later", [False, True])
+async def test_remote_all_without_development_sources_keeps_ordinary_builds(workspace, monkeypatch, register_later):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from plugin.server.routes import plugin_cli as route
+
+    ordinary = register(workspace, "ordinary_demo")
+    dev.remove_registration_sync(ordinary)
+    shutil.copytree(ordinary.source_dir, workspace / "installed" / "ordinary_demo")
+    original = route.service.build
+
+    async def dispatch(**kwargs):
+        assert kwargs["allow_development"] is False
+        if register_later:
+            register(workspace, "late_development")
+        return await original(**kwargs)
+
+    monkeypatch.setattr(route.service, "build", dispatch)
+    app = FastAPI()
+    app.include_router(route.router)
+    async with AsyncClient(transport=ASGITransport(app=app, client=("192.168.1.2", 1234)),
+                           base_url="http://127.0.0.1") as client:
+        response = await client.post("/plugin-cli/build", json={"mode": "all"})
+    assert response.status_code == 200, response.text
+    assert [item["plugin_id"] for item in response.json()["built"]] == ["ordinary_demo"]
+    if register_later:
+        assert dev.registration_for_plugin_sync("late_development") is not None
+
+
+@pytest.mark.asyncio
+async def test_remote_all_with_development_sources_remains_denied(workspace):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from plugin.server.routes.plugin_cli import router
+
+    register(workspace)
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app=app, client=("192.168.1.2", 1234)),
+                           base_url="http://127.0.0.1", headers={"X-Neko-Development": "1"}) as client:
+        response = await client.post("/plugin-cli/build", json={"mode": "all"})
+    assert response.status_code == 403
+    assert not list((workspace / "packages").glob("*.neko-plugin"))
+
+
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(dev, "_store_path", lambda: tmp_path / "state" / "development.json")

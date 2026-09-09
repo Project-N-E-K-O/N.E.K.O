@@ -143,6 +143,22 @@ def test_new_registration_cannot_claim_runtime_id(tmp_path, owner):
         assert service.state.plugins["demo"]["config_path"] == str(existing / "plugin.toml")
 
 
+@pytest.mark.parametrize("entry", [
+    "plugins.my-plugin.bad-name:Demo",
+    "plugins.my-plugin.123child:Demo",
+    "plugins.my-plugin:Bad-Class",
+])
+def test_package_id_relaxation_keeps_submodule_and_class_validation(tmp_path, entry):
+    store.set_enabled_sync(True)
+    source = _source(tmp_path, name="my-plugin", plugin_id="my-plugin", entry=entry)
+    for name in ("bad-name.py", "123child.py"):
+        (source / name).write_text("class Demo: pass\n", encoding="utf-8")
+    with pytest.raises(ServerDomainError) as error:
+        store.register_directory_sync(str(source))
+    assert error.value.code == "DEVELOPMENT_INVALID"
+    assert store.list_registration_records_sync() == []
+
+
 def test_missing_directory_remains_visible_and_rebind_fences_old_operations(tmp_path):
     record = _register(tmp_path)
     moved = record.source_dir.with_name("moved")

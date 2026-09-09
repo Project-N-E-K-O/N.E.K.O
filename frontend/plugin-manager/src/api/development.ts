@@ -16,7 +16,8 @@ export interface DevelopmentState { enabled: boolean; registrations: Development
 const config = { headers: { 'X-Neko-Development': '1' }, timeout: PLUGIN_LIFECYCLE_TIMEOUT }
 export const getDevelopment = (): Promise<DevelopmentState> => get('/plugins/development', config)
 export const setDevelopmentEnabled = (enabled: boolean): Promise<DevelopmentState> =>
-  put('/plugins/development/settings', { enabled }, config)
+  // Disabling stops every development plugin sequentially, like reload-all.
+  put('/plugins/development/settings', { enabled }, { ...config, timeout: enabled ? config.timeout : 0 })
 export const registerDevelopment = (source_dir: string, preview = false, ref?: DevelopmentRef): Promise<DevelopmentRegistration> =>
   post('/plugins/development/registrations', { source_dir, preview, ...(ref ? { registration_id: ref.registration_id, revision: ref.revision } : {}) }, config)
 export const rebindDevelopment = (ref: DevelopmentRef, source_dir: string): Promise<DevelopmentRegistration> =>

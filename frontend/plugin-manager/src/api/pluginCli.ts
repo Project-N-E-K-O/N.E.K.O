@@ -226,7 +226,8 @@ export function getPluginCliPackages(): Promise<PluginCliLocalPackagesResponse> 
  */
 export function buildPluginCli(payload: PluginCliBuildRequest): Promise<PluginCliBuildResponse> {
   if (payload.development_ref || payload.development_refs?.length || payload.mode === 'all') {
-    return post('/plugin-cli/build', payload, { headers: { 'X-Neko-Development': '1' } })
+    // Staging, metadata probing and archive validation can outlast a normal API request.
+    return post('/plugin-cli/build', payload, { timeout: 300_000, headers: { 'X-Neko-Development': '1' } })
   }
   return post('/plugin-cli/build', payload)
 }

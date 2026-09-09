@@ -23,14 +23,33 @@ describe('development API identity boundaries', () => {
   it('builds by registration identity, never by the source path', async () => {
     const payload = { mode: 'single' as const, development_ref: { registration_id: record.registration_id, revision: 3 } }
     await buildPluginCli(payload)
-    expect(post).toHaveBeenCalledWith('/plugin-cli/build', payload, { headers: { 'X-Neko-Development': '1' } })
+    expect(post).toHaveBeenCalledWith('/plugin-cli/build', payload, { timeout: 300_000, headers: { 'X-Neko-Development': '1' } })
   })
   it('preserves ordinary build requests and gates all-mode builds', async () => {
     await buildPluginCli({ mode: 'single', plugin: 'demo' })
     expect(post).toHaveBeenLastCalledWith('/plugin-cli/build', { mode: 'single', plugin: 'demo' })
     await buildPluginCli({ mode: 'all' })
-    expect(post).toHaveBeenLastCalledWith('/plugin-cli/build', { mode: 'all' }, { headers: { 'X-Neko-Development': '1' } })
+    expect(post).toHaveBeenLastCalledWith('/plugin-cli/build', { mode: 'all' }, { timeout: 300_000, headers: { 'X-Neko-Development': '1' } })
     await setDevelopmentEnabled(false)
     expect(put).toHaveBeenCalledWith('/plugins/development/settings', { enabled: false }, expect.any(Object))
+  })
+  it('waits for bulk shutdown without changing the single-operation timeout', async () => {
+    await setDevelopmentEnabled(false)
+    expect(put).toHaveBeenLastCalledWith('/plugins/development/settings', { enabled: false }, {
+      headers: { 'X-Neko-Development': '1' }, timeout: 0,
+    })
+    await setDevelopmentEnabled(true)
+    expect(put).toHaveBeenLastCalledWith('/plugins/development/settings', { enabled: true }, {
+      headers: { 'X-Neko-Development': '1' }, timeout: 45_000,
+    })
+    await runDevelopmentAction(record, 'stop')
+    expect(post).toHaveBeenLastCalledWith('/plugin/demo/stop', undefined, expect.objectContaining({ timeout: 45_000 }))
+  })
+  it.each(['selected', 'bundle'] as const)('gives %s development builds the long operation budget', async (mode) => {
+    const payload = { mode, development_refs: [{ registration_id: record.registration_id, revision: 3 }] }
+    await buildPluginCli(payload)
+    expect(post).toHaveBeenLastCalledWith('/plugin-cli/build', payload, {
+      timeout: 300_000, headers: { 'X-Neko-Development': '1' },
+    })
   })
 })

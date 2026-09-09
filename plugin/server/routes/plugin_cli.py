@@ -295,11 +295,11 @@ async def plugin_cli_build(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        from plugin.server.application.plugins.development import development_enabled_sync
+        from plugin.server.application.plugin_cli.development_build import resolve_development_sources
         from plugin.server.infrastructure.development_access import require_development_access
 
         allow_development = bool(payload.development_ref or payload.development_refs) or (
-            payload.mode == "all" and await asyncio.to_thread(development_enabled_sync)
+            payload.mode == "all" and bool(await asyncio.to_thread(resolve_development_sources, "all", None, []))
         )
         if allow_development:
             require_development_access(request)

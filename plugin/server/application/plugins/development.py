@@ -132,7 +132,9 @@ def validate_directory_sync(source_dir: str | Path, *, expected_id: str | None =
             raise ValueError(mismatch)
         module, class_name = entry.split(":", 1)
         parts = module.split(".")
-        if parts[0] != "plugins" or len(parts) < 2 or not all(p.isidentifier() for p in parts) or not class_name.isidentifier():
+        if (parts[0] != "plugins" or len(parts) < 2
+                or not (parts[1].isidentifier() or re.fullmatch(r"[a-zA-Z0-9_-]+", parts[1]))
+                or not all(p.isidentifier() for p in parts[2:]) or not class_name.isidentifier()):
             raise ValueError("Entry must use plugins.<directory>[.<module>]:<class>")
         relative = Path(*parts[2:]) if len(parts) > 2 else Path()
         module_file = path / relative
