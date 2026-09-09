@@ -163,6 +163,17 @@ class ProactiveBridge:
             return self._subscribed.is_set()
         return self._subscribed.wait(timeout)
 
+    def is_alive(self) -> bool:
+        """Whether the bridge thread is running.
+
+        ``wait_until_subscribed`` answers ``False`` both for a bridge that is
+        still coming up and for one that never started or has died, and those
+        want opposite handling: the first heals on its own, the second recovers
+        only if something restarts it. Callers that must tell them apart ask here.
+        """
+        t = self._thread
+        return t is not None and t.is_alive()
+
     def stop(self) -> None:
         self._stop.set()
         # 醒掉任何在等订阅的人：bridge 停了就不会再有订阅了，让它们继续跑，
@@ -453,6 +464,11 @@ def start_proactive_bridge() -> None:
 def wait_for_proactive_subscriber(timeout: float) -> bool:
     """Wait for the bridge's SUB socket before anything may publish."""
     return _bridge.wait_until_subscribed(timeout)
+
+
+def proactive_bridge_is_alive() -> bool:
+    """Whether the bridge thread is running. See ``ProactiveBridge.is_alive``."""
+    return _bridge.is_alive()
 
 
 def stop_proactive_bridge() -> None:

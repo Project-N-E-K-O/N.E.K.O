@@ -695,6 +695,44 @@ async def test_state_burst_body_matches_who_is_actually_acting():
 
 
 @pytest.mark.asyncio
+async def test_state_burst_carries_log_lines_forward_one_generation():
+    """A coalesced burst must not take the game's recent events with it.
+
+    These bursts collapse on ``mc_state`` (latest wins), and a collapsed burst is
+    dropped whole -- so lines drained into it would never reach the model. They
+    are not snapshot data like the inventory; they are incremental events.
+    Carrying one generation makes a single coalescing step lossless, which is the
+    case that happens: a burst collapses into the very next one.
+    """
+    service, push_calls = _make_service()
+    service.configure({})
+    service._lang = "en"
+
+    def _body_of(push):
+        return [p for p in push["parts"] if p["type"] == "text"][-1]["text"]
+
+    await service._on_log("chopped an oak log")
+    await service._fire_system_prompt()
+    assert "chopped an oak log" in _body_of(push_calls[-1])
+
+    # Next burst: the previous line rides along, so if the first one coalesced
+    # away the model still sees it.
+    await service._on_log("picked up a sapling")
+    await service._fire_system_prompt()
+    body = _body_of(push_calls[-1])
+    assert "chopped an oak log" in body
+    assert "picked up a sapling" in body
+
+    # Bounded at one generation -- the oldest drops out rather than accumulating.
+    await service._on_log("crafted planks")
+    await service._fire_system_prompt()
+    body = _body_of(push_calls[-1])
+    assert "chopped an oak log" not in body
+    assert "picked up a sapling" in body
+    assert "crafted planks" in body
+
+
+@pytest.mark.asyncio
 async def test_alert_without_text_falls_back_to_the_cause():
     """A text-less alert still has to reach her; only a truly empty one is dropped.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import threading
 
 import pytest
 
@@ -614,6 +615,93 @@ async def test_failure_report_names_the_stage_that_did_not_start(
     ]
 
 
+def test_delivery_path_lock_hands_off_across_event_loops() -> None:
+    """The two callers really do run on different loops in different threads.
+
+    ``startup()`` is awaited from the agent's loop; ``POST /plugin/{id}/start``
+    runs on the embedded plugin server's own loop in the ``plugin-server``
+    thread. An ``asyncio.Lock`` binds its waiter future to whichever loop first
+    contends, and a release from the other loop does not wake it -- so the very
+    race the lock exists for is the one that would break it.
+
+    Deliberately NOT an asyncio test: a single-loop test cannot tell the two lock
+    types apart, which is why nothing caught this before review did.
+    """
+    service = module.ServerLifecycleService()
+    lock = service._delivery_path_lock
+
+    b_may_start = threading.Event()
+    b_acquired = threading.Event()
+    b_error: list[BaseException] = []
+
+    def _run_b() -> None:
+        async def _main() -> None:
+            b_may_start.wait(5)
+            async with module._held(lock):
+                b_acquired.set()
+
+        try:
+            asyncio.run(_main())
+        except BaseException as exc:  # noqa: BLE001 - surfaced via the list below
+            b_error.append(exc)
+
+    thread_b = threading.Thread(target=_run_b, name="lock-loop-b", daemon=True)
+
+    async def _run_a() -> None:
+        async with module._held(lock):
+            thread_b.start()
+            b_may_start.set()
+            await asyncio.sleep(0.15)
+            assert not b_acquired.is_set(), "the other loop got in while it was held"
+        # Released from loop A. Loop B must be woken on ITS own loop.
+        await asyncio.to_thread(b_acquired.wait, 5)
+
+    asyncio.run(_run_a())
+    thread_b.join(timeout=5)
+
+    assert not b_error, f"cross-loop acquire raised: {b_error!r}"
+    assert b_acquired.is_set(), "the waiter on the other loop was never woken"
+
+
+@pytest.mark.asyncio
+async def test_a_dead_proactive_bridge_is_a_failure_but_a_slow_one_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``wait_for_proactive_subscriber`` returns False for both; they differ.
+
+    A live thread whose SUB has not attached yet heals on its own, so treating it
+    as a failure would tear down a working plane. A thread that exited during
+    socket setup returns False just as fast and never recovers -- and reporting
+    THAT as success latched the path, so nothing ever restarted the bridge and
+    every proactive message stayed undeliverable until a full shutdown.
+    """
+    service = module.ServerLifecycleService()
+
+    async def _plane_ok() -> bool:
+        return True
+
+    monkeypatch.setattr(service, "_start_message_plane", _plane_ok)
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: False)
+
+    # Alive but slow: not a failure.
+    monkeypatch.setattr(module, "proactive_bridge_is_alive", lambda: True)
+    assert await service._start_delivery_path_locked() == []
+
+    # Dead thread: a failure, and named so the warning tells the truth.
+    monkeypatch.setattr(module, "proactive_bridge_is_alive", lambda: False)
+    assert await service._start_delivery_path_locked() == ["proactive_bridge"]
+
+    # Not double-counted when start_proactive_bridge already raised.
+    def _boom() -> None:
+        raise OSError("no socket")
+
+    monkeypatch.setattr(module, "start_proactive_bridge", _boom)
+    assert await service._start_delivery_path_locked() == ["proactive_bridge"]
+
+
 @pytest.mark.asyncio
 async def test_shutdown_itself_closes_the_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """The producer side of the gate contract.
@@ -662,7 +750,7 @@ async def test_shutdown_closes_the_gate_so_a_late_start_cannot_orphan_a_plane(
     monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
 
     # Simulate what shutdown() does to the gate, without driving real teardown.
-    async with service._delivery_path_lock:
+    async with module._held(service._delivery_path_lock):
         service._delivery_path_shutting_down = True
         service._delivery_path_started = False
 
@@ -672,7 +760,7 @@ async def test_shutdown_closes_the_gate_so_a_late_start_cannot_orphan_a_plane(
 
     # startup() reopens it: the same service instance is reused across a restart
     # in the same process, and a gate latched closed would mute the new run.
-    async with service._delivery_path_lock:
+    async with module._held(service._delivery_path_lock):
         service._delivery_path_shutting_down = False
     await service.ensure_delivery_path_started()
     assert starts == ["plane"]

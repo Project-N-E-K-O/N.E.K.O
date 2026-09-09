@@ -252,6 +252,10 @@ class GameAgentService:
         # and we'd never drain. ``deque(maxlen=...)`` drops oldest on
         # overflow which is fine — the LLM only needs recent context.
         self._log_cache: collections.deque[str] = collections.deque(maxlen=200)
+        # Lines drained into the PREVIOUS state burst. Re-sent once so a burst
+        # that coalesces away does not take the game's recent events with it.
+        # See ``_fire_system_prompt``.
+        self._log_carry: list[str] = []
         # Bounded ring buffer of (image_bytes, mime). We carry the mime
         # alongside the bytes because the JPEG→PNG conversion in
         # ``_on_screenshot`` can fall through to "ship as-is" on Pillow
@@ -608,6 +612,9 @@ class GameAgentService:
         self._pending_screenshot = None
 
         self._log_cache.clear()
+        # Same session boundary as the cache above: carrying a dead session's
+        # lines into the next world would narrate events that never happened there.
+        self._log_carry.clear()
         self._screenshot_cache.clear()
         # Inventory snapshot belongs to the WS session that just ended.
         # game_agent_reload_config（ws_url 切换）/ 重启场景下，下一个 WS
@@ -2069,9 +2076,25 @@ class GameAgentService:
         "task running — comment if you like" tail.
         """
         log_text = ""
-        if self._log_cache:
-            log_text = _ANSI_RE.sub("", "\n".join(self._log_cache))
-            self._log_cache.clear()
+        # Carry the previous burst's lines forward one generation. These bursts
+        # coalesce on ``mc_state`` (latest wins), and a coalesced burst is dropped
+        # whole -- so lines drained into it would be gone before the model ever
+        # saw them. They are not snapshot data like the inventory or a screenshot;
+        # they are the game's incremental events, and losing them silently is the
+        # class of bug this plugin keeps getting bitten by.
+        #
+        # One generation, not a growing buffer: it makes a single coalescing step
+        # lossless, which is the case that actually happens (a burst collapses
+        # into the very next one), at the cost of repeating at most one window's
+        # lines when both are delivered. The burst is ``ai_behavior="read"``
+        # context rather than a speak cue, so a repeated line costs context, not
+        # a repeated sentence.
+        fresh_lines = list(self._log_cache)
+        self._log_cache.clear()
+        combined = self._log_carry + fresh_lines
+        self._log_carry = fresh_lines
+        if combined:
+            log_text = _ANSI_RE.sub("", "\n".join(combined))
 
         sections: list[str] = []
         # Inventory line first — it's the closest thing to ground truth

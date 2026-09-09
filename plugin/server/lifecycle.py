@@ -4,8 +4,9 @@ from __future__ import annotations
 import atexit
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import AsyncIterator, Protocol, runtime_checkable
 
 from plugin.core.state import state
 from plugin.core.status import status_manager
@@ -14,7 +15,10 @@ from plugin.utils.time_utils import now_iso
 from plugin.server.application.install_source import StartupReconciler, get_install_source_manager
 from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
 from plugin.server.application.plugins.layout_migration import migrate_legacy_plugin_layout
-from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.operation_lock import (
+    _CrossLoopLock,
+    serialized_plugin_operation,
+)
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import (
@@ -24,6 +28,7 @@ from plugin.server.messaging.plane_bridge import (
     stop_bridge,
 )
 from plugin.server.messaging.proactive_bridge import (
+    proactive_bridge_is_alive,
     start_proactive_bridge,
     stop_proactive_bridge,
     wait_for_proactive_subscriber,
@@ -47,6 +52,22 @@ else:
 _PROACTIVE_SUBSCRIBER_WAIT_SECONDS = 3.0
 
 
+@asynccontextmanager
+async def _held(lock: _CrossLoopLock) -> AsyncIterator[None]:
+    """``async with`` for ``_CrossLoopLock``, which exposes acquire/release only.
+
+    Waiting inherits any ``bounded_operation_wait`` budget in force, so a plugin
+    start that cannot get the lock in time raises ``PluginOperationBusy`` and the
+    route answers 409 instead of hanging. ``startup()`` runs outside any budget
+    and therefore waits.
+    """
+    await lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 @runtime_checkable
 class _PluginHostContract(Protocol):
     async def start(self, message_target_queue: object) -> None: ...
@@ -66,7 +87,19 @@ class ServerLifecycleService:
         self._plugin_lifecycle_service = PluginLifecycleService()
         # Guards ``ensure_delivery_path_started`` so the startup lifecycle and a
         # concurrent manual plugin start cannot both bring the plane up.
-        self._delivery_path_lock = asyncio.Lock()
+        #
+        # Cross-loop, not ``asyncio.Lock``: the two callers genuinely run on
+        # different loops in different threads. ``startup()`` is awaited from the
+        # agent's loop (app/agent_server/plugin_host.py
+        # ``_ensure_plugin_lifecycle_started``), while ``POST /plugin/{id}/start``
+        # runs on the embedded plugin server's own loop in the ``plugin-server``
+        # thread. An ``asyncio.Lock`` binds its waiter futures to whichever loop
+        # first contends on it; the other loop then raises "attached to a
+        # different loop", and a release from the wrong loop does not wake the
+        # waiter -- so the exact race this lock exists for is the one that would
+        # break it. ``_CrossLoopLock`` keeps its state under a ``threading.Lock``
+        # and schedules each wake onto that waiter's own loop.
+        self._delivery_path_lock = _CrossLoopLock()
         self._delivery_path_started = False
         # Closed by ``shutdown`` under the same lock. Without it, a manual plugin
         # start could win the lock after shutdown reset the flag and stand a fresh
@@ -292,7 +325,7 @@ class ServerLifecycleService:
         # Reopen the gate a previous shutdown closed: this service instance is
         # reused across a restart in the same process, and a latched-closed gate
         # would make every delivery-path start a no-op for the new run.
-        async with self._delivery_path_lock:
+        async with _held(self._delivery_path_lock):
             self._delivery_path_shutting_down = False
 
         try:
@@ -365,7 +398,7 @@ class ServerLifecycleService:
         own death, and not one reached the dialog LLM. Nothing logged above DEBUG.
         Both entry points funnel through here now.
         """
-        async with self._delivery_path_lock:
+        async with _held(self._delivery_path_lock):
             if self._delivery_path_shutting_down:
                 # Teardown owns the plane from here on. Standing a new one up now
                 # would leak it past ``_shutdown_internal``, which has already
@@ -493,17 +526,35 @@ class ServerLifecycleService:
         # 前面并不能让它变窄。有界等待：bridge 被禁用或已经死了就立刻返回，
         # 起不来也不能把整个启动挂在这儿。
         #
-        # NOT counted as a failure: the SUB may still connect after this bounded
-        # wait, and the components themselves are up. Retrying the whole path on
-        # a slow subscriber would tear down a working plane to rebuild it.
+        # A timeout here is NOT a failure by itself -- the SUB may still connect
+        # after this bounded wait and the components are up, so retrying would
+        # tear down a working plane to rebuild it.
+        #
+        # But ``wait_until_subscribed`` answers False for a DEAD thread too (it
+        # returns the un-set event immediately rather than waiting), so the two
+        # cases are indistinguishable from the return value alone. A bridge whose
+        # thread exited during socket setup would otherwise leave ``failed``
+        # empty, latch the path as started, and make every proactive message
+        # undeliverable until a full shutdown -- with nothing ever retrying it.
+        # Ask whether the thread is running and separate them.
         if not await asyncio.to_thread(
             wait_for_proactive_subscriber, _PROACTIVE_SUBSCRIBER_WAIT_SECONDS
         ):
-            logger.warning(
-                "proactive subscriber not ready after {}s; autostart plugins "
-                "pushing from their startup hook may go unheard",
-                _PROACTIVE_SUBSCRIBER_WAIT_SECONDS,
-            )
+            if not proactive_bridge_is_alive():
+                logger.warning(
+                    "proactive bridge is not running after start; proactive "
+                    "messages cannot be delivered until a later entry restarts "
+                    "it (start_proactive_bridge replaces a dead thread)"
+                )
+                if "proactive_bridge" not in failed:
+                    failed.append("proactive_bridge")
+            else:
+                logger.warning(
+                    "proactive subscriber not ready after {}s; the thread is "
+                    "alive and its SUB may still attach, so autostart plugins "
+                    "pushing from their startup hook may go unheard",
+                    _PROACTIVE_SUBSCRIBER_WAIT_SECONDS,
+                )
 
         return failed
 
@@ -656,7 +707,7 @@ class ServerLifecycleService:
         # teardown proceeds and no later one can start a plane behind it. The
         # flag is cleared here too -- leaving it latched would make the starter a
         # silent no-op for the rest of the process. ``startup`` reopens the gate.
-        async with self._delivery_path_lock:
+        async with _held(self._delivery_path_lock):
             self._delivery_path_shutting_down = True
             self._delivery_path_started = False
         try:
