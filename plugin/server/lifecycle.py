@@ -194,23 +194,47 @@ class ServerLifecycleService:
             )
             return True
 
-    def _stop_message_plane_runner(self) -> None:
-        """Stop and forget the current runner so a later entry rebuilds it."""
+    async def _retire_message_plane(self) -> None:
+        """Tear the plane AND both bridges down so a later entry rebuilds them all.
+
+        The bridges have to go too. Each connects its socket once, inside its own
+        thread: the plane bridge PUSHes to the ingest endpoint it read at connect
+        time and swallows send failures, and ``ProactiveBridge`` reads the PUB
+        endpoint once at thread start. Neither ever reconnects, and both
+        ``start()`` calls return early on a live thread. So a rebuild that lands
+        on fallback ports -- likely, since the retired plane may not have released
+        its own yet -- would leave two healthy-looking threads talking to an
+        endpoint nobody serves, and the next probe would latch the path as ready
+        on top of that. ``refresh_ingest_endpoint()`` does not save the plane
+        bridge either: it updates the field a running thread has already read.
+
+        Runs off the event loop: each stop joins its thread.
+        """
         runner = self._message_plane_runner
         self._message_plane_runner = None
         self._plane_probe_failures = 0
-        if runner is None:
-            return
-        try:
-            runner.stop()
-        except Exception as exc:
-            # Already being discarded; a failed stop must not abort the retry
-            # that is trying to recover delivery.
-            logger.warning(
-                "failed to stop the retired message_plane runner: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
+
+        def _teardown() -> None:
+            for what, stop in (
+                ("message_plane runner", getattr(runner, "stop", None)),
+                ("message bridge", stop_bridge),
+                ("proactive bridge", stop_proactive_bridge),
+            ):
+                if stop is None:
+                    continue
+                try:
+                    stop()
+                except Exception as exc:
+                    # All of it is being discarded; a failed stop must not abort
+                    # the retry that is trying to recover delivery.
+                    logger.warning(
+                        "failed to stop the retired {}: err_type={}, err={}",
+                        what,
+                        type(exc).__name__,
+                        str(exc),
+                    )
+
+        await asyncio.to_thread(_teardown)
 
     async def _check_message_plane_health(self) -> bool:
         """Probe the current runner. Never raises; a failed probe is ``False``.
@@ -285,7 +309,7 @@ class ServerLifecycleService:
                         self._plane_probe_failures,
                         alive,
                     )
-                    self._stop_message_plane_runner()
+                    await self._retire_message_plane()
                 else:
                     logger.warning(
                         "message_plane is still not healthy (probe {} of {}); "

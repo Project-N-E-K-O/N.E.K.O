@@ -822,6 +822,90 @@ async def test_an_unhealthy_plane_is_eventually_retired_and_rebuilt(
 
 
 @pytest.mark.asyncio
+async def test_retiring_the_plane_also_retires_both_bridges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rebuilt plane can land on different ports; live bridges cannot follow.
+
+    Each bridge connects its socket once, inside its own thread, and neither ever
+    reconnects -- the plane bridge PUSHes to the ingest endpoint it read at
+    connect time (and swallows send failures), and ``ProactiveBridge`` reads the
+    PUB endpoint once at thread start. Both ``start()`` calls return early on a
+    live thread, so leaving them up across a rebuild strands them on an endpoint
+    nobody serves while the next probe latches the path as ready.
+    """
+    service = module.ServerLifecycleService()
+    stops: list[str] = []
+
+    class _Runner:
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            stops.append("runner")
+
+        def is_alive(self) -> bool:
+            return False  # threads gone -> retire on the first probe
+
+        async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
+            return False
+
+    monkeypatch.setattr(module, "build_message_plane_runner", lambda *, auth_token: _Runner())
+    monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "stop_bridge", lambda: stops.append("plane_bridge"))
+    monkeypatch.setattr(module, "stop_proactive_bridge", lambda: stops.append("proactive"))
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+    monkeypatch.setattr(module, "proactive_bridge_is_alive", lambda: True)
+
+    # First entry takes the fresh-build branch: the probe fails, but a runner
+    # that was just created keeps its cycle (it may still be coming up), so
+    # nothing is retired yet.
+    assert await service._start_delivery_path_locked() == ["message_plane"]
+    assert stops == []
+    assert service._message_plane_runner is not None
+
+    # Second entry takes the reuse branch, re-probes, sees the threads are gone,
+    # and retires the plane -- taking both bridges with it.
+    assert await service._start_delivery_path_locked() == ["message_plane"]
+    assert stops == ["runner", "plane_bridge", "proactive"]
+    assert service._message_plane_runner is None
+
+
+def test_plane_bridge_stop_lets_a_following_start_take_effect() -> None:
+    """``stop()`` must clear the thread, or the retirement start-over is a no-op.
+
+    ``start()`` returns early while a thread is alive. If ``stop()`` only set the
+    flag, the ``start()`` right after would see the still-draining thread, do
+    nothing, and leave the bridge stopped for good -- the retirement path would
+    turn a repointing into an outage.
+    """
+    from plugin.server.messaging import plane_bridge
+
+    bridge = plane_bridge._Bridge()
+    if not bridge._enabled:
+        pytest.skip("message plane bridge disabled by configuration")
+
+    bridge.start()
+    first = bridge._thread
+    assert first is not None and first.is_alive()
+
+    bridge.stop()
+    assert bridge._thread is None, "stop() left the thread in place"
+    assert not first.is_alive(), "stop() returned before the thread exited"
+
+    bridge.start()
+    try:
+        second = bridge._thread
+        assert second is not None and second.is_alive()
+        assert second is not first, "start() reused the stopped thread"
+    finally:
+        bridge.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_raising_plane_start_does_not_start_the_bridges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

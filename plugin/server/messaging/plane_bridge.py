@@ -161,10 +161,27 @@ class _Bridge:
         t.start()
 
     def stop(self) -> None:
+        """Stop the sender thread and wait for it, so ``start()`` can follow.
+
+        The join and the ``_thread`` reset are what make stop/start usable as a
+        pair. ``_run`` connects its PUSH socket ONCE and then loops forever, so a
+        thread that outlives a plane rebuild keeps sending to the old endpoint --
+        the only way to repoint it is to let it die and start a new one. Without
+        clearing ``_thread`` here, the ``start()`` right after would see the
+        still-draining thread, return early, and leave the bridge stopped for
+        good. The loop wakes every 0.2s, so the wait is short.
+        """
         try:
             self._stop.set()
         except _RUNTIME_ERRORS:
             pass
+        t = self._thread
+        self._thread = None
+        if t is not None and t.is_alive():
+            try:
+                t.join(timeout=1.0)
+            except _RUNTIME_ERRORS:
+                pass
 
     def enqueue_delta(
         self,
