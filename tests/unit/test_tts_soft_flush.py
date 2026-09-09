@@ -244,6 +244,103 @@ def test_soft_flush_whose_finish_fails_to_send_drops_the_dead_stream(worker):
     assert _FakeSynthesizer.instances[1].spoken == [_LONG_ENOUGH + "接着说。"]
 
 
+def _block_next_reset(shared_callback):
+    """Make the next reset_bootstrap_state() (from the SDK thread) wait on an event.
+
+    Simulates the SDK callback being descheduled between flushing its buffers
+    and finishing its cleanup — the window both races below live in.
+    """
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+    real_reset = shared_callback.reset_bootstrap_state
+    armed = {"on": True}
+
+    def _reset():
+        if armed["on"]:
+            armed["on"] = False
+            entered.set()
+            release.wait(5)
+        real_reset()
+
+    shared_callback.reset_bootstrap_state = _reset
+    return entered, release
+
+
+def test_drain_completion_is_published_only_after_the_old_stream_reset(worker):
+    """The worker must not start the continuation while the old callback still owns the buffers."""
+    import threading
+
+    request_queue, _response_queue, _thread = worker
+    request_queue.put(("speech-a", _LONG_ENOUGH + "第一段。"))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "first synthesizer")
+    first = _FakeSynthesizer.instances[0]
+    request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
+    _wait_for(lambda: first.finish_payloads, "FINISH from the soft flush")
+    request_queue.put(("speech-a", "同一轮后面还有话。"))
+    _settle()
+
+    entered, release = _block_next_reset(first.callback._inner)
+    threading.Thread(target=first.callback.on_complete, daemon=True).start()
+    assert entered.wait(2), "completion callback did not reach its cleanup"
+    _settle()
+    assert len(_FakeSynthesizer.instances) == 1, (
+        "continuation started while the old completion was still resetting shared state"
+    )
+    release.set()
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "continuation after the reset finished")
+
+
+def test_timeout_retirement_waits_for_an_in_flight_completion(fake_dashscope, monkeypatch):
+    """A callback past its generation check must finish before the generation is retired."""
+    import threading
+    import types
+
+    from main_logic.tts_client.workers import cosyvoice as mod
+
+    monkeypatch.setattr(mod, "configure_dashscope_sdk_urls", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "get_config_manager", lambda: types.SimpleNamespace(
+        get_model_api_config=lambda _name: {"base_url": ""}
+    ))
+    import main_logic.tts_client as pkg
+    monkeypatch.setattr(pkg, "_get_voice_meta", lambda _vid: {}, raising=False)
+    real_time = time.time
+    offset = {"seconds": 0.0}
+    monkeypatch.setattr(mod, "time", types.SimpleNamespace(
+        time=lambda: real_time() + offset["seconds"], sleep=time.sleep,
+    ))
+
+    request_queue, response_queue = Queue(), Queue()
+    thread = threading.Thread(target=mod.cosyvoice_vc_tts_worker,
+                              args=(request_queue, response_queue, "test-key", "voice-x"), daemon=True)
+    thread.start()
+    try:
+        _wait_for(lambda: response_queue.get(timeout=0.2) == ("__ready__", True), "ready signal")
+        request_queue.put(("speech-a", _LONG_ENOUGH + "第一段。"))
+        _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "first synthesizer")
+        first = _FakeSynthesizer.instances[0]
+        request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
+        _wait_for(lambda: first.finish_payloads, "FINISH from the soft flush")
+        request_queue.put(("speech-a", "同一轮后面还有话。"))
+        _settle()
+
+        # 完成通知已过 generation 检查、卡在清理里；此时排空期限到期
+        entered, release = _block_next_reset(first.callback._inner)
+        threading.Thread(target=first.callback.on_complete, daemon=True).start()
+        assert entered.wait(2)
+        offset["seconds"] = 10.0
+        _settle(0.3)
+        assert len(_FakeSynthesizer.instances) == 1, (
+            "retired the generation under a callback that was still mutating shared state"
+        )
+        release.set()
+        _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "continuation once the callback finished")
+        assert _FakeSynthesizer.instances[1].spoken == ["同一轮后面还有话。"]
+    finally:
+        request_queue.put(("__shutdown__", None))
+        thread.join(timeout=5)
+
+
 def test_soft_flush_for_another_speech_is_ignored(worker):
     request_queue, _response_queue, _thread = worker
 

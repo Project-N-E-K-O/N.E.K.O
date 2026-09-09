@@ -14,6 +14,7 @@
 
 """Aliyun CosyVoice (hosted) TTS worker."""
 
+import threading
 import time
 
 from utils.config_manager import get_config_manager
@@ -140,13 +141,21 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             # 减少前端处理次数、增大每段解码出的音频长度。
             self._agg_buffer = bytearray()
             self._agg_min_bytes = 4096
+            # 这个对象被 SDK 的接收线程（on_data / on_complete）和 worker 主循环
+            # （退役旧流、回合边界 reset）同时改。generation 戳只能挡住「退役之后
+            # 才进来」的回调；一条已经过了戳、被调度出去的回调醒来后照样会
+            # 冲刷、清掉此刻已属于新流的缓冲和 FINISH 标记。所以改共享状态的路径
+            # 都持这把锁：退役要等在飞的回调跑完，回调进来时再看一眼当代。
+            # 可重入：on_complete 的 finally 里要调 reset_bootstrap_state。
+            self._lock = threading.RLock()
 
         def reset_bootstrap_state(self):
-            self._active_sid = None
-            self._bootstrap_buffer.clear()
-            self._bootstrap_sent = False
-            self._agg_buffer.clear()
-            self.finish_requested_speech_id = None
+            with self._lock:
+                self._active_sid = None
+                self._bootstrap_buffer.clear()
+                self._bootstrap_sent = False
+                self._agg_buffer.clear()
+                self.finish_requested_speech_id = None
 
         def on_open(self): 
             self.connection_lost = False
@@ -155,6 +164,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             logger.debug(f"TTS 连接已建立 (构造到open耗时: {elapsed:.2f}s)")
             
         def on_complete(self, generation=None):
+            with self._lock:
+                self._on_complete_locked(generation)
+
+        def _on_complete_locked(self, generation):
             # 过期的 synthesizer（连切两轮 / 轮内重连时被 close 掉的那个）迟到的完成
             # 通知：它描述的是上一代的流，而这个 callback 的状态早已换成当前轮的。
             # 整个早退——不冲刷（缓冲里是别人的数据）、不发信号（会把还在说话的这轮
@@ -178,11 +191,14 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     if sid == self.finish_requested_speech_id:
                         # 尾包已经投进队列，本轮音频流到此关闭
                         self.audio_done.emit(sid)
-                # 尾包都投完了才记「这一代放干净」：主循环读到它之后再往队列里
-                # 放的任何东西（补发的 audio_done、下一段的音频）都排在尾包后面。
-                self.completed_generation = generation
             finally:
                 self.reset_bootstrap_state()
+                # 「这一代放干净」必须在共享状态归零之后才发布：主循环一读到它就会
+                # 退役旧流、起续接流，若发布得早，上面这个 reset 就会落在新流身上，
+                # 把它刚攒的缓冲和 round-end 的 FINISH 标记一起抹掉。尾包都已投进
+                # 队列，主循环之后放的任何东西（补发的 audio_done、下一段的音频）
+                # 仍然排在尾包后面。
+                self.completed_generation = generation
 
         def on_error(self, message: str, generation=None):
             # 旧 synthesizer（软 flush 后已放干净、或重建时被换掉的那个）的报错
@@ -213,6 +229,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             pass
             
         def on_data(self, data: bytes, generation=None) -> None:
+            with self._lock:
+                self._on_data_locked(data, generation)
+
+        def _on_data_locked(self, data: bytes, generation) -> None:
             # 过期 synthesizer（软 flush 排空超时后被退役、或重建时被换掉的那个）
             # 迟到的页：同一 speech_id 的新流正在用同一份聚合缓冲，混进去就是
             # 两条 OGG 流交错成坏音频。
@@ -438,14 +458,21 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     def _retire_soft_finished_synthesizer(*, drained: bool):
         """Drop a soft-finished synthesizer so the next text starts a fresh stream."""
         nonlocal synthesizer, soft_finished, soft_finish_deadline, last_streaming_call_time
-        callback.finish_requested_speech_id = None
-        # 先把这一代退役：close() 之后 SDK 线程仍可能迟到地打回 on_data /
-        # on_close，没有当代可比对时它们一律按过期丢弃，不会混进接下来同一
-        # speech_id 的新流。新 synthesizer 建出来会盖上自己的代号。
-        callback.current_generation = None
-        # 「断开」是这条连接的状态，随它一起退役；不然新流建起来之前它一直是
-        # True，谁在这个窗口里问 connection_lost 都会跳过 FINISH。
-        callback.connection_lost = False
+        # 持锁退役：一条已经过了 generation 检查、正在冲刷/reset 的回调跑完之前
+        # 不能换代，否则它醒来后清掉的是新流的缓冲和 FINISH 标记。
+        with callback._lock:
+            callback.finish_requested_speech_id = None
+            # 先把这一代退役：close() 之后 SDK 线程仍可能迟到地打回 on_data /
+            # on_close，没有当代可比对时它们一律按过期丢弃，不会混进接下来同一
+            # speech_id 的新流。新 synthesizer 建出来会盖上自己的代号。
+            callback.current_generation = None
+            # 「断开」是这条连接的状态，随它一起退役；不然新流建起来之前它一直是
+            # True，谁在这个窗口里问 connection_lost 都会跳过 FINISH。
+            callback.connection_lost = False
+            if not drained:
+                # 没等到完成通知就放弃了：共享缓冲里可能留着旧流的半页，
+                # 不能拼进新流（与重连路径同一条理由）。锁内做，和换代同一步。
+                callback.reset_bootstrap_state()
         if synthesizer is not None:
             try:
                 synthesizer.close()
@@ -457,10 +484,6 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         soft_finished = False
         soft_finish_deadline = None
         last_streaming_call_time = None
-        if not drained:
-            # 没等到完成通知就放弃了：共享缓冲里可能留着旧流的半页，
-            # 不能拼进新流（与重连路径同一条理由）。
-            callback.reset_bootstrap_state()
 
     def _service_soft_finished():
         """Advance the soft-finished state once the old stream has drained.
