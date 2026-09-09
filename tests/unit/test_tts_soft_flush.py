@@ -302,7 +302,7 @@ def test_timeout_retirement_waits_for_an_in_flight_completion(fake_dashscope, mo
     monkeypatch.setattr(mod, "get_config_manager", lambda: types.SimpleNamespace(
         get_model_api_config=lambda _name: {"base_url": ""}
     ))
-    monkeypatch.setattr("main_logic.tts_client._get_voice_meta", lambda _vid: {}, raising=False)
+    monkeypatch.setattr("main_logic.tts_client._get_voice_meta", lambda _vid: {})
     real_time = time.time
     offset = {"seconds": 0.0}
     monkeypatch.setattr(mod, "time", types.SimpleNamespace(
