@@ -540,20 +540,20 @@ class ServerLifecycleService:
         A list rather than a bool because the caller words its warning from it:
         a plane that failed its probe self-heals, a bridge that raised does not,
         and one sentence covering both is false about whichever it is not.
+
+        Every stage below catches ``Exception`` rather than an enumerated tuple.
+        The job here is to record a stage as failed and let the caller degrade,
+        and an enumeration cannot be complete: pyzmq raises ``ZMQError``, which
+        derives from ``ZMQBaseError(Exception)`` and is NOT an ``OSError``, so a
+        bind failure escaped the tuple this used to carry -- and through the
+        manual-start entry that shares this method it surfaced as a 500 from the
+        route instead of the degraded start where the router's tools stay usable.
+        ``BaseException`` is still not caught, so cancellation propagates.
         """
         failed: list[str] = []
         try:
             if not await self._start_message_plane():
                 failed.append("message_plane")
-                    # Exception, not a tuple: this block's whole job is to record
-        # the stage as failed and let the caller degrade, and an
-        # enumerated tuple cannot be complete. Proven: pyzmq raises
-        # ZMQError, which derives from ZMQBaseError(Exception) and is
-        # NOT an OSError, so a bind failure escaped the old tuple --
-            # through the newly shared manual-start path it reached the HTTP
-            # route as a 500 instead of the degraded start where router
-            # tools stay usable. BaseException is still not caught, so
-        # cancellation propagates.
         except Exception as exc:
             logger.warning(
                 "message_plane start failed: err_type={}, err={}",
@@ -562,19 +562,25 @@ class ServerLifecycleService:
             )
             self._message_plane_runner = None
             failed.append("message_plane")
-            # Return BEFORE the bridges. ``ProactiveBridge._run`` reads
-            # ``NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT`` once, at thread start, and
-            # ``start()`` reuses a live thread -- so starting it now would bind it
-            # to the endpoint this failed attempt published. If the retry's
-            # ``build_message_plane_runner`` then falls back to a different port,
-            # the bridge stays subscribed to a plane that is not the one running
-            # and every proactive message goes nowhere, with the bridge looking
-            # perfectly healthy. Nothing was started yet, so the next entry gets
-            # to build both cleanly.
+
+        if self._message_plane_runner is None:
+            # No runner means no endpoint worth binding to, so stop before the
+            # bridges. ``ProactiveBridge._run`` reads
+            # ``NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT`` once at thread start and
+            # ``start()`` reuses a live thread, so a bridge started now is pinned
+            # to the endpoint this attempt published. When the next entry's
+            # ``build_message_plane_runner`` falls back to a different port -- the
+            # old one may not be released yet -- that thread stays subscribed to a
+            # plane nobody runs, looking perfectly healthy while every proactive
+            # message goes nowhere.
             #
-            # Only on the EXCEPTION path: a probe that merely returned False left
-            # a real runner assigned at the endpoint the bridges are about to
-            # read, which is why that case still starts them.
+            # The condition is "is there a runner", not "did it raise". Both the
+            # exception path and a probe-failure retirement end the attempt with
+            # none, and the first version of this guard covered only the throw --
+            # so a retirement walked straight into the split it was written to
+            # prevent. A probe that merely returned False keeps its runner and so
+            # still starts the bridges: the endpoint they read is the one that
+            # plane actually holds.
             return failed
 
         # 两条 bridge 先于任何插件起来。autostart 插件可以在自己的 startup 钩
@@ -602,15 +608,6 @@ class ServerLifecycleService:
         # submitted=True——正是这条路要消灭的那种静默不投递。
         try:
             refresh_ingest_endpoint()
-                    # Exception, not a tuple: this block's whole job is to record
-        # the stage as failed and let the caller degrade, and an
-        # enumerated tuple cannot be complete. Proven: pyzmq raises
-        # ZMQError, which derives from ZMQBaseError(Exception) and is
-        # NOT an OSError, so a bind failure escaped the old tuple --
-            # through the newly shared manual-start path it reached the HTTP
-            # route as a 500 instead of the degraded start where router
-            # tools stay usable. BaseException is still not caught, so
-        # cancellation propagates.
         except Exception as exc:
             logger.warning(
                 "failed to refresh ingest endpoint: err_type={}, err={}",
@@ -624,15 +621,6 @@ class ServerLifecycleService:
 
         try:
             start_bridge()
-                    # Exception, not a tuple: this block's whole job is to record
-        # the stage as failed and let the caller degrade, and an
-        # enumerated tuple cannot be complete. Proven: pyzmq raises
-        # ZMQError, which derives from ZMQBaseError(Exception) and is
-        # NOT an OSError, so a bind failure escaped the old tuple --
-            # through the newly shared manual-start path it reached the HTTP
-            # route as a 500 instead of the degraded start where router
-            # tools stay usable. BaseException is still not caught, so
-        # cancellation propagates.
         except Exception as exc:
             logger.warning(
                 "failed to start message bridge: err_type={}, err={}",
@@ -643,15 +631,6 @@ class ServerLifecycleService:
 
         try:
             start_proactive_bridge()
-                    # Exception, not a tuple: this block's whole job is to record
-        # the stage as failed and let the caller degrade, and an
-        # enumerated tuple cannot be complete. Proven: pyzmq raises
-        # ZMQError, which derives from ZMQBaseError(Exception) and is
-        # NOT an OSError, so a bind failure escaped the old tuple --
-            # through the newly shared manual-start path it reached the HTTP
-            # route as a 500 instead of the degraded start where router
-            # tools stay usable. BaseException is still not caught, so
-        # cancellation propagates.
         except Exception as exc:
             logger.warning(
                 "failed to start proactive bridge: err_type={}, err={}",

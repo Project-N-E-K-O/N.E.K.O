@@ -12,6 +12,13 @@ from plugin.server.application.plugins.operation_lock import plugin_operation_lo
 
 pytestmark = pytest.mark.plugin_unit
 
+# Stands in for the runner the real ``_start_message_plane`` assigns. Stubs
+# must set it: ``_start_delivery_path_locked`` decides whether to bind the
+# bridges by asking whether a runner exists, so a stub that reports success
+# while leaving none describes a state production never reaches -- and would
+# quietly exercise the retirement path instead of the one under test.
+_PLANE_STUB = object()
+
 
 @pytest.mark.asyncio
 async def test_ensure_plugin_messaging_started_initializes_response_map_and_router(
@@ -265,6 +272,7 @@ async def test_ensure_delivery_path_started_is_idempotent_under_concurrency(
     async def _start_plane() -> bool:
         started.append("plane")
         await asyncio.sleep(0)  # a real await, so a second caller can interleave
+        service._message_plane_runner = _PLANE_STUB
         return True
 
     monkeypatch.setattr(service, "_start_message_plane", _start_plane)
@@ -307,6 +315,7 @@ async def test_a_failed_delivery_path_is_not_latched_and_retries(
         attempts.append("plane")
         if fail:
             raise RuntimeError("port busy")
+        service._message_plane_runner = _PLANE_STUB
         return True
 
     monkeypatch.setattr(service, "_start_message_plane", _start_plane)
@@ -340,6 +349,7 @@ async def test_a_failed_bridge_also_leaves_the_path_retryable(
     service = module.ServerLifecycleService()
 
     async def _noop() -> bool:
+        service._message_plane_runner = _PLANE_STUB
         return True
 
     monkeypatch.setattr(service, "_start_message_plane", _noop)
@@ -578,9 +588,11 @@ async def test_failure_report_names_the_stage_that_did_not_start(
     service = module.ServerLifecycleService()
 
     async def _plane_ok() -> bool:
+        service._message_plane_runner = _PLANE_STUB
         return True
 
     async def _plane_unhealthy() -> bool:
+        service._message_plane_runner = _PLANE_STUB
         return False
 
     monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
@@ -855,13 +867,32 @@ async def test_a_raising_plane_start_does_not_start_the_bridges(
     assert await service._start_delivery_path_locked() == ["message_plane"]
     assert started == []
 
-    # The probe-false path keeps its existing behaviour.
+    # The probe-false path keeps its existing behaviour: it leaves a real runner
+    # assigned at the endpoint the bridges are about to read, so they still start.
+    # The stub has to assign one the way the real method does -- the guard asks
+    # "is there a runner", and a stub that skips that would fake a retirement.
+    sentinel = object()
+
     async def _unhealthy() -> bool:
+        service._message_plane_runner = sentinel  # type: ignore[assignment]
         return False
 
     monkeypatch.setattr(service, "_start_message_plane", _unhealthy)
     assert await service._start_delivery_path_locked() == ["message_plane"]
     assert started == ["ingest_ep", "plane_bridge", "proactive"]
+
+    # And a retirement (runner gone, no throw) must take the same early exit as
+    # the throw: this is the case the first version of the guard missed.
+    started.clear()
+    service._message_plane_runner = None
+
+    async def _retired() -> bool:
+        service._message_plane_runner = None
+        return False
+
+    monkeypatch.setattr(service, "_start_message_plane", _retired)
+    assert await service._start_delivery_path_locked() == ["message_plane"]
+    assert started == [], "bridges were bound to a retired runner's endpoint"
 
 
 @pytest.mark.asyncio
@@ -879,6 +910,7 @@ async def test_a_dead_proactive_bridge_is_a_failure_but_a_slow_one_is_not(
     service = module.ServerLifecycleService()
 
     async def _plane_ok() -> bool:
+        service._message_plane_runner = _PLANE_STUB
         return True
 
     monkeypatch.setattr(service, "_start_message_plane", _plane_ok)
@@ -942,6 +974,7 @@ async def test_shutdown_closes_the_gate_so_a_late_start_cannot_orphan_a_plane(
 
     async def _start_plane() -> bool:
         starts.append("plane")
+        service._message_plane_runner = _PLANE_STUB
         return True
 
     monkeypatch.setattr(service, "_start_message_plane", _start_plane)
