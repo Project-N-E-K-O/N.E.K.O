@@ -221,9 +221,6 @@ plugin/plugins/sts2_autoplay
 plugin/plugins/qq_auto_reply/static/cache/
 plugin/plugins/qq_auto_reply/data/
 
-# bilibili_danmaku 插件运行时数据（凭据、用户画像），不入库
-plugin/plugins/bilibili_danmaku/data/bili_credential.*
-plugin/plugins/bilibili_danmaku/data/user_profiles/
 !plugin/plugins/qq_auto_reply/NapCat.Shell/.gitkeep
 # Ignore local temporary Steam/launcher environment dumps
 .tmp_env_*
