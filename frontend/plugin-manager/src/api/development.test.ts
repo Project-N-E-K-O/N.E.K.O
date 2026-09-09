@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { del, post, put } from './index'
+import { del, get, post, put } from './index'
 import request from '@/utils/request'
 import { registerDevelopment, rebindDevelopment, removeDevelopment, runDevelopmentAction, setDevelopmentEnabled } from './development'
 import { buildPluginCli } from './pluginCli'
 vi.mock('./index', () => ({ get: vi.fn(), post: vi.fn(), del: vi.fn(), put: vi.fn() }))
 vi.mock('@/utils/request', () => ({ default: { patch: vi.fn() } }))
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.resetAllMocks()
+  vi.mocked(get).mockResolvedValue({ enabled: true, registrations: [], disable_timeout_ms: 300_000 })
+})
 const record = { registration_id: 'registration/1', revision: 3, plugin_id: 'demo', source_dir: 'C:/中文 folder/demo' }
 describe('development API identity boundaries', () => {
   it('previews without registering and sends the local-action header', async () => {
@@ -33,10 +36,12 @@ describe('development API identity boundaries', () => {
     await setDevelopmentEnabled(false)
     expect(put).toHaveBeenCalledWith('/plugins/development/settings', { enabled: false }, expect.any(Object))
   })
-  it('waits for bulk shutdown without changing the single-operation timeout', async () => {
+  it('uses the current bulk shutdown budget without changing single-operation timeouts', async () => {
+    vi.mocked(get).mockResolvedValueOnce({ enabled: true, registrations: [record], disable_timeout_ms: 980_000 })
     await setDevelopmentEnabled(false)
+    expect(get).toHaveBeenLastCalledWith('/plugins/development', expect.objectContaining({ timeout: 45_000 }))
     expect(put).toHaveBeenLastCalledWith('/plugins/development/settings', { enabled: false }, {
-      headers: { 'X-Neko-Development': '1' }, timeout: 0,
+      headers: { 'X-Neko-Development': '1' }, timeout: 980_000,
     })
     await setDevelopmentEnabled(true)
     expect(put).toHaveBeenLastCalledWith('/plugins/development/settings', { enabled: true }, {
@@ -44,6 +49,22 @@ describe('development API identity boundaries', () => {
     })
     await runDevelopmentAction(record, 'stop')
     expect(post).toHaveBeenLastCalledWith('/plugin/demo/stop', undefined, expect.objectContaining({ timeout: 45_000 }))
+    expect(get).toHaveBeenCalledTimes(1)
+  })
+  it.each([undefined, 0, -1, NaN, Infinity])('keeps a finite bulk fallback for an invalid budget %s', async (budget) => {
+    vi.mocked(get).mockResolvedValueOnce({ enabled: true, registrations: Array(10).fill(record), disable_timeout_ms: budget })
+    await setDevelopmentEnabled(false)
+    expect(put).toHaveBeenLastCalledWith('/plugins/development/settings', { enabled: false }, expect.objectContaining({ timeout: 495_000 }))
+  })
+  it('does not mutate if fetching the current budget fails', async () => {
+    vi.mocked(get).mockRejectedValueOnce(new Error('network timeout'))
+    await expect(setDevelopmentEnabled(false)).rejects.toThrow('network timeout')
+    expect(put).not.toHaveBeenCalled()
+  })
+  it('propagates a lost shutdown response without retrying the mutation', async () => {
+    vi.mocked(put).mockRejectedValueOnce(new Error('request timeout'))
+    await expect(setDevelopmentEnabled(false)).rejects.toThrow('request timeout')
+    expect(put).toHaveBeenCalledTimes(1)
   })
   it.each(['selected', 'bundle'] as const)('gives %s development builds the long operation budget', async (mode) => {
     const payload = { mode, development_refs: [{ registration_id: record.registration_id, revision: 3 }] }

@@ -8,8 +8,10 @@ from pathlib import Path
 
 from plugin.core.state import state
 from plugin.server.application.plugins import development as store
+from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.domain.errors import ServerDomainError
+from plugin.settings import PLUGIN_SHUTDOWN_TIMEOUT, PROCESS_TERMINATE_TIMEOUT
 
 
 def _record_runtime_failure_sync(record: store.DevelopmentSnapshot, error: Exception | None) -> None:
@@ -62,6 +64,13 @@ def registration_view_sync(record: store.DevelopmentSnapshot) -> dict:
 def development_view_sync() -> dict:
     result = store.development_view_sync()
     result["registrations"] = [_overlay_runtime_error_sync(item) for item in result["registrations"]]
+    # A client waiting for sequential stops needs more than a single-stop deadline.
+    # Include graceful exit, terminate/kill joins, communication/tool cleanup,
+    # lock acquisition and registry/transport headroom. This is a wait estimate,
+    # not a server cancellation deadline or a guarantee against stalled I/O.
+    per_plugin = PLUGIN_SHUTDOWN_TIMEOUT + 2 * PROCESS_TERMINATE_TIMEOUT + 10.0
+    seconds = env_seconds("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", 20.0) + 60.0 + len(result["registrations"]) * per_plugin
+    result["disable_timeout_ms"] = int(min(2_147_483_647, max(300_000, seconds * 1000)))
     return result
 
 

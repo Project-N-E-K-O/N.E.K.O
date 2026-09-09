@@ -12,12 +12,22 @@ export interface DevelopmentRegistration extends DevelopmentRef {
   error?: string | null
   runtime_alive?: boolean | null
 }
-export interface DevelopmentState { enabled: boolean; registrations: DevelopmentRegistration[] }
+export interface DevelopmentState { enabled: boolean; registrations: DevelopmentRegistration[]; disable_timeout_ms?: number }
 const config = { headers: { 'X-Neko-Development': '1' }, timeout: PLUGIN_LIFECYCLE_TIMEOUT }
 export const getDevelopment = (): Promise<DevelopmentState> => get('/plugins/development', config)
-export const setDevelopmentEnabled = (enabled: boolean): Promise<DevelopmentState> =>
-  // Disabling stops every development plugin sequentially, like reload-all.
-  put('/plugins/development/settings', { enabled }, { ...config, timeout: enabled ? config.timeout : 0 })
+export const setDevelopmentEnabled = async (enabled: boolean): Promise<DevelopmentState> => {
+  if (enabled) return put('/plugins/development/settings', { enabled }, config)
+  // Refresh the count/configuration estimate rather than using the page's stale
+  // snapshot. A lost response must eventually release the UI; never retry this
+  // mutation automatically, since the server may still be stopping plugins.
+  const state = await getDevelopment()
+  const estimate = state.disable_timeout_ms
+  const fallback = Math.max(300_000, (state.registrations.length + 1) * PLUGIN_LIFECYCLE_TIMEOUT)
+  const timeout = typeof estimate === 'number' && Number.isFinite(estimate) && estimate > 0
+    ? Math.min(2_147_483_647, Math.max(300_000, estimate))
+    : Math.min(2_147_483_647, fallback)
+  return put('/plugins/development/settings', { enabled }, { ...config, timeout })
+}
 export const registerDevelopment = (source_dir: string, preview = false, ref?: DevelopmentRef): Promise<DevelopmentRegistration> =>
   post('/plugins/development/registrations', { source_dir, preview, ...(ref ? { registration_id: ref.registration_id, revision: ref.revision } : {}) }, config)
 export const rebindDevelopment = (ref: DevelopmentRef, source_dir: string): Promise<DevelopmentRegistration> =>

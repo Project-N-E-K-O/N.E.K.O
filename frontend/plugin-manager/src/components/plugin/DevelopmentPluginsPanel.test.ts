@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick } from 'vue'
 import DevelopmentPluginsPanel from './DevelopmentPluginsPanel.vue'
 import { usePluginStore } from '@/stores/plugin'
-import { getDevelopment, registerDevelopment, removeDevelopment, runDevelopmentAction } from '@/api/development'
+import { getDevelopment, registerDevelopment, removeDevelopment, runDevelopmentAction, setDevelopmentEnabled } from '@/api/development'
 const record = { registration_id: 'reg-1', revision: 7, plugin_id: 'demo', source_dir: 'C:/中文 folder/demo', name: 'Demo', version: '1', entry: 'plugins.demo:Demo', error: null }
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
@@ -46,6 +46,33 @@ beforeEach(() => {
 })
 afterEach(() => teardown())
 describe('development plugin workflow', () => {
+  it('releases busy state and refreshes the actual setting after a shutdown timeout', async () => {
+    let failRequest!: (reason: Error) => void
+    vi.mocked(setDevelopmentEnabled).mockImplementationOnce(() => new Promise((_, reject) => { failRequest = reject }))
+    const root = mount()
+    await settle()
+    const toggle = root.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    toggle.checked = false
+    toggle.dispatchEvent(new Event('change'))
+    await settle()
+    expect(toggle.disabled).toBe(true)
+    expect(button(root, 'common.refresh').disabled).toBe(true)
+    failRequest(new Error('request timeout'))
+    await settle()
+    expect(root.textContent).toContain('request timeout')
+    expect(toggle.disabled).toBe(false)
+    expect(getDevelopment).toHaveBeenCalledTimes(2)
+    expect(button(root, 'development.reload').disabled).toBe(false)
+    expect(button(root, 'common.refresh').disabled).toBe(false)
+    expect(setDevelopmentEnabled).toHaveBeenCalledTimes(1)
+    // The backend may finish later; manual refresh reconciles without retrying.
+    vi.mocked(getDevelopment).mockResolvedValueOnce({ enabled: false, registrations: [record] })
+    button(root, 'common.refresh').click()
+    await settle()
+    expect(toggle.checked).toBe(false)
+    expect(button(root, 'development.reload').disabled).toBe(true)
+    expect(setDevelopmentEnabled).toHaveBeenCalledTimes(1)
+  })
   it('uses the translated source-missing label instead of the raw backend status', async () => {
     usePluginStore().pluginsWithStatus[0]!.status = 'source_missing'
     const root = mount()

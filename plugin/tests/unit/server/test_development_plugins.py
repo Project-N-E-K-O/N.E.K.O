@@ -67,6 +67,25 @@ def test_registration_keeps_live_process_visible_when_source_invalid(tmp_path, m
     assert service.registration_view_sync(record)["runtime_alive"] is False
 
 
+@pytest.mark.parametrize("count,shutdown,lock_wait", [(0, 1.5, 20), (20, 1.5, 20), (3, 300, 90)])
+def test_disable_wait_estimate_covers_registered_stops(tmp_path, monkeypatch, count, shutdown, lock_wait):
+    store.set_enabled_sync(True)
+    monkeypatch.setattr(service, "PLUGIN_SHUTDOWN_TIMEOUT", shutdown)
+    monkeypatch.setattr(service, "PROCESS_TERMINATE_TIMEOUT", 2.0)
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", str(lock_wait))
+    for index in range(count):
+        plugin_id = f"demo_{index}"
+        store.register_directory_sync(str(_source(tmp_path, plugin_id, plugin_id)))
+    # Stopped and missing-source registrations still count: they may retain a host.
+    if count:
+        (tmp_path / "demo_0").rename(tmp_path / "moved")
+    result = service.development_view_sync()
+    assert len(result["registrations"]) == count
+    assert 300_000 <= result["disable_timeout_ms"] <= 2_147_483_647
+    assert result["disable_timeout_ms"] > 1000 * (lock_wait + count * (shutdown + 4.0))
+    assert store.development_enabled_sync()
+
+
 def test_registration_is_persistent_idempotent_and_does_not_write_source(tmp_path):
     source = _source(tmp_path / "中文 developer folder")
     before = {p.name: p.read_bytes() for p in source.iterdir()}
