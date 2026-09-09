@@ -1467,11 +1467,27 @@ class GameAgentService:
         inventing one (the historical UX problem: 猫娘 saw HP drop and
         made up "被怪物打了" with no evidence).
         """
-        text = str(data.get("text") or "").strip()
-        if not text:
-            return
         severity = str(data.get("severity") or "warn").lower()
         cause_hint = self._format_alert_cause(data.get("cause"))
+        text = str(data.get("text") or "").strip()
+        if not text:
+            # An alert with no prose is still an alert. mc-agent populates
+            # ``text`` best-effort, and dropping the frame threw away a ``cause``
+            # we had already rendered into a usable phrase -- for a death, the
+            # single most important thing that can happen to her. Fall back to the
+            # cause; only a frame carrying literally nothing is dropped, and that
+            # one gets logged rather than vanishing (this is the highest-severity
+            # channel there is, so a silent return here is never acceptable).
+            if not cause_hint:
+                self._log_warning(
+                    "alert dropped: no text and no usable cause (severity={}, keys={})",
+                    severity, sorted(data.keys()),
+                )
+                return
+            text = cause_hint
+            # Already the headline; a "Cause hint:" line repeating it verbatim
+            # just invites her to say the same thing twice.
+            cause_hint = ""
 
         sections = [prompts.t(
             "CUE_PREFIX_ALERT", lang=self._lang, severity=severity, text=text,

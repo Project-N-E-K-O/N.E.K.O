@@ -27,15 +27,25 @@ async def test_ensure_plugin_messaging_started_initializes_response_map_and_rout
     async def _start_router() -> None:
         calls.append("router_start")
 
+    async def _start_delivery_path() -> None:
+        calls.append("delivery_path")
+
     monkeypatch.setattr(module, "state", _State())
     monkeypatch.setattr(module.plugin_router, "start", _start_router)
+    monkeypatch.setattr(module._service, "ensure_delivery_path_started", _start_delivery_path)
 
     ensure = getattr(module, "ensure_plugin_messaging_started", None)
     assert callable(ensure)
 
     await ensure()
 
-    assert calls == ["response_map", "router_start"]
+    # The delivery path is not optional here. This entry point is what
+    # ``POST /plugin/{id}/start`` calls, and a plugin started through it pushes
+    # messages immediately -- the router carries entry triggers and @llm_tool
+    # calls, NOT push_message. Starting only the router produced a plugin whose
+    # tool calls worked while every alert, including the character's own death,
+    # went nowhere with nothing logged above DEBUG (2026-09-10).
+    assert calls == ["response_map", "router_start", "delivery_path"]
 
 
 @pytest.mark.asyncio
@@ -62,13 +72,18 @@ async def test_ensure_plugin_messaging_started_starts_router_when_response_map_i
         def debug(self, *_args: object, **_kwargs: object) -> None:
             return None
 
+    async def _start_delivery_path() -> None:
+        calls.append("delivery_path")
+
     monkeypatch.setattr(module, "state", _State())
     monkeypatch.setattr(module.plugin_router, "start", _start_router)
+    monkeypatch.setattr(module._service, "ensure_delivery_path_started", _start_delivery_path)
     monkeypatch.setattr(module, "logger", _Logger())
 
     await module.ensure_plugin_messaging_started()
 
-    assert calls == ["response_map", "router_start"]
+    # A response-map failure must not cost the delivery path either.
+    assert calls == ["response_map", "router_start", "delivery_path"]
     assert warnings == [
         (
             "failed to initialize plugin response map early: err_type={}, err={}",
@@ -219,3 +234,41 @@ async def test_layout_migration_and_reconcile_share_plugin_operation_lock(
 
     await task
     assert migration_started.is_set()
+
+
+@pytest.mark.asyncio
+async def test_ensure_delivery_path_started_is_idempotent_under_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both entry points call this; it must bring the plane up exactly once.
+
+    The startup lifecycle and ``POST /plugin/{id}/start`` can race -- that race
+    is the normal case, not an edge one, because the manual start is what a user
+    clicks while the server is still coming up.
+    """
+    service = module.ServerLifecycleService()
+    started: list[str] = []
+
+    async def _start_plane() -> None:
+        started.append("plane")
+        await asyncio.sleep(0)  # a real await, so a second caller can interleave
+
+    monkeypatch.setattr(service, "_start_message_plane", _start_plane)
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: started.append("ingest_ep"))
+    monkeypatch.setattr(module, "start_bridge", lambda: started.append("bridge"))
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: started.append("proactive"))
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _timeout: True)
+
+    await asyncio.gather(
+        service.ensure_delivery_path_started(),
+        service.ensure_delivery_path_started(),
+    )
+    await service.ensure_delivery_path_started()
+
+    assert started == ["plane", "ingest_ep", "bridge", "proactive"]
+
+    # A shutdown re-arms it: a restart in the same process must get a live plane
+    # back, so the latch cannot survive teardown.
+    service._delivery_path_started = False
+    await service.ensure_delivery_path_started()
+    assert started.count("plane") == 2

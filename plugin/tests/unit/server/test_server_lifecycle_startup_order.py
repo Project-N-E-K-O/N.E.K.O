@@ -28,13 +28,36 @@ from pathlib import Path
 import pytest
 
 
-def _startup_source() -> str:
+def _method_source(signature: str) -> str:
     import plugin.server.lifecycle as lifecycle
 
     text = Path(lifecycle.__file__).read_text(encoding="utf-8")
-    start = text.index("    async def startup(self) -> None:")
+    start = text.index(signature)
     end = text.index("\n    async def ", start + 10)
     return text[start:end]
+
+
+def _startup_source() -> str:
+    """``startup()`` plus the delivery-path method it delegates to.
+
+    The plane and both bridges used to sit inline in ``startup()``. They moved
+    into ``ensure_delivery_path_started`` / ``_start_delivery_path_locked`` so the
+    lazy path behind ``POST /plugin/{id}/start`` gets them too: a plugin started
+    by hand used to come up with a live request router and no delivery path at
+    all, which let its tool calls work while every ``push_message`` went nowhere.
+
+    The delegate's body is spliced in AT THE CALL SITE, not appended, so the
+    assertions below still read the sequence the process actually executes --
+    appending would put ``start_bridge()`` after the autostart call and quietly
+    inflate the very ordering these tests exist to pin.
+    """
+    startup = _method_source("    async def startup(self) -> None:")
+    delegate = _method_source(
+        "    async def _start_delivery_path_locked(self) -> None:"
+    )
+    call = "await self.ensure_delivery_path_started()"
+    assert call in startup, "startup() 不再委托给 ensure_delivery_path_started()"
+    return startup.replace(call, delegate, 1)
 
 
 @pytest.mark.plugin_unit

@@ -734,17 +734,26 @@ class PluginCommunicationResourceManager:
                 topic=MESSAGES_TOPIC,
             )
         except Exception:
-            self.logger.debug(
-                "Plugin {} message not written to the message plane",
+            # WARNING, not DEBUG. This is the last hop between ``push_message()``
+            # and the character actually speaking, the caller has already been
+            # answered ``submitted=True``, and the ``[MESSAGE FORWARD]`` line
+            # below prints either way -- so a drop here reads exactly like a
+            # delivered message unless it says otherwise. (2026-09-10: a whole
+            # session's alerts, the character's own death included, died here and
+            # the only trace was the absence of the downstream lines.)
+            self.logger.warning(
+                "Plugin {} message NOT delivered: message plane write raised",
                 self.plugin_id,
                 exc_info=True,
             )
             return False
         if not queued:
             # Refused, not crashed: the bridge is disabled or its queue is full.
-            # Worth a line -- the plugin has already been told ``submitted``.
-            self.logger.debug(
-                "Plugin {} message refused by the message plane bridge",
+            # Same reasoning as above -- the plugin was already told ``submitted``,
+            # so the refusal has to be visible at the default level.
+            self.logger.warning(
+                "Plugin {} message NOT delivered: refused by the message plane "
+                "bridge (disabled, or queue full)",
                 self.plugin_id,
             )
         return queued

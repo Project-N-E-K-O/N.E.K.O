@@ -691,6 +691,47 @@ async def test_state_burst_body_matches_who_is_actually_acting():
 
 
 @pytest.mark.asyncio
+async def test_alert_without_text_falls_back_to_the_cause():
+    """A text-less alert still has to reach her; only a truly empty one is dropped.
+
+    ``text`` is best-effort on mc-agent's side, and the handler used to return on
+    an empty one -- throwing away a ``cause`` that had already been rendered into
+    a usable phrase, for the single most important event that can happen to her
+    (death). This is the highest-severity channel in the plugin; a silent return
+    on it is never acceptable, so the drop that remains is logged.
+    """
+    service, push_calls = _make_service()
+    service.configure({})
+    service._lang = "en"
+
+    # No prose, but a cause we can render.
+    await service._on_alert({
+        "severity": "critical",
+        "cause": {"attacker": {"kind": "mob", "name": "zombie", "distance": 1.4}},
+    })
+    assert len(push_calls) == 1
+    pushed = push_calls[0]
+    assert pushed["priority"] == 9
+    assert pushed["coalesce_key"] == "mc_alert"
+    body = [p for p in pushed["parts"] if p["type"] == "text"][0]["text"]
+    assert "nearby" in body and "1.4" in body
+    # The cause became the headline, so it must not also appear as a duplicate
+    # "Cause hint:" line -- she would just say the same thing twice.
+    assert body.count("1.4") == 1
+
+    # Nothing usable at all: dropped, but the warning says so.
+    warnings: list[str] = []
+    service._log_warning = lambda msg, *a: warnings.append(msg)  # type: ignore[assignment]
+    await service._on_alert({"severity": "warn"})
+    assert len(push_calls) == 1
+    assert warnings and "alert dropped" in warnings[0]
+
+    # A normal alert is unaffected.
+    await service._on_alert({"severity": "warn", "text": "took 3 damage"})
+    assert len(push_calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_log_cache_is_bounded():
     """Without a cap, an idle ``skip_system_prompt_if_busy=True`` plus a
     chatty agent would balloon the log cache without bound. The cap

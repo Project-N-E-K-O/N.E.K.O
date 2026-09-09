@@ -64,6 +64,10 @@ class ServerLifecycleService:
         self._message_plane_runner: MessagePlaneRunner | None = None
         self._plugin_registry_service = PluginRegistryService()
         self._plugin_lifecycle_service = PluginLifecycleService()
+        # Guards ``ensure_delivery_path_started`` so the startup lifecycle and a
+        # concurrent manual plugin start cannot both bring the plane up.
+        self._delivery_path_lock = asyncio.Lock()
+        self._delivery_path_started = False
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -254,6 +258,50 @@ class ServerLifecycleService:
                 str(exc),
             )
 
+        await self.ensure_delivery_path_started()
+
+        await self._refresh_registry_and_start_autostart_plugins()
+
+        await bus_subscription_manager.start()
+        logger.debug("bus subscription manager started")
+
+        def _get_hosts() -> dict[str, object]:
+            return self._get_plugin_hosts_snapshot()
+
+        await status_manager.start_status_consumer(plugin_hosts_getter=_get_hosts)
+        logger.debug("status consumer started")
+
+        await metrics_collector.start(plugin_hosts_getter=_get_hosts)
+        logger.debug("metrics collector started")
+        try:
+            emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
+        except Exception as exc:
+            logger.warning("failed to emit server_startup_ready event: {}", exc)
+
+    async def ensure_delivery_path_started(self) -> None:
+        """Bring up message plane + both bridges. Idempotent; safe to call twice.
+
+        Everything a plugin says to the character -- ``push_message``, alerts,
+        screenshots -- travels this path. The request router does NOT: it carries
+        entry triggers and ``@llm_tool`` calls, which is why a half-started server
+        can dispatch tools perfectly while every proactive message vanishes.
+
+        That asymmetry was reachable in production. ``ensure_plugin_messaging_started``
+        (the lazy path behind ``POST /plugin/{id}/start``) started only the router,
+        so a plugin started by hand before the startup lifecycle reached this block
+        ran with no delivery path at all -- while ``push_message()`` kept answering
+        ``submitted=True``. Observed 2026-09-10: the Minecraft plugin dispatched a
+        task fine, then emitted four priority-9 alerts including the character's
+        own death, and not one reached the dialog LLM. Nothing logged above DEBUG.
+        Both entry points funnel through here now.
+        """
+        async with self._delivery_path_lock:
+            if self._delivery_path_started:
+                return
+            await self._start_delivery_path_locked()
+            self._delivery_path_started = True
+
+    async def _start_delivery_path_locked(self) -> None:
         try:
             await self._start_message_plane()
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
@@ -326,24 +374,6 @@ class ServerLifecycleService:
                 "pushing from their startup hook may go unheard",
                 _PROACTIVE_SUBSCRIBER_WAIT_SECONDS,
             )
-
-        await self._refresh_registry_and_start_autostart_plugins()
-
-        await bus_subscription_manager.start()
-        logger.debug("bus subscription manager started")
-
-        def _get_hosts() -> dict[str, object]:
-            return self._get_plugin_hosts_snapshot()
-
-        await status_manager.start_status_consumer(plugin_hosts_getter=_get_hosts)
-        logger.debug("status consumer started")
-
-        await metrics_collector.start(plugin_hosts_getter=_get_hosts)
-        logger.debug("metrics collector started")
-        try:
-            emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
-        except Exception as exc:
-            logger.warning("failed to emit server_startup_ready event: {}", exc)
 
     async def _shutdown_hosts(self) -> bool:
         hosts_snapshot = self._get_plugin_hosts_snapshot()
@@ -489,6 +519,10 @@ class ServerLifecycleService:
         return _ShutdownResult(had_errors=had_errors)
 
     async def shutdown(self) -> None:
+        # Re-arm before tearing anything down: a restart in the same process must
+        # get the plane back, and leaving this latched would make
+        # ``ensure_delivery_path_started`` a silent no-op forever after.
+        self._delivery_path_started = False
         try:
             result = await asyncio.wait_for(self._shutdown_internal(), timeout=PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
         except asyncio.TimeoutError:
@@ -511,7 +545,14 @@ class ServerLifecycleService:
 
 
 async def ensure_plugin_messaging_started() -> None:
-    """Start plugin request messaging without running full plugin lifecycle."""
+    """Start plugin messaging without running the full plugin lifecycle.
+
+    Both halves, not just the router. A plugin started through this path (the
+    lazy call behind ``POST /plugin/{id}/start``) pushes messages the moment it
+    comes up, and the router does not carry those -- see
+    ``ServerLifecycleService.ensure_delivery_path_started`` for what a
+    router-only start actually looked like in production.
+    """
     try:
         _ = state.plugin_response_map
     except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
@@ -523,6 +564,11 @@ async def ensure_plugin_messaging_started() -> None:
 
     await plugin_router.start()
     logger.debug("plugin router started")
+
+    # Idempotent: the startup lifecycle calls the same method and whichever runs
+    # first wins. Never skipped on the grounds that "startup will do it" -- that
+    # assumption is exactly what left a hand-started plugin mute.
+    await _service.ensure_delivery_path_started()
 
 
 _service = ServerLifecycleService()

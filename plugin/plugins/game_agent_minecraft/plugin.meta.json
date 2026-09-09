@@ -371,7 +371,7 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 337738,
+  "source_bytes": 338724,
   "source_files": [
     "README.md",
     "__init__.py",
@@ -391,5 +391,5 @@
     "smoke_overwrite.py",
     "surfaces/quickstart.tsx"
   ],
-  "source_sha256": "682dae4d70532aef126e1fffc0cdd4afd16accc6d6ec61a585aef7dd96d7756d"
+  "source_sha256": "53876e0f682c02d610d8e19d73ba9dec855db832e14834865c50ba327f0ef298"
 }
