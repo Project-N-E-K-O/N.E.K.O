@@ -900,7 +900,6 @@ async def _generate_phase2_stream(
     set_call_type("proactive")
     buffer = ""
     tag_parsed = False
-    prefix_pending = False
     source_tag = ""
     full_text = ""
     pipe_count = 0
@@ -975,38 +974,26 @@ async def _generate_phase2_stream(
 
                     if not tag_parsed:
                         buffer += content
-                        if (
-                            not prefix_pending
-                            and len(buffer) < 80
-                            and "\n" not in buffer[min(len(buffer) - 1, 10) :]
-                        ):
+                        if "[PASS]" in buffer.upper():
+                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                            break
+                        parsed = _parse_proactive_phase2_prefix(buffer)
+                        if parsed is None:
+                            # Recovery needs the complete output: a chunk may
+                            # end inside a label, separator, or ordinary path.
+                            # Bound pending data by the provider's generation
+                            # budget; the cleaned body keeps its stricter limit.
+                            if (
+                                sum(buffer.count(mark) for mark in ("|", "｜")) >= 2
+                                or count_tokens(buffer)
+                                > PROACTIVE_PHASE2_GENERATE_MAX_TOKENS
+                            ):
+                                _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
+                                break
                             continue
-                        cleaned = buffer
-                        prefix_match = re.search(r"主动搭话\s*\n", cleaned)
-                        if prefix_match:
-                            cleaned = cleaned[prefix_match.end() :]
-                        cleaned = cleaned.lstrip()
-                        tag_match = re.match(
-                            r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
-                            cleaned,
-                            re.IGNORECASE,
-                        )
-                        if tag_match:
-                            source_tag = tag_match.group(1).upper()
-                            cleaned = cleaned[tag_match.end() :]
-                        else:
-                            cleaned, leak_tag = _strip_proactive_screen_tag_leak(
-                                cleaned
-                            )
-                            if leak_tag:
-                                source_tag = leak_tag
-                                if leak_tag != "PASS" and not cleaned.strip():
-                                    # A leak-only chunk is provisional: another
-                                    # source tag or the body may arrive next.
-                                    prefix_pending = True
-                                    continue
+                        cleaned, source_tag = parsed
                         tag_parsed = True
-                        prefix_pending = False
+                        buffer = ""
 
                         if (
                             source_tag == "PASS"
@@ -1078,23 +1065,7 @@ async def _generate_phase2_stream(
             buffer += residual
 
     if not tag_parsed and buffer and not aborted:
-        cleaned = buffer
-        prefix_match = re.search(r"主动搭话\s*\n", cleaned)
-        if prefix_match:
-            cleaned = cleaned[prefix_match.end() :]
-        cleaned = cleaned.lstrip()
-        tag_match = re.match(
-            r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
-            cleaned,
-            re.IGNORECASE,
-        )
-        if tag_match:
-            source_tag = tag_match.group(1).upper()
-            cleaned = cleaned[tag_match.end() :]
-        else:
-            cleaned, leak_tag = _strip_proactive_screen_tag_leak(cleaned)
-            if leak_tag:
-                source_tag = leak_tag
+        cleaned, source_tag = _parse_proactive_phase2_prefix(buffer, final=True)
         if (
             source_tag == "PASS"
             or "[PASS]" in cleaned.upper()
@@ -1150,23 +1121,7 @@ async def _generate_phase2_stream(
                 )
                 fix_text = ""
             fixed = (fix_text or "").strip()
-            prefix_match = re.search(r"主动搭话\s*\n", fixed)
-            if prefix_match:
-                fixed = fixed[prefix_match.end() :]
-            fixed = fixed.lstrip()
-            fix_tag = ""
-            tag_match = re.match(
-                r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
-                fixed,
-                re.IGNORECASE,
-            )
-            if tag_match:
-                fix_tag = tag_match.group(1).upper()
-                fixed = fixed[tag_match.end() :]
-            else:
-                fixed, leak_tag = _strip_proactive_screen_tag_leak(fixed)
-                if leak_tag:
-                    fix_tag = leak_tag
+            fixed, fix_tag = _parse_proactive_phase2_prefix(fixed, final=True)
             if (
                 fix_tag
                 and fix_tag != "PASS"
@@ -2122,6 +2077,34 @@ _PROACTIVE_BRACKET_TAG_RE = re.compile(r"^\[([A-Za-z][A-Za-z0-9_-]{0,31})\]\s*")
 _PROACTIVE_LEGAL_TAG_RE = re.compile(
     r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", re.IGNORECASE
 )
+
+
+def _parse_proactive_phase2_prefix(
+    text: str, *, final: bool = False,
+) -> tuple[str, str] | None:
+    """Return body/source, or None while nonstandard framing is incomplete.
+
+    A complete leading legal tag commits once its body starts (PASS aborts
+    immediately); waiting through whitespace keeps split separators intact.
+    Recovery of
+    leaked labels and the legacy heading waits for EOF so arbitrary provider
+    chunk boundaries cannot change path preservation or source selection.
+    At EOF an unrecognized prefix is returned as ordinary text with no source.
+    """
+    cleaned = text.lstrip()
+    if final:
+        heading = re.search(r"主动搭话\s*\n", cleaned)
+        if heading:
+            cleaned = cleaned[heading.end() :].lstrip()
+    match = _PROACTIVE_LEGAL_TAG_RE.match(cleaned)
+    if match:
+        source = match.group(1).upper()
+        if not final and match.end() == len(cleaned) and source != "PASS":
+            return None
+        return cleaned[match.end() :], source
+    if not final:
+        return None
+    return _strip_proactive_screen_tag_leak(cleaned)
 
 
 _PROACTIVE_SLASHES = "/／"

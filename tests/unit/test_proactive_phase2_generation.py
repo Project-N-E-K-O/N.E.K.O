@@ -148,6 +148,84 @@ async def test_screen_only_chunk_defers_to_following_legal_tag(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw", "body", "source"),
+    [
+        ("[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("[Screen]\n[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("当前屏幕观察\n[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("\ufeff[Screen]\u200b[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("chat/[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("/chat /api", "/api", "CHAT"),
+        ("chat/hello", "chat/hello", ""),
+        ("当前屏幕观察到你正在写代码", "当前屏幕观察到你正在写代码", ""),
+        ("[Screen]\n[W", "[W", "CHAT"),
+        ("[Screen]\n[docs]", "[docs]", "CHAT"),
+        ("主动搭话\n[WEB]\n看这个链接", "看这个链接", "WEB"),
+    ],
+)
+async def test_prefix_result_is_independent_of_chunk_boundaries(
+    monkeypatch, raw, body, source,
+) -> None:
+    _patch_runtime_guards(monkeypatch)
+    expected = generation.Phase2Generation(
+        result=None, full_text=body, response_text=body, source_tag=source,
+    )
+    # Every two-chunk split plus single-character chunks includes cuts inside
+    # labels, punctuation and whitespace, not just handpicked whole-tag chunks.
+    partitions = [[raw], list(raw)] + [
+        [raw[:cut], raw[cut:]] for cut in range(1, len(raw))
+    ]
+    for chunks in partitions:
+        mgr = _FakeManager()
+        generated = await _generate(mgr, chunks, expects_source_tag=bool(source))
+        assert generated == expected, chunks
+        mgr.handle_new_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", ["[Screen]\n[PASS]", "当前屏幕观察\n[PASS]", "[CHAT]\n[PASS]"])
+async def test_pass_after_prefix_is_blocked_at_every_split(monkeypatch, raw) -> None:
+    _patch_runtime_guards(monkeypatch)
+    for cut in range(1, len(raw)):
+        mgr = _FakeManager()
+        generated = await _generate(mgr, [raw[:cut], raw[cut:]])
+        assert generated.result.body["reason_code"] == contracts.PROACTIVE_REASON_PASS_MODEL_PASS
+        mgr.handle_new_message.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        ["[Screen]\n", "a|", "b｜"],
+        ["[Screen]\n", "x" * 451],
+        ["[Screen]\n", "x" * 301],
+    ],
+)
+async def test_pending_prefix_still_enforces_stream_limits(monkeypatch, chunks) -> None:
+    _patch_runtime_guards(monkeypatch)
+    generated = await _generate(_FakeManager(), chunks)
+    assert generated.result.body["reason_code"] == contracts.PROACTIVE_REASON_PASS_GENERATION_EMPTY
+
+
+@pytest.mark.asyncio
+async def test_user_preemption_while_prefix_is_pending(monkeypatch) -> None:
+    _patch_runtime_guards(monkeypatch)
+    mgr = _FakeManager()
+
+    async def preempted_stream(self, messages):
+        yield SimpleNamespace(content="[Screen]\n[W")
+        mgr.state.preempted = True
+        yield SimpleNamespace(content="EB]\n看这个链接")
+
+    monkeypatch.setattr(_FakeStreamingLLM, "astream", preempted_stream)
+    generated = await _generate(mgr, [])
+    assert generated.result.body["reason_code"] == contracts.PROACTIVE_REASON_DELIVERY_PREEMPTED
+    mgr.handle_new_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_label_only_output_becomes_generation_empty(monkeypatch) -> None:
     _patch_runtime_guards(monkeypatch)
     mgr = _FakeManager()
