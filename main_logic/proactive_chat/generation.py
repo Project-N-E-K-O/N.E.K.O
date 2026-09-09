@@ -2236,8 +2236,9 @@ def _strip_proactive_label_slash_prefix(
         ):
             rest = body[1 + len(label) :]
             if _label_prefix_boundary_ok(label, rest):
+                adjacent_separator = rest[:1] in _PROACTIVE_SLASHES + "：:"
                 rest = rest.lstrip()
-                if rest[:1] in _PROACTIVE_SLASHES + "：:":
+                if adjacent_separator:
                     rest = rest[1:]
                 return rest.lstrip()
     return None
@@ -2347,8 +2348,9 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                 or not rest[0].isascii()
             ):
                 continue
+            adjacent_separator = rest[:1] in _PROACTIVE_SLASHES + "：:"
             rest = rest.lstrip()
-            if rest[:1] in _PROACTIVE_SLASHES + "：:":
+            if adjacent_separator:
                 rest = rest[1:]
             return rest.lstrip(), source_tag
     return None
