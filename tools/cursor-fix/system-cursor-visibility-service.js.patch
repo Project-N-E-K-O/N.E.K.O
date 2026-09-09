@@ -1,0 +1,26 @@
+--- a/src/system-cursor-visibility-service.js
++++ b/src/system-cursor-visibility-service.js
+@@ -301,13 +301,14 @@ function startPlatformHelper(reason) {
+     if (platform === 'win32') {
+-      const encodedScript = Buffer.from(buildWin32CursorHelperScript(), 'utf16le').toString('base64');
+-      return startHelper('powershell.exe', [
+-        '-NoProfile',
+-        '-NonInteractive',
+-        '-ExecutionPolicy',
+-        'Bypass',
+-        '-EncodedCommand',
+-        encodedScript,
+-      ], {
++      // 2026-09-09 patch: 替换 PowerShell 子进程为原生 Win32 helper
++      // 原 PowerShell 路径每次 spawn 都要加载 .NET Framework（300-800ms）+ 火绒扫描，
++      // 导致系统光标操作期间鼠标卡 1-3 秒。换成预编译的 neko_cursor_helper.exe，
++      // 启动 <10ms，不再走 .NET。
++      const path = require('path');
++      const helperPath = path.join(
++        path.dirname(process.execPath),
++        'resources', 'bin', 'neko_cursor_helper.exe'
++      );
++      return startHelper(helperPath, [], {
+         windowsHide: true,
+         stdio: ['pipe', 'ignore', 'ignore'],
+       }, reason);
