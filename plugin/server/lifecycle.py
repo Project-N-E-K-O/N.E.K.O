@@ -378,9 +378,20 @@ class ServerLifecycleService:
             # mute until the process restarts.
             self._delivery_path_started = await self._start_delivery_path_locked()
             if not self._delivery_path_started:
+                # Worded for what is actually known, which is less than "broken".
+                # Both bridges came up regardless of this outcome (nothing above
+                # returns early), and their sockets reconnect on their own once
+                # the plane binds -- so a plane that was merely slow needs no
+                # further entry and heals silently. Calling that a delivery
+                # outage would send an operator hunting a fault that is not
+                # there, and would dull the one signal that does mean messages
+                # are being dropped: the per-message "message NOT delivered"
+                # warnings from the plugin's own push path.
                 logger.warning(
-                    "delivery path did not come up; plugin messages will not "
-                    "reach the character until a later start retries it"
+                    "delivery path not verified: the bridges are up and will "
+                    "attach on their own if the plane is merely slow, and the "
+                    "next entry re-probes it. If it never arrives, pushes are "
+                    "accepted and dropped -- look for 'message NOT delivered'"
                 )
             return self._delivery_path_started
 

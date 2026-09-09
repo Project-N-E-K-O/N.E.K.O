@@ -437,11 +437,13 @@ async def test_reuse_reprobes_health_and_refuses_an_unhealthy_plane(
         built.append(runner)
         return runner
 
+    bridges: list[str] = []
+
     monkeypatch.setattr(module, "build_message_plane_runner", _build)
     monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
     monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
-    monkeypatch.setattr(module, "start_bridge", lambda: None)
-    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: bridges.append("plane_bridge"))
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: bridges.append("proactive"))
     monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
 
     # Fresh start with a false probe: the runner is kept and the bridges still
@@ -449,6 +451,12 @@ async def test_reuse_reprobes_health_and_refuses_an_unhealthy_plane(
     # nothing re-probes a path already marked started, so a plane that never
     # arrived would answer submitted=True for the life of the process.
     assert await service.ensure_delivery_path_started() is False
+
+    # Both bridges started anyway. This is the factual basis for the wording of
+    # the "not verified" warning: their sockets reattach on their own once the
+    # plane binds, so a merely-slow plane heals with no further entry. An early
+    # return on a failed probe would make that warning a lie.
+    assert bridges == ["plane_bridge", "proactive"]
     assert service._delivery_path_started is False, "an unverified plane was latched"
     assert service._message_plane_runner is not None, "the runner was discarded"
     assert len(built) == 1
