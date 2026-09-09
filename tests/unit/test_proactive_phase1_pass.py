@@ -341,12 +341,18 @@ def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
         ("\ufeff \u200b chat/你好", "你好", "CHAT"),
         ("chat/ hello", "hello", "CHAT"),
         ("music／ hello", "hello", "MUSIC"),
+        ("screen: hello", "hello", "CHAT"),
+        ("vision：hello", "hello", "CHAT"),
+        ("music: hello", "hello", "MUSIC"),
         ("聊天中 你好", "你好", "CHAT"),
         ("聊天中\t你好", "你好", "CHAT"),
         ("chat\n/api", "/api", "CHAT"),
         ("chat\n/API", "/API", "CHAT"),
         ("当前屏幕观察\nchat/你好", "你好", "CHAT"),
         ("当前屏幕观察\n[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("\ufeff[CHAT]\n你好", "你好", "CHAT"),
+        ("\u200b [WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("\ufeff[Screen]\n你好", "你好", "CHAT"),
         ("当前屏幕观察", "", "CHAT"),
     ]
 
@@ -374,6 +380,8 @@ def test_strip_proactive_screen_tag_leak_preserves_inline_known_prefix_words():
         "／chatbot 路由",
         "当前屏幕观察到你正在写代码",
         "current screen observation shows a text editor",
+        "\ufeffordinary text",
+        "\ufeff[Foo] literal text",
     ):
         cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak(raw)
         assert cleaned == raw

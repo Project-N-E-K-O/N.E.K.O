@@ -2294,18 +2294,21 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                     continue
                 return after, source_tag
 
-            # Screen/source labels emitted as an entire line or with a colon
-            # are unambiguously scaffolding. A glued phrase such as
-            # ``当前屏幕观察到……`` deliberately does not match this branch.
+            # A colon makes every known source label unambiguous, including
+            # otherwise route-like English labels such as ``screen``.
+            colon = re.match(r"^[ \t]*[：:]", rest)
+            if colon:
+                return rest[colon.end() :].lstrip(), source_tag
+
+            # Only the conservative bare-label subset may stand alone or as
+            # an entire line. A glued phrase such as ``当前屏幕观察到……``
+            # deliberately does not match this branch.
             if folded_label in _PROACTIVE_BARE_PREFIX_LABELS:
                 if not rest:
                     return "", source_tag
                 newline = re.match(r"^[ \t]*\r?\n[ \t]*", rest)
                 if newline:
                     return rest[newline.end() :].lstrip(), source_tag
-                colon = re.match(r"^[ \t]*[：:]", rest)
-                if colon:
-                    return rest[colon.end() :].lstrip(), source_tag
                 if folded_label in _PROACTIVE_SPACED_BARE_PREFIX_LABELS:
                     space = re.match(r"^[ \t]+", rest)
                     if space:
@@ -2402,11 +2405,29 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     leading = text[:leading_len]
     body = text[leading_len:]
     match = _PROACTIVE_BRACKET_TAG_RE.match(body)
+    normalized_leading = False
+    if not match:
+        # ``str.lstrip`` does not remove BOM / zero-width characters. Only
+        # adopt the broader normalization after it exposes a recognized tag;
+        # otherwise normal prose and unknown bracket text remain byte-for-byte
+        # unchanged below.
+        normalized_body = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", text, count=1)
+        normalized_match = _PROACTIVE_BRACKET_TAG_RE.match(normalized_body)
+        if normalized_match:
+            normalized_tag = normalized_match.group(1).upper()
+            if (
+                normalized_tag in _PROACTIVE_LEGAL_SOURCE_TAGS
+                or normalized_tag in _PROACTIVE_SCREEN_TAG_LEAKS
+            ):
+                leading = ""
+                body = normalized_body
+                match = normalized_match
+                normalized_leading = True
     if not match:
         return text, prefix_tag
     tag = match.group(1).upper()
     if tag in _PROACTIVE_LEGAL_SOURCE_TAGS:
-        if prefix_tag:
+        if prefix_tag or normalized_leading:
             return leading + body[match.end() :].lstrip(), tag
         return text, ""
     if tag not in _PROACTIVE_SCREEN_TAG_LEAKS:
