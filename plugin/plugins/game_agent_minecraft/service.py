@@ -287,7 +287,12 @@ class GameAgentService:
         self._agent_busy: bool = False
         self._agent_busy_at: float = 0.0
         self._agent_activity: str = ""
-        self._agent_busy_ttl: float = 60.0
+        # TTL sized against the observed bot_status_nl cadence (~6s): 20s
+        # tolerates three missed frames and still self-heals fast. It used to be
+        # 60s, which meant one mis-read frame suppressed the keep-going nudge —
+        # and made ``_fire_system_prompt`` claim she was mid-action — for a full
+        # minute (~4 state bursts) while she stood still and the user waited.
+        self._agent_busy_ttl: float = 20.0
         # On-demand inventory refresh plumbing. ``_inventory_waiters`` are
         # asyncio.Futures that resolve when the next ``inventory`` frame
         # lands; multiple concurrent ``query_inventory`` calls can all
@@ -833,6 +838,17 @@ class GameAgentService:
         async with self._pending_lock:
             if self._pending is not None:
                 if not overwrite:
+                    # Logged, not silent: this is the one refusal path that used
+                    # to leave no trace anywhere. With the happy path also silent
+                    # (registry + callback route only log failures), a log read
+                    # afterwards could not tell "the model never called the tool"
+                    # apart from "it called and we turned it away" — which is
+                    # exactly the question a stalled dispatch raises.
+                    self._log_info(
+                        "claim refused (busy, overwrite=False): running {!r}, "
+                        "refusing {!r}",
+                        self._pending.task_text[:40], task[:40],
+                    )
                     return None
                 # [ISSUE4c] Anti-thrash guard: even with overwrite=True, refuse
                 # to interrupt a task that has barely started (< _OVERWRITE_MIN_
@@ -879,6 +895,9 @@ class GameAgentService:
             )
             self._pending = my_pending
             self._task_finished = False
+            self._log_info(
+                "claim accepted (overwrite={}): {!r}", overwrite, task[:80],
+            )
             return my_pending
 
     async def run_claimed_task(self, my_pending: PendingTask) -> Dict[str, Any]:
@@ -1229,9 +1248,19 @@ class GameAgentService:
                 self._task_finished = True
                 self._mark_agent_idle()  # [BUSY] local terminal — drop stale latch
         elif "action selection" in text_strip:
-            # Setting False unconditionally is safe — at worst it
-            # confirms what's already true (a task is in flight).
-            self._task_finished = False
+            if self._pending is not None:
+                # A task WE dispatched is in flight; the log just confirms it.
+                self._task_finished = False
+            else:
+                # Autonomous action selection — mc-agent picked this itself.
+                # It must NOT land on ``_task_finished``: nothing would ever
+                # reset that flag (``task run ended`` needs a real task run,
+                # the terminal paths need a pending slot), so the keep-going
+                # branch — gated on ``_task_finished`` — would be dead for the
+                # rest of the session. Route it to the busy latch instead,
+                # which is TTL-bounded and self-heals.
+                self._agent_busy = True
+                self._agent_busy_at = time.time()
         elif text_strip == "Connection lost and re-established.":
             # Connection bounce wipes the agent's task queue: any
             # pending task's ``task_finished`` will never arrive, so
@@ -2044,14 +2073,21 @@ class GameAgentService:
             sections.append(prompts.t(
                 "RECENT_EVENTS_BLOCK", lang=self._lang, log_text=log_text,
             ))
-        # [BUSY] The mc-agent's own activity counts as busy too: in autonomous
-        # play the plugin has no _pending task, so without this it would always
-        # look idle and keep telling her to dispatch. Use the BUSY body (narrate
-        # / stay quiet) whenever the agent is actively executing.
-        if self._task_finished and not self._mc_agent_busy():
-            sections.append(prompts.t("SYSTEM_PROMPT_IDLE_BODY", lang=self._lang))
-        else:
+        # [BUSY] Three states, not two. mc-agent's own activity still suppresses
+        # the dispatch invitation (otherwise the loop keeps telling her to
+        # dispatch over whatever the agent is already doing), but it must not
+        # borrow the BUSY wording: with no ``_pending`` there IS no previous
+        # action of hers, and telling her there is stalls her for the whole
+        # busy-latch TTL while the user is asking her to move.
+        if self._pending is not None:
+            # A task we dispatched is genuinely in flight.
             sections.append(prompts.t("SYSTEM_PROMPT_BUSY_BODY", lang=self._lang))
+        elif self._mc_agent_busy() or not self._task_finished:
+            # mc-agent is doing its own thing. Say exactly that, and keep the
+            # master-override door open.
+            sections.append(prompts.t("SYSTEM_PROMPT_AUTONOMOUS_BODY", lang=self._lang))
+        else:
+            sections.append(prompts.t("SYSTEM_PROMPT_IDLE_BODY", lang=self._lang))
         prompt_text = prompts.t("CUE_PREFIX_STATE", lang=self._lang) + "\n" + "\n".join(sections)
 
         # Build the parts list: cached screenshots first (so the LLM
@@ -2083,12 +2119,22 @@ class GameAgentService:
             # forcing an AI turn, so it can't make her narrate non-stop or
             # compete with real alert/completion cues in the pacing manager.
             # The specific nudges (in_progress / keep_going) remain "respond".
+            #
+            # ``coalesce_key`` matters as much as the pacing here. This burst is
+            # a SNAPSHOT of current state, so only the newest one is worth
+            # delivering — but it was the one minecraft category that never
+            # tagged a key, so every burst got a unique ``__uniq:N`` slot and
+            # they stacked. Observed in the wild: a delivery queue at pending=25
+            # (``__uniq:68``) where the user's one-line request had to compete
+            # with two dozen stale state bursts, several of them saying she was
+            # busy. Latest-wins collapses that back to one.
             self._push_message(
                 source="game_agent_minecraft",
                 visibility=[],
                 ai_behavior="read",
                 parts=parts,
                 priority=4,
+                coalesce_key="mc_state",
             )
         except Exception as exc:
             self._log_error(

@@ -641,6 +641,56 @@ async def test_system_prompt_bundles_only_latest_frame_with_mime():
 
 
 @pytest.mark.asyncio
+async def test_state_burst_body_matches_who_is_actually_acting():
+    """The state burst must not tell her she is finishing her own previous
+    action when the only thing moving is mc-agent's autonomous play.
+
+    Regression: the burst had two bodies (IDLE / BUSY) and mc-agent's own
+    activity borrowed the BUSY one, whose text is ``You're still doing the
+    previous action``. With no dispatched task that is simply false, and it
+    held for the whole busy-latch TTL — she kept narrating instead of
+    dispatching while the user asked her to move.
+    """
+    from plugin.plugins.game_agent_minecraft import prompts
+
+    def _body_of(push):
+        return [p for p in push["parts"] if p["type"] == "text"][-1]["text"]
+
+    idle = prompts.t("SYSTEM_PROMPT_IDLE_BODY", lang="en")
+    busy = prompts.t("SYSTEM_PROMPT_BUSY_BODY", lang="en")
+    autonomous = prompts.t("SYSTEM_PROMPT_AUTONOMOUS_BODY", lang="en")
+    assert idle != busy != autonomous
+
+    # 1. Nothing running anywhere → invite her to dispatch.
+    service, push_calls = _make_service()
+    service.configure({})
+    service._lang = "en"
+    await service._fire_system_prompt()
+    assert idle in _body_of(push_calls[-1])
+
+    # 2. A task WE dispatched is in flight → "you're still doing it" is true.
+    claimed = await service.try_claim_pending("chop wood", overwrite=False)
+    assert claimed is not None
+    await service._fire_system_prompt()
+    assert busy in _body_of(push_calls[-1])
+
+    # 3. mc-agent is off doing its own thing, nothing pending on our side →
+    #    say that, not "your previous action".
+    service._pending = None
+    service._task_finished = True
+    await service._on_bot_status({"text": "🤖[自主] wandering around", "skill": "explore"})
+    assert service._mc_agent_busy() is True
+    await service._fire_system_prompt()
+    body = _body_of(push_calls[-1])
+    assert autonomous in body
+    assert busy not in body
+
+    # The burst is a snapshot: it must coalesce so bursts can't stack up in
+    # the delivery queue ahead of the user's own turn.
+    assert push_calls[-1]["coalesce_key"] == "mc_state"
+
+
+@pytest.mark.asyncio
 async def test_log_cache_is_bounded():
     """Without a cap, an idle ``skip_system_prompt_if_busy=True`` plus a
     chatty agent would balloon the log cache without bound. The cap
@@ -784,10 +834,32 @@ async def test_log_callback_tracks_task_state_from_strings():
     service, _ = _make_service()
     service.configure({})
 
+    # A task WE dispatched is in flight — "action selection" just confirms it,
+    # so it may clear the finished flag.
+    claimed = await service.try_claim_pending("chop wood", overwrite=False)
+    assert claimed is not None
+    service._task_finished = True  # stale True; the log must clear it
     await service._on_log("action selection: chop wood")
     assert service._task_finished is False
+
+    # Drop the slot the way a terminal path would.
+    service._pending = None
+    service._task_finished = True
+
+    # Autonomous action selection (nothing pending) must NOT touch
+    # ``_task_finished``: nothing would ever reset it (``task run ended`` needs
+    # a real task run, the terminal paths need a pending slot), so the
+    # keep-going branch — gated on that flag — would be dead for the rest of
+    # the session and the state burst would keep telling her she is mid-action.
+    # It arms the TTL-bounded busy latch instead.
+    await service._on_log("action selection: wander off on its own")
+    assert service._task_finished is True
+    assert service._mc_agent_busy() is True
+
     await service._on_log("task run ended")
     assert service._task_finished is True
+    # A local terminal drops the stale busy latch too.
+    assert service._mc_agent_busy() is False
     await service._on_log("Connection lost and re-established.")
     assert service._task_finished is True
 
