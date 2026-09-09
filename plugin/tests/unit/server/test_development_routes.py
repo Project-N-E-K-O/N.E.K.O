@@ -460,7 +460,6 @@ async def test_development_lifecycle_requires_current_reference_and_local_guard(
 async def test_reload_all_cannot_bypass_development_origin_guard(app, monkeypatch):
     store.set_enabled_sync(True)
     from types import SimpleNamespace
-    monkeypatch.setattr(routes, "_list_running_plugin_ids_sync", lambda: ["demo", "ordinary"])
     monkeypatch.setattr(routes, "list_registration_records_sync", lambda: [SimpleNamespace(plugin_id="demo")])
     action = AsyncMock(return_value={"success": True})
     monkeypatch.setattr(routes.lifecycle_service, "reload_all_plugins", action)
@@ -477,14 +476,17 @@ async def test_reload_all_cannot_bypass_development_origin_guard(app, monkeypatc
 async def test_ordinary_bulk_reload_remains_available_remotely(app, monkeypatch, registered):
     from types import SimpleNamespace
     store.set_enabled_sync(True)
-    monkeypatch.setattr(routes, "_list_running_plugin_ids_sync", lambda: ["ordinary"])
     monkeypatch.setattr(routes, "list_registration_records_sync",
                         lambda: [SimpleNamespace(plugin_id="stopped_development")] if registered else [])
     action = AsyncMock(return_value={"success": True})
     monkeypatch.setattr(routes.lifecycle_service, "reload_all_plugins", action)
     async with client(app, peer="192.168.1.2") as http:
-        assert (await http.post("/plugins/reload")).status_code == 200
-    action.assert_awaited_once()
+        response = await http.post("/plugins/reload")
+        assert response.status_code == (403 if registered else 200)
+    if registered:
+        action.assert_not_awaited()
+    else:
+        action.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -501,3 +503,34 @@ async def test_development_routes_reuse_administrator_dependency(app):
         response = await http.put("/plugins/development/settings", json={"enabled": True})
         assert response.status_code == 403
     assert not store.development_enabled_sync()
+
+
+@pytest.mark.asyncio
+async def test_remote_reload_cannot_publish_stopped_development_metadata(app, tmp_path, monkeypatch):
+    from plugin.core.state import state
+    from plugin.server.application.plugins import registry_service
+
+    monkeypatch.setattr(registry_service, "PLUGIN_CONFIG_ROOTS", store.settings.PLUGIN_CONFIG_ROOTS)
+    monkeypatch.setattr(state, "plugins", {})
+    monkeypatch.setattr(state, "plugin_hosts", {})
+    source = tmp_path / "external" / "demo"
+    source.mkdir(parents=True)
+    manifest = source / "plugin.toml"
+    manifest.write_text('[plugin]\nid="demo"\nname="Before"\nentry="plugins.demo:Demo"\n', encoding="utf-8")
+    (source / "__init__.py").write_text("class Demo: pass\n", encoding="utf-8")
+    store.set_enabled_sync(True)
+    store.register_directory_sync(str(source))
+    await registry_service.PluginRegistryService().refresh_registry()
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace("Before", "After"), encoding="utf-8")
+
+    async with client(app, peer="192.168.1.2", headers={"X-Neko-Development": "1"}) as http:
+        response = await http.post("/plugins/reload")
+    assert response.status_code == 403
+    assert response.headers["X-Error-Code"] == "DEVELOPMENT_ACCESS_DENIED"
+    assert state.plugins["demo"]["name"] == "Before"
+    # Exercise the actual lifecycle refresh, with no host stop/start mocks.
+    async with client(app, headers={"X-Neko-Development": "1"}) as http:
+        response = await http.post("/plugins/reload")
+    assert response.status_code == 200, response.text
+    assert response.json()["reloaded"] == []
+    assert state.plugins["demo"]["name"] == "After"

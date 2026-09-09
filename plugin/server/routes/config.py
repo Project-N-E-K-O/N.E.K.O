@@ -146,10 +146,11 @@ async def update_plugin_config_endpoint(
 async def parse_toml_to_config_endpoint(
     plugin_id: str,
     payload: ConfigTomlParseRequest,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await config_query_service.parse_toml_to_config(
+        return await _dispatch_config(request, config_query_service.parse_toml_to_config,
             plugin_id=plugin_id,
             toml=payload.toml,
         )
@@ -161,10 +162,11 @@ async def parse_toml_to_config_endpoint(
 async def render_config_to_toml_endpoint(
     plugin_id: str,
     payload: ConfigTomlRenderRequest,
+    request: Request,
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await config_query_service.render_config_to_toml(
+        return await _dispatch_config(request, config_query_service.render_config_to_toml,
             plugin_id=plugin_id,
             config=payload.config,
         )

@@ -47,6 +47,106 @@ def source_bytes(path):
     return {item.relative_to(path): item.read_bytes() for item in path.rglob("*") if item.is_file()}
 
 
+def conversion_body(operation, plugin_id="demo"):
+    config = {"plugin": {"id": plugin_id, "entry": f"plugins.{plugin_id}:Demo"}}
+    if operation == "parse_toml":
+        return {"toml": f'[plugin]\nid="{plugin_id}"\nentry="plugins.{plugin_id}:Demo"\n'}
+    return {"config": config}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["parse_toml", "render_toml"])
+@pytest.mark.parametrize("ordinary", [False, True])
+async def test_toml_conversion_retains_authorized_behavior(workspace, operation, ordinary):
+    app, record = workspace
+    plugin_id = "ordinary" if ordinary else "demo"
+    params = {} if ordinary else {"registration_id": record.registration_id, "revision": record.revision}
+    if ordinary:
+        directory = store.settings.PLUGIN_CONFIG_ROOTS[0] / plugin_id
+        directory.mkdir()
+        manifest = directory / "plugin.toml"
+        manifest.write_text('[plugin]\nid="ordinary"\nentry="plugins.ordinary:Demo"\n')
+        state.plugins[plugin_id] = {"config_path": str(manifest)}
+
+    async with client(app, peer="192.168.1.2" if ordinary else "127.0.0.1",
+                      headers={} if ordinary else {"X-Neko-Development": "1"}) as http:
+        async def convert():
+            return await http.post(f"/plugin/{plugin_id}/config/{operation}",
+                                   params=params, json=conversion_body(operation, plugin_id))
+        if ordinary:
+            # The ordinary dispatcher must still bypass the lifecycle lock.
+            async with operation_lock.plugin_operation_lock.hold():
+                response = await asyncio.wait_for(convert(), 3)
+        else:
+            response = await convert()
+    assert response.status_code == 200, response.text
+    assert response.json()["plugin_id"] == plugin_id
+    if operation == "parse_toml":
+        assert response.json()["config"]["plugin"]["id"] == plugin_id
+    else:
+        assert plugin_id in response.json()["toml"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["parse_toml", "render_toml"])
+async def test_toml_conversion_rechecks_revision_after_lock_wait(workspace, operation):
+    app, record = workspace
+    before = source_bytes(record.source_dir)
+    async with client(app, headers={"X-Neko-Development": "1"}) as http:
+        async with operation_lock.plugin_operation_lock.hold():
+            pending = asyncio.create_task(http.post(f"/plugin/demo/config/{operation}",
+                params={"registration_id": record.registration_id, "revision": record.revision},
+                json=conversion_body(operation)))
+            await asyncio.sleep(0.05)
+            assert not pending.done()
+            await asyncio.to_thread(store.rebind_registration_sync, record, str(record.source_dir))
+        response = await asyncio.wait_for(pending, 3)
+    assert response.status_code == 409
+    assert response.headers["X-Error-Code"] == "DEVELOPMENT_STALE"
+    assert source_bytes(record.source_dir) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["parse_toml", "render_toml"])
+async def test_cancelled_toml_conversion_fences_runtime_initialization(workspace, monkeypatch, operation):
+    from plugin.server.infrastructure import config_queries
+
+    app, record = workspace
+    original = config_queries.load_plugin_base_config
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked_load(plugin_id):
+        entered.set()
+        assert release.wait(5)
+        return original(plugin_id)
+
+    monkeypatch.setattr(config_queries, "load_plugin_base_config", blocked_load)
+
+    @operation_lock.serialized_plugin_operation
+    async def rebind():
+        return await asyncio.to_thread(store.rebind_registration_sync, record, str(record.source_dir))
+
+    async with client(app, headers={"X-Neko-Development": "1"}) as http:
+        pending = asyncio.create_task(http.post(f"/plugin/demo/config/{operation}",
+            params={"registration_id": record.registration_id, "revision": record.revision},
+            json=conversion_body(operation)))
+        writer = None
+        try:
+            assert await asyncio.to_thread(entered.wait, 3)
+            pending.cancel()
+            writer = asyncio.create_task(rebind())
+            await asyncio.sleep(0.05)
+            assert not pending.done()
+            assert not writer.done()
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(pending, 3)
+            if writer is not None:
+                updated = await asyncio.wait_for(writer, 3)
+    assert updated.revision == record.revision + 1
+
+
 @pytest.mark.asyncio
 async def test_ordinary_config_does_not_wait_for_development_operation(workspace, monkeypatch):
     app, _ = workspace
@@ -121,6 +221,8 @@ async def test_ordinary_request_keeps_source_and_host_after_metadata_takeover(wo
     ("GET", "", None), ("GET", "/toml", None), ("GET", "/base", None),
     ("GET", "/base/effective", None), ("GET", "/profiles", None),
     ("GET", "/profiles/default", None),
+    ("POST", "/parse_toml", {"toml": '[plugin]\nid="demo"\nentry="plugins.demo:Demo"\n'}),
+    ("POST", "/render_toml", {"config": {"plugin": {"id": "demo", "entry": "plugins.demo:Demo"}}}),
     ("PUT", "", {"config": {"settings": {"value": "changed"}}}),
     ("PUT", "/toml", {"toml": '[settings]\nvalue="changed"\n'}),
     ("PUT", "/profiles/default", {"config": {"settings": {"value": "changed"}}}),

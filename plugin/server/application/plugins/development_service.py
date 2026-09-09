@@ -88,12 +88,17 @@ async def stop_ordinary_plugin(plugin_id: str, *, lifecycle_service=None) -> dic
 
 def preflight_development_sync(snapshot: store.DevelopmentSnapshot) -> None:
     """Validate current source before stopping a healthy process; do not import it."""
+    store.validate_development_snapshot_sync(snapshot)
+    _preflight_source_sync(snapshot.source_dir, snapshot.plugin_id)
+
+
+def _preflight_source_sync(source_dir: Path, plugin_id: str) -> None:
+    """Check a validated source, including a replacement not yet registered."""
     from plugin.core.registry import _parse_single_plugin_config
     from plugin.server.application.plugins.registry_service import _build_discovery_payload, logger
 
-    store.validate_development_snapshot_sync(snapshot)
-    ctx = _parse_single_plugin_config(snapshot.source_dir / "plugin.toml", set(), logger)
-    if ctx is None or ctx.pid != snapshot.plugin_id:
+    ctx = _parse_single_plugin_config(source_dir / "plugin.toml", set(), logger)
+    if ctx is None or ctx.pid != plugin_id:
         raise store._error("Development manifest could not be validated")
     payload = _build_discovery_payload(replace(ctx, enabled=True), plugin_id=ctx.pid)
     if payload.get("runtime_load_state") == "failed":
@@ -103,14 +108,14 @@ def preflight_development_sync(snapshot: store.DevelopmentSnapshot) -> None:
     def walk_error(exc):
         raise store._error(str(exc)) from exc
 
-    for root, directories, files in os.walk(snapshot.source_dir, onerror=walk_error, followlinks=False):
+    for root, directories, files in os.walk(source_dir, onerror=walk_error, followlinks=False):
         directories[:] = [name for name in directories if name not in {"vendor", ".venv", ".git", "__pycache__"}]
         for name in files:
             if not name.lower().endswith(".py"):
                 continue
             path = Path(root) / name
-            relative = path.relative_to(snapshot.source_dir)
-            if not path.resolve().is_relative_to(snapshot.source_dir):
+            relative = path.relative_to(source_dir)
+            if not path.resolve().is_relative_to(source_dir):
                 raise store._error(f"Python source escapes the registered directory: {relative}")
             try:
                 compile(path.read_bytes(), str(path), "exec")
@@ -201,7 +206,12 @@ async def remove_development(registration_id: str, revision: int) -> dict:
 @serialized_plugin_operation
 async def rebind_development(registration_id: str, revision: int, source_dir: str) -> dict:
     record = await asyncio.to_thread(store.require_registration_sync, registration_id, revision)
-    await asyncio.to_thread(preview_development_sync, source_dir, record.registration_id, record.revision)
+    metadata = await asyncio.to_thread(preview_development_sync, source_dir, record.registration_id, record.revision)
+    if await asyncio.to_thread(_has_owned_host_sync, record):
+        # Preserve an existing instance on detectable replacement errors. With
+        # no host, directory repair remains possible before dependencies work.
+        await asyncio.to_thread(_preflight_source_sync, Path(metadata["source_dir"]), record.plugin_id)
+    await asyncio.to_thread(store.require_registration_sync, record.registration_id, record.revision)
     await _stop_if_present(record)
     updated = await asyncio.to_thread(store.rebind_registration_sync, record, source_dir)
     from plugin.server.application.plugins.registry_service import PluginRegistryService

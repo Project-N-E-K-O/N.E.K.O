@@ -7,7 +7,6 @@ from fastapi import APIRouter, HTTPException, Query, Request
 import asyncio
 from plugin.server.routes.development import router as development_router
 from plugin.server.application.plugins.development import registration_for_plugin_sync, list_registration_records_sync
-from plugin.server.application.plugins.lifecycle_service import _list_running_plugin_ids_sync
 from plugin.server.application.plugins.development_service import development_lifecycle_action
 from plugin.server.infrastructure.development_access import require_development_access
 
@@ -94,7 +93,6 @@ async def _dispatch_lifecycle(request: Request, plugin_id: str, action: str,
 
 @serialized_plugin_operation
 async def _dispatch_reload_all(request: Request) -> dict[str, object]:
-    running_ids = set(await asyncio.to_thread(_list_running_plugin_ids_sync))
     try:
         registrations = await asyncio.to_thread(list_registration_records_sync)
     except ServerDomainError as exc:
@@ -104,7 +102,9 @@ async def _dispatch_reload_all(request: Request) -> dict[str, object]:
         # lifecycle path reload known managed hosts and retain unverifiable ones.
         require_development_access(request)
         return await lifecycle_service.reload_all_plugins()
-    if any(record.plugin_id in running_ids for record in registrations):
+    # Reload-all refreshes the whole registry, including stopped sources.
+    # Apply the same provenance boundary as an explicit full refresh.
+    if registrations:
         require_development_access(request)
     return await lifecycle_service.reload_all_plugins()
 

@@ -655,6 +655,65 @@ def test_preflight_reports_syntax_error_before_lifecycle_mutation(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["syntax", "dependency"])
+async def test_rebind_preflight_preserves_owned_host_and_registration(tmp_path, invalid):
+    record = _register(tmp_path)
+    replacement = _source(tmp_path / "replacement")
+    if invalid == "syntax":
+        (replacement / "child.py").write_text("def invalid(\n", encoding="utf-8")
+    else:
+        (replacement / "pyproject.toml").write_text(
+            '[project]\ndependencies=["neko_missing_review_dependency_123"]\n', encoding="utf-8")
+    host = _SourceHost(str(record.source_dir / "plugin.toml"))
+    service.state.plugin_hosts[record.plugin_id] = host
+    service.state.event_handlers[record.plugin_id] = {"sentinel": True}
+    original = store._store_path().read_bytes()
+
+    with pytest.raises(ServerDomainError) as error:
+        await service.rebind_development(record.registration_id, record.revision, str(replacement))
+
+    assert error.value.code == "DEVELOPMENT_INVALID"
+    assert ("child.py" if invalid == "syntax" else "neko_missing_review_dependency_123") in error.value.message
+    assert service.state.plugin_hosts[record.plugin_id] is host
+    assert host.is_alive() and host.stops == 0
+    assert service.state.event_handlers[record.plugin_id] == {"sentinel": True}
+    assert store._store_path().read_bytes() == original
+    assert store.list_registration_records_sync() == [record]
+
+
+@pytest.mark.asyncio
+async def test_rebind_preflights_replacement_without_requiring_old_source(tmp_path):
+    record = _register(tmp_path)
+    replacement = _source(tmp_path / "replacement")
+    # Preflight must compile without executing plugin code.
+    (replacement / "__init__.py").write_text('raise RuntimeError("must not import")\nclass Demo: pass\n')
+    host = _SourceHost(str(record.source_dir / "plugin.toml"))
+    service.state.plugin_hosts[record.plugin_id] = host
+    (record.source_dir / "plugin.toml").unlink()
+
+    result = await service.rebind_development(record.registration_id, record.revision, str(replacement))
+
+    assert result["revision"] == record.revision + 1
+    assert result["source_dir"] == str(replacement.resolve())
+    assert host.stops == 1
+    assert record.plugin_id not in service.state.plugin_hosts
+    assert store.list_registration_records_sync() == [replace(record, revision=2, source_dir=replacement.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_rebind_without_host_can_repair_source_before_dependencies(tmp_path):
+    record = _register(tmp_path)
+    replacement = _source(tmp_path / "replacement")
+    (replacement / "pyproject.toml").write_text(
+        '[project]\ndependencies=["neko_missing_review_dependency_123"]\n', encoding="utf-8")
+    (record.source_dir / "plugin.toml").unlink()
+    result = await service.rebind_development(record.registration_id, record.revision, str(replacement))
+    assert result["revision"] == record.revision + 1
+    assert result["source_dir"] == str(replacement.resolve())
+    assert record.plugin_id not in service.state.plugin_hosts
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("invalid", ["manifest", "syntax", "dependency"])
 async def test_bulk_reload_preserves_invalid_development_and_reloads_healthy(monkeypatch, tmp_path, invalid):
     from plugin.server.application.plugins import lifecycle_service as lifecycle
