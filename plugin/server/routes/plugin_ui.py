@@ -24,6 +24,7 @@ import os
 import re
 from collections.abc import Awaitable
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request
@@ -643,6 +644,37 @@ async def plugin_hosted_ui_action(
                 kind=request.kind,
                 surface_id=request.surface_id,
                 locale=request.locale,
+            ),
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+    return JSONResponse(result)
+
+
+class ChatCardActionRequest(BaseModel):
+    card_id: str = Field(min_length=1)
+    target_lanlan: str = Field(min_length=1)
+    args: dict[str, object] = Field(default_factory=dict)
+    locale: str | None = None
+    presentation: Literal["chat", "agent"] = "chat"
+
+
+@router.post("/plugin/{plugin_id}/chat-card/action/{action_id}")
+async def plugin_chat_card_action(
+    plugin_id: str, action_id: str, http_request: Request, request: ChatCardActionRequest,
+):
+    """Trusted plugin HTML buttons call existing @ui.action entries without a panel."""
+    card_context = {"card_id": request.card_id, "lanlan_name": request.target_lanlan}
+    if request.presentation == "agent":
+        card_context["view_id"] = request.card_id
+    try:
+        result = await _await_action_or_disconnect(
+            http_request,
+            plugin_ui_query_service.call_surface_action(
+                plugin_id, action_id=action_id, args=request.args,
+                kind="plugin_view" if request.presentation == "agent" else "chat_card",
+                surface_id=request.card_id, locale=request.locale,
+                _card_context=card_context,
             ),
         )
     except ServerDomainError as error:

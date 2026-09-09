@@ -61,6 +61,7 @@ if TYPE_CHECKING:
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
 
 _CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
+_CURRENT_LANLAN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_lanlan", default=None)
 
 
 def _is_submission_backpressure(error: BaseException) -> bool:
@@ -598,6 +599,19 @@ class PluginContext:
             yield
         finally:
             _CURRENT_RUN_ID.reset(token)
+
+    @contextlib.contextmanager
+    def _lanlan_scope(self, lanlan_name: Optional[str]):
+        token = _CURRENT_LANLAN.set(lanlan_name if isinstance(lanlan_name, str) and lanlan_name else None)
+        try:
+            yield
+        finally:
+            _CURRENT_LANLAN.reset(token)
+
+    @property
+    def current_lanlan(self) -> Optional[str]:
+        """Recipient of this invocation, never the last caller on another task."""
+        return _CURRENT_LANLAN.get()
 
     @property
     def handler_ctx(self) -> Optional[str]:
@@ -1484,6 +1498,34 @@ class PluginContext:
             "submitted": False,
             "reason": "transport_unavailable",
         }
+
+    async def create_card(self, *, html: str, summary: str, css: str = "",
+                          actions: Optional[Dict[str, Any]] = None,
+                          target_lanlan: Optional[str] = None):
+        """Create a display-only HTML card; awaiting confirms local submission."""
+        from plugin.sdk.shared.core.cards import create_card
+        return await create_card(self, html=html, summary=summary, css=css,
+                                 actions=actions, target_lanlan=target_lanlan or self.current_lanlan)
+
+    def get_card(self, card_id: str, *, target_lanlan: Optional[str] = None):
+        """Recover an online card handle from a UI action's _ctx."""
+        from plugin.sdk.shared.core.cards import ChatCard
+        return ChatCard(self, card_id, target_lanlan or self.current_lanlan)
+
+    async def create_view(self, *, title: str, html: str, css: str = "",
+                          actions: Optional[Dict[str, Any]] = None,
+                          summary: Optional[str] = None,
+                          target_lanlan: Optional[str] = None):
+        """Create online AgentHUD content; awaiting confirms local submission."""
+        from plugin.sdk.shared.core.cards import create_view
+        return await create_view(self, title=title, html=html, css=css,
+                                 actions=actions, summary=summary,
+                                 target_lanlan=target_lanlan or self.current_lanlan)
+
+    def get_view(self, view_id: str, *, target_lanlan: Optional[str] = None):
+        """Recover an AgentHUD view handle from a UI action's _ctx."""
+        from plugin.sdk.shared.core.cards import PluginView
+        return PluginView(self, view_id, target_lanlan or self.current_lanlan)
 
     async def push_message_async(self, *args: Any, **kwargs: Any) -> "PushMessageResult":
         """异步版本的 push_message，使用 asyncio.to_thread 包装同步调用。

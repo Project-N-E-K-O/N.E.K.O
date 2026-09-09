@@ -5,6 +5,39 @@
 
 window.AgentHUD = window.AgentHUD || {};
 
+// /chat and /chat_full also run in browsers. Only native Chat mirrors must
+// leave the task/plugin HUD to Pet (or the standalone AgentHUD page).
+window.AgentHUD.isNativeChatMirror = function () {
+    const body = document.body;
+    return !!(body && !body.classList.contains('agent-hud-standalone-page') &&
+        !body.classList.contains('lanlan-pet-mode') &&
+        body.classList.contains('electron-chat-window') && (
+            window.nekoChatWindow || body.classList.contains('neko-electron-runtime') ||
+            /Electron/i.test(navigator.userAgent || '')
+        ));
+};
+
+function suppressAgentHudInChatMirror() {
+    if (!window.AgentHUD.isNativeChatMirror()) return false;
+    const hud = document.getElementById('agent-task-hud');
+    // Handle a late runtime marker as well as an ordinary native startup.
+    if (hud) {
+        if (window.NekoPluginViews && window.NekoPluginViews.hasContent()) window.NekoPluginViews.clear();
+        if (window.AgentHUD._cleanupDragging) {
+            window.AgentHUD._cleanupDragging();
+            window.AgentHUD._cleanupDragging = null;
+        }
+        hud.remove();
+    }
+    if (window.AgentHUD._updateRafId) cancelAnimationFrame(window.AgentHUD._updateRafId);
+    if (window.AgentHUD._hideTimeout) clearTimeout(window.AgentHUD._hideTimeout);
+    if (window.AgentHUD._lingerTimer) clearTimeout(window.AgentHUD._lingerTimer);
+    window.AgentHUD._updateRafId = null;
+    window.AgentHUD._hideTimeout = null;
+    window.AgentHUD._lingerTimer = null;
+    return true;
+}
+
 var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';
 const STANDALONE_HUD_POSITION = Object.freeze({
     top: '0',
@@ -556,6 +589,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
 
 // 创建 Agent 任务 HUD（屏幕正中右侧）
 window.AgentHUD.createAgentTaskHUD = function () {
+    if (suppressAgentHudInChatMirror()) return null;
     // 如果已存在则不重复创建
     if (document.getElementById('agent-task-hud')) {
         return document.getElementById('agent-task-hud');
@@ -774,6 +808,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
 
     // 整体折叠逻辑 (key v2: reset stale collapsed state)
     const applyHudCollapsed = (collapsed) => {
+        hud.dataset.agentHudCollapsed = String(collapsed);
         if (!collapsed && hud.style.display !== 'none') {
             // Check edge collision for smooth unfolding direction towards the left
             const rect = hud.getBoundingClientRect();
@@ -826,6 +861,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
             taskList.style.overflowY = 'auto';
             minimizeBtn.style.transform = 'rotate(0deg)';
         }
+        if (window.NekoPluginViews) window.NekoPluginViews.syncHud();
     };
 
     // Default: expanded
@@ -876,6 +912,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
 
     // 添加拖拽功能
     this._setupDragging(hud);
+    if (window.NekoPluginViews) window.NekoPluginViews.syncHud();
 
     return hud;
 };
@@ -887,9 +924,12 @@ window.AgentHUD._setupCollapseFunctionality = function (emptyState, collapseButt
 
 // 显示任务 HUD
 window.AgentHUD.showAgentTaskHUD = function (options = {}) {
+    if (suppressAgentHudInChatMirror()) return;
     const ignoreVisibilityPreference = options.ignoreVisibilityPreference === true;
     console.log('[AgentHUD][TimeoutTrace] showAgentTaskHUD called. Current timeout ID:', this._hideTimeout);
-    if (isAgentHudSuppressedByGoodbye() || (!ignoreVisibilityPreference && !isAgentTaskHudVisiblePreferenceEnabled())) {
+    const taskHiddenByPreference = (!ignoreVisibilityPreference && !isAgentTaskHudVisiblePreferenceEnabled());
+    const hasPluginContent = !!(window.NekoPluginViews && window.NekoPluginViews.hasContent());
+    if (isAgentHudSuppressedByGoodbye() || (taskHiddenByPreference && !hasPluginContent)) {
         this.hideAgentTaskHUD();
         return;
     }
@@ -932,6 +972,7 @@ window.AgentHUD.showAgentTaskHUD = function (options = {}) {
 
 // 隐藏任务 HUD
 window.AgentHUD.expandAgentTaskHUD = function () {
+    if (suppressAgentHudInChatMirror()) return false;
     const hud = document.getElementById('agent-task-hud');
     if (!hud) return false;
     if (typeof hud._setAgentTaskHudCollapsed === 'function') {
@@ -987,6 +1028,7 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     // Cache latest snapshot so deferred re-render won't use stale closure data.
     this._latestTasksData = tasksData;
+    if (suppressAgentHudInChatMirror()) return;
     if (isAgentHudSuppressedByGoodbye()) {
         if (this._updateRafId) {
             cancelAnimationFrame(this._updateRafId);
@@ -1068,6 +1110,7 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
 
 // Internal: actual HUD update logic (called via RAF throttle)
 window.AgentHUD._doUpdateAgentTaskHUD = function () {
+    if (suppressAgentHudInChatMirror()) return;
     if (isAgentHudSuppressedByGoodbye()) {
         this.hideAgentTaskHUD();
         return;
@@ -1230,6 +1273,7 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
     } else {
         taskList.appendChild(fragment);
     }
+    if (window.NekoPluginViews) window.NekoPluginViews.syncHud();
 };
 
 // 差异更新已有任务卡片（避免全量 DOM 重建触发 backdrop-filter 重合成导致模型闪烁）

@@ -688,6 +688,11 @@
         "occupied": "摄像头被其它应用占用？关闭扫码/拍照应用后重试"
     },
     "chat": {
+        "cardActionFailed": "插件操作失败",
+        "cardActionRunning": "正在执行…",
+        "cardActionDone": "操作完成",
+        "cardActionTimeout": "请求超时，操作可能已经完成。",
+        "cardServerUnavailable": "插件服务不可用。",
         "title": "对话",
         "topicHint": "{{author}}好像有点想找你聊的话题…",
         "viewerTitle": "对话 (观看模式)",
@@ -3150,6 +3155,12 @@
         },
         "contentFilterError": "猫爪浏览的网页内容触发了 AI 模型的安全审查过滤，任务已中止。这通常发生在页面包含敏感话题时，请尝试其他关键词或网站。",
         "taskHud": {
+            "tasksTab": "任务",
+            "pluginsTab": "插件内容",
+            "contentTabs": "任务与插件内容",
+            "newPluginContent": "新内容",
+            "selectPluginContent": "选择插件内容",
+            "closePluginContent": "关闭内容",
             "title": "猫爪任务",
             "running": "运行中",
             "queued": "队列中",

@@ -2703,6 +2703,11 @@
                     console.log(window.t('console.catgirlSwitchedReceived'), response);
                 }
 
+                if (response.type === 'plugin_view') {
+                    if (window.NekoPluginViews) window.NekoPluginViews.receive(response.view);
+                    return;
+                }
+
                 if (response.type === 'chat_blocks') {
                     // NOT gated on suppressAssistantStreamUntilNextSession.
                     // That latch stops a finished session's ASSISTANT stream

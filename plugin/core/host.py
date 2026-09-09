@@ -1405,6 +1405,7 @@ def _plugin_process_runner(
             ret = {"req_id": req_id, "success": False, "data": None, "error": None}
 
             run_id = None
+            lanlan_name = None
             try:
                 ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
                 if isinstance(ctx_obj, dict):
@@ -1433,7 +1434,7 @@ def _plugin_process_runner(
                     args=args,
                 )
 
-                with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
+                with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id), ctx._lanlan_scope(lanlan_name):
                     result = await _run_with_watchdog(
                         method(**call_args), entry_id, timeout_seconds,
                     )
@@ -1485,6 +1486,7 @@ def _plugin_process_runner(
 
             logger.info("[Plugin Process] TRIGGER_CUSTOM {}.{} req_id={}", event_type, event_id, req_id)
 
+            lanlan_name = None
             try:
                 ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
                 if isinstance(ctx_obj, dict):
@@ -1507,7 +1509,7 @@ def _plugin_process_runner(
                     ret["error"] = f"Custom event '{event_type}.{event_id}' must be 'async def'."
                     return
 
-                with ctx._handler_scope(f"{event_type}.{event_id}"):
+                with ctx._handler_scope(f"{event_type}.{event_id}"), ctx._lanlan_scope(lanlan_name):
                     result = await _run_with_watchdog(
                         method(**args),
                         f"{event_type}.{event_id}",
@@ -1554,6 +1556,10 @@ def _plugin_process_runner(
                 # 时，宿主仍然要拿得到 api.call 的授权白名单，否则面板上每个按钮
                 # 都会返回一条与真实原因无关的 500。
                 actions = _collect_ui_actions()
+                if context_id == "__chat_card__":
+                    # Card buttons need the UI-action list, not a panel's state provider.
+                    ret.update(success=True, data={"state": {}, "actions": actions})
+                    return
                 provider_budget = _ui_context_provider_budget(msg.get("timeout"))
 
                 provider = ui_context_map.get(context_id)

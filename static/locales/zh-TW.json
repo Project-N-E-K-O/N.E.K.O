@@ -688,6 +688,11 @@
         "occupied": "攝影機被其他應用程式佔用？關閉掃碼/拍照應用程式後重試"
     },
     "chat": {
+        "cardActionFailed": "外掛操作失敗",
+        "cardActionRunning": "正在執行…",
+        "cardActionDone": "操作完成",
+        "cardActionTimeout": "請求逾時，操作可能已經完成。",
+        "cardServerUnavailable": "外掛服務無法使用。",
         "title": "對話",
         "topicHint": "{{author}}好像有點想找你聊的話題…",
         "viewerTitle": "對話 (觀看模式)",
@@ -3150,6 +3155,12 @@
         },
         "contentFilterError": "貓爪瀏覽的網頁內容觸發了 AI 模型的安全審查過濾，任務已中止。這通常發生在頁面包含敏感話題時，請嘗試其他關鍵詞或網站。",
         "taskHud": {
+            "tasksTab": "任務",
+            "pluginsTab": "外掛內容",
+            "contentTabs": "任務與外掛內容",
+            "newPluginContent": "新內容",
+            "selectPluginContent": "選擇外掛內容",
+            "closePluginContent": "關閉內容",
             "title": "貓爪任務",
             "running": "運行中",
             "queued": "隊列中",

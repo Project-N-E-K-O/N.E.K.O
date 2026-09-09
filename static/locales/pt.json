@@ -688,6 +688,11 @@
         "occupied": "A câmera está ocupada por outro aplicativo? Feche aplicativos de código QR/fotos e tente novamente"
     },
     "chat": {
+        "cardActionFailed": "Falha na ação do plugin",
+        "cardActionRunning": "Executando…",
+        "cardActionDone": "Concluído",
+        "cardActionTimeout": "A solicitação excedeu o tempo limite; a ação pode ter sido concluída.",
+        "cardServerUnavailable": "O serviço de plugins está indisponível.",
         "title": "Bater papo",
         "topicHint": "{{author}} parece ter algo sobre o que quer conversar…",
         "viewerTitle": "Bate-papo (modo visualizador)",
@@ -3150,6 +3155,12 @@
         },
         "contentFilterError": "O conteúdo da página web navegada pelo NekoClaw foi rejeitado pelo filtro de segurança do modelo de IA e a tarefa foi abortada. Isso geralmente acontece quando a página contém tópicos delicados. Tente palavras-chave ou sites diferentes.",
         "taskHud": {
+            "tasksTab": "Tarefas",
+            "pluginsTab": "Conteúdo de plugins",
+            "contentTabs": "Tarefas e conteúdo dos plugins",
+            "newPluginContent": "Novo conteúdo",
+            "selectPluginContent": "Selecionar conteúdo do plugin",
+            "closePluginContent": "Fechar conteúdo",
             "title": "Tarefas NekoClaw",
             "running": "Correndo",
             "queued": "Na fila",
