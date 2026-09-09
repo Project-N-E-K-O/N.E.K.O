@@ -116,6 +116,18 @@ def _elevenlabs_dialogue_event_flags(payload: dict) -> tuple[bool, bool, bool]:
         ),
     )
 
+def _drain_elevenlabs_resampler(resampler, pcm_sample_rate: int) -> bytes:
+    """Return any PCM still buffered by the streaming sample-rate converter."""
+    if resampler is None:
+        return b""
+    return _resample_audio(
+        np.empty(0, dtype=np.int16),
+        pcm_sample_rate,
+        48000,
+        resampler,
+        last=True,
+    )
+
 def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
     """ElevenLabs V3 worker using Text-to-Dialogue WebSocket PCM output."""
     normalized_voice_id = _normalize_elevenlabs_voice_id(voice_id)
@@ -167,6 +179,18 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             audio_jitter.reset()
             audio_done.reset()  # 新会话重置 audio_done 去重标记
 
+        def _flush_resampler_tail() -> None:
+            nonlocal resampler
+            active_resampler = resampler
+            if active_resampler is None:
+                return
+            # Mark it consumed before appending so every normal/error cleanup path is
+            # idempotent and cannot finalize the same streaming resampler twice.
+            resampler = None
+            audio_jitter.append(
+                _drain_elevenlabs_resampler(active_resampler, pcm_sample_rate)
+            )
+
         async def _close_ws(
             send_final_empty: bool = False,
             wait_for_final: bool = False,
@@ -202,6 +226,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             ws = None
             if receive_task and not receive_task.done():
                 if not interrupt:
+                    _flush_resampler_tail()
                     audio_jitter.flush()
                 receive_task.cancel()
                 try:
@@ -297,6 +322,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         # now, but keep receiving until is_final before publishing audio_done.
                         audio_jitter.flush()
                     if is_final:
+                        _flush_resampler_tail()
                         audio_jitter.flush()  # 本轮音频结束，放掉缓冲区里不足 steady 阈值的尾音
                         # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭
                         audio_done.emit(speech_id)
@@ -317,6 +343,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 logger.error("ElevenLabs WS receive failed: %s", exc)
             finally:
                 if not cancelled:
+                    _flush_resampler_tail()
                     audio_jitter.flush()
                 response_finished.set()
 

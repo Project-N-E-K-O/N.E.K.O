@@ -203,7 +203,8 @@ def test_realtime_workers_flush_jitter_on_non_cancelled_receiver_exit():
         "elevenlabs": 1,
     }
     pattern = re.compile(
-        r"finally:\s+if not cancelled:\s+(?:qwen_)?audio_jitter\.flush\(\)",
+        r"finally:\s+if not cancelled:\s+"
+        r"(?:_flush_resampler_tail\(\)\s+)?(?:qwen_)?audio_jitter\.flush\(\)",
         re.MULTILINE,
     )
 
