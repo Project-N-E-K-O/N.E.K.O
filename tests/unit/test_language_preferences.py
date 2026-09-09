@@ -147,11 +147,22 @@ def run_connector(monkeypatch):
     return run
 
 
-class _LifecycleHarness(LifecycleMixin):
+from main_logic.core.tts_lifecycle import TtsLifecycleMixin
+
+
+class _LifecycleHarness(LifecycleMixin, TtsLifecycleMixin):
     def __init__(self, *, renew=None):
         self.lock = asyncio.Lock()
         self.is_active = True
-        self.session = object()
+        async def close():
+            return None
+        self.session = SimpleNamespace(close=close)
+        self.message_handler_task = None
+        self.input_cache_lock = asyncio.Lock()
+        self.session_ready = True
+        self.pending_input_data = []
+        self.tts_thread = None
+        self._activity_tracker = SimpleNamespace(on_voice_mode=lambda value: None)
         self._starting_session_count = 0
         self._user_session_abandon_epoch = 0
         self._audio_stream_epoch = 0
@@ -181,6 +192,9 @@ class _LifecycleHarness(LifecycleMixin):
         pass
 
     def _reset_voice_echo_suppression_cache(self):
+        pass
+
+    def _clear_pending_context_appends(self):
         pass
 
 
@@ -1953,14 +1967,13 @@ async def test_idle_memory_barrier_rechecks_start_after_lock_wait():
 @pytest.mark.asyncio
 async def test_post_init_stale_session_does_not_clear_replacement_context():
     effects = []
-    old_session = object()
     replacement_session = object()
 
     async def replace(manager):
         manager.session = replacement_session
 
     manager = _LifecycleHarness(renew=replace)
-    manager.session = old_session
+    old_session = manager.session
     manager._clear_audio_stream_queue = lambda reason: effects.append(("clear", reason))
     manager._cancel_audio_stream_worker = lambda reason: effects.append(("cancel", reason))
     manager._reset_voice_echo_suppression_cache = lambda: effects.append(("echo",))
