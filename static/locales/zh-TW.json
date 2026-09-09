@@ -1684,7 +1684,8 @@
         "pngtuberTalkPreview": "測試說話",
         "pngtuberStatePreview": "狀態預覽",
         "pngtuberImportProjectFile": "導入工程檔案",
-        "pngtuberImportFolder": "導入資料夾"
+        "pngtuberImportFolder": "導入資料夾",
+        "pngtuberImportSuccess": "PNGTuber 模型匯入成功。"
     },
     "voice": {
         "title": "音色注冊",

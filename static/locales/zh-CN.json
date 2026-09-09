@@ -1684,7 +1684,8 @@
         "pngtuberTalkPreview": "测试说话",
         "pngtuberStatePreview": "状态预览",
         "pngtuberImportProjectFile": "导入工程文件",
-        "pngtuberImportFolder": "导入文件夹"
+        "pngtuberImportFolder": "导入文件夹",
+        "pngtuberImportSuccess": "PNGTuber 模型导入成功。"
     },
     "voice": {
         "title": "音色注册",

@@ -1684,7 +1684,8 @@
         "pngtuberTalkPreview": "Probar habla",
         "pngtuberStatePreview": "Vista previa de estado",
         "pngtuberImportProjectFile": "Importar archivo de proyecto",
-        "pngtuberImportFolder": "Importar carpeta"
+        "pngtuberImportFolder": "Importar carpeta",
+        "pngtuberImportSuccess": "El modelo PNGTuber se importó correctamente."
     },
     "voice": {
         "title": "Registro de voz",

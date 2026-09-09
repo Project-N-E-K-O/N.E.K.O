@@ -1684,7 +1684,8 @@
         "pngtuberTalkPreview": "発話をテスト",
         "pngtuberStatePreview": "状態プレビュー",
         "pngtuberImportProjectFile": "プロジェクトファイルをインポート",
-        "pngtuberImportFolder": "フォルダーをインポート"
+        "pngtuberImportFolder": "フォルダーをインポート",
+        "pngtuberImportSuccess": "PNGTuber モデルをインポートしました。"
     },
     "voice": {
         "title": "ボイス登録",

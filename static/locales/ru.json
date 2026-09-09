@@ -1684,7 +1684,8 @@
         "pngtuberTalkPreview": "Проверить речь",
         "pngtuberStatePreview": "Предпросмотр состояния",
         "pngtuberImportProjectFile": "Импорт файла проекта",
-        "pngtuberImportFolder": "Импорт папки"
+        "pngtuberImportFolder": "Импорт папки",
+        "pngtuberImportSuccess": "Модель PNGTuber успешно импортирована."
     },
     "voice": {
         "title": "Регистрация голоса",
