@@ -69,12 +69,12 @@ def test_source_finder_does_not_change_dependencies_or_other_plugins(tmp_path: P
     assert finder.find_spec("json") is None
     assert finder.find_spec("plugins.other.module") is None
     assert finder.find_spec("plugins.probe.vendor.lib") is None
-    for name in ("plugins.probe.lazy", "plugin.plugins.probe.lazy"):
-        spec = finder.find_spec(name)
-        assert isinstance(spec.loader, SourceOnlyLoader)
-        namespace = {}
-        exec(spec.loader.get_code(name), namespace)
-        assert namespace["VALUE"] == 1
+    assert finder.find_spec("plugin.plugins.probe.vendor.lib") is None
+    spec = finder.find_spec("plugins.probe.lazy")
+    assert isinstance(spec.loader, SourceOnlyLoader)
+    namespace = {}
+    exec(spec.loader.get_code("plugins.probe.lazy"), namespace)
+    assert namespace["VALUE"] == 1
     namespace_dir = directory / "nested"
     namespace_dir.mkdir()
     assert finder.find_spec("plugins.probe.nested").submodule_search_locations == [str(namespace_dir)]
@@ -122,3 +122,131 @@ def test_host_passes_source_policy_to_child_without_changing_default(monkeypatch
         host.PluginHost("probe", "plugins.probe:Probe", tmp_path / "plugin.toml", source_only=enabled)
     assert "source_only" not in captured[0]["args"][7]
     assert captured[1]["args"][7]["source_only"] is True
+
+
+def test_development_lazy_alias_imports_share_concurrent_initialization(tmp_path: Path):
+    directory = tmp_path / "parallel_probe"
+    directory.mkdir()
+    manifest = directory / "plugin.toml"
+    manifest.write_text("", encoding="utf-8")
+    (directory / "__init__.py").write_text("loads = []\n", encoding="utf-8")
+    (directory / "child.py").write_text(
+        "import time\nfrom plugins.parallel_probe import loads\n"
+        "loads.append(__name__)\ntime.sleep(0.1)\nVALUE = object()\n", encoding="utf-8",
+    )
+    code = """
+import importlib, sys, threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from plugin.core.host import _import_plugin_module
+from plugin.logging_config import get_logger
+root = _import_plugin_module('plugins.parallel_probe', Path(sys.argv[1]), get_logger('probe'), source_only=True)
+barrier = threading.Barrier(2)
+def load(name):
+    barrier.wait(timeout=5)
+    return importlib.import_module(name)
+with ThreadPoolExecutor(max_workers=2) as executor:
+    modules = list(executor.map(load, ['plugins.parallel_probe.child', 'plugin.plugins.parallel_probe.child']))
+assert modules[0] is modules[1]
+assert len(root.loads) == 1
+assert modules[0].__spec__.name == 'plugins.parallel_probe.child'
+"""
+    process = subprocess.run([sys.executable, "-c", code, str(manifest)], capture_output=True, text=True, timeout=30)
+    assert process.returncode == 0, process.stderr
+
+
+@pytest.mark.parametrize("legacy_first", [False, True])
+def test_development_failed_lazy_alias_import_can_retry(tmp_path: Path, legacy_first: bool):
+    directory = tmp_path / "retry_probe"
+    directory.mkdir()
+    manifest = directory / "plugin.toml"
+    manifest.write_text("", encoding="utf-8")
+    (directory / "__init__.py").write_text("", encoding="utf-8")
+    (directory / "child.py").write_text("raise RuntimeError('broken source')\n", encoding="utf-8")
+    code = """
+import importlib, sys
+from pathlib import Path
+from plugin.core.host import _import_plugin_module
+from plugin.logging_config import get_logger
+manifest = Path(sys.argv[1])
+_import_plugin_module('plugins.retry_probe', manifest, get_logger('probe'), source_only=True)
+names = ['plugins.retry_probe.child', 'plugin.plugins.retry_probe.child']
+if sys.argv[2] == 'True':
+    names.reverse()
+try:
+    importlib.import_module(names[0])
+except RuntimeError as exc:
+    assert str(exc) == 'broken source'
+else:
+    raise AssertionError('broken source must fail')
+assert all(name not in sys.modules for name in names)
+(manifest.parent / 'child.py').write_text('VALUE = object()\\n', encoding='utf-8')
+left = importlib.import_module(names[1])
+right = importlib.import_module(names[0])
+assert left is right
+assert left.__spec__.name == 'plugins.retry_probe.child'
+assert importlib.reload(right) is left
+assert left.__spec__.name == 'plugins.retry_probe.child'
+"""
+    process = subprocess.run([sys.executable, "-c", code, str(manifest), str(legacy_first)], capture_output=True, text=True, timeout=30)
+    assert process.returncode == 0, process.stderr
+
+
+@pytest.mark.parametrize("legacy_first", [False, True])
+@pytest.mark.parametrize("namespace", [False, True])
+@pytest.mark.parametrize("scanner", [False, True], ids=["runtime", "metadata"])
+def test_development_submodule_aliases_share_identity(tmp_path: Path, legacy_first: bool, namespace: bool, scanner: bool):
+    directory = tmp_path / "mixed_probe"
+    group = directory / "group"
+    group.mkdir(parents=True)
+    manifest = directory / "plugin.toml"
+    manifest.write_text("", encoding="utf-8")
+    if not namespace:
+        (group / "__init__.py").write_text("", encoding="utf-8")
+    first, second = ("plugin.plugins", "plugins") if legacy_first else ("plugins", "plugin.plugins")
+    (directory / "__init__.py").write_text(
+        "loads = []\n"
+        f"from {first}.mixed_probe.group import child as first\n"
+        f"from {second}.mixed_probe.group import child as second\n"
+        "assert first is second, 'submodule loaded twice'\n"
+        "assert len(loads) == 1, loads\n"
+        "from plugin.sdk.plugin.decorators import plugin_entry\n"
+        "class Probe:\n"
+        "    @plugin_entry(id='probe', name=first.VALUE)\n"
+        "    def probe(self): pass\n", encoding="utf-8",
+    )
+    child_prefix = "from plugins.mixed_probe import loads\nloads.append(__name__)\nSTATE = []\n"
+    _stale_source(group / "child.py", child_prefix + 'VALUE="old"\n', child_prefix + 'VALUE="new"\n')
+    if scanner:
+        from plugin.server.application.plugins.metadata_scanner import scan_plugin_metadata_isolated
+        result = scan_plugin_metadata_isolated(
+            plugin_id="mixed_probe", module_path="plugins.mixed_probe", class_name="Probe",
+            config_path=manifest, conf={}, pdata={}, source_only=True,
+        )
+        assert any(entry.get("name") == "new" for entry in result.entries_preview)
+    else:
+        code = """
+import importlib, sys
+from pathlib import Path
+from plugin.core.host import _import_plugin_module
+from plugin.logging_config import get_logger
+previous = None
+for attempt in range(2):
+    root = _import_plugin_module('plugins.mixed_probe', Path(sys.argv[1]), get_logger('probe'), source_only=True)
+    left = importlib.import_module('plugins.mixed_probe.group.child')
+    right = importlib.import_module('plugin.plugins.mixed_probe.group.child')
+    assert left is right and left is not previous
+    assert left.__spec__.name == 'plugins.mixed_probe.group.child'
+    assert left.__package__ == 'plugins.mixed_probe.group'
+    left.STATE.append(attempt)
+    assert right.STATE == [attempt]
+    assert left.VALUE == 'new'
+    canonical_group = importlib.import_module('plugins.mixed_probe.group')
+    legacy_group = importlib.import_module('plugin.plugins.mixed_probe.group')
+    assert canonical_group is legacy_group
+    assert canonical_group.child is legacy_group.child is left
+    assert len(root.loads) == 1
+    previous = left
+"""
+        process = subprocess.run([sys.executable, "-c", code, str(manifest)], capture_output=True, text=True, timeout=30)
+        assert process.returncode == 0, process.stderr

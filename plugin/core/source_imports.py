@@ -16,6 +16,24 @@ class SourceOnlyLoader(importlib.machinery.SourceFileLoader):
         return self.source_to_code(self.get_data(source_path), source_path)
 
 
+class _PluginAliasLoader(importlib.abc.Loader):
+    """Resolve a legacy import through the canonical module's import lock/cache."""
+
+    def __init__(self, canonical: str):
+        self.canonical = canonical
+        self.canonical_spec = None
+
+    def create_module(self, spec):
+        module = importlib.import_module(self.canonical)
+        self.canonical_spec = module.__spec__
+        return module
+
+    def exec_module(self, module):
+        # module_from_spec assigns the alias spec even when create_module
+        # returns an existing object. Keep reload and relative imports canonical.
+        module.__spec__ = self.canonical_spec
+
+
 class PluginSourceFinder(importlib.abc.MetaPathFinder):
     def __init__(self, package: str, directory: Path):
         self.package = package
@@ -31,6 +49,11 @@ class PluginSourceFinder(importlib.abc.MetaPathFinder):
         if relative and relative[0] == "vendor":
             return None
         candidate = self.directory.joinpath(*relative)
+        if prefix != self.package:
+            canonical = self.package + fullname[len(prefix):]
+            return importlib.util.spec_from_loader(
+                fullname, _PluginAliasLoader(canonical), is_package=candidate.is_dir(),
+            )
         source = candidate / "__init__.py" if candidate.is_dir() else candidate.with_suffix(".py")
         if not source.is_file():
             if candidate.is_dir():
