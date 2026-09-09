@@ -1612,22 +1612,7 @@ async def _guard_phase2_output(
             )
 
         cleaned = (regen_text or "").strip()
-        regen_source_tag = ""
-        prefix_match = re.search(r"主动搭话\s*\n", cleaned)
-        if prefix_match:
-            cleaned = cleaned[prefix_match.end() :]
-        tag_match = re.match(
-            r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
-            cleaned,
-            re.IGNORECASE,
-        )
-        if tag_match:
-            regen_source_tag = tag_match.group(1).upper()
-            cleaned = cleaned[tag_match.end() :]
-        else:
-            cleaned, leak_tag = _strip_proactive_screen_tag_leak(cleaned)
-            if leak_tag:
-                regen_source_tag = leak_tag
+        cleaned, regen_source_tag = _parse_proactive_phase2_prefix(cleaned, final=True)
         cleaned = _strip_proactive_intent_label_leak(cleaned)
         if (
             regen_source_tag == "PASS"
@@ -2086,14 +2071,13 @@ def _parse_proactive_phase2_prefix(
 
     A complete leading legal tag commits once its body starts (PASS aborts
     immediately); waiting through whitespace keeps split separators intact.
-    Recovery of
-    leaked labels and the legacy heading waits for EOF so arbitrary provider
+    Recovery of leaked labels and the legacy heading waits for EOF so arbitrary provider
     chunk boundaries cannot change path preservation or source selection.
     At EOF an unrecognized prefix is returned as ordinary text with no source.
     """
     cleaned = text.lstrip()
     if final:
-        heading = re.search(r"主动搭话\s*\n", cleaned)
+        heading = re.match(r"主动搭话\s*\n", cleaned)
         if heading:
             cleaned = cleaned[heading.end() :].lstrip()
     match = _PROACTIVE_LEGAL_TAG_RE.match(cleaned)

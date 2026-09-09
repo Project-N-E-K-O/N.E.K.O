@@ -162,6 +162,9 @@ async def test_screen_only_chunk_defers_to_following_legal_tag(monkeypatch) -> N
         ("[Screen]\n[W", "[W", "CHAT"),
         ("[Screen]\n[docs]", "[docs]", "CHAT"),
         ("主动搭话\n[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("我想主动搭话\n你好", "我想主动搭话\n你好", ""),
+        ("[CHAT]\n我想主动搭话\n你好", "我想主动搭话\n你好", "CHAT"),
+        ("[Screen]\n我想主动搭话\n你好", "我想主动搭话\n你好", "CHAT"),
     ],
 )
 async def test_prefix_result_is_independent_of_chunk_boundaries(
@@ -181,6 +184,19 @@ async def test_prefix_result_is_independent_of_chunk_boundaries(
         generated = await _generate(mgr, chunks, expects_source_tag=bool(source))
         assert generated == expected, chunks
         mgr.handle_new_message.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("我想主动搭话\n你好", ("我想主动搭话\n你好", "")),
+        ("[CHAT]\n我想主动搭话\n你好", ("我想主动搭话\n你好", "CHAT")),
+        ("  主动搭话\n[WEB]\n你好", ("你好", "WEB")),
+        ("主动搭话\n我想主动搭话\n你好", ("我想主动搭话\n你好", "")),
+    ],
+)
+def test_final_prefix_parser_only_removes_leading_heading(raw, expected) -> None:
+    assert generation._parse_proactive_phase2_prefix(raw, final=True) == expected
 
 
 @pytest.mark.asyncio
