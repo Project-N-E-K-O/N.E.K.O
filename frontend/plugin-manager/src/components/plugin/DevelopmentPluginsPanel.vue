@@ -30,9 +30,9 @@
           <el-button :disabled="busy || (!enabled && !isRunning(record))" @click="lifecycle(record, isRunning(record) ? 'stop' : 'start')">{{ t(isRunning(record) ? 'development.stop' : 'development.start') }}</el-button>
           <el-button :disabled="busy || !enabled" @click="lifecycle(record, 'reload')">{{ t('development.reload') }}</el-button>
           <el-button @click="router.push(`/logs/${encodeURIComponent(record.plugin_id)}`)">{{ t('development.logs') }}</el-button>
-          <el-button :disabled="busy || !enabled" @click="build(record)">{{ t('development.build') }}</el-button>
           <el-button :disabled="busy" @click="openLoader(record)">{{ t('development.rebind') }}</el-button>
           <el-button :disabled="busy" type="danger" plain @click="remove(record)">{{ t('development.remove') }}</el-button>
+          <el-button class="development-build" type="primary" plain :disabled="busy || !enabled" @click="build(record)">{{ t('development.build') }}</el-button>
         </div>
       </article>
     </div>
@@ -216,6 +216,7 @@ onMounted(refresh)
 .development-path { overflow-wrap: anywhere; font-family: monospace; }
 .development-actions { margin-top: 14px; }
 .development-actions .el-button { margin-left: 0; }
+.development-actions .development-build { margin-left: auto; }
 .development-entries { margin-top: 12px; overflow-wrap: anywhere; }
 .development-entries summary { cursor: pointer; }
 .development-entries ul { list-style: none; margin: 8px 0; padding: 0; max-height: 280px; overflow-y: auto; }
