@@ -212,7 +212,12 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         def on_event(self, message):
             pass
             
-        def on_data(self, data: bytes) -> None:
+        def on_data(self, data: bytes, generation=None) -> None:
+            # 过期 synthesizer（软 flush 排空超时后被退役、或重建时被换掉的那个）
+            # 迟到的页：同一 speech_id 的新流正在用同一份聚合缓冲，混进去就是
+            # 两条 OGG 流交错成坏音频。
+            if generation is not None and generation != self.current_generation:
+                return
             sid = self.accepted_speech_id
             if not sid or self._muted:
                 # 回合切换窗口或未就绪时直接丢弃，避免错序串包
@@ -273,7 +278,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             self._inner.on_event(message)
 
         def on_data(self, data: bytes) -> None:
-            self._inner.on_data(data)
+            self._inner.on_data(data, generation=self._generation)
 
     audio_done = AudioDoneEmitter(response_queue)
     callback = Callback(response_queue, audio_done)
@@ -362,7 +367,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         if synthesizer is None:
             callback.accepted_speech_id = None
             callback.reset_bootstrap_state()
-            return
+            return False
         if callback.connection_lost:
             logger.info("CosyVoice WebSocket 已断开，跳过 streaming_complete")
             try:
@@ -371,7 +376,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 pass
             synthesizer = None
             last_streaming_call_time = None
-            return
+            return False
 
         # 标记必须在 send 之前武装：SDK 的接收线程可能在 send 返回前就把
         # on_complete 打回来（短句尤其快），标记晚一步就等于本轮白白漏发一次
@@ -380,6 +385,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         # 空闲保活的 FINISH 不算：本轮还可能继续来文本（届时会新建 synthesizer），
         # 那次 on_complete 发 audio_done 就是早发，前端会提前收尾。
         callback.finish_requested_speech_id = current_speech_id if round_end else None
+        sent = True
         try:
             synthesizer.ws.send(synthesizer.request.getFinishRequest())
         except Exception as e:
@@ -387,9 +393,12 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             # FINISH 没发出去，服务端不会给这一轮的完成通知；撤回标记，
             # 免得后面某个别的完成通知被当成本轮收尾（早发）。
             callback.finish_requested_speech_id = None
+            sent = False
         last_streaming_call_time = None
         # 这里不能立刻清 accepted_speech_id/bootstrap。
         # FINISH 发出后，服务端仍可能继续回传尾包；应由 on_complete 或后续中断/切换来收口状态。
+        # 回报 FINISH 有没有真的发出去：软 flush 据此决定是等排空还是直接换流。
+        return sent
 
     def _soft_finish():
         """Send FINISH for everything said so far without ending the round.
@@ -410,9 +419,14 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             logger.warning(f"TTS soft flush buffer 失败: {e}")
         if synthesizer is None:
             return
-        _do_streaming_complete(round_end=False)
+        sent = _do_streaming_complete(round_end=False)
         if synthesizer is None:
             # 连接已断，_do_streaming_complete 直接丢掉了 synthesizer，没什么可等的
+            return
+        if not sent:
+            # FINISH 没发出去：服务端永远不会给完成通知，进软完成态就是白等
+            # 2.5s；这条连接已经不可信，直接丢掉，后续文本走新 synthesizer。
+            _retire_soft_finished_synthesizer(drained=False)
             return
         soft_finished = True
         soft_finish_deadline = time.time() + SOFT_FLUSH_DRAIN_TIMEOUT_SECONDS
@@ -421,10 +435,16 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         """Drop a soft-finished synthesizer so the next text starts a fresh stream."""
         nonlocal synthesizer, soft_finished, soft_finish_deadline, last_streaming_call_time
         callback.finish_requested_speech_id = None
+        # 先把这一代退役：close() 之后 SDK 线程仍可能迟到地打回 on_data /
+        # on_close，没有当代可比对时它们一律按过期丢弃，不会混进接下来同一
+        # speech_id 的新流。新 synthesizer 建出来会盖上自己的代号。
+        callback.current_generation = None
         if synthesizer is not None:
             try:
                 synthesizer.close()
             except Exception:
+                # 这条连接反正要丢，close 失败也得继续换流；SDK 关一条多半已被
+                # 服务端收掉的 ws 本来就常抛，与打断路径同款处理。
                 pass
         synthesizer = None
         soft_finished = False

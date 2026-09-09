@@ -28,8 +28,6 @@ drained stream instead of the closed socket.
 """
 
 import asyncio
-import queue
-import threading
 import time
 from queue import Queue
 from unittest.mock import MagicMock
@@ -37,10 +35,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from main_logic.core import LLMSessionManager, tts_runtime as tts_runtime_mod
-from main_logic.tts_client._infra import (
-    TTS_AUDIO_DONE_SENTINEL,
-    TTS_SOFT_FLUSH_SENTINEL,
-)
+from main_logic.tts_client._infra import TTS_SOFT_FLUSH_SENTINEL
 from tests.unit.test_cosyvoice_audio_done_generation import (  # noqa: F401 - fixtures
     _LONG_ENOUGH,
     _FakeSynthesizer,
@@ -159,6 +154,48 @@ def test_stale_close_from_the_drained_stream_does_not_mark_the_new_one_lost(work
     request_queue.put((None, None))
     _wait_for(lambda: second.finish_payloads,
               "round-end FINISH still sent: the new stream was never lost")
+
+
+def test_late_pages_from_the_retired_stream_do_not_reach_the_continuation(worker):
+    """close() does not stop the SDK thread; whatever it still delivers is stale."""
+    request_queue, response_queue, _thread = worker
+
+    request_queue.put(("speech-a", _LONG_ENOUGH + "第一段。"))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "first synthesizer")
+    first = _FakeSynthesizer.instances[0]
+    request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
+    _wait_for(lambda: first.finish_payloads, "FINISH from the soft flush")
+    first.callback.on_complete()
+    request_queue.put(("speech-a", "同一轮后面还有话。"))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "continuation synthesizer")
+    _drain(response_queue)
+
+    first.callback.on_data(b"X" * 4096)  # 旧连接迟到的页
+    _settle()
+    leaked = [item for item in _drain(response_queue)
+              if isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__" and b"X" in item[2]]
+    assert leaked == [], "a retired stream's pages must not be spliced into the new stream"
+
+
+def test_soft_flush_whose_finish_fails_to_send_drops_the_dead_stream(worker):
+    """No FINISH on the wire means no completion will ever come; do not wait for it."""
+    request_queue, _response_queue, _thread = worker
+
+    request_queue.put(("speech-a", _LONG_ENOUGH + "第一段。"))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "first synthesizer")
+    first = _FakeSynthesizer.instances[0]
+
+    def _broken_send(_payload):
+        raise ConnectionError("socket gone")
+
+    first.ws.send = _broken_send
+    request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
+    _wait_for(lambda: first.closed, "the dead stream is released")
+
+    # 后续文本不该被扣到 2.5s 排空期限，立刻走新 synthesizer
+    request_queue.put(("speech-a", _LONG_ENOUGH + "接着说。"))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "new synthesizer right away", timeout=1.0)
+    assert _FakeSynthesizer.instances[1].spoken == [_LONG_ENOUGH + "接着说。"]
 
 
 def test_soft_flush_for_another_speech_is_ignored(worker):
