@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick } from 'vue'
 import DevelopmentPluginsPanel from './DevelopmentPluginsPanel.vue'
 import { usePluginStore } from '@/stores/plugin'
-import { getDevelopment, registerDevelopment, removeDevelopment, runDevelopmentAction, setDevelopmentEnabled } from '@/api/development'
+import { getDevelopment, registerDevelopment, removeDevelopment, runDevelopmentAction, setDevelopmentEnabled, downloadDevelopmentPackage } from '@/api/development'
+import { buildPluginCli } from '@/api/pluginCli'
+import { ElMessage } from 'element-plus'
 const record = { registration_id: 'reg-1', revision: 7, plugin_id: 'demo', source_dir: 'C:/中文 folder/demo', name: 'Demo', version: '1', entry: 'plugins.demo:Demo', error: null }
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
@@ -13,7 +15,7 @@ vi.mock('@/stores/plugin', async () => {
   const store = reactive({ pluginsWithStatus: [{ id: 'demo', status: 'running', entries: [] }], fetchPlugins: vi.fn(), fetchPluginStatus: vi.fn() })
   return { usePluginStore: () => store }
 })
-vi.mock('@/api/development', () => ({ getDevelopment: vi.fn(), setDevelopmentEnabled: vi.fn(), registerDevelopment: vi.fn(), rebindDevelopment: vi.fn(), removeDevelopment: vi.fn(), runDevelopmentAction: vi.fn() }))
+vi.mock('@/api/development', () => ({ getDevelopment: vi.fn(), setDevelopmentEnabled: vi.fn(), registerDevelopment: vi.fn(), rebindDevelopment: vi.fn(), removeDevelopment: vi.fn(), runDevelopmentAction: vi.fn(), downloadDevelopmentPackage: vi.fn() }))
 vi.mock('@/api/pluginCli', () => ({ buildPluginCli: vi.fn(), downloadPluginPackage: vi.fn() }))
 vi.mock('element-plus', () => ({ ElMessage: { success: vi.fn() }, ElMessageBox: { confirm: vi.fn().mockResolvedValue(true) } }))
 let teardown = () => {}
@@ -46,6 +48,30 @@ beforeEach(() => {
 })
 afterEach(() => teardown())
 describe('development plugin workflow', () => {
+  it('awaits the protected download and displays a download failure', async () => {
+    vi.mocked(buildPluginCli).mockResolvedValueOnce({ ok: true, built: [{ package_path: 'C:/packages-development/demo.neko-plugin' }], failed: [] } as Awaited<ReturnType<typeof buildPluginCli>>)
+    let rejectDownload!: (error: Error) => void
+    vi.mocked(downloadDevelopmentPackage).mockImplementationOnce(() => new Promise((_, reject) => { rejectDownload = reject }))
+    const root = mount()
+    await settle()
+    button(root, 'development.build').click()
+    await settle()
+    expect(downloadDevelopmentPackage).toHaveBeenCalledWith('C:/packages-development/demo.neko-plugin')
+    expect(button(root, 'development.build').disabled).toBe(true)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    rejectDownload(new Error('download denied'))
+    await settle()
+    expect(root.textContent).toContain('download denied')
+    expect(button(root, 'development.build').disabled).toBe(false)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+  })
+  it('shows a degraded startup error while keeping Stop available', async () => {
+    vi.mocked(getDevelopment).mockResolvedValueOnce({ enabled: true, registrations: [{ ...record, runtime_alive: true, error: 'startup hook failed' }] })
+    const root = mount()
+    await settle()
+    expect(root.textContent).toContain('startup hook failed')
+    expect(button(root, 'development.stop').disabled).toBe(false)
+  })
   it('releases busy state and refreshes the actual setting after a shutdown timeout', async () => {
     let failRequest!: (reason: Error) => void
     vi.mocked(setDevelopmentEnabled).mockImplementationOnce(() => new Promise((_, reject) => { failRequest = reject }))

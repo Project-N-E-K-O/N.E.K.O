@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from plugin.server.application.plugins import development as store
 from plugin.server.application.plugins import development_service as service
+from plugin.server.application.plugin_cli.development_artifacts import resolve_development_download_sync
 from plugin.server.application.plugins.operation_lock import PluginOperationBusy, bounded_operation_wait
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.errors import ServerDomainError
@@ -45,6 +47,12 @@ async def _operation(awaitable):
 @router.get("/plugins/development")
 async def get_development():
     return await _operation(asyncio.to_thread(service.development_view_sync))
+
+
+@router.get("/plugins/development/download")
+async def download_development_package(package: str = Query(min_length=1)):
+    resolved = await _operation(asyncio.to_thread(resolve_development_download_sync, package))
+    return FileResponse(str(resolved), filename=resolved.name, media_type="application/octet-stream")
 
 
 @router.put("/plugins/development/settings")

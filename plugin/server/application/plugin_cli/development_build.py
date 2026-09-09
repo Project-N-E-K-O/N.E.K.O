@@ -16,6 +16,7 @@ from plugin.neko_plugin_cli.core.dependencies import validate_source_dependency_
 from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
 from plugin.neko_plugin_cli.core.build import PluginBuilder
 from plugin.neko_plugin_cli.public import inspect_package
+from plugin.server.application.plugin_cli.development_artifacts import development_artifacts_root
 
 
 def build_plugin(*args, source_only_roots=(), **kwargs):
@@ -143,7 +144,6 @@ def build_development_sources(
     output_root = _require_output(
         Path(target_dir).expanduser() if target_dir else target_root, target_root, source_dirs,
     )
-    output_root.mkdir(parents=True, exist_ok=True)
     requested_output = _require_output(Path(out).expanduser(), target_root, source_dirs) if out else None
     built: list[dict[str, object]] = []
     groups = [source_dirs] if mode == "bundle" else [[source] for source in source_dirs]
@@ -211,8 +211,14 @@ def build_development_sources(
                 # never replace one another or publish an incomplete zip.
                 name = requested_output.stem if requested_output else result.plugin_id
                 destination_root = requested_output.parent if requested_output else output_root
+                publication_root = target_root
+                if any(by_path[path][1] is not None for path in group):
+                    # Keep caller-suggested relative directories/names, but never
+                    # publish development bytes to the public package surface.
+                    publication_root = development_artifacts_root(target_root)
+                    destination_root = publication_root / destination_root.relative_to(target_root.resolve())
                 destination = _require_output(
-                    destination_root / f"{name}-{uuid.uuid4().hex}{suffix}", target_root, source_dirs,
+                    destination_root / f"{name}-{uuid.uuid4().hex}{suffix}", publication_root, source_dirs,
                 )
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 # Stage beside the final file for atomic rename across volumes.

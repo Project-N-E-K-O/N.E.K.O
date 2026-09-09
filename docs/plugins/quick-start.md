@@ -6,6 +6,8 @@ For an existing valid plugin source folder, you do not need to clone the main re
 
 Development-directory APIs are available only to the local desktop application and loopback web pages. Remote LAN pages and reverse-proxy access are not supported yet.
 
+Development archives are stored separately and downloaded through the local development page. They do not appear in the ordinary package list. Removing a registration or disabling developer mode preserves the local-only download restriction. Downloaded files can be installed through the normal import flow.
+
 1. Open the plugin manager, select **Developer mode** below **Server logs** in the sidebar, and enable its switch.
 2. Choose **Load unpacked plugin** and select the folder containing `plugin.toml`. In a browser, enter an absolute folder path on the **backend machine**; uploading a browser-local folder does not provide in-place development.
 3. Validate the name, ID, version, entry point and path, then load. Failed startup keeps the registration and error so you can fix the source and retry.

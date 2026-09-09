@@ -86,8 +86,8 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { FolderOpened, InfoFilled, CircleCheckFilled, DocumentChecked } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
-import { getDevelopment, setDevelopmentEnabled, registerDevelopment, rebindDevelopment, removeDevelopment, runDevelopmentAction, type DevelopmentRegistration } from '@/api/development'
-import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
+import { getDevelopment, setDevelopmentEnabled, registerDevelopment, rebindDevelopment, removeDevelopment, runDevelopmentAction, downloadDevelopmentPackage, type DevelopmentRegistration } from '@/api/development'
+import { buildPluginCli } from '@/api/pluginCli'
 import { formatHttpError } from '@/utils/request'
 
 interface HostBridge {
@@ -188,7 +188,7 @@ async function build(record: DevelopmentRegistration) {
   await perform(async () => {
     const result = await buildPluginCli({ mode: 'single', development_ref: { registration_id: record.registration_id, revision: record.revision } })
     if (!result.ok || !result.built.length) throw new Error(result.failed.map((item) => item.error).join('\n') || t('development.failed'))
-    result.built.forEach((item) => downloadPluginPackage(item.package_path))
+    for (const item of result.built) await downloadDevelopmentPackage(item.package_path)
     ElMessage.success(t('development.built'))
   })
 }

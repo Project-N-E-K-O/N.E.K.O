@@ -14,6 +14,23 @@ export interface DevelopmentRegistration extends DevelopmentRef {
 }
 export interface DevelopmentState { enabled: boolean; registrations: DevelopmentRegistration[]; disable_timeout_ms?: number }
 const config = { headers: { 'X-Neko-Development': '1' }, timeout: PLUGIN_LIFECYCLE_TIMEOUT }
+export const downloadDevelopmentPackage = async (packagePath: string): Promise<void> => {
+  const blob = await get<Blob>('/plugins/development/download', {
+    ...config, params: { package: packagePath }, responseType: 'blob', timeout: 300_000,
+  })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = packagePath.split(/[\\/]/).pop() || 'development.neko-plugin'
+  document.body.appendChild(link)
+  try {
+    link.click()
+  } finally {
+    link.remove()
+    // Let the browser/Electron consume the download before releasing the blob.
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+}
 export const getDevelopment = (): Promise<DevelopmentState> => get('/plugins/development', config)
 export const setDevelopmentEnabled = async (enabled: boolean): Promise<DevelopmentState> => {
   if (enabled) return put('/plugins/development/settings', { enabled }, config)

@@ -18,6 +18,82 @@ from plugin.server.application.plugins import development as dev
 pytestmark = pytest.mark.plugin_unit
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["single", "selected", "bundle", "all"])
+async def test_development_archives_require_local_download_after_detach(workspace, monkeypatch, mode):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from plugin.server.routes import development, plugin_cli
+
+    monkeypatch.setattr(dev.settings, "USER_PLUGIN_PACKAGES_ROOT", workspace / "packages")
+    snapshot = register(workspace)
+    ordinary = register(workspace, "ordinary_demo")
+    dev.remove_registration_sync(ordinary)
+    shutil.copytree(ordinary.source_dir, workspace / "installed" / "ordinary_demo")
+    ref = {"registration_id": snapshot.registration_id, "revision": snapshot.revision}
+    kwargs = {"development_ref": ref} if mode == "single" else {"development_refs": [ref]} if mode != "all" else {}
+    if mode in {"selected", "bundle"}:
+        kwargs["plugins"] = ["ordinary_demo"]
+    result = await PluginCliService().build(mode=mode, **kwargs)
+    assert result["ok"], result
+    private = [Path(item["package_path"]) for item in result["built"]
+               if Path(item["package_path"]).parent == workspace / "packages-development"]
+    assert len(private) == 1
+    package = private[0]
+    expected_bytes = package.read_bytes()
+    assert inspect_package(package).payload_hash_verified
+    # Artifacts remain private independently of registration/runtime state.
+    dev.remove_registration_sync(snapshot)
+    dev.set_enabled_sync(False)
+    app = FastAPI()
+    app.include_router(development.router)
+    app.include_router(plugin_cli.router)
+    async with AsyncClient(transport=ASGITransport(app=app, client=("192.168.1.2", 1234)),
+                           base_url="http://127.0.0.1") as remote:
+        listed = await remote.get("/plugin-cli/packages")
+        assert listed.status_code == 200
+        assert package.name not in listed.text
+        for reference in (str(package), package.name, "../packages-development/" + package.name):
+            response = await remote.get("/plugin-cli/download", params={"package": reference})
+            assert response.status_code in {400, 404}
+        denied = await remote.get("/plugins/development/download", params={"package": str(package)},
+                                  headers={"X-Neko-Development": "1"})
+        assert denied.status_code == 403
+        # Ordinary packages produced in a mixed build keep their public contract.
+        for item in listed.json()["packages"]:
+            downloaded = await remote.get("/plugin-cli/download", params={"package": item["path"]})
+            assert downloaded.status_code == 200
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1") as local:
+        for headers in ({}, {"X-Neko-Development": "1", "Origin": "https://evil.example"},
+                        {"X-Neko-Development": "1", "Host": "evil.example"}):
+            response = await local.get("/plugins/development/download", params={"package": str(package)}, headers=headers)
+            assert response.status_code == 403
+        for reference in (str(package), package.name):
+            downloaded = await local.get("/plugins/development/download", params={"package": reference},
+                                         headers={"X-Neko-Development": "1", "Origin": "http://localhost:48911"})
+            assert downloaded.status_code == 200
+            assert downloaded.content == expected_bytes
+        for reference, status in (("../outside.neko-plugin", 400), ("missing.neko-plugin", 404),
+                                  ("output.neko-plugin.pending", 400)):
+            response = await local.get("/plugins/development/download", params={"package": reference},
+                                       headers={"X-Neko-Development": "1"})
+            assert response.status_code == status
+
+
+@pytest.mark.parametrize("suggestion", ["directory", "file"])
+def test_development_output_suggestions_stay_private(workspace, suggestion):
+    snapshot = register(workspace)
+    result = build.build_development_sources(
+        development=[snapshot], ordinary=[], mode="single", target_root=workspace / "packages",
+        target_dir=str(workspace / "packages" / "nested") if suggestion == "directory" else None,
+        out=str(workspace / "packages" / "nested" / "custom.neko-plugin") if suggestion == "file" else None,
+        keep_staging=False, bundle_id=None, package_name=None, package_description=None, version=None,
+    )
+    assert result["ok"], result
+    assert Path(result["built"][0]["package_path"]).parent == workspace / "packages-development" / "nested"
+    assert not list((workspace / "packages").rglob("*.neko-plugin"))
+
+
 @pytest.mark.parametrize("plugin_id", ["my-plugin", "123plugin"])
 @pytest.mark.parametrize("prefix", ["plugins", "plugin.plugins"])
 def test_package_valid_ids_register_load_build_and_install(workspace, plugin_id, prefix):
@@ -108,7 +184,7 @@ async def test_remote_all_with_development_sources_remains_denied(workspace):
                            base_url="http://127.0.0.1", headers={"X-Neko-Development": "1"}) as client:
         response = await client.post("/plugin-cli/build", json={"mode": "all"})
     assert response.status_code == 403
-    assert not list((workspace / "packages").glob("*.neko-plugin"))
+    assert not list(workspace.glob("packages*/*.neko-plugin"))
 
 
 @pytest.mark.asyncio
@@ -175,7 +251,7 @@ async def test_corrupt_store_explicit_development_build_still_fails(workspace, m
     assert response.status_code == 500
     assert response.headers["X-Error-Code"] == "DEVELOPMENT_STORE_INVALID"
     assert dev._store_path().read_bytes() == b'{'
-    assert not list((workspace / "packages").glob("*.neko-plugin"))
+    assert not list(workspace.glob("packages*/*.neko-plugin"))
 
 
 @pytest.mark.asyncio
@@ -268,7 +344,7 @@ def test_concurrent_builds_publish_distinct_complete_archives(workspace):
     paths = [result["built"][0]["package_path"] for result in results]
     assert len(set(paths)) == 2
     assert all(inspect_package(path).payload_hash_verified for path in paths)
-    assert not list((workspace / "packages").glob("*.pending"))
+    assert not list(workspace.glob("packages*/*.pending"))
 
 
 def test_edit_during_build_refuses_publication(workspace, monkeypatch):
@@ -284,7 +360,7 @@ def test_edit_during_build_refuses_publication(workspace, monkeypatch):
     result = run_build(snapshot, workspace)
     assert not result["ok"]
     assert "Source changed" in result["failed"][0]["error"]
-    assert not list((workspace / "packages").glob("*.neko-plugin"))
+    assert not list(workspace.glob("packages*/*.neko-plugin"))
 
 
 def test_detach_during_build_refuses_publication(workspace, monkeypatch):
@@ -299,7 +375,7 @@ def test_detach_during_build_refuses_publication(workspace, monkeypatch):
     monkeypatch.setattr(build, "build_plugin", detaching_build)
     result = run_build(snapshot, workspace)
     assert not result["ok"]
-    assert not list((workspace / "packages").glob("*.neko-plugin"))
+    assert not list(workspace.glob("packages*/*.neko-plugin"))
     assert snapshot.source_dir.is_dir()
 
 
@@ -349,7 +425,7 @@ def test_missing_vendor_dependency_fails_without_package(workspace):
     result = run_build(snapshot, workspace)
     assert not result["ok"]
     assert "vendor" in result["failed"][0]["error"]
-    assert not list((workspace / "packages").glob("*.neko-plugin"))
+    assert not list(workspace.glob("packages*/*.neko-plugin"))
 
 
 @pytest.mark.asyncio
@@ -383,8 +459,8 @@ async def test_cancelled_build_does_not_publish_later(workspace, monkeypatch):
         await task
     release.set()
     assert await asyncio.to_thread(finished.wait, 5)
-    assert not list((workspace / "packages").glob("*.neko-plugin"))
-    assert not list((workspace / "packages").glob("*.pending"))
+    assert not list(workspace.glob("packages*/*.neko-plugin"))
+    assert not list(workspace.glob("packages*/*.pending"))
 
 
 @pytest.mark.asyncio
@@ -423,7 +499,7 @@ async def test_build_route_guards_development_sources(workspace, headers, peer, 
     if expected == 200:
         assert response.json()["built_count"] == 1
     else:
-        assert not list((workspace / "packages").glob("*.neko-plugin"))
+        assert not list(workspace.glob("packages*/*.neko-plugin"))
 
 
 @pytest.mark.asyncio
@@ -522,5 +598,5 @@ async def test_directory_id_mismatch_cannot_publish_broken_package(workspace, mo
     assert "release_demo" in result["failed"][0]["error"]
     assert "source_pkg" in result["failed"][0]["error"]
     assert "rebind" in result["failed"][0]["error"]
-    assert not list((workspace / "packages").glob("*.neko-*"))
+    assert not list(workspace.glob("packages*/*.neko-*"))
     assert {path.name: path.read_bytes() for path in snapshot.source_dir.iterdir()} == before

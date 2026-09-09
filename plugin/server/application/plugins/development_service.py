@@ -52,7 +52,8 @@ def _overlay_runtime_error_sync(result: dict) -> dict:
         meta = state.plugins.get(result["plugin_id"])
         reference = {"registration_id": result["registration_id"], "revision": result["revision"]}
         if (not result.get("error") and isinstance(meta, dict)
-                and meta.get("development_ref") == reference and meta.get("runtime_startup_state") == "failed"):
+                and meta.get("development_ref") == reference
+                and meta.get("runtime_startup_state") in {"failed", "degraded"}):
             result["error"] = meta.get("runtime_startup_error")
     return result
 

@@ -48,6 +48,36 @@ def _register(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_degraded_startup_error_survives_view_refresh_and_stop(monkeypatch, tmp_path):
+    from plugin.server.application.plugins import lifecycle_service
+
+    record = _register(tmp_path)
+
+    class WarnHost(_SourceHost):
+        def __init__(self, **kwargs):
+            super().__init__(kwargs["config_path"])
+
+        async def start(self, **kwargs):
+            assert kwargs["startup_failure"] == "warn"
+            return {"startup_error": "startup hook failed"}
+
+    monkeypatch.setattr(lifecycle_service, "PluginProcessHost", WarnHost)
+    result = await lifecycle_service.PluginLifecycleService().start_plugin(record.plugin_id)
+    assert result["startup_degraded"] is True
+    service._record_runtime_failure_sync(record, None)
+    for view in (service.registration_view_sync(record), service.development_view_sync()["registrations"][0]):
+        assert view["error"] == "startup hook failed"
+        assert view["runtime_alive"] is True
+    host = service.state.plugin_hosts[record.plugin_id]
+    result = await service.development_lifecycle_action(record.plugin_id, "stop", record.registration_id, record.revision)
+    assert result["success"]
+    assert host.stops == 1
+    assert service.registration_view_sync(record)["runtime_alive"] is False
+    updated = store.rebind_registration_sync(record, str(_source(tmp_path / "replacement")))
+    assert service.registration_view_sync(updated)["error"] is None
+
+
+@pytest.mark.asyncio
 async def test_extra_registration_field_preserves_ordinary_startup(tmp_path, monkeypatch):
     _register(tmp_path)
     data = json.loads(store._store_path().read_text(encoding="utf-8"))
