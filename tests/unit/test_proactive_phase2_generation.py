@@ -165,6 +165,18 @@ async def test_screen_only_chunk_defers_to_following_legal_tag(monkeypatch) -> N
         ("我想主动搭话\n你好", "我想主动搭话\n你好", ""),
         ("[CHAT]\n我想主动搭话\n你好", "我想主动搭话\n你好", "CHAT"),
         ("[Screen]\n我想主动搭话\n你好", "我想主动搭话\n你好", "CHAT"),
+        ("\ufeff主动搭话\n[CHAT]\n你好", "你好", "CHAT"),
+        ("\u200b \ufeff主动搭话\n[WEB]\n你好", "你好", "WEB"),
+        ("\ufeff我想主动搭话\n你好", "\ufeff我想主动搭话\n你好", ""),
+        ("chat /[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("/screen /[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("QQ ／\ufeff[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("chat /[docs]\n正文", "/[docs]\n正文", "CHAT"),
+        ("QQ\n/api", "/api", "CHAT"),
+        ("Older memory cue\n/help", "/help", "CHAT"),
+        ("QQ\r\n[WEB]\n看这个链接", "看这个链接", "WEB"),
+        ("QQ\n你好", "你好", "CHAT"),
+        ("QQ聊天\n/api", "QQ聊天\n/api", ""),
     ],
 )
 async def test_prefix_result_is_independent_of_chunk_boundaries(

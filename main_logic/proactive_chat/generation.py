@@ -2077,9 +2077,10 @@ def _parse_proactive_phase2_prefix(
     """
     cleaned = text.lstrip()
     if final:
-        heading = re.match(r"主动搭话\s*\n", cleaned)
+        heading_text = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", cleaned, count=1)
+        heading = re.match(r"主动搭话\s*\n", heading_text)
         if heading:
-            cleaned = cleaned[heading.end() :].lstrip()
+            cleaned = heading_text[heading.end() :].lstrip()
     match = _PROACTIVE_LEGAL_TAG_RE.match(cleaned)
     if match:
         source = match.group(1).upper()
@@ -2249,6 +2250,9 @@ def _strip_proactive_label_tail(rest: str) -> str:
             or not slash_tail
             or slash_tail.isspace()
             or not slash_tail.isascii()
+            or _starts_with_proactive_source_tag(
+                _PROACTIVE_LEADING_IGNORABLE_RE.sub("", same_line[1:], count=1)
+            )
         )
         if not slash_is_separator:
             break
@@ -2417,15 +2421,24 @@ def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
         return "", ""
     body = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", text, count=1)
     recovered_tag = ""
+    context_labels = _get_proactive_context_leak_labels()
 
     # Bounded peeling handles stacked new-line prefixes without allowing a
     # malformed response to turn this guard into an unbounded rewrite loop.
     for _ in range(4):
         cleaned = _strip_proactive_label_slash_prefix(
             body,
-            _get_proactive_context_leak_labels(),
+            context_labels,
         )
         source_tag = "CHAT"
+        if cleaned is None:
+            # A whole context-label line is framing, independently of whether
+            # the next line starts with prose, a route or another source tag.
+            first, newline, rest = body.partition("\n")
+            if newline and first.strip(
+                _PROACTIVE_HORIZONTAL_SPACES + "\r" + _PROACTIVE_LEADING_INVISIBLES
+            ).casefold() in context_labels:
+                cleaned = rest
         if cleaned is None:
             source_prefix = _strip_proactive_source_prefix(body)
             if source_prefix is not None:
