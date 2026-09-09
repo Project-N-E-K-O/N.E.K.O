@@ -245,6 +245,137 @@ input:focus-visible,
     max-width: 620px;
 }
 
+.enrollment-hints {
+    display: grid;
+    max-width: 520px;
+    margin: 18px auto 0;
+    padding: 0;
+    color: var(--voice-muted);
+    font-size: 0.92rem;
+    line-height: 1.55;
+    list-style: none;
+    gap: 4px;
+}
+
+.enrollment-hints li::before {
+    margin-right: 7px;
+    color: var(--voice-blue-dark);
+    content: "✓";
+    font-weight: 800;
+}
+
+.step-progress {
+    display: flex;
+    width: min(420px, 100%);
+    align-items: center;
+    margin-top: 24px;
+}
+
+.step-dot {
+    display: inline-flex;
+    width: 32px;
+    height: 32px;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border: 2px solid var(--voice-border);
+    border-radius: 50%;
+    color: var(--voice-muted);
+    background: var(--voice-panel);
+    font-weight: 800;
+}
+
+.step-dot.current {
+    border-color: var(--voice-blue-dark);
+    color: var(--voice-focus);
+    box-shadow: 0 0 0 5px rgba(36, 184, 242, 0.12);
+}
+
+.step-dot.completed {
+    border-color: #168c5b;
+    color: white;
+    background: #168c5b;
+}
+
+.step-dot.verification {
+    border-style: double;
+}
+
+.step-line {
+    height: 2px;
+    flex: 1 1 auto;
+    background: var(--voice-border);
+}
+
+.progress-label,
+.phase-label,
+.remaining-label {
+    margin: 10px 0 0;
+    color: var(--voice-muted);
+    line-height: 1.4;
+}
+
+.progress-label {
+    color: var(--voice-blue-dark);
+    font-weight: 800;
+}
+
+.phase-label {
+    min-height: 1.4em;
+    font-weight: 600;
+}
+
+.reading-prompt {
+    display: grid;
+    width: min(560px, 100%);
+    margin-top: 14px;
+    padding: 16px 20px;
+    border: 1px solid var(--voice-border);
+    border-radius: 16px;
+    color: var(--voice-ink);
+    background: rgba(36, 184, 242, 0.09);
+    line-height: 1.6;
+    gap: 4px;
+}
+
+.reading-prompt[hidden] {
+    display: none;
+}
+
+.reading-prompt-label {
+    color: var(--voice-blue-dark);
+    font-size: 0.82rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+}
+
+#voice-identity-reading-text {
+    font-size: clamp(1.05rem, 2.4vw, 1.3rem);
+    font-weight: 700;
+}
+
+#voice-identity-reading-text::before,
+#voice-identity-reading-text::after {
+    color: var(--voice-muted);
+}
+
+.verification-help {
+    width: min(560px, 100%);
+    margin: 8px 0 0;
+    color: var(--voice-muted);
+    font-size: 0.86rem;
+    line-height: 1.5;
+}
+
+.verification-help[hidden] {
+    display: none;
+}
+
+.remaining-label {
+    min-height: 1.4em;
+    font-size: 0.88rem;
+}
+
 .eyebrow {
     margin: 0 0 9px;
     color: var(--voice-blue-dark);
@@ -280,6 +411,16 @@ input:focus-visible,
     animation: pulse 0.9s ease-in-out infinite alternate;
 }
 
+.capture-status.preparing {
+    color: var(--voice-muted);
+    background: rgba(97, 121, 138, 0.12);
+}
+
+.capture-status.preparing .record-icon {
+    background: var(--voice-muted);
+    animation: none;
+}
+
 .capture-status.saving .record-icon {
     background: var(--voice-blue-dark);
     animation: none;
@@ -308,7 +449,7 @@ input:focus-visible,
 
 .enrollment-message {
     min-height: 1.5em;
-    margin: 16px 0 0;
+    margin: 0;
     color: var(--voice-blue-dark);
     font-weight: 600;
 }
@@ -456,6 +597,11 @@ button:disabled {
         padding: 30px 20px;
     }
 
+    .step-dot {
+        width: 29px;
+        height: 29px;
+    }
+
     .filter-row {
         align-items: flex-start;
     }
@@ -463,4 +609,70 @@ button:disabled {
     .profile-actions {
         justify-content: flex-start;
     }
+}
+/* Model download status shares the enrollment card on browser and desktop. */
+#voice-identity-ecapa-progress {
+    display: block;
+    width: 100%;
+    margin: 12px 0;
+    accent-color: var(--primary-color, #37b8b4);
+}
+#voice-identity-ecapa-progress[hidden] { display: none; }
+/* TSE stays compact until the user chooses to configure it. */
+.tse-model-card {
+    display: block;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0;
+    text-align: left;
+}
+.tse-model-summary {
+    display: flex;
+    min-height: 116px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 24px 28px;
+    cursor: pointer;
+    list-style: none;
+}
+.tse-model-summary::-webkit-details-marker { display: none; }
+.tse-model-summary:focus-visible { outline: 3px solid var(--voice-focus); outline-offset: -5px; }
+.tse-model-summary-copy { display: grid; min-width: 0; gap: 5px; }
+.tse-model-summary-copy .eyebrow { margin: 0; }
+.tse-model-summary-title { color: var(--voice-text); font-size: 1.35rem; font-weight: 800; }
+.tse-model-summary-help { color: var(--voice-muted); line-height: 1.5; }
+.tse-model-summary-action {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+    color: var(--voice-blue-dark);
+    font-weight: 750;
+}
+.tse-model-collapse-label { display: none; }
+.tse-model-card[open] .tse-model-expand-label { display: none; }
+.tse-model-card[open] .tse-model-collapse-label { display: inline; }
+.tse-model-summary-action::after { content: "⌄"; font-size: 1.2rem; transition: transform 0.2s ease; }
+.tse-model-card[open] .tse-model-summary-action::after { transform: rotate(180deg); }
+.tse-model-content { padding: 0 28px 28px; }
+.tse-model-states { display: grid; gap: 10px; margin: 16px 0; }
+.tse-model-states > div { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 3fr); gap: 12px; }
+.tse-model-states dt { color: var(--voice-muted); }
+.tse-model-states dd { margin: 0; overflow-wrap: anywhere; }
+.tse-model-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.tse-model-actions button { white-space: normal; }
+.tse-model-toggle { margin-top: 18px; border-top: 1px solid var(--voice-border); padding-top: 16px; }
+.tse-model-toggle h3 { margin: 0 0 6px; font-size: 16px; }
+.tse-model-note { margin-top: 16px; font-size: 0.9rem; }
+#voice-identity-tse-progress { width: 100%; accent-color: var(--voice-blue-dark); }
+#voice-identity-tse-size { overflow-wrap: anywhere; }
+
+@media (max-width: 680px) {
+    .tse-model-card { min-height: 0; padding: 0; }
+    .tse-model-summary { min-height: 104px; gap: 14px; padding: 22px 20px; }
+    .tse-model-summary-title { font-size: 1.15rem; }
+    .tse-model-summary-action { font-size: 0.88rem; }
+    .tse-model-content { padding: 0 20px 24px; }
+    .tse-model-states > div { grid-template-columns: 88px minmax(0, 1fr); }
 }

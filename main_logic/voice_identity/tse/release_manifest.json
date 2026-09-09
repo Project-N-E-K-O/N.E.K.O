@@ -1,0 +1,138 @@
+{
+  "schema": 1,
+  "resource_revision": "real-tse-causal-onnx-v1",
+  "model_id": "real-tse-wespeaker-ecapa",
+  "model_revision": "6eb9e96eed042cc59b875631deb448ea8b11a7b40918a8424d0aa0161be70e99",
+  "upstream_commit": "2a540977a348fbaa92e623210505430e2cec608d",
+  "preprocessing_revision": "wespeaker-kaldi-fbank-v1",
+  "reference_method": "mean_raw_3_segments_v1",
+  "embedding_dimension": 192,
+  "sample_rate": 16000,
+  "archive": {
+    "filename": "real-tse-causal-onnx-v1.zip",
+    "bytes": 94496929,
+    "sha256": "ae8a0a150232d4cf182f7526ec0fff30206a067ea998fdd5de9efb43967d54e2"
+  },
+  "source": null,
+  "files": {
+    "LICENSE-APACHE-2.0.txt": {
+      "bytes": 11357,
+      "sha256": "0d99b64baf1323c3a7f70a28075b14d573df6d773aa2d33d827053cc775062d8"
+    },
+    "NOTICE.txt": {
+      "bytes": 1569,
+      "sha256": "737f12d18feb76a2b4cc032f9e7ab6a02b1f4cf6dcaa872106cc676bccfefd29"
+    },
+    "README.md": {
+      "bytes": 1150,
+      "sha256": "491219bf32a7fe20a91bf5f2595cfcc8333d854d983ac0428a5b5c1689cca9a0"
+    },
+    "bundle.json": {
+      "bytes": 856,
+      "sha256": "d6233fc4e1d7d0744f40e39edff428c396ab1807c1db5dabf14b6795496bd279"
+    },
+    "tse_ecapa_fp32.onnx": {
+      "bytes": 24897704,
+      "sha256": "6eb9e96eed042cc59b875631deb448ea8b11a7b40918a8424d0aa0161be70e99"
+    },
+    "tse_frontend_constants.npz": {
+      "bytes": 84346,
+      "sha256": "312c4f3e526452fa8a83b2246f23e5b3581199bc36c0548e1c2be0ba87f7db4b"
+    },
+    "tse_stateful_fp32.onnx": {
+      "bytes": 75778515,
+      "sha256": "bce77f0146c5ff01b0fc62a500b8dd94553212373b235639e8436d7be3d809a6"
+    }
+  },
+  "onnx": {
+    "tse_stateful_fp32.onnx": {
+      "external_data": false,
+      "inputs": {
+        "spectrum": [
+          1,
+          2,
+          257,
+          "frames"
+        ],
+        "embedding": [
+          1,
+          192
+        ],
+        "hidden": [
+          6,
+          1,
+          32,
+          256
+        ],
+        "cell": [
+          6,
+          1,
+          32,
+          256
+        ]
+      },
+      "outputs": {
+        "estimated": [
+          "Concatestimated_dim_0",
+          2,
+          257,
+          "frames"
+        ],
+        "next_hidden": [
+          6,
+          1,
+          "Concatnext_hidden_dim_2",
+          256
+        ],
+        "next_cell": [
+          6,
+          1,
+          "Concatnext_cell_dim_2",
+          256
+        ]
+      },
+      "probe_outputs": {
+        "estimated": [
+          1,
+          2,
+          257,
+          1
+        ],
+        "next_hidden": [
+          6,
+          1,
+          32,
+          256
+        ],
+        "next_cell": [
+          6,
+          1,
+          32,
+          256
+        ]
+      }
+    },
+    "tse_ecapa_fp32.onnx": {
+      "external_data": false,
+      "inputs": {
+        "fbank": [
+          1,
+          "frames",
+          80
+        ]
+      },
+      "outputs": {
+        "embedding": [
+          1,
+          192
+        ]
+      },
+      "probe_outputs": {
+        "embedding": [
+          1,
+          192
+        ]
+      }
+    }
+  }
+}

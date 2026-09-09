@@ -7,6 +7,10 @@ import json
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from main_logic.voice_identity_service.audio_contract import (
+    OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID,
+    OWNER_CAMPPLUS_DESKTOP_SOURCE_SAMPLE_RATE_HZ,
+)
 from main_logic.voice_identity_service.registry import (
     VoiceIdentityServiceRegistryError,
     get_voice_identity_service_for_router,
@@ -18,8 +22,15 @@ from main_routers.system_router import _validate_local_mutation_request
 router = APIRouter(prefix="/api/voice-identity", tags=["voice-identity"])
 _ENROLLMENT_HEADER = "X-Voice-Identity-Enrollment"
 _PROFILE_HEADER = "X-Voice-Identity-Profile"
-_PCM_CONTENT_TYPE = "audio/pcm;format=pcm_s16le;rate=16000;channels=1"
-_MAX_PCM_BYTES = 16_000 * 4 * 2
+_SEGMENT_HEADER = "X-Voice-Identity-Segment"
+_AUDIO_CONTRACT_HEADER = "X-Voice-Audio-Contract"
+_PCM_CONTENT_TYPE = "audio/pcm;format=pcm_s16le;rate=48000;channels=1"
+_MAX_REFERENCE_PCM_BYTES = (
+    OWNER_CAMPPLUS_DESKTOP_SOURCE_SAMPLE_RATE_HZ * 4 * 2
+)
+_MAX_VERIFICATION_PCM_BYTES = (
+    OWNER_CAMPPLUS_DESKTOP_SOURCE_SAMPLE_RATE_HZ * 5 * 2
+)
 _MAX_FILTER_JSON_BYTES = 1024
 
 
@@ -38,18 +49,49 @@ def _service_unavailable() -> JSONResponse:
 
 
 def _service_error(exc: VoiceIdentityServiceError) -> JSONResponse:
-    if exc.code in {"invalid_enrollment_id", "invalid_profile_id"}:
+    if exc.code in {
+        "invalid_enrollment_id",
+        "invalid_profile_id",
+        "invalid_segment_index",
+    }:
         status_code = 400
-    elif exc.code == "stale_enrollment":
+    elif exc.code in {
+        "stale_enrollment",
+        "segment_out_of_order",
+        "segment_in_progress",
+        "enrollment_active",
+        "tse_assets_busy",
+        "stale_profile",
+        "tse_reference_missing",
+        "tse_reference_required",
+        "tse_route_unavailable",
+        "tse_reference_incompatible",
+        "tse_model_missing",
+    }:
         status_code = 409
+    elif exc.code == "audio_too_long":
+        status_code = 413
     elif exc.code in {
         "invalid_pcm",
         "speech_too_short",
-        "audio_too_long",
         "silence",
+        "volume_too_low",
         "severe_clipping",
+        "no_speech_detected",
+        "voice_samples_inconsistent",
+        "owner_verification_failed",
+        "tse_integrity_error",
+        "tse_invalid_archive",
+        "tse_model_contract_error",
     }:
         status_code = 422
+    elif exc.code in {
+        "audio_processing_unavailable",
+        "unsupported_audio_contract",
+        "model_unavailable",
+        "secure_storage_unavailable",
+    }:
+        status_code = 503
     else:
         status_code = 503
     return JSONResponse({"error_code": exc.code}, status_code=status_code)
@@ -100,37 +142,144 @@ async def start_voice_identity_enrollment(request: Request):
     return service.status().as_dict()
 
 
-@router.put("/enrollment/profile")
-async def complete_voice_identity_enrollment(request: Request):
+@router.post("/models/ecapa/download")
+async def download_voice_identity_ecapa(request: Request):
+    rejected = _validate_mutation(request)
+    if rejected is not None:
+        return rejected
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    try:
+        return (await service.download_activity_model()).as_dict()
+    except VoiceIdentityServiceError as exc:
+        if exc.code == "enrollment_active":
+            return JSONResponse({"error_code": exc.code}, status_code=409)
+        return _service_error(exc)
+
+
+@router.post("/models/tse/download")
+async def download_voice_identity_tse(request: Request):
+    rejected = _validate_mutation(request)
+    if rejected is not None:
+        return rejected
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    try:
+        # The service selects only the application-pinned resource. Request
+        # query/body fields cannot override the source, revision or cache path.
+        return (await service.download_tse_model()).as_dict()
+    except VoiceIdentityServiceError as exc:
+        return _service_error(exc)
+
+
+@router.post("/models/tse/import")
+async def import_voice_identity_tse(request: Request):
+    rejected = _validate_mutation(request)
+    if rejected is not None:
+        return rejected
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/zip":
+        return JSONResponse({"error_code": "tse_invalid_archive"}, status_code=415)
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    try:
+        # No Request.body(), multipart buffer or caller-provided filesystem path.
+        # TseAssets enforces the exact trusted archive byte limit as it receives.
+        return (await service.import_tse_model(request.stream())).as_dict()
+    except VoiceIdentityServiceError as exc:
+        return _service_error(exc)
+
+
+@router.post("/tse")
+async def set_voice_identity_tse(request: Request):
+    has_csrf_header = bool(request.headers.get("X-CSRF-Token"))
+    if has_csrf_header:
+        rejected = _validate_mutation(request)
+        if rejected is not None:
+            return rejected
+    body = await _read_bounded_body(request, _MAX_FILTER_JSON_BYTES)
+    if body is None:
+        return JSONResponse({"error_code": "invalid_enabled"}, status_code=413)
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        parsed = None
+    payload = parsed if type(parsed) is dict else None
+    if not has_csrf_header:
+        rejected = _validate_mutation(request, payload)
+        if rejected is not None:
+            return rejected
+    if payload is None or type(payload.get("enabled")) is not bool:
+        return JSONResponse({"error_code": "invalid_enabled"}, status_code=422)
+    profile_id = payload.get("profile_id")
+    no_profile_disable = payload["enabled"] is False and "profile_id" in payload and profile_id is None
+    if not no_profile_disable and (type(profile_id) is not str or not profile_id.strip()):
+        return JSONResponse({"error_code": "invalid_profile_id"}, status_code=400)
+    service = _service()
+    if service is None:
+        return _service_unavailable()
+    try:
+        return (await service.update_tse(payload["enabled"], profile_id)).as_dict()
+    except VoiceIdentityServiceError as exc:
+        return _service_error(exc)
+
+
+@router.put("/enrollment/segment")
+async def submit_voice_identity_enrollment_segment(request: Request):
     rejected = _validate_mutation(request)
     if rejected is not None:
         return rejected
     if request.headers.get("content-type", "").lower() != _PCM_CONTENT_TYPE:
         return JSONResponse({"error_code": "invalid_pcm"}, status_code=415)
+    audio_contract_id = request.headers.get(_AUDIO_CONTRACT_HEADER, "")
+    if audio_contract_id != OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID:
+        return JSONResponse(
+            {"error_code": "unsupported_audio_contract"},
+            status_code=415,
+        )
+    raw_segment_index = request.headers.get(_SEGMENT_HEADER, "")
+    if raw_segment_index not in {"1", "2", "3", "4"}:
+        return JSONResponse(
+            {"error_code": "invalid_segment_index"},
+            status_code=400,
+        )
+    segment_index = int(raw_segment_index)
+    maximum_pcm_bytes = (
+        _MAX_VERIFICATION_PCM_BYTES
+        if segment_index == 4
+        else _MAX_REFERENCE_PCM_BYTES
+    )
     content_length = request.headers.get("content-length")
     if content_length is not None:
         try:
             parsed_content_length = int(content_length)
             if parsed_content_length < 0:
                 raise ValueError
-            if parsed_content_length > _MAX_PCM_BYTES:
+            if parsed_content_length > maximum_pcm_bytes:
                 return JSONResponse(
                     {"error_code": "audio_too_long"},
                     status_code=413,
                 )
         except ValueError:
             return JSONResponse({"error_code": "invalid_pcm"}, status_code=400)
-    pcm16 = await _read_bounded_body(request, _MAX_PCM_BYTES)
+    pcm16 = await _read_bounded_body(request, maximum_pcm_bytes)
     if pcm16 is None:
         return JSONResponse({"error_code": "audio_too_long"}, status_code=413)
+    if len(pcm16) % 2:
+        return JSONResponse({"error_code": "invalid_pcm"}, status_code=400)
     service = _service()
     if service is None:
         return _service_unavailable()
     try:
-        status = await service.complete_enrollment(
+        status = await service.submit_enrollment_segment(
             request.headers.get(_ENROLLMENT_HEADER, ""),
             request.headers.get(_PROFILE_HEADER, ""),
+            segment_index,
             pcm16,
+            sample_rate_hz=OWNER_CAMPPLUS_DESKTOP_SOURCE_SAMPLE_RATE_HZ,
+            audio_contract_id=audio_contract_id,
         )
     except VoiceIdentityServiceError as exc:
         return _service_error(exc)

@@ -1,4 +1,4 @@
-"""Pure Owner-speaker policy for the independent-ASR soft filter."""
+"""Stateless Owner-speaker classification for independent-ASR evidence."""
 
 from __future__ import annotations
 
@@ -6,96 +6,176 @@ import math
 from dataclasses import dataclass
 from enum import StrEnum
 
-from main_logic.asr_client.speaker_shadow.contracts import SpeakerShadowCandidateKey
+from main_logic.asr_client.speaker_shadow.contracts import (
+    SpeakerShadowObservationKind,
+)
+
+from .calibration import (
+    CalibrationFeatures,
+    CalibrationOutcome,
+    CalibrationPackage,
+    CalibrationProtocol,
+    RegisteredCalibration,
+    calibration_package_artifact_sha256,
+)
 
 
-class OwnerVoiceDecision(StrEnum):
-    FORWARD = "forward"
-    REJECT = "reject"
+class OwnerVoiceClassification(StrEnum):
+    LOW = "low"
+    HIGH = "high"
+    INSUFFICIENT = "insufficient"
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True, slots=True)
 class OwnerVoicePolicyResult:
-    decision: OwnerVoiceDecision
+    classification: OwnerVoiceClassification
     reason: str
+    calibration_outcome: CalibrationOutcome | None = None
 
 
 class OwnerVoicePolicy:
-    """Require two explicit low scores and otherwise forward the candidate."""
+    """Classify one immutable score without retaining candidate state."""
 
     FIRST_CHECKPOINT_MS = 1_500
     SECOND_CHECKPOINT_MS = 3_000
     SIMILARITY_THRESHOLD = 0.40
-    DEFAULT_CANDIDATE_CAPACITY = 256
 
-    def __init__(self, *, candidate_capacity: int = DEFAULT_CANDIDATE_CAPACITY) -> None:
-        if type(candidate_capacity) is not int or candidate_capacity <= 0:
-            raise ValueError("candidate_capacity must be a positive integer")
-        self._candidate_capacity = candidate_capacity
-        self._first_low: dict[SpeakerShadowCandidateKey, bool] = {}
-
-    @property
-    def pending_candidate_count(self) -> int:
-        return len(self._first_low)
-
-    def observe(
-        self,
+    @classmethod
+    def classify(
+        cls,
         *,
-        candidate: SpeakerShadowCandidateKey,
         checkpoint_ms: int | None,
         similarity: float,
-        enforce: bool,
+        observation_kind: SpeakerShadowObservationKind = "checkpoint",
+        audio_ms: int | None = None,
+        calibration_package: CalibrationPackage | None = None,
+        registered_calibration: RegisteredCalibration | None = None,
+        runtime_protocol: CalibrationProtocol | None = None,
+        rms: float | None = None,
+        peak: float | None = None,
+        near_silence: float | None = None,
+        clipping: float | None = None,
     ) -> OwnerVoicePolicyResult:
-        if type(candidate) is not SpeakerShadowCandidateKey:
-            return OwnerVoicePolicyResult(
-                OwnerVoiceDecision.FORWARD, "invalid_candidate"
-            )
         if (
-            type(checkpoint_ms) is not int
-            or checkpoint_ms
-            not in {self.FIRST_CHECKPOINT_MS, self.SECOND_CHECKPOINT_MS}
+            type(observation_kind) is not str
+            or observation_kind
+            not in ("checkpoint", "completion_confirmation", "terminal_short")
             or type(similarity) not in {int, float}
             or not math.isfinite(float(similarity))
             or not -1.0 <= float(similarity) <= 1.0
         ):
-            self._first_low.pop(candidate, None)
             return OwnerVoicePolicyResult(
-                OwnerVoiceDecision.FORWARD, "invalid_observation"
+                OwnerVoiceClassification.UNAVAILABLE,
+                "invalid_observation",
             )
 
-        low = float(similarity) < self.SIMILARITY_THRESHOLD
-        if checkpoint_ms == self.FIRST_CHECKPOINT_MS:
-            self._first_low.pop(candidate, None)
-            if low:
-                self._remember(candidate)
+        if observation_kind == "terminal_short":
+            if not (
+                checkpoint_ms is None
+                and type(audio_ms) is int
+                and 0 < audio_ms < cls.FIRST_CHECKPOINT_MS
+            ):
                 return OwnerVoicePolicyResult(
-                    OwnerVoiceDecision.FORWARD,
-                    "awaiting_second_low_observation",
+                    OwnerVoiceClassification.UNAVAILABLE,
+                    "invalid_observation",
                 )
+            if calibration_package is None:
+                if registered_calibration is not None:
+                    return OwnerVoicePolicyResult(
+                        OwnerVoiceClassification.UNAVAILABLE,
+                        "registered_calibration_mismatch",
+                    )
+                return OwnerVoicePolicyResult(
+                    OwnerVoiceClassification.INSUFFICIENT,
+                    "terminal_short_observation_only",
+                )
+            if runtime_protocol is None:
+                return OwnerVoicePolicyResult(
+                    OwnerVoiceClassification.UNAVAILABLE,
+                    "calibration_protocol_unavailable",
+                )
+            try:
+                calibrated = calibration_package.classify(
+                    CalibrationFeatures(
+                        raw_similarity=float(similarity),
+                        audio_ms=float(audio_ms),
+                        rms=rms,
+                        peak=peak,
+                        near_silence=near_silence,
+                        clipping=clipping,
+                    ),
+                    runtime_protocol,
+                )
+            except Exception:
+                return OwnerVoicePolicyResult(
+                    OwnerVoiceClassification.UNAVAILABLE,
+                    "calibration_failure",
+                )
+            if registered_calibration is None:
+                return OwnerVoicePolicyResult(
+                    OwnerVoiceClassification.INSUFFICIENT,
+                    "terminal_short_observation_only",
+                    calibrated.outcome,
+                )
+            if (
+                type(registered_calibration) is not RegisteredCalibration
+                or registered_calibration.package != calibration_package
+                or registered_calibration.artifact_sha256
+                != calibration_package_artifact_sha256(calibration_package)
+            ):
+                return OwnerVoicePolicyResult(
+                    OwnerVoiceClassification.UNAVAILABLE,
+                    "registered_calibration_mismatch",
+                    calibrated.outcome,
+                )
+            if calibrated.outcome is CalibrationOutcome.OWNER:
+                classification = OwnerVoiceClassification.HIGH
+            elif calibrated.outcome is CalibrationOutcome.NONOWNER:
+                classification = OwnerVoiceClassification.LOW
+            elif calibrated.outcome is CalibrationOutcome.UNCERTAIN:
+                classification = OwnerVoiceClassification.INSUFFICIENT
+            else:
+                classification = OwnerVoiceClassification.UNAVAILABLE
             return OwnerVoicePolicyResult(
-                OwnerVoiceDecision.FORWARD, "owner_or_uncertain"
+                classification,
+                calibrated.reason,
+                calibrated.outcome,
             )
 
-        first_low = self._first_low.pop(candidate, False)
-        if first_low and low and enforce is True:
-            return OwnerVoicePolicyResult(
-                OwnerVoiceDecision.REJECT, "stable_clear_mismatch"
+        if observation_kind == "completion_confirmation":
+            valid_checkpoint = bool(
+                type(checkpoint_ms) is int
+                and checkpoint_ms == cls.FIRST_CHECKPOINT_MS
+                and type(audio_ms) is int
+                and cls.FIRST_CHECKPOINT_MS
+                < audio_ms
+                < cls.SECOND_CHECKPOINT_MS
             )
-        if first_low and low:
-            return OwnerVoicePolicyResult(OwnerVoiceDecision.FORWARD, "shadow_only")
-        return OwnerVoicePolicyResult(OwnerVoiceDecision.FORWARD, "owner_or_uncertain")
+        else:
+            valid_checkpoint = bool(
+                type(checkpoint_ms) is int
+                and checkpoint_ms
+                in {cls.FIRST_CHECKPOINT_MS, cls.SECOND_CHECKPOINT_MS}
+            )
+        if not valid_checkpoint:
+            return OwnerVoicePolicyResult(
+                OwnerVoiceClassification.UNAVAILABLE,
+                "invalid_observation",
+            )
+        if float(similarity) < cls.SIMILARITY_THRESHOLD:
+            return OwnerVoicePolicyResult(
+                OwnerVoiceClassification.LOW,
+                "clear_mismatch",
+            )
+        return OwnerVoicePolicyResult(
+            OwnerVoiceClassification.HIGH,
+            "owner_or_uncertain",
+        )
 
-    def forget(self, candidate: SpeakerShadowCandidateKey) -> None:
-        if type(candidate) is SpeakerShadowCandidateKey:
-            self._first_low.pop(candidate, None)
 
-    def reset(self) -> None:
-        self._first_low.clear()
-
-    def _remember(self, candidate: SpeakerShadowCandidateKey) -> None:
-        self._first_low[candidate] = True
-        while len(self._first_low) > self._candidate_capacity:
-            self._first_low.pop(next(iter(self._first_low)), None)
-
-
-__all__ = ["OwnerVoiceDecision", "OwnerVoicePolicy", "OwnerVoicePolicyResult"]
+__all__ = [
+    "OwnerVoiceClassification",
+    "OwnerVoicePolicy",
+    "OwnerVoicePolicyResult",
+]

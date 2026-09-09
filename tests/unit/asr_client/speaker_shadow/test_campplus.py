@@ -70,9 +70,7 @@ class _FakeSession:
                     "https://www.modelscope.cn/models/iic/"
                     "speech_campplus_sv_zh_en_16k-common_advanced/summary"
                 ),
-                "comment": (
-                    "iic/speech_campplus_sv_zh_en_16k-common_advanced"
-                ),
+                "comment": ("iic/speech_campplus_sv_zh_en_16k-common_advanced"),
                 "feature_normalize_type": "global-mean",
                 "sample_rate": "16000",
                 "output_dim": "192",
@@ -368,6 +366,41 @@ class _BackendModel:
         self.close_calls += 1
 
 
+class _ModeTrackingBackendModel(_BackendModel):
+    def __init__(self, embeddings: dict[bytes, np.ndarray]) -> None:
+        super().__init__(embeddings)
+        self.standard_calls: list[bytes] = []
+        self.short_probe_calls: list[bytes] = []
+        self.returned_arrays: list[np.ndarray] = []
+
+    def embedding_from_pcm16(
+        self,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+    ) -> np.ndarray:
+        assert sample_rate_hz == 16_000
+        self.standard_calls.append(pcm16)
+        if len(pcm16) // 2 < campplus.CAMPPLUS_MINIMUM_SAMPLES:
+            raise ValueError("pcm_too_short")
+        return self._return_embedding(pcm16)
+
+    def probe_short_input_embedding_from_pcm16(
+        self,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+    ) -> np.ndarray:
+        assert sample_rate_hz == 16_000
+        self.short_probe_calls.append(pcm16)
+        return self._return_embedding(pcm16)
+
+    def _return_embedding(self, pcm16: bytes) -> np.ndarray:
+        result = np.array(self.embeddings[pcm16], dtype=np.float32, copy=True)
+        self.returned_arrays.append(result)
+        return result
+
+
 def test_backend_scores_cosine_copies_reference_and_wipes_on_close() -> None:
     basis = np.eye(192, dtype=np.float32)
     source = basis[0].copy()
@@ -388,6 +421,148 @@ def test_backend_scores_cosine_copies_reference_and_wipes_on_close() -> None:
     assert not any(private_reference)
     with pytest.raises(RuntimeError, match="backend_closed"):
         backend.score(b"same", 16_000)
+
+
+def test_explicit_score_mode_routes_short_pcm_without_changing_standard_guard() -> None:
+    basis = np.eye(192, dtype=np.float32)
+    short_pcm = b"short"
+    model = _ModeTrackingBackendModel({short_pcm: basis[0]})
+    backend = CampPlusSpeakerShadowBackend(
+        basis[0],
+        model_factory=lambda: model,
+    )
+    assert backend.load()
+
+    with pytest.raises(ValueError, match="pcm_too_short"):
+        backend.score_with_mode(short_pcm, 16_000, mode="standard")
+    assert backend.score_with_mode(
+        short_pcm,
+        16_000,
+        mode="short_probe",
+    ) == pytest.approx(1.0, abs=1e-6)
+
+    assert model.standard_calls == [short_pcm]
+    assert model.short_probe_calls == [short_pcm]
+    assert model.load_calls == 1
+    backend.close()
+
+
+def test_explicit_score_modes_match_for_long_pcm_and_share_one_model() -> None:
+    basis = np.eye(192, dtype=np.float32)
+    long_pcm = _pcm16()
+    model = _ModeTrackingBackendModel({long_pcm: basis[0]})
+    backend = CampPlusSpeakerShadowBackend(
+        basis[0],
+        model_factory=lambda: model,
+    )
+    assert backend.load()
+
+    legacy = backend.score(long_pcm, 16_000)
+    standard = backend.score_with_mode(long_pcm, 16_000, mode="standard")
+    short_probe = backend.score_with_mode(
+        long_pcm,
+        16_000,
+        mode="short_probe",
+    )
+
+    assert legacy == standard == short_probe == pytest.approx(1.0, abs=1e-6)
+    assert model.load_calls == 1
+    assert model.standard_calls == [long_pcm, long_pcm]
+    assert model.short_probe_calls == [long_pcm]
+    backend.close()
+
+
+def test_legacy_allow_short_input_still_selects_the_default_score_mode() -> None:
+    basis = np.eye(192, dtype=np.float32)
+    short_pcm = b"short"
+    standard_model = _ModeTrackingBackendModel({short_pcm: basis[0]})
+    probe_model = _ModeTrackingBackendModel({short_pcm: basis[0]})
+    standard = CampPlusSpeakerShadowBackend(
+        basis[0],
+        model_factory=lambda: standard_model,
+    )
+    probe = CampPlusSpeakerShadowBackend(
+        basis[0],
+        model_factory=lambda: probe_model,
+        allow_short_input=True,
+    )
+    assert standard.load()
+    assert probe.load()
+
+    with pytest.raises(ValueError, match="pcm_too_short"):
+        standard.score(short_pcm, 16_000)
+    assert probe.score(short_pcm, 16_000) == pytest.approx(1.0, abs=1e-6)
+    assert standard_model.standard_calls == [short_pcm]
+    assert probe_model.short_probe_calls == [short_pcm]
+    standard.close()
+    probe.close()
+
+
+def test_explicit_score_mode_rejects_invalid_mode_before_inference() -> None:
+    basis = np.eye(192, dtype=np.float32)
+    model = _ModeTrackingBackendModel({b"pcm": basis[0]})
+    backend = CampPlusSpeakerShadowBackend(
+        basis[0],
+        model_factory=lambda: model,
+    )
+    assert backend.load()
+
+    with pytest.raises(ValueError, match="score_mode_invalid"):
+        backend.score_with_mode(
+            b"pcm",
+            16_000,
+            mode="automatic",  # type: ignore[arg-type]
+        )
+    assert model.standard_calls == []
+    assert model.short_probe_calls == []
+    backend.close()
+
+
+@pytest.mark.parametrize("mode", ["standard", "short_probe"])
+def test_explicit_score_mode_respects_unloaded_and_closed_lifecycle(mode: str) -> None:
+    basis = np.eye(192, dtype=np.float32)
+    model = _ModeTrackingBackendModel({b"pcm": basis[0]})
+    backend = CampPlusSpeakerShadowBackend(
+        basis[0],
+        model_factory=lambda: model,
+    )
+
+    with pytest.raises(RuntimeError, match="backend_not_loaded"):
+        backend.score_with_mode(
+            b"pcm",
+            16_000,
+            mode=mode,  # type: ignore[arg-type]
+        )
+    assert backend.load()
+    backend.close()
+    with pytest.raises(RuntimeError, match="backend_closed"):
+        backend.score_with_mode(
+            b"pcm",
+            16_000,
+            mode=mode,  # type: ignore[arg-type]
+        )
+
+
+def test_explicit_score_mode_wipes_model_result_and_retains_no_candidate() -> None:
+    basis = np.eye(192, dtype=np.float32)
+    pcm16 = b"short"
+    model = _ModeTrackingBackendModel({pcm16: basis[0]})
+    backend = CampPlusSpeakerShadowBackend(
+        basis[0],
+        model_factory=lambda: model,
+    )
+    assert backend.load()
+
+    assert backend.score_with_mode(
+        pcm16,
+        16_000,
+        mode="short_probe",
+    ) == pytest.approx(1.0, abs=1e-6)
+
+    assert len(model.returned_arrays) == 1
+    assert not np.any(model.returned_arrays[0])
+    assert not any(isinstance(value, np.ndarray) for value in backend.__dict__.values())
+    backend.close()
 
 
 def test_backend_factory_is_zero_io_spawn_pickleable_and_wipes_parent_copy(

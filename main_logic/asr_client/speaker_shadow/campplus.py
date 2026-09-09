@@ -6,7 +6,7 @@ import math
 from collections.abc import Callable
 from pathlib import Path
 import threading
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -24,12 +24,23 @@ from .asset_manifest import (
 
 CAMPPLUS_EMBEDDING_DIM = 192
 CAMPPLUS_MINIMUM_SAMPLES = 24_000
-_FRAME_LENGTH = 400
+CAMPPLUS_FEATURE_MINIMUM_SAMPLES = 400
+_FRAME_LENGTH = CAMPPLUS_FEATURE_MINIMUM_SAMPLES
 _FRAME_SHIFT = 160
+# The pinned graph produces non-finite output for one or two frontend frames.
+# The offline real-model probe verifies that three frames (720 raw samples) are
+# the first finite, non-zero execution point. This is a capability boundary,
+# not evidence that a 45 ms speaker embedding is identity-reliable.
+CAMPPLUS_EXECUTABLE_MINIMUM_FRAMES = 3
+CAMPPLUS_EXECUTABLE_MINIMUM_SAMPLES = (
+    _FRAME_LENGTH + (CAMPPLUS_EXECUTABLE_MINIMUM_FRAMES - 1) * _FRAME_SHIFT
+)
 _PADDED_FRAME_LENGTH = 512
 _MEL_BIN_COUNT = 80
 _PREEMPHASIS_COEFFICIENT = np.float32(0.97)
 _FLOAT32_EPSILON = np.finfo(np.float32).eps
+
+CampPlusScoreMode = Literal["standard", "short_probe"]
 
 
 def _wipe_array(value: np.ndarray | None) -> None:
@@ -58,9 +69,7 @@ class _ZeroizableEmbedding:
             if not math.isfinite(norm) or norm <= 1e-12:
                 raise ValueError("reference_embedding_norm")
             embedding /= np.float32(norm)
-            self._storage = bytearray(
-                embedding.astype("<f4", copy=False).tobytes()
-            )
+            self._storage = bytearray(embedding.astype("<f4", copy=False).tobytes())
         finally:
             _wipe_array(embedding)
         self._closed = False
@@ -82,9 +91,7 @@ class _ZeroizableEmbedding:
 
 def _povey_window() -> np.ndarray:
     indices = np.arange(_FRAME_LENGTH, dtype=np.float64)
-    window = (
-        0.5 - 0.5 * np.cos(2 * np.pi * indices / (_FRAME_LENGTH - 1))
-    ) ** 0.85
+    window = (0.5 - 0.5 * np.cos(2 * np.pi * indices / (_FRAME_LENGTH - 1))) ** 0.85
     return window.astype(np.float32)
 
 
@@ -106,9 +113,7 @@ def _mel_filter_bank() -> np.ndarray:
         (_MEL_BIN_COUNT, _PADDED_FRAME_LENGTH // 2 + 1),
         dtype=np.float32,
     )
-    segments = np.floor((mel_frequencies - low_mel) / mel_delta).astype(
-        np.int32
-    )
+    segments = np.floor((mel_frequencies - low_mel) / mel_delta).astype(np.int32)
     for fft_bin, segment in enumerate(segments):
         if segment < 0 or segment > _MEL_BIN_COUNT:
             continue
@@ -165,9 +170,9 @@ def compute_campplus_features(
         frames[:, 0] *= np.float32(1.0) - _PREEMPHASIS_COEFFICIENT
         frames *= _POVEY_WINDOW
         spectrum = np.fft.rfft(frames, n=_PADDED_FRAME_LENGTH, axis=1)
-        power = (
-            spectrum.real * spectrum.real + spectrum.imag * spectrum.imag
-        ).astype(np.float32)
+        power = (spectrum.real * spectrum.real + spectrum.imag * spectrum.imag).astype(
+            np.float32
+        )
         mel_energies = power @ _MEL_FILTER_BANK.T
         np.maximum(mel_energies, _FLOAT32_EPSILON, out=mel_energies)
         features = np.log(mel_energies, dtype=np.float32)
@@ -217,9 +222,7 @@ class CampPlusEmbeddingModel:
             options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             options.intra_op_num_threads = 1
             options.inter_op_num_threads = 1
-            options.graph_optimization_level = (
-                ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            )
+            options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             options.enable_cpu_mem_arena = False
             with self._lifecycle_lock:
                 if self._closed:
@@ -275,10 +278,7 @@ class CampPlusEmbeddingModel:
             raise ValueError("onnx_output_name")
         if outputs[0].type != "tensor(float)":
             raise ValueError("onnx_output_type")
-        if (
-            len(outputs[0].shape) != 2
-            or outputs[0].shape[1] != CAMPPLUS_EMBEDDING_DIM
-        ):
+        if len(outputs[0].shape) != 2 or outputs[0].shape[1] != CAMPPLUS_EMBEDDING_DIM:
             raise ValueError("onnx_output_shape")
         metadata = session.get_modelmeta().custom_metadata_map
         expected_metadata = {
@@ -290,12 +290,66 @@ class CampPlusEmbeddingModel:
             "normalize_samples": "1",
         }
         if any(
-            metadata.get(key) != expected
-            for key, expected in expected_metadata.items()
+            metadata.get(key) != expected for key, expected in expected_metadata.items()
         ):
             raise ValueError("onnx_metadata")
 
     def embedding_from_pcm16(
+        self,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+    ) -> np.ndarray:
+        """Embed production PCM under the existing 1.5 second guard."""
+
+        self._validate_pcm16(pcm16, sample_rate_hz=sample_rate_hz)
+        if len(pcm16) // 2 < CAMPPLUS_MINIMUM_SAMPLES:
+            raise ValueError("pcm_too_short")
+        return self._embedding_from_validated_pcm16(
+            pcm16,
+            sample_rate_hz=sample_rate_hz,
+        )
+
+    def probe_short_input_embedding_from_pcm16(
+        self,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+    ) -> np.ndarray:
+        """Probe raw short-input model capability outside production flows.
+
+        This deliberately named entry point is absent from the speaker backend
+        protocol. It consumes the exact PCM supplied by the caller without
+        silence padding, repetition, or concatenation. A finite embedding only
+        establishes that the frontend and pinned ONNX graph can execute; it
+        says nothing about speaker-identity reliability at this duration.
+        """
+
+        self._validate_pcm16(pcm16, sample_rate_hz=sample_rate_hz)
+        if len(pcm16) // 2 < CAMPPLUS_FEATURE_MINIMUM_SAMPLES:
+            raise ValueError("pcm_below_feature_minimum")
+        return self._embedding_from_validated_pcm16(
+            pcm16,
+            sample_rate_hz=sample_rate_hz,
+        )
+
+    def _validate_pcm16(
+        self,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+    ) -> None:
+        with self._lifecycle_lock:
+            session = self._session
+            closed = self._closed
+        if closed or session is None:
+            raise RuntimeError("model_not_loaded")
+        if not isinstance(pcm16, bytes) or not pcm16 or len(pcm16) % 2:
+            raise ValueError("pcm_invalid")
+        if sample_rate_hz != CAMPPLUS_SAMPLE_RATE_HZ:
+            raise ValueError("sample_rate_mismatch")
+
+    def _embedding_from_validated_pcm16(
         self,
         pcm16: bytes,
         *,
@@ -306,12 +360,6 @@ class CampPlusEmbeddingModel:
             closed = self._closed
         if closed or session is None:
             raise RuntimeError("model_not_loaded")
-        if not isinstance(pcm16, bytes) or not pcm16 or len(pcm16) % 2:
-            raise ValueError("pcm_invalid")
-        if sample_rate_hz != CAMPPLUS_SAMPLE_RATE_HZ:
-            raise ValueError("sample_rate_mismatch")
-        if len(pcm16) // 2 < CAMPPLUS_MINIMUM_SAMPLES:
-            raise ValueError("pcm_too_short")
 
         features: np.ndarray | None = None
         raw_embedding: np.ndarray | None = None
@@ -333,6 +381,14 @@ class CampPlusEmbeddingModel:
                 pcm16,
                 sample_rate_hz=sample_rate_hz,
             )
+            if (
+                features.ndim != 2
+                or features.shape[1] != _MEL_BIN_COUNT
+                or features.shape[0] < 1
+            ):
+                raise ValueError("features_shape")
+            if not np.isfinite(features).all():
+                raise ValueError("features_non_finite")
             outputs = session.run(
                 ["embedding"],
                 {"x": features[np.newaxis, :, :]},
@@ -402,10 +458,14 @@ class CampPlusSpeakerShadowBackend:
         *,
         asset_dir: Path | None = None,
         model_factory: Callable[[], Any] | None = None,
+        allow_short_input: bool = False,
     ) -> None:
+        if type(allow_short_input) is not bool:
+            raise ValueError("allow_short_input_invalid")
         self._reference = _ZeroizableEmbedding(reference_embedding)
         self._asset_dir = Path(asset_dir) if asset_dir is not None else None
         self._model_factory = model_factory
+        self._allow_short_input = allow_short_input
         self._model: Any | None = None
         self._closed = False
 
@@ -435,6 +495,26 @@ class CampPlusSpeakerShadowBackend:
         return True
 
     def score(self, pcm16: bytes, sample_rate_hz: int) -> float:
+        mode: CampPlusScoreMode = (
+            "short_probe" if self._allow_short_input else "standard"
+        )
+        return self.score_with_mode(
+            pcm16,
+            sample_rate_hz,
+            mode=mode,
+        )
+
+    def score_with_mode(
+        self,
+        pcm16: bytes,
+        sample_rate_hz: int,
+        *,
+        mode: CampPlusScoreMode,
+    ) -> float:
+        """Score once with an explicit production or short-probe input contract."""
+
+        if mode not in ("standard", "short_probe"):
+            raise ValueError("score_mode_invalid")
         if self._closed:
             raise RuntimeError("backend_closed")
         model = self._model
@@ -445,10 +525,16 @@ class CampPlusSpeakerShadowBackend:
         candidate: np.ndarray | None = None
         reference: np.ndarray | None = None
         try:
-            raw_candidate = model.embedding_from_pcm16(
-                pcm16,
-                sample_rate_hz=sample_rate_hz,
-            )
+            if mode == "short_probe":
+                raw_candidate = model.probe_short_input_embedding_from_pcm16(
+                    pcm16,
+                    sample_rate_hz=sample_rate_hz,
+                )
+            else:
+                raw_candidate = model.embedding_from_pcm16(
+                    pcm16,
+                    sample_rate_hz=sample_rate_hz,
+                )
             candidate = np.array(raw_candidate, dtype=np.float32, copy=True)
             if candidate.shape != (CAMPPLUS_EMBEDDING_DIM,):
                 raise ValueError("embedding_shape")
@@ -489,9 +575,13 @@ class CampPlusBackendFactory:
         reference_embedding: np.ndarray,
         *,
         asset_dir: Path | None = None,
+        allow_short_input: bool = False,
     ) -> None:
+        if type(allow_short_input) is not bool:
+            raise ValueError("allow_short_input_invalid")
         self._reference = _ZeroizableEmbedding(reference_embedding)
         self._asset_dir = Path(asset_dir) if asset_dir is not None else None
+        self._allow_short_input = allow_short_input
         self._closed = False
 
     def __call__(self) -> CampPlusSpeakerShadowBackend:
@@ -502,6 +592,7 @@ class CampPlusBackendFactory:
             return CampPlusSpeakerShadowBackend(
                 reference,
                 asset_dir=self._asset_dir,
+                allow_short_input=self._allow_short_input,
             )
         finally:
             _wipe_array(reference)

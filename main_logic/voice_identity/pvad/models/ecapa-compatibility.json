@@ -1,0 +1,101 @@
+{
+  "purpose": "numeric compatibility, not speaker-identification accuracy",
+  "python": "3.11.14",
+  "versions": {
+    "numpy": "2.4.6",
+    "torch": "2.5.1+cpu",
+    "torchaudio": "2.5.1+cpu",
+    "speechbrain": "1.0.3",
+    "onnxruntime": "1.25.0"
+  },
+  "checkpoint_sha256": "0575cb64845e6b9a10db9bcb74d5ac32b326b8dc90352671d345e2ee3d0126a2",
+  "assets": {
+    "ecapa-speaker-v1.onnx": "f46380bbaeddb929fb3a10ab63a4b1877a50e3d1e5fdd55a1b618d5651d3f64e",
+    "fbank-80x201-f32.bin": "024e5073b7cfedee84408dc68dd6bafa02808fc786e67f1314e9c918297f5a63"
+  },
+  "resource_revision": "ecapa-a9cb9321-f46380bb-fbank024e5073-v1",
+  "preprocessing_revision": "speechbrain-fbank-zero-pad-fft400-hop160-cmn-v1",
+  "bank_exact_equal": true,
+  "results": [
+    {
+      "case": "upstream_example",
+      "samples": 52173,
+      "input_sha256": "a381b00d9136048e4e97670b92686b0e68d0fc338b383cf552257d952cc59df3",
+      "feature_max_abs_error": 0.000629425048828125,
+      "network_only_cosine": 0.9999999999997433,
+      "embedding_cosine": 0.9999999999977364,
+      "embedding_max_abs_error": 3.396033995354403e-07,
+      "reference_admissible": true
+    },
+    {
+      "case": "speech_first_1_5s",
+      "samples": 24000,
+      "input_sha256": "b7e126ab9fe675c3a392e71a6de8dffb2f17a8c06ed2196171e3157466ff8b9e",
+      "feature_max_abs_error": 0.000644683837890625,
+      "network_only_cosine": 0.999999999999677,
+      "embedding_cosine": 0.9999999999984464,
+      "embedding_max_abs_error": 3.166617241340264e-07,
+      "reference_admissible": true
+    },
+    {
+      "case": "speech_first_3s",
+      "samples": 48000,
+      "input_sha256": "8d0ee14f1adcd47aa6bcb5be0c3bccd33c59627eb82955d9af81919de8e6aaf7",
+      "feature_max_abs_error": 0.000637054443359375,
+      "network_only_cosine": 0.9999999999996543,
+      "embedding_cosine": 0.9999999999981406,
+      "embedding_max_abs_error": 3.599296591744183e-07,
+      "reference_admissible": true
+    },
+    {
+      "case": "quiet_speech",
+      "samples": 52173,
+      "input_sha256": "f0c0c9f9a8010824997d114253b750c9346bc57dfc762205a96f672332a79615",
+      "feature_max_abs_error": 0.00025177001953125,
+      "network_only_cosine": 0.9999999999997071,
+      "embedding_cosine": 0.9999999999958895,
+      "embedding_max_abs_error": 7.744656498054336e-07,
+      "reference_admissible": true
+    },
+    {
+      "case": "clipped_speech",
+      "samples": 52173,
+      "input_sha256": "a494c9251536f8d562a32dce8c23687e98103ece9c95f445c88b35c1b46dcfe7",
+      "feature_max_abs_error": 0.000225067138671875,
+      "network_only_cosine": 0.9999999999996686,
+      "embedding_cosine": 0.9999999999991158,
+      "embedding_max_abs_error": 2.7331911046923896e-07,
+      "reference_admissible": true
+    },
+    {
+      "case": "noise_1_5s",
+      "samples": 24000,
+      "input_sha256": "06641748280b5dcb0de80d1bfec9e14e4853793668451d6e131c92d3499cd1eb",
+      "feature_max_abs_error": 5.340576171875e-05,
+      "network_only_cosine": 0.9999999999992567,
+      "embedding_cosine": 0.9999999999991437,
+      "embedding_max_abs_error": 3.170626035799845e-07,
+      "reference_admissible": true
+    },
+    {
+      "case": "noise_5s",
+      "samples": 80000,
+      "input_sha256": "5df413ba3fed5d23506d44c621f795611cd71f80035ab5aa0549311d5c383875",
+      "feature_max_abs_error": 7.62939453125e-05,
+      "network_only_cosine": 0.9999999999992296,
+      "embedding_cosine": 0.9999999999991209,
+      "embedding_max_abs_error": 3.6217942214755716e-07,
+      "reference_admissible": true
+    },
+    {
+      "case": "silence",
+      "samples": 24000,
+      "input_sha256": "bb918147fe10391b43adeba4bd21b9ef32e5bd6c5076c3517733a05ed6dd0569",
+      "feature_max_abs_error": 0.0,
+      "network_only_cosine": 0.9999999999986238,
+      "embedding_cosine": 0.9999999999986238,
+      "embedding_max_abs_error": 3.4764750241403353e-07,
+      "reference_admissible": false
+    }
+  ]
+}

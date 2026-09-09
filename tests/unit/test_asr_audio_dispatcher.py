@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from main_logic.asr_client.lifecycle import VoiceIngressToken, VoiceTurnToken
-from main_logic.asr_client.audio import AsrAudioDispatcher
+from main_logic.asr_client.audio import (
+    AsrActivateCommand,
+    AsrAudioCommand,
+    AsrAudioDispatcher,
+)
 
 
 def _turn(turn_id: int = 1) -> VoiceTurnToken:
     return VoiceTurnToken(VoiceIngressToken(1, "socket", 1, 1, 1), turn_id)
 
 
-async def test_activate_audio_and_seal_are_strictly_ordered() -> None:
+async def test_activate_buffer_and_realtime_share_ordered_payload_entry(
+    monkeypatch,
+) -> None:
     calls: list[tuple[str, bytes | None]] = []
     session = type("Session", (), {})()
 
@@ -29,6 +35,8 @@ async def test_activate_audio_and_seal_are_strictly_ordered() -> None:
         on_wire_audio=AsyncMock(),
         on_failure=AsyncMock(),
     )
+    enqueue_payload = Mock(wraps=dispatcher._enqueue_payload)
+    monkeypatch.setattr(dispatcher, "_enqueue_payload", enqueue_payload)
     turn = _turn()
 
     assert dispatcher.activate(turn, session, b"pre-roll")
@@ -47,6 +55,105 @@ async def test_activate_audio_and_seal_are_strictly_ordered() -> None:
         ("audio", b"realtime"),
         ("seal", None),
     ]
+    assert [type(call.args[0]) for call in enqueue_payload.call_args_list] == [
+        AsrActivateCommand,
+        AsrAudioCommand,
+    ]
+    assert [call.args[0].pcm16 for call in enqueue_payload.call_args_list] == [
+        b"pre-roll",
+        b"realtime",
+    ]
+    await dispatcher.close()
+
+
+async def test_empty_activation_keeps_payload_order_without_wire_callback(
+    monkeypatch,
+) -> None:
+    session = type("Session", (), {})()
+    session.stream_audio = AsyncMock()
+    session.signal_user_activity_end = AsyncMock()
+    on_wire_audio = AsyncMock()
+    dispatcher = AsrAudioDispatcher(
+        validator=lambda _token, ref: ref is session,
+        on_wire_audio=on_wire_audio,
+        on_failure=AsyncMock(),
+    )
+    enqueue_payload = Mock(wraps=dispatcher._enqueue_payload)
+    monkeypatch.setattr(dispatcher, "_enqueue_payload", enqueue_payload)
+    turn = _turn()
+
+    assert dispatcher.activate(turn, session, b"")
+    assert dispatcher.enqueue_audio(
+        turn,
+        session,
+        b"\x01\x00",
+        sample_rate_hz=16_000,
+        sequence_no=1,
+    )
+    assert dispatcher.seal(turn, session, after_sequence=1)
+    await dispatcher.wait_idle()
+
+    assert [call.args[0].pcm16 for call in enqueue_payload.call_args_list] == [
+        b"",
+        b"\x01\x00",
+    ]
+    session.stream_audio.assert_awaited_once_with(
+        b"\x01\x00",
+        sample_rate_hz=16_000,
+    )
+    on_wire_audio.assert_awaited_once_with(turn, session, 2)
+    assert dispatcher.provider_wire_sequence == 1
+    session.signal_user_activity_end.assert_awaited_once()
+    await dispatcher.close()
+
+
+async def test_repeated_sequence_is_not_requeued_or_replayed() -> None:
+    writes: list[bytes] = []
+    session = type("Session", (), {})()
+
+    async def stream_audio(pcm16: bytes, *, sample_rate_hz: int) -> None:
+        assert sample_rate_hz == 16_000
+        writes.append(pcm16)
+
+    session.stream_audio = stream_audio
+    session.signal_user_activity_end = AsyncMock()
+    on_wire_audio = AsyncMock()
+    dispatcher = AsrAudioDispatcher(
+        validator=lambda _token, ref: ref is session,
+        on_wire_audio=on_wire_audio,
+        on_failure=AsyncMock(),
+    )
+    turn = _turn()
+
+    assert dispatcher.activate(turn, session, b"startup!")
+    assert dispatcher.enqueue_audio(
+        turn,
+        session,
+        b"first!",
+        sample_rate_hz=16_000,
+        sequence_no=1,
+    )
+    assert not dispatcher.enqueue_audio(
+        turn,
+        session,
+        b"duplicate!",
+        sample_rate_hz=16_000,
+        sequence_no=1,
+    )
+    assert dispatcher.enqueue_audio(
+        turn,
+        session,
+        b"second",
+        sample_rate_hz=16_000,
+        sequence_no=2,
+    )
+    assert dispatcher.seal(turn, session, after_sequence=2)
+    await dispatcher.wait_idle()
+
+    assert writes == [b"startup!", b"first!", b"second"]
+    assert dispatcher.provider_wire_sequence == 3
+    assert on_wire_audio.await_count == 3
+    session.signal_user_activity_end.assert_awaited_once()
     await dispatcher.close()
 
 
@@ -180,6 +287,111 @@ async def test_abort_suppresses_failure_from_inflight_audio_command() -> None:
     await dispatcher.close()
 
 
+async def test_abort_and_join_closes_session_while_joining_active_writer() -> None:
+    writer_started = asyncio.Event()
+    writer_released = asyncio.Event()
+    close_started = asyncio.Event()
+    writes: list[bytes] = []
+    session = type("Session", (), {})()
+
+    async def stream_audio(pcm16: bytes, *, sample_rate_hz: int) -> None:
+        assert sample_rate_hz == 16_000
+        writes.append(pcm16)
+        writer_started.set()
+        await writer_released.wait()
+
+    async def close_session() -> None:
+        close_started.set()
+        writer_released.set()
+
+    session.stream_audio = stream_audio
+    session.signal_user_activity_end = AsyncMock()
+    dispatcher = AsrAudioDispatcher(
+        validator=lambda _token, ref: ref is session,
+        on_wire_audio=AsyncMock(),
+        on_failure=AsyncMock(),
+    )
+    turn = _turn()
+    assert dispatcher.activate(turn, session, b"\x01\x00")
+    retired_generation = dispatcher.transport_generation
+    assert dispatcher.enqueue_audio(
+        turn,
+        session,
+        b"\x02\x00",
+        sample_rate_hz=16_000,
+        sequence_no=1,
+    )
+    await asyncio.wait_for(writer_started.wait(), 1)
+
+    receipt = await asyncio.wait_for(
+        dispatcher.abort_and_join(
+            turn,
+            close_session=close_session,
+            transport_generation=retired_generation,
+        ),
+        1,
+    )
+
+    assert close_started.is_set()
+    assert writes == [b"\x01\x00"]
+    assert receipt.transport_generation == retired_generation
+    assert receipt.discarded_commands == 1
+    assert receipt.active_writer_joined is True
+    assert receipt.session_closed is True
+    await dispatcher.close()
+
+
+async def test_abort_and_join_reports_close_failure_without_claiming_safety() -> None:
+    session = type("Session", (), {})()
+    session.stream_audio = AsyncMock()
+    session.signal_user_activity_end = AsyncMock()
+    dispatcher = AsrAudioDispatcher(
+        validator=lambda _token, ref: ref is session,
+        on_wire_audio=AsyncMock(),
+        on_failure=AsyncMock(),
+    )
+    turn = _turn()
+    assert dispatcher.activate(turn, session, b"")
+    await dispatcher.wait_idle()
+
+    async def close_session() -> None:
+        raise RuntimeError("provider close failed")
+
+    receipt = await dispatcher.abort_and_join(
+        turn,
+        close_session=close_session,
+        transport_generation=dispatcher.transport_generation,
+    )
+
+    assert receipt.active_writer_joined is True
+    assert receipt.session_closed is False
+    await dispatcher.close()
+
+
+async def test_worker_rechecks_generation_after_validator_returns() -> None:
+    session = type("Session", (), {})()
+    session.stream_audio = AsyncMock()
+    session.signal_user_activity_end = AsyncMock()
+    turn = _turn()
+    dispatcher: AsrAudioDispatcher
+
+    def validator(_token: VoiceTurnToken, ref: object) -> bool:
+        assert ref is session
+        dispatcher.abort(turn)
+        return True
+
+    dispatcher = AsrAudioDispatcher(
+        validator=validator,
+        on_wire_audio=AsyncMock(),
+        on_failure=AsyncMock(),
+    )
+    assert dispatcher.activate(turn, session, b"\x01\x00")
+    await dispatcher.wait_idle()
+
+    session.stream_audio.assert_not_awaited()
+    await dispatcher.close()
+
+
 async def test_current_audio_command_failure_still_fails_closed() -> None:
     session = type("Session", (), {})()
 
@@ -208,9 +420,7 @@ async def test_backpressure_failure_task_is_retained_until_completion() -> None:
     release_failure = asyncio.Event()
     session = type("Session", (), {})()
 
-    async def on_failure(
-        _turn_token: VoiceTurnToken, _error: BaseException
-    ) -> None:
+    async def on_failure(_turn_token: VoiceTurnToken, _error: BaseException) -> None:
         failure_started.set()
         await release_failure.wait()
 
