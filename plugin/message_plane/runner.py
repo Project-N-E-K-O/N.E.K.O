@@ -298,15 +298,19 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         return self._endpoints
 
     def is_alive(self) -> bool:
-        """True while either serving thread is still running.
+        """True only while BOTH serving threads are still running.
 
-        Both are needed: the RPC thread answers health probes and the ingest
-        thread accepts records, so a plane with only one left is not usable.
+        Not "either": the RPC thread answers health probes and the ingest thread
+        accepts records, so a plane with only one left is not usable. And the
+        asymmetry is not harmless -- ``health_check`` reaches the RPC endpoint
+        only, so an ingest thread that exited while RPC kept serving would probe
+        healthy, and an ``either`` answer here would agree with it. The plane
+        would take no records while the delivery path latched as ready.
         """
-        for t in (self._thread, self._ingest_thread):
-            if t is not None and t.is_alive():
-                return True
-        return False
+        return all(
+            t is not None and t.is_alive()
+            for t in (self._thread, self._ingest_thread)
+        )
 
     def stop(self) -> None:
         rpc_srv = self._rpc

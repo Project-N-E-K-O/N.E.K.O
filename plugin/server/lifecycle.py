@@ -213,9 +213,23 @@ class ServerLifecycleService:
             )
 
     async def _check_message_plane_health(self) -> bool:
-        """Probe the current runner. Never raises; a failed probe is ``False``."""
+        """Probe the current runner. Never raises; a failed probe is ``False``.
+
+        Liveness is part of "healthy", not a fallback consulted after a failed
+        probe. ``PythonMessagePlaneRunner.health_check`` reaches the RPC endpoint
+        only, so an ingest thread that exited while RPC kept serving answers
+        healthy: the plane accepts no records, yet the delivery path latches as
+        ready and nothing ever re-probes it. Checked first because it is cheap
+        and skips the 1s probe when the threads are already gone.
+        """
         runner = self._message_plane_runner
         if runner is None:
+            return False
+        if not self._message_plane_runner_is_alive():
+            logger.warning(
+                "message_plane threads are not all running; treating it as "
+                "unhealthy even if its RPC endpoint still answers"
+            )
             return False
         try:
             health_check_async = getattr(runner, "health_check_async", None)

@@ -664,6 +664,85 @@ def test_delivery_path_lock_hands_off_across_event_loops() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_half_dead_plane_is_not_healthy_even_when_its_probe_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A passing RPC probe is not proof the plane can take records.
+
+    ``PythonMessagePlaneRunner.health_check`` reaches the RPC endpoint only. If
+    the ingest thread exits while RPC keeps serving, the probe answers healthy,
+    the delivery path latches as ready, and nothing re-probes it -- the plane
+    accepts nothing and ``push_message`` keeps reporting success. Liveness has to
+    be part of the answer, not a fallback consulted only after a failed probe.
+    """
+    service = module.ServerLifecycleService()
+    ingest_alive = True
+
+    class _Runner:
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            # Stands in for "RPC thread up, ingest thread gone".
+            return ingest_alive
+
+        async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
+            return True  # the RPC endpoint answers either way
+
+    monkeypatch.setattr(module, "build_message_plane_runner", lambda *, auth_token: _Runner())
+    monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+    monkeypatch.setattr(module, "proactive_bridge_is_alive", lambda: True)
+
+    assert await service.ensure_delivery_path_started() is True
+
+    service._delivery_path_started = False
+    ingest_alive = False
+    assert await service.ensure_delivery_path_started() is False, (
+        "a plane whose ingest thread is gone was reported healthy"
+    )
+
+
+def test_runner_liveness_requires_both_serving_threads() -> None:
+    """``is_alive`` is ALL, not ANY -- the two threads do different jobs.
+
+    An ``any`` answer would agree with the RPC-only health probe about a plane
+    that can no longer ingest, which is precisely the combination that latches a
+    dead delivery path.
+    """
+    from plugin.message_plane.runner import PythonMessagePlaneRunner
+
+    class _Thread:
+        def __init__(self, alive: bool) -> None:
+            self._alive = alive
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+    runner = PythonMessagePlaneRunner.__new__(PythonMessagePlaneRunner)
+
+    for rpc, ingest, expected in (
+        (True, True, True),
+        (True, False, False),
+        (False, True, False),
+        (False, False, False),
+    ):
+        runner._thread = _Thread(rpc)
+        runner._ingest_thread = _Thread(ingest)
+        assert runner.is_alive() is expected, f"rpc={rpc} ingest={ingest}"
+
+    runner._thread = None
+    runner._ingest_thread = _Thread(True)
+    assert runner.is_alive() is False
+
+
+@pytest.mark.asyncio
 async def test_an_unhealthy_plane_is_eventually_retired_and_rebuilt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
