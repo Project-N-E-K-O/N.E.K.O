@@ -664,6 +664,73 @@ def test_delivery_path_lock_hands_off_across_event_loops() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_unhealthy_plane_is_eventually_retired_and_rebuilt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keeping an unhealthy runner must not mean keeping it forever.
+
+    Reuse-without-rebuild exists so a retry does not hand the runner's ports to a
+    second one. Applied unconditionally it strands the path: nothing else stops
+    the runner, so one whose threads died -- or one that simply never answers --
+    fails every future probe and no manual plugin start can recover delivery
+    short of a full lifecycle shutdown.
+    """
+    service = module.ServerLifecycleService()
+    built: list[object] = []
+    stopped: list[object] = []
+    healthy = False
+    alive = True
+
+    class _Runner:
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            stopped.append(self)
+
+        def is_alive(self) -> bool:
+            return alive
+
+        async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
+            return healthy
+
+    def _build(*, auth_token: str) -> object:
+        runner = _Runner()
+        built.append(runner)
+        return runner
+
+    monkeypatch.setattr(module, "build_message_plane_runner", _build)
+    monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+    monkeypatch.setattr(module, "proactive_bridge_is_alive", lambda: True)
+
+    # Alive but unhealthy: kept for a bounded number of probes...
+    for expected in range(1, module._MAX_PLANE_PROBE_FAILURES):
+        assert await service._start_delivery_path_locked() == ["message_plane"]
+        assert service._plane_probe_failures == expected
+        assert stopped == [], "retired before its bounded chances were used"
+        assert len(built) == 1
+
+    # ...then retired, so the next entry rebuilds instead of probing a wedge.
+    assert await service._start_delivery_path_locked() == ["message_plane"]
+    assert stopped == [built[0]]
+    assert service._message_plane_runner is None
+    healthy = True
+    assert await service._start_delivery_path_locked() == []
+    assert len(built) == 2
+
+    # Threads gone: retired on the first probe, no need to burn the budget.
+    healthy = False
+    alive = False
+    assert await service._start_delivery_path_locked() == ["message_plane"]
+    assert stopped == [built[0], built[1]]
+    assert service._message_plane_runner is None
+
+
+@pytest.mark.asyncio
 async def test_a_raising_plane_start_does_not_start_the_bridges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -694,6 +761,20 @@ async def test_a_raising_plane_start_does_not_start_the_bridges(
     monkeypatch.setattr(service, "_start_message_plane", _raises)
     assert await service._start_delivery_path_locked() == ["message_plane"]
     assert started == [], "bridges were pinned to a failed attempt's endpoint"
+
+    # A ZMQ bind failure must take the same degraded path. ZMQError derives from
+    # ZMQBaseError(Exception) and is NOT an OSError, so the enumerated tuple this
+    # block used to carry let it escape -- and through the newly shared
+    # manual-start entry that surfaced as a 500 from the route instead of a
+    # degraded start where the router's tools stay usable.
+    import zmq
+
+    async def _zmq_raises() -> bool:
+        raise zmq.ZMQError(98, "Address already in use")
+
+    monkeypatch.setattr(service, "_start_message_plane", _zmq_raises)
+    assert await service._start_delivery_path_locked() == ["message_plane"]
+    assert started == []
 
     # The probe-false path keeps its existing behaviour.
     async def _unhealthy() -> bool:

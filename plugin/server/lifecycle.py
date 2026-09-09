@@ -52,6 +52,13 @@ else:
 _PROACTIVE_SUBSCRIBER_WAIT_SECONDS = 3.0
 
 
+# How many consecutive failed health probes a nominally-alive runner gets before
+# it is retired and rebuilt. Small on purpose: each probe is a 1s bound and only
+# runs when something calls in, so three is a real chance to finish starting
+# without leaving a wedged plane in place indefinitely.
+_MAX_PLANE_PROBE_FAILURES = 3
+
+
 @asynccontextmanager
 async def _held(lock: _CrossLoopLock) -> AsyncIterator[None]:
     """``async with`` for ``_CrossLoopLock``, which exposes acquire/release only.
@@ -106,6 +113,9 @@ class ServerLifecycleService:
         # plane up that teardown has already walked past -- orphan threads and
         # sockets, plus a ``True`` flag describing a plane nobody owns.
         self._delivery_path_shutting_down = False
+        # Consecutive failed health probes against the CURRENT runner. Reset on a
+        # healthy probe and whenever the runner is replaced.
+        self._plane_probe_failures = 0
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -164,6 +174,44 @@ class ServerLifecycleService:
         with state.acquire_event_handlers_write_lock():
             state.event_handlers.clear()
 
+    def _message_plane_runner_is_alive(self) -> bool:
+        """Whether the runner's own threads are up. Unknown counts as alive."""
+        runner = self._message_plane_runner
+        if runner is None:
+            return False
+        probe = getattr(runner, "is_alive", None)
+        if not callable(probe):
+            # An implementation with no thread state to report. Treat it as
+            # coming up so the bounded probe counter, not this, decides.
+            return True
+        try:
+            return bool(probe())
+        except Exception as exc:
+            logger.warning(
+                "message_plane liveness check failed: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            return True
+
+    def _stop_message_plane_runner(self) -> None:
+        """Stop and forget the current runner so a later entry rebuilds it."""
+        runner = self._message_plane_runner
+        self._message_plane_runner = None
+        self._plane_probe_failures = 0
+        if runner is None:
+            return
+        try:
+            runner.stop()
+        except Exception as exc:
+            # Already being discarded; a failed stop must not abort the retry
+            # that is trying to recover delivery.
+            logger.warning(
+                "failed to stop the retired message_plane runner: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+
     async def _check_message_plane_health(self) -> bool:
         """Probe the current runner. Never raises; a failed probe is ``False``."""
         runner = self._message_plane_runner
@@ -205,12 +253,35 @@ class ServerLifecycleService:
             # submitted=True with nothing behind it, which is the exact failure
             # this branch exists to prevent.
             if not await self._check_message_plane_health():
-                logger.warning(
-                    "message_plane is still not healthy; not reusing it yet "
-                    "(kept for the next retry rather than rebuilt, so its ports "
-                    "are not handed to a second runner)"
-                )
+                self._plane_probe_failures += 1
+                alive = self._message_plane_runner_is_alive()
+                # Keeping an unhealthy runner instead of rebuilding avoids handing
+                # its ports to a second one -- but kept unconditionally it is kept
+                # FOREVER: nothing else stops it, so a runner whose threads died,
+                # or one that simply never answers, would fail every future probe
+                # and no manual plugin start could ever recover delivery short of
+                # a full lifecycle shutdown. Retire it when its threads are gone,
+                # or after a bounded number of failed probes when it is nominally
+                # alive but never becomes usable -- by then its ports are the
+                # lesser problem.
+                if not alive or self._plane_probe_failures >= _MAX_PLANE_PROBE_FAILURES:
+                    logger.warning(
+                        "retiring the message_plane runner after {} failed "
+                        "probe(s) (threads_alive={}); the next entry rebuilds it",
+                        self._plane_probe_failures,
+                        alive,
+                    )
+                    self._stop_message_plane_runner()
+                else:
+                    logger.warning(
+                        "message_plane is still not healthy (probe {} of {}); "
+                        "keeping it for the next retry rather than rebuilding, so "
+                        "its ports are not handed to a second runner",
+                        self._plane_probe_failures,
+                        _MAX_PLANE_PROBE_FAILURES,
+                    )
                 return False
+            self._plane_probe_failures = 0
             logger.debug("message_plane already running; reusing it for this retry")
             return True
         # Same process mints the credential and starts the plane that must
@@ -218,8 +289,12 @@ class ServerLifecycleService:
         self._message_plane_runner = build_message_plane_runner(
             auth_token=ingest_auth_token(),
         )
+        self._plane_probe_failures = 0
         self._message_plane_runner.start()
         if not await self._check_message_plane_health():
+            # Counts toward the same budget the reuse branch spends: this is
+            # failure #1 against this runner, not a free one.
+            self._plane_probe_failures += 1
             # Symmetric with the reuse branch, and for the same reason. Latching
             # here would be permanent: nothing re-probes a path already marked
             # started, so a plane that never arrived would keep answering
@@ -456,7 +531,16 @@ class ServerLifecycleService:
         try:
             if not await self._start_message_plane():
                 failed.append("message_plane")
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
+                    # Exception, not a tuple: this block's whole job is to record
+        # the stage as failed and let the caller degrade, and an
+        # enumerated tuple cannot be complete. Proven: pyzmq raises
+        # ZMQError, which derives from ZMQBaseError(Exception) and is
+        # NOT an OSError, so a bind failure escaped the old tuple --
+            # through the newly shared manual-start path it reached the HTTP
+            # route as a 500 instead of the degraded start where router
+            # tools stay usable. BaseException is still not caught, so
+        # cancellation propagates.
+        except Exception as exc:
             logger.warning(
                 "message_plane start failed: err_type={}, err={}",
                 type(exc).__name__,
@@ -504,7 +588,16 @@ class ServerLifecycleService:
         # submitted=True——正是这条路要消灭的那种静默不投递。
         try:
             refresh_ingest_endpoint()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
+                    # Exception, not a tuple: this block's whole job is to record
+        # the stage as failed and let the caller degrade, and an
+        # enumerated tuple cannot be complete. Proven: pyzmq raises
+        # ZMQError, which derives from ZMQBaseError(Exception) and is
+        # NOT an OSError, so a bind failure escaped the old tuple --
+            # through the newly shared manual-start path it reached the HTTP
+            # route as a 500 instead of the degraded start where router
+            # tools stay usable. BaseException is still not caught, so
+        # cancellation propagates.
+        except Exception as exc:
             logger.warning(
                 "failed to refresh ingest endpoint: err_type={}, err={}",
                 type(exc).__name__,
@@ -517,7 +610,16 @@ class ServerLifecycleService:
 
         try:
             start_bridge()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
+                    # Exception, not a tuple: this block's whole job is to record
+        # the stage as failed and let the caller degrade, and an
+        # enumerated tuple cannot be complete. Proven: pyzmq raises
+        # ZMQError, which derives from ZMQBaseError(Exception) and is
+        # NOT an OSError, so a bind failure escaped the old tuple --
+            # through the newly shared manual-start path it reached the HTTP
+            # route as a 500 instead of the degraded start where router
+            # tools stay usable. BaseException is still not caught, so
+        # cancellation propagates.
+        except Exception as exc:
             logger.warning(
                 "failed to start message bridge: err_type={}, err={}",
                 type(exc).__name__,
@@ -527,7 +629,16 @@ class ServerLifecycleService:
 
         try:
             start_proactive_bridge()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
+                    # Exception, not a tuple: this block's whole job is to record
+        # the stage as failed and let the caller degrade, and an
+        # enumerated tuple cannot be complete. Proven: pyzmq raises
+        # ZMQError, which derives from ZMQBaseError(Exception) and is
+        # NOT an OSError, so a bind failure escaped the old tuple --
+            # through the newly shared manual-start path it reached the HTTP
+            # route as a 500 instead of the degraded start where router
+            # tools stay usable. BaseException is still not caught, so
+        # cancellation propagates.
+        except Exception as exc:
             logger.warning(
                 "failed to start proactive bridge: err_type={}, err={}",
                 type(exc).__name__,

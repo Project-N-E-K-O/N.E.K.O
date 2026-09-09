@@ -28,6 +28,17 @@ class MessagePlaneRunner:
     def health_check(self, *, timeout_s: float = 1.0) -> bool:
         raise NotImplementedError
 
+    def is_alive(self) -> bool:
+        """Whether the plane's own threads are still running.
+
+        Separates "started, not answering probes yet" from "the threads are
+        gone" -- a health probe alone cannot, since both answer ``False``, and a
+        caller that keeps a dead runner because it might still be starting keeps
+        it forever. Defaults to ``True`` ("cannot tell, assume it is coming up")
+        so an implementation without thread state is not retired on a slow probe.
+        """
+        return True
+
 
 def _parse_wait_tcp_target(endpoint: str) -> tuple[str, int] | None:
     ep = str(endpoint)
@@ -285,6 +296,17 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             )
             raise
         return self._endpoints
+
+    def is_alive(self) -> bool:
+        """True while either serving thread is still running.
+
+        Both are needed: the RPC thread answers health probes and the ingest
+        thread accepts records, so a plane with only one left is not usable.
+        """
+        for t in (self._thread, self._ingest_thread):
+            if t is not None and t.is_alive():
+                return True
+        return False
 
     def stop(self) -> None:
         rpc_srv = self._rpc
