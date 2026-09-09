@@ -237,6 +237,7 @@
           </WorkbenchToolbar>
         </template>
 
+
         <LoadingSpinner
           v-if="loading && rawPlugins.length === 0"
           :loading="true"
@@ -601,8 +602,8 @@ const dangerDialogMessage = computed(() => {
   )
 })
 
-const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
-const rawNormalPlugins = computed(() => pluginStore.normalPlugins)
+const rawPlugins = computed(() => pluginStore.pluginsWithStatus.filter((plugin) => !('development_ref' in plugin)))
+const rawNormalPlugins = computed(() => pluginStore.normalPlugins.filter((plugin) => !('development_ref' in plugin)))
 const duplicateDisplayNamePluginIds = computed(() => [
   ...findDuplicatePluginDisplayNameIds(rawPlugins.value, locale.value),
 ])

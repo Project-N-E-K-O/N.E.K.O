@@ -51,6 +51,7 @@ describe('plugin hosted UI API', () => {
 
     expect(postMock).toHaveBeenCalledWith('/plugins/reload', undefined, {
       timeout: 0,
+      headers: { 'X-Neko-Development': '1' },
     })
   })
 

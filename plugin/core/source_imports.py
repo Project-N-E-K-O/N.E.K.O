@@ -1,0 +1,57 @@
+"""Opt-in source imports confined to one plugin package in its child process."""
+from __future__ import annotations
+
+import importlib.abc
+import importlib.machinery
+import importlib.util
+from pathlib import Path
+import sys
+
+
+class SourceOnlyLoader(importlib.machinery.SourceFileLoader):
+    """Compile the selected source without reading or writing bytecode caches."""
+
+    def get_code(self, fullname: str):
+        source_path = self.get_filename(fullname)
+        return self.source_to_code(self.get_data(source_path), source_path)
+
+
+class PluginSourceFinder(importlib.abc.MetaPathFinder):
+    def __init__(self, package: str, directory: Path):
+        self.package = package
+        self.directory = directory.resolve()
+        self.prefixes = (package, f"plugin.{package}")
+
+    def find_spec(self, fullname, path=None, target=None):
+        prefix = next((p for p in self.prefixes if fullname == p or fullname.startswith(p + ".")), None)
+        if prefix is None:
+            return None
+        relative = fullname[len(prefix):].lstrip(".").split(".") if fullname != prefix else []
+        # Dependencies retain their ordinary import policy, including vendor/.
+        if relative and relative[0] == "vendor":
+            return None
+        candidate = self.directory.joinpath(*relative)
+        source = candidate / "__init__.py" if candidate.is_dir() else candidate.with_suffix(".py")
+        if not source.is_file():
+            if candidate.is_dir():
+                spec = importlib.machinery.ModuleSpec(fullname, None, is_package=True)
+                spec.submodule_search_locations = [str(candidate)]
+                return spec
+            raise ModuleNotFoundError(f"No source module named '{fullname}'", name=fullname)
+        try:
+            source.resolve().relative_to(self.directory)
+        except ValueError:
+            raise ImportError(f"Plugin source escapes its registered directory: {source}") from None
+        return importlib.util.spec_from_file_location(
+            fullname, source, loader=SourceOnlyLoader(fullname, str(source)),
+            submodule_search_locations=[str(candidate)] if candidate.is_dir() else None,
+        )
+
+
+def install_source_imports(package: str, directory: Path) -> None:
+    """Keep the finder for lazy imports; replace it when this package is reloaded."""
+    sys.meta_path[:] = [
+        finder for finder in sys.meta_path
+        if not isinstance(finder, PluginSourceFinder) or finder.package != package
+    ]
+    sys.meta_path.insert(0, PluginSourceFinder(package, directory))

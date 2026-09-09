@@ -3,7 +3,12 @@
 """
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+import asyncio
+from plugin.server.routes.development import router as development_router
+from plugin.server.application.plugins.development import registration_for_plugin_sync, development_enabled_sync
+from plugin.server.application.plugins.development_service import development_lifecycle_action
+from plugin.server.infrastructure.development_access import require_development_access
 
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins import (
@@ -16,11 +21,13 @@ from plugin.server.infrastructure.auth import require_admin
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
     bounded_operation_wait,
+    serialized_plugin_operation,
 )
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 from plugin.server.lifecycle import ensure_plugin_messaging_started
 
 router = APIRouter()
+router.include_router(development_router)
 logger = get_logger("server.routes.plugins")
 query_service = PluginQueryService()
 lifecycle_service = PluginLifecycleService()
@@ -69,8 +76,31 @@ def _busy_response() -> HTTPException:
     )
 
 
+@serialized_plugin_operation
+async def _dispatch_lifecycle(request: Request, plugin_id: str, action: str,
+                              registration_id: str | None, revision: int | None) -> dict[str, object]:
+    # Check provenance after acquiring the same lock as registration/rebinding,
+    # so an ordinary request cannot acquire a newly registered development ID.
+    if registration_id is not None or await asyncio.to_thread(registration_for_plugin_sync, plugin_id) is not None:
+        require_development_access(request)
+        return await development_lifecycle_action(plugin_id, action, registration_id, revision)
+    if action == "reload":
+        return await lifecycle_service.reload_plugin(plugin_id)
+    if action == "stop":
+        return await lifecycle_service.stop_plugin(plugin_id, persist_user_intent=True)
+    return await lifecycle_service.start_plugin(plugin_id, persist_user_intent=True)
+
+
+@serialized_plugin_operation
+async def _dispatch_reload_all(request: Request) -> dict[str, object]:
+    if await asyncio.to_thread(development_enabled_sync):
+        require_development_access(request)
+    return await lifecycle_service.reload_all_plugins()
+
+
 @router.post("/plugin/{plugin_id}/start")
-async def start_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+async def start_plugin_endpoint(plugin_id: str, request: Request, _: str = require_admin,
+                                registration_id: str | None = None, revision: int | None = Query(default=None, ge=1)) -> dict[str, object]:
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
             if not await ensure_plugin_messaging_started():
@@ -91,7 +121,7 @@ async def start_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[
                     "messages are dropped -- watch for 'message NOT delivered'",
                     plugin_id,
                 )
-            return await lifecycle_service.start_plugin(plugin_id, persist_user_intent=True)
+            return await _dispatch_lifecycle(request, plugin_id, "start", registration_id, revision)
     except PluginOperationBusy:
         raise _busy_response()
     except ServerDomainError as error:
@@ -107,10 +137,11 @@ async def refresh_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dic
 
 
 @router.post("/plugin/{plugin_id}/stop")
-async def stop_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+async def stop_plugin_endpoint(plugin_id: str, request: Request, _: str = require_admin,
+                               registration_id: str | None = None, revision: int | None = Query(default=None, ge=1)) -> dict[str, object]:
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
-            return await lifecycle_service.stop_plugin(plugin_id, persist_user_intent=True)
+            return await _dispatch_lifecycle(request, plugin_id, "stop", registration_id, revision)
     except PluginOperationBusy:
         raise _busy_response()
     except ServerDomainError as error:
@@ -137,10 +168,11 @@ async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
 
 
 @router.post("/plugin/{plugin_id}/reload")
-async def reload_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+async def reload_plugin_endpoint(plugin_id: str, request: Request, _: str = require_admin,
+                                 registration_id: str | None = None, revision: int | None = Query(default=None, ge=1)) -> dict[str, object]:
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
-            return await lifecycle_service.reload_plugin(plugin_id)
+            return await _dispatch_lifecycle(request, plugin_id, "reload", registration_id, revision)
     except PluginOperationBusy:
         raise _busy_response()
     except ServerDomainError as error:
@@ -148,7 +180,7 @@ async def reload_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict
 
 
 @router.post("/plugins/reload")
-async def reload_all_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
+async def reload_all_plugins_endpoint(request: Request, _: str = require_admin) -> dict[str, object]:
     """
     重载所有插件
     
@@ -157,7 +189,7 @@ async def reload_all_plugins_endpoint(_: str = require_admin) -> dict[str, objec
     """
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
-            return await lifecycle_service.reload_all_plugins()
+            return await _dispatch_reload_all(request)
     except PluginOperationBusy:
         raise _busy_response()
     except ServerDomainError as error:

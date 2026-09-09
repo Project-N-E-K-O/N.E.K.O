@@ -115,6 +115,7 @@ export function reloadAllPlugins(): Promise<{
 }> {
   return post('/plugins/reload', undefined, {
     timeout: PLUGIN_RELOAD_ALL_TIMEOUT,
+    headers: { 'X-Neko-Development': '1' },
   })
 }
 

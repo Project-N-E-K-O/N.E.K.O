@@ -19,6 +19,7 @@ from fastapi import HTTPException
 
 from plugin._types.exceptions import PluginError, PluginLifecycleError
 from plugin.core.host import PluginProcessHost
+from plugin.server.application.plugins import development as development_store
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
     _collect_plugin_python_requirement_paths,
@@ -878,6 +879,9 @@ class PluginLifecycleService:
         original_plugin_id = plugin_id
         current_plugin_id = plugin_id
         resolved_plugin_ids = [plugin_id]
+        development_snapshot = await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id)
+        if development_snapshot is not None:
+            await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)
 
         existing_host_obj = await asyncio.to_thread(_get_plugin_host_sync, current_plugin_id)
         if isinstance(existing_host_obj, PluginHostContract):
@@ -1146,6 +1150,7 @@ class PluginLifecycleService:
                 plugin_id=current_plugin_id,
                 entry_point=entry,
                 config_path=config_path,
+                **({"source_only": True} if development_snapshot is not None else {}),
             )
             if not isinstance(created_host, PluginHostContract):
                 raise _to_domain_error(
@@ -1182,7 +1187,7 @@ class PluginLifecycleService:
             # 上限按剩余预算收窄：扫描自己的上限是 10s，只钳住 host 启动的话，一次
             # 冷扫描就能把整轮 reload 的墙钟顶穿（CodeRabbit）。
             module_path, class_name = entry.split(":", 1)
-            isolated_metadata = await asyncio.to_thread(
+            isolated_metadata = None if development_snapshot is not None else await asyncio.to_thread(
                 partial(
                     _read_packaged_isolated_metadata,
                     config_path,
@@ -1207,7 +1212,7 @@ class PluginLifecycleService:
                 # 总预算，可选的优化不放进去；应用启动的自动拉起没有截止期，在那里做。
                 before_scan = (
                     await asyncio.to_thread(_snapshot_stale_package_tree, config_path)
-                    if start_deadline is None
+                    if start_deadline is None and development_snapshot is None
                     else None
                 )
                 isolated_metadata = await asyncio.to_thread(
@@ -1220,6 +1225,7 @@ class PluginLifecycleService:
                     pdata=pdata,
                     python_requirement_paths=python_requirement_paths,
                     timeout=scan_timeout,
+                    **({"source_only": True} if development_snapshot is not None else {}),
                 )
                 await asyncio.to_thread(
                     _upgrade_stale_packaged_metadata,
@@ -1253,6 +1259,8 @@ class PluginLifecycleService:
                     floor=_MIN_CLAMPED_START_TIMEOUT,
                 )
 
+            if development_snapshot is not None:
+                await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)
             startup_result = await _start_host_with_timeout(
                 plugin_id=current_plugin_id,
                 host_obj=host_obj,
@@ -1428,6 +1436,13 @@ class PluginLifecycleService:
                     )
                 )
             )
+            if (
+                await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id) is not None
+                and host_obj.is_alive()
+            ):
+                raise _to_domain_error(code="PLUGIN_STOP_FAILED",
+                    message="Development plugin process is still running; association was retained",
+                    status_code=409, plugin_id=plugin_id, error_type="PluginStillRunning")
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             # Clear any LLM tools the plugin had registered with
@@ -1539,6 +1554,11 @@ class PluginLifecycleService:
     async def reload_plugin(self, plugin_id: str) -> dict[str, object]:
         _emit_lifecycle_event(event_type="plugin_reload_requested", plugin_id=plugin_id)
 
+        development_snapshot = await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id)
+        if development_snapshot is not None:
+            from plugin.server.application.plugins.development_service import preflight_development_sync
+            await asyncio.to_thread(preflight_development_sync, development_snapshot)
+
         is_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
         if is_running:
             try:
@@ -1550,10 +1570,13 @@ class PluginLifecycleService:
         # reload 是用户按的按钮，而前端在插件停着的时候也给这个按钮。用它把一个
         # 待批准的插件启动起来，和用 start 启动是同一件事，批准位一样要清掉——否则
         # 那个插件永远启动得起来、却永远不自启（codex）。
+        if development_snapshot is not None:
+            await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)
         result = await self.start_plugin(plugin_id, persist_user_intent=True)
         _emit_lifecycle_event(event_type="plugin_reloaded", plugin_id=plugin_id)
         return result
 
+    @serialized_plugin_operation
     async def reload_all_plugins(self) -> dict[str, object]:
         start_time = time_module.perf_counter()
         _emit_lifecycle_event(event_type="plugins_reload_all_requested")
@@ -1725,6 +1748,9 @@ class PluginLifecycleService:
     @serialized_plugin_operation
     async def delete_plugin(self, plugin_id: str) -> dict[str, object]:
         """Invoke the uninstall transaction and preserve the public response."""
+        if await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id) is not None:
+            raise ServerDomainError(code="DEVELOPMENT_REMOVE_ASSOCIATION_REQUIRED",
+                message="Use Remove association for a development plugin; its source and data are retained", status_code=409)
         try:
             result = await uninstall_plugin(plugin_id)
         except UninstallPluginError as exc:
@@ -1787,6 +1813,10 @@ class PluginLifecycleService:
         self, plugin_id: str, *, stop_deadline: float | None = None
     ) -> _ReloadOutcome:
         try:
+            development_snapshot = await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id)
+            if development_snapshot is not None:
+                from plugin.server.application.plugins.development_service import preflight_development_sync
+                await asyncio.to_thread(preflight_development_sync, development_snapshot)
             await self.stop_plugin(plugin_id, stop_deadline=stop_deadline)
             return _ReloadOutcome(plugin_id=plugin_id, success=True)
         except PluginOperationBusy as error:

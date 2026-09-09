@@ -24,6 +24,8 @@ export interface PluginCliPluginRef {
 
 export interface PluginCliBuildRequest {
   mode: PluginCliBuildMode
+  development_ref?: { registration_id: string; revision: number }
+  development_refs?: Array<{ registration_id: string; revision: number }>
   plugin?: string
   plugins?: string[]
   plugin_ref?: PluginCliPluginRef
@@ -223,6 +225,9 @@ export function getPluginCliPackages(): Promise<PluginCliLocalPackagesResponse> 
  * 构建一个或多个插件
  */
 export function buildPluginCli(payload: PluginCliBuildRequest): Promise<PluginCliBuildResponse> {
+  if (payload.development_ref || payload.development_refs?.length || payload.mode === 'all') {
+    return post('/plugin-cli/build', payload, { headers: { 'X-Neko-Development': '1' } })
+  }
   return post('/plugin-cli/build', payload)
 }
 
