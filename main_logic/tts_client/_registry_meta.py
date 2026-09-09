@@ -54,6 +54,9 @@ class TTSProviderMeta:
     client_sentence_split: bool     # 客户端是否做句子分割
     audio_format: str               # 原始音频格式，如 "PCM 24kHz", "OGG OPUS 48kHz"
     notes: str = ""                 # 特殊说明
+    # worker 认 TTS_SOFT_FLUSH_SENTINEL：文本空闲时先把攒着的尾句合成出来，
+    # 之后同一 speech_id 还能继续说。core 只对 True 的 provider 发这个哨兵。
+    soft_flush: bool = False
 
 TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
     "step": TTSProviderMeta(
@@ -95,7 +98,9 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         client_sentence_split=False,
         audio_format="OGG OPUS 48kHz (直接透传)",
         notes="streaming_call() 逐片发送；最小 6 字符缓冲 + 日文检测；"
-              "首包聚合 1KB + 后续聚合 4KB；空闲 15s 主动 complete",
+              "首包聚合 1KB + 后续聚合 4KB；空闲 15s 主动 complete；"
+              "服务端把尾句扣到 FINISH 才合成，故认 core 的软 flush 哨兵",
+        soft_flush=True,
     ),
     "cogtts": TTSProviderMeta(
         name="cogtts",

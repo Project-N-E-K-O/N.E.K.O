@@ -23,7 +23,12 @@ from utils.dashscope_region import (
     prefer_dashscope_websocket_ipv4,
 )
 
-from .._infra import AudioDoneEmitter, TTS_SHUTDOWN_SENTINEL, _enqueue_error
+from .._infra import (
+    AudioDoneEmitter,
+    TTS_SHUTDOWN_SENTINEL,
+    TTS_SOFT_FLUSH_SENTINEL,
+    _enqueue_error,
+)
 from .._telemetry import _record_tts_telemetry
 from .dummy import dummy_tts_worker
 from utils.logger_config import get_module_logger
@@ -117,6 +122,9 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             # _active_sid 和 FINISH 标记，把还在说话的那一轮判成放完（早发），
             # 顺带还把它的聚合缓冲清掉。迟到的旧回调据此认出自己已经过期。
             self.current_generation = None
+            # 已经收到完成通知的那一代。软 flush 之后主循环靠它判断旧流是否已经
+            # 放干净：干净了才敢关掉旧 synthesizer 接着说 / 直接补发 audio_done。
+            self.completed_generation = None
             # 当前允许投递的 speech_id（由 worker 在回合边界显式设置）
             # 不能在 on_data 时动态读取 current_speech_id，否则旧流尾包可能被错标到新流。
             self.accepted_speech_id = None
@@ -170,10 +178,19 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     if sid == self.finish_requested_speech_id:
                         # 尾包已经投进队列，本轮音频流到此关闭
                         self.audio_done.emit(sid)
+                # 尾包都投完了才记「这一代放干净」：主循环读到它之后再往队列里
+                # 放的任何东西（补发的 audio_done、下一段的音频）都排在尾包后面。
+                self.completed_generation = generation
             finally:
                 self.reset_bootstrap_state()
-                
-        def on_error(self, message: str):
+
+        def on_error(self, message: str, generation=None):
+            # 旧 synthesizer（软 flush 后已放干净、或重建时被换掉的那个）的报错
+            # 描述的是别人的连接：既不能把当代标成断开，也不该当成本轮出错上报。
+            if generation is not None and generation != self.current_generation:
+                logger.debug("CosyVoice 忽略过期 synthesizer 的 on_error (gen=%s, 当前 gen=%s)",
+                             generation, self.current_generation)
+                return
             if "request timeout after 23 seconds" in message:
                 self.connection_lost = True
                 logger.debug("CosyVoice SDK 内部 WebSocket 空闲超时，标记连接已断开")
@@ -184,10 +201,15 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             else:
                 _enqueue_error(self.response_queue, message)
             
-        def on_close(self): 
+        def on_close(self, generation=None):
+            # 只有当代连接的关闭才算「断开」。软 flush 之后服务端会在放完尾包后
+            # 关掉旧连接，那时新 synthesizer 可能已经在说下一段——把它标成断开，
+            # 下一次收尾就会跳过 FINISH 并丢掉 synthesizer，新一段的尾句直接消失。
+            if generation is not None and generation != self.current_generation:
+                return
             self.connection_lost = True
-            
-        def on_event(self, message): 
+
+        def on_event(self, message):
             pass
             
         def on_data(self, data: bytes) -> None:
@@ -242,10 +264,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             self._inner.on_complete(generation=self._generation)
 
         def on_error(self, message: str):
-            self._inner.on_error(message)
+            self._inner.on_error(message, generation=self._generation)
 
         def on_close(self):
-            self._inner.on_close()
+            self._inner.on_close(generation=self._generation)
 
         def on_event(self, message):
             self._inner.on_event(message)
@@ -261,6 +283,17 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     detected_lang = None
     last_streaming_call_time = None  # 追踪最后一次 streaming_call 的时间
     IDLE_AUTO_COMPLETE_SECONDS = 15  # 空闲超过此秒数则主动 complete（须 < 服务端 23s 超时）
+    # 软 flush（core 的空闲哨兵 / 上面的空闲保活）发过 FINISH 之后，旧 synthesizer
+    # 还在往回吐尾包。同一轮再来文本时不能立刻在旁边开新流：两条 OGG 流的页会在
+    # 共享缓冲里交错成坏音频，所以先攒在 char_buffer 里等旧流的完成通知，最多等
+    # 这么久（DashScope FINISH→complete 通常 <1s）。
+    SOFT_FLUSH_DRAIN_TIMEOUT_SECONDS = 2.5
+    # 当前 synthesizer 已经因软 flush 发过 FINISH（本轮没结束、还可能来文本）。
+    soft_finished = False
+    soft_finish_deadline = None
+    # 软 flush 期间收到 (None, None)：等旧流放干净再决定是补发 audio_done 还是
+    # 起新流把攒着的文本说完再收尾。
+    round_end_pending = False
 
     def _create_synthesizer(lang_hint=None):
         """Create a new SpeechSynthesizer, with an optional language hint.
@@ -358,16 +391,104 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         # 这里不能立刻清 accepted_speech_id/bootstrap。
         # FINISH 发出后，服务端仍可能继续回传尾包；应由 on_complete 或后续中断/切换来收口状态。
 
+    def _soft_finish():
+        """Send FINISH for everything said so far without ending the round.
+
+        The server only synthesizes the trailing sentence once it sees FINISH,
+        and on some realtime routes the round's real FINISH (core's ``(None,
+        None)``, tied to the provider's ``response.done``) trails the last text
+        by seconds. Finishing early releases that tail; the synthesizer is then
+        left to drain and more text of the same speech is handled by
+        ``_service_soft_finished``.
+        """
+        nonlocal soft_finished, soft_finish_deadline
+        if soft_finished:
+            return
+        try:
+            _flush_buffer()  # 短尾巴可能还卡在 6 字缓冲里没建 synthesizer
+        except Exception as e:
+            logger.warning(f"TTS soft flush buffer 失败: {e}")
+        if synthesizer is None:
+            return
+        _do_streaming_complete(round_end=False)
+        if synthesizer is None:
+            # 连接已断，_do_streaming_complete 直接丢掉了 synthesizer，没什么可等的
+            return
+        soft_finished = True
+        soft_finish_deadline = time.time() + SOFT_FLUSH_DRAIN_TIMEOUT_SECONDS
+
+    def _retire_soft_finished_synthesizer(*, drained: bool):
+        """Drop a soft-finished synthesizer so the next text starts a fresh stream."""
+        nonlocal synthesizer, soft_finished, soft_finish_deadline, last_streaming_call_time
+        callback.finish_requested_speech_id = None
+        if synthesizer is not None:
+            try:
+                synthesizer.close()
+            except Exception:
+                pass
+        synthesizer = None
+        soft_finished = False
+        soft_finish_deadline = None
+        last_streaming_call_time = None
+        if not drained:
+            # 没等到完成通知就放弃了：共享缓冲里可能留着旧流的半页，
+            # 不能拼进新流（与重连路径同一条理由）。
+            callback.reset_bootstrap_state()
+
+    def _service_soft_finished():
+        """Advance the soft-finished state once the old stream has drained.
+
+        Called from the idle loop and after every queue item while
+        ``soft_finished`` is set. Nothing happens until the current
+        generation's completion arrives (or the drain timeout passes); then
+        buffered text of the same speech starts a new synthesizer, and a
+        pending round end either finishes that new stream or, with nothing
+        left to say, closes the audio stream directly.
+        """
+        nonlocal char_buffer, round_end_pending, soft_finished, soft_finish_deadline
+        if not soft_finished:
+            return
+        drained = callback.completed_generation == synth_generation
+        if not drained and time.time() < soft_finish_deadline:
+            return
+        if char_buffer.strip():
+            _retire_soft_finished_synthesizer(drained=drained)
+            try:
+                _flush_buffer()  # 同一轮接着说：新 synthesizer + 攒下的文本
+            except Exception as e:
+                # 与 TTS Init Error 路径同款：这段文本丢弃，别让它每 10ms 重试一次
+                logger.error(f"TTS soft flush 续接失败: {e}")
+                char_buffer = ""
+            if round_end_pending:
+                _do_streaming_complete(round_end=True)
+        elif round_end_pending:
+            if drained:
+                # 旧流的尾包早已投进队列，这里补的收尾排在它们后面
+                audio_done.emit(current_speech_id)
+            else:
+                # 放弃等待：完成通知若迟到，还能借它把收尾补上；不来就漏发，
+                # 前端 give-up 兜底（宁可漏发不可早发）。
+                callback.finish_requested_speech_id = current_speech_id
+            soft_finished = False
+            soft_finish_deadline = None
+        else:
+            # 放干净了但本轮没结束、也没新文本：保持软完成态，等下一个信号
+            return
+        round_end_pending = False
+
     while True:
         # 非阻塞检查队列，优先处理打断
         if request_queue.empty():
+            _service_soft_finished()
             # 主动完成：合成器空闲超过阈值，趁 WebSocket 还活着主动 complete
-            # 避免等到 (None,None) 到达时 WebSocket 已被服务端回收（23s 超时）
-            if (synthesizer is not None
+            # 避免等到 (None,None) 到达时 WebSocket 已被服务端回收（23s 超时）。
+            # 走软 flush 同一条状态机：之后同一轮再来文本会等旧流放干净再续。
+            if (not soft_finished
+                    and synthesizer is not None
                     and last_streaming_call_time is not None
                     and time.time() - last_streaming_call_time > IDLE_AUTO_COMPLETE_SECONDS):
                 logger.debug(f"CosyVoice 空闲 >{IDLE_AUTO_COMPLETE_SECONDS}s，主动 streaming_complete")
-                _do_streaming_complete(round_end=False)
+                _soft_finish()
             time.sleep(0.01)
             continue
 
@@ -401,11 +522,28 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 callback.accepted_speech_id = None
                 callback.reset_bootstrap_state()
                 audio_done.reset()
+                soft_finished = False
+                soft_finish_deadline = None
+                round_end_pending = False
             finally:
                 audio_done.end_interrupt()
             continue
 
+        if sid == TTS_SOFT_FLUSH_SENTINEL:
+            # core 的文本空闲哨兵：只对仍在说的这一轮有效。迟到的（sid 已经换了、
+            # 或本轮已经正常收尾）直接忽略，不然会把别的轮次的流截断。
+            if tts_text is not None and tts_text == current_speech_id:
+                _soft_finish()
+            continue
+
         if sid is None:
+            if soft_finished:
+                # 软 flush 已经把 FINISH 发出去了，同一条连接不能再发一次。
+                # 等旧流放干净：有攒着的文本就起新流说完再收尾，没有就直接补收尾。
+                round_end_pending = True
+                _service_soft_finished()
+                detected_lang = None
+                continue
             # 正常结束 - 告诉TTS没有更多文本了（非阻塞）
             try:
                 _flush_buffer()
@@ -441,9 +579,23 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             callback.reset_bootstrap_state()
             callback.accepted_speech_id = sid
             audio_done.reset()  # 新轮次重置 audio_done 去重标记
+            soft_finished = False
+            soft_finish_deadline = None
+            round_end_pending = False
 
         if tts_text is None or not tts_text.strip():
             time.sleep(0.01)
+            continue
+
+        if soft_finished:
+            # 软 flush 之后同一轮又来文本：旧 synthesizer 已经发过 FINISH，不能再往
+            # 里 streaming_call（服务端会报 task 已结束）；也不能立刻开新流（两条
+            # OGG 流的页会在共享缓冲里交错）。先攒着，等旧流放干净再续。
+            char_buffer += tts_text
+            hint = detect_tts_language_hint(tts_text)
+            if hint and detected_lang != hint:
+                detected_lang = hint
+            _service_soft_finished()
             continue
 
         # 尚未创建 synthesizer 时先缓冲，等够 TTS_LANG_DETECT_MIN_CHARS 个字符再一起发送
