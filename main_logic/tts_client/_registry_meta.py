@@ -165,12 +165,12 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
     "elevenlabs": TTSProviderMeta(
         name="elevenlabs",
         category="ws_bistream",
-        protocol="WebSocket (wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input)",
+        protocol="WebSocket (wss://api.elevenlabs.io/v1/text-to-dialogue/stream-input)",
         input_streaming=True,
         output_streaming=True,
         client_sentence_split=False,
         audio_format="PCM 24kHz -> resample 48kHz",
-        notes="ElevenLabs text-to-speech stream with Flash v2.5 by default",
+        notes="ElevenLabs Text-to-Dialogue stream with eleven_v3_conversational",
     ),
     "minimax": TTSProviderMeta(
         name="minimax",
