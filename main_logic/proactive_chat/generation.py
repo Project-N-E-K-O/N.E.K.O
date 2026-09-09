@@ -2215,13 +2215,17 @@ def _label_prefix_boundary_ok(label: str, rest: str) -> bool:
     return (not label.isascii()) and (not ch.isascii())
 
 
-def _strip_proactive_leading_label_tail(rest: str) -> str:
+def _strip_proactive_label_tail(rest: str) -> str:
     """Strip label punctuation without consuming a spaced reply path."""
     adjacent_separator = rest[:1] in _PROACTIVE_SLASHES + "：:"
     body = rest.lstrip()
-    # A spaced colon still belongs to the label; a spaced slash may be the
-    # reply itself (for example ``/chat /api``) and must be preserved.
-    if adjacent_separator or body[:1] in "：:":
+    spaced_slash_separator = (
+        body[:1] in _PROACTIVE_SLASHES and body[1:2].isspace()
+    )
+    # A spaced colon still belongs to the label. A spaced slash is a separator
+    # only when whitespace also follows it; otherwise it may begin the reply's
+    # path (for example ``/chat /api``) and must be preserved.
+    if adjacent_separator or body[:1] in "：:" or spaced_slash_separator:
         body = body[1:]
     return body.lstrip()
 
@@ -2241,13 +2245,13 @@ def _strip_proactive_label_slash_prefix(
             rest = body[len(label) :]
             sep = re.match(rf"[ \t]*[{re.escape(_PROACTIVE_SLASHES)}]", rest)
             if sep:
-                return rest[sep.end() :].lstrip()
+                return _strip_proactive_label_tail(rest)
         if body.startswith(tuple(_PROACTIVE_SLASHES)) and folded[1:].startswith(
             label
         ):
             rest = body[1 + len(label) :]
             if _label_prefix_boundary_ok(label, rest):
-                return _strip_proactive_leading_label_tail(rest)
+                return _strip_proactive_label_tail(rest)
     return None
 
 
@@ -2289,18 +2293,20 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
             if slash:
                 after_slash = rest[slash.end() :]
                 after = after_slash.lstrip()
+                slash_is_adjacent = rest[:1] in _PROACTIVE_SLASHES
                 # A single-word ASCII label may also be a route segment. Keep
                 # ``screen/share`` intact, but treat ``screen/ share`` as an
                 # explicitly separated leaked label.
                 if (
                     folded_label in _PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS
+                    and slash_is_adjacent
                     and after_slash == after
                     and after
                     and after[0].isascii()
                     and not after[0].isupper()
                 ):
                     continue
-                return after, source_tag
+                return _strip_proactive_label_tail(rest), source_tag
 
             # A colon is a strong separator for lowercase / all-caps internal
             # source labels. Preserve title-cased single-word English prose
@@ -2355,7 +2361,7 @@ def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
                 or not rest[0].isascii()
             ):
                 continue
-            return _strip_proactive_leading_label_tail(rest), source_tag
+            return _strip_proactive_label_tail(rest), source_tag
     return None
 
 
