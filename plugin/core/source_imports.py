@@ -56,6 +56,18 @@ class PluginSourceFinder(importlib.abc.MetaPathFinder):
             )
         source = candidate / "__init__.py" if candidate.is_dir() else candidate.with_suffix(".py")
         if not source.is_file():
+            # Preserve native modules/packages without falling through to stale
+            # bytecode or a different plugin directory on the import path.
+            native_spec = importlib.machinery.FileFinder(
+                str(candidate.parent),
+                (importlib.machinery.ExtensionFileLoader, importlib.machinery.EXTENSION_SUFFIXES),
+            ).find_spec(fullname)
+            if native_spec is not None and native_spec.loader is not None:
+                try:
+                    Path(native_spec.origin).resolve().relative_to(self.directory)
+                except ValueError:
+                    raise ImportError(f"Plugin source escapes its registered directory: {native_spec.origin}") from None
+                return native_spec
             if candidate.is_dir():
                 spec = importlib.machinery.ModuleSpec(fullname, None, is_package=True)
                 spec.submodule_search_locations = [str(candidate)]

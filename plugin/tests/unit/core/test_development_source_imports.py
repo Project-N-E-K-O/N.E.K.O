@@ -1,14 +1,70 @@
 from __future__ import annotations
 
 import json
+import importlib.machinery
+import importlib.util
 import os
 from pathlib import Path
 import py_compile
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.mark.parametrize("legacy_first", [False, True])
+@pytest.mark.parametrize("native_package", [False, True], ids=["module", "package"])
+@pytest.mark.parametrize("scanner", [False, True], ids=["runtime", "metadata"])
+def test_development_imports_load_native_extensions(tmp_path: Path, legacy_first: bool, native_package: bool, scanner: bool):
+    # Reuse the interpreter's real extension, preserving its PyInit_* name.
+    native_spec = importlib.util.find_spec("_decimal")
+    if native_spec is None or not isinstance(native_spec.loader, importlib.machinery.ExtensionFileLoader):
+        pytest.skip("this interpreter does not ship _decimal as a native extension")
+    directory = tmp_path / "native_probe"
+    directory.mkdir()
+    manifest = directory / "plugin.toml"
+    manifest.write_text("", encoding="utf-8")
+    binary = Path(native_spec.origin)
+    if native_package:
+        destination = directory / "_decimal" / ("__init__" + binary.name.removeprefix("_decimal"))
+        destination.parent.mkdir()
+    else:
+        destination = directory / binary.name
+    shutil.copy2(binary, destination)
+    first, second = ("plugin.plugins", "plugins") if legacy_first else ("plugins", "plugin.plugins")
+    (directory / "__init__.py").write_text(
+        f"from {first}.native_probe import _decimal as first\n"
+        f"from {second}.native_probe import _decimal as second\n"
+        "assert first is second\n"
+        "assert first.__spec__.name == 'plugins.native_probe._decimal'\n"
+        "VALUE = str(first.Decimal('1.25') + first.Decimal('2.50'))\n"
+        "from plugin.sdk.plugin.decorators import plugin_entry\n"
+        "class Probe:\n"
+        "    @plugin_entry(id='probe', name=VALUE)\n"
+        "    def probe(self): pass\n", encoding="utf-8",
+    )
+    if scanner:
+        from plugin.server.application.plugins.metadata_scanner import scan_plugin_metadata_isolated
+        result = scan_plugin_metadata_isolated(
+            plugin_id="native_probe", module_path="plugins.native_probe", class_name="Probe",
+            config_path=manifest, conf={}, pdata={}, source_only=True,
+        )
+        assert any(entry.get("name") == "3.75" for entry in result.entries_preview)
+    else:
+        code = """
+import sys
+from pathlib import Path
+from plugin.core.host import _import_plugin_module
+from plugin.logging_config import get_logger
+for mode in (False, True):
+    root = _import_plugin_module('plugins.native_probe', Path(sys.argv[1]), get_logger('probe'), source_only=mode)
+    assert root.VALUE == '3.75'
+    assert Path(root.first.__file__).resolve() == Path(sys.argv[2]).resolve()
+"""
+        process = subprocess.run([sys.executable, "-c", code, str(manifest), str(destination)], capture_output=True, text=True, timeout=30)
+        assert process.returncode == 0, process.stderr
 
 
 def _stale_source(path: Path, old: str, new: str) -> None:
@@ -18,6 +74,103 @@ def _stale_source(path: Path, old: str, new: str) -> None:
     py_compile.compile(str(path), doraise=True)
     path.write_text(new, encoding="utf-8")
     os.utime(path, (1700000000.8, 1700000000.8))
+
+
+@pytest.mark.parametrize("native_package", [False, True])
+def test_native_fallback_keeps_python_source_priority(tmp_path: Path, native_package: bool):
+    from plugin.core.source_imports import PluginSourceFinder, SourceOnlyLoader
+    directory = tmp_path / "probe"
+    directory.mkdir()
+    candidate = directory / "native"
+    if native_package:
+        candidate.mkdir()
+        source = candidate / "__init__.py"
+    else:
+        source = candidate.with_suffix(".py")
+    _stale_source(source, 'VALUE="old"\n', 'VALUE="new"\n')
+    binary = source.with_suffix(importlib.machinery.EXTENSION_SUFFIXES[0])
+    binary.write_bytes(b"invalid native module must not override Python source")
+    finder = PluginSourceFinder("plugins.probe", directory)
+    spec = finder.find_spec("plugins.probe.native")
+    assert isinstance(spec.loader, SourceOnlyLoader)
+    namespace = {}
+    exec(spec.loader.get_code(spec.name), namespace)
+    assert namespace["VALUE"] == "new"
+
+
+def test_native_fallback_does_not_load_deleted_source_bytecode(tmp_path: Path):
+    from plugin.core.source_imports import PluginSourceFinder
+    source = tmp_path / "deleted.py"
+    source.write_text("VALUE = 'stale'\n", encoding="utf-8")
+    py_compile.compile(str(source), cfile=str(source.with_suffix(".pyc")), doraise=True)
+    source.unlink()
+    # Ordinary PathFinder could load this legacy bytecode file.
+    spec = importlib.machinery.PathFinder.find_spec("plugins.probe.deleted", [str(tmp_path)])
+    assert isinstance(spec.loader, importlib.machinery.SourcelessFileLoader)
+    with pytest.raises(ModuleNotFoundError) as exc:
+        PluginSourceFinder("plugins.probe", tmp_path).find_spec("plugins.probe.deleted")
+    assert exc.value.name == "plugins.probe.deleted"
+
+
+@pytest.mark.parametrize("suffix", importlib.machinery.EXTENSION_SUFFIXES)
+def test_native_fallback_uses_registered_directory(tmp_path: Path, suffix: str):
+    from plugin.core.source_imports import PluginSourceFinder
+    directory = tmp_path / "probe"
+    directory.mkdir()
+    binary = directory / ("native" + suffix)
+    binary.write_bytes(b"native fixture: only resolving, not loading")
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / binary.name).write_bytes(b"must not select this directory")
+    spec = PluginSourceFinder("plugins.probe", directory).find_spec("plugins.probe.native", [str(other)])
+    assert isinstance(spec.loader, importlib.machinery.ExtensionFileLoader)
+    assert Path(spec.origin) == binary
+
+
+def test_native_fallback_rejects_extension_symlink_outside_source(tmp_path: Path):
+    from plugin.core.source_imports import PluginSourceFinder
+    directory = tmp_path / "probe"
+    directory.mkdir()
+    name = "native" + importlib.machinery.EXTENSION_SUFFIXES[0]
+    outside = tmp_path / name
+    outside.write_bytes(b"outside source")
+    try:
+        (directory / name).symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks are unavailable in this test environment")
+    with pytest.raises(ImportError, match="escapes its registered directory"):
+        PluginSourceFinder("plugins.probe", directory).find_spec("plugins.probe.native")
+
+
+def test_development_failed_native_import_can_retry_from_source(tmp_path: Path):
+    directory = tmp_path / "native_retry"
+    directory.mkdir()
+    manifest = directory / "plugin.toml"
+    manifest.write_text("", encoding="utf-8")
+    (directory / "__init__.py").write_text("", encoding="utf-8")
+    (directory / ("native" + importlib.machinery.EXTENSION_SUFFIXES[0])).write_bytes(b"invalid binary")
+    code = """
+import importlib, sys
+from pathlib import Path
+from plugin.core.host import _import_plugin_module
+from plugin.logging_config import get_logger
+manifest = Path(sys.argv[1])
+_import_plugin_module('plugins.native_retry', manifest, get_logger('probe'), source_only=True)
+names = ['plugin.plugins.native_retry.native', 'plugins.native_retry.native']
+try:
+    importlib.import_module(names[0])
+except ImportError as exc:
+    assert not isinstance(exc, ModuleNotFoundError), 'native loader must attempt the binary'
+else:
+    raise AssertionError('invalid native binary must fail')
+assert all(name not in sys.modules for name in names)
+(manifest.parent / 'native.py').write_text('VALUE = 42\\n', encoding='utf-8')
+left = importlib.import_module(names[0])
+right = importlib.import_module(names[1])
+assert left is right and left.VALUE == 42
+"""
+    process = subprocess.run([sys.executable, "-c", code, str(manifest)], capture_output=True, text=True, timeout=30)
+    assert process.returncode == 0, process.stderr
 
 
 @pytest.mark.parametrize("child", [False, True], ids=["entry", "submodule"])
