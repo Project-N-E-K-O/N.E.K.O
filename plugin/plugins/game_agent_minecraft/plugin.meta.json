@@ -371,7 +371,7 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 343709,
+  "source_bytes": 341442,
   "source_files": [
     "README.md",
     "__init__.py",
