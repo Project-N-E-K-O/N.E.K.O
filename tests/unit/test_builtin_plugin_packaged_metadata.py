@@ -44,6 +44,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGINS_DIR = REPO_ROOT / "plugin" / "plugins"
+# Spelled without an escape: tooling has rewritten this file turning backslash
+# sequences into the raw bytes they name, which is the mistake the LF guard
+# below exists to catch.
+TAB = chr(9)
 
 
 def _tracked_plugin_paths() -> set[str] | None:
@@ -76,6 +80,11 @@ def _worktree_crlf_paths() -> list[str] | None:
 
     ``None`` when git cannot answer, which makes the test skip rather than pass
     on no evidence.
+
+    Output is ``i/<eol> w/<eol> attr/<attrs>`` then a TAB then the path. The
+    attribute column is not a single token -- ``*.py text eol=lf`` prints as
+    ``attr/text eol=lf`` -- so the path has to be taken from the tab, not from a
+    fixed field count.
     """
     try:
         completed = subprocess.run(
@@ -89,12 +98,14 @@ def _worktree_crlf_paths() -> list[str] | None:
         return None
     found: list[str] = []
     for line in completed.stdout.splitlines():
-        fields = line.split(maxsplit=3)
-        if len(fields) < 4:
+        prefix, separator, path = line.partition(TAB)
+        if not separator:
             continue
-        worktree_eol = fields[1]
-        if worktree_eol in ("w/crlf", "w/mixed"):
-            found.append(fields[3].strip())
+        fields = prefix.split()
+        if len(fields) < 2:
+            continue
+        if fields[1] in ("w/crlf", "w/mixed"):
+            found.append(path.strip())
     return sorted(found)
 
 
