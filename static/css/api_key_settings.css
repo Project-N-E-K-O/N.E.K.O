@@ -1400,7 +1400,7 @@ border-bottom: none;
 
 .tooltip-content {
 color: #365c70;
-padding: 15px 48px 15px 17px;
+padding: 0;
 border-radius: 16px;
 font-size: 0.88em;
 line-height: 1.62;
@@ -1412,8 +1412,27 @@ width: min(600px, calc(100vw - 40px));
 max-width: calc(100vw - 40px);
 box-sizing: border-box;
 white-space: normal;
-pointer-events: none;
+pointer-events: auto;
 letter-spacing: 0.01em;
+}
+
+.tooltip-scroll-content {
+max-height: var(--tooltip-max-height, calc(100vh - 42px));
+padding: 15px 48px 15px 17px;
+box-sizing: border-box;
+overflow-y: auto;
+overscroll-behavior: contain;
+scrollbar-width: thin;
+scrollbar-color: rgba(64, 197, 241, 0.68) transparent;
+}
+
+.tooltip-scroll-content::-webkit-scrollbar {
+width: 7px;
+}
+
+.tooltip-scroll-content::-webkit-scrollbar-thumb {
+background: rgba(64, 197, 241, 0.68);
+border-radius: 999px;
 }
 
 .tooltip-content strong {

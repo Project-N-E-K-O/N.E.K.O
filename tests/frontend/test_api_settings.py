@@ -147,6 +147,48 @@ def test_api_help_tooltips_follow_neko_theme_and_fit_viewport(
     assert narrow["right"] <= 370
     assert narrow["width"] <= 350
 
+    mock_page.evaluate("window.changeLanguage('es')")
+    assist_icon = mock_page.locator(".tooltip-icon").nth(1)
+    assist_tooltip = mock_page.locator(".tooltip-content").nth(1)
+    assist_icon.scroll_into_view_if_needed()
+    assist_icon.hover()
+    expect(assist_tooltip).to_be_visible()
+    vertical = assist_tooltip.evaluate("""
+        element => {
+            const rect = element.getBoundingClientRect();
+            const scrollRegion = element.querySelector('.tooltip-scroll-content') || element;
+            return {
+                top: rect.top,
+                bottom: rect.bottom,
+                overflowY: getComputedStyle(scrollRegion).overflowY,
+                clientHeight: scrollRegion.clientHeight,
+                scrollHeight: scrollRegion.scrollHeight,
+            };
+        }
+    """)
+    assert vertical["top"] >= 20
+    assert vertical["bottom"] <= 700
+    assert vertical["overflowY"] == "auto"
+    assert vertical["scrollHeight"] > vertical["clientHeight"]
+
+    assist_tooltip.hover()
+    mock_page.wait_for_timeout(250)
+    expect(assist_tooltip).to_be_visible()
+    scroll_state = assist_tooltip.evaluate("""
+        element => {
+            const scrollRegion = element.querySelector('.tooltip-scroll-content');
+            scrollRegion.scrollTop = scrollRegion.scrollHeight;
+            return {
+                opacity: getComputedStyle(element).opacity,
+                pointerEvents: getComputedStyle(element).pointerEvents,
+                scrollTop: scrollRegion.scrollTop,
+            };
+        }
+    """)
+    assert scroll_state["opacity"] == "1"
+    assert scroll_state["pointerEvents"] == "auto"
+    assert scroll_state["scrollTop"] > 0
+
 
 @pytest.mark.frontend
 def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_server: str):
