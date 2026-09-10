@@ -57,6 +57,7 @@ released. ``AsrRuntimeMixin._fail_closed_voice_route`` owns that order for
 the fail-closed route exits.
 """
 
+import asyncio
 import hashlib
 import json
 from typing import Optional
@@ -640,7 +641,12 @@ class NotifyMixin:
                 delivered = True
 
                 # 同步到同步服务器
-                check_start()
+                try:
+                    check_start()
+                except asyncio.CancelledError:
+                    # Ownership changed after the display write committed.
+                    # Stop mirroring, but preserve the caller's delivery receipt.
+                    return delivered
                 if callable(check_tts) and not check_tts():
                     return delivered
                 self.sync_message_queue.put(

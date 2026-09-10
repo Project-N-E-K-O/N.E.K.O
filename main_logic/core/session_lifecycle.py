@@ -278,6 +278,10 @@ class SessionOwnershipMixin:
         operation = getattr(self, "_start_operation", None)
         if expected_session is not None and expected_session is not session:
             return self._own_cleanup_task(asyncio.sleep(0))
+        # Accept user intent even when teardown of these resources is already
+        # owned by another end request. Starts waiting for that handoff must stop.
+        if not by_server and reset_starting_count:
+            self._user_session_abandon_epoch = getattr(self, "_user_session_abandon_epoch", 0) + 1
         tts = self._snapshot_tts_runtime()
         for previous in reversed(self._session_retirements):
             if previous.generation == self._session_generation and (
@@ -289,8 +293,6 @@ class SessionOwnershipMixin:
                 or previous.memory_callback is after_memory_settlement
             ):
                 return previous.task
-        if not by_server and reset_starting_count:
-            self._user_session_abandon_epoch = getattr(self, "_user_session_abandon_epoch", 0) + 1
         caller = asyncio.current_task()
         if reset_starting_count and operation is not None:
             operation.valid = False

@@ -55,7 +55,9 @@ from queue import Queue
 from ._shared import logger, NO_RETRY_TTS_CODES, IMMEDIATE_REPORT_TTS_CODES
 from .notices import enqueue_voice_migration_notice
 from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE, GameSpeechCaptureOwner
-from .tts_records import TtsCapacityError, TtsRuntimeRecord, tts_output_runtime
+from .tts_records import (
+    TTS_FRAME_WRITE_TIMEOUT_SECONDS, TtsCapacityError, TtsRuntimeRecord, tts_output_runtime,
+)
 
 # Late-binding read point for symbols that tests rebind on the facade via
 # ``monkeypatch.setattr("main_logic.core.<attr>", ...)``. Do NOT from-import
@@ -1053,6 +1055,21 @@ class TtsRuntimeMixin:
         response_queue = self.tts_response_queue
         if not self._tts_runtime_is_current(runtime) or not self._tts_output_is_current():
             return
+
+        def clear_responses():
+            # A cancelled handler still owns its executor's blocking get().
+            # Discard audio, but return its wakeups after draining the queue.
+            wakeups = []
+            while not response_queue.empty():
+                try:
+                    item = response_queue.get_nowait()
+                except Exception:
+                    break
+                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__handler_exit__":
+                    wakeups.append(item)
+            for item in wakeups:
+                response_queue.put_nowait(item)
+
         self._tts_done_queued_for_turn = False
         # 打断作废的是这一轮的一切，包括还没到点的空闲软 flush；同样在第一个
         # await 之前同步取消，让它和 __interrupt__ 入队一起落地。
@@ -1061,11 +1078,7 @@ class TtsRuntimeMixin:
         self._clear_game_speech_correlation()
         GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
         if self.tts_thread and self.tts_thread.is_alive():
-            while not response_queue.empty():
-                try:
-                    response_queue.get_nowait()
-                except Exception:
-                    break
+            clear_responses()
             try:
                 request_queue.put(("__interrupt__", None))
             except Exception as e:
@@ -1074,11 +1087,7 @@ class TtsRuntimeMixin:
             # 等待 TTS worker 处理 __interrupt__ 并 mute 回调（worker 轮询间隔 ~10ms）
             # 然后再次清空响应队列，确保旧 synthesizer 泄漏的音频全部丢弃
             await asyncio.sleep(0.02)
-            while not response_queue.empty():
-                try:
-                    response_queue.get_nowait()
-                except Exception:
-                    break
+            clear_responses()
         async with self.tts_cache_lock:
             if (not self._tts_runtime_is_current(runtime)
                     or response_queue is not self.tts_response_queue
@@ -1791,8 +1800,19 @@ class TtsRuntimeMixin:
     async def _write_audio_frame(self, websocket, header: dict, tts_audio) -> None:
         """Write one header/payload pair. The caller holds the frame lock."""
         async def write_frame():
-            await websocket.send_json(header)
-            await websocket.send_bytes(tts_audio)
+            try:
+                async with asyncio.timeout(TTS_FRAME_WRITE_TIMEOUT_SECONDS):
+                    await websocket.send_json(header)
+                    await websocket.send_bytes(tts_audio)
+            except TimeoutError:
+                # A partial frame must never be followed by another frame on
+                # this socket. Close the captured transport, not a successor.
+                try:
+                    async with asyncio.timeout(1.0):
+                        await websocket.close(code=1011)
+                except Exception:
+                    logger.warning("Failed to close stalled TTS audio transport", exc_info=True)
+                raise WebSocketDisconnect(code=1011) from None
             self.sync_message_queue.put({"type": "binary", "data": tts_audio})
 
         writing = asyncio.create_task(write_frame())
@@ -1805,7 +1825,7 @@ class TtsRuntimeMixin:
         # Retirement cannot release the frame lock with a header already sent
         # and the corresponding payload still pending. The handler stays part
         # of the handoff barrier until this pair finishes, even under repeated
-        # cancellation; the successor's shared startup deadline remains bounded.
+        # cancellation. The writer itself times out and closes a partial stream.
         if cancelled:
             if not writing.cancelled():
                 writing.exception()
