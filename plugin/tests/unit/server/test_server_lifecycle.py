@@ -21,16 +21,17 @@ _PLANE_STUB = object()
 
 
 @pytest.fixture(autouse=True)
-def _assume_proactive_bridge_alive(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The module-global ``ProactiveBridge`` is never started in these tests.
+def _assume_bridges_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The module-global bridges are never started in these tests.
 
     ``ensure_delivery_path_started`` revalidates a latched path against thread
     liveness, so without this default every test that latches would consult the
-    real (never started) bridge, unlatch, and end up exercising the retirement
+    real (never started) bridges, unlatch, and end up exercising the retirement
     path instead of whatever it is actually about. Tests whose subject IS bridge
     liveness set their own value afterwards and win.
     """
     monkeypatch.setattr(module, "proactive_bridge_is_alive", lambda: True)
+    monkeypatch.setattr(module, "message_bridge_is_alive", lambda: True)
 
 
 @pytest.mark.asyncio
@@ -890,6 +891,9 @@ async def test_a_latched_path_is_revalidated_not_trusted(
     # to notice and another to rebuild.
     plane_alive = False
     assert await service.ensure_delivery_path_started() is False
+    # Same call, not the next one: this entry must both notice and rebuild, or
+    # recovery degrades into "two plugin starts before messages flow again".
+    assert len(built) == 2
     assert stopped == ["runner", "plane_bridge", "proactive"]
     assert service._delivery_path_started is False
 
@@ -1098,6 +1102,109 @@ def test_proactive_bridge_start_does_not_recall_the_retired_thread() -> None:
         bridge.stop()
 
     assert not _touches_self_stop(pb.ProactiveBridge._run)
+
+
+@pytest.mark.asyncio
+async def test_a_dead_message_bridge_unlatches_the_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sender thread counts toward liveness, exactly like the other two.
+
+    It is the quietest of the three when it dies: ``_run`` returns if
+    ``connect()`` fails during socket setup, long after ``start_bridge()``
+    returned, and ``enqueue_delta`` keeps taking records afterwards. So
+    ``publish_record`` answers True the whole time and the only visible symptom
+    is silence -- until 4096 queue slots fill, which on a quiet plugin can be
+    never. If the latch revalidation skipped it, every later manual plugin start
+    would confirm a path over which nothing can travel.
+    """
+    service = module.ServerLifecycleService()
+    built: list[object] = []
+    stopped: list[str] = []
+    bridge_alive = True
+
+    class _Runner:
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            stopped.append("runner")
+
+        def is_alive(self) -> bool:
+            return True
+
+        async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
+            return True
+
+    def _build(*, auth_token: str) -> object:
+        runner = _Runner()
+        built.append(runner)
+        return runner
+
+    monkeypatch.setattr(module, "build_message_plane_runner", _build)
+    monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "stop_bridge", lambda: stopped.append("plane_bridge"))
+    monkeypatch.setattr(module, "stop_proactive_bridge", lambda: stopped.append("proactive"))
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+    monkeypatch.setattr(module, "message_bridge_is_alive", lambda: bridge_alive)
+
+    assert await service.ensure_delivery_path_started() is True
+    assert len(built) == 1
+
+    # The sender thread leaves. The next entry must retire the whole path --
+    # the plane and the proactive bridge are healthy, but repointing the sender
+    # means letting its thread die and starting a new one, and that only happens
+    # through a rebuild.
+    bridge_alive = False
+    assert await service.ensure_delivery_path_started() is False
+    assert stopped == ["runner", "plane_bridge", "proactive"]
+    assert len(built) == 2
+    assert service._delivery_path_started is False
+
+
+@pytest.mark.asyncio
+async def test_a_message_bridge_that_died_during_setup_is_a_failed_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``start_bridge()`` returning is not the same as the bridge running.
+
+    The sender waits for the ingest port and then connects, and it just returns
+    when that connect fails -- nothing propagates back to the caller. Reporting
+    the stage keeps the failure on THIS entry: the path is not latched, so the
+    next plugin start retries instead of trusting it.
+    """
+    service = module.ServerLifecycleService()
+
+    async def _start_plane() -> bool:
+        service._message_plane_runner = _PLANE_STUB
+        return True
+
+    monkeypatch.setattr(service, "_start_message_plane", _start_plane)
+    monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
+    monkeypatch.setattr(module, "start_bridge", lambda: None)
+    monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module, "wait_for_proactive_subscriber", lambda _t: True)
+    monkeypatch.setattr(module, "message_bridge_is_alive", lambda: False)
+
+    assert await service._start_delivery_path_locked() == ["message_bridge"]
+
+
+def test_a_disabled_message_bridge_reports_alive() -> None:
+    """Configuration turning the bridge off is not a failure to recover from.
+
+    There is no thread to lose, and the callers of this use a False to tear the
+    delivery path down and rebuild it -- which here would just rebuild the same
+    nothing, on every single plugin start.
+    """
+    from plugin.server.messaging import plane_bridge
+
+    bridge = plane_bridge._Bridge()
+    bridge._enabled = False
+    assert bridge._thread is None
+    assert bridge.is_alive() is True
 
 
 @pytest.mark.asyncio

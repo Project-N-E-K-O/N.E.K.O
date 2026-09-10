@@ -168,6 +168,25 @@ class _Bridge:
         self._thread = t
         t.start()
 
+    def is_alive(self) -> bool:
+        """Whether the sender thread is running.
+
+        A bridge switched off by configuration answers True: there is no thread
+        to lose, and callers use this to decide whether to tear the delivery
+        path down and rebuild it, which would achieve nothing here.
+
+        The case worth catching is a thread that left on its own. ``_run``
+        returns when ``connect()`` fails, and ``start()`` raised nothing, so
+        from the outside the bridge still looks started. ``enqueue_delta`` goes
+        on accepting records and ``publish_record`` goes on answering True, so
+        nothing surfaces until all 4096 queue slots fill -- by which time every
+        plugin message, state burst and alert in between is gone.
+        """
+        if not self._enabled:
+            return True
+        t = self._thread
+        return t is not None and t.is_alive()
+
     def stop(self) -> None:
         """Stop the sender thread and wait for it, so ``start()`` can follow.
 
@@ -182,6 +201,10 @@ class _Bridge:
         try:
             self._stop.set()
         except _RUNTIME_ERRORS:
+            # Interpreter teardown can leave the Event unusable. Nothing to
+            # salvage and nothing to report -- the thread is a daemon and dies
+            # with the process anyway; raising here would only turn a clean
+            # shutdown into a traceback.
             pass
         t = self._thread
         self._thread = None
@@ -189,6 +212,9 @@ class _Bridge:
             try:
                 t.join(timeout=1.0)
             except _RUNTIME_ERRORS:
+                # Same: at teardown ``join`` can refuse. The wait is a courtesy
+                # to the next ``start()``, not a correctness requirement -- the
+                # retired thread holds its own stop event and cannot be recalled.
                 pass
 
     def enqueue_delta(
@@ -330,6 +356,11 @@ def start_bridge() -> None:
 
 def stop_bridge() -> None:
     _bridge.stop()
+
+
+def message_bridge_is_alive() -> bool:
+    """Whether the sender thread is running. See ``_Bridge.is_alive``."""
+    return _bridge.is_alive()
 
 
 def refresh_ingest_endpoint() -> str:

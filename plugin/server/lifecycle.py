@@ -23,6 +23,7 @@ from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import (
     ingest_auth_token,
+    message_bridge_is_alive,
     refresh_ingest_endpoint,
     start_bridge,
     stop_bridge,
@@ -177,12 +178,23 @@ class ServerLifecycleService:
     def _delivery_path_threads_alive(self) -> bool:
         """Whether the components a latched path promises are still running.
 
-        Cheap by construction: both are thread checks, so this can sit on the
-        per-plugin-start fast path. A bridge that never started cannot reach here
-        -- the path would not have latched in the first place, because
+        Cheap by construction: all three are thread checks, so this can sit on
+        the per-plugin-start fast path. A bridge that never started cannot reach
+        here -- the path would not have latched in the first place, because
         ``_start_delivery_path_locked`` reports it as a failed stage.
+
+        The message bridge belongs here for the same reason the other two do,
+        and it is the quietest of the three when it dies: its sender thread
+        returns if ``connect()`` fails during socket setup, well after
+        ``start_bridge()`` returned, and its queue keeps accepting records
+        afterwards. Leaving it out would let this answer True for a path over
+        which no plugin message can travel.
         """
-        return self._message_plane_runner_is_alive() and proactive_bridge_is_alive()
+        return (
+            self._message_plane_runner_is_alive()
+            and message_bridge_is_alive()
+            and proactive_bridge_is_alive()
+        )
 
     def _message_plane_runner_is_alive(self) -> bool:
         """Whether the runner's own threads are up. Unknown counts as alive."""
@@ -684,6 +696,19 @@ class ServerLifecycleService:
                 str(exc),
             )
             failed.append("message_bridge")
+        else:
+            # Returning without raising is not the same as running. The sender
+            # thread waits for the ingest port and then connects, and it simply
+            # returns if that connect fails -- nothing propagates back here.
+            # There is no race in asking now: a thread still in socket setup is
+            # alive, so a False answer means it has already left (or the bridge
+            # is switched off in configuration, which reports alive).
+            if not message_bridge_is_alive():
+                logger.warning(
+                    "message bridge is not running after start; plugin records "
+                    "would queue up undelivered until a later entry rebuilds it"
+                )
+                failed.append("message_bridge")
 
         try:
             start_proactive_bridge()
