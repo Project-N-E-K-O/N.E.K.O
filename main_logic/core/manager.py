@@ -36,9 +36,11 @@ from ._shared import logger, ContextAppendResult
 from .context_append import ContextAppendMixin
 from .focus import FocusMixin
 from .tts_runtime import TtsRuntimeMixin
+from .tts_lifecycle import TtsLifecycleMixin
 from .turn import TurnMixin
 from .tool_calling import ToolCallingMixin
 from .lifecycle import LifecycleMixin
+from .session_lifecycle import SessionOwnershipMixin
 from .proactive import ProactiveMixin
 from .greeting import GreetingMixin
 from .asr_runtime import AsrRuntimeMixin
@@ -51,9 +53,11 @@ class LLMSessionManager(
     ContextAppendMixin,
     FocusMixin,
     TtsRuntimeMixin,
+    TtsLifecycleMixin,
     TurnMixin,
     ToolCallingMixin,
     LifecycleMixin,
+    SessionOwnershipMixin,
     ProactiveMixin,
     GreetingMixin,
     AsrRuntimeMixin,

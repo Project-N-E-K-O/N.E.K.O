@@ -55,9 +55,7 @@ from queue import Queue
 from ._shared import logger, NO_RETRY_TTS_CODES, IMMEDIATE_REPORT_TTS_CODES
 from .notices import enqueue_voice_migration_notice
 from .game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE, GameSpeechCaptureOwner
-from .tts_lifecycle import (
-    TtsCapacityError, TtsLifecycleMixin, TtsRuntimeRecord, tts_output_runtime,
-)
+from .tts_records import TtsCapacityError, TtsRuntimeRecord, tts_output_runtime
 
 # Late-binding read point for symbols that tests rebind on the facade via
 # ``monkeypatch.setattr("main_logic.core.<attr>", ...)``. Do NOT from-import
@@ -75,7 +73,7 @@ class _GameSpeechPreloadCancelled(Exception):
     """
 
 
-class TtsRuntimeMixin(TtsLifecycleMixin):
+class TtsRuntimeMixin:
     """TTS runtime methods (see module docstring)."""
 
     @staticmethod

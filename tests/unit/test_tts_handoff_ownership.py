@@ -5,10 +5,11 @@ from threading import Event, Thread
 import pytest
 
 from main_logic.core.tts_runtime import TtsRuntimeMixin
-from main_logic.core.tts_lifecycle import TtsCapacityError, tts_output_runtime
+from main_logic.core.tts_lifecycle import TtsLifecycleMixin
+from main_logic.core.tts_records import TtsCapacityError, tts_output_runtime
 
 
-class Manager(TtsRuntimeMixin):
+class Manager(TtsRuntimeMixin, TtsLifecycleMixin):
     def __init__(self):
         self._init_tts_lifecycle_state()
         self.tts_thread = None
