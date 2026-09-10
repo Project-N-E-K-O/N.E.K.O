@@ -111,6 +111,10 @@ def test_api_help_tooltips_follow_neko_theme_and_fit_viewport(
     assert light["color"] == "rgb(54, 92, 112)"
     assert light["radius"] == "16px"
     assert "paw_ui.png" in light["paw"]
+    paw_response = mock_page.request.get(f"{running_server}/static/icons/paw_ui.png")
+    assert paw_response.ok
+    assert paw_response.headers["content-type"].startswith("image/png")
+    assert paw_response.body().startswith(b"\x89PNG\r\n\x1a\n")
     assert light["left"] >= 20
     assert light["right"] <= 1260
     assert light["width"] <= 1240
