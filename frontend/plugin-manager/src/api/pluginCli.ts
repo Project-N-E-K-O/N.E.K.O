@@ -229,7 +229,7 @@ export function buildPluginCli(payload: PluginCliBuildRequest, config?: Pick<Axi
     // Staging, metadata probing and archive validation can outlast a normal API request.
     return post('/plugin-cli/build', payload, { timeout: 300_000, headers: { 'X-Neko-Development': '1' } })
   }
-  return post('/plugin-cli/build', payload, config)
+  return config ? post('/plugin-cli/build', payload, config) : post('/plugin-cli/build', payload)
 }
 
 /**
