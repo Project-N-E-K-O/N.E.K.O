@@ -60,18 +60,56 @@ async def test_notification_keeps_requester_when_display_and_lease_move(kind):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("kind", ["preparing", "started", "failed"])
+@pytest.mark.parametrize("handoff", ["revoke", "replace"])
 @pytest.mark.asyncio
-async def test_notification_does_not_fan_out_after_handoff_during_display_send(kind):
+async def test_notification_does_not_fan_out_after_handoff_during_display_send(kind, handoff):
     display, owner, requester = Socket(block=True), Socket(), Socket()
     manager = Manager(display, owner, requester)
     task = asyncio.create_task(getattr(manager, f"send_session_{kind}")("audio"))
     await display.entered.wait()
-    manager.valid = False
+    if handoff == "revoke":
+        manager.valid = False
+    else:
+        manager.operation = SimpleNamespace(request_id="request-b", websocket=Socket())
     display.release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert owner.payloads == []
     assert requester.payloads == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_status_keeps_delivery_receipt_after_operation_replaced():
+    from queue import Queue
+
+    display = Socket(block=True)
+    manager = Manager(display, Socket(), Socket())
+    manager.sync_message_queue = Queue()
+    sending = asyncio.create_task(manager.send_status('{"code":"ASR_INDEPENDENT_READY"}'))
+    await asyncio.wait_for(display.entered.wait(), 1)
+    manager.operation = SimpleNamespace(request_id="request-b", websocket=Socket())
+    display.release.set()
+    assert await sending is True
+    assert len(display.payloads) == 1
+    assert manager.sync_message_queue.empty()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_status_does_not_swallow_cancellation_during_socket_write():
+    from queue import Queue
+
+    display = Socket(block=True)
+    manager = Manager(display, Socket(), Socket())
+    manager.sync_message_queue = Queue()
+    sending = asyncio.create_task(manager.send_status('{"code":"ASR_INDEPENDENT_READY"}'))
+    await asyncio.wait_for(display.entered.wait(), 1)
+    sending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await sending
+    assert display.payloads == []
+    assert manager.sync_message_queue.empty()
 
 
 @pytest.mark.unit

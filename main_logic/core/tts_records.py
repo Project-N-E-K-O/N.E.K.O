@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# Bound a single frame while preserving its header/payload ordering on cancel.
+TTS_FRAME_WRITE_TIMEOUT_SECONDS = 5.0
+
+
 class TtsCapacityError(RuntimeError):
     """The bounded main TTS worker pool cannot admit another runtime."""
 

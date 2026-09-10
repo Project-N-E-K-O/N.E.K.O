@@ -85,23 +85,28 @@ async def test_old_ready_waiting_for_cache_lock_cannot_publish_to_new_runtime():
     old.response_queue.put(("__ready__", True))
     await manager.tts_cache_lock.acquire()
     task = manager._start_tts_response_handler()
-    for _ in range(30):
-        await asyncio.sleep(0.01)
-        if old.response_queue.empty():
-            break
-    new = install(manager, releases[1])
-    manager.tts_pending_chunks = [("new", "keep")]
-    manager.tts_cache_lock.release()
+    records = [old]
     try:
+        for _ in range(30):
+            await asyncio.sleep(0.01)
+            if old.response_queue.empty():
+                break
+        assert old.response_queue.empty(), "old handler never consumed the ready event"
+        new = install(manager, releases[1])
+        records.append(new)
+        manager.tts_pending_chunks = [("new", "keep")]
+        manager.tts_cache_lock.release()
         await asyncio.wait_for(task, 1)
         assert manager.tts_ready is False
         assert manager.tts_pending_chunks == [("new", "keep")]
         assert new.request_queue.empty()
     finally:
-        for record, release in zip((old, new), releases):
+        if manager.tts_cache_lock.locked():
+            manager.tts_cache_lock.release()
+        for record, release in zip(records, releases):
             manager._retire_tts_runtime(record)
             release.set()
-        await asyncio.gather(old.cleanup_task, new.cleanup_task)
+        await asyncio.gather(*(record.cleanup_task for record in records))
 
 
 @pytest.mark.asyncio
