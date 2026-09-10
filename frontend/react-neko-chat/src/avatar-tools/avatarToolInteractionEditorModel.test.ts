@@ -86,6 +86,62 @@ describe('avatar tool interaction editor model', () => {
     });
   });
 
+  it('projects every v2 click-advance image into one ordered click chain with a stable tail loop', () => {
+    const state = createAvatarToolInteractionEditorState({
+      ...DETAIL,
+      changeMode: 'click-advance',
+      changeItems: [
+        { resource: 'change-000.png', url: '/change-000.png', meaning: 'A' },
+        { resource: 'change-001.png', url: '/change-001.png', meaning: 'B' },
+        { resource: 'change-002.png', url: '/change-002.png', meaning: 'C' },
+      ],
+    });
+
+    expect(state.items.map(item => ({
+      id: item.id,
+      kind: item.kind,
+      press: item.kind === 'mouse-click' ? item.press : undefined,
+      release: item.kind === 'mouse-click' ? item.release : undefined,
+    }))).toEqual([
+      {
+        id: 'ix-v2-click-advance-000',
+        kind: 'mouse-click',
+        press: { kind: 'keep' },
+        release: { kind: 'show', imageId: 'img-v2-change-000' },
+      },
+      {
+        id: 'ix-v2-click-advance-001',
+        kind: 'mouse-click',
+        press: { kind: 'keep' },
+        release: { kind: 'show', imageId: 'img-v2-change-001' },
+      },
+      {
+        id: 'ix-v2-click-advance-002',
+        kind: 'mouse-click',
+        press: { kind: 'keep' },
+        release: { kind: 'show', imageId: 'img-v2-change-002' },
+      },
+    ]);
+    expect(state.links).toEqual([
+      {
+        id: 'link-v2-click-advance-000',
+        from: 'ix-v2-click-advance-000',
+        to: 'ix-v2-click-advance-001',
+      },
+      {
+        id: 'link-v2-click-advance-001',
+        from: 'ix-v2-click-advance-001',
+        to: 'ix-v2-click-advance-002',
+      },
+      {
+        id: 'link-v2-click-advance-002',
+        from: 'ix-v2-click-advance-002',
+        to: 'ix-v2-click-advance-002',
+      },
+    ]);
+    expect(state.initialImageTargetIds).toEqual(['ix-v2-click-advance-000']);
+  });
+
   it('edits the initial waiting set only through connections from the initial image', () => {
     const initial = { ...standardGraph(), initialImageTargetIds: [] };
     const connected = avatarToolInteractionEditorReducer(initial, {
@@ -176,10 +232,11 @@ describe('avatar tool interaction editor model', () => {
   });
 
   it('offsets a duplicate far enough to keep both complete nodes readable', () => {
-    const source = standardGraph().items[0];
+    const source = { ...standardGraph().items[0], name: 'Wave hello' };
     const duplicate = duplicateAvatarToolInteractionDraft(source);
     expect(duplicate.position).toEqual({ x: 40, y: 140 });
     expect(duplicate).toMatchObject({
+      name: '',
       kind: 'mouse-click',
       press: source.kind === 'mouse-click' ? source.press : undefined,
       release: source.kind === 'mouse-click' ? source.release : undefined,
@@ -213,6 +270,24 @@ describe('avatar tool interaction editor model', () => {
       standardGraph(),
       [IMAGE_A, IMAGE_B, IMAGE_C],
     )).toEqual([]);
+  });
+
+  it('rejects interaction names that only differ by case or surrounding spaces', () => {
+    const graph = standardGraph();
+    graph.items[0].name = 'Wave hello';
+    graph.items[1].name = '  wave HELLO  ';
+
+    const duplicateNameIssues = validateAvatarToolInteractionGraph(
+      graph,
+      [IMAGE_A, IMAGE_B, IMAGE_C],
+      item => item.name?.trim() || item.id,
+    ).filter(issue => issue.code === 'duplicate-name');
+
+    expect(duplicateNameIssues.map(issue => issue.interactionId)).toEqual([
+      'ix-click-1',
+      'ix-delay-1',
+    ]);
+    expect(duplicateNameIssues.every(issue => issue.field === 'name')).toBe(true);
   });
 
   it('marks unreachable nodes and indistinguishable triggers without rejecting cycles', () => {

@@ -10,6 +10,7 @@ import {
 } from './avatar-tools/avatarToolInteractionEditorModel';
 import { useAvatarToolInteractionEditor } from './avatar-tools/AvatarToolInteractionEditorContext';
 import type { AvatarToolImageDraft, AvatarToolImageId } from './avatar-tools/avatarToolEditorModel';
+import { findDuplicateAvatarToolNameIds } from './avatar-tools/avatarToolNames';
 
 type AvatarToolInteractionInspectorProps = {
   images: AvatarToolImageDraft[];
@@ -64,6 +65,12 @@ export function formatAvatarToolInteractionIssue(
       return i18n(
         'chat.avatarToolInitialConnectionRequired',
         'Connect the initial image to at least one interaction.',
+      );
+    case 'duplicate-name':
+      return i18n(
+        'chat.avatarToolInteractionNameDuplicate',
+        '“{{name}}” is already used by another interaction. Choose a different name.',
+        { name: label },
       );
     case 'action-image-missing':
       return i18n('chat.avatarToolInteractionActionImageMissing', '{{interaction}} uses an image that is no longer available.', {
@@ -201,19 +208,24 @@ function InteractionErrorSummary() {
         { count: String(issues.length) },
       )}</strong>
       <ul>
-        {issues.map(issue => (
-          <li key={issue.key}>
-            <button type="button" onClick={() => {
-              if (issue.interactionId) {
-                dispatch({ type: 'select-interaction', interactionId: issue.interactionId });
-              } else if (issue.linkId) {
-                dispatch({ type: 'select-link', linkId: issue.linkId });
-              }
-            }}>
-              {formatAvatarToolInteractionIssue(state, issue)}
-            </button>
-          </li>
-        ))}
+        {issues.map((issue) => {
+          const label = formatAvatarToolInteractionIssue(state, issue);
+          return (
+            <li key={issue.key}>
+              {issue.interactionId || issue.linkId ? (
+                <button type="button" onClick={() => {
+                  if (issue.interactionId) {
+                    dispatch({ type: 'select-interaction', interactionId: issue.interactionId });
+                  } else if (issue.linkId) {
+                    dispatch({ type: 'select-link', linkId: issue.linkId });
+                  }
+                }}>
+                  {label}
+                </button>
+              ) : <span>{label}</span>}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
@@ -337,6 +349,11 @@ export default function AvatarToolInteractionInspector({
   }
 
   const defaultTitle = defaultInteractionLabel(state, selectedItem);
+  const duplicateNameIds = findDuplicateAvatarToolNameIds(
+    state.items,
+    item => item.name?.trim() || defaultInteractionLabel(state, item),
+  );
+  const duplicateName = duplicateNameIds.has(selectedItem.id);
   const delayCompleteAction = selectedItem.kind === 'after' ? selectedItem.complete : null;
   const delayTargetImage = delayCompleteAction?.kind === 'show'
     ? images.find(image => image.id === delayCompleteAction.imageId) ?? null
@@ -354,18 +371,39 @@ export default function AvatarToolInteractionInspector({
             <span>{selectedItem.kind === 'mouse-click'
               ? i18n('chat.avatarToolInteractionMouseClick', 'Mouse click')
               : i18n('chat.avatarToolInteractionAfterTime', 'Delayed switch')}</span>
-            <input
-              className="avatar-tool-interaction-name-input"
-              value={selectedItem.name ?? ''}
-              aria-label={i18n('chat.avatarToolInteractionName', 'Interaction name')}
-              disabled={busy}
-              onChange={event => dispatch({
-                type: 'update-name',
-                interactionId: selectedItem.id,
-                name: event.target.value,
-              })}
-              placeholder={defaultTitle}
-            />
+            <label
+              className="avatar-tool-editable-name"
+              title={i18n('chat.avatarToolEditableNameHint', 'Click the name to rename')}
+            >
+              <input
+                className="avatar-tool-interaction-name-input"
+                value={selectedItem.name ?? ''}
+                aria-label={i18n('chat.avatarToolInteractionName', 'Interaction name')}
+                aria-invalid={duplicateName ? 'true' : undefined}
+                disabled={busy}
+                onChange={event => dispatch({
+                  type: 'update-name',
+                  interactionId: selectedItem.id,
+                  name: event.target.value,
+                })}
+                placeholder={defaultTitle}
+              />
+              <img
+                className="avatar-tool-editable-name-icon"
+                src="/static/icons/edit.png"
+                alt=""
+                aria-hidden="true"
+              />
+            </label>
+            {duplicateName ? (
+              <small className="avatar-tool-interaction-field-error">
+                {i18n(
+                  'chat.avatarToolInteractionNameDuplicate',
+                  '“{{name}}” is already used by another interaction. Choose a different name.',
+                  { name: selectedItem.name?.trim() || defaultTitle },
+                )}
+              </small>
+            ) : null}
           </div>
           <div className="avatar-tool-interaction-inspector-actions">
             <button
@@ -450,7 +488,7 @@ export default function AvatarToolInteractionInspector({
             </label>
             <FieldIssue item={selectedItem} field="delayMs" />
             <label className="avatar-tool-interaction-field">
-              <span>{i18n('chat.avatarToolInteractionTargetImage', 'When time is up')}</span>
+              <span>{i18n('chat.avatarToolInteractionTargetImage', 'Switch to')}</span>
               <div className="avatar-tool-interaction-image-choice">
                 <InteractionImagePreview
                   image={delayTargetImage}

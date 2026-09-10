@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -135,6 +136,19 @@ function avatarToolConnectionHandles(size: { width: number; height: number }): N
   ];
 }
 
+function avatarToolConnectionBoundaryLabel(position: Position): string {
+  if (position === Position.Top) {
+    return i18n('chat.avatarToolWorkspaceHandleTop', 'Top edge for connections');
+  }
+  if (position === Position.Right) {
+    return i18n('chat.avatarToolWorkspaceHandleRight', 'Right edge for connections');
+  }
+  if (position === Position.Bottom) {
+    return i18n('chat.avatarToolWorkspaceHandleBottom', 'Bottom edge for connections');
+  }
+  return i18n('chat.avatarToolWorkspaceHandleLeft', 'Left edge for connections');
+}
+
 const AVATAR_TOOL_INITIAL_NODE_HANDLES = avatarToolConnectionHandles(AVATAR_TOOL_INITIAL_NODE_SIZE);
 const AVATAR_TOOL_INTERACTION_NODE_HANDLES = avatarToolConnectionHandles(AVATAR_TOOL_INTERACTION_NODE_SIZE);
 
@@ -148,7 +162,7 @@ function AvatarToolConnectionBoundaries({ sourceOnly = false }: { sourceOnly?: b
       position={position}
       isConnectableStart
       isConnectableEnd={!sourceOnly}
-      aria-label={i18n('chat.avatarToolWorkspaceHandle', 'Node edge for connections')}
+      aria-label={avatarToolConnectionBoundaryLabel(position)}
     />
   ));
 }
@@ -545,6 +559,8 @@ export function AvatarToolInteractionCanvas() {
   );
   const [draggingNodeIds, setDraggingNodeIds] = useState<ReadonlySet<string>>(() => new Set());
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const overviewPositionTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const overviewOpenButtonRef = useRef<HTMLButtonElement | null>(null);
   const routePlanCacheRef = useRef<AvatarToolRoutePlanCache | null>(null);
   useLayoutEffect(() => {
     const refreshLocalizedContent = () => setLocaleRevision(revision => revision + 1);
@@ -616,7 +632,7 @@ export function AvatarToolInteractionCanvas() {
                 : i18n('chat.avatarToolInteractionNotSet', 'Not set'),
             },
             {
-              label: i18n('chat.avatarToolInteractionThenShow', 'Then'),
+              label: i18n('chat.avatarToolInteractionThenShow', 'Switch to'),
               value: item.complete
                 ? imageActionSummary(item.complete, images)
                 : i18n('chat.avatarToolInteractionNotSet', 'Not set'),
@@ -763,6 +779,10 @@ export function AvatarToolInteractionCanvas() {
     setOverviewPositionMenuOpen(false);
     setOverviewExplicit(true);
     saveOverviewPreference(visible, overviewPosition);
+    window.requestAnimationFrame(() => {
+      if (visible) overviewPositionTriggerRef.current?.focus();
+      else overviewOpenButtonRef.current?.focus();
+    });
   }, [overviewPosition]);
 
   const moveOverview = useCallback((position: AvatarToolOverviewPosition) => {
@@ -770,7 +790,20 @@ export function AvatarToolInteractionCanvas() {
     setOverviewPositionMenuOpen(false);
     setOverviewExplicit(true);
     saveOverviewPreference(overviewVisible, position);
+    overviewPositionTriggerRef.current?.focus();
   }, [overviewVisible]);
+
+  const closeOverviewPositionMenu = useCallback(() => {
+    setOverviewPositionMenuOpen(false);
+    overviewPositionTriggerRef.current?.focus();
+  }, []);
+
+  const handleOverviewKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Escape' || !overviewPositionMenuOpen) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeOverviewPositionMenu();
+  }, [closeOverviewPositionMenu, overviewPositionMenuOpen]);
 
   const addInteraction = useCallback((kind: AvatarToolInteractionDraft['kind']) => {
     const bounds = canvasRef.current?.getBoundingClientRect();
@@ -954,6 +987,7 @@ export function AvatarToolInteractionCanvas() {
         <Panel
           className={`avatar-tool-overview-dock is-${overviewVisible ? 'open' : 'collapsed'}`}
           position={overviewPosition}
+          onKeyDown={handleOverviewKeyDown}
         >
           {overviewVisible ? (
             <>
@@ -967,10 +1001,11 @@ export function AvatarToolInteractionCanvas() {
               />
               <div className="avatar-tool-overview-toolbar">
                 <button
+                  ref={overviewPositionTriggerRef}
                   className="avatar-tool-overview-position-trigger"
                   type="button"
-                  aria-haspopup="menu"
                   aria-expanded={overviewPositionMenuOpen}
+                  aria-controls="avatar-tool-overview-position-options"
                   aria-label={i18n('chat.avatarToolOverviewPosition', 'Overview position')}
                   title={i18n('chat.avatarToolOverviewPosition', 'Overview position')}
                   onClick={() => setOverviewPositionMenuOpen(open => !open)}
@@ -989,10 +1024,15 @@ export function AvatarToolInteractionCanvas() {
                 </button>
               </div>
               {overviewPositionMenuOpen ? (
-                <div className="avatar-tool-overview-position-menu" role="menu" aria-label={i18n(
-                  'chat.avatarToolOverviewPosition',
-                  'Overview position',
-                )}>
+                <div
+                  id="avatar-tool-overview-position-options"
+                  className="avatar-tool-overview-position-menu"
+                  role="group"
+                  aria-label={i18n(
+                    'chat.avatarToolOverviewPosition',
+                    'Overview position',
+                  )}
+                >
                   {([
                     ['top-left', 'chat.avatarToolOverviewTopLeft', 'Move overview to top left'],
                     ['top-right', 'chat.avatarToolOverviewTopRight', 'Move overview to top right'],
@@ -1002,9 +1042,8 @@ export function AvatarToolInteractionCanvas() {
                     <button
                       key={position}
                       type="button"
-                      role="menuitemradio"
                       className={overviewPosition === position ? 'is-active' : ''}
-                      aria-checked={overviewPosition === position}
+                      aria-pressed={overviewPosition === position}
                       aria-label={i18n(key, fallback)}
                       title={i18n(key, fallback)}
                       onClick={() => moveOverview(position)}
@@ -1017,6 +1056,7 @@ export function AvatarToolInteractionCanvas() {
             </>
           ) : (
             <button
+              ref={overviewOpenButtonRef}
               className="avatar-tool-overview-open"
               type="button"
               aria-expanded="false"

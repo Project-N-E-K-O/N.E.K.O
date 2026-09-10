@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Position } from '@xyflow/react';
 import {
   AvatarToolInteractionCanvas,
@@ -79,6 +79,36 @@ describe('AvatarToolEditorWorkspace', () => {
     expect(route).not.toBeNull();
     expect(route!.some(point => point.y <= -18 || point.y >= 118)).toBe(true);
     expect(route).not.toEqual([{ x: 118, y: 50 }, { x: 282, y: 50 }]);
+  });
+
+  it('checks the final route against nodes outside the initial search envelope', () => {
+    const blocker = { x: 718, y: 175, width: 228, height: 104 };
+    const route = planAvatarToolEdgeRoutes([{
+      id: 'source-target',
+      source: 'source',
+      target: 'target',
+      sourcePosition: Position.Bottom,
+      targetPosition: Position.Top,
+    }], new Map([
+      ['source', { x: 502, y: 419, width: 202, height: 82 }],
+      ['target', { x: 327, y: -7, width: 228, height: 104 }],
+      ['blocker', blocker],
+    ])).get('source-target')!;
+    const crossesBlocker = route.points.slice(1).some((point, index) => {
+      const previous = route.points[index];
+      if (previous.y === point.y) {
+        return previous.y > blocker.y
+          && previous.y < blocker.y + blocker.height
+          && Math.max(previous.x, point.x) > blocker.x
+          && Math.min(previous.x, point.x) < blocker.x + blocker.width;
+      }
+      return previous.x > blocker.x
+        && previous.x < blocker.x + blocker.width
+        && Math.max(previous.y, point.y) > blocker.y
+        && Math.min(previous.y, point.y) < blocker.y + blocker.height;
+    });
+
+    expect(crossesBlocker).toBe(false);
   });
 
   it('keeps reciprocal routes on different corridors', () => {
@@ -196,6 +226,35 @@ describe('AvatarToolEditorWorkspace', () => {
 
     expect(nextRoutes.get('a-b')).not.toBe(previousRoutes.get('a-b'));
     expect(nextRoutes.get('a-b')!.points.some(point => point.y <= -18 || point.y >= 98)).toBe(true);
+  });
+
+  it('reroutes an edge when a blocker leaves the clearance boundary it created', () => {
+    const edges = [{
+      id: 'a-b',
+      source: 'a',
+      target: 'b',
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+    }];
+    const previousBoxes = new Map([
+      ['a', { x: 0, y: 0, width: 100, height: 80 }],
+      ['b', { x: 340, y: 0, width: 100, height: 80 }],
+      ['blocker', { x: 160, y: 0, width: 80, height: 80 }],
+    ]);
+    const previousRoutes = planAvatarToolEdgeRoutes(edges, previousBoxes);
+    const nextBoxes = new Map(previousBoxes);
+    nextBoxes.set('blocker', { x: 160, y: 300, width: 80, height: 80 });
+    const nextRoutes = planAvatarToolEdgeRoutes(edges, nextBoxes, {
+      previousRoutes,
+      previousBoxes,
+      changedNodeIds: new Set(['blocker']),
+    });
+
+    expect(nextRoutes.get('a-b')).not.toBe(previousRoutes.get('a-b'));
+    expect(nextRoutes.get('a-b')!.points).toEqual([
+      { x: 100, y: 40 },
+      { x: 340, y: 40 },
+    ]);
   });
 
   it('updates only shared-side peers whose lane order changes after a move', () => {
@@ -754,7 +813,7 @@ describe('AvatarToolEditorWorkspace', () => {
     expect(document.querySelector('.avatar-tool-edge-feedback.is-selected')).toBeInTheDocument();
   });
 
-  it('shows the real initial image entry, continuous edge boundaries, and one movable overview dock', () => {
+  it('shows the real initial image entry, continuous edge boundaries, and one movable overview dock', async () => {
     render(
       <AvatarToolInteractionEditorProvider>
         <PreparedCanvas />
@@ -773,16 +832,28 @@ describe('AvatarToolEditorWorkspace', () => {
       .toHaveTextContent('Initial image');
     expect(document.querySelector('.react-flow__node[data-id="avatar-tool-initial-image"]'))
       .toHaveTextContent('The interaction flow starts from this image');
-    expect(document.querySelector('.react-flow__node[data-id="ix-a"]')
-      ?.querySelectorAll('.avatar-tool-connection-boundary')).toHaveLength(4);
+    const interactionNode = document.querySelector('.react-flow__node[data-id="ix-a"]');
+    expect(interactionNode?.querySelectorAll('.avatar-tool-connection-boundary')).toHaveLength(4);
+    expect(interactionNode?.querySelector('[aria-label="Top edge for connections"]')).toBeInTheDocument();
+    expect(interactionNode?.querySelector('[aria-label="Right edge for connections"]')).toBeInTheDocument();
+    expect(interactionNode?.querySelector('[aria-label="Bottom edge for connections"]')).toBeInTheDocument();
+    expect(interactionNode?.querySelector('[aria-label="Left edge for connections"]')).toBeInTheDocument();
     expect(document.querySelector('.avatar-tool-interaction-handle')).not.toBeInTheDocument();
     expect(document.querySelector('.react-flow__node[data-id="ix-a"]')).toHaveAttribute('tabindex', '0');
     expect(document.querySelector('[id^="react-flow__edge-desc-"]')).toHaveTextContent(
       'Press Enter to select this connection. Press Delete to remove it.',
     );
-    expect(screen.queryByRole('menu', { name: 'Overview position' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Overview position' }));
-    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Move overview to top left' }));
+    expect(screen.queryByRole('group', { name: 'Overview position' })).not.toBeInTheDocument();
+    const positionTrigger = screen.getByRole('button', { name: 'Overview position' });
+    fireEvent.click(positionTrigger);
+    const positionOptions = screen.getByRole('group', { name: 'Overview position' });
+    expect(positionOptions).toBeInTheDocument();
+    const topLeftOption = screen.getByRole('button', { name: 'Move overview to top left' });
+    fireEvent.keyDown(topLeftOption, { key: 'Escape' });
+    expect(screen.queryByRole('group', { name: 'Overview position' })).not.toBeInTheDocument();
+    expect(positionTrigger).toHaveFocus();
+    fireEvent.click(positionTrigger);
+    fireEvent.click(screen.getByRole('button', { name: 'Move overview to top left' }));
     expect(screen.getByLabelText('Interaction overview').closest('.avatar-tool-overview-dock'))
       .toHaveClass('top', 'left');
     fireEvent.click(screen.getByRole('button', { name: 'Hide overview' }));
@@ -791,8 +862,10 @@ describe('AvatarToolEditorWorkspace', () => {
     expect(showOverview.querySelector('span')).toBeNull();
     expect(showOverview.closest('.avatar-tool-overview-dock'))
       .toHaveClass('top', 'left', 'is-collapsed');
+    await waitFor(() => expect(showOverview).toHaveFocus());
     fireEvent.click(screen.getByRole('button', { name: 'Show overview' }));
     expect(screen.getByLabelText('Interaction overview').closest('.avatar-tool-overview-dock'))
       .toHaveClass('top', 'left', 'is-open');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Overview position' })).toHaveFocus());
   });
 });

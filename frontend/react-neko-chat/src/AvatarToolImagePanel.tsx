@@ -274,13 +274,24 @@ export default function AvatarToolImagePanel({
           data-avatar-tool-selected-image-id={selectedImage.id}
         >
           <div className="avatar-tool-image-detail-heading">
-            <label className="avatar-tool-image-detail-identity">
+            <label
+              className="avatar-tool-image-detail-identity avatar-tool-editable-name"
+              title={i18n('chat.avatarToolEditableNameHint', 'Click the name to rename')}
+              data-error-key={`image_name:${selectedImage.id}`}
+            >
               <input
                 value={selectedImage.name ?? ''}
                 aria-label={i18n('chat.avatarToolImageName', 'Image name')}
+                aria-invalid={fieldErrors[`image_name:${selectedImage.id}`] ? 'true' : undefined}
                 disabled={busy}
                 onChange={event => onUpdateName(selectedImage.id, event.target.value)}
                 placeholder={selectedImageDefaultName}
+              />
+              <img
+                className="avatar-tool-editable-name-icon"
+                src="/static/icons/edit.png"
+                alt=""
+                aria-hidden="true"
               />
             </label>
             <div className="avatar-tool-image-detail-heading-actions">
@@ -304,6 +315,7 @@ export default function AvatarToolImagePanel({
               </button>
             </div>
           </div>
+          <ImageFieldError message={fieldErrors[`image_name:${selectedImage.id}`]} />
           <ImageFieldError message={fieldErrors[`image_remove:${selectedImage.id}`]} />
           <label
             className={`avatar-tool-create-file-control avatar-tool-image-detail-replace${busy ? ' is-disabled' : ''}`}

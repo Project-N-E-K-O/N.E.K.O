@@ -78,16 +78,6 @@ export default function AvatarToolStandaloneEditor() {
   }, [title]);
 
   useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.isComposing) return;
-      event.preventDefault();
-      closeEditorWindow();
-    };
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, []);
-
-  useEffect(() => {
     if (request.mode !== 'edit' || !request.toolId) return undefined;
     let disposed = false;
     setLoading(true);

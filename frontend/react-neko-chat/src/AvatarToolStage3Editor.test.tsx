@@ -75,6 +75,33 @@ describe('avatar tool stage 3 editor', () => {
     });
   });
 
+  it('supports standard keyboard navigation between the two editor tabs', () => {
+    renderEditor();
+
+    const toolSettings = screen.getByRole('tab', { name: 'Tool settings' });
+    const interactionSettings = screen.getByRole('tab', { name: /Interaction settings/ });
+    expect(toolSettings).toHaveAttribute('tabindex', '0');
+    expect(interactionSettings).toHaveAttribute('tabindex', '-1');
+    expect(toolSettings).toHaveAttribute('aria-controls', 'avatar-tool-editor-panel-content');
+
+    toolSettings.focus();
+    fireEvent.keyDown(toolSettings, { key: 'ArrowRight' });
+    expect(interactionSettings).toHaveFocus();
+    expect(interactionSettings).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel')).toHaveAttribute(
+      'aria-labelledby',
+      'avatar-tool-editor-tab-interaction',
+    );
+
+    fireEvent.keyDown(interactionSettings, { key: 'Home' });
+    expect(toolSettings).toHaveFocus();
+    expect(toolSettings).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(toolSettings, { key: 'End' });
+    expect(interactionSettings).toHaveFocus();
+    fireEvent.keyDown(interactionSettings, { key: 'ArrowRight' });
+    expect(toolSettings).toHaveFocus();
+  });
+
   it('uses custom names across image choices, nodes, and connection labels while keeping event types separate', async () => {
     renderEditor();
     await addImage(validPng('A.png'));
@@ -90,7 +117,11 @@ describe('avatar tool stage 3 editor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
     expect(Array.from(screen.getByLabelText('Release').querySelectorAll('option')).map(option => option.textContent))
       .toContain('Open palm');
-    fireEvent.change(screen.getByLabelText('Interaction name'), { target: { value: 'Wave hello' } });
+    const interactionName = screen.getByLabelText('Interaction name');
+    expect(interactionName.closest('label')).toHaveAttribute('title', 'Click the name to rename');
+    expect(interactionName.closest('label')?.querySelector('.avatar-tool-editable-name-icon'))
+      .toHaveAttribute('src', '/static/icons/edit.png');
+    fireEvent.change(interactionName, { target: { value: 'Wave hello' } });
     expect(screen.getByText('Wave hello')).toBeVisible();
     fireEvent.change(screen.getByLabelText('Interaction name'), { target: { value: '' } });
     expect(screen.getByText('Mouse click 1')).toBeVisible();
@@ -101,6 +132,42 @@ describe('avatar tool stage 3 editor', () => {
 
     act(() => connectInitialImageToSelected());
     expect(screen.getByText('Initial image → Wave hello')).toBeVisible();
+  });
+
+  it('shows and blocks duplicate display names within images and within interactions', async () => {
+    renderEditor();
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Unique names' } });
+    await addImage(validPng('A.png'));
+    await addImage(validPng('B.png'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Tool image 2' }));
+    fireEvent.change(screen.getByLabelText('Image name'), { target: { value: ' tool IMAGE 1 ' } });
+    expect(screen.getByLabelText('Image name')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText(
+      '“tool IMAGE 1” is already used by another image. Choose a different name.',
+    )).toBeVisible();
+
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+    expect(screen.queryByText(
+      'The interaction flow is valid. Saving it will be connected in the next implementation stage.',
+    )).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Image name'), { target: { value: 'Open palm' } });
+    expect(screen.getByLabelText('Image name')).not.toHaveAttribute('aria-invalid');
+    expect(screen.queryByText(/already used by another image/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
+    fireEvent.change(screen.getByLabelText('Interaction name'), { target: { value: ' mouse CLICK 1 ' } });
+    expect(screen.getByLabelText('Interaction name')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText(
+      '“mouse CLICK 1” is already used by another interaction. Choose a different name.',
+    )).toBeVisible();
+
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+    expect(screen.getAllByText(/already used by another interaction/).length).toBeGreaterThanOrEqual(1);
+    fireEvent.change(screen.getByLabelText('Interaction name'), { target: { value: 'Second click' } });
+    await waitFor(() => expect(screen.queryByText(/already used by another interaction/)).not.toBeInTheDocument());
   });
 
   it('edits a complete mouse click and blocks deletion through its real image reference', async () => {
@@ -171,7 +238,7 @@ describe('avatar tool stage 3 editor', () => {
     await addImage(validPng('A.png'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Delayed switch' }));
-    const completion = screen.getByLabelText('When time is up');
+    const completion = screen.getByLabelText('Switch to');
     expect(completion).toHaveValue('');
     expect([...completion.querySelectorAll('option')].map(option => option.textContent))
       .toContain('Keep image');
@@ -205,5 +272,47 @@ describe('avatar tool stage 3 editor', () => {
       name: 'Mouse click 2 conflicts with another mouse click after the initial image appears.',
     })).toBeVisible();
     expect(document.querySelectorAll('.avatar-tool-interaction-node.has-error')).toHaveLength(2);
+  });
+
+  it('keeps unresolved validation feedback through layout and naming edits, then revalidates semantic edits', async () => {
+    renderEditor();
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Delayed loop' } });
+    await addImage(validPng('A.png'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delayed switch' }));
+    act(() => connectInitialImageToSelected());
+    fireEvent.click(document.querySelector('[data-avatar-tool-interaction-id]')!);
+    fireEvent.change(screen.getByLabelText('Wait time'), { target: { value: '0' } });
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+    expect(await screen.findByText('Interaction issues: 2')).toBeVisible();
+    const selectedNode = document.querySelector<HTMLElement>('[data-avatar-tool-interaction-id]')!;
+    fireEvent.keyDown(selectedNode.closest('.react-flow__node')!, { key: 'ArrowRight' });
+    expect(screen.getByText('Interaction issues: 2')).toBeVisible();
+    fireEvent.change(screen.getByLabelText('Interaction name'), { target: { value: 'Return later' } });
+    expect(screen.getByText('Interaction issues: 2')).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText('Switch to'), { target: { value: 'keep' } });
+    await waitFor(() => expect(screen.getByText('Interaction issues: 1')).toBeVisible());
+    expect(screen.getByText('Fix the interaction flow before saving.')).toBeVisible();
+    expect(screen.getByRole('button', {
+      name: 'Return later needs a positive wait time.',
+    })).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText('Wait time'), { target: { value: '800' } });
+    await waitFor(() => expect(screen.queryByText(/Interaction issues:/)).not.toBeInTheDocument());
+    expect(screen.queryByText('Fix the interaction flow before saving.')).not.toBeInTheDocument();
+  });
+
+  it('does not present an initial-image connection error as a button with no action', async () => {
+    renderEditor();
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Needs entry' } });
+    await addImage(validPng('A.png'));
+    fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+    const message = await screen.findByText('Connect the initial image to at least one interaction.');
+    expect(message.closest('button')).toBeNull();
+    expect(document.querySelector('.avatar-tool-initial-image-node')).toHaveClass('has-error');
   });
 });

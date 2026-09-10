@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { i18n } from './i18n';
@@ -21,6 +22,7 @@ import {
   createAvatarToolImageDraft,
   createAvatarToolImageEditorState,
   getAvatarToolImageRemovalBlock,
+  type AvatarToolImageDraft,
   type AvatarToolImageId,
 } from './avatar-tools/avatarToolEditorModel';
 import {
@@ -28,7 +30,10 @@ import {
   getAvatarToolInteractionImageReferences,
   getAvatarToolInteractionOrdinal,
   validateAvatarToolInteractionGraph,
+  type AvatarToolInteractionDraft,
+  type AvatarToolInteractionEditorState,
 } from './avatar-tools/avatarToolInteractionEditorModel';
+import { findDuplicateAvatarToolNameIds } from './avatar-tools/avatarToolNames';
 import { useAvatarToolInteractionEditor } from './avatar-tools/AvatarToolInteractionEditorContext';
 import {
   validateAvatarToolPng,
@@ -60,6 +65,16 @@ type FieldErrors = Record<string, string>;
 
 const NAME_ALLOWED_PATTERN = /^[\p{L}\p{M}\p{N} _-]+$/u;
 const MEANING_CONTROL_PATTERN = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
+type AvatarToolEditorPane = 'content' | 'interaction';
+const AVATAR_TOOL_EDITOR_PANES: readonly AvatarToolEditorPane[] = ['content', 'interaction'];
+
+function avatarToolEditorPaneTabId(pane: AvatarToolEditorPane): string {
+  return `avatar-tool-editor-tab-${pane}`;
+}
+
+function avatarToolEditorPanePanelId(pane: AvatarToolEditorPane): string {
+  return `avatar-tool-editor-panel-${pane}`;
+}
 
 function normalizeToolName(value: string): string {
   return value.normalize('NFC').trim().replace(/ +/g, ' ');
@@ -71,6 +86,39 @@ function normalizeMeaning(value: string): string {
 
 function characterCount(value: string): number {
   return Array.from(value).length;
+}
+
+function avatarToolImageDisplayName(image: AvatarToolImageDraft, index: number): string {
+  return image.name?.trim() || i18n(
+    'chat.avatarToolCreateToolImageNumber',
+    'Tool image {{number}}',
+    { number: String(index + 1) },
+  );
+}
+
+function avatarToolImageNameErrors(images: readonly AvatarToolImageDraft[]): FieldErrors {
+  const errors: FieldErrors = {};
+  findDuplicateAvatarToolNameIds(images, avatarToolImageDisplayName).forEach((imageId) => {
+    const index = images.findIndex(image => image.id === imageId);
+    if (index < 0) return;
+    errors[`image_name:${imageId}`] = i18n(
+      'chat.avatarToolImageNameDuplicate',
+      '“{{name}}” is already used by another image. Choose a different name.',
+      { name: avatarToolImageDisplayName(images[index], index) },
+    );
+  });
+  return errors;
+}
+
+function avatarToolInteractionDisplayName(
+  state: AvatarToolInteractionEditorState,
+  item: AvatarToolInteractionDraft,
+): string {
+  const number = getAvatarToolInteractionOrdinal(state, item.id);
+  const defaultName = item.kind === 'mouse-click'
+    ? i18n('chat.avatarToolInteractionClickNumber', 'Mouse click {{number}}', { number: String(number) })
+    : i18n('chat.avatarToolInteractionDelayNumber', 'Delayed switch {{number}}', { number: String(number) });
+  return item.name?.trim() || defaultName;
 }
 
 function FieldError({ message }: { message?: string }) {
@@ -120,7 +168,7 @@ export default function AvatarToolCreatePage({
     setImageState: setInteractionImageState,
     graphRevision,
   } = useAvatarToolInteractionEditor();
-  const [activePane, setActivePane] = useState<'content' | 'interaction'>('content');
+  const [activePane, setActivePane] = useState<AvatarToolEditorPane>('content');
   const [validationNotice, setValidationNotice] = useState('');
   const [interactionSubmitFailed, setInteractionSubmitFailed] = useState(false);
   const [normalSound, setNormalSound] = useState<File | null>(null);
@@ -139,6 +187,7 @@ export default function AvatarToolCreatePage({
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const busy = deleting;
   const maximumImages = Math.max(1, (limits?.maxChangeImages ?? 16) + 1);
+  const imageNameErrors = avatarToolImageNameErrors(images);
   const meaningExample = i18n(
     'chat.avatarToolCreateImageMeaningPlaceholder',
     'For example: “{{user}}” brings a lollipop to “{{character}}”, and “{{character}}” takes a bite.',
@@ -187,10 +236,18 @@ export default function AvatarToolCreatePage({
       Object.entries(current).filter(([key]) => !key.startsWith('image_remove:')),
     ));
     if (interactionSubmitFailed) {
-      setError('');
-      setInteractionSubmitFailed(false);
+      const nextIssues = validateAvatarToolInteractionGraph(
+        interactionState,
+        images.map(image => image.id),
+        item => avatarToolInteractionDisplayName(interactionState, item),
+      );
+      setInteractionIssues(nextIssues);
+      if (nextIssues.length === 0) {
+        setError('');
+        setInteractionSubmitFailed(false);
+      }
     }
-  }, [graphRevision]); // A graph edit clears stale save feedback; selection changes do not.
+  }, [graphRevision]); // Revalidate semantic and naming edits after a failed submit; layout does not change validity.
 
   useEffect(() => {
     setValidationNotice('');
@@ -216,7 +273,7 @@ export default function AvatarToolCreatePage({
           ? i18n('chat.avatarToolInteractionPressTiming', 'Press')
           : location.field === 'release'
             ? i18n('chat.avatarToolInteractionReleaseTiming', 'Release')
-            : i18n('chat.avatarToolInteractionTargetImage', 'When time is up');
+            : i18n('chat.avatarToolInteractionTargetImage', 'Switch to');
         add(imageId as AvatarToolImageId, `${interaction} · ${field}`);
       });
     });
@@ -389,6 +446,9 @@ export default function AvatarToolCreatePage({
 
   const updateImageName = (imageId: AvatarToolImageId, imageName: string) => {
     dispatchImage({ type: 'update-name', imageId, name: imageName });
+    setFieldErrors(current => Object.fromEntries(
+      Object.entries(current).filter(([key]) => !key.startsWith('image_name:')),
+    ));
     setError('');
   };
 
@@ -470,6 +530,7 @@ export default function AvatarToolCreatePage({
     if (!initialImageId || !images.some(image => image.id === initialImageId)) {
       nextErrors.initial_image = i18n('chat.avatarToolCreateInitialImageRequired', 'Choose one initial image.');
     }
+    Object.assign(nextErrors, imageNameErrors);
     images.forEach((image) => {
       const meaningError = validateOptionalMeaning(image.meaning);
       if (meaningError) nextErrors[`image_meaning:${image.id}`] = meaningError;
@@ -495,9 +556,17 @@ export default function AvatarToolCreatePage({
     const nextInteractionIssues = validateAvatarToolInteractionGraph(
       interactionState,
       images.map(image => image.id),
+      item => avatarToolInteractionDisplayName(interactionState, item),
     );
     setInteractionIssues(nextInteractionIssues);
     if (Object.keys(nextErrors).length > 0) {
+      const firstErrorKey = Object.keys(nextErrors)[0];
+      if (firstErrorKey?.startsWith('image_name:')) {
+        dispatchImage({
+          type: 'select',
+          imageId: firstErrorKey.slice('image_name:'.length) as AvatarToolImageId,
+        });
+      }
       setActivePane('content');
       setValidationNotice('');
       setInteractionSubmitFailed(false);
@@ -560,6 +629,25 @@ export default function AvatarToolCreatePage({
     }
   };
 
+  const handlePaneTabKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    pane: AvatarToolEditorPane,
+  ) => {
+    const currentIndex = AVATAR_TOOL_EDITOR_PANES.indexOf(pane);
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowLeft') nextIndex = currentIndex - 1;
+    if (event.key === 'ArrowRight') nextIndex = currentIndex + 1;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = AVATAR_TOOL_EDITOR_PANES.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextPane = AVATAR_TOOL_EDITOR_PANES[
+      (nextIndex + AVATAR_TOOL_EDITOR_PANES.length) % AVATAR_TOOL_EDITOR_PANES.length
+    ];
+    setActivePane(nextPane);
+    document.getElementById(avatarToolEditorPaneTabId(nextPane))?.focus();
+  };
+
   return (
     <form className={`avatar-tool-create-page${specialEnabled ? ' has-special' : ''}`} noValidate onSubmit={submit}>
       <div className="avatar-tool-create-pane-tabs" role="tablist" aria-label={i18n(
@@ -567,20 +655,28 @@ export default function AvatarToolCreatePage({
         'Edit area',
       )}>
         <button
+          id={avatarToolEditorPaneTabId('content')}
           type="button"
           role="tab"
           aria-selected={activePane === 'content'}
+          aria-controls={avatarToolEditorPanePanelId('content')}
+          tabIndex={activePane === 'content' ? 0 : -1}
           className={activePane === 'content' ? 'is-active' : ''}
           onClick={() => setActivePane('content')}
+          onKeyDown={event => handlePaneTabKeyDown(event, 'content')}
         >
           {i18n('chat.avatarToolWorkspaceSettingsTitle', 'Tool settings')}
         </button>
         <button
+          id={avatarToolEditorPaneTabId('interaction')}
           type="button"
           role="tab"
           aria-selected={activePane === 'interaction'}
+          aria-controls={avatarToolEditorPanePanelId('interaction')}
+          tabIndex={activePane === 'interaction' ? 0 : -1}
           className={activePane === 'interaction' ? 'is-active' : ''}
           onClick={() => setActivePane('interaction')}
+          onKeyDown={event => handlePaneTabKeyDown(event, 'interaction')}
         >
           {i18n('chat.avatarToolInteractionSettings', 'Interaction settings')}
           {interactionState.items.length > 0 ? <span>{interactionState.items.length}</span> : null}
@@ -598,7 +694,12 @@ export default function AvatarToolCreatePage({
         ) : null}
 
         {activePane === 'content' ? (
-          <>
+          <div
+            id={avatarToolEditorPanePanelId('content')}
+            className="avatar-tool-create-pane-panel"
+            role="tabpanel"
+            aria-labelledby={avatarToolEditorPaneTabId('content')}
+          >
         <label className="avatar-tool-create-field" data-error-key="name">
           <span>{i18n('chat.avatarToolCreateName', 'Tool name')}</span>
           <input
@@ -627,7 +728,7 @@ export default function AvatarToolCreatePage({
           selectedImageId={selectedImageId}
           maximumImages={maximumImages}
           busy={busy}
-          fieldErrors={fieldErrors}
+          fieldErrors={{ ...fieldErrors, ...imageNameErrors }}
           meaningPlaceholder={meaningExample}
           onSelectImage={imageId => dispatchImage({ type: 'select', imageId })}
           onChooseInitialImage={chooseInitialImage}
@@ -678,7 +779,9 @@ export default function AvatarToolCreatePage({
                   );
                 }}
                 onChange={(event) => {
-                  setNormalSound(event.target.files?.[0] ?? null);
+                  const file = event.target.files?.[0] ?? null;
+                  event.target.value = '';
+                  setNormalSound(file);
                   clearFieldError('normal_sound');
                 }}
               />
@@ -832,7 +935,9 @@ export default function AvatarToolCreatePage({
                         );
                       }}
                       onChange={(event) => {
-                        setSpecialSound(event.target.files?.[0] ?? null);
+                        const file = event.target.files?.[0] ?? null;
+                        event.target.value = '';
+                        setSpecialSound(file);
                         clearFieldError('special_sound');
                       }}
                     />
@@ -859,9 +964,16 @@ export default function AvatarToolCreatePage({
             </div>
           ) : null}
         </section>
-          </>
+          </div>
         ) : (
-          <AvatarToolInteractionInspector images={images} busy={busy} />
+          <div
+            id={avatarToolEditorPanePanelId('interaction')}
+            className="avatar-tool-create-pane-panel"
+            role="tabpanel"
+            aria-labelledby={avatarToolEditorPaneTabId('interaction')}
+          >
+            <AvatarToolInteractionInspector images={images} busy={busy} />
+          </div>
         )}
       </div>
 

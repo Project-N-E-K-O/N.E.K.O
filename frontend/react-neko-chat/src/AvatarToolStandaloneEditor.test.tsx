@@ -35,7 +35,7 @@ describe('AvatarToolStandaloneEditor', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders creation in the dedicated editor page and closes on Escape', () => {
+  it('renders creation in the dedicated editor page without a hidden Escape close shortcut', () => {
     const close = vi.spyOn(window, 'close').mockImplementation(() => undefined);
     render(<AvatarToolStandaloneEditor />);
 
@@ -53,7 +53,7 @@ describe('AvatarToolStandaloneEditor', () => {
     expect(document.querySelector('.avatar-tool-workspace-header')).toBeNull();
     expect(document.body).toHaveClass('avatar-tool-editor-page');
     fireEvent.keyDown(window, { key: 'Escape' });
-    expect(close).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
     close.mockRestore();
   });
 

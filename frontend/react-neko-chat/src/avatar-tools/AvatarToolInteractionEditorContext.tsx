@@ -31,10 +31,18 @@ type AvatarToolInteractionEditorContextValue = {
 
 const AvatarToolInteractionEditorContext = createContext<AvatarToolInteractionEditorContextValue | null>(null);
 
-function actionChangesGraph(action: AvatarToolInteractionEditorAction): boolean {
-  return action.type !== 'select-interaction'
-    && action.type !== 'select-link'
-    && action.type !== 'select-initial-link';
+function actionChangesGraphValidation(action: AvatarToolInteractionEditorAction): boolean {
+  return action.type === 'add'
+    || action.type === 'update-name'
+    || action.type === 'update-click-action'
+    || action.type === 'update-delay'
+    || action.type === 'update-delay-action'
+    || action.type === 'connect-initial-image'
+    || action.type === 'remove-initial-link'
+    || action.type === 'connect'
+    || action.type === 'remove-link'
+    || action.type === 'remove-interaction'
+    || action.type === 'duplicate-interaction';
 }
 
 export function AvatarToolInteractionEditorProvider({ children }: { children: ReactNode }) {
@@ -50,8 +58,9 @@ export function AvatarToolInteractionEditorProvider({ children }: { children: Re
   }>({ images: [], initialImageId: null });
   const [graphRevision, setGraphRevision] = useState(0);
   const dispatch = useCallback<Dispatch<AvatarToolInteractionEditorAction>>((action) => {
-    if (actionChangesGraph(action)) {
+    if (action.type === 'reset') {
       setIssues([]);
+    } else if (actionChangesGraphValidation(action)) {
       setGraphRevision(revision => revision + 1);
     }
     baseDispatch(action);

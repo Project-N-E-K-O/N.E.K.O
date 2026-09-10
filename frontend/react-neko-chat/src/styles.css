@@ -7125,6 +7125,13 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
   scrollbar-color: rgba(36, 151, 217, 0.42) transparent;
 }
 
+.avatar-tool-create-pane-panel {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: inherit;
+}
+
 .avatar-tool-create-page:not(.has-special) .avatar-tool-create-fields {
   padding-bottom: 11px;
 }
@@ -7234,10 +7241,45 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
   line-height: 1.3;
 }
 
+.avatar-tool-editable-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  cursor: text;
+}
+
+.avatar-tool-editable-name > input {
+  width: auto;
+  min-width: 6ch;
+  max-width: calc(100% - 18px);
+  flex: 0 1 auto;
+  field-sizing: content;
+}
+
+.avatar-tool-editable-name-icon {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.avatar-tool-editable-name:hover .avatar-tool-editable-name-icon,
+.avatar-tool-editable-name:focus-within .avatar-tool-editable-name-icon {
+  opacity: 0.94;
+}
+
 .avatar-tool-interaction-name-input::placeholder,
 .avatar-tool-image-detail-identity input::placeholder {
-  color: currentColor;
+  color: rgba(45, 74, 96, 0.58);
   opacity: 1;
+}
+
+[data-theme="dark"] .avatar-tool-interaction-name-input::placeholder,
+[data-theme="dark"] .avatar-tool-image-detail-identity input::placeholder {
+  color: rgba(199, 222, 240, 0.62);
 }
 
 .avatar-tool-interaction-name-input:focus-visible,

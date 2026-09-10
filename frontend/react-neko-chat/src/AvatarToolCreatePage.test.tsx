@@ -68,6 +68,9 @@ describe('AvatarToolCreatePage stage 2 image references', () => {
 
     const imageName = screen.getByLabelText('Image name');
     expect(imageName).toHaveAttribute('placeholder', 'Tool image 2');
+    expect(imageName.closest('label')).toHaveAttribute('title', 'Click the name to rename');
+    expect(imageName.closest('label')?.querySelector('.avatar-tool-editable-name-icon'))
+      .toHaveAttribute('src', '/static/icons/edit.png');
     fireEvent.change(imageName, { target: { value: 'Open palm' } });
     expect(screen.getByRole('button', { name: 'Edit Open palm' })).toBeVisible();
 
@@ -112,5 +115,35 @@ describe('AvatarToolCreatePage stage 2 image references', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('鼠标点击 1 · 松开时');
     expect(screen.getByRole('alert')).toHaveTextContent('经过 800ms · 目标图片');
     expect(document.querySelector('[data-avatar-tool-image-id="img-v2-change-000"]')).toBeInTheDocument();
+  });
+
+  it('clears both Web audio inputs so the same MP3 can be selected again', () => {
+    render(
+      <AvatarToolInteractionEditorProvider>
+        <AvatarToolCreatePage
+        limits={LIMITS}
+        onSpecialEnabledChange={() => undefined}
+        onSave={async () => undefined}
+        onCancel={() => undefined}
+        />
+      </AvatarToolInteractionEditorProvider>,
+    );
+    const audio = new File(['mp3'], 'tap.mp3', { type: 'audio/mpeg' });
+    const normalInput = screen.getByLabelText('Interaction sound (optional)') as HTMLInputElement;
+
+    fireEvent.change(normalInput, { target: { files: [audio] } });
+    expect(normalInput.value).toBe('');
+    expect(screen.getByText('tap.mp3')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    fireEvent.change(normalInput, { target: { files: [audio] } });
+    expect(normalInput.value).toBe('');
+    expect(screen.getByText('tap.mp3')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Surprise' }));
+    const specialInput = screen.getByLabelText('Surprise sound (optional)') as HTMLInputElement;
+    fireEvent.change(specialInput, { target: { files: [audio] } });
+    expect(specialInput.value).toBe('');
+    expect(screen.getByText('tap.mp3')).toBeVisible();
   });
 });

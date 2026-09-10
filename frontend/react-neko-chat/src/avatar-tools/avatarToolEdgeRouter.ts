@@ -454,16 +454,13 @@ function movesAgainstDirection(
   return dx * expected.x + dy * expected.y < 0;
 }
 
-export function findAvatarToolOrthogonalRoute(
+function findAvatarToolOrthogonalRouteWithObstacles(
   start: AvatarToolRoutePoint,
   end: AvatarToolRoutePoint,
-  nodeObstacles: readonly AvatarToolRouteNodeBox[],
+  obstacles: readonly RouteObstacle[],
   options: OrthogonalRouteOptions = {},
 ): AvatarToolRoutePoint[] | null {
   if (pointEquals(start, end)) return [start, end];
-  const obstacles = nodeObstacles
-    .map(routeObstacle)
-    .filter(obstacle => obstacleIntersectsEnvelope(obstacle, start, end));
   const existingRoutes = options.existingRoutes ?? [];
   const envelope = {
     left: Math.min(start.x, end.x) - ROUTING_ENVELOPE_PADDING,
@@ -604,6 +601,34 @@ export function findAvatarToolOrthogonalRoute(
     if (state === startState) break;
   }
   return compactRoute(route.reverse());
+}
+
+export function findAvatarToolOrthogonalRoute(
+  start: AvatarToolRoutePoint,
+  end: AvatarToolRoutePoint,
+  nodeObstacles: readonly AvatarToolRouteNodeBox[],
+  options: OrthogonalRouteOptions = {},
+): AvatarToolRoutePoint[] | null {
+  const allObstacles = nodeObstacles.map(routeObstacle);
+  const included = new Set(
+    allObstacles.filter(obstacle => obstacleIntersectsEnvelope(obstacle, start, end)),
+  );
+
+  while (true) {
+    const route = findAvatarToolOrthogonalRouteWithObstacles(
+      start,
+      end,
+      [...included],
+      options,
+    );
+    if (!route) return null;
+
+    const missedObstacles = allObstacles.filter(obstacle => (
+      !included.has(obstacle) && !routeIsClear(route, [obstacle])
+    ));
+    if (missedObstacles.length === 0) return route;
+    missedObstacles.forEach(obstacle => included.add(obstacle));
+  }
 }
 
 function roundedOrthogonalPath(
@@ -1174,9 +1199,22 @@ function routeIntersectsNodeClearance(
   box: AvatarToolRouteNodeBox,
 ): boolean {
   const obstacle = routeObstacle(box);
-  return routeSegments(points).some(segment => (
-    segmentCrossesObstacle(segment.from, segment.to, obstacle)
-  ));
+  return routeSegments(points).some(({ from, to }) => {
+    if (Math.abs(from.y - to.y) < EPSILON) {
+      const minimumX = Math.min(from.x, to.x);
+      const maximumX = Math.max(from.x, to.x);
+      return from.y >= obstacle.top - EPSILON
+        && from.y <= obstacle.bottom + EPSILON
+        && maximumX >= obstacle.left - EPSILON
+        && minimumX <= obstacle.right + EPSILON;
+    }
+    const minimumY = Math.min(from.y, to.y);
+    const maximumY = Math.max(from.y, to.y);
+    return from.x >= obstacle.left - EPSILON
+      && from.x <= obstacle.right + EPSILON
+      && maximumY >= obstacle.top - EPSILON
+      && minimumY <= obstacle.bottom + EPSILON;
+  });
 }
 
 function affectedEdgeIdsForIncrementalPlan(

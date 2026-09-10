@@ -1,5 +1,6 @@
 import type { LocalAvatarToolDetail } from './localTools';
 import type { AvatarToolImageId } from './avatarToolEditorModel';
+import { findDuplicateAvatarToolNameIds } from './avatarToolNames';
 
 export type AvatarToolInteractionId = `ix-${string}`;
 export type AvatarToolInteractionLinkId = `link-${string}`;
@@ -57,6 +58,7 @@ export type AvatarToolInteractionEditorState = {
 
 export type AvatarToolInteractionValidationCode =
   | 'initial-connection-required'
+  | 'duplicate-name'
   | 'action-image-missing'
   | 'delay-invalid'
   | 'delay-image-missing'
@@ -71,7 +73,7 @@ export type AvatarToolInteractionValidationIssue = {
   code: AvatarToolInteractionValidationCode;
   interactionId?: AvatarToolInteractionId;
   linkId?: AvatarToolInteractionLinkId;
-  field?: 'press' | 'release' | 'delayMs' | 'complete' | 'initialConnection' | 'connection';
+  field?: 'name' | 'press' | 'release' | 'delayMs' | 'complete' | 'initialConnection' | 'connection';
   waitingAfterId?: AvatarToolInteractionId;
   delayMs?: number;
 };
@@ -180,6 +182,7 @@ export function duplicateAvatarToolInteractionDraft(
   return {
     ...source,
     id: createAvatarToolInteractionId(),
+    name: '',
     position: findAvailableAvatarToolInteractionPosition(
       { x: source.position.x + 40, y: source.position.y + 140 },
       occupied,
@@ -484,6 +487,9 @@ function parseDelayMs(value: string): number | null {
 export function validateAvatarToolInteractionGraph(
   state: AvatarToolInteractionEditorState,
   imageIds: readonly AvatarToolImageId[],
+  getInteractionDisplayName: (item: AvatarToolInteractionDraft) => string = item => (
+    item.name?.trim() || item.id
+  ),
 ): AvatarToolInteractionValidationIssue[] {
   const issues: AvatarToolInteractionValidationIssue[] = [];
   const interactionIds = new Set(state.items.map(item => item.id));
@@ -497,6 +503,20 @@ export function validateAvatarToolInteractionGraph(
       field: 'initialConnection',
     });
   }
+
+  const duplicateNameIds = findDuplicateAvatarToolNameIds(
+    state.items,
+    getInteractionDisplayName,
+  );
+  state.items.forEach((item) => {
+    if (!duplicateNameIds.has(item.id)) return;
+    issues.push({
+      key: `interaction:${item.id}:name`,
+      code: 'duplicate-name',
+      interactionId: item.id,
+      field: 'name',
+    });
+  });
 
   state.items.forEach((item) => {
     if (item.kind === 'mouse-click') {
