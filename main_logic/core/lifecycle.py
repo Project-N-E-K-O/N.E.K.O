@@ -71,9 +71,9 @@ from .callback_render import (
 # those names here: a from-import snapshots the value at import time and the
 # facade patch would no longer reach this module's methods.
 from main_logic import core as _core_facade
-from .session_lifecycle import SessionOwnershipMixin, start_phase
+from .session_records import start_phase
 
-class LifecycleMixin(SessionOwnershipMixin):
+class LifecycleMixin:
     """Session lifecycle methods (see module docstring)."""
 
     def is_goodbye_silent(self) -> bool:

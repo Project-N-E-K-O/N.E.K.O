@@ -39,18 +39,20 @@ def replace_method(owner, name, namespace, before, after):
 def run_mutant(name):
     import pytest
     from main_logic.core.tts_runtime import TtsRuntimeMixin
+    from main_logic.core.tts_lifecycle import TtsLifecycleMixin
     from main_logic.core.session_lifecycle import SessionOwnershipMixin
     import main_logic.core.tts_runtime as tts_module
+    import main_logic.core.tts_lifecycle as tts_lifecycle_module
     import main_logic.core.session_lifecycle as session_module
-    for module in (tts_module, session_module):
+    for module in (tts_module, tts_lifecycle_module, session_module):
         if not Path(module.__file__).resolve().is_relative_to(WORKTREE_ROOT):
             raise RuntimeError(f"Wrong worktree import: {module.__file__}")
     print(f"Mutation worktree: {WORKTREE_ROOT}", flush=True)
 
     if name == "runtime_fence":
-        TtsRuntimeMixin._tts_runtime_is_current = lambda self, runtime: True
+        TtsLifecycleMixin._tts_runtime_is_current = lambda self, runtime: True
     elif name == "capacity":
-        TtsRuntimeMixin._tts_capacity_limit = lambda self, worker=None: 99
+        TtsLifecycleMixin._tts_capacity_limit = lambda self, worker=None: 99
     elif name == "cleanup_shield":
         replace_method(TtsRuntimeMixin, "_teardown_tts_runtime", dict(vars(tts_module)),
                        "asyncio.shield(runtime.cleanup_task)", "runtime.cleanup_task")

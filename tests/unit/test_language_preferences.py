@@ -148,9 +148,10 @@ def run_connector(monkeypatch):
 
 
 from main_logic.core.tts_lifecycle import TtsLifecycleMixin
+from main_logic.core.session_lifecycle import SessionOwnershipMixin
 
 
-class _LifecycleHarness(LifecycleMixin, TtsLifecycleMixin):
+class _LifecycleHarness(LifecycleMixin, SessionOwnershipMixin, TtsLifecycleMixin):
     def __init__(self, *, renew=None):
         self.lock = asyncio.Lock()
         self.is_active = True
