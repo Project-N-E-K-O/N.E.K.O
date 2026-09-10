@@ -206,7 +206,10 @@ async def test_ordinary_request_keeps_source_and_host_after_metadata_takeover(wo
             response = await asyncio.wait_for(pending, 3)
             assert response.status_code == 200, response.text
         # The request-local binding must not authorize the next request.
-        assert (await http.get("/plugin/ordinary/config")).status_code == 403
+        # Cached development metadata without a matching registration is stale.
+        denied = await http.get("/plugin/ordinary/config")
+        assert denied.status_code == 409, denied.text
+        assert denied.headers["X-Error-Code"] == "DEVELOPMENT_STALE"
     new_host.send_config_update.assert_not_awaited()
     if hot_update:
         old_host.send_config_update.assert_awaited_once()
