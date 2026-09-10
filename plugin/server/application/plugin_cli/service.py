@@ -2124,7 +2124,17 @@ class PluginCliService:
                     )
             from plugin.server.application.plugins.development import list_registration_records_sync
             incoming_ids = set(getattr(plan, "bundle_plugin_ids", ()) or (plan.plugin_id,))
-            conflicts = [item for item in list_registration_records_sync() if item.plugin_id in incoming_ids]
+            try:
+                registrations = list_registration_records_sync()
+            except ServerDomainError as exc:
+                if exc.code != "DEVELOPMENT_STORE_INVALID":
+                    raise
+                # Like managed discovery, installation does not depend on a
+                # readable optional development store. Preserve it for repair;
+                # all package, target and installed-identity checks still apply.
+                logger.warning("Ignoring invalid optional development registry during managed install planning")
+                registrations = []
+            conflicts = [item for item in registrations if item.plugin_id in incoming_ids]
             if conflicts:
                 plan = replace(plan, action="blocked", confirmation_token="", reason="development_registration_conflict")
                 result = asdict(plan)

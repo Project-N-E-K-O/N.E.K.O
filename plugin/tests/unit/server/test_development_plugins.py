@@ -1054,6 +1054,80 @@ async def test_install_package_cannot_claim_registered_development_id(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bundle", [False, True], ids=["single", "bundle"])
+@pytest.mark.parametrize("corruption", ["truncated", "invalid_shape", "unknown_field"])
+async def test_corrupt_development_store_preserves_managed_install(monkeypatch, tmp_path, bundle, corruption):
+    from plugin.neko_plugin_cli.public.build import build_plugin, build_bundle
+    from plugin.server.application.plugin_cli import service as cli
+    from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+
+    record = _register(tmp_path)
+    source_before = {path.name: path.read_bytes() for path in record.source_dir.iterdir()}
+    healthy_store = store._store_path().read_bytes()
+    invalid = json.loads(healthy_store)
+    invalid["registrations"][0]["unexpected"] = "private value"
+    damaged = {"truncated": b'{', "invalid_shape": b'{"enabled":true,"registrations":{}}',
+               "unknown_field": json.dumps(invalid).encode()}[corruption]
+    store._store_path().write_bytes(damaged)
+    incoming = _source(tmp_path / "incoming", "ordinary", "ordinary")
+    packages = tmp_path / "packages"
+    packages.mkdir()
+    package = packages / ("incoming.neko-bundle" if bundle else "incoming.neko-plugin")
+    ids = ["ordinary", "second"] if bundle else ["ordinary"]
+    if bundle:
+        second = _source(tmp_path / "incoming", "second", "second")
+        await asyncio.to_thread(build_bundle, [incoming, second], package, bundle_id="ordinary_bundle")
+    else:
+        await asyncio.to_thread(build_plugin, incoming, package)
+    policy = PluginCliPathPolicy(store.settings.PLUGIN_CONFIG_ROOTS[1], store.settings.PLUGIN_CONFIG_ROOTS[0],
+                                 packages, tmp_path / "profiles", store.settings.get_plugin_state_root())
+    monkeypatch.setattr(cli.PluginCliService, "_path_policy", staticmethod(lambda: policy))
+    monkeypatch.setattr(cli, "get_install_source_manager", lambda: SimpleNamespace())
+    manager = cli.PluginCliService()
+    plan = await manager.plan_install(package=str(package))
+    assert plan["action"] == "install"
+    assert not list(policy.user_plugins_root.iterdir())
+    result = await manager.install(package=str(package))
+    assert {item["target_plugin_id"] for item in result["installed_plugins"]} == set(ids)
+    for plugin_id in ids:
+        assert (policy.user_plugins_root / plugin_id / "__init__.py").read_bytes() == (incoming / "__init__.py").read_bytes()
+        assert not cli.is_autostart_approved(plugin_id)
+    assert store._store_path().read_bytes() == damaged
+    assert {path.name: path.read_bytes() for path in record.source_dir.iterdir()} == source_before
+    # Installation does not silently repair, reset, or erase optional registrations.
+    store._store_path().write_bytes(healthy_store)
+    assert store.list_registration_records_sync() == [record]
+
+
+@pytest.mark.asyncio
+async def test_install_plan_preserves_other_development_errors(monkeypatch, tmp_path):
+    from plugin.neko_plugin_cli.public.build import build_plugin
+    from plugin.server.application.plugin_cli import service as cli
+    from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+
+    incoming = _source(tmp_path / "incoming", "ordinary", "ordinary")
+    packages = tmp_path / "packages"
+    packages.mkdir()
+    package = packages / "incoming.neko-plugin"
+    await asyncio.to_thread(build_plugin, incoming, package)
+    policy = PluginCliPathPolicy(store.settings.PLUGIN_CONFIG_ROOTS[1], store.settings.PLUGIN_CONFIG_ROOTS[0],
+                                 packages, tmp_path / "profiles", store.settings.get_plugin_state_root())
+    monkeypatch.setattr(cli.PluginCliService, "_path_policy", staticmethod(lambda: policy))
+    monkeypatch.setattr(cli, "get_install_source_manager", lambda: SimpleNamespace())
+
+    def conflict():
+        raise ServerDomainError(code="DEVELOPMENT_CONFLICT", message="conflict", status_code=409)
+
+    monkeypatch.setattr(store, "list_registration_records_sync", conflict)
+    manager = cli.PluginCliService()
+    for operation in (manager.plan_install, manager.install):
+        with pytest.raises(ServerDomainError) as error:
+            await operation(package=str(package))
+        assert error.value.code == "DEVELOPMENT_CONFLICT"
+    assert not list(policy.user_plugins_root.iterdir())
+
+
+@pytest.mark.asyncio
 async def test_shutdown_returning_with_live_process_retains_host_and_association(tmp_path):
     from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService
     record = _register(tmp_path)
