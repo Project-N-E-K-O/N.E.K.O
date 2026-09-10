@@ -1312,6 +1312,37 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
   color: #4aa3df;
 }
 
+[data-theme="dark"] .api-key-settings-page .tooltip-content {
+  background: linear-gradient(145deg, rgba(30, 52, 68, 0.98), rgba(21, 37, 51, 0.98));
+  color: #d9eff8;
+  border-color: rgba(80, 202, 244, 0.42);
+  border-left-color: #50caf4;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.38), 0 3px 12px rgba(39, 171, 224, 0.16);
+}
+
+[data-theme="dark"] .api-key-settings-page .tooltip-icon {
+  color: #a7e9ff;
+  background: linear-gradient(180deg, #315f77 0%, #203f53 100%);
+  border-color: rgba(105, 220, 255, 0.72);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="dark"] .api-key-settings-page .tooltip-content strong {
+  color: #75dcff;
+}
+
+[data-theme="dark"] .api-key-settings-page .tooltip-content::before {
+  opacity: 0.16;
+}
+
+[data-theme="dark"] .api-key-settings-page .tooltip-content::after {
+  border-color: #172c3a transparent transparent transparent;
+}
+
+[data-theme="dark"] .api-key-settings-page .tooltip-content[data-position="bottom"]::after {
+  border-color: transparent transparent #1d3545 transparent;
+}
+
 /* ===== 子页面：模态框 / 警告 ===== */
 [data-theme="dark"] .modal-warning {
   background: #2d2d2d;
