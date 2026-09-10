@@ -49,7 +49,14 @@ beforeEach(() => {
 afterEach(() => teardown())
 describe('development plugin workflow', () => {
   it('awaits the protected download and displays a download failure', async () => {
-    vi.mocked(buildPluginCli).mockResolvedValueOnce({ ok: true, built: [{ package_path: 'C:/packages-development/demo.neko-plugin' }], failed: [] } as Awaited<ReturnType<typeof buildPluginCli>>)
+    vi.mocked(buildPluginCli).mockResolvedValueOnce({
+      ok: true, built_count: 1, failed_count: 0, failed: [],
+      built: [{
+        plugin_id: 'demo', package_type: 'plugin', plugin_ids: ['demo'],
+        package_path: 'C:/packages-development/demo.neko-plugin', profile_files: [], staged_files: [],
+        payload_hash: 'hash', package_size_bytes: 1, staged_file_count: 0, profile_file_count: 0,
+      }],
+    })
     let rejectDownload!: (error: Error) => void
     vi.mocked(downloadDevelopmentPackage).mockImplementationOnce(() => new Promise((_, reject) => { rejectDownload = reject }))
     const root = mount()

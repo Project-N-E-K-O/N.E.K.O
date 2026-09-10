@@ -224,12 +224,12 @@ export function getPluginCliPackages(): Promise<PluginCliLocalPackagesResponse> 
 /**
  * 构建一个或多个插件
  */
-export function buildPluginCli(payload: PluginCliBuildRequest): Promise<PluginCliBuildResponse> {
+export function buildPluginCli(payload: PluginCliBuildRequest, config?: Pick<AxiosRequestConfig, 'timeout'>): Promise<PluginCliBuildResponse> {
   if (payload.development_ref || payload.development_refs?.length || payload.mode === 'all') {
     // Staging, metadata probing and archive validation can outlast a normal API request.
     return post('/plugin-cli/build', payload, { timeout: 300_000, headers: { 'X-Neko-Development': '1' } })
   }
-  return post('/plugin-cli/build', payload)
+  return post('/plugin-cli/build', payload, config)
 }
 
 /**

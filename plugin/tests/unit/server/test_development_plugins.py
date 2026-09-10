@@ -16,6 +16,12 @@ from plugin.server.domain.errors import ServerDomainError
 
 @pytest.fixture(autouse=True)
 def isolated_development_store(monkeypatch, tmp_path):
+    from plugin.server.infrastructure import autostart_approvals
+
+    # The data root is per-test, but the approval cache is process-global.
+    # Installation cases must not leave later discovery cases pending approval.
+    monkeypatch.setattr(autostart_approvals, "_cache", set())
+    monkeypatch.setattr(autostart_approvals, "_load_failed", False)
     roots = (tmp_path / "installed", tmp_path / "builtin")
     for root in roots:
         root.mkdir()
@@ -45,6 +51,52 @@ def _source(root: Path, name="demo", plugin_id="demo", entry=None):
 def _register(tmp_path):
     store.set_enabled_sync(True)
     return store.register_directory_sync(str(_source(tmp_path / "中文 developer folder")))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker", ["source", "development_ref"])
+@pytest.mark.parametrize("action", ["start", "stop", "reload", "refresh"])
+async def test_removed_registration_cannot_downgrade_cached_development(tmp_path, monkeypatch, marker, action):
+    from fastapi import FastAPI
+    import httpx
+    from plugin.server.application.plugins import registry_service
+    from plugin.server.routes import plugins as routes
+
+    record = _register(tmp_path)
+    registry = registry_service.PluginRegistryService()
+    registry._refresh_plugin_sync(record.plugin_id)
+    meta = service.state.plugins[record.plugin_id]
+    meta.pop("development_ref" if marker == "source" else "source")
+    # Another worker has removed the persisted association, leaving this cache.
+    store.remove_registration_sync(record)
+    ordinary_action = AsyncMock(return_value={"success": True})
+    target = routes.registry_service if action == "refresh" else routes.lifecycle_service
+    monkeypatch.setattr(target, f"{action}_plugin", ordinary_action)
+    monkeypatch.setattr(routes, "ensure_plugin_messaging_started", AsyncMock(return_value=True))
+    app = FastAPI()
+    app.include_router(routes.router)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("192.168.1.2", 1234)),
+                                 base_url="http://127.0.0.1") as http:
+        response = await http.post(f"/plugin/{record.plugin_id}/{action}")
+    assert response.status_code == 409, response.text
+    assert response.headers["X-Error-Code"] == "DEVELOPMENT_STALE"
+    ordinary_action.assert_not_awaited()
+    # The registry's real external-path fallback must also preserve provenance.
+    with pytest.raises(ServerDomainError) as failure:
+        registry._refresh_plugin_sync(record.plugin_id)
+    assert failure.value.code == "DEVELOPMENT_STALE"
+    assert service.state.plugins[record.plugin_id] is meta
+    assert (record.source_dir / "plugin.toml").exists()
+
+
+def test_unregistered_ordinary_external_source_remains_refreshable(tmp_path):
+    from plugin.server.application.plugins import registry_service
+
+    source = _source(tmp_path / "legacy")
+    service.state.plugins["demo"] = {"id": "demo", "config_path": str(source / "plugin.toml")}
+    assert store.registration_for_plugin_sync("demo") is None
+    registry_service.PluginRegistryService()._refresh_plugin_sync("demo")
+    assert service.state.plugins["demo"].get("source") != "development"
 
 
 @pytest.mark.asyncio

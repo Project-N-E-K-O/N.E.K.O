@@ -104,7 +104,7 @@ def list_registration_records_sync() -> list[DevelopmentSnapshot]:
 
 def registration_for_plugin_sync(plugin_id: str) -> DevelopmentSnapshot | None:
     try:
-        return next((item for item in list_registration_records_sync() if item.plugin_id == plugin_id), None)
+        record = next((item for item in list_registration_records_sync() if item.plugin_id == plugin_id), None)
     except ServerDomainError as exc:
         if exc.code != "DEVELOPMENT_STORE_INVALID":
             raise
@@ -119,6 +119,15 @@ def registration_for_plugin_sync(plugin_id: str) -> DevelopmentSnapshot | None:
             if path.name == "plugin.toml" and any(path.parent.parent == Path(root).resolve() for root in settings.PLUGIN_CONFIG_ROOTS):
                 return None
         raise
+    if record is None:
+        # Removal in another worker (or manual store repair) does not erase
+        # this process's provenance. Never reparse that cached source as ordinary.
+        with state.acquire_plugins_read_lock():
+            meta = state.plugins.get(plugin_id)
+            is_development = isinstance(meta, dict) and (meta.get("source") == "development" or meta.get("development_ref"))
+        if is_development:
+            raise _error("Development registration changed; refresh and retry", "DEVELOPMENT_STALE", 409)
+    return record
 
 
 def validate_directory_sync(source_dir: str | Path, *, expected_id: str | None = None) -> dict:
