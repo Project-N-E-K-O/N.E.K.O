@@ -3,6 +3,7 @@
 import asyncio
 from queue import Queue
 
+from main_logic import tts_client
 from main_logic.core import LLMSessionManager
 from main_logic.core import lifecycle, manager as manager_module
 
@@ -96,6 +97,7 @@ class ProviderClient:
 async def make_full_manager(monkeypatch):
     config = MemoryConfig()
     monkeypatch.setattr(manager_module, "get_config_manager", lambda: config)
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: config)
     manager = LLMSessionManager(Queue(), "cat", "test prompt")
     manager.user_language = "zh"
     manager.websocket = ConnectedSocket()

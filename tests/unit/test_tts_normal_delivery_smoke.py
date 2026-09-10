@@ -6,14 +6,28 @@ import json
 
 import pytest
 
+from main_logic import tts_client
 from main_logic.tts_client.workers import qwen
-from tests.unit.session_handoff_harness import drain_manager, make_full_manager
+from tests.unit.session_handoff_harness import MemoryConfig, drain_manager, make_full_manager
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("retire_first", [False, True])
-async def test_normal_owned_text_reaches_audio_with_real_qwen_worker(monkeypatch, retire_first):
+@pytest.mark.parametrize("ambient_custom", [False, True])
+async def test_normal_owned_text_reaches_audio_with_real_qwen_worker(monkeypatch, retire_first, ambient_custom):
+    # Model an unrelated config left in the process before this fixture starts.
+    # The full manager and real worker dispatch must both use the fixture config.
+    ambient = MemoryConfig()
+    ambient.core["DISABLE_TTS"] = False
+    if ambient_custom:
+        ambient.core.update({
+            "ENABLE_CUSTOM_API": True, "ttsModelProvider": "custom",
+            "ttsModelUrl": "https://speech.example.invalid/v1",
+            "ttsModelId": "vendor-tts", "ttsVoiceId": "vendor-voice",
+        })
+    ambient.load_json_config = lambda *args: dict(ambient.core)
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: ambient)
     manager, created, clients = await make_full_manager(monkeypatch)
     manager._config_manager.core["DISABLE_TTS"] = False
     sent_provider_text = []
