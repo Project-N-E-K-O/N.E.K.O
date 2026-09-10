@@ -155,8 +155,16 @@ class _Bridge:
             return
         if self._thread is not None and self._thread.is_alive():
             return
-        self._stop.clear()
-        t = threading.Thread(target=self._run, daemon=True)
+        # A NEW event, never ``clear()`` on the shared one. ``stop()`` gives up
+        # after a bounded join, so a slow thread can still be draining here --
+        # clearing the event it is watching would put it straight back into its
+        # send loop, PUSHing to the endpoint it was retired from, competing with
+        # the new thread for the same queue, and swallowing every send failure.
+        # Records it happened to pick up would vanish, which is the exact silent
+        # loss the retirement path exists to end. Its own event stays set, so it
+        # leaves on its own schedule and cannot be recalled.
+        self._stop = threading.Event()
+        t = threading.Thread(target=self._run, args=(self._stop,), daemon=True)
         self._thread = t
         t.start()
 
@@ -255,24 +263,27 @@ class _Bridge:
         except queue.Full:
             return
 
-    def _wait_tcp_ready(self, endpoint: str) -> None:
+    def _wait_tcp_ready(self, endpoint: str, stop: threading.Event) -> None:
         parsed = _parse_tcp_endpoint(endpoint)
         if parsed is None:
             return
         host, port = parsed
-        while not self._stop.is_set():
+        while not stop.is_set():
             try:
                 with socket.create_connection((host, port), timeout=0.2):
                     return
             except OSError:
                 time.sleep(0.2)
 
-    def _run(self) -> None:
+    def _run(self, stop: threading.Event) -> None:
+        # ``stop`` is THIS thread's event, handed over at start. Never
+        # ``self._stop`` -- that name is rebound for each new thread, so reading
+        # it here would make a retired thread obey its successor's lifetime.
         try:
-            self._wait_tcp_ready(self._endpoint)
+            self._wait_tcp_ready(self._endpoint, stop)
         except _RUNTIME_ERRORS:
             pass
-        if self._stop.is_set():
+        if stop.is_set():
             return
 
         ctx = zmq.Context.instance()
@@ -292,7 +303,7 @@ class _Bridge:
             return
 
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 try:
                     msg = self._q.get(timeout=0.2)
                 except queue.Empty:

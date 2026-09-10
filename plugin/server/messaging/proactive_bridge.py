@@ -137,11 +137,17 @@ class ProactiveBridge:
             return
         if self._thread is not None and self._thread.is_alive():
             return
-        self._stop.clear()
+        # 新事件，而不是 clear() 掉共用的那个：stop() 的 join 是有界的，超时时
+        # 旧线程可能还在收尾。清掉它正在等的事件会把它拉回收发循环——订阅的
+        # 还是退休前那个 PUB 端点，而且和新线程一起往同一个 PUSH 上投递。它
+        # 自己那个事件保持置位，于是按自己的节奏退出，且不会被叫回来。
+        self._stop = threading.Event()
         # 必须清：stop() 会置位 _subscribed 来唤醒等待者，重启后不清的话
         # wait_until_subscribed() 会拿着上一条命的事件立刻返回，窗口原样回来。
         self._subscribed.clear()
-        t = threading.Thread(target=self._run, daemon=True, name="proactive-bridge")
+        t = threading.Thread(
+            target=self._run, args=(self._stop,), daemon=True, name="proactive-bridge"
+        )
         self._thread = t
         t.start()
         logger.info("proactive bridge started")
@@ -184,7 +190,10 @@ class ProactiveBridge:
         if t is not None and t.is_alive():
             t.join(timeout=2.0)
 
-    def _run(self) -> None:
+    def _run(self, stop: threading.Event) -> None:
+        # ``stop`` is THIS thread's event, handed over at start. Never
+        # ``self._stop`` -- that name is rebound for each new thread, so reading
+        # it here would make a retired thread obey its successor's lifetime.
         from plugin.settings import MESSAGE_PLANE_ZMQ_PUB_ENDPOINT
 
         pub_endpoint = os.getenv(
@@ -195,7 +204,7 @@ class ProactiveBridge:
 
         # Brief wait for message_plane PUB to bind before we connect.
         time.sleep(1.0)
-        if self._stop.is_set():
+        if stop.is_set():
             return
 
         ctx = zmq.Context.instance()
@@ -217,13 +226,13 @@ class ProactiveBridge:
         )
 
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 try:
                     parts_raw = sub_sock.recv_multipart()
                 except zmq.Again:
                     continue
                 except Exception as e:
-                    if not self._stop.is_set():
+                    if not stop.is_set():
                         logger.debug("proactive bridge recv error: {}", e)
                         time.sleep(0.1)
                     continue

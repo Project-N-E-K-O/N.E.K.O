@@ -1004,6 +1004,9 @@ def test_plane_bridge_stop_lets_a_following_start_take_effect() -> None:
 
     bridge.stop()
     assert bridge._thread is None, "stop() left the thread in place"
+    # stop() already joined; this only absorbs the scheduling slack between the
+    # thread returning and the OS marking it dead, which CI can stretch.
+    first.join(timeout=5.0)
     assert not first.is_alive(), "stop() returned before the thread exited"
 
     bridge.start()
@@ -1013,6 +1016,88 @@ def test_plane_bridge_stop_lets_a_following_start_take_effect() -> None:
         assert second is not first, "start() reused the stopped thread"
     finally:
         bridge.stop()
+
+
+def _touches_self_stop(func: object) -> bool:
+    """Whether a ``_run`` method reaches for ``self._stop`` in code.
+
+    A string match would trip on the comment that warns against exactly this,
+    so the check is on the parsed tree: it looks for the attribute access
+    itself, wherever in the body it appears.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    return any(
+        isinstance(node, ast.Attribute)
+        and node.attr == "_stop"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+        for node in ast.walk(tree)
+    )
+
+
+def test_plane_bridge_start_does_not_recall_the_retired_thread() -> None:
+    """``start()`` must hand out a fresh stop event, not clear the shared one.
+
+    ``stop()`` joins with a bounded timeout, so a slow thread can still be
+    draining when ``start()`` runs. Clearing the event that thread is watching
+    puts it back into its send loop -- PUSHing to the endpoint it was retired
+    from, competing with the new thread for the same queue, and swallowing the
+    send failures. That is silent message loss, which is what the retirement
+    path exists to prevent.
+    """
+    from plugin.server.messaging import plane_bridge
+
+    bridge = plane_bridge._Bridge()
+    if not bridge._enabled:
+        pytest.skip("message plane bridge disabled by configuration")
+
+    bridge.start()
+    first_stop = bridge._stop
+    bridge.stop()
+    assert first_stop.is_set()
+
+    bridge.start()
+    try:
+        assert bridge._stop is not first_stop, "start() reused the retired thread's event"
+        assert first_stop.is_set(), "start() recalled the retired thread"
+    finally:
+        bridge.stop()
+
+    # The event only helps if the thread actually watches the one it was given.
+    assert not _touches_self_stop(plane_bridge._Bridge._run)
+
+
+def test_proactive_bridge_start_does_not_recall_the_retired_thread() -> None:
+    """Same hazard on the SUB side, with the same fix.
+
+    A recalled proactive thread stays subscribed to the PUB endpoint of the
+    plane that was just retired, and looks perfectly healthy while every
+    proactive message it picks up goes to a socket nobody reads.
+    """
+    from plugin.server.messaging import proactive_bridge as pb
+
+    if pb.zmq is None:
+        pytest.skip("pyzmq not available")
+
+    bridge = pb.ProactiveBridge()
+    bridge.start()
+    first_stop = bridge._stop
+    assert bridge._thread is not None
+    bridge.stop()
+    assert first_stop.is_set()
+
+    bridge.start()
+    try:
+        assert bridge._stop is not first_stop, "start() reused the retired thread's event"
+        assert first_stop.is_set(), "start() recalled the retired thread"
+    finally:
+        bridge.stop()
+
+    assert not _touches_self_stop(pb.ProactiveBridge._run)
 
 
 @pytest.mark.asyncio
