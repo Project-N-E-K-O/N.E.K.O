@@ -10,6 +10,7 @@
 
   const SLOT = 'drawing-guess-character';
   const CHARACTER_LIMIT = 256;
+  const QUERY_LIMIT = 4;
   const NAME_LIMIT = 128;
   const PATH_LIMIT = 2048;
   const VRM_DEFAULT_IDLE = '/static/vrm/animation/wait03.vrma.gz';
@@ -244,8 +245,51 @@
 
     const privateDescriptorsByName = new Map();
     const lifetime = new (windowImpl.AbortController || AbortController)();
-    let charactersPromise = null;
+    const queries = new Set();
     let disposed = false;
+
+    async function query(requestOptions, invoke) {
+      if (disposed) fail('disposed', 'The Avatar host has been disposed');
+      if (requestOptions.signal?.aborted) fail('cancelled', 'Avatar query cancelled');
+      if (queries.size >= QUERY_LIMIT) fail('busy', 'Avatar query limit reached');
+      const requestedTimeout = requestOptions.timeoutMs ?? 10000;
+      if (!Number.isFinite(requestedTimeout) || requestedTimeout <= 0) {
+        fail('invalid_timeout', 'Avatar query timeout must be positive and finite');
+      }
+      const timeoutMs = Math.min(30000, Math.max(1, Math.floor(requestedTimeout)));
+      const controller = new (windowImpl.AbortController || AbortController)();
+      let reason = '';
+      let cancel;
+      const cancelled = new Promise((_, reject) => {
+        cancel = (code) => {
+          if (reason) return;
+          reason = code;
+          controller.abort();
+          reject(new DrawingAvatarHostError(code, 'Avatar query cancelled'));
+        };
+      });
+      const onAbort = () => cancel('cancelled');
+      const onDispose = () => cancel('disposed');
+      requestOptions.signal?.addEventListener('abort', onAbort, { once: true });
+      lifetime.signal.addEventListener('abort', onDispose, { once: true });
+      const timer = windowImpl.setTimeout(() => cancel('timeout'), timeoutMs);
+      queries.add(controller);
+      // Caller cancellation is prompt, but ignored aborts keep their raw slot
+      // until actual settlement so repeated timeouts cannot accumulate work.
+      const raw = Promise.resolve().then(() => {
+        if (controller.signal.aborted) fail(reason, 'Avatar query cancelled');
+        return invoke({ signal: controller.signal });
+      }).finally(() => queries.delete(controller));
+      try {
+        const result = await Promise.race([raw, cancelled]);
+        if (controller.signal.aborted) fail(reason, 'Avatar query cancelled');
+        return result;
+      } finally {
+        windowImpl.clearTimeout(timer);
+        requestOptions.signal?.removeEventListener('abort', onAbort);
+        lifetime.signal.removeEventListener('abort', onDispose);
+      }
+    }
 
     async function json(url, requestOptions = {}) {
       const controller = new (windowImpl.AbortController || AbortController)();
@@ -257,6 +301,7 @@
       }
       const timer = windowImpl.setTimeout(abort, 10000);
       try {
+        if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
         const response = await fetchImpl(url, {
           cache: 'no-store', credentials: 'same-origin', ...requestOptions, signal: controller.signal,
         });
@@ -267,42 +312,46 @@
         const value = await response.json();
         if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
         return value;
+      } catch (cause) {
+        if (controller.signal.aborted) fail('cancelled', 'Avatar request cancelled');
+        throw cause;
       } finally {
         windowImpl.clearTimeout(timer);
         for (const signal of signals) signal.removeEventListener('abort', abort);
       }
     }
 
-    function loadCharacters() {
-      if (!charactersPromise) {
-        charactersPromise = json('/api/characters').then((payload) => {
-          const raw = payload?.['猫娘'];
-          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return Object.freeze({});
-          const result = Object.create(null);
-          for (const [rawName, value] of Object.entries(raw).slice(0, CHARACTER_LIMIT)) {
-            const name = cleanString(rawName, NAME_LIMIT);
-            if (name && value && typeof value === 'object' && !Array.isArray(value)) result[name] = value;
-          }
-          return Object.freeze(result);
-        }).finally(() => { charactersPromise = null; });
-      }
-      return charactersPromise;
+    function loadCharacters(requestOptions) {
+      // Each query owns its request; cancelling one consumer must not abort
+      // another consumer or leave it attached to an abandoned shared promise.
+      return json('/api/characters', requestOptions).then((payload) => {
+        const raw = payload?.['猫娘'];
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return Object.freeze({});
+        const result = Object.create(null);
+        for (const [rawName, value] of Object.entries(raw).slice(0, CHARACTER_LIMIT)) {
+          const name = cleanString(rawName, NAME_LIMIT);
+          if (name && value && typeof value === 'object' && !Array.isArray(value)) result[name] = value;
+        }
+        return Object.freeze(result);
+      });
     }
 
-    async function currentCharacterName() {
-      const payload = await json('/api/characters/current_catgirl');
+    async function currentCharacterName(requestOptions) {
+      const payload = await json('/api/characters/current_catgirl', requestOptions);
       return cleanString(payload?.current_catgirl, NAME_LIMIT);
     }
 
-    async function resolveLive2DPath(name, fallback) {
+    async function resolveLive2DPath(name, fallback, requestOptions) {
       if (!name) return fallback;
       try {
         const payload = await json(
           `/api/characters/current_live2d_model?catgirl_name=${encodeURIComponent(name)}`,
+          requestOptions,
         );
         const resolved = payload?.success ? cleanString(payload?.model_info?.path) : '';
         return resolved || fallback;
-      } catch (_) {
+      } catch (cause) {
+        if (requestOptions.signal.aborted || cause?.code === 'cancelled') throw cause;
         return fallback;
       }
     }
@@ -333,24 +382,31 @@
       return descriptor;
     }
 
-    async function getCharacter(name = '') {
+    function getCharacter(name = '', requestOptions = {}) {
+      return query(requestOptions, (managed) => readCharacter(name, managed));
+    }
+
+    async function readCharacter(name, requestOptions) {
       if (disposed) fail('disposed', 'The Drawing Guess Avatar host has been disposed');
-      const requested = cleanString(name, NAME_LIMIT) || await currentCharacterName();
+      const requested = cleanString(name, NAME_LIMIT) || await currentCharacterName(requestOptions);
+      if (requestOptions.signal.aborted) fail('cancelled', 'Avatar query cancelled');
       if (!requested) return null;
-      const characters = await loadCharacters();
+      const characters = await loadCharacters(requestOptions);
+      if (requestOptions.signal.aborted) fail('cancelled', 'Avatar query cancelled');
       const character = Object.prototype.hasOwnProperty.call(characters, requested)
         ? characters[requested]
         : null;
       if (!character) return null;
       const configured = rawAvatarConfig(requested, character);
       if (configured.type === 'live2d') {
-        configured.path = await resolveLive2DPath(requested, configured.path);
+        configured.path = await resolveLive2DPath(requested, configured.path, requestOptions);
       }
       const descriptor = Object.freeze({
         ...configured,
         path: cleanString(configured.path),
       });
       if (disposed) fail('disposed', 'The Avatar host was disposed during character lookup');
+      if (requestOptions.signal.aborted) fail('cancelled', 'Avatar query cancelled');
       if (!privateDescriptorsByName.has(descriptor.name) && privateDescriptorsByName.size >= CHARACTER_LIMIT) {
         privateDescriptorsByName.delete(privateDescriptorsByName.keys().next().value);
       }
@@ -358,10 +414,11 @@
       return publicDescriptor(descriptor);
     }
 
-    async function listCharacters() {
-      if (disposed) fail('disposed', 'The Drawing Guess Avatar host has been disposed');
-      const characters = await loadCharacters();
-      return Object.freeze(Object.keys(characters).slice(0, CHARACTER_LIMIT));
+    function listCharacters(requestOptions = {}) {
+      return query(requestOptions, async (managed) => {
+        const characters = await loadCharacters(managed);
+        return Object.freeze(Object.keys(characters).slice(0, CHARACTER_LIMIT));
+      });
     }
 
     function waitForRuntime(predicate, readyEvent, failedEvent, label, signal, timeoutMs = 10000) {
@@ -1220,7 +1277,7 @@
       get activeCount() { return rendererHost.activeCount; },
       get pendingCount() { return rendererHost.pendingCount; },
       getCharacter,
-      getCurrentCharacter() { return getCharacter(''); },
+      getCurrentCharacter(requestOptions = {}) { return getCharacter('', requestOptions); },
       listCharacters,
       async mount(config) {
         if (String(config?.slot || '') !== slot) {
@@ -1228,9 +1285,9 @@
         }
         let characterName = cleanString(config?.characterName, NAME_LIMIT);
         if (!characterName) {
-          characterName = (await getCharacter(''))?.name || '';
+          characterName = (await getCharacter('', { signal: config?.signal }))?.name || '';
         } else if (!privateDescriptorsByName.has(characterName)) {
-          await getCharacter(characterName);
+          await getCharacter(characterName, { signal: config?.signal });
         }
         const descriptor = trustedDescriptorForModel(characterName, config?.model);
         const trustedConfig = Object.freeze({

@@ -656,6 +656,14 @@ untyped Blobs also need it. MIME types must be `image/jpeg`, `image/png` or
 images), strips metadata, composites transparency onto white and proportionally
 reduces to at most 1280×1280 before sending to the model.
 
+Only pass image URLs you trust. CORS controls reading the response, not whether
+a simple GET can reach a local or private-network service. This browser helper
+does not provide a destination allowlist or a network sandbox; omitting
+credentials is not a promise of zero request-side effects. Local URLs remain
+supported for trusted game assets. Do not pass untrusted user/model-generated
+URLs or run adversarial games in this first-phase same-origin host. Untrusted
+game containers need network policy enforced outside game-controlled code.
+
 The attachment array preserves order in **one model request**, with optional
 labels (128 characters each). A bad image fails the whole request, not a partial
 analysis. Limits are 1–4 images, 2 MiB bytes per image and 6 MiB total (checked
@@ -867,6 +875,12 @@ Timers and signal listeners are released; a provider ignoring abort retains its
 bounded slot until it settles, preventing retries from accumulating abandoned
 work. `pendingQueryCount` includes those still-settling transport calls. Discovery
 is available before start, and after exit requires a new/reset lifecycle.
+
+The bundled `NekoMiniGameDrawingAvatarHost` provider also accepts these query
+options directly. Its current-role, catalog and canonical-model lookups share
+one cancellation scope and total deadline. Independent callers do not share a
+cancellable catalog fetch; cancelled lookups never populate its bounded model
+descriptor cache or silently become a Live2D fallback result.
 
 Discovery is read-only: looking at another character does **not** change the
 game's runtime/voice identity. Bind explicitly before any pregame context,
