@@ -787,6 +787,9 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
         if end > len(data):
             break
         kind = data[offset + 4:offset + 8]
+        expected_crc = int.from_bytes(data[end - 4:end], "big")
+        if binascii.crc32(data[offset + 4:end - 4]) & 0xffffffff != expected_crc:
+            raise _GenerationFailure("图片数据校验失败", "InvalidImageData")
         if kind == b"acTL":
             animated = True
         if kind == b"IDAT" and length > 0:
@@ -2340,7 +2343,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         groups: dict[str, dict[str, Any]] = {}
         for path, size, mtime in files_with_stats:
             name = path.name
-            key = name[len("thumb_") :] if name.startswith("thumb_") else name
+            key = name.removeprefix("thumb_").rsplit(".", 1)[0]
             group = groups.setdefault(
                 key,
                 {"paths": [], "size": 0, "mtime": 0.0},
@@ -2396,7 +2399,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             name = path.name
             if _GENERATED_TEMP_FILE_PATTERN.fullmatch(name):
                 continue
-            key = name[len("thumb_") :] if name.startswith("thumb_") else name
+            key = name.removeprefix("thumb_").rsplit(".", 1)[0]
             try:
                 total_bytes += path.stat().st_size
             except OSError:
@@ -2561,7 +2564,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 # The preview is optional: keep the paid original when the
                 # additional thumbnail would exceed the byte budget.
                 if stats["total_bytes"] > int(settings["cache_max_bytes"]):
-                    self._unlink_cached_file(f"thumb_{filename}")
+                    self._unlink_cached_file(f"thumb_{filename.rsplit('.', 1)[0]}.png")
                     preview = None
                 stats = self._prune_cache_sync(settings)
                 if (not target.is_file() or stats["count"] > int(settings["cache_max_count"])
@@ -2591,7 +2594,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             except OSError:
                 pass
             try:
-                self._unlink_cached_file(f"thumb_{filename}")
+                self._unlink_cached_file(f"thumb_{filename.rsplit('.', 1)[0]}.png")
             except OSError:
                 pass
             raise _GenerationFailure(
@@ -3263,7 +3266,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         and the caller falls back to the original URL — the preview is a
         convenience, not a hard dependency.
         """
-        thumb_name = f"thumb_{filename}"
+        thumb_name = f"thumb_{filename.rsplit('.', 1)[0]}.png"
         thumb_path = target.with_name(thumb_name)
         # Windows-only: System.Drawing is the most reliable built-in image
         # resizer on the Steam deck (no PIL in the frozen runtime).
@@ -4226,8 +4229,26 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     )
                 )
             async def commit_reset():
-                deleted_ok, _existed = await self._store_delete(_SETTINGS_STORE_KEY)
-                if deleted_ok:
+                await self._acquire_lock(self._history_lock)
+                try:
+                    read_ok, old_history = await self._store_get_checked(
+                        _HISTORY_STORE_KEY, None
+                    )
+                    if not read_ok:
+                        return False
+                    history_safe = await self._sanitize_history_before_secret_change(
+                        secrets=secrets,
+                        history_limit=int(target_settings["history_limit"]),
+                    )
+                    if not history_safe:
+                        return False
+                    deleted_ok, _existed = await self._store_delete(_SETTINGS_STORE_KEY)
+                    if not deleted_ok:
+                        if old_history is None:
+                            await self._store_delete(_HISTORY_STORE_KEY)
+                        else:
+                            await self._store_set(_HISTORY_STORE_KEY, old_history)
+                        return False
                     with self._state_lock:
                         self._settings = target_settings
                         self._settings_available = True
@@ -4236,7 +4257,9 @@ class ImageGeneratorPlugin(NekoPluginBase):
                             if self._asset_dir is not None
                             else "生成图片缓存不可用；管理面板可能可读，但生成已降级"
                         )
-                return deleted_ok
+                    return True
+                finally:
+                    self._history_lock.release()
 
             if not await self._drain_on_cancel(commit_reset()):
                 return Err(SdkError("恢复默认设置失败（StoreError）"))
@@ -4305,15 +4328,17 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 )
             await self._acquire_lock(self._history_lock)
             try:
-                history_safe = await self._sanitize_history_before_secret_change(
+                history_safe = await self._drain_on_cancel(self._sanitize_history_before_secret_change(
                     secrets=secrets,
                     history_limit=int(current_settings["history_limit"]),
-                )
+                ))
             finally:
                 self._history_lock.release()
             if not history_safe:
                 return Err(SdkError("无法在清除密钥前安全清理历史记录（StoreError）"))
-            deleted_ok, existed = await self._store_delete(_API_KEY_STORE_KEY)
+            deleted_ok, existed = await self._drain_on_cancel(
+                self._store_delete(_API_KEY_STORE_KEY)
+            )
         if not deleted_ok:
             return Err(SdkError("清除 API 密钥失败（StoreError）"))
         self.logger.info("ImageGenerator API key cleared: existed={}", existed)

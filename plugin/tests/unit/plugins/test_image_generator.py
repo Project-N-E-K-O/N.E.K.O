@@ -3435,3 +3435,85 @@ async def test_cancelled_reset_publishes_after_delete_before_unlock(monkeypatch)
     assert not plugin._config_lock.locked()
     assert "settings" not in store.data
     assert plugin._settings == plugin._manifest_settings
+
+
+@pytest.mark.parametrize("kind", [b"IHDR", b"IDAT", b"IEND"])
+def test_png_rejects_corrupt_chunk_crc(kind):
+    data = bytearray(PNG_BYTES)
+    offset = data.index(kind) - 4
+    length = int.from_bytes(data[offset:offset + 4], "big")
+    data[offset + 8 + length] ^= 1
+    with pytest.raises(image_generator_module._GenerationFailure):
+        image_generator_module._read_png_geometry(bytes(data))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["sanitize", "delete"])
+async def test_cancelled_clear_key_drains_mutations(monkeypatch, stage):
+    plugin, _, store = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    started, release = asyncio.Event(), asyncio.Event()
+    method = "_store_set" if stage == "sanitize" else "_store_delete"
+    original = getattr(plugin, method)
+
+    async def delayed(*args):
+        started.set()
+        await release.wait()
+        return await original(*args)
+
+    monkeypatch.setattr(plugin, method, delayed)
+    task = asyncio.create_task(plugin.clear_api_key())
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    try:
+        assert plugin._config_lock.locked()
+        assert not task.done()
+        if stage == "sanitize":
+            assert plugin._history_lock.locked()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    async with plugin._config_lock:
+        await store.set("api_key", "replacement-key")
+    assert store.data["api_key"] == "replacement-key"
+    assert not plugin._history_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_reset_truncates_durable_history_to_manifest_limit():
+    plugin, _, store = make_plugin()
+    plugin._settings["history_limit"] = 100
+    for index in range(40):
+        await plugin._record_history(prompt=str(index), model="test", status="failed", result_url="", api_key="")
+    assert len(store.data["recent_generations"]) == 40
+    assert (await plugin.reset_settings()).is_ok()
+    assert len(store.data["recent_generations"]) == DEFAULT_SETTINGS["history_limit"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extension", ["jpg", "webp"])
+async def test_thumbnail_png_suffix_and_cache_group(monkeypatch, tmp_path, extension):
+    plugin, _, _ = make_plugin()
+    asset_dir = prepare_asset_cache(plugin, tmp_path)
+    original = asset_dir / f"{'a' * 32}.{extension}"
+    original.write_bytes(PNG_BYTES)
+    thumbnail = asset_dir / f"thumb_{'a' * 32}.png"
+
+    class Process:
+        returncode = 0
+
+        async def wait(self):
+            thumbnail.write_bytes(PNG_BYTES)
+            return b"", b""
+
+    async def spawn(*args, **kwargs):
+        assert str(thumbnail) in args[-1]
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    url = await plugin._generate_thumbnail(original, original.name, extension)
+    assert url.endswith(thumbnail.name)
+    assert plugin._cache_stats_sync()["count"] == 1
+    plugin._prune_cache_sync({**plugin._settings_snapshot(), "cache_max_count": 0})
+    assert not original.exists() and not thumbnail.exists()
