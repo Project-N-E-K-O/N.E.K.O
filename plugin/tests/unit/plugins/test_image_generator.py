@@ -4382,3 +4382,47 @@ async def test_provider_json_parsing_runs_off_event_loop(monkeypatch, tmp_path):
     monkeypatch.setattr(json, "loads", tracked_parse)
     assert (await plugin.test_generation(prompt="cat")).is_ok()
     assert observed and all(thread != event_thread for thread in observed)
+
+
+@pytest.mark.asyncio
+async def test_locked_optional_thumbnail_preserves_paid_original(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    plugin._settings["cache_max_bytes"] = len(PNG_BYTES)
+    async def thumbnail(target, filename, extension, **kwargs):
+        target.with_name("thumb_" + filename).write_bytes(PNG_BYTES)
+        return plugin._asset_url("thumb_" + filename)
+    real_unlink = plugin._unlink_cached_file
+    def locked(name):
+        if name.startswith("thumb_"):
+            raise PermissionError("scanner lock")
+        return real_unlink(name)
+    monkeypatch.setattr(plugin, "_generate_thumbnail", thumbnail)
+    monkeypatch.setattr(plugin, "_unlink_cached_file", locked)
+    _, filename, preview = await plugin._save_asset(PNG_BYTES, extension="png")
+    assert preview is None
+    assert (assets / filename).read_bytes() == PNG_BYTES
+    assert plugin._cache_stats_sync()["total_bytes"] == 2 * len(PNG_BYTES)
+
+
+@pytest.mark.parametrize("stage", ["dump", "fsync", "fdopen"])
+def test_failed_history_snapshot_removes_partial_file(monkeypatch, tmp_path, stage):
+    real_mkstemp = image_generator_module.tempfile.mkstemp
+    monkeypatch.setattr(image_generator_module.tempfile, "mkstemp", lambda **kw: real_mkstemp(dir=tmp_path, **kw))
+    def fail(*args, **kwargs):
+        raise OSError("full temporary filesystem")
+    owner = image_generator_module.json if stage == "dump" else image_generator_module.os
+    monkeypatch.setattr(owner, stage, fail)
+    with pytest.raises(OSError):
+        ImageGeneratorPlugin._write_history_recovery_sync([{"prompt": "private prompt"}])
+    assert list(tmp_path.glob("neko-image-history-recovery-*")) == []
+
+
+def test_posix_eviction_preflight_preserves_unverifiable_entry(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    path = tmp_path / "original.png"
+    path.write_bytes(PNG_BYTES)
+    monkeypatch.setattr(image_generator_module, "os", SimpleNamespace(name="posix"))
+    with pytest.raises(PermissionError, match="cannot safely verify"):
+        ImageGeneratorPlugin._verify_cache_removable(path)
+    assert path.read_bytes() == PNG_BYTES

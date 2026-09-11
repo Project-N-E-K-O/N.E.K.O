@@ -2508,9 +2508,10 @@ class ImageGeneratorPlugin(NekoPluginBase):
         if path.is_symlink():
             raise OSError("unsafe cache entry")
         if os.name != "nt":
-            if not os.access(path.parent, os.W_OK | os.X_OK):
-                raise PermissionError("cache entries cannot be removed")
-            return
+            # Directory access cannot establish unlinkability (immutable
+            # files, sticky directories, or filesystem-specific policy).
+            # Preserve existing paid data rather than destructively probing it.
+            raise PermissionError("cannot safely verify cache eviction; free cache space before generating")
         import ctypes
         from ctypes import wintypes
         if getattr(path.stat(), "st_file_attributes", 0) & 1:
@@ -2845,7 +2846,14 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 # The preview is optional: keep the paid original when the
                 # additional thumbnail would exceed the byte budget.
                 if stats["total_bytes"] > int(settings["cache_max_bytes"]):
-                    self._unlink_cached_file(f"thumb_{filename.rsplit('.', 1)[0]}.png")
+                    try:
+                        self._unlink_cached_file(f"thumb_{filename.rsplit('.', 1)[0]}.png")
+                    except OSError as exc:
+                        # The original already passed the capacity check. A
+                        # locked optional preview must not destroy that result.
+                        # Leave the excess visible to subsequent preflight.
+                        self.logger.warning("Optional thumbnail cleanup failed: failure_class={}", type(exc).__name__)
+                        return None
                     preview = None
                 stats = self._prune_cache_sync(settings, newest=filename)
                 if (not target.is_file() or stats["count"] > int(settings["cache_max_count"])
@@ -4324,10 +4332,17 @@ class ImageGeneratorPlugin(NekoPluginBase):
     @staticmethod
     def _write_history_recovery_sync(history: Any) -> Path:
         descriptor, filename = tempfile.mkstemp(prefix="neko-image-history-recovery-", suffix=".json")
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(history, stream, ensure_ascii=False)
-            stream.flush()
-            os.fsync(stream.fileno())
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                descriptor = None
+                json.dump(history, stream, ensure_ascii=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.unlink(filename)
+            raise
         return Path(filename)
 
     async def _discard_history_recovery(self, recovery: Path) -> None:
