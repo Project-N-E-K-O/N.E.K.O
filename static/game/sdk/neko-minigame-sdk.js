@@ -2395,25 +2395,46 @@
       if (!plainObject(payload)) {
         fail('invalid_request', 'The runtime lifecycle payload must be an object', { operation });
       }
-      // Every other SDK egress path is bounded; the runtime lifecycle payload
-      // was not, in the one dimension that costs anything. Same 256 KiB the
-      // trusted host now enforces, so the two cannot disagree about an honest
-      // payload.
-      const bytes = jsonByteLength(payload ?? {});
+      // Dispatch the measured snapshot: toJSON/getters must not make validation
+      // observe different data from the later lifecycle transport call.
+      // Materialize the same own fields as the route envelope before JSON
+      // serialization, so a non-enumerable toJSON cannot hide an outgoing getter.
+      let serialized;
+      try { serialized = JSON.stringify({ ...payload }); }
+      catch (_) { fail('invalid_request', 'The runtime lifecycle payload must be JSON-compatible', { operation }); }
+      if (serialized === undefined) {
+        fail('invalid_request', 'The runtime lifecycle payload must be JSON-compatible', { operation });
+      }
+      const TextEncoderImpl = globalThis.TextEncoder;
+      const bytes = typeof TextEncoderImpl === 'function'
+        ? new TextEncoderImpl().encode(serialized).byteLength
+        : unescape(encodeURIComponent(serialized)).length;
       if (bytes > MAX_RUNTIME_EVENT_BYTES) {
         fail('invalid_request', 'The runtime lifecycle payload exceeds its size limit', {
-          operation,
-          bytes,
-          limit: MAX_RUNTIME_EVENT_BYTES,
+          operation, bytes, limit: MAX_RUNTIME_EVENT_BYTES,
         });
       }
+      const normalized = JSON.parse(serialized);
+      if (!plainObject(normalized)) {
+        fail('invalid_request', 'The runtime lifecycle payload must serialize to an object', { operation });
+      }
+      // The temporary work list is bounded by the parsed 256 KiB snapshot and
+      // drained here; nested caller objects are neither retained nor forwarded.
+      const remaining = [normalized];
+      while (remaining.length) {
+        const value = remaining.pop();
+        Object.freeze(value);
+        for (const child of Object.values(value)) {
+          if (child && typeof child === 'object') remaining.push(child);
+        }
+      }
+      return normalized;
     }
 
     function runtimePayload() {
       if (!runtimeConfig || typeof runtimeConfig.payload !== 'function') return {};
       const payload = runtimeConfig.payload();
-      requireBoundedRuntimeLifecyclePayload(payload, 'runtime.payload');
-      return payload;
+      return requireBoundedRuntimeLifecyclePayload(payload, 'runtime.payload');
     }
 
     function runtimeRouteInstanceEntropy() {
@@ -2470,12 +2491,12 @@
     }
 
     function runtimeRoutePayload(payload, routeInstanceId = runtimeRouteInstanceId) {
-      requireBoundedRuntimeLifecyclePayload(payload, 'runtime.route');
+      const normalized = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.route');
       const candidateIds = runtimeRouteInstanceIds.length
         ? Array.from(runtimeRouteInstanceIds)
         : (routeInstanceId ? [routeInstanceId] : []);
       return Object.freeze({
-        ...(payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}),
+        ...normalized,
         ...(routeInstanceId ? { sdk_route_instance_id: routeInstanceId } : {}),
         ...(candidateIds.length ? { sdk_route_instance_ids: Object.freeze(candidateIds) } : {}),
       });
@@ -2804,7 +2825,7 @@
           payload = runtimeConfig.pageExit.payload
             ? runtimeConfig.pageExit.payload(exitContext)
             : runtimePayload();
-          requireBoundedRuntimeLifecyclePayload(payload, 'runtime.page-exit');
+          payload = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.page-exit');
         } catch (error) {
           // Still release the owned generation on unload, without forwarding
           // malformed application data or claiming that it was accepted.
@@ -3502,7 +3523,7 @@
         // the browser, so letting it take that path would burn one of the four
         // candidate slots per attempt and wedge start() on `busy` after four
         // tries with the same mistake.
-        requireBoundedRuntimeLifecyclePayload(payload, 'runtime.start');
+        payload = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.start');
         memoryConsentLocked = true;
         runtimeRouteEstablished = false;
         const routeInstanceId = nextRuntimeRouteInstanceId();
@@ -3571,7 +3592,7 @@
       },
       async end(payload = {}, requestOptions = {}) {
         requireCapability('runtime', 'runtime.end');
-        requireBoundedRuntimeLifecyclePayload(payload, 'runtime.end');
+        payload = requireBoundedRuntimeLifecyclePayload(payload, 'runtime.end');
         let endRequestOptions = requestOptions;
         if (runtimePhase === 'starting' && runtimeStartSettlement) {
           if (runtimeEndWaitingForStart) {
