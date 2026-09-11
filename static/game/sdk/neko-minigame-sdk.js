@@ -88,7 +88,7 @@
   // the post-negotiation check below have to mean exactly the same set.
   // `speech-output` is deliberately absent: speech.speak() is accepted pre-route.
   const RUNTIME_DEPENDENT_CAPABILITIES = Object.freeze([
-    'memory', 'context-read', 'leaderboard-server', 'voice-input',
+    'memory', 'context-read', 'leaderboard-server', 'voice-input', 'media-timeline',
   ]);
   const CONTRACT_KINDS = Object.freeze(['events', 'states', 'controls', 'results']);
   const CONTRACT_SCHEMA_TYPES = Object.freeze([
@@ -114,6 +114,7 @@
     'bottom-left', 'bottom-center', 'bottom-right',
   ]);
   const SUPPORTED_CAPABILITIES = Object.freeze([
+    'media-timeline',
     'runtime',
     'dialogue',
     'quick-lines',
@@ -1329,6 +1330,8 @@
 
   function supportedByTransport(transport, capability) {
     switch (capability) {
+      case 'media-timeline':
+        return typeof transport.requestMedia === 'function' && typeof transport.mountMedia === 'function';
       case 'runtime':
         return [
           'start', 'end', 'heartbeat', 'drain',
@@ -5005,6 +5008,48 @@
       },
     });
 
+    const mediaControllers = new Set();
+    let mediaMountPending = false;
+    let mediaMountAbort = null;
+    const media = Object.freeze({
+      async request(action, payload = {}) {
+        requireCapability('media-timeline', 'media.request');
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('invalid_request', 'Media payload must be an object');
+        try { if (JSON.stringify(payload).length > 65536) fail('invalid_request', 'Media payload too large'); }
+        catch(error) { if (error instanceof NekoMiniGameError) throw error; fail('invalid_request', 'Media payload must be JSON'); }
+        if (!['history', 'load', 'watch', 'prepare', 'preparation', 'character', 'discover'].includes(action)) fail('invalid_request', 'Unknown media operation');
+        if (action === 'watch') requireActiveRuntimeRoute('media.watch');
+        return transport.requestMedia(action, { ...payload, sdk_route_instance_id: runtimeRouteInstanceId });
+      },
+      async mount(config) {
+        requireCapability('media-timeline', 'media.mount');
+        requireActiveRuntimeRoute('media.mount');
+        if (mediaControllers.size || mediaMountPending) fail('busy', 'A media timeline is already mounted');
+        const generation = runtimeRouteInstanceId;
+        mediaMountPending = true;
+        mediaMountAbort = new AbortControllerImpl();
+        let controller;
+        try { controller = await transport.mountMedia({ ...config, signal:mediaMountAbort.signal }); }
+        finally { mediaMountPending = false; mediaMountAbort = null; }
+        if (disposed || generation !== runtimeRouteInstanceId || !runtimeRouteEstablished) {
+          controller.dispose(); fail('cancelled', 'Media route changed while loading');
+        }
+        mediaControllers.add(controller);
+        return Object.freeze({
+          play: () => { requireActiveRuntimeRoute('media.play'); return controller.play(); },
+          pause: () => controller.pause(),
+          interrupt: () => controller.interrupt(),
+          dispose: () => { controller.dispose(); mediaControllers.delete(controller); },
+        });
+      },
+    });
+    subscribe('runtime-event:runtime-state', ({ payload }) => {
+      if (['ending', 'ended', 'inactive', 'disposed'].includes(payload?.current)) {
+        mediaMountAbort?.abort();
+        for (const controller of mediaControllers) controller.dispose();
+        mediaControllers.clear();
+      }
+    });
     const client = {
       manifest,
       host: Object.freeze({
@@ -5029,10 +5074,14 @@
       speech,
       audio,
       avatar,
+      media,
       get disposed() { return disposed || disposing; },
       dispose(disposeOptions = {}) {
         if (disposed || disposing) return;
         disposing = true;
+        mediaMountAbort?.abort();
+        for (const controller of mediaControllers) controller.dispose();
+        mediaControllers.clear();
         runtimeRouteEstablished = false;
         clearRuntimeRouteInstanceIds();
         stopRuntimeMonitoring();

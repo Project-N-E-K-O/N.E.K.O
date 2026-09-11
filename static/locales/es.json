@@ -5336,5 +5336,32 @@
             "label": "Guardar este partido en la memoria (desactivado por defecto)",
             "hint": "Cuando está desactivado, las entradas del jugador, las respuestas directas de NEKO, las reacciones a eventos, el resumen del partido y las conversaciones posteriores no se guardan ni se consultan en la memoria."
         }
-    }
+    },
+  "watchTogether": {
+    "topic": "Tema (opcional)",
+    "discover": "Que la compañera elija",
+    "discoveryRule": "Solo vídeos de menos de 3 minutos y más de 100 comentarios danmaku/min. En blanco: tema del vídeo actual, o vídeos populares si no hay ninguno seleccionado.",
+    "checking": "Comprobando el vídeo…",
+    "longWarning": "Este vídeo dura más de 5 minutos. La preparación puede tardar más y consumir más tokens y síntesis de voz. ¿Continuar?",
+    "cancelled": "Cancelado; la preparación no ha comenzado.",
+    "searching": "Buscando vídeos populares relacionados…",
+    "noCandidates": "No se encontró ningún vídeo apto. Prueba otro tema; los límites no se relajarán.",
+    "density": "danmaku/min",
+    "usageNote": "Uso real informado por la API, incluidos reintentos de formato. Caché y razonamiento están incluidos; TTS va aparte. Los valores ausentes no se registraron.",
+    "savedAudio": "Audio original conservado",
+    "title": "Ver juntos",
+    "exit": "Salir",
+    "analyses": "Historial de análisis",
+    "play": "Ver juntos",
+    "speed": "Velocidad",
+    "usage": "Uso de API",
+    "watches": "Historial de visualización",
+    "unrecorded": "Sin registrar",
+    "unknown": "Desconocido",
+    "noWatches": "No hay visualizaciones registradas",
+    "ready": "Listo. Pulsa Ver juntos.",
+    "playing": "Viendo juntos",
+    "choose": "Elige un vídeo analizado o pega un enlace de Bilibili.",
+    "prepare": "Analizar vídeo"
+  }
 }

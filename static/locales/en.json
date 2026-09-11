@@ -5336,5 +5336,32 @@
             "label": "Save this match to memory (off by default)",
             "hint": "When off, your inputs, NEKO's direct replies, event reactions, post-match summary, and follow-ups will not enter or reference memory."
         }
-    }
+    },
+  "watchTogether": {
+    "topic": "Topic (optional)",
+    "discover": "Let the companion choose",
+    "discoveryRule": "Under 3 minutes and over 100 danmaku/minute. If blank, uses the current video topic, or popular videos when none is selected.",
+    "checking": "Checking video…",
+    "longWarning": "This video is longer than 5 minutes. Preparation may take longer and use more API tokens and speech synthesis. Continue?",
+    "cancelled": "Cancelled; no preparation started.",
+    "searching": "Looking for relevant popular videos…",
+    "noCandidates": "No qualifying video found. Try another topic; the limits remain unchanged.",
+    "density": "danmaku/min",
+    "usageNote": "Provider-reported usage, including format retries. Cached and reasoning tokens are subsets; TTS is separate. Missing values are not recorded.",
+    "savedAudio": "Saved audio preserved",
+    "title": "Watch together",
+    "exit": "Exit",
+    "analyses": "Analysis history",
+    "play": "Watch together",
+    "speed": "Speed",
+    "usage": "API usage",
+    "watches": "Actual viewing history",
+    "unrecorded": "Not recorded",
+    "unknown": "Unknown",
+    "noWatches": "No viewing activity recorded",
+    "ready": "Ready. Click Watch together to start.",
+    "playing": "Watching together",
+    "choose": "Choose a prepared video or paste a Bilibili link.",
+    "prepare": "Prepare video"
+  }
 }

@@ -1,0 +1,103 @@
+# Watch together
+
+The built-in `/watch_together` scene uses the mini-game SDK exclusively. The
+shared React chat surfaces expose a manual entry; the existing proactive
+mini-game invitation policy also offers this scene. Accepting an invitation
+opens the scene. Only pressing Play starts audible playback.
+The manual button is in the expanded chat title bar. Compact mode retains its
+existing seven-slot tool wheel and tutorial indices; use the direct scene URL
+or an accepted invitation while remaining in that layout.
+
+## Storage and migration
+
+Data lives under `ConfigManager.app_docs_dir / watch_together`, outside the
+source tree. There is no automatic eviction. Import with:
+
+```powershell
+uv run python scripts/migrate_watch_together.py ARCHIVE LIVE_CACHE --audio-assets AUDIO_DIRECTORY
+```
+
+Both sources are scanned. The archive's `backup-manifest.json` is checked when
+present. Every file is copied to an immutable SHA256-addressed object through a
+temporary file, verified, then atomically installed. Job manifests commit only
+after the source file set and hashes are rechecked. Re-running safely reuses
+verified objects and repairs corrupt copies. A failed/interrupted import can be
+retried; source files are never changed. Import runs must use stable sources or
+retry when an active preparation changes them.
+
+The original job ID remains the primary identity. Different contents produce
+different immutable versions, including multiple jobs for the same video.
+The original timeline JSON and audio remain byte-for-byte unchanged. The host
+maps legacy `/media/{job}/...` references only when serving a timeline. All
+resource paths resolve through the manifest, and the media route supports HTTP
+Range requests. Incomplete jobs stay visible but cannot be played. Imported
+audio assets also retain their original names and hashes in a local manifest.
+
+Analysis history and actual viewing history are separate tables. Legacy
+watching timestamps, progress and completion remain unknown. New viewing
+sessions record actual media events, progress and playback starts. The local
+completion field means the player reached its end, not proof that every second
+was watched (seeking remains possible). The local
+history does not grant long-term character memory consent; this scene does not
+request the memory capability.
+
+## Playback and preparation
+
+The trusted media host preloads reaction files, owns the only reaction audio
+output, and uses `video.currentTime` for scheduling. Pause/buffering stops audio,
+resume uses the current offset, seek discards stale reactions and rearms future
+reactions, and playback rate follows video. Generation changes invalidate
+pending mounts. A Web Lock prevents concurrent timeline output from two scene
+windows. Ordinary host speech and active voice input interrupt the video;
+resumption is manual. Exit releases media, renderers and the SDK route.
+
+Live2D and VRM have symmetric trusted avatar providers mounted through
+`game.avatar`. Mouth opening uses the actual reaction waveform. Available happy
+expressions are best-effort; missing model expressions do not block playback.
+The scene avatar is distinct from the desktop renderer. Historical audio keeps
+its original voice and is labelled accordingly; it is never mirrored through
+desktop speech a second time.
+
+New preparations reuse the Bilibili parser, five-second base frames, one-second
+samples from three seconds before through one second after danmaku hotspots,
+and 30-second visual analysis windows. Full preparation and official character
+TTS preloading finish before playback. Provider-reported usage includes invalid
+format attempts. Cached/reasoning tokens are subsets, and TTS is separate.
+Missing usage is displayed as unrecorded. New audio comes from the character's
+provider-neutral official PCM cache, with voice-change detection.
+
+## Validation and remaining boundaries
+
+Automatic discovery is exposed through SDK `media.request('discover', {topic})`.
+The scene can choose a relevant popular video itself: a supplied topic takes
+priority, otherwise it uses the selected video's title, or the popular feed.
+Topic search sorts by views; the search is bounded to three pages and does not
+relax its thresholds on empty results. Metadata is checked again before starting
+preparation and inside the engine: duration must be strictly less than 180 seconds
+and danmaku count times 60 divided by duration must be strictly greater than 100.
+Automatic discovery excludes multipart videos to avoid dividing a whole video's
+danmaku count by a single part's duration. It prepares a selected video but keeps
+playback under the user's Play control.
+
+Manual URLs above 300 seconds return `confirmation_required` before any job,
+download, model request or TTS starts. The scene displays the title, duration and
+cost/time warning; cancelling starts nothing. Confirmation submits the exact
+inspected duration, and changed durations require confirmation again. Exactly
+five minutes does not trigger the warning. The existing 20-minute limit remains.
+
+Run `tests/unit/test_watch_together_*.py`, the mini-game manifest tests, and
+`node tests/frontend/test_watch_together_media_runtime.mjs`. Existing SDK,
+same-origin host and lifecycle regression scripts cover shared behavior. Build
+the React chat package to update both floating and full-window entries.
+
+This version uses the internal player. It does not read a Bilibili website tab,
+provide a browser extension, perform ASR, or incrementally analyze while playing.
+Without subtitles, it explicitly falls back to images, metadata and danmaku.
+The parser currently bounds videos to 20 minutes and downloads to 1 GiB.
+The official TTS preload interface does not expose the old provider-specific
+laughter instruction; newly synthesized laughter therefore uses normal current
+character TTS. All previously auditioned laughter files remain intact. Arbitrary
+motion selection and PNGTuber/MMD avatar mounting are not part of this SDK API.
+Electron host-shell window registration must be checked in its separate source
+repository; both `/` and `/chat` share the new React entry and use same-origin
+absolute URLs.

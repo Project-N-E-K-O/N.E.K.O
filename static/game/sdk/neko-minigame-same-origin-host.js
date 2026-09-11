@@ -346,6 +346,7 @@
       this._grantedCapabilities = new Set();
       this._avatarHost = options.avatarHost || null;
       this._audioHost = options.audioHost || null;
+      this._mediaHost = options.mediaHost || window.NekoMiniGameMediaHost || null;
       const capabilityProviders = options.capabilityProviders && typeof options.capabilityProviders === 'object'
         ? options.capabilityProviders
         : {};
@@ -524,6 +525,7 @@
         ...(this._canUseGameStorage() && this._canUseGameStorageLock() ? ['leaderboard-local'] : []),
         ...(this._avatarHost ? ['avatar-renderer'] : []),
         ...(this._audioHost ? ['audio'] : []),
+        ...(this._mediaHost ? ['media-timeline'] : []),
       ]);
       const allowedCapabilities = new Set(registration.allowedCapabilities);
       const grantedCapabilities = [...new Set(requested)].filter((name) => (
@@ -821,6 +823,29 @@
         });
       }
       return this._avatarHost.mount(config);
+    }
+
+    async requestMedia(action, payload = {}) {
+      this._requireGrantedCapability('media-timeline', 'media.request');
+      let response;
+      if (action === 'history') response = await this._request('/api/watch-together/history');
+      else if (action === 'character') response = await this.getCharacter(payload.name || '');
+      else if (action === 'prepare') response = await this._post('/api/watch-together/prepare', this._trustedRuntimePayload(payload));
+      else if (action === 'discover') response = await this._post('/api/watch-together/discover', {topic: payload.topic || ''});
+      else if (action === 'preparation') response = await this._request(`/api/watch-together/preparation/${encodeURIComponent(payload.job)}`);
+      else if (action === 'load') response = await this._request(`/api/watch-together/jobs/${encodeURIComponent(payload.job)}/${encodeURIComponent(payload.version)}`);
+      else if (action === 'watch') response = await this._post('/api/watch-together/watch', this._trustedRuntimePayload(payload));
+      else throw this._hostError('invalid_request', 'Unknown media operation');
+      if (!response.ok) throw this._hostError('request_failed', `Media request failed (${response.status})`);
+      return response.json();
+    }
+
+    async mountMedia(config) {
+      this._requireGrantedCapability('media-timeline', 'media.mount');
+      if (this._disposed) throw this._hostError('disposed', 'Host disposed');
+      const timeline = await this.requestMedia('load', { job: config.job, version: config.version });
+      if (config.signal?.aborted || this._disposed) throw this._hostError('cancelled', 'Media mount cancelled');
+      return this._mediaHost.mount({ ...config, timeline });
     }
 
     mountAudio(config) {

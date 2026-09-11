@@ -11,6 +11,7 @@ declare namespace NekoMiniGame {
     | 'voice-input'
     | 'avatar-renderer'
     | 'audio'
+    | 'media-timeline'
     | 'speech-output'
     | 'context-read'
     | 'memory'
@@ -586,6 +587,12 @@ declare namespace NekoMiniGame {
   }
 
   interface Client {
+    readonly media: {
+      request(action: 'history' | 'load' | 'watch' | 'prepare' | 'preparation' | 'character' | 'discover', payload?: Record<string, JsonValue>): Promise<JsonValue>;
+      mount(config: { video: HTMLVideoElement; job: string; version: string; onEvent?: (event: any) => void; onCue?: (cue: any) => void }): Promise<{
+        play(): Promise<void>; pause(): void; interrupt(): void; dispose(): void;
+      }>;
+    };
     readonly manifest: NormalizedManifest;
     readonly host: HostInfo;
     readonly capabilities: Capabilities;
