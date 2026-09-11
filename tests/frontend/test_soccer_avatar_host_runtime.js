@@ -350,7 +350,8 @@ async function main() {
     internalModel: { settings: { url: '/model.json' }, coreModel: core },
     scale: { x: 1, y: 1, set() {} }, position: { set() {} }, anchor: { set() {} } };
   windowMock.live2dManager = { currentModel: liveModel, async initPIXI() {},
-    async loadModel() { return liveModel; }, pauseRendering() {}, resumeRendering() {}, destroy() {} };
+    async loadModel() { return liveModel; }, pauseRendering() { this.paused = true; },
+    resumeRendering() { this.paused = false; }, destroy() {} };
   windowMock.requestAnimationFrame = callback => { const id = {}; mouthFrames.set(id, callback); return id; };
   windowMock.cancelAnimationFrame = id => mouthFrames.delete(id);
   const liveHost = windowMock.createSoccerAvatarHost();
@@ -363,6 +364,19 @@ async function main() {
   assert(mouthFrames.size === 1, 'Live2D playback updates accumulated RAFs');
   live.pause(); await flush();
   assert(mouthValue === 0 && mouthFrames.size === 0, 'Live2D pause did not release mouth');
+  windowMock.VRMManager = class {
+    constructor() { this.core = { init: async () => { throw new Error('VRM init failed'); } }; }
+    dispose() {}
+  };
+  for (const paused of [true, false]) {
+    if (!paused) { live.resume(); await flush(); }
+    const error = await live.setModel({ type: 'vrm', path: '/missing.vrm' }).then(
+      () => null, failure => failure);
+    assert(error && live.getState().ready && live.getState().model.type === 'live2d',
+      'failed VRM did not restore Live2D');
+    assert(windowMock.live2dManager.paused === paused,
+      'failed VRM replacement changed Live2D pause state');
+  }
   live.resume(); await flush();
   await live.setSpeechPlayback(speechFrame);
   assert(mouthValue > 0, 'Live2D resume did not accept fresh speech');
@@ -421,7 +435,8 @@ async function main() {
   }
   // Exercise the real soccer load order with skinned T-pose bounds cached by
   // the engine before its standing animation lowers both arms.
-  for (const slot of ['player', 'ai']) {
+  for (const { slot, paused } of [{ slot: 'player', paused: false },
+    { slot: 'ai', paused: false }, { slot: 'ai', paused: true }]) {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(
       [-.2,0,0,.2,0,0,-.2,2,0,.2,2,0,-1.3,1.6,0,1.3,1.6,0], 3));
@@ -452,7 +467,9 @@ async function main() {
           this.renderer = { setSize() {}, domElement: { style: {} } };
         } };
       }
-      startAnimateLoop() {}
+      startAnimateLoop() { this.paused = false; }
+      pauseRendering() { this.paused = true; }
+      resumeRendering() { this.paused = false; }
       async playVRMAAnimation(_url, options) {
         if (options.shouldApply && !options.shouldApply()) return false;
         leftUpperArm.rotation.z = Math.PI / 2;
@@ -477,6 +494,35 @@ async function main() {
     await controller.resize({ width: 200, height: 300 });
     assert(Math.abs(controller.getState().layout.height - initial.height) < 1e-6,
       `${slot}: animated resize changed reference size`);
+    if (slot === 'ai') {
+      if (paused) { controller.pause(); await flush(); }
+      for (const stage of ['init', 'load']) {
+        const loadError = new Error(`Live2D ${stage} failed`);
+        windowMock.live2dManager = { currentModel: null,
+          async initPIXI() { if (stage === 'init') throw loadError; },
+          async loadModel() { throw loadError; }, destroy() {} };
+        const error = await controller.setModel({ type: 'live2d', path: '/missing.json' }).then(
+          () => null, failure => failure);
+        assert(error && controller.getState().ready && controller.getState().model.type === 'vrm',
+          `${stage}: failed Live2D did not restore VRM`);
+        await controller.resize({ width: 230, height: 320 });
+        await controller.resize({ width: 200, height: 300 });
+        const restored = controller.getState().layout;
+        assert(restored.reference.source === 'standing-reference'
+          && Math.abs(restored.height - initial.height) < 1e-6
+          && Math.abs(restored.y - initial.y) < 1e-6,
+        `${stage}: restored VRM lost its stable fitting reference`);
+        assert(manager.paused === paused, `${stage}: failed replacement changed VRM pause state`);
+        assert(activeTimers.size === 0, `${stage}: failed Live2D left readiness timers`);
+      }
+      windowMock.live2dManager = { currentModel: liveModel, async initPIXI() {},
+        async loadModel() { return liveModel; }, pauseRendering() {}, resumeRendering() {}, destroy() {} };
+      await controller.setModel({ type: 'live2d', path: '/model.json' });
+      const retired = windowMock.NekoMiniGameAvatarHost.fitPerspectiveModel(THREE, skin, manager.camera,
+        { width: 200, height: 300 }, { mode: 'contain', padding: 6 });
+      assert(retired.reference.source === 'current-pose-fallback' && retired.height < 150,
+        'successful Live2D replacement retained old standing reference');
+    }
     referenceHost.dispose();
     const rebuilt = windowMock.NekoMiniGameAvatarHost.fitPerspectiveModel(THREE, skin, manager.camera,
       { width: 200, height: 300 }, { mode: 'contain', padding: 6 });

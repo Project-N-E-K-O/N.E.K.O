@@ -555,11 +555,6 @@
           }
 
           const previousType = state.model?.type || window.__SoccerAiAvatar?.type;
-          if (previousType === 'vrm' && model.type !== 'vrm') {
-            window.NekoMiniGameAvatarHost.releasePerspectiveReference(
-              window.aiVrmManager?.currentModel?.vrm?.scene, window.aiVrmManager?.camera,
-            );
-          }
           await releaseExtended();
           assertLive();
           const isExtended = ['mmd', 'pngtuber'].includes(model.type);
@@ -592,7 +587,7 @@
               });
             } catch (error) {
               assertLive();
-              if (previousType === 'live2d') resumeAiRenderer('live2d');
+              if (previousType === 'live2d' && !state.paused) resumeAiRenderer('live2d');
               throw error;
             }
             assertLive();
@@ -614,7 +609,7 @@
               await waitForLive2DModel(manager, model.path, loadPromise, startedWithSameModel, loadToken);
             } catch (error) {
               assertLive();
-              if (previousType === 'vrm') resumeAiRenderer('vrm');
+              if (previousType === 'vrm' && !state.paused) resumeAiRenderer('vrm');
               throw error;
             }
             assertLive();
@@ -637,6 +632,13 @@
             }
           } else {
             throw new Error('ai avatar: unsupported model type');
+          }
+          // Failed Live2D loads restore the old VRM. Keep its standing fit
+          // reference until replacement commits; disposal also releases it.
+          if (previousType === 'vrm' && model.type !== 'vrm') {
+            window.NekoMiniGameAvatarHost.releasePerspectiveReference(
+              window.aiVrmManager?.currentModel?.vrm?.scene, window.aiVrmManager?.camera,
+            );
           }
           state.model = model;
           if (state.paused) pauseAiRenderer(model.type);
