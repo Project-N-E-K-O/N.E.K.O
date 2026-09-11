@@ -122,6 +122,8 @@
   // require a completed connectGame() and a granted capability rather than a
   // bare read off a freshly constructed host.
   const HOST_CAPABILITY_PROVIDERS = new WeakMap();
+  const HOST_AVATAR_PROVIDERS = new WeakMap();
+  const AVATAR_QUERY_LIMIT = 4;
 
   const TRUSTED_PAYLOAD_MAX_DEPTH = 24;
   const TRUSTED_PAYLOAD_MAX_NODES = 4096;
@@ -277,6 +279,9 @@
         quickLines: typeof rawProviders?.quickLines === 'function'
           ? rawProviders.quickLines
           : null,
+        avatarHostFactory: typeof rawProviders?.avatarHostFactory === 'function'
+          ? rawProviders.avatarHostFactory
+          : null,
       }));
     }
     return { registrations, capabilityProviders };
@@ -345,6 +350,9 @@
       this._console = this._window.console || console;
       this._grantedCapabilities = new Set();
       this._avatarHost = options.avatarHost || null;
+      this._avatarCleanup = [];
+      this._avatarFactoryController = null;
+      this._avatarQueries = new Set();
       this._audioHost = options.audioHost || null;
       const capabilityProviders = options.capabilityProviders && typeof options.capabilityProviders === 'object'
         ? options.capabilityProviders
@@ -480,6 +488,75 @@
       });
     }
 
+    _initializeAvatar(factory) {
+      if (this._avatarInitialized || this._disposed) return;
+      this._avatarInitialized = true;
+      // Transitional compatibility only; new integrations must register a factory.
+      // Explicit legacy injection wins: existing trusted same-origin adapters
+      // transfer disposal ownership to this host. Never create a second provider.
+      let provider = this._avatarHost;
+      const legacy = Boolean(provider);
+      this._avatarHost = null;
+      try {
+        if (!provider && typeof factory === 'function') {
+          this._avatarFactoryController = new (this._window.AbortController || AbortController)();
+          provider = factory(Object.freeze({
+            windowImpl: this._window,
+            documentImpl: this._window.document,
+            fetchImpl: this._fetchImpl,
+            signal: this._avatarFactoryController.signal,
+            onCleanup: (cleanup) => {
+              if (typeof cleanup !== 'function' || this._avatarCleanup.length >= 16) {
+                throw this._hostError('invalid_request', 'Avatar factory cleanup limit reached');
+              }
+              if (this._disposed || this._avatarFactoryController.signal.aborted) {
+                cleanup();
+                return;
+              }
+              this._avatarCleanup.push(cleanup);
+            },
+            // Built-in display-only source; adapters need not reproduce role data.
+            characterSource: Object.freeze({
+              getCurrentCharacter: (options) => this._readAvatarCharacter('', options),
+              getCharacter: (name, options) => this._readAvatarCharacter(name, options),
+              listCharacters: (options) => this._readAvatarNames(options),
+            }),
+          }));
+        }
+        if (provider?.then) {
+          // Factories are synchronous. Still release an accidentally async result.
+          Promise.resolve(provider).then(value => this._disposeAvatarResource(value), () => {});
+          provider = null;
+          throw this._hostError('invalid_request', 'Avatar factory must return synchronously');
+        }
+        if (provider && (typeof provider.mount !== 'function' || (!legacy && typeof provider.dispose !== 'function'))) {
+          this._disposeAvatarResource(provider);
+          provider = null;
+          throw this._hostError('invalid_request', 'Avatar provider must support mount and dispose');
+        }
+        if (provider) HOST_AVATAR_PROVIDERS.set(this, provider);
+      } catch (_) {
+        // Optional Avatar failure must not prevent runtime/logging handshakes.
+        this._disposeAvatarResource(provider);
+        this._releaseAvatar();
+      }
+    }
+
+    _disposeAvatarResource(resource) {
+      try { Promise.resolve(resource?.dispose?.()).catch(() => {}); }
+      catch (_) { /* cleanup must not block release of remaining resources */ }
+    }
+
+    _releaseAvatar() {
+      this._avatarFactoryController?.abort();
+      const provider = HOST_AVATAR_PROVIDERS.get(this);
+      HOST_AVATAR_PROVIDERS.delete(this);
+      this._disposeAvatarResource(provider);
+      for (const cleanup of this._avatarCleanup.splice(0).reverse()) {
+        try { Promise.resolve(cleanup()).catch(() => {}); } catch (_) { /* continue releasing */ }
+      }
+    }
+
     connectGame(request = {}) {
       if (this._disposed) {
         throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, {
@@ -522,7 +599,7 @@
         'memory',
         ...(this._canUseGameStorage() ? ['storage'] : []),
         ...(this._canUseGameStorage() && this._canUseGameStorageLock() ? ['leaderboard-local'] : []),
-        ...(this._avatarHost ? ['avatar-renderer'] : []),
+        ...(HOST_AVATAR_PROVIDERS.has(this) ? ['avatar-renderer'] : []),
         ...(this._audioHost ? ['audio'] : []),
       ]);
       const allowedCapabilities = new Set(registration.allowedCapabilities);
@@ -815,12 +892,13 @@
           operation: 'avatar.mount',
         });
       }
-      if (!this._avatarHost || typeof this._avatarHost.mount !== 'function') {
+      const provider = HOST_AVATAR_PROVIDERS.get(this);
+      if (!provider || typeof provider.mount !== 'function') {
         throw this._hostError('capability_unavailable', 'Avatar renderer host is unavailable', {
           operation: 'avatar.mount',
         });
       }
-      return this._avatarHost.mount(config);
+      return provider.mount(config);
     }
 
     mountAudio(config) {
@@ -1034,6 +1112,123 @@
       }));
     }
 
+    async _readAvatarJson(endpoint, name, options = {}) {
+      this._requireGrantedCapability('avatar-renderer', 'avatar.character');
+      if (this._disposed || options.signal?.aborted) {
+        throw this._hostError(this._disposed ? 'disposed' : 'cancelled', 'Avatar lookup cancelled');
+      }
+      const url = new URL(this._gameEndpoint(endpoint), this._window.location.origin);
+      if (name) url.searchParams.set('lanlan_name', name);
+      const response = await this._fetchImpl(url.toString(), { signal: options.signal, credentials: 'same-origin' });
+      if (!response.ok) throw this._hostError('request_failed', 'Avatar lookup failed', { status: response.status });
+      const data = await response.json();
+      if (this._disposed || options.signal?.aborted) {
+        throw this._hostError(this._disposed ? 'disposed' : 'cancelled', 'Avatar lookup cancelled');
+      }
+      return data;
+    }
+
+    async _readAvatarCharacter(name = '', options = {}) {
+      const data = await this._readAvatarJson('character', name, options);
+      if (data?.error) throw this._hostError('request_failed', 'Avatar lookup failed');
+      if (!data?.lanlan_name || (name && data.lanlan_name !== name)) return null;
+      const type = data.model_type === 'live3d' ? data.live3d_sub_type : data.model_type;
+      const path = { live2d: data.live2d_path, vrm: data.vrm_path, mmd: data.mmd_path }[type];
+      return {
+        name: data.lanlan_name,
+        model: path ? { type, path } : null,
+        rendererAvailable: Boolean(path && ['live2d', 'vrm'].includes(type)),
+      };
+    }
+
+    async _readAvatarNames(options = {}) {
+      return (await this._readAvatarJson('characters', '', options))?.names;
+    }
+
+    async _queryAvatar(operation, options, invoke) {
+      this._requireGrantedCapability('avatar-renderer', operation);
+      if (this._disposed) throw this._hostError('disposed', 'Avatar host disposed');
+      if (options.signal?.aborted) throw this._hostError('cancelled', 'Avatar query cancelled');
+      if (this._avatarQueries.size >= AVATAR_QUERY_LIMIT) throw this._hostError('busy', 'Avatar query limit reached');
+      const controller = new (this._window.AbortController || AbortController)();
+      const timeoutMs = boundedPositiveInteger(options.timeoutMs, 10000, 30000);
+      const entry = { controller, cancel: null };
+      let timer;
+      let code = '';
+      const cancelled = new Promise((_, reject) => {
+        entry.cancel = (reason) => {
+          if (code) return;
+          code = reason;
+          controller.abort();
+          reject(this._hostError(reason, 'Avatar query cancelled', { operation }));
+        };
+      });
+      const onAbort = () => entry.cancel('cancelled');
+      this._avatarQueries.add(entry);
+      options.signal?.addEventListener('abort', onAbort, { once: true });
+      timer = this._window.setTimeout(() => entry.cancel('timeout'), timeoutMs);
+      // Keep the raw slot until settlement even when a provider ignores abort.
+      // Repeated timeouts cannot launch unbounded abandoned provider work.
+      const raw = Promise.resolve().then(() => {
+        if (controller.signal.aborted) throw this._hostError(code || 'cancelled', 'Avatar query cancelled');
+        return invoke({ signal: controller.signal, timeoutMs });
+      }).finally(() => this._avatarQueries.delete(entry));
+      try {
+        const value = await Promise.race([raw, cancelled]);
+        if (this._disposed || controller.signal.aborted) {
+          throw this._hostError(this._disposed ? 'disposed' : code || 'cancelled', 'Avatar query cancelled');
+        }
+        return value;
+      } finally {
+        this._window.clearTimeout(timer);
+        options.signal?.removeEventListener('abort', onAbort);
+      }
+    }
+
+    getAvatarCharacter(name = '', options = {}) {
+      if (typeof name !== 'string' || name.length > 128) {
+        return Promise.reject(this._hostError('invalid_request', 'Invalid character name'));
+      }
+      const requested = name.trim();
+      return this._queryAvatar('avatar.getCharacter', options, async (managed) => {
+        const provider = HOST_AVATAR_PROVIDERS.get(this);
+        const value = requested
+          ? await (typeof provider?.getCharacter === 'function'
+            ? provider.getCharacter(requested, managed) : this._readAvatarCharacter(requested, managed))
+          : await (typeof provider?.getCurrentCharacter === 'function'
+            ? provider.getCurrentCharacter(managed)
+            : typeof provider?.getCharacter === 'function'
+              ? provider.getCharacter('', managed) : this._readAvatarCharacter('', managed));
+        if (value == null) return null;
+        const characterName = value.name;
+        const model = value.model;
+        if (typeof characterName !== 'string' || !characterName.trim() || characterName.length > 128
+          || (model != null && (!['live2d', 'vrm', 'mmd', 'pngtuber'].includes(model.type)
+            || typeof model.path !== 'string' || !model.path.trim() || model.path.length > 2048))) {
+          throw this._hostError('invalid_response', 'Invalid character descriptor');
+        }
+        if (requested && characterName.trim() !== requested) return null;
+        return Object.freeze({
+          name: characterName.trim(),
+          model: model == null ? null : Object.freeze({ type: model.type, path: model.path.trim() }),
+          rendererAvailable: Boolean(model && value.rendererAvailable === true),
+        });
+      });
+    }
+
+    listAvatarCharacters(options = {}) {
+      return this._queryAvatar('avatar.listCharacters', options, async (managed) => {
+        const provider = HOST_AVATAR_PROVIDERS.get(this);
+        const names = await (typeof provider?.listCharacters === 'function'
+          ? provider.listCharacters(managed) : this._readAvatarNames(managed));
+        if (!Array.isArray(names) || names.length > 256 || names.some(name => (
+          typeof name !== 'string' || !name.trim() || name.length > 128
+        ))) throw this._hostError('invalid_response', 'Invalid character list');
+        return Object.freeze([...new Set(names.map(name => name.trim()))]);
+      });
+    }
+
+    /** @deprecated Existing adapters only. New games must use game.avatar discovery. */
     async getCharacter(lanlanName = '') {
       this._requireGrantedCapability('avatar-renderer', 'character');
       const url = new URL(this._gameEndpoint('character'), this._window.location.origin);
@@ -2931,8 +3126,9 @@
       this.stopVoiceControlBridge('disposed');
       this._grantedCapabilities.clear();
       this.stopGameControlBridge();
-      try { this._avatarHost?.dispose?.(); }
-      catch (error) { this._console.warn(`[${this.displayName}Host] avatar host dispose failed:`, error); }
+      for (const entry of this._avatarQueries) entry.cancel('disposed');
+      this._avatarQueries.clear();
+      this._releaseAvatar();
       try { this._audioHost?.dispose?.(); }
       catch (error) { this._console.warn(`[${this.displayName}Host] audio host dispose failed:`, error); }
       this._disposeLogger();
@@ -2942,11 +3138,14 @@
 
   const createNekoMiniGameSameOriginHost = function createNekoMiniGameSameOriginHost(options = {}) {
     const gameType = String(options.gameType || '').trim();
-    return new NekoMiniGameSameOriginHost({
+    const host = new NekoMiniGameSameOriginHost({
       ...options,
       launchRegistration: HOST_BOOTSTRAP.registrations.get(gameType) || null,
       capabilityProviders: HOST_BOOTSTRAP.capabilityProviders.get(gameType) || null,
     });
+    // Construction/identity validation completes before any factory allocates.
+    host._initializeAvatar(HOST_BOOTSTRAP.capabilityProviders.get(gameType)?.avatarHostFactory);
+    return host;
   };
   Object.defineProperty(window, FACTORY_PROPERTY, {
     value: createNekoMiniGameSameOriginHost,

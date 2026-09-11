@@ -569,6 +569,11 @@ declare namespace NekoMiniGame {
   }
 
   interface AvatarModel { type: 'live2d' | 'vrm'; path: string }
+  interface AvatarCharacterDescriptor {
+    readonly name: string;
+    readonly model: Readonly<{ type: 'live2d' | 'vrm' | 'mmd' | 'pngtuber'; path: string }> | null;
+    readonly rendererAvailable: boolean;
+  }
   interface AvatarMountConfiguration {
     slot: string;
     model: AvatarModel;
@@ -596,6 +601,12 @@ declare namespace NekoMiniGame {
 
   interface Avatar {
     readonly activeCount: number;
+    /** At most four queries, including transports still settling after cancellation. */
+    readonly pendingQueryCount: number;
+    /** Display-only metadata; default deadline 10s, maximum 30s. */
+    getCurrentCharacter(options?: RequestOptions): Promise<AvatarCharacterDescriptor | null>;
+    getCharacter(name: string, options?: RequestOptions): Promise<AvatarCharacterDescriptor | null>;
+    listCharacters(options?: RequestOptions): Promise<readonly string[]>;
     mount(config: AvatarMountConfiguration): Promise<AvatarController>;
     disposeAll(): void;
   }

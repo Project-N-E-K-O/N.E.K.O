@@ -4771,6 +4771,23 @@ async def _load_game_character_prompt_locale(lanlan_name: str) -> tuple[str, boo
         return "", False
 
 
+@router.get("/{game_type}/characters")
+async def game_character_names(game_type: str):
+    """Expose only bounded display names from the existing character registry."""
+    characters = await asyncio.to_thread(get_config_manager().load_characters)
+    nekos = characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+    if not isinstance(nekos, dict):
+        return {"names": []}
+    if len(nekos) > 256:
+        raise HTTPException(status_code=413, detail="character_list_too_large")
+    names = []
+    for name in nekos:
+        if not isinstance(name, str) or not name.strip() or len(name) > 128:
+            raise HTTPException(status_code=422, detail="invalid_character_name")
+        names.append(name)
+    return {"names": names}
+
+
 @router.get("/{game_type}/character")
 async def game_character(game_type: str, request: Request = None):
     """Return current character information for model replacement.

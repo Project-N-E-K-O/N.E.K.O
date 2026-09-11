@@ -42,6 +42,7 @@
   const MAX_BUBBLE_PRESENTATIONS = 8;
   const MAX_CONSENT_PRESENTATIONS = 4;
   const MAX_AVATAR_RENDERERS = 8;
+  const MAX_AVATAR_QUERIES = 4;
   const MAX_AUDIO_CONTROLLERS = 4;
   const MAX_AUDIO_RESOURCE_NODES = 2048;
   const MAX_AUDIO_RESOURCE_CHARS = 512 * 1024;
@@ -1999,6 +2000,9 @@
     const grantedSet = new Set(usableGranted);
     const listeners = new Map();
     const avatarRenderers = new Set();
+    const avatarQueryRequests = new Set();
+    const avatarQueriesInFlight = new Set();
+    let avatarQueryGeneration = {};
     let avatarMountsPending = 0;
     const audioControllers = new Set();
     let audioMountsPending = 0;
@@ -2362,6 +2366,9 @@
       if (runtimePhase === normalized) return;
       const previous = runtimePhase;
       runtimePhase = normalized;
+      if (['ending', 'ended', 'inactive', 'disposed'].includes(normalized)) {
+        cancelAvatarQueries(normalized === 'disposed' ? 'disposed' : 'cancelled');
+      }
       if (!runtimeRouteEstablished || !['running', 'degraded'].includes(normalized)) {
         clearVoiceState();
       }
@@ -2811,6 +2818,7 @@
       pageExitHandler = (event = {}) => {
         if (disposed || pageExitDispatched) return;
         pageExitDispatched = true;
+        cancelAvatarQueries('cancelled');
         const type = String(event.type || 'page-exit');
         const exitContext = Object.freeze({
           type,
@@ -3466,6 +3474,7 @@
         stopRuntimeOperation();
         abortPendingProtocolRequests('cancelled');
         abortManagedRequests(contextPendingRequests, 'cancelled');
+        cancelAvatarQueries('cancelled');
         abortManagedRequests(dialoguePendingRequests, 'cancelled');
         abortManagedRequests(memoryPendingRequests, 'cancelled');
         abortManagedRequests(serverLeaderboardPendingRequests, 'cancelled');
@@ -5009,8 +5018,83 @@
       }
     }
 
+    function avatarCharacterName(value) {
+      if (typeof value !== 'string' || !value.trim() || value.length > 128) {
+        fail('invalid_request', 'Avatar character name must contain 1 to 128 characters');
+      }
+      return value.trim();
+    }
+
+    function avatarCharacterDescriptor(value) {
+      if (value == null) return null;
+      if (!plainObject(value)) fail('invalid_response', 'Invalid avatar character descriptor');
+      const name = avatarCharacterName(value.name);
+      let model = null;
+      if (value.model != null) {
+        const raw = value.model;
+        if (!plainObject(raw) || !['live2d', 'vrm', 'mmd', 'pngtuber'].includes(raw.type)
+          || typeof raw.path !== 'string' || !raw.path.trim() || raw.path.length > 2048) {
+          fail('invalid_response', 'Invalid avatar character model');
+        }
+        model = Object.freeze({ type: raw.type, path: raw.path.trim() });
+      }
+      return Object.freeze({ name, model, rendererAvailable: Boolean(model && value.rendererAvailable === true) });
+    }
+
+    function cancelAvatarQueries(reason) {
+      avatarQueryGeneration = {};
+      abortManagedRequests(avatarQueryRequests, reason);
+    }
+
+    async function queryAvatar(operation, method, args, options, normalize) {
+      requireCapability('avatar-renderer', operation);
+      if (['ending', 'ended', 'inactive'].includes(runtimePhase) || pageExitDispatched) {
+        fail('invalid_state', 'Avatar queries are unavailable after route exit', { operation });
+      }
+      if (typeof transport[method] !== 'function') fail('transport_unavailable', 'Avatar query transport unavailable');
+      if (avatarQueriesInFlight.size >= MAX_AVATAR_QUERIES) fail('busy', 'Avatar query limit reached');
+      const slot = {};
+      const generation = avatarQueryGeneration;
+      avatarQueriesInFlight.add(slot);
+      let invoked = false;
+      try {
+        const value = await performManagedHostRequest({
+          operation, pendingSet: avatarQueryRequests, limit: MAX_AVATAR_QUERIES,
+          timeoutMs: 10000, maximumTimeoutMs: 30000, requestOptions: options,
+          invoke: (managed) => {
+            invoked = true;
+            // A transport that ignores abort retains its slot until settlement.
+            return Promise.resolve().then(() => transport[method](...args, managed))
+              .then(normalize).finally(() => avatarQueriesInFlight.delete(slot));
+          },
+        });
+        ensureActive(operation);
+        if (generation !== avatarQueryGeneration) fail('cancelled', 'Avatar query belongs to an exited lifecycle');
+        return value;
+      } finally {
+        if (!invoked) avatarQueriesInFlight.delete(slot);
+      }
+    }
+
     const avatar = Object.freeze({
       get activeCount() { return avatarRenderers.size; },
+      get pendingQueryCount() { return avatarQueriesInFlight.size; },
+      getCurrentCharacter(options = {}) {
+        return queryAvatar('avatar.getCurrentCharacter', 'getAvatarCharacter', [''], options, avatarCharacterDescriptor);
+      },
+      async getCharacter(name, options = {}) {
+        const requested = avatarCharacterName(name);
+        return queryAvatar('avatar.getCharacter', 'getAvatarCharacter', [requested], options, value => {
+          const descriptor = avatarCharacterDescriptor(value);
+          return descriptor?.name === requested ? descriptor : null;
+        });
+      },
+      listCharacters(options = {}) {
+        return queryAvatar('avatar.listCharacters', 'listAvatarCharacters', [], options, value => {
+          if (!Array.isArray(value) || value.length > 256) fail('invalid_response', 'Invalid character list');
+          return Object.freeze([...new Set(value.map(avatarCharacterName))]);
+        });
+      },
       async mount(configInput) {
         requireCapability('avatar-renderer', 'avatar.mount');
         if (avatarRenderers.size + avatarMountsPending >= MAX_AVATAR_RENDERERS) {
@@ -5135,6 +5219,8 @@
         abortPendingSpeechRequests('disposed');
         abortPendingProtocolRequests('disposed');
         abortManagedRequests(contextPendingRequests, 'disposed');
+        cancelAvatarQueries('disposed');
+        avatarQueriesInFlight.clear();
         abortManagedRequests(dialoguePendingRequests, 'disposed');
         abortManagedRequests(memoryPendingRequests, 'disposed');
         abortManagedRequests(storagePendingRequests, 'disposed');
