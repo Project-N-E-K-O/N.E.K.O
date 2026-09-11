@@ -408,6 +408,7 @@ async function main() {
   let envelopeCallCount = 0;
   let saveCallCount = 0;
   let saveSucceeded = false;
+  let persistedModel = 'initial-model';
 
   globalThis.fetch = async (rawUrl, options = {}) => {
     const url = String(rawUrl);
@@ -427,9 +428,7 @@ async function main() {
       let data = {};
 
       if (body.entry_id === 'get_panel_state') {
-        data = saveSucceeded
-          ? panelState(old.envelope, true, 'persisted-model-after-refresh')
-          : panelState(old.envelope, false, 'initial-model');
+        data = panelState(old.envelope, saveSucceeded, persistedModel);
       } else if (body.entry_id === 'test_generation') {
         data = {
           result_url: '/plugin/image_generator/ui/generated/' + 'a'.repeat(32) + '.png',
@@ -438,6 +437,7 @@ async function main() {
       } else if (body.entry_id === 'clear_api_key') {
         data = { api_key_configured: false };
       } else if (body.entry_id === 'reset_settings') {
+        persistedModel = 'reset-model';
         data = { reset: true, settings: panelState(old.envelope, true, 'reset-model').settings };
       } else if (body.entry_id === 'get_secret_envelope') {
         const issued = fresh[envelopeCallCount];
@@ -466,6 +466,7 @@ async function main() {
           };
         } else {
           saveSucceeded = true;
+          persistedModel = 'persisted-model-after-refresh';
           data = { saved: true };
         }
       } else {
@@ -582,7 +583,7 @@ async function main() {
     elements.get('resetButton').dispatchEvent(new FakeEvent('click'));
     await waitFor(() => entryCalls.filter((entry) => entry === 'get_panel_state').length > beforeReset
       && !elements.get('resetButton').disabled, 'authoritative reset refresh');
-    check(elements.get('model').value === 'persisted-model-after-refresh', 'reset did not fetch authoritative state');
+    check(elements.get('model').value === 'reset-model', 'reset did not fetch the reset authoritative state');
     check(
       elements.get('credentialValue').textContent.includes('已配置'),
       `credential status is not configured: ${elements.get('credentialValue').textContent}`,
@@ -690,7 +691,7 @@ def test_save_uses_fresh_envelopes_retries_once_and_refreshes_panel(
 
     assert result["envelopeCallCount"] == 2
     assert result["saveCallCount"] == 2
-    assert result["model"] == "persisted-model-after-refresh"
+    assert result["model"] == "reset-model"
     assert result["apiKey"] == ""
     assert "已配置" in str(result["credential"])
 
