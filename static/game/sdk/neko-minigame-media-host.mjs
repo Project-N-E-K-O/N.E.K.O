@@ -1,5 +1,7 @@
 /** Trusted host: the only owner of pre-recorded reaction audio. */
 import { ReactionClock } from './media-clock.mjs';
+// A media element can be attached to Web Audio only once, including across mounts.
+const videoGraphs = new WeakMap();
 
 export async function mount({ video, timeline, signal, onEvent = () => {}, onCue = () => {}, onMouth = () => {} }) {
   if (!(video instanceof HTMLVideoElement) || timeline.status !== 'ready') throw Error('Media is not ready');
@@ -18,17 +20,15 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   let active = null, disposed = false, waiting = false, frame = 0, release = null;
   let generation = 0, playingGeneration = -1;
   const audio = new Audio();
-  let context = null, analyser = null;
-  let masterVolume = video.volume ?? 1, appliedVolume = masterVolume, speaking = false;
+  let context = null, analyser = null, soundtrack = null;
+  const voiceNodes = [];
   const waveform = new Uint8Array(128);
   audio.preload = 'auto';
   const listeners = [];
   const running = () => !disposed && !waiting && !video.paused && !video.seeking && video.readyState >= 3;
   const emit = (type, cue = '') => onEvent({ type, cue, position: video.currentTime });
   const duckSoundtrack = value => {
-    speaking = value;
-    appliedVolume = masterVolume * (speaking ? 0.25 : 1);
-    if (video.volume !== appliedVolume) video.volume = appliedVolume;
+    if (soundtrack) soundtrack.gain.setTargetAtTime(value ? 0.25 : 1, context.currentTime, value ? 0.03 : 0.15);
   };
   function stop(clear = false) {
     audio.pause();
@@ -53,10 +53,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   }
   function listen(target, type, fn) { target.addEventListener(type, fn); listeners.push(() => target.removeEventListener(type, fn)); }
   const syncVolume = () => {
-    // Internal ducking must not also turn down the companion's voice.
-    if (video.volume !== appliedVolume) masterVolume = video.volume;
-    audio.volume = masterVolume; audio.muted = video.muted;
-    duckSoundtrack(speaking);
+    audio.volume = video.volume; audio.muted = video.muted;
   };
   syncVolume();
   listen(video, 'volumechange', syncVolume);
@@ -99,7 +96,14 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     async play() {
       if (disposed) throw Error('Media controller disposed');
       if (!context) {
-        context = new AudioContext(); analyser=context.createAnalyser();analyser.fftSize=256;
+        let graph = videoGraphs.get(video);
+        if (!graph) {
+          const ctx = new AudioContext(), gain = ctx.createGain();
+          ctx.createMediaElementSource(video).connect(gain);gain.connect(ctx.destination);
+          graph = {context:ctx, soundtrack:gain};videoGraphs.set(video,graph);
+        }
+        context = graph.context;soundtrack = graph.soundtrack;
+        analyser=context.createAnalyser();analyser.fftSize=256;
         // Lift quiet reactions above the soundtrack without boosting the video.
         const voiceGain = context.createGain(), compressor = context.createDynamicsCompressor();
         voiceGain.gain.value = 3;
@@ -108,7 +112,9 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
         compressor.ratio.value = 20;
         compressor.attack.value = 0.003;
         compressor.release.value = 0.1;
-        context.createMediaElementSource(audio).connect(analyser);
+        const source = context.createMediaElementSource(audio);
+        voiceNodes.push(source,analyser,voiceGain,compressor);
+        source.connect(analyser);
         analyser.connect(voiceGain);voiceGain.connect(compressor);compressor.connect(context.destination);
       }
       await context.resume();
@@ -131,7 +137,9 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
       video.pause(); stop(true); disposed = true; generation++;
       cancelAnimationFrame(frame); listeners.forEach(remove => remove());
       video.removeAttribute('src'); video.load(); audio.load(); release?.(); release = null;
-      context?.close();
+      voiceNodes.forEach(node=>node.disconnect());
+      // Keep the video's graph reusable for the next timeline; release audio work.
+      context?.suspend().catch(()=>{});
       for(const url of resources.values())URL.revokeObjectURL(url);
     },
   });

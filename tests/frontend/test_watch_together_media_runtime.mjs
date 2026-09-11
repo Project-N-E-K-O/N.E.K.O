@@ -9,8 +9,8 @@ class Media extends EventTarget {
 const audios=[];
 globalThis.HTMLVideoElement=Media;
 globalThis.Audio=class extends Media{constructor(){super();audios.push(this);}};
-const gains=[];
-globalThis.AudioContext=class {createAnalyser(){return {connect(){},getByteTimeDomainData(a){a.fill(128);}};}createMediaElementSource(){return {connect(){}};}createGain(){const node={gain:{value:1,setTargetAtTime(value){this.value=value;}},connect(){}};gains.push(node);return node;}createDynamicsCompressor(){return {threshold:{},knee:{},ratio:{},attack:{},release:{},connect(){}};}async resume(){}async close(){}};
+const gains=[], sources=new WeakSet();
+globalThis.AudioContext=class {createAnalyser(){return {connect(){},disconnect(){},getByteTimeDomainData(a){a.fill(128);}};}createMediaElementSource(element){assert.equal(sources.has(element),false);sources.add(element);return {connect(){},disconnect(){}};}createGain(){const node={gain:{value:1,setTargetAtTime(value){this.value=value;}},connect(){},disconnect(){}};gains.push(node);return node;}createDynamicsCompressor(){return {threshold:{},knee:{},ratio:{},attack:{},release:{},connect(){},disconnect(){}};}async resume(){}async suspend(){}async close(){}};
 globalThis.window={};globalThis.document=new EventTarget();
 globalThis.fetch=async()=>({ok:true,blob:async()=>new Blob(['audio'])});
 let nextFrame=null;
@@ -23,11 +23,14 @@ const controller=await mount({video,timeline:{id:'job',version:'version',status:
 await controller.play();
 video.currentTime=3.95;nextFrame();assert.equal(audios[0].paused,true,'future cue is not consumed');
 video.currentTime=4.05;nextFrame();assert.equal(audios[0].paused,false);assert.ok(Math.abs(audios[0].currentTime-.05)<.001);
-assert.equal(video.volume,.25,'reaction ducks soundtrack');
+assert.equal(gains[0].gain.value,.25,'reaction ducks soundtrack');
+assert.equal(video.volume,1,'ducking leaves user volume untouched');
 video.dispatchEvent(new Event('volumechange'));
 assert.equal(audios[0].volume,1,'ducking preserves voice volume');
+video.volume=.25;video.dispatchEvent(new Event('volumechange'));
 video.pause();assert.equal(audios[0].paused,true,'pause stops reaction');
-assert.equal(video.volume,1,'pause restores soundtrack');
+assert.equal(gains[0].gain.value,1,'pause restores soundtrack gain');
+assert.equal(video.volume,.25,'user volume survives end of ducking');
 await controller.play();assert.equal(audios[0].paused,false,'resume uses media offset');
 video.dispatchEvent(new Event('waiting'));assert.equal(audios[0].paused,true,'buffering stops reaction');
 video.dispatchEvent(new Event('playing'));assert.equal(audios[0].paused,false);
@@ -60,3 +63,9 @@ assert.equal(v2.paused,false,'obsolete audio failure does not pause new video po
 c2.dispose();
 await assert.rejects(mount({video:new Media(),timeline:{id:'job',version:'version',status:'ready',events:[{audio:'/unregistered'}]}}),/Unregistered/);
 console.log('watch-together review regressions: cue identity, silent cues, volume and stale failures passed');
+const gainCount=gains.length;
+const again=await mount({video,timeline:{id:'job',version:'version',status:'ready',video:'/video',events:[]}});
+await again.play();
+assert.equal(gains.length,gainCount+1,'remount reuses video graph and creates only a voice gain');
+again.dispose();
+console.log('watch-together audio graph: remount reuses media element source');
