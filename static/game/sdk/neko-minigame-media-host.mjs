@@ -22,15 +22,20 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
   const audio = new Audio();
   let context = null, analyser = null, soundtrack = null;
   const voiceNodes = [];
+  let outputStopped = true, ducked = false;
   const waveform = new Uint8Array(128);
   audio.preload = 'auto';
   const listeners = [];
   const running = () => !disposed && !waiting && !video.paused && !video.seeking && video.readyState >= 3;
   const emit = (type, cue = '') => onEvent({ type, cue, position: video.currentTime });
   const duckSoundtrack = value => {
+    if(ducked===value)return;
+    ducked=value;
     if (soundtrack) soundtrack.gain.setTargetAtTime(value ? 0.25 : 1, context.currentTime, value ? 0.03 : 0.15);
   };
   function stop(clear = false) {
+    if(outputStopped && (!clear || !active))return;
+    outputStopped=true;
     playAttempt++;
     audio.pause();
     duckSoundtrack(false);
@@ -43,6 +48,7 @@ export async function mount({ video, timeline, signal, onEvent = () => {}, onCue
     if (offset < 0 || offset >= active.duration) { stop(true); return; }
     audio.playbackRate = video.playbackRate;
     if (audio.paused) {
+      outputStopped=false;
       audio.currentTime = offset;
       playingGeneration = generation;
       const attemptGeneration = generation, attemptCue = active, attempt = ++playAttempt;

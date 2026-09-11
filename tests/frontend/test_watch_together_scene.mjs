@@ -22,6 +22,7 @@ async function fixture(confirm, afterDownload=false, usage=null, discover=null) 
       calls.push({action,payload});
       if(action==='character')return {lanlan_name:'cat'};
       if(action==='history')return {analyses:usage?[{job:'selected',version:'v',status:'ready'}]:[],watches};
+      if(action==='watches')return {watches};
       if(action==='watch'){watches=[{job:'selected',progress:payload.position || 0,last_watched:'now'}];return {id:'watch-1'};}
       if(action==='load')return {id:'selected',version:'v',bvid:'BV1GJ411x7h7',title:'Cats',usage,events:[]};
       if(action==='discover')return discover ? discover() : {video:null};
@@ -130,3 +131,19 @@ assert.equal(takeover.prompts.length,0,'stale job cannot display confirmation');
 if(terminal.confirmation_required)assert.equal(staleDecision.accepted,false,'release stale confirmation without paid work');
 }
 console.log('watch-together scene: stale completion, confirmation and failure preserve newer playback');
+for (const failOld of [false,true]) {
+  const racing=await fixture(false,false,{total_tokens:1});
+  const baseRequest=racing.game.media.request;
+  const pendingLoads=[];
+  racing.game.media.request=(action,payload)=>action==='load' ? new Promise((resolve,reject)=>pendingLoads.push({resolve,reject})) : baseRequest(action,payload);
+  const button=racing.elements.get('history').children[0];
+  const older=button.onclick();await new Promise(resolve=>setTimeout(resolve,0));
+  const newer=button.onclick();await new Promise(resolve=>setTimeout(resolve,0));
+  pendingLoads[1].resolve({id:'new',version:'v',title:'New selection',events:[]});await newer;
+  if(failOld)pendingLoads[0].reject(Error('old load failed'));
+  else pendingLoads[0].resolve({id:'old',version:'v',title:'Old selection',events:[]});
+  await older;
+  assert.equal(racing.elements.get('title').textContent,'New selection');
+  assert.match(racing.elements.get('status').textContent,/ready/);
+}
+console.log('watch-together scene: superseded load success and failure preserve newest selection');

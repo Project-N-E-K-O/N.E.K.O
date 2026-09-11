@@ -17,3 +17,8 @@ async def test_library_construction_and_history_query_run_off_event_loop(monkeyp
         return SimpleNamespace(history=lambda: checked(["analysis"]), watches=lambda: checked(["watch"]))
     monkeypatch.setattr(router, "application_library", library)
     assert await router.history() == {"analyses": ["analysis"], "watches": ["watch"]}
+
+@pytest.mark.asyncio
+async def test_watches_endpoint_does_not_read_analysis_history(monkeypatch):
+    monkeypatch.setattr(router, 'application_library', lambda: SimpleNamespace(watches=lambda: ['watch']))
+    assert await router.watches() == {'watches': ['watch']}

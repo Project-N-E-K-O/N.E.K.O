@@ -5234,7 +5234,7 @@
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('invalid_request', 'Media payload must be an object');
         try { if (JSON.stringify(payload).length > 65536) fail('invalid_request', 'Media payload too large'); }
         catch(error) { if (error instanceof NekoMiniGameError) throw error; fail('invalid_request', 'Media payload must be JSON'); }
-        if (!['history', 'load', 'watch', 'prepare', 'preparation', 'character', 'discover'].includes(action)) fail('invalid_request', 'Unknown media operation');
+        if (!['history', 'watches', 'load', 'watch', 'prepare', 'preparation', 'character', 'discover'].includes(action)) fail('invalid_request', 'Unknown media operation');
         if (action === 'watch') requireActiveRuntimeRoute('media.watch');
         return transport.requestMedia(action, { ...payload, sdk_route_instance_id: runtimeRouteInstanceId });
       },

@@ -94,5 +94,9 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
 
     task = asyncio.create_task(run())
     tasks.add(task)
-    task.add_done_callback(tasks.discard)
+    def finished(completed):
+        tasks.discard(completed)
+        # Keep terminal status for an hour of polling; persisted history remains.
+        asyncio.get_running_loop().call_later(3600, jobs.pop, job["id"], None)
+    task.add_done_callback(finished)
     return {"id": job["id"]}

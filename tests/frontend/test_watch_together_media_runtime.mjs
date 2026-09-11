@@ -9,8 +9,9 @@ class Media extends EventTarget {
 const audios=[];
 globalThis.HTMLVideoElement=Media;
 globalThis.Audio=class extends Media{constructor(){super();audios.push(this);}};
+let gainUpdates=0;
 const gains=[], sources=new WeakSet();
-globalThis.AudioContext=class {createAnalyser(){return {connect(){},disconnect(){},getByteTimeDomainData(a){a.fill(128);}};}createMediaElementSource(element){assert.equal(sources.has(element),false);sources.add(element);return {connect(){},disconnect(){}};}createGain(){const node={gain:{value:1,setTargetAtTime(value){this.value=value;}},connect(){},disconnect(){}};gains.push(node);return node;}createDynamicsCompressor(){return {threshold:{},knee:{},ratio:{},attack:{},release:{},connect(){},disconnect(){}};}async resume(){}async suspend(){}async close(){}};
+globalThis.AudioContext=class {createAnalyser(){return {connect(){},disconnect(){},getByteTimeDomainData(a){a.fill(128);}};}createMediaElementSource(element){assert.equal(sources.has(element),false);sources.add(element);return {connect(){},disconnect(){}};}createGain(){const node={gain:{value:1,setTargetAtTime(value){gainUpdates++;this.value=value;}},connect(){},disconnect(){}};gains.push(node);return node;}createDynamicsCompressor(){return {threshold:{},knee:{},ratio:{},attack:{},release:{},connect(){},disconnect(){}};}async resume(){}async suspend(){}async close(){}};
 globalThis.window={};globalThis.document=new EventTarget();
 globalThis.fetch=async()=>({ok:true,blob:async()=>new Blob(['audio'])});
 let nextFrame=null;
@@ -70,6 +71,9 @@ console.log('watch-together review regressions: cue identity, silent cues, volum
 const gainCount=gains.length;
 const again=await mount({video,timeline:{id:'job',version:'version',status:'ready',video:'/video',events:[]}});
 await again.play();
+const idleUpdates=gainUpdates;
+for(let i=0;i<120;i++)nextFrame();
+assert.equal(gainUpdates,idleUpdates,'idle frames do not schedule repeated gain automation');
 assert.equal(gains.length,gainCount+1,'remount reuses video graph and creates only a voice gain');
 again.dispose();
 console.log('watch-together audio graph: remount reuses media element source');

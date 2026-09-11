@@ -56,14 +56,17 @@ export async function run(game, character) {
     if (!['idle','ended','inactive'].includes(game.runtime.state)) await game.runtime.end({reason:'user_exit'});
   }
   async function load(row) {
-    selectionGeneration++;
+    const selection = ++selectionGeneration;
     nextQueue.clear();queuedFor=null;
     $('play').disabled = true;
     const previous = selected;
     try {
     await end();
+    if(selection!==selectionGeneration)return false;
     if (game.runtime.state !== 'idle') game.runtime.reset({newSession:true});
-    selected = await game.media.request('load', row);
+    const loaded = await game.media.request('load', row);
+    if(selection!==selectionGeneration)return false;
+    selected = loaded;
     if(selected.bvid)seenVideos.add(selected.bvid);
     const address = new URL(location.href);
     address.searchParams.set('job',selected.id);address.searchParams.set('version',selected.version);
@@ -82,8 +85,9 @@ export async function run(game, character) {
       $('events').append(button);
     }
     status(t('ready')); $('play').disabled = false;
-    } catch(error) { selected = previous; throw error; }
-    finally { $('play').disabled = !selected; }
+    return true;
+    } catch(error) { if(selection!==selectionGeneration)return false; selected = previous; throw error; }
+    finally { if(selection===selectionGeneration)$('play').disabled = !selected; }
   }
   $('play').onclick = async () => {
     $('play').disabled = true;
@@ -183,7 +187,7 @@ export async function run(game, character) {
   $('next-video').onclick=async()=>{
     if(!nextRow)return;
     const row=nextRow;
-    try {await load(row);await $('play').onclick();}catch(error){status(error.message);}
+    try {if(await load(row))await $('play').onclick();}catch(error){status(error.message);}
   };
   $('exit').onclick = async () => {
     nextQueue.dispose();
@@ -191,7 +195,7 @@ export async function run(game, character) {
     setTimeout(()=>{if(!window.closed)location.href='/';},100);
   };
   async function refreshWatches() {
-    try { renderWatches((await game.media.request('history')).watches); }
+    try { renderWatches((await game.media.request('watches')).watches); }
     catch(error) { status(error.message); }
   }
   function renderWatches(rows) {

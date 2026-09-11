@@ -106,6 +106,22 @@ def browser_codec_args(video, audio):
     return args
 
 
+async def write_download_chunk(target, chunk, mode):
+    def write():
+        with target.open(mode) as stream:
+            stream.write(chunk)
+    operation = asyncio.create_task(asyncio.to_thread(write))
+    cancelled = False
+    while not operation.done():
+        try:
+            await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            cancelled = True
+    operation.result()
+    if cancelled:
+        raise asyncio.CancelledError()
+
+
 async def download_stream(client, representation, target):
     primary = representation.get('baseUrl') or representation.get('base_url') or representation.get('url')
     backups = representation.get('backupUrl') or representation.get('backup_url') or []
@@ -118,12 +134,12 @@ async def download_stream(client, representation, target):
             size = 0
             async with client.stream('GET', address) as response:
                 response.raise_for_status()
-                with target.open('wb') as stream:
-                    async for chunk in response.aiter_bytes(1024 * 1024):
-                        size += len(chunk)
-                        if size > 1024 * 1024 * 1024:
-                            raise ValueError('Video stream exceeds 1GB limit')
-                        stream.write(chunk)
+                await write_download_chunk(target, b'', 'wb')
+                async for chunk in response.aiter_bytes(1024 * 1024):
+                    size += len(chunk)
+                    if size > 1024 * 1024 * 1024:
+                        raise ValueError('Video stream exceeds 1GB limit')
+                    await write_download_chunk(target, chunk, 'ab')
             return
         except httpx.HTTPError as exc:
             last_error = exc
@@ -248,11 +264,15 @@ class Engine:
             self._cm = get_config_manager()
         return self._cm
 
-    async def llm(self, content, job):
-        from openai import AsyncOpenAI
+    async def vision_config(self):
         cfg = await asyncio.to_thread(self.cm.get_model_api_config, "vision")
         if not cfg.get("api_key"):
             raise RuntimeError("请先配置猫娘的视觉模型 API")
+        return cfg
+
+    async def llm(self, content, job):
+        from openai import AsyncOpenAI
+        cfg = await self.vision_config()
         options = {"response_format": {"type": "json_object"}}
         if str(cfg["model"]).startswith("deepseek-"):
             options["extra_body"] = {"thinking": {"type": "disabled"}}
@@ -283,6 +303,7 @@ class Engine:
         # Fail before downloading or paying for analysis when prerequisites are absent.
         media_binary("ffmpeg")
         media_binary("ffprobe")
+        await self.vision_config()
         folder = self.cache / job["id"]
         folder.mkdir()
         job["usage"] = {"calls": [], "input_tokens": 0, "output_tokens": 0,

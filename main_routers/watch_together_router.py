@@ -23,6 +23,11 @@ async def history():
     return await asyncio.to_thread(read)
 
 
+@router.get("/watches")
+async def watches():
+    return {"watches": await asyncio.to_thread(_library_call, "watches")}
+
+
 @router.get("/jobs/{job}/{version}")
 async def timeline(job: str, version: str):
     try:
