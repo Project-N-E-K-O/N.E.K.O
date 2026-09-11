@@ -900,7 +900,7 @@ async def test_save_crash_cannot_pair_new_endpoint_with_old_api_key() -> None:
         await plugin.save_settings(
             **await encrypted_save_args(
                 plugin,
-                secret="",
+                secret=NEW_SECRET,
                 provider="custom",
                 api_base_url="https://new-provider.example/v1",
             )
@@ -1294,7 +1294,7 @@ async def test_generation_waits_for_atomic_reset_snapshot(
 ) -> None:
     old_settings = copy.deepcopy(DEFAULT_SETTINGS)
     old_settings["provider"] = "custom"
-    old_settings["api_base_url"] = "https://old-provider.example/v1"
+    old_settings["api_base_url"] = DEFAULT_SETTINGS["api_base_url"]
     old_settings["model"] = "old-model"
     store = BarrierStore({"settings": old_settings, "api_key": OLD_SECRET})
     plugin, context, _store = make_plugin(store)

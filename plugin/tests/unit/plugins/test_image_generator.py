@@ -2939,7 +2939,7 @@ async def test_dashscope_native_flow_creates_polls_and_downloads(
     )
     plugin = make_dashscope_plugin(monkeypatch, tmp_path, client)
     saved = await plugin.save_settings(**await encrypted_save_payload(
-        plugin, provider="aliyun_bailian", api_base_url=origin, model="wanx2.1-t2i-turbo"
+        plugin, provider="aliyun_bailian", api_base_url=origin, model="wanx2.1-t2i-turbo", api_key=SECRET
     ))
     assert saved.is_ok(), saved
 
@@ -3565,3 +3565,74 @@ async def test_history_rollback_failure_still_restores_old_key(monkeypatch):
     assert (await plugin.save_settings(**payload)).is_err()
     assert store.data["api_key"] == SECRET
     assert store.data["settings"] == DEFAULT_SETTINGS
+
+
+@pytest.mark.asyncio
+async def test_origin_change_requires_explicit_credential():
+    plugin, _, store = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    changes = dict(provider="custom", api_base_url="https://other.example/v1")
+    assert (await plugin.save_settings(**await encrypted_save_payload(plugin, **changes))).is_err()
+    assert store.data["api_key"] == SECRET
+    assert (await plugin.save_settings(**await encrypted_save_payload(plugin, **changes, api_key="new-provider-key"))).is_ok()
+    assert (await plugin.reset_settings()).is_err()
+    assert (await plugin.clear_api_key()).is_ok()
+    assert (await plugin.reset_settings()).is_ok()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_panel_generation_clears_running_state(monkeypatch, tmp_path):
+    plugin, ctx, _ = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    prepare_asset_cache(plugin, tmp_path)
+    started = asyncio.Event()
+
+    async def request(**kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(plugin, "_request_generation", request)
+    task = asyncio.create_task(plugin.test_generation(prompt="cat"))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert plugin._api_state != "generating"
+    assert plugin._last_request["failure_class"] == "CancelledError"
+
+
+@pytest.mark.asyncio
+async def test_late_generation_uses_raised_history_limit():
+    plugin, _, store = make_plugin()
+    plugin._settings["history_limit"] = 10
+    for index in range(5):
+        await plugin._record_history(prompt=str(index), model="test", status="failed", result_url="", api_key="", history_limit=2)
+    assert len(store.data["recent_generations"]) == 5
+
+
+def test_png_rejects_unknown_critical_chunk():
+    def chunk(kind):
+        return b"\x00" * 4 + kind + zlib.crc32(kind).to_bytes(4, "big")
+
+    with pytest.raises(image_generator_module._GenerationFailure):
+        image_generator_module._read_png_geometry(PNG_BYTES[:33] + chunk(b"ABCD") + PNG_BYTES[33:])
+    assert image_generator_module._read_png_geometry(PNG_BYTES[:33] + chunk(b"abCD") + PNG_BYTES[33:]) == (8, 6, False)
+
+
+def test_jpeg_rejects_empty_component_tables():
+    data = b"\xff\xd8\xff\xc0\x00\x08\x08\x00\x06\x00\x08\x00\xff\xda\x00\x06\x00\x00\x3f\x00a\xff\xd9"
+    with pytest.raises(image_generator_module._GenerationFailure):
+        image_generator_module._read_jpeg_geometry(data)
+
+
+def test_static_probe_never_reuses_existing_directory(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    old_probe = tmp_path / ".static_ui_probe"
+    old_probe.mkdir()
+    sentinel = old_probe / "index.html"
+    sentinel.write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(plugin, "data_path", lambda: tmp_path)
+    def register(directory, **kwargs):
+        assert Path(directory) != old_probe
+        return False
+    monkeypatch.setattr(plugin, "register_static_ui", register)
+    assert plugin._frozen_static_ui_overrides_ignored()
+    assert sentinel.read_text(encoding="utf-8") == "keep"

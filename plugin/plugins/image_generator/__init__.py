@@ -797,6 +797,8 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
         if end > len(data):
             break
         kind = data[offset + 4:offset + 8]
+        if not (kind[0] & 0x20) and kind not in {b"IHDR", b"PLTE", b"IDAT", b"IEND"}:
+            raise _GenerationFailure("图片包含未知关键数据块", "InvalidImageData")
         expected_crc = int.from_bytes(data[end - 4:end], "big")
         if binascii.crc32(data[offset + 4:end - 4]) & 0xffffffff != expected_crc:
             raise _GenerationFailure("图片数据校验失败", "InvalidImageData")
@@ -841,6 +843,7 @@ def _read_jpeg_geometry(data: bytes) -> tuple[int, int]:
     offset = 2
     limit = len(data)
     geometry = None
+    frame_components: set[int] = set()
     in_scan = False
     has_image_data = False
     while offset + 2 <= limit:
@@ -878,7 +881,7 @@ def _read_jpeg_geometry(data: bytes) -> tuple[int, int]:
                 "InvalidImageData",
             )
         if marker in _JPEG_SOF_MARKERS:
-            if segment_length < 7:
+            if segment_length < 8:
                 raise _GenerationFailure(
                     "图片服务返回了损坏、截断或尺寸不安全的图片",
                     "InvalidImageData",
@@ -886,8 +889,22 @@ def _read_jpeg_geometry(data: bytes) -> tuple[int, int]:
             height = int.from_bytes(data[offset + 5 : offset + 7], "big")
             width = int.from_bytes(data[offset + 7 : offset + 9], "big")
             geometry = width, height
+            count = data[offset + 9]
+            precision = data[offset + 4]
+            if (not count or segment_length != 8 + 3 * count
+                    or precision not in ({8} if marker == 0xC0 else {8, 12, 16})):
+                break
+            frame_components = set(data[offset + 10:offset + 2 + segment_length:3])
+            if len(frame_components) != count:
+                break
         if marker == 0xDA:
             if geometry is None or segment_length < 6:
+                break
+            count = data[offset + 4]
+            components = data[offset + 5:offset + 5 + 2 * count:2]
+            if (not count or count > 4 or segment_length != 6 + 2 * count
+                    or len(set(components)) != count
+                    or not set(components).issubset(frame_components)):
                 break
             in_scan = True
         offset += 2 + segment_length
@@ -2223,8 +2240,11 @@ class ImageGeneratorPlugin(NekoPluginBase):
         probe = None
         index = None
         try:
-            probe_dir = Path(self.data_path()) / ".static_ui_probe"
-            probe_dir.mkdir(parents=True, exist_ok=True)
+            probe_root = Path(self.data_path())
+            if probe_root.is_symlink():
+                return True
+            probe_dir = probe_root / f".static_ui_probe_{uuid4().hex}"
+            probe_dir.mkdir(parents=True, exist_ok=False)
             index = probe_dir / "index.html"
             index.write_text("<!doctype html><title>Static UI probe</title>", encoding="utf-8")
             probe = probe_dir / f"{uuid4().hex}.txt"
@@ -3237,11 +3257,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 },
             )
             current_limit = int(self._settings_snapshot()["history_limit"])
-            limit = (
-                min(int(history_limit), current_limit)
-                if history_limit is not None
-                else current_limit
-            )
+            limit = current_limit
             if not await self._drain_on_cancel(self._store_set(
                 _HISTORY_STORE_KEY,
                 history[:limit],
@@ -3641,7 +3657,12 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 auto_show_override=auto_show_override,
             )
 
-        return await _run_generation()
+        try:
+            return await _run_generation()
+        except asyncio.CancelledError:
+            self._set_request_state(action=action, status="error", failure_class="CancelledError")
+            self.report_status({"status": "error", "failure_class": "CancelledError"})
+            raise
 
     async def _finalize_success(
         self,
@@ -4000,6 +4021,10 @@ class ImageGeneratorPlugin(NekoPluginBase):
             effective_api_key = (
                 "" if clear_api_key else (new_api_key or validated_old_key)
             )
+            if (validated_old_key and not new_api_key and not clear_api_key
+                    and _origin_tuple(validated["api_base_url"])
+                    != _origin_tuple(old_runtime_settings["api_base_url"])):
+                return Err(SdkError("切换服务地址时请提供新 API 密钥或明确清除原密钥"))
             await self._acquire_lock(self._history_lock)
             try:
                 # Snapshot the stored history BEFORE any mutation so a
@@ -4226,6 +4251,9 @@ class ImageGeneratorPlugin(NekoPluginBase):
             }
             if self._cache_limits_decrease(target_settings):
                 return Err(SdkError("图片正在生成，请完成后再降低缓存或下载限额"))
+            if (api_key and _origin_tuple(target_settings["api_base_url"])
+                    != _origin_tuple(self._settings_snapshot()["api_base_url"])):
+                return Err(SdkError("恢复默认设置会切换服务地址，请先清除 API 密钥"))
             if _settings_contain_secret(target_settings, secrets):
                 return Err(
                     SdkError(
