@@ -170,10 +170,11 @@ declare namespace NekoMiniGame {
   }
 
   interface RuntimeConfiguration {
-    payload?: () => Record<string, unknown>;
+    /** Plain JSON object; its shape and bounds are validated at runtime. */
+    payload?: () => object;
     heartbeat?: false | { intervalMs?: number; timeoutMs?: number };
     outputs?: false | { intervalMs?: number; timeoutMs?: number; limit?: number };
-    pageExit?: false | true | { payload?: (context: unknown) => Record<string, unknown> };
+    pageExit?: false | true | { payload?: (context: unknown) => object };
   }
 
   interface Runtime {
@@ -181,8 +182,10 @@ declare namespace NekoMiniGame {
     readonly session: RuntimeSession;
     configure(config?: RuntimeConfiguration): Readonly<RuntimeConfiguration>;
     reset(options?: { newSession?: boolean }): RuntimeSession;
-    start(payload?: Record<string, unknown>, options?: RequestOptions): Promise<Response>;
-    end(payload?: Record<string, unknown>, options?: RequestOptions & { useBeacon?: boolean }): Promise<Response>;
+    /** Accepts object interfaces; runtime requires a bounded plain JSON object. */
+    start(payload?: object, options?: RequestOptions): Promise<Response>;
+    /** Accepts object interfaces; runtime requires a bounded plain JSON object. */
+    end(payload?: object, options?: RequestOptions & { useBeacon?: boolean }): Promise<Response>;
     pulse(force?: boolean): Promise<unknown>;
     pollOutputs(): Promise<unknown>;
     startMonitoring(options?: { heartbeat?: boolean; outputs?: boolean }): void;
