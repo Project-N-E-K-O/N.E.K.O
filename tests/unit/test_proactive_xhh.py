@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from utils.web_scraper import trending_content
 from utils.web_scraper.trending_content import (
     fetch_news_content,
     fetch_neko_community_feed,
@@ -336,6 +337,9 @@ async def test_fetch_neko_community_feed_uses_configured_social_base_url():
     ), patch(
         "utils.web_scraper.trending_content.social_base_url",
         return_value="https://community.example.test",
+    ), patch(
+        "utils.web_scraper.trending_content._neko_community_access_token",
+        new=AsyncMock(return_value=""),
     ):
         result = await fetch_neko_community_feed(limit=1)
 
@@ -345,7 +349,85 @@ async def test_fetch_neko_community_feed_uses_configured_social_base_url():
     assert url == "https://community.example.test/api/feed"
     assert kwargs["params"] == {"offset": 0, "limit": 60}
     assert kwargs["headers"]["Referer"] == "https://community.example.test/discover"
+    assert result["authenticated"] is False
 
+
+@pytest.mark.asyncio
+async def test_neko_community_access_token_uses_only_matching_oauth_origin(
+    monkeypatch, tmp_path
+):
+    session_path = tmp_path / "social_session.json"
+    session_path.write_text(
+        """{
+  "baseUrl": "https://community.example.test",
+  "token": "desktop-access-token"
+}""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        trending_content,
+        "_neko_community_session_path",
+        lambda: session_path,
+    )
+
+    assert await trending_content._neko_community_access_token(
+        "https://community.example.test/api/feed"
+    ) == "desktop-access-token"
+    assert await trending_content._neko_community_access_token(
+        "https://other.example.test/api/feed"
+    ) == ""
+
+
+@pytest.mark.asyncio
+async def test_fetch_neko_community_feed_uses_isolated_oauth_client():
+    class CommunityResponse(_FakeResponse):
+        status_code = 200
+
+        def json(self):
+            return SAMPLE_NEKO_COMMUNITY_PAYLOAD
+
+    class AuthenticatedClient:
+        def __init__(self):
+            self.call = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def get(self, url, **kwargs):
+            self.call = (url, kwargs)
+            return CommunityResponse()
+
+    auth_client = AuthenticatedClient()
+    shared_client = _FakeClient()
+    client_options = {}
+
+    def build_authenticated_client(**kwargs):
+        client_options.update(kwargs)
+        return auth_client
+
+    with patch(
+        "utils.web_scraper.trending_content._neko_community_access_token",
+        new=AsyncMock(return_value="desktop-access-token"),
+    ), patch(
+        "utils.web_scraper.trending_content.httpx.AsyncClient",
+        side_effect=build_authenticated_client,
+    ), patch(
+        "utils.web_scraper.trending_content.get_external_http_client",
+        return_value=shared_client,
+    ):
+        result = await fetch_neko_community_feed(limit=1)
+
+    assert result["success"] is True
+    assert result["authenticated"] is True
+    assert shared_client.call is None
+    assert client_options["follow_redirects"] is False
+    assert client_options["trust_env"] is True
+    url, kwargs = auth_client.call
+    assert url == "https://community.project-neko.cn/api/feed"
+    assert kwargs["headers"]["Authorization"] == "Bearer desktop-access-token"
 
 @pytest.mark.asyncio
 async def test_community_mode_fetches_only_neko_community_cards():

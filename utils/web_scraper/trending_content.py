@@ -18,6 +18,9 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from itertools import zip_longest
+import json
+import os
+from pathlib import Path
 import httpx
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
@@ -63,6 +66,73 @@ def _neko_community_urls() -> tuple[str, str]:
 
     base_url = social_base_url().rstrip("/")
     return f"{base_url}/api/feed", f"{base_url}/discover"
+
+
+def _same_community_origin(left: str, right: str) -> bool:
+    """Return whether two URLs have the same validated HTTP(S) origin."""
+
+    try:
+        left_url = urlparse(left)
+        right_url = urlparse(right)
+        return (
+            left_url.scheme.lower() in {"http", "https"}
+            and left_url.scheme.lower() == right_url.scheme.lower()
+            and bool(left_url.hostname)
+            and left_url.hostname.casefold() == (right_url.hostname or "").casefold()
+            and left_url.port == right_url.port
+        )
+    except ValueError:
+        return False
+
+
+def _neko_community_session_path() -> Path | None:
+    """Return the authoritative desktop OAuth session file without router imports."""
+
+    user_data_dir = (os.environ.get("NEKO_USER_DATA_DIR") or "").strip()
+    if user_data_dir:
+        candidate = Path(user_data_dir).expanduser()
+        if candidate.is_absolute():
+            return candidate / "social_session.json"
+    try:
+        from utils.config_manager import get_config_manager
+
+        return Path(get_config_manager().memory_dir).parent / "social_session.json"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _load_neko_community_access_token(feed_api: str) -> str:
+    """Read a matching desktop OAuth token without validating or refreshing it."""
+
+    path = _neko_community_session_path()
+    if path is None:
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    access_token = str(data.get("token") or data.get("access_token") or "").strip()
+    base_url = str(data.get("baseUrl") or social_base_url()).strip()
+    return (
+        access_token
+        if access_token and _same_community_origin(base_url, feed_api)
+        else ""
+    )
+
+
+async def _neko_community_access_token(feed_api: str) -> str:
+    """Read a same-origin desktop OAuth token without blocking the event loop."""
+
+    try:
+        return await asyncio.to_thread(_load_neko_community_access_token, feed_api)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "社区 OAuth 会话读取失败，按未登录 Feed 继续: %s",
+            type(exc).__name__,
+        )
+        return ""
 
 
 async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
@@ -1871,19 +1941,45 @@ def format_neko_community_feed(posts: list[dict[str, Any]]) -> str:
 
 
 async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
-    """Fetch the public first-page discover cards from the N.E.K.O community."""
+    """Fetch community cards with the validated desktop OAuth session when available."""
+
     try:
         feed_api, discover_url = _neko_community_urls()
-        response = await get_external_http_client().get(
-            feed_api,
-            params={"offset": 0, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE},
-            headers={
-                "Accept": "application/json",
-                "Referer": discover_url,
-                "User-Agent": XHH_USER_AGENT,
-            },
-            timeout=10.0,
-        )
+        headers = {
+            "Accept": "application/json",
+            "Referer": discover_url,
+            "User-Agent": XHH_USER_AGENT,
+        }
+        params = {"offset": 0, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
+        access_token = await _neko_community_access_token(feed_api)
+        authenticated = bool(access_token)
+        if authenticated:
+            # Never put a refreshable community bearer into the process-wide client:
+            # its cookie jar and connection lifetime are shared by unrelated scrapers.
+            headers["Authorization"] = f"Bearer {access_token}"
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                trust_env=True,
+                follow_redirects=False,
+            ) as client:
+                response = await client.get(feed_api, params=params, headers=headers)
+            # A permission/scope mismatch must not suppress the public discovery feed.
+            if response.status_code in {401, 403}:
+                authenticated = False
+                headers.pop("Authorization", None)
+                response = await get_external_http_client().get(
+                    feed_api,
+                    params=params,
+                    headers=headers,
+                    timeout=10.0,
+                )
+        else:
+            response = await get_external_http_client().get(
+                feed_api,
+                params=params,
+                headers=headers,
+                timeout=10.0,
+            )
         response.raise_for_status()
         payload = response.json()
         posts = normalize_neko_community_feed(payload, limit=limit)
@@ -1893,6 +1989,7 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
             "success": True,
             "posts": posts,
             "formatted_content": format_neko_community_feed(posts),
+            "authenticated": authenticated,
         }
     except Exception as exc:
         logger.warning(f"获取喵宇宙社区内容失败: {type(exc).__name__}: {exc}")
