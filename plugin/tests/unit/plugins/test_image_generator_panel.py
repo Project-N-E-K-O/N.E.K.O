@@ -320,7 +320,7 @@ async function makeEnvelope(keyId) {
       key_id: keyId,
       public_key_spki_b64: Buffer.from(spki).toString('base64'),
       algorithm: 'RSA-OAEP-256+A256GCM',
-      expires_at: Date.now() + 60_000,
+      expires_at: Date.now() - 3_600_000, // Host clock is behind this browser.
       max_plaintext_bytes: 32_768,
     },
   };

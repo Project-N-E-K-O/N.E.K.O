@@ -1718,6 +1718,9 @@ class ImageGeneratorPlugin(NekoPluginBase):
         # One async lock serializes every settings/key snapshot and mutation.
         # Plugin entry dispatch uses one persistent command event loop.
         self._config_lock = asyncio.Lock()
+        self._static_probe_lock = asyncio.Lock()
+        self._static_override_pending = False
+        self._defer_static_probe = False
         self._envelope_lock = threading.Lock()
         self._secret_lock = threading.Lock()
         self._manifest_settings = {
@@ -1824,8 +1827,12 @@ class ImageGeneratorPlugin(NekoPluginBase):
             self._configuration_warning = configuration_warning
             self._running = True
 
-        ui_registered = self._register_writable_static_ui()
-        asset_cache_available = self._asset_dir is not None
+        self._defer_static_probe = True
+        try:
+            ui_registered = self._register_writable_static_ui()
+        finally:
+            self._defer_static_probe = False
+        asset_cache_available = self._asset_dir is not None and not self._static_override_pending
         if not asset_cache_available:
             configuration_warning = "生成图片缓存不可用；管理面板可能可读，但生成已降级"
             with self._state_lock:
@@ -1860,7 +1867,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 "failure_class=SecretInSettings"
             )
         try:
-            if self._settings_available:
+            if self._settings_available and not self._static_override_pending:
                 await self._prune_cache()
         except Exception as exc:
             self.logger.warning(
@@ -2302,7 +2309,9 @@ class ImageGeneratorPlugin(NekoPluginBase):
         # even though generation and panel state report success — detect
         # that case and fail the asset cache instead of reporting a live
         # one (surfaced to the panel as asset_cache_available=False).
-        if self._frozen_static_ui_overrides_ignored():
+        if self._defer_static_probe:
+            self._static_override_pending = True
+        elif self._frozen_static_ui_overrides_ignored():
             self.logger.warning(
                 "ImageGenerator data-directory static UI is unserved on this "
                 "frozen host; generated-asset cache disabled"
@@ -2379,6 +2388,19 @@ class ImageGeneratorPlugin(NekoPluginBase):
             self._writable_ui_dir = self._source_static_dir
             self._writable_ui_identity = None
         return fallback_registered
+
+    async def _ensure_static_override(self) -> None:
+        # Autostart runs inside the server lifespan before HTTP is ready.
+        # The first panel/generation request occurs after that startup barrier.
+        async with self._static_probe_lock:
+            if not self._static_override_pending:
+                return
+            await self._drain_on_cancel(asyncio.to_thread(self._register_writable_static_ui))
+            self._static_override_pending = False
+            if self._asset_dir_is_safe():
+                with self._state_lock:
+                    if self._configuration_warning == "生成图片缓存不可用；管理面板可能可读，但生成已降级":
+                        self._configuration_warning = None
 
     def _frozen_static_ui_overrides_ignored(self) -> bool:
         """Disable directory fallback unless the host serves the probe."""
@@ -2544,7 +2566,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
         max_bytes = int(settings["cache_max_bytes"])
         for group in ordered_groups:
             size = group["size"]
-            keep = kept_count < max_count and kept_bytes + size <= max_bytes
+            has_original = any(_GENERATED_FILE_PATTERN.fullmatch(path.name) for path in group["paths"])
+            keep = has_original and kept_count < max_count and kept_bytes + size <= max_bytes
             if keep:
                 kept_count += 1
                 kept_bytes += size
@@ -2670,7 +2693,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
         secret_values = _secret_values(secrets)
         image_url = self._asset_url(filename)
         for _attempt in range(7):
-            if not _value_contains_secret(image_url, secret_values):
+            planned_preview = self._asset_url(f"thumb_{filename.rsplit('.', 1)[0]}.png")
+            if not _value_contains_secret([image_url, planned_preview], secret_values):
                 break
             filename = f"{uuid4().hex}.{extension}"
             image_url = self._asset_url(filename)
@@ -3480,12 +3504,30 @@ class ImageGeneratorPlugin(NekoPluginBase):
         """Generate a 280px thumbnail next to the original so the chat preview
         does not blow up the dialog.
 
-        The Steam frozen runtime ships no PIL, so we shell out to PowerShell
-        System.Drawing on Windows.  If anything fails we simply return None
+        Use Pillow where available; the Steam frozen runtime ships no PIL,
+        so it uses PowerShell System.Drawing. If anything fails return None
         and the caller falls back to the original URL — the preview is a
         convenience, not a hard dependency.
         """
         thumb_name = f"thumb_{filename.rsplit('.', 1)[0]}.png"
+        if _value_contains_secret(self._asset_url(thumb_name), self._known_secrets_snapshot()):
+            return None
+        if _PIL_Image is not None:
+            def render_with_pillow():
+                with _PIL_Image.open(io.BytesIO(source_data)) as source:
+                    source.thumbnail((280, 280))
+                    with source.convert("RGBA") as preview:
+                        output = io.BytesIO()
+                        preview.save(output, format="PNG")
+                _atomic_write_bytes(
+                    self._writable_ui_dir, self._writable_ui_identity,
+                    f".{filename}.{uuid4().hex}.tmp", thumb_name, output.getvalue(),
+                )
+                return self._asset_url(thumb_name)
+            try:
+                return await self._drain_on_cancel(asyncio.to_thread(render_with_pillow))
+            except Exception:
+                return None
         # Windows-only: System.Drawing is the most reliable built-in image
         # resizer on the Steam deck (no PIL in the frozen runtime).
         ps_script = (
@@ -3749,6 +3791,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         config_snapshot: tuple[dict[str, Any], str] | None = None,
     ):
         """Run one real (deduplicated) generation end to end."""
+        await self._ensure_static_override()
         try:
             settings, api_key = config_snapshot or await self._generation_config_snapshot()
             cleaned_prompt, resolved_size, resolved_quality, resolved_style = (
@@ -3782,6 +3825,22 @@ class ImageGeneratorPlugin(NekoPluginBase):
 
         if not self._asset_dir_is_safe():
             return Err(SdkError("生成图片缓存不可用，无法安全保存生成结果"))
+
+        await self._acquire_lock(self._cache_lock)
+        try:
+            def capacity_preflight():
+                stats = self._prune_cache_sync(settings)
+                temp_bytes = sum(path.stat().st_size for path in self._cache_files(strict=True)
+                                 if _GENERATED_TEMP_FILE_PATTERN.fullmatch(path.name))
+                return stats, temp_bytes
+            stats, temp_bytes = await self._drain_on_cancel(asyncio.to_thread(capacity_preflight))
+            if (stats["count"] > settings["cache_max_count"] or stats["total_bytes"] > settings["cache_max_bytes"]
+                    or temp_bytes >= settings["cache_max_bytes"]):
+                return Err(SdkError("图片缓存容量不可用，请清理被占用的文件后重试"))
+        except Exception:
+            return Err(SdkError("无法安全检查图片缓存，请恢复目录访问后重试"))
+        finally:
+            self._cache_lock.release()
 
         self._set_request_state(action=action, status="running")
         self.report_status({"status": "generating"})
@@ -4063,6 +4122,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         metadata={"agent_hidden": True},
     )
     async def get_panel_state(self, **_: Any):
+        await self._ensure_static_override()
         async with self._config_lock:
             settings = self._settings_snapshot()
             if bool(getattr(self.store, "enabled", False)):
@@ -4372,7 +4432,14 @@ class ImageGeneratorPlugin(NekoPluginBase):
                                 old_settings,
                             )
                         if not settings_restored:
-                            return False, False
+                            # Do not pair an old credential with a possibly
+                            # committed new endpoint after a failed rollback.
+                            read_ok, durable_settings = await self._store_get_checked(_SETTINGS_STORE_KEY, None)
+                            if not read_ok or durable_settings != old_settings:
+                                self._settings_available = False
+                                with self._state_lock:
+                                    self._settings = old_runtime_settings
+                                return False, False
                         # Roll the history back alongside settings and the
                         # credential: the sanitize above already persisted a
                         # rewritten, possibly truncated history using the proposed
@@ -4394,6 +4461,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                             )
                         else:
                             key_restored = True
+                        if not (settings_restored and history_restored and key_restored):
+                            self._settings_available = False
                         return settings_restored and history_restored, key_restored
 
                     async def commit_configuration():

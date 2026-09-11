@@ -3533,6 +3533,7 @@ async def test_thumbnail_png_suffix_and_cache_group(monkeypatch, tmp_path, exten
         return Process()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(image_generator_module, "_PIL_Image", None)
     url = await plugin._generate_thumbnail(original, original.name, extension, source_data=PNG_BYTES)
     assert url.endswith(thumbnail.name)
     assert plugin._cache_stats_sync()["count"] == 1
@@ -3991,7 +3992,8 @@ async def test_original_replacement_during_thumbnail_is_rejected(monkeypatch, tm
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(os.name != "nt", reason="Windows System.Drawing integration")
-async def test_windows_thumbnail_reads_original_bytes_from_stdin(tmp_path):
+async def test_windows_thumbnail_reads_original_bytes_from_stdin(tmp_path, monkeypatch):
+    monkeypatch.setattr(image_generator_module, "_PIL_Image", None)
     plugin, _, _ = make_plugin()
     assets = prepare_asset_cache(plugin, tmp_path)
     filename = "a" * 32 + ".png"
@@ -4167,3 +4169,95 @@ def test_cache_settings_panel_deadline_exceeds_entry_timeout():
     assert "const SETTINGS_RUN_TIMEOUT_MS = 630000;" in html
     assert "callPlugin('save_settings', encryptedArgs, SETTINGS_RUN_TIMEOUT_MS)" in html
     assert "callPlugin('reset_settings', {}, SETTINGS_RUN_TIMEOUT_MS)" in html
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_filename_checks_short_key_collision(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    plugin, _, _ = make_plugin()
+    prepare_asset_cache(plugin, tmp_path)
+    identifiers = iter(["ab" + "0" * 30, "c" * 32])
+    monkeypatch.setattr(image_generator_module, "uuid4", lambda: SimpleNamespace(hex=next(identifiers, "d" * 32)))
+    image, filename, preview = await plugin._save_asset(PNG_BYTES, extension="png", secrets="thumb_ab")
+    assert filename == "c" * 32 + ".png"
+    assert "thumb_ab" not in image and "thumb_ab" not in (preview or "")
+
+
+@pytest.mark.asyncio
+async def test_pillow_thumbnail_works_without_powershell(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    async def no_powershell(*args, **kwargs):
+        raise AssertionError("Pillow path must not launch PowerShell")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", no_powershell)
+    filename = "a" * 32 + ".png"
+    result = await plugin._generate_thumbnail(assets / filename, filename, "png", source_data=PNG_BYTES)
+    assert result == plugin._asset_url("thumb_" + filename)
+    assert image_generator_module._verified_image_format((assets / ("thumb_" + filename)).read_bytes()) == "PNG"
+
+
+@pytest.mark.asyncio
+async def test_failed_settings_rollback_preserves_key_when_durable_endpoint_unchanged():
+    store = FakeStore(data={"settings": copy.deepcopy(DEFAULT_SETTINGS), "api_key": SECRET})
+    plugin, _, _ = make_plugin(store=store)
+    store.fail_set_keys.add("settings")
+    result = await plugin.save_settings(**await encrypted_save_payload(plugin, model="different-model"))
+    assert result.is_err()
+    assert store.data["api_key"] == SECRET
+    assert store.data["settings"] == DEFAULT_SETTINGS
+    assert plugin._settings_snapshot() == DEFAULT_SETTINGS
+    assert not plugin._settings_available
+
+
+def test_orphan_thumbnail_cannot_evict_valid_original(tmp_path):
+    plugin, _, _ = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    original = assets / ("a" * 32 + ".png")
+    orphan = assets / ("thumb_" + "b" * 32 + ".png")
+    original.write_bytes(PNG_BYTES)
+    orphan.write_bytes(PNG_BYTES)
+    recent = original.stat().st_mtime + 10
+    os.utime(orphan, (recent, recent))
+    assert plugin._prune_cache_sync({**DEFAULT_SETTINGS, "cache_max_count": 1})["count"] == 1
+    assert original.exists() and not orphan.exists()
+
+
+@pytest.mark.asyncio
+async def test_locked_temp_blocks_paid_generation(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    assets = prepare_asset_cache(plugin, tmp_path)
+    plugin._settings.update(cache_max_bytes=1024, max_download_bytes=1024)
+    temporary = assets / ("." + "a" * 32 + ".png." + "b" * 32 + ".tmp")
+    temporary.write_bytes(b"x" * 1025)
+    def locked(name):
+        raise PermissionError("locked")
+    monkeypatch.setattr(plugin, "_unlink_cached_file", locked)
+    async def paid_request(**kwargs):
+        pytest.fail("unenforceable cache reached paid provider")
+    monkeypatch.setattr(plugin, "_request_generation", paid_request)
+    assert (await plugin.test_generation(prompt="cat")).is_err()
+
+
+@pytest.mark.asyncio
+async def test_readonly_install_defers_probe_until_first_panel_request(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    monkeypatch.setattr(plugin, "data_path", lambda *parts: tmp_path.joinpath(*parts))
+    ensure = image_generator_module._ensure_generated_asset_dir
+    def readonly_install(root, identity):
+        if root == plugin._source_static_dir:
+            raise PermissionError("read-only install")
+        return ensure(root, identity)
+    monkeypatch.setattr(image_generator_module, "_ensure_generated_asset_dir", readonly_install)
+    ready = False
+    probes = []
+    def probe():
+        assert ready, "HTTP probe ran before server startup returned"
+        probes.append(True)
+        return False
+    monkeypatch.setattr(plugin, "_frozen_static_ui_overrides_ignored", probe)
+    assert (await plugin.startup()).is_ok()
+    assert plugin._static_override_pending and not probes
+    ready = True
+    state = await plugin.get_panel_state()
+    assert state.is_ok() and state.value["asset_cache_available"]
+    assert probes == [True] and not plugin._static_override_pending

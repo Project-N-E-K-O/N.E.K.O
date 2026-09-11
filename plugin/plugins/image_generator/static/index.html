@@ -1802,21 +1802,12 @@
         return window.btoa(binary);
       }
 
-      function envelopeExpiryMillis(value) {
-        if (typeof value === 'number' && Number.isFinite(value)) {
-          return value < 1e12 ? value * 1000 : value;
-        }
-        const parsed = Date.parse(String(value || ''));
-        return Number.isFinite(parsed) ? parsed : 0;
-      }
-
       async function encryptSavePayload(savePayload, envelope) {
         if (!envelope || typeof envelope !== 'object'
           || envelope.algorithm !== SECRET_ENVELOPE_ALGORITHM
           || typeof envelope.key_id !== 'string'
           || !/^[0-9a-f]{32}$/.test(envelope.key_id)
-          || typeof envelope.public_key_spki_b64 !== 'string'
-          || envelopeExpiryMillis(envelope.expires_at) <= Date.now()) {
+          || typeof envelope.public_key_spki_b64 !== 'string') {
           throw new Error(t('error.secret_envelope', '安全密钥信封已失效，请刷新面板后重试'));
         }
         if (!window.crypto || !window.crypto.subtle || typeof TextEncoder === 'undefined') {
