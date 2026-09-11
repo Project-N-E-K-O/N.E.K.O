@@ -2101,6 +2101,28 @@ def _link_matches_phase1_title(title: str, link: dict) -> bool:
     return False
 
 
+_NEKO_COMMUNITY_PHASE1_SOURCE_ALIASES = {
+    "喵宇宙社区",
+    "neko community",
+    "n.e.k.o community",
+}
+
+
+def _is_neko_community_phase1_source(source: Any) -> bool:
+    """Recognize the stable community source name and common localized aliases."""
+
+    normalized = " ".join(str(source or "").split()).casefold()
+    return normalized in _NEKO_COMMUNITY_PHASE1_SOURCE_ALIASES
+
+
+def _link_matches_phase1_source(source: str, link: dict[str, Any]) -> bool:
+    """Match the model-returned source without losing community aliases."""
+
+    if link.get("mode") == "community" and _is_neko_community_phase1_source(source):
+        return True
+    return str(link.get("source") or "").strip().casefold() == source.casefold()
+
+
 def _link_has_exact_phase1_title(title: str, link: dict) -> bool:
     """Return whether a returned title exactly identifies this candidate."""
 
@@ -2138,7 +2160,7 @@ def _lookup_link_by_phase1_selection(
         for link in all_links
         if str(link.get("title") or "").strip()
         and source
-        and str(link.get("source") or "").strip().casefold() == source.casefold()
+        and _link_matches_phase1_source(source, link)
     ]
     if number > 0 and number <= len(source_links):
         candidate = source_links[number - 1]

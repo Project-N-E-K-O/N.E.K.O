@@ -59,6 +59,8 @@ XHH_USER_AGENT = (
 # of 60 cards. The caller's smaller ``limit`` is applied after normalization,
 # so Phase 1 keeps its existing prompt budget while still getting a varied pool.
 NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
+NEKO_COMMUNITY_TITLE_MAX_CHARS = 200
+NEKO_COMMUNITY_AUTHOR_MAX_CHARS = 120
 
 
 def _neko_community_urls() -> tuple[str, str]:
@@ -88,14 +90,7 @@ def _same_community_origin(left: str, right: str) -> bool:
         return False
 
 
-def _neko_community_session_path() -> Path | None:
-    """Return the authoritative desktop OAuth session file without router imports."""
-
-    user_data_dir = (os.environ.get("NEKO_USER_DATA_DIR") or "").strip()
-    if user_data_dir:
-        candidate = Path(user_data_dir).expanduser()
-        if candidate.is_absolute():
-            return candidate / "social_session.json"
+def _neko_community_legacy_session_path() -> Path | None:
     try:
         from utils.config_manager import get_config_manager
 
@@ -104,25 +99,45 @@ def _neko_community_session_path() -> Path | None:
         return None
 
 
+def _neko_community_session_path() -> Path | None:
+    """Return the preferred desktop OAuth session file without router imports."""
+
+    user_data_dir = (os.environ.get("NEKO_USER_DATA_DIR") or "").strip()
+    if user_data_dir:
+        candidate = Path(user_data_dir).expanduser()
+        if candidate.is_absolute():
+            return candidate / "social_session.json"
+    return _neko_community_legacy_session_path()
+
+
+def _neko_community_session_paths() -> list[Path]:
+    """Return desktop then legacy OAuth-session paths, deduplicated."""
+
+    paths: list[Path] = []
+    for candidate in (
+        _neko_community_session_path(),
+        _neko_community_legacy_session_path(),
+    ):
+        if candidate is not None and candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
 def _load_neko_community_access_token(feed_api: str) -> str:
     """Read a matching desktop OAuth token without validating or refreshing it."""
 
-    path = _neko_community_session_path()
-    if path is None:
-        return ""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    access_token = str(data.get("token") or data.get("access_token") or "").strip()
-    base_url = str(data.get("baseUrl") or social_base_url()).strip()
-    return (
-        access_token
-        if access_token and _same_community_origin(base_url, feed_api)
-        else ""
-    )
+    for path in _neko_community_session_paths():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        access_token = str(data.get("token") or data.get("access_token") or "").strip()
+        base_url = str(data.get("baseUrl") or social_base_url()).strip()
+        if access_token and _same_community_origin(base_url, feed_api):
+            return access_token
+    return ""
 
 
 async def _neko_community_access_token(feed_api: str) -> str:
@@ -1897,7 +1912,7 @@ def normalize_neko_community_feed(
             or raw.get("user")
             or raw.get("creator")
         )
-        author = _community_text(author_data)
+        author = _community_text(author_data)[:NEKO_COMMUNITY_AUTHOR_MAX_CHARS]
         labels = _community_label_values(
             raw.get("tags") or raw.get("topics") or raw.get("categories")
         )
@@ -1906,6 +1921,7 @@ def normalize_neko_community_feed(
             raw.get("id") or raw.get("post_id") or raw.get("uuid")
         )
         dedupe_key = item_id or f"{url}|{title.casefold()}"
+        title = title[:NEKO_COMMUNITY_TITLE_MAX_CHARS]
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)

@@ -73,6 +73,25 @@ def test_phase1_selection_uses_source_local_number_for_duplicate_titles():
     assert selected is second
 
 
+def test_phase1_selection_accepts_neko_community_source_alias():
+    link = {
+        "title": "社区卡牌",
+        "source": "喵宇宙社区",
+        "mode": "community",
+    }
+    distractor = {"title": "社区卡牌", "source": "其他来源"}
+
+    assert sr_parsing._is_neko_community_phase1_source("N.E.K.O Community")
+    assert proactive_service._is_neko_community_phase1_source("N.E.K.O Community")
+    assert (
+        sr_parsing._lookup_link_by_phase1_selection(
+            {"title": "社区卡牌", "source": "N.E.K.O Community", "number": "1"},
+            [distractor, link],
+        )
+        is link
+    )
+
+
 def test_phase1_ambiguous_duplicate_title_does_not_fallback_without_number():
     links = [
         {

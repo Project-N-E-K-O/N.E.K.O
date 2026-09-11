@@ -95,6 +95,7 @@ from main_logic.proactive_chat.generation import (
     ProactiveModelConfig,
     _decide_phase1_channels,
     _fetch_phase1_followups,
+    _is_neko_community_phase1_source,
     _lookup_link_by_phase1_selection,
     _proactive_llm_retry_error_types,
     _run_phase2_generation,
@@ -1751,52 +1752,66 @@ async def handle_proactive_chat(
         web_parsed = unified_parsed.get("web")
         if web_parsed and web_parsed.get("title"):
             matched = _lookup_link_by_phase1_selection(web_parsed, all_web_links)
-            topic_key = _source_hash(
-                (matched.get("dedupe_key") or matched.get("url", ""))
-                if matched
-                else "",
-                web_parsed.get("title", ""),
-            )
-            # matched 的链接已经在 picking 阶段过了一次 _should_skip_source，
-            # 这里再 roll 等于让等效 p_skip = 1-(1-p)^2，违背单次半衰期模型。
-            # 仅对未匹配（LLM 幻觉的 title-only 候选）兜底再判一次。
-            needs_recheck = bool(topic_key) and matched is None
-            if needs_recheck and _should_skip_source(topic_key):
+            if matched is None and _is_neko_community_phase1_source(
+                web_parsed.get("source")
+            ):
                 print(
-                    f"[{lanlan_name}] Phase 1 title-only 话题命中衰减，跳过: {web_parsed.get('title', '')[:60]}"
+                    f"[{lanlan_name}] Phase 1 社区卡牌选择未匹配，跳过: "
+                    f"{web_parsed.get('title', '')[:60]}"
                 )
             else:
-                if matched:
-                    selected_web_link = dict(matched)
-                    canonical_title = matched.get("title", "")
-                    selected_title = (
-                        canonical_title
-                        if matched.get("mode") == "community"
-                        else web_parsed.get("title", canonical_title)
-                    )
-                    selected_web_link.update(
-                        {
-                            "title": selected_title,
-                            "url": matched["url"],
-                            "source": web_parsed.get(
-                                "source", matched.get("source", "")
-                            ),
-                            "mode": matched.get("mode", "web"),
-                        }
-                    )
+                topic_key = _source_hash(
+                    (matched.get("dedupe_key") or matched.get("url", ""))
+                    if matched
+                    else "",
+                    web_parsed.get("title", ""),
+                )
+                # matched 的链接已经在 picking 阶段过了一次 _should_skip_source，
+                # 这里再 roll 等于让等效 p_skip = 1-(1-p)^2，违背单次半衰期模型。
+                # 仅对未匹配（LLM 幻觉的 title-only 候选）兜底再判一次。
+                needs_recheck = bool(topic_key) and matched is None
+                if needs_recheck and _should_skip_source(topic_key):
                     print(
-                        f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title', '')[:60]}"
+                        f"[{lanlan_name}] Phase 1 title-only 话题命中衰减，跳过: {web_parsed.get('title', '')[:60]}"
                     )
                 else:
-                    print(
-                        f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {web_parsed.get('title', '')[:60]}"
+                    if matched:
+                        selected_web_link = dict(matched)
+                        canonical_title = matched.get("title", "")
+                        selected_title = (
+                            canonical_title
+                            if matched.get("mode") == "community"
+                            else web_parsed.get("title", canonical_title)
+                        )
+                        selected_web_link.update(
+                            {
+                                "title": selected_title,
+                                "url": matched["url"],
+                                "source": (
+                                    matched.get("source", "")
+                                    if matched.get("mode") == "community"
+                                    else web_parsed.get(
+                                        "source", matched.get("source", "")
+                                    )
+                                ),
+                                "mode": matched.get("mode", "web"),
+                            }
+                        )
+                        print(
+                            f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title', '')[:60]}"
+                        )
+                    else:
+                        print(
+                            f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {web_parsed.get('title', '')[:60]}"
+                        )
+                    # 不论 matched 与否，都把 topic_key 留下来供 Phase 2 后落盘 ——
+                    # 哪怕只有 title 也参与衰减历史，避免同样的标题被反复 surface
+                    selected_web_topic_key = topic_key
+                    # 用 web_parsed 的 summary 或原始文本作为 topic
+                    web_topic_text = web_parsed.get(
+                        "summary", web_parsed.get("title", "")
                     )
-                # 不论 matched 与否，都把 topic_key 留下来供 Phase 2 后落盘 ——
-                # 哪怕只有 title 也参与衰减历史，避免同样的标题被反复 surface
-                selected_web_topic_key = topic_key
-                # 用 web_parsed 的 summary 或原始文本作为 topic
-                web_topic_text = web_parsed.get("summary", web_parsed.get("title", ""))
-                phase1_topics.append(("web", web_topic_text.strip()))
+                    phase1_topics.append(("web", web_topic_text.strip()))
 
         # ============================================================
         # 并行后置 fetch：music + meme（使用 LLM 生成的关键词）

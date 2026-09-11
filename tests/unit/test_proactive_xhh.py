@@ -233,6 +233,18 @@ def test_normalize_neko_community_feed_falls_back_after_blank_story_markdown():
     assert posts[0]["content"] == "可用的后备摘要。"
 
 
+def test_normalize_neko_community_feed_bounds_title_and_author():
+    title = "t" * (trending_content.NEKO_COMMUNITY_TITLE_MAX_CHARS + 1)
+    author = "a" * (trending_content.NEKO_COMMUNITY_AUTHOR_MAX_CHARS + 1)
+
+    posts = normalize_neko_community_feed(
+        {"items": [{"id": "long-card", "title": title, "author": author}]}
+    )
+
+    assert posts[0]["title"] == title[: trending_content.NEKO_COMMUNITY_TITLE_MAX_CHARS]
+    assert posts[0]["author"] == author[: trending_content.NEKO_COMMUNITY_AUTHOR_MAX_CHARS]
+
+
 def test_normalize_neko_community_feed_keeps_numeric_card_id_for_deduplication():
     posts = normalize_neko_community_feed(
         {"items": [{"id": 42, "title": "数值 ID 卡牌"}]}
@@ -449,6 +461,33 @@ async def test_neko_community_access_token_uses_only_matching_oauth_origin(
     assert await trending_content._neko_community_access_token(
         "https://other.example.test/api/feed"
     ) == ""
+
+
+@pytest.mark.asyncio
+async def test_neko_community_access_token_falls_back_to_legacy_session(tmp_path, monkeypatch):
+    desktop_dir = tmp_path / "desktop"
+    legacy_session = tmp_path / "legacy_social_session.json"
+    legacy_session.write_text(
+        """{
+  "baseUrl": "https://community.example.test",
+  "token": "legacy-access-token"
+}""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NEKO_USER_DATA_DIR", str(desktop_dir))
+    monkeypatch.setattr(
+        trending_content,
+        "_neko_community_legacy_session_path",
+        lambda: legacy_session,
+    )
+
+    assert trending_content._neko_community_session_paths() == [
+        desktop_dir / "social_session.json",
+        legacy_session,
+    ]
+    assert await trending_content._neko_community_access_token(
+        "https://community.example.test/api/feed"
+    ) == "legacy-access-token"
 
 
 @pytest.mark.asyncio
