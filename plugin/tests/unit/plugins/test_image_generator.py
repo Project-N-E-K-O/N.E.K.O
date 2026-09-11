@@ -13,6 +13,7 @@ import subprocess
 import threading
 import tomllib
 import zipfile
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,156 @@ def _real_png_bytes() -> bytes:
 PNG_BYTES = _real_png_bytes()
 PNG_B64 = base64.b64encode(PNG_BYTES).decode("ascii")
 LOCALES = {"zh-CN", "zh-TW", "en", "ja", "ko", "es", "pt", "ru"}
+
+
+def test_png_animation_detection_uses_chunk_boundaries():
+    def chunk(kind, body):
+        return len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+
+    static = PNG_BYTES[:33] + chunk(b"tEXt", b"Comment\x00acTL") + PNG_BYTES[33:]
+    assert image_generator_module._read_png_geometry(static) == (8, 6, False)
+    animated = PNG_BYTES[:33] + chunk(b"tEXt", b"Comment\x00" + b"a" * 1_048_576) + chunk(b"acTL", b"\x00" * 8) + PNG_BYTES[33:]
+    assert image_generator_module._read_png_geometry(animated) == (8, 6, True)
+    with pytest.raises(image_generator_module._GenerationFailure):
+        image_generator_module._read_png_geometry(PNG_BYTES[:-5])
+
+
+def test_size_allowlist_rejects_unusable_pixel_count():
+    with pytest.raises(SdkError):
+        _validate_settings({"allowed_sizes": ["8192x8192"]}, base=DEFAULT_SETTINGS, require_all=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_owner", [False, True])
+async def test_cancelled_waiter_does_not_cancel_shared_generation(monkeypatch, cancel_owner):
+    plugin, _, _ = make_plugin()
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        started.set()
+        await release.wait()
+        return Ok({"generated": True})
+
+    monkeypatch.setattr(plugin, "_run_dedup_generation", generate)
+    owner = asyncio.create_task(plugin.generate_image(prompt="cat"))
+    await started.wait()
+    duplicate = asyncio.create_task(plugin.generate_image(prompt="cat"))
+    await asyncio.sleep(0)
+    cancelled, survivor = (owner, duplicate) if cancel_owner else (duplicate, owner)
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    assert len(plugin._inflight) == 1
+    release.set()
+    assert (await survivor).is_ok()
+    assert len(calls) == 1
+    assert not plugin._inflight
+
+
+@pytest.mark.asyncio
+async def test_dedup_keys_preserve_argument_boundaries(monkeypatch):
+    plugin, _, _ = make_plugin()
+    calls = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        await asyncio.sleep(0)
+        return Ok(kwargs)
+
+    monkeypatch.setattr(plugin, "_run_dedup_generation", generate)
+    await asyncio.gather(
+        plugin.generate_image(prompt="cat|1024x1024", size="auto"),
+        plugin.generate_image(prompt="cat", size="1024x1024", quality="auto"),
+    )
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_startup_settings_read_cannot_reuse_key_with_defaults(monkeypatch, tmp_path):
+    store = FakeStore(data={"api_key": SECRET, "settings": {"provider": "custom", "api_base_url": "https://custom.example/v1"}})
+    store.fail_get = True
+    plugin, _, _ = make_plugin(store=store)
+    await plugin.startup()
+    store.fail_get = False
+    try:
+        with pytest.raises(SdkError):
+            await plugin._generation_config_snapshot()
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_history_read_failure_never_overwrites_existing_records():
+    store = FakeStore(data={"history": [{"id": "previous"}]})
+    plugin, _, _ = make_plugin(store=store)
+    store.fail_get = True
+    await plugin._record_history(prompt="cat", model="model", status="succeeded", result_url="", api_key="")
+    assert store.data["history"] == [{"id": "previous"}]
+    assert not store.set_calls
+
+
+@pytest.mark.asyncio
+async def test_unavailable_cache_rejects_before_provider(monkeypatch):
+    plugin, _, _ = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+
+    async def unexpected(**kwargs):
+        pytest.fail("paid provider must not be invoked")
+
+    monkeypatch.setattr(plugin, "_request_generation", unexpected)
+    assert (await plugin.generate_image(prompt="cat")).is_err()
+
+
+@pytest.mark.asyncio
+async def test_panel_refresh_does_not_mint_envelopes():
+    plugin, _, _ = make_plugin()
+    for _ in range(10):
+        result = await plugin.get_panel_state()
+        assert result.is_ok()
+        assert "secret_envelope" not in result.value
+    assert not plugin._secret_envelopes
+
+
+@pytest.mark.asyncio
+async def test_task_json_is_bounded_while_streaming():
+    plugin, _, _ = make_plugin()
+    response = FakeStreamResponse([b"a" * 65536] * 17)
+    client = FakeClient(streams=[response])
+    with pytest.raises(image_generator_module._GenerationFailure) as error:
+        await plugin._request_task_json(client, "GET", "https://dashscope.aliyuncs.com/api/v1/tasks/id", headers={}, timeout=30)
+    assert error.value.failure_class == "ProviderResponseTooLarge"
+
+
+def test_static_probe_satisfies_registration_index_contract(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    monkeypatch.setattr(plugin, "data_path", lambda *parts: tmp_path.joinpath(*parts))
+    registered = []
+
+    def register(directory, **kwargs):
+        path = Path(directory)
+        assert (path / "index.html").is_file()
+        registered.append(path)
+        return True
+
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def get(self, url):
+            assert registered
+            return httpx.Response(404)
+
+    monkeypatch.setattr(plugin, "register_static_ui", register)
+    monkeypatch.setattr(image_generator_module.httpx, "Client", Client)
+    assert plugin._frozen_static_ui_overrides_ignored()
+    assert not (tmp_path / ".static_ui_probe").exists()
 
 
 class FakeLogger:
@@ -227,7 +378,7 @@ class FakeResponse:
             raise self.json_error
         return copy.deepcopy(self.payload)
 
-    async def aiter_bytes(self):
+    async def aiter_bytes(self, chunk_size=None):
         if self.json_error is not None:
             yield b"{invalid-json"
             return
@@ -248,7 +399,7 @@ class FakeStreamResponse:
         self.chunks = list(chunks or [])
         self.iteration_error = iteration_error
 
-    async def aiter_bytes(self):
+    async def aiter_bytes(self, chunk_size=None):
         for chunk in self.chunks:
             yield chunk
         if self.iteration_error is not None:
@@ -388,6 +539,12 @@ class FakeDashScopeClient:
         return FakeResponse(self.poll_payloads.pop(0))
 
     def stream(self, method: str, url: str, **kwargs: Any) -> FakeStreamContext:
+        if method == "POST":
+            self.post_calls.append({"url": url, **kwargs})
+            return FakeStreamContext(FakeResponse(self.create_payload, status_code=self.create_status))
+        if "/api/v1/tasks/" in url:
+            self.get_calls.append({"url": url, **kwargs})
+            return FakeStreamContext(FakeResponse(self.poll_payloads.pop(0)))
         self.stream_calls.append({"method": method, "url": url, **kwargs})
         return FakeStreamContext(
             FakeStreamResponse(
@@ -538,7 +695,7 @@ async def encrypted_save_payload(
     plugin: ImageGeneratorPlugin,
     **overrides: Any,
 ) -> dict[str, str]:
-    state = await plugin.get_panel_state()
+    state = await plugin.get_secret_envelope()
     assert state.is_ok()
     envelope = state.value["secret_envelope"]
     assert envelope["algorithm"] == "RSA-OAEP-256+A256GCM"
@@ -637,6 +794,7 @@ def test_panel_methods_are_real_entries_not_llm_tools(
     assert entry.event_type == "plugin_entry"
     assert entry.id == method_name
     assert getattr(method, LLM_TOOL_META_ATTR, None) is None
+    assert entry.metadata.get("agent_hidden") is True
     if method_name == "test_generation":
         assert entry.timeout == 300.0
 
@@ -1640,16 +1798,16 @@ async def test_generate_pushes_small_markdown_without_inline_image_data(
     )
 
     assert result.is_ok()
-    # Push succeeded → the image is already in the chat stream, so the model
-    # gets NO display_markdown (handing it the Markdown again rendered a
-    # duplicate bubble). Fallback fields only appear when the push failed.
+    # Local submission is not a delivery acknowledgement; retain the link.
     assert set(result.value) == {
         "message",
         "display_instruction",
         "revised_prompt",
+        "image_url",
+        "display_markdown",
     }
-    assert "已直接发送" in result.value["message"]
-    assert "不要再" in result.value["display_instruction"]
+    assert "已提交" in result.value["message"]
+    assert "可点击链接" in result.value["display_instruction"]
     # Exactly one paid original; the 280px chat-preview thumbnail may or may
     # not exist (it is only produced where PowerShell System.Drawing is
     # available, e.g. the Windows CI runner, never on macOS/Linux).
@@ -2646,9 +2804,11 @@ def make_dashscope_plugin(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("origin", ["https://dashscope.aliyuncs.com", "https://dashscope-intl.aliyuncs.com"])
 async def test_dashscope_native_flow_creates_polls_and_downloads(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    origin: str,
 ) -> None:
     client = FakeDashScopeClient(
         create_payload={"output": {"task_id": "task-abc123", "task_status": "PENDING"}},
@@ -2657,13 +2817,14 @@ async def test_dashscope_native_flow_creates_polls_and_downloads(
             {
                 "output": {
                     "task_status": "SUCCEEDED",
-                    "results": [{"url": "https://cdn.example.com/result.png"}],
+                    "results": [{"url": "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/result.png"}],
                 }
             },
         ],
         download_chunks=[PNG_BYTES],
     )
     plugin = make_dashscope_plugin(monkeypatch, tmp_path, client)
+    plugin._settings["api_base_url"] = origin
 
     result = await plugin.generate_image(prompt="一只猫")
 
@@ -2672,12 +2833,14 @@ async def test_dashscope_native_flow_creates_polls_and_downloads(
             print("LOG", level, args)
     assert result.is_ok(), result
     assert client.post_calls[0]["url"].endswith("text2image/image-synthesis")
+    assert client.post_calls[0]["url"].startswith(origin + "/")
+    assert client.get_calls[0]["url"].startswith(origin + "/")
     assert client.post_calls[0]["headers"]["X-DashScope-Async"] == "enable"
     assert client.post_calls[0]["json"]["input"]["prompt"] == "一只猫"
     assert client.post_calls[0]["json"]["parameters"]["size"] == "1024*1024"
     assert client.get_calls[0]["url"].endswith("/api/v1/tasks/task-abc123")
     assert client.stream_calls[0]["method"] == "GET"
-    assert client.stream_calls[0]["url"] == "https://cdn.example.com/result.png"
+    assert client.stream_calls[0]["url"] == "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/result.png"
 
 
 @pytest.mark.asyncio
@@ -2712,9 +2875,15 @@ async def test_dashscope_failed_task_surfaces_friendly_error(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("image_url", [
+    "http://127.0.0.1/evil.png",
+    "https://attacker.example/evil.png",
+    "https://bucket.oss-cn-beijing-internal.aliyuncs.com/evil.png",
+])
 async def test_dashscope_rejects_private_image_url(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    image_url: str,
 ) -> None:
     client = FakeDashScopeClient(
         create_payload={"output": {"task_id": "task-abc123"}},
@@ -2722,7 +2891,7 @@ async def test_dashscope_rejects_private_image_url(
             {
                 "output": {
                     "task_status": "SUCCEEDED",
-                    "results": [{"url": "http://127.0.0.1/evil.png"}],
+                    "results": [{"url": image_url}],
                 }
             }
         ],

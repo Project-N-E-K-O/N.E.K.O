@@ -63,9 +63,17 @@ Content-Type: application/json
 
 ## 安全与存储
 
+并发的相同聊天生成调用共享一个任务，取消单个调用不取消共享生成。任务完成后的
+再次调用会重新生成，不按提示词缓存已完成结果，以便用户主动重画。
+
+百炼的创建与轮询使用配置中的北京或新加坡域名，任务 JSON 限制为 1 MiB。
+下载仅接受 HTTPS 的公共 OSS 域名（`<bucket>.oss-<region>.aliyuncs.com`），
+拒绝内网 OSS 地址和重定向。结果域名形式可参见[百炼官方示例](https://www.alibabacloud.com/help/en/model-studio/text-to-image)。
+聊天推送仅表示本地提交，工具结果仍保留图片链接作为送达失败时的兜底。
+
 - API 密钥只写入 `PluginStore` 的独立记录，不出现在 `plugin.toml`、日志、面板响应、
   生成历史或工具结果中。面板只显示是否已配置，不返回任何密钥片段。
-- 面板从 `get_panel_state` 获取一个短时、一次性的 RSA 公钥信封；浏览器使用
+- 面板保存前从 `get_secret_envelope` 获取一个短时、一次性的 RSA 公钥信封；浏览器使用
   WebCrypto 生成临时 AES-256-GCM 密钥加密完整保存载荷（所有设置与可选 API
   密钥），再以 RSA-OAEP SHA-256 包装该 AES 密钥。`save_settings` 的 `/runs`
   参数只包含密文和信封编号，因此即使宿主记录任务参数，也没有明文设置或凭据。

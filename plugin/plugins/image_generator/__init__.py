@@ -520,6 +520,8 @@ def _normalize_option_list(
                     width, height = (int(part) for part in item.split("x", 1))
                     if width > 8192 or height > 8192:
                         raise SdkError("允许尺寸不能超过 8192x8192")
+                    if width * height > _MAX_IMAGE_PIXELS:
+                        raise SdkError("允许尺寸超过图片像素上限")
             elif not _OPTION_PATTERN.fullmatch(item):
                 raise SdkError(f"{label}包含无效选项：{item[:32]}")
         if item not in normalized:
@@ -770,8 +772,20 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
         )
     width = int.from_bytes(data[16:20], "big")
     height = int.from_bytes(data[20:24], "big")
-    animated = b"acTL" in data[: min(len(data), 1_048_576)]
-    return width, height, animated
+    offset = 8
+    animated = False
+    while offset + 12 <= len(data):
+        length = int.from_bytes(data[offset:offset + 4], "big")
+        end = offset + 12 + length
+        if end > len(data):
+            break
+        kind = data[offset + 4:offset + 8]
+        if kind == b"acTL":
+            animated = True
+        if kind == b"IEND" and length == 0:
+            return width, height, animated
+        offset = end
+    raise _GenerationFailure("图片数据不完整", "InvalidImageData")
 
 
 _JPEG_SOF_MARKERS = frozenset(
@@ -1511,6 +1525,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         self._running = False
         self._api_state = "idle"
         self._configuration_warning: str | None = None
+        self._settings_available = True
         self._last_request: dict[str, Any] = {
             "status": "not_requested",
             "time": None,
@@ -1523,9 +1538,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
         self._asset_dir: Path | None = None
         self._writable_ui_identity: tuple[int, int] | None = None
         # In-flight generation dedup: the host may dispatch the same request
-        # twice (llm_tool + plugin_entry both broadcast to the model), and the
-        # model itself occasionally re-calls within seconds. Each real call
-        # costs money, so concurrent/duplicate requests must collapse to one.
+        # twice (llm_tool + plugin_entry both broadcast to the model).
+        # Each real call costs money, so concurrent requests collapse to one.
         self._inflight: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
@@ -1571,7 +1585,11 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 "ImageGenerator manifest settings ignored: "
                 "failure_class=ValidationError"
             )
-        stored_settings = await self._store_get(_SETTINGS_STORE_KEY, None)
+        settings_available, stored_settings = await self._store_get_checked(
+            _SETTINGS_STORE_KEY, None
+        )
+        if not settings_available:
+            configuration_warning = "无法安全读取已保存设置，请重新启动插件后重试"
         effective_settings = manifest_settings
         if stored_settings is not None:
             try:
@@ -1581,6 +1599,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     require_all=False,
                 )
             except SdkError:
+                settings_available = False
                 configuration_warning = "已保存的图片生成设置无效，已使用安全默认值"
                 self.logger.warning(
                     "ImageGenerator stored settings ignored: "
@@ -1590,6 +1609,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         with self._state_lock:
             self._manifest_settings = manifest_settings
             self._settings = effective_settings
+            self._settings_available = settings_available
             self._configuration_warning = configuration_warning
             self._running = True
 
@@ -1628,6 +1648,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             configuration_warning = "检测到设置中包含 API 密钥，已改用安全默认值"
             with self._state_lock:
                 self._settings = safe_settings
+                self._settings_available = False
                 self._configuration_warning = configuration_warning
             self.logger.warning(
                 "ImageGenerator secret-bearing settings ignored: "
@@ -1646,7 +1667,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         configured = bool(key)
         lifecycle_status = (
             "running"
-            if ui_registered and asset_cache_available and dependencies_available
+            if ui_registered and asset_cache_available and dependencies_available and self._settings_available
             else "degraded"
         )
         status_payload: dict[str, Any] = {
@@ -1949,6 +1970,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
         self,
     ) -> tuple[dict[str, Any], str]:
         async with self._config_lock:
+            if not self._settings_available:
+                raise SdkError("已保存设置不可用，请重新启动插件后重试")
             settings = self._settings_snapshot()
             if not bool(getattr(self.store, "enabled", False)):
                 raise SdkError("插件存储已禁用，无法安全读取 API 密钥")
@@ -2148,9 +2171,12 @@ class ImageGeneratorPlugin(NekoPluginBase):
         we only disable the data-directory fallback when the host
         demonstrably ignored a registration."""
         probe = None
+        index = None
         try:
             probe_dir = Path(self.data_path()) / ".static_ui_probe"
             probe_dir.mkdir(parents=True, exist_ok=True)
+            index = probe_dir / "index.html"
+            index.write_text("<!doctype html><title>Static UI probe</title>", encoding="utf-8")
             probe = probe_dir / f"{uuid4().hex}.txt"
             probe.write_text("ok", encoding="utf-8")
             if not self.register_static_ui(str(probe_dir), cache_control="no-cache"):
@@ -2174,6 +2200,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
             if probe is not None:
                 try:
                     probe.unlink(missing_ok=True)
+                    if index is not None:
+                        index.unlink(missing_ok=True)
                     probe.parent.rmdir()
                 except OSError:
                     pass
@@ -2574,6 +2602,32 @@ class ImageGeneratorPlugin(NekoPluginBase):
         # OpenAI style "1024x1024" -> DashScope style "1024*1024".
         return size.lower().replace("x", "*")
 
+    async def _request_task_json(self, client, method: str, url: str, **kwargs):
+        try:
+            async with client.stream(
+                method, url, follow_redirects=False, **kwargs
+            ) as response:
+                if response.status_code in (401, 403):
+                    raise _GenerationFailure("图片服务拒绝了凭据", f"ProviderHttp{response.status_code}")
+                if not 200 <= response.status_code < 300:
+                    raise _GenerationFailure(
+                        f"图片服务请求失败（HTTP {response.status_code}）",
+                        f"ProviderHttp{response.status_code}",
+                    )
+                body = bytearray()
+                async for chunk in response.aiter_bytes(chunk_size=65536):
+                    if len(body) + len(chunk) > 1_048_576:
+                        raise _GenerationFailure("图片服务响应过大", "ProviderResponseTooLarge")
+                    body.extend(chunk)
+            payload = json.loads(body)
+            if not isinstance(payload, dict):
+                raise _GenerationFailure("图片服务响应格式无效", "MalformedResponse")
+            return payload
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise _GenerationFailure("图片服务响应格式无效", "InvalidProviderJson") from None
+        except httpx.RequestError:
+            raise _GenerationFailure("无法连接图片服务", "ProviderNetworkError") from None
+
     async def _request_generation_dashscope(
         self,
         *,
@@ -2585,8 +2639,14 @@ class ImageGeneratorPlugin(NekoPluginBase):
         max_bytes = int(settings["max_download_bytes"])
         timeout_seconds = float(settings["timeout_seconds"])
         deadline = time.monotonic() + timeout_seconds
+        parsed_base = _parse_http_url(str(settings["api_base_url"]))
+        if (parsed_base is None or parsed_base.scheme != "https"
+                or parsed_base.hostname not in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"}
+                or parsed_base.port not in (None, 443)):
+            raise _GenerationFailure("百炼 API 地址无效", "InvalidProviderUrl")
+        origin = f"https://{parsed_base.hostname}"
         create_endpoint = (
-            "https://dashscope.aliyuncs.com/api/v1/services/aigc/"
+            f"{origin}/api/v1/services/aigc/"
             "text2image/image-synthesis"
         )
         create_body: dict[str, Any] = {
@@ -2600,8 +2660,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
         async def post_create() -> dict[str, Any]:
             client = self._get_client()
             try:
-                response = await client.post(
-                    create_endpoint,
+                payload = await self._request_task_json(
+                    client, "POST", create_endpoint,
                     json=create_body,
                     headers={
                         "Authorization": f"Bearer {api_key}",
@@ -2621,33 +2681,6 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     await client.aclose()
                 except Exception:
                     pass
-            if response.status_code == 401 or response.status_code == 403:
-                raise _GenerationFailure(
-                    "图片服务拒绝了凭据，请检查 API 密钥",
-                    f"ProviderHttp{response.status_code}",
-                )
-            if response.status_code == 429:
-                raise _GenerationFailure(
-                    "图片服务请求过于频繁或额度不足，请稍后重试",
-                    "ProviderHttp429",
-                )
-            if response.status_code < 200 or response.status_code >= 300:
-                raise _GenerationFailure(
-                    f"图片服务请求失败（HTTP {response.status_code}）",
-                    f"ProviderHttp{response.status_code}",
-                )
-            try:
-                payload = json.loads(response.content)
-            except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
-                raise _GenerationFailure(
-                    "图片服务返回了无法解析的数据",
-                    "InvalidProviderJson",
-                ) from None
-            if not isinstance(payload, Mapping):
-                raise _GenerationFailure(
-                    "图片服务返回的数据格式无效",
-                    "MalformedResponse",
-                )
             return dict(payload)
 
         created = await post_create()
@@ -2664,7 +2697,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 "图片服务返回的任务编号格式无效",
                 "MalformedResponse",
             )
-        task_endpoint = f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
+        task_endpoint = f"{origin}/api/v1/tasks/{task_id}"
 
         poll_client = self._get_client()
         try:
@@ -2675,8 +2708,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         "ProviderTimeout",
                     )
                 try:
-                    response = await poll_client.get(
-                        task_endpoint,
+                    payload = await self._request_task_json(
+                        poll_client, "GET", task_endpoint,
                         headers={
                             "Authorization": f"Bearer {api_key}",
                             "Accept": "application/json",
@@ -2688,18 +2721,6 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     raise _GenerationFailure(
                         "无法连接图片生成服务，请检查 API 地址和网络",
                         "ProviderNetworkError",
-                    ) from None
-                if response.status_code < 200 or response.status_code >= 300:
-                    raise _GenerationFailure(
-                        f"图片服务请求失败（HTTP {response.status_code}）",
-                        f"ProviderHttp{response.status_code}",
-                    )
-                try:
-                    payload = json.loads(response.content)
-                except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
-                    raise _GenerationFailure(
-                        "图片服务返回了无法解析的数据",
-                        "InvalidProviderJson",
                     ) from None
                 task_output = payload.get("output") if isinstance(payload, Mapping) else None
                 if not isinstance(task_output, Mapping):
@@ -2723,6 +2744,11 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         parsed_image is None
                         or parsed_image.scheme.lower() != "https"
                         or _is_private_or_loopback_hostname(parsed_image.hostname)
+                        or not re.fullmatch(
+                            r"[a-z0-9-]+\.oss-[a-z0-9-]+\.aliyuncs\.com",
+                            parsed_image.hostname or "",
+                        )
+                        or "-internal." in (parsed_image.hostname or "")
                     ):
                         raise _GenerationFailure(
                             "图片服务返回了不安全的图片地址",
@@ -3070,8 +3096,11 @@ class ImageGeneratorPlugin(NekoPluginBase):
         self,
         *,
         api_key: str = "",
+        checked: bool = False,
     ) -> list[dict[str, Any]]:
-        raw = await self._store_get(_HISTORY_STORE_KEY, [])
+        success, raw = await self._store_get_checked(_HISTORY_STORE_KEY, [])
+        if checked and not success:
+            raise SdkError("无法安全读取生成历史（StoreError）")
         if not isinstance(raw, list):
             return []
         secrets = self._known_secrets_snapshot(api_key)
@@ -3096,7 +3125,10 @@ class ImageGeneratorPlugin(NekoPluginBase):
             return
         await self._acquire_lock(self._history_lock)
         try:
-            history = await self._load_history(api_key=api_key)
+            try:
+                history = await self._load_history(api_key=api_key, checked=True)
+            except SdkError:
+                return
             secrets = self._known_secrets_snapshot(api_key)
             history.insert(
                 0,
@@ -3281,16 +3313,15 @@ class ImageGeneratorPlugin(NekoPluginBase):
     ):
         # Collapse duplicate dispatches onto one real API call. The host may
         # route the same user request through both the llm_tool and the
-        # plugin_entry registration, and the model occasionally re-calls
-        # within seconds; each non-deduplicated call bills the provider again.
+        # plugin_entry registration concurrently.
         # Dedup only applies to the LLM-facing action: panel test_generation
         # is user-driven and must always run fresh.
         dedup_key: str | None = None
         if action == "generate_image":
             candidate_key = hashlib.sha256(
-                "|".join(
-                    str(part)
-                    for part in (prompt, size, quality, style, auto_show_override)
+                json.dumps(
+                    [prompt, size, quality, style, auto_show_override],
+                    ensure_ascii=False, separators=(",", ":"), default=repr,
                 ).encode("utf-8")
             ).hexdigest()
             # Check-and-register must be atomic: a lookup here followed by
@@ -3311,7 +3342,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     len(str(prompt)),
                 )
                 try:
-                    return await existing
+                    return await asyncio.shield(existing)
                 except Exception:
                     # The in-flight attempt failed; fall through to a fresh
                     # run so the caller still gets a real error/result rather
@@ -3334,14 +3365,21 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     action,
                     len(str(prompt)),
                 )
-                try:
-                    return await self._inflight[dedup_key]
-                finally:
-                    self._inflight.pop(dedup_key, None)
+                task = self._inflight[dedup_key]
+
+                def discard(completed: asyncio.Task) -> None:
+                    if self._inflight.get(candidate_key) is completed:
+                        self._inflight.pop(candidate_key, None)
+                    if not completed.cancelled():
+                        completed.exception()
+
+                task.add_done_callback(discard)
+                return await asyncio.shield(task)
         return await self._run_dedup_generation(
             prompt=prompt,
             size=size,
             quality=quality,
+            style=style,
             action=action,
             auto_show_override=auto_show_override,
         )
@@ -3387,6 +3425,9 @@ class ImageGeneratorPlugin(NekoPluginBase):
             return Err(
                 SdkError("检测到设置字段包含 API 密钥；请在管理面板重新保存安全设置")
             )
+
+        if not self._asset_dir_is_safe():
+            return Err(SdkError("生成图片缓存不可用，无法安全保存生成结果"))
 
         self._set_request_state(action=action, status="running")
         self.report_status({"status": "generating"})
@@ -3518,17 +3559,15 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 fallback_markdown=markdown,
             )
         if push_attempted:
-            message = "图片已生成，并已直接发送到聊天中显示"
-            # The image part is already in the chat stream; handing the model
-            # the same Markdown again would render a duplicate. Tell it to
-            # describe the result verbally instead.
+            message = "图片已生成，已提交聊天显示请求"
             instruction = (
-                "图片已经直接展示在聊天中，{MASTER_NAME} 已经能看到。"
-                "请不要再在回复中粘贴任何图片链接或 Markdown，"
-                "只用角色口吻简短说明已经画好即可。"
+                "图片已提交聊天显示，但尚未确认送达。"
+                "请在回复中附上 image_url 的可点击链接，确保 {MASTER_NAME} 能打开图片。"
             )
             result_fields: dict[str, Any] = {
                 "message": message,
+                "image_url": image_url,
+                "display_markdown": markdown,
                 "display_instruction": instruction,
                 "revised_prompt": revised_prompt,
             }
@@ -3640,6 +3679,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         name="创建图片生成器密钥信封",
         description="为下一次设置保存创建短时、一次性的公钥加密信封。",
         input_schema=_EMPTY_SCHEMA,
+        metadata={"agent_hidden": True},
     )
     async def get_secret_envelope(self, **_: Any):
         try:
@@ -3653,6 +3693,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         name="读取图片生成器面板状态",
         description="读取安全设置、运行状态、缓存统计和最近生成记录。",
         input_schema=_EMPTY_SCHEMA,
+        metadata={"agent_hidden": True},
     )
     async def get_panel_state(self, **_: Any):
         async with self._config_lock:
@@ -3694,14 +3735,6 @@ class ImageGeneratorPlugin(NekoPluginBase):
             configuration_warning = (
                 secret_warning or "检测到默认设置中包含 API 密钥；面板已隐藏这些设置"
             )
-        try:
-            secret_envelope: dict[str, Any] | None = await self._issue_secret_envelope()
-        except SdkError:
-            secret_envelope = None
-            configuration_warning = (
-                configuration_warning
-                or "密钥加密组件不可用；请重新安装插件后再配置 API 密钥"
-            )
         cache.update(
             {
                 "max_count": settings["cache_max_count"],
@@ -3715,7 +3748,6 @@ class ImageGeneratorPlugin(NekoPluginBase):
             "store_enabled": bool(getattr(self.store, "enabled", False)),
             "asset_cache_available": self._asset_dir is not None,
             "api_key_configured": bool(api_key),
-            "secret_envelope": secret_envelope,
             "settings": settings,
             "defaults": defaults,
             "history": history[:20],
@@ -3755,6 +3787,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             "消费一次性 RSA-OAEP + AES-GCM 加密载荷，原子保存设置和 API 密钥。"
         ),
         input_schema=_SAVE_SETTINGS_SCHEMA,
+        metadata={"agent_hidden": True},
     )
     async def save_settings(
         self,
@@ -3865,16 +3898,14 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     return Err(
                         SdkError("无法在保存前安全读取生成历史（StoreError）")
                     )
-                history_safe = await self._sanitize_history_before_secret_change(
-                    secrets=secrets,
-                    history_limit=int(validated["history_limit"]),
-                )
-                if not history_safe:
-                    return Err(
-                        SdkError("无法在更新密钥前安全清理历史记录（StoreError）")
-                    )
+                async def restore_history() -> bool:
+                    if old_history is None:
+                        restored, _ = await self._store_delete(_HISTORY_STORE_KEY)
+                        return restored
+                    return await self._store_set(_HISTORY_STORE_KEY, old_history)
 
                 async def restore_previous_configuration() -> tuple[bool, bool]:
+                    history_restored = await restore_history()
                     key_removed, _ = await self._store_delete(_API_KEY_STORE_KEY)
                     if not key_removed:
                         return False, False
@@ -3894,15 +3925,6 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     # rewritten, possibly truncated history using the proposed
                     # limit, so without this the save reports failure while
                     # older generation records are permanently lost.
-                    if old_history is None:
-                        history_restored, _ = await self._store_delete(
-                            _HISTORY_STORE_KEY
-                        )
-                    else:
-                        history_restored = await self._store_set(
-                            _HISTORY_STORE_KEY,
-                            old_history,
-                        )
                     if not history_restored:
                         return False, False
                     # The rollback credential may become durable in a worker
@@ -3921,64 +3943,113 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         key_restored = True
                     return settings_restored, key_restored
 
-                # Fail closed across process loss: remove the authoritative key
-                # before changing settings, then restore/write it only after the
-                # settings commit. Every crash-visible intermediate state has no
-                # usable credential instead of a key paired with the wrong URL.
-                key_staged, key_existed = await self._store_delete(
-                    _API_KEY_STORE_KEY
-                )
-                if not key_staged:
-                    return Err(
-                        SdkError(
-                            "无法在保存前安全暂存 API 密钥（StoreError），"
-                            "请稍后重试"
+                async def commit_configuration():
+                    nonlocal key_changed
+                    history_safe = await self._sanitize_history_before_secret_change(
+                        secrets=secrets,
+                        history_limit=int(validated["history_limit"]),
+                    )
+                    if not history_safe:
+                        await restore_history()
+                        return Err(
+                            SdkError("无法在更新密钥前安全清理历史记录（StoreError）")
                         )
-                    )
 
-                if not await self._store_set(_SETTINGS_STORE_KEY, validated):
-                    settings_restored, key_restored = (
-                        await restore_previous_configuration()
+                    # Fail closed across process loss: remove the authoritative key
+                    # before changing settings, then restore/write it only after the
+                    # settings commit. Every crash-visible intermediate state has no
+                    # usable credential instead of a key paired with the wrong URL.
+                    key_staged, key_existed = await self._store_delete(
+                        _API_KEY_STORE_KEY
                     )
-                    if not settings_restored or not key_restored:
-                        self.logger.warning(
-                            "ImageGenerator settings rollback incomplete: "
-                            "failure_class=StoreError"
+                    if not key_staged:
+                        await restore_history()
+                        return Err(
+                            SdkError(
+                                "无法在保存前安全暂存 API 密钥（StoreError），"
+                                "请稍后重试"
+                            )
                         )
-                    return Err(SdkError("保存设置失败（StoreError），请稍后重试"))
 
-                # Publish the matching settings before the credential write.
-                # PluginStore uses a worker thread, so task cancellation can
-                # arrive after a durable key commit. At every await boundary,
-                # runtime settings must therefore already match any new key
-                # that may have reached the Store.
-                with self._state_lock:
-                    self._settings = validated
-                    self._configuration_warning = (
-                        None
-                        if self._asset_dir is not None
-                        else "生成图片缓存不可用；管理面板可能可读，但生成已降级"
-                    )
-
-                if effective_api_key and not await self._store_set(
-                    _API_KEY_STORE_KEY,
-                    effective_api_key,
-                ):
-                    settings_restored, key_restored = (
-                        await restore_previous_configuration()
-                    )
-                    if not settings_restored or not key_restored:
-                        self.logger.warning(
-                            "ImageGenerator settings rollback incomplete: "
-                            "failure_class=StoreError"
+                    if not await self._store_set(_SETTINGS_STORE_KEY, validated):
+                        settings_restored, key_restored = (
+                            await restore_previous_configuration()
                         )
-                    return Err(SdkError("保存 API 密钥失败（StoreError）"))
+                        if not settings_restored or not key_restored:
+                            self.logger.warning(
+                                "ImageGenerator settings rollback incomplete: "
+                                "failure_class=StoreError"
+                            )
+                        return Err(SdkError("保存设置失败（StoreError），请稍后重试"))
 
-                key_changed = (
-                    key_existed
-                    if clear_api_key
-                    else effective_api_key != validated_old_key
-                )
+                    # Publish the matching settings before the credential write.
+                    # PluginStore uses a worker thread, so task cancellation can
+                    # arrive after a durable key commit. At every await boundary,
+                    # runtime settings must therefore already match any new key
+                    # that may have reached the Store.
+                    with self._state_lock:
+                        self._settings = validated
+                        self._configuration_warning = (
+                            None
+                            if self._asset_dir is not None
+                            else "生成图片缓存不可用；管理面板可能可读，但生成已降级"
+                        )
+
+                    if effective_api_key and not await self._store_set(
+                        _API_KEY_STORE_KEY,
+                        effective_api_key,
+                    ):
+                        settings_restored, key_restored = (
+                            await restore_previous_configuration()
+                        )
+                        if not settings_restored or not key_restored:
+                            self.logger.warning(
+                                "ImageGenerator settings rollback incomplete: "
+                                "failure_class=StoreError"
+                            )
+                        return Err(SdkError("保存 API 密钥失败（StoreError）"))
+
+                    key_changed = (
+                        key_existed
+                        if clear_api_key
+                        else effective_api_key != validated_old_key
+                    )
+
+                async def guarded_commit():
+                    try:
+                        return await commit_configuration()
+                    except BaseException as exc:
+                        # Propagate on the owner task, including process-loss
+                        # signals, rather than terminating the event loop here.
+                        return exc
+
+                worker = asyncio.create_task(guarded_commit())
+                try:
+                    outcome = await asyncio.shield(worker)
+                    if isinstance(outcome, BaseException):
+                        raise outcome
+                except asyncio.CancelledError:
+                    # Store operations use worker threads. First drain the
+                    # transaction, then roll back while both locks remain held.
+                    while not worker.done():
+                        try:
+                            await asyncio.shield(worker)
+                        except asyncio.CancelledError:
+                            continue
+                    if not worker.cancelled():
+                        worker.exception()
+                    rollback = asyncio.create_task(restore_previous_configuration())
+                    while not rollback.done():
+                        try:
+                            await asyncio.shield(rollback)
+                        except asyncio.CancelledError:
+                            continue
+                    if rollback.cancelled() or not all(rollback.result()):
+                        self._settings_available = False
+                    raise
+                if isinstance(outcome, Err):
+                    return outcome
+                self._settings_available = True
             finally:
                 self._history_lock.release()
 
@@ -4015,6 +4086,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         name="恢复图片生成器默认设置",
         description="恢复 plugin.toml 中的非秘密默认设置；不会清除 API 密钥。",
         input_schema=_EMPTY_SCHEMA,
+        metadata={"agent_hidden": True},
     )
     async def reset_settings(self, **_: Any):
         if not bool(getattr(self.store, "enabled", False)):
@@ -4077,6 +4149,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         name="清除图片生成 API 密钥",
         description="显式删除 PluginStore 中保存的 API 密钥。",
         input_schema=_EMPTY_SCHEMA,
+        metadata={"agent_hidden": True},
     )
     async def clear_api_key(self, **_: Any):
         if not bool(getattr(self.store, "enabled", False)):
@@ -4138,6 +4211,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         name="读取最近图片生成记录",
         description="读取不含密钥和 Base64 图片的有界最近生成记录。",
         input_schema=_RECENT_HISTORY_SCHEMA,
+        metadata={"agent_hidden": True},
     )
     async def get_recent_history(self, limit: int = 20, **_: Any):
         try:
@@ -4172,6 +4246,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         name="清除图片生成历史",
         description="清除最近生成记录；不会清除 API 密钥或已生成文件缓存。",
         input_schema=_EMPTY_SCHEMA,
+        metadata={"agent_hidden": True},
     )
     async def clear_history(self, **_: Any):
         if not bool(getattr(self.store, "enabled", False)):

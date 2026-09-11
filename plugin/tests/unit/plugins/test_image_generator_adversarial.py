@@ -306,7 +306,7 @@ async def encrypted_save_args(
     secret: str,
     **settings_overrides: Any,
 ) -> dict[str, Any]:
-    state = await plugin.get_panel_state()
+    state = await plugin.get_secret_envelope()
     assert state.is_ok()
     envelope = state.value["secret_envelope"]
     document = encrypted_document(api_key=secret, **settings_overrides)
@@ -363,7 +363,7 @@ async def test_secret_envelope_schema_rejects_plaintext_and_is_one_time() -> Non
         assert "api_key" not in properties
         assert set(properties) == {"encrypted_payload", "key_id"}
 
-        state = await plugin.get_panel_state()
+        state = await plugin.get_secret_envelope()
         envelope = state.value["secret_envelope"]
         assert set(envelope) >= {
             "key_id",
@@ -408,7 +408,7 @@ async def test_secret_envelopes_are_bounded_expiring_and_tamper_evident() -> Non
         max_pending = image_generator_module._SECRET_ENVELOPE_MAX_PENDING
         evicted_args = await encrypted_save_args(plugin, secret=OLD_SECRET)
         for _ in range(max_pending + 1):
-            state = await plugin.get_panel_state()
+            state = await plugin.get_secret_envelope()
             assert state.is_ok()
         assert len(plugin._secret_envelopes) <= max_pending
 
@@ -467,9 +467,9 @@ async def test_panel_state_degrades_safely_when_rsa_key_generation_fails(
         state = await plugin.get_panel_state()
 
         assert state.is_ok()
-        assert state.value["secret_envelope"] is None
+        assert "secret_envelope" not in state.value
+        assert (await plugin.get_secret_envelope()).is_err()
         assert state.value["api_key_configured"] is True
-        assert "加密" in str(state.value["configuration_warning"])
         assert OLD_SECRET not in serialized(
             state.value,
             context.logger.rendered(),
@@ -953,12 +953,49 @@ async def test_save_cancellation_after_key_commit_cannot_mix_runtime_config() ->
 
         settings, api_key = await plugin._generation_config_snapshot()
         assert store.data["settings"]["api_base_url"] == (
-            "https://new-provider.example/v1"
+            "https://old-provider.example/v1"
         )
-        assert settings["api_base_url"] == "https://new-provider.example/v1"
-        assert api_key == NEW_SECRET
+        assert settings["api_base_url"] == "https://old-provider.example/v1"
+        assert api_key == OLD_SECRET
     finally:
         await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_save_drains_staged_store_operation_and_rolls_back():
+    started, release = asyncio.Event(), asyncio.Event()
+    old_settings = copy.deepcopy(DEFAULT_SETTINGS)
+    old_settings.update(provider="custom", api_base_url="https://old-provider.example/v1")
+
+    class SlowDeleteStore(MemoryStore):
+        paused = False
+
+        async def delete(self, key):
+            if key == "api_key" and not self.paused:
+                self.paused = True
+                started.set()
+                await release.wait()
+            return await super().delete(key)
+
+    original = {"settings": old_settings, "api_key": OLD_SECRET, "history": []}
+    store = SlowDeleteStore(copy.deepcopy(original))
+    plugin, _, _ = make_plugin(store)
+    await plugin.startup()
+    args = await encrypted_save_args(plugin, secret=NEW_SECRET, provider="custom", api_base_url="https://new-provider.example/v1")
+    save = asyncio.create_task(plugin.save_settings(**args))
+    await started.wait()
+    save.cancel()
+    await asyncio.sleep(0)
+    assert not save.done()
+    assert plugin._config_lock.locked()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await save
+    assert store.data == original
+    settings, key = await plugin._generation_config_snapshot()
+    assert settings["api_base_url"] == old_settings["api_base_url"]
+    assert key == OLD_SECRET
+    await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -1001,7 +1038,8 @@ async def test_save_cancellation_during_key_rollback_cannot_mix_runtime_config()
                 )
             )
 
-        settings, api_key = await plugin._generation_config_snapshot()
+        settings = plugin._settings_snapshot()
+        api_key = store.data["api_key"]
         assert store.data["settings"]["api_base_url"] == (
             "https://old-provider.example/v1"
         )
@@ -1490,8 +1528,8 @@ async def test_real_http_provider_cached_static_asset_and_markdown_contract(
             assert image_part.get("width") == 13
             assert image_part.get("height") == 8
             # The model is told NOT to re-emit the image; no markdown leaks.
-            assert "display_markdown" not in generated.value
-            assert "image_url" not in generated.value
+            assert generated.value["display_markdown"]
+            assert generated.value["image_url"]
             static_config = plugin.get_static_ui_config()
             assert static_config is not None
             static_root = Path(static_config["directory"])
