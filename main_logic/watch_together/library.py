@@ -204,7 +204,12 @@ class Library:
                 timeline['status'] = 'incomplete'
                 return timeline
             def valid_time(value):
-                return type(value) in (int, float) and math.isfinite(value) and value >= 0
+                if type(value) not in (int, float):
+                    return False
+                try:
+                    return math.isfinite(value) and value >= 0
+                except OverflowError:
+                    return False
             if any(not valid_time(cue.get('at')) or
                    (cue.get('audio') and (not isinstance(cue['audio'], str) or
                                          not valid_time(cue.get('duration')) or cue['duration'] == 0))
