@@ -139,9 +139,8 @@ def test_soccer_avatar_rendering_uses_sdk_fixed_viewport_contract():
     assert "ResizeObserverImpl" in avatar_host
     assert "fitLive2DModel" in avatar_host
     assert "async mountAvatar(config)" in adapter
-    assert "const avatarProvider = HOST_AVATAR_PROVIDERS.get(this);" in adapter
-    assert "HOST_AVATAR_PROVIDERS.delete(this);" in adapter
-    assert "avatarProvider?.dispose?.();" in adapter
+    # The host adapter runtime suite verifies injected Avatar ownership and
+    # exactly-once disposal; SDK private storage/helper names are not contracts.
 
     assert "optionalCapabilities: ['dialogue', 'quick-lines', 'voice-input', 'avatar-renderer', 'storage']" in script
     assert "viewport: Object.freeze({ mode: 'fixed', width: 200, height: 300 })" in script
@@ -390,7 +389,7 @@ def test_soccer_script_posts_session_debug_errors():
     assert "transport.applyRuntimeState(routeState)" in MINIGAME_SDK_PATH.read_text(encoding="utf-8")
     assert "enableSoccerSessionDebugLog('keyboard_l')" in script
     assert "session_id: context.sessionId" in adapter
-    assert "game_type: this.routeGameType" in adapter
+    assert "gameType: 'soccer'" in SOCCER_ADAPTER_PATH.read_text(encoding="utf-8")
     assert "lanlan_name: context.lanlanName" in adapter
     assert "this._window.nekoLocalMutationSecurity" in adapter
     assert "peekCachedToken" in adapter

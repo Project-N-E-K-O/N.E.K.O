@@ -298,6 +298,8 @@ async function main() {
   assert(avatarMountConfig?.viewport?.mode === 'fixed', 'avatar config was not forwarded');
   avatarAdapter.dispose();
   assert(avatarHostDisposed === 1, 'avatar host was not released by adapter disposal');
+  avatarAdapter.dispose();
+  assert(avatarHostDisposed === 1, 'repeated adapter disposal released the avatar host twice');
 
   let audioHostDisposed = 0;
   let audioMountConfig = null;
