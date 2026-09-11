@@ -121,6 +121,7 @@ export async function run(game, character) {
       status(t('checking'));
       let result = await game.media.request('prepare',{url,source,lanlan_name:character,render_language:renderLanguage()});
       while (result.confirmation_required) {
+        if(selection!==selectionGeneration)return;
         const info = result.video;
         if (!window.confirm(`${info.title}\n${t('longWarning')}\n${Math.ceil(info.duration)}s`)) {
           status(t('cancelled')); return;
@@ -136,9 +137,13 @@ export async function run(game, character) {
         }
         if (state.status === 'awaiting_confirmation' && state.confirmation_required) {
           const info = state.confirmation_video;
+          if(selection!==selectionGeneration) {
+            await game.media.request('prepare',{confirmation_job:result.id,lanlan_name:character,accepted:false,confirmed_duration:info.duration});
+            return;
+          }
           const accepted = window.confirm(`${info.title}\n${t('longWarning')}\n${Math.ceil(info.duration)}s`);
           await game.media.request('prepare',{confirmation_job:result.id,lanlan_name:character,accepted,confirmed_duration:info.duration});
-          if (!accepted) {status(t('cancelled'));return;}
+          if (!accepted) {if(selection===selectionGeneration)status(t('cancelled'));return;}
           continue;
         }
         if (['error','cancelled'].includes(state.status)) throw Error(state.stage_key ? t(state.stage_key) : (state.error || state.stage));
@@ -150,7 +155,7 @@ export async function run(game, character) {
         }
         await new Promise(resolve=>setTimeout(resolve,1000));
       }
-    } catch(error) {status(error.message);}
+    } catch(error) {if(selection===selectionGeneration)status(error.message);}
     finally {preparing=false;updatePrepareButtons();}
   }
   $('prepare').onsubmit = event => {

@@ -104,11 +104,13 @@ await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(discoveryCount,2,'queue release retries current selection exactly once');
 retrying.handlers['runtime-inactive']();
 console.log('watch-together scene: queue release retries current playback without duplicate prefetch');
+for (const terminal of [{status:'ready'},{status:'awaiting_confirmation',confirmation_required:true,confirmation_video:{title:'Old',duration:350}},{status:'error',error:'Old failure'}]) {
 const takeover=await fixture(false,false,{total_tokens:1});
+let staleDecision;
 const originalRequest=takeover.game.media.request;
 let finishForeground;
 takeover.game.media.request=async(action,payload)=>{
-  if(action==='prepare')return {id:'foreground'};
+  if(action==='prepare'){if(payload.confirmation_job)staleDecision=payload;return {id:'foreground'};}
   if(action==='preparation')return new Promise(resolve=>{finishForeground=resolve;});
   const result=await originalRequest(action,payload);
   if(action==='history')result.analyses.push({job:'foreground',version:'v',status:'ready'});
@@ -119,9 +121,12 @@ await new Promise(resolve=>setTimeout(resolve,0));
 await takeover.elements.get('history').children[0].onclick();
 await takeover.elements.get('play').onclick();
 const loadsBeforeReady=takeover.calls.filter(c=>c.action==='load').length;
-finishForeground({status:'ready'});
+finishForeground(terminal);
 await preparingForeground;
 assert.equal(takeover.calls.filter(c=>c.action==='load').length,loadsBeforeReady,'foreground result cannot replace newer history selection');
 assert.match(takeover.elements.get('status').textContent,/playing/);
 takeover.handlers['runtime-inactive']();
-console.log('watch-together scene: foreground completion preserves newer playback');
+assert.equal(takeover.prompts.length,0,'stale job cannot display confirmation');
+if(terminal.confirmation_required)assert.equal(staleDecision.accepted,false,'release stale confirmation without paid work');
+}
+console.log('watch-together scene: stale completion, confirmation and failure preserve newer playback');
