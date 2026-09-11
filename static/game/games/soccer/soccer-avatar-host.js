@@ -342,11 +342,32 @@
           `soccer avatar slot is no longer active: ${slot}`);
       }
 
-      function waitForLive2DModel(manager, path, loadPromise, startedWithSameModel) {
+      function waitForLive2DModel(manager, path, loadPromise, startedWithSameModel, loadToken) {
         return new Promise((resolve, reject) => {
           const startedAt = Date.now();
           let settled = false;
+          let loadFinished = false;
+          let abandoned = false;
+          let abandonedToken = null;
           const waitState = { timer: null, cancel: null };
+          const abandonLoad = () => {
+            if (abandoned) return;
+            abandoned = true;
+            // Only invalidate the load this controller actually started. A
+            // rejected busy request must not cancel another owner's token.
+            if (loadToken != null && manager._activeLoadToken === loadToken) {
+              abandonedToken = ++manager._activeLoadToken;
+            }
+          };
+          const releaseLateModel = (result) => {
+            if (!abandoned) return;
+            const ownsCurrent = abandonedToken != null && manager._activeLoadToken === abandonedToken;
+            const model = result || (ownsCurrent ? manager.currentModel : null);
+            if (!model) return;
+            if (manager.currentModel === model) manager.currentModel = null;
+            try { if (!model.destroyed) model.destroy?.({ children: true }); }
+            catch (error) { console.warn('[soccer-avatar-host] late Live2D cleanup failed:', error); }
+          };
           const cleanup = () => {
             if (waitState.timer != null) {
               window.clearTimeout(waitState.timer);
@@ -357,6 +378,10 @@
           };
           const finish = (callback, value) => {
             if (settled) return;
+            if (callback === reject) {
+              abandonLoad();
+              releaseLateModel();
+            }
             settled = true;
             cleanup();
             callback(value);
@@ -366,6 +391,11 @@
           };
           const onAbort = () => waitState.cancel();
           const poll = () => {
+            if (settled) return;
+            if (waitState.timer != null) {
+              window.clearTimeout(waitState.timer);
+              waitState.timer = null;
+            }
             if (state.disposed) {
               waitState.cancel('disposed', `soccer avatar slot is disposed: ${slot}`);
               return;
@@ -377,7 +407,7 @@
             const current = manager.currentModel;
             const currentUrl = current?.internalModel?.settings?.url || '';
             const matches = currentUrl === path || currentUrl.endsWith(path);
-            if (current?.width > 0 && (matches || startedWithSameModel)) {
+            if (loadFinished && current?.width > 0 && (matches || startedWithSameModel)) {
               finish(resolve);
               return;
             }
@@ -389,7 +419,21 @@
           };
           state.pendingWaits.add(waitState);
           signal?.addEventListener?.('abort', onAbort, { once: true });
-          Promise.resolve(loadPromise).catch((error) => finish(reject, error));
+          Promise.resolve(loadPromise).then((model) => {
+            loadFinished = true;
+            if (abandoned || state.disposed || signal?.aborted) {
+              abandonLoad();
+              // The manager's fallback path can assign a model before checking
+              // its token. Release that exact late result without destroying a
+              // replacement manager or a successor's current model.
+              releaseLateModel(model);
+              return;
+            }
+            poll();
+          }).catch((error) => {
+            finish(reject, error);
+            releaseLateModel();
+          });
           poll();
         });
       }
@@ -449,8 +493,11 @@
               assertLive(() => manager.destroy?.());
               const previousUrl = manager.currentModel?.internalModel?.settings?.url || '';
               const startedWithSameModel = previousUrl === model.path || previousUrl.endsWith(model.path);
+              const previousLoadToken = manager._activeLoadToken;
               const loadPromise = manager.loadModel(model.path);
-              await waitForLive2DModel(manager, model.path, loadPromise, startedWithSameModel);
+              const loadToken = Number.isFinite(manager._activeLoadToken)
+                && manager._activeLoadToken !== previousLoadToken ? manager._activeLoadToken : null;
+              await waitForLive2DModel(manager, model.path, loadPromise, startedWithSameModel, loadToken);
             } catch (error) {
               assertLive();
               if (previousType === 'vrm') resumeAiRenderer('vrm');
