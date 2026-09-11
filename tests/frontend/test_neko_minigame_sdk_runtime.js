@@ -722,6 +722,13 @@ async function main() {
   assert((await Promise.all(bodyProtocolCalls)).every(code => code === 'cancelled'),
     'protocol body ignored cancellation after response headers');
   assert(bodySignals.every(signal => signal.aborted), 'protocol cancellation lost the transport signal');
+  let bodyStillBusy;
+  void game.events.emit('round-started', { round: 10 }).then(
+    () => { bodyStillBusy = { code: 'unexpected_success' }; }, error => { bodyStillBusy = error; },
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert(bodyStillBusy?.code === 'busy',
+    'a cancelled protocol request freed its slot before the abandoned body settled');
   settleProtocolBody({ detail: 'late conflict' });
   await new Promise(resolve => setImmediate(resolve));
   transport.publishGameProtocol = originalPublishProtocol;
