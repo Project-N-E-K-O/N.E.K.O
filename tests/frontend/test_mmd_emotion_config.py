@@ -40,6 +40,9 @@ def setup_runtime(page: Page):
     ("http://neko.test/workshop/123/%E8%8A%B1%E7%81%AB3.0.PMX?v=4#preview", "花火3.0"),
     ("/static/mmd/a%2520b%23c%3Fd.pMd", "a%20b#c?d"),
     ("/workshop/456/花火3.0.pmx", "花火3.0"),
+    ("/user_mmd/100%_model.pmx", "100%_model"),
+    ("/user_mmd/100%_花火.pmx", "100%_花火"),
+    ("/user_mmd/100%25_model.pmx", "100%_model"),
 ])
 def test_config_name_is_filename_not_internal_metadata(page: Page, url, expected):
     setup_runtime(page)
@@ -202,7 +205,8 @@ def test_vmd_write_order_is_unchanged(page: Page):
 
 
 @pytest.mark.parametrize("switch_editor", [False, True])
-def test_save_notifies_matching_runtime_without_opener(page: Page, switch_editor):
+@pytest.mark.parametrize("storage_blocked", [False, True])
+def test_save_notifies_matching_runtime_without_opener(page: Page, switch_editor, storage_blocked):
     setup_runtime(page)
     page.evaluate("""() => {
         mapping = {happy: ['瞳小']};
@@ -211,6 +215,8 @@ def test_save_notifies_matching_runtime_without_opener(page: Page, switch_editor
     }""")
     with page.context.new_page() as editor:
         setup_editor(editor)
+        if storage_blocked:
+            editor.evaluate("() => { Storage.prototype.setItem = () => { throw new Error('storage denied'); }; }")
         if switch_editor:
             editor.evaluate("""() => {
                 const previousFetch = fetch;
@@ -223,7 +229,7 @@ def test_save_notifies_matching_runtime_without_opener(page: Page, switch_editor
             editor.evaluate("async () => { finishSave(); await savePromise; }")
         else:
             editor.evaluate("MMDEmotionManager.saveEmotionMapping()")
-        page.wait_for_function("expression.moodMap.happy[0] === '瞳小' && shared.moodMap.happy[0] === '瞳小'")
+        page.wait_for_function("expression.moodMap.happy[0] === '瞳小' && shared.moodMap.happy[0] === '瞳小'", timeout=5000)
         assert page.evaluate("other.moodMap.happy[0]") == "笑い"
         assert len(page.evaluate("requests")) == 2
         assert editor.evaluate("localStorage.getItem('neko_mmd_emotion_mapping_changed')") is None
@@ -303,3 +309,80 @@ def test_reload_does_not_restart_unchanged_manual_expression(page: Page):
             manual: expression.manualExpressionInProgress, weight: expression.getMorphWeight('瞳小')};
     }""")
     assert result == {"sameTimer": True, "manual": "瞳小", "weight": 1}
+
+
+@pytest.mark.parametrize("failure", ["http", "json", "network", "unsuccessful", "invalid_mapping"])
+def test_editor_read_failure_cannot_overwrite_saved_mapping(page: Page, failure):
+    setup_editor(page)
+    page.evaluate("""failure => {
+        window.workingFetch = fetch;
+        fetch = async (url, options) => {
+            if (options?.method === 'POST') return workingFetch(url, options);
+            if (failure === 'network') throw new Error('offline');
+            return {ok: failure !== 'http', status: 500, text: async () => 'failed', json: async () => {
+                if (failure === 'json') throw new Error('bad JSON');
+                return failure === 'unsuccessful' ? {success: false} : {success: true, mapping: []};
+            }};
+        };
+    }""", failure)
+    page.locator('.singleselect-item[data-value="other"]').click()
+    page.wait_for_function("document.getElementById('status-message').textContent.includes('配置加载失败')")
+    assert page.locator('#save-btn').is_disabled()
+    page.evaluate("MMDEmotionManager.resetConfig(); MMDEmotionManager.saveEmotionMapping()")
+    assert page.evaluate("saved") is None
+    page.evaluate("fetch = workingFetch; mapping = {}")
+    page.locator('.singleselect-item[data-value="other"]').click()
+    page.wait_for_function("!document.getElementById('save-btn').disabled")
+    page.evaluate("MMDEmotionManager.saveEmotionMapping()")
+    assert page.evaluate("saved.model") == "other"
+
+
+def test_broadcast_fallback_receiver_is_closed_on_dispose(page: Page):
+    setup_runtime(page)
+    result = page.evaluate("""() => {
+        const channel = expression._moodMapChannel;
+        if (!channel) return {created: false};
+        let closed = 0;
+        const originalClose = channel.close.bind(channel);
+        channel.close = () => { closed++; originalClose(); };
+        expression.dispose(); expression.dispose();
+        return {created: true, closed, released: expression._moodMapChannel === null,
+            detached: channel.onmessage === null};
+    }""")
+    assert result == {"created": True, "closed": 1, "released": True, "detached": True}
+
+
+@pytest.mark.parametrize("channel_result", ["success", "constructor_error", "post_error"])
+def test_broadcast_sender_cleanup_and_opener_fallback(page: Page, channel_result):
+    setup_editor(page)
+    result = page.evaluate("""async channelResult => {
+        let closed = 0, notified = 0;
+        window.opener = {closed: false, mmdManager: {currentModel: {configName: '花火3.0'},
+            expression: {loadMoodMap: () => { notified++; }}}};
+        Storage.prototype.setItem = () => { throw new Error('storage denied'); };
+        window.BroadcastChannel = class {
+            constructor() { if (channelResult === 'constructor_error') throw new Error('denied'); }
+            postMessage() { if (channelResult === 'post_error') throw new Error('send failed'); }
+            close() { closed++; }
+        };
+        await MMDEmotionManager.saveEmotionMapping();
+        return {closed, notified, saved: saved.model};
+    }""", channel_result)
+    assert result == {"closed": int(channel_result != "constructor_error"),
+                      "notified": int(channel_result != "success"), "saved": "花火3.0"}
+
+
+def test_blocked_broadcast_receiver_keeps_storage_support(page: Page):
+    setup_runtime(page)
+    result = page.evaluate("""async () => {
+        window.BroadcastChannel = class { constructor() { throw new Error('denied'); } };
+        const receiver = new MMDExpression(manager);
+        mapping = {happy: ['瞳小']};
+        window.dispatchEvent(new StorageEvent('storage', {key: 'neko_mmd_emotion_mapping_changed',
+            newValue: JSON.stringify({model: '花火3.0'})}));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const happy = receiver.moodMap.happy;
+        receiver.dispose();
+        return {happy, channel: receiver._moodMapChannel};
+    }""")
+    assert result == {"happy": ["瞳小"], "channel": None}

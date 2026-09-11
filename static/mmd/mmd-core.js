@@ -876,7 +876,12 @@ class MMDCore {
         if (typeof modelUrl !== 'string' || !modelUrl) return '';
         try {
             const filename = new URL(modelUrl, window.location.href).pathname.split('/').pop();
-            return decodeURIComponent(filename).replace(/\.(pmx|pmd)$/i, '');
+            // Backend URLs can contain literal percent signs. Decode valid runs once,
+            // without rejecting the entire filename or double-decoding escaped names.
+            return filename.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+                try { return decodeURIComponent(encoded); }
+                catch (_) { return encoded; }
+            }).replace(/\.(pmx|pmd)$/i, '');
         } catch (error) {
             console.warn('[MMD Core] 无法从模型路径获取配置名称:', error);
             return '';

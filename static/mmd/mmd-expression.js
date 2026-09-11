@@ -50,6 +50,21 @@ class MMDExpression {
             }
         };
         window.addEventListener('storage', this._moodMapStorageHandler);
+        // One fallback receiver per expression instance; closed by dispose().
+        this._moodMapChannel = null;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                this._moodMapChannel = new BroadcastChannel('neko_mmd_emotion_mapping_changed');
+                this._moodMapChannel.onmessage = (event) => {
+                    const model = event.data?.model;
+                    if (typeof model === 'string' && model === this.manager.currentModel?.configName) {
+                        void this.loadMoodMap(model);
+                    }
+                };
+            }
+        } catch (error) {
+            console.warn('[MMD Expression] Broadcast notifications unavailable:', error);
+        }
 
         // MMD 常见眨眼 morph 名
         this.blinkMorphNames = ['まばたき', 'blink', 'まばたき左', 'まばたき右', 'blink_l', 'blink_r'];
@@ -443,6 +458,11 @@ class MMDExpression {
     dispose() {
         this._moodMapDisposed = true;
         window.removeEventListener('storage', this._moodMapStorageHandler);
+        if (this._moodMapChannel) {
+            this._moodMapChannel.onmessage = null;
+            this._moodMapChannel.close();
+            this._moodMapChannel = null;
+        }
         this.resetMoodMap();
         this.manualBlinkInProgress = null;
     }

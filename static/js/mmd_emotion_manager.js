@@ -178,8 +178,8 @@
 
         loadModelMorphs(modelName, selectionId).then(async (success) => {
             if (success && selectionId === currentSelectionId) {
-                await loadEmotionMapping(modelName, selectionId);
-                if (selectionId === currentSelectionId) saveBtn.disabled = false;
+                const loaded = await loadEmotionMapping(modelName, selectionId);
+                if (selectionId === currentSelectionId) saveBtn.disabled = !loaded;
             }
         });
     }
@@ -470,20 +470,20 @@
         try {
             const response = await fetch(`/api/model/mmd/emotion_mapping?model=${encodeURIComponent(modelName)}`);
 
-            if (selectionId != null && selectionId !== currentSelectionId) return;
+            if (selectionId != null && selectionId !== currentSelectionId) return false;
 
             if (!response.ok) {
-                console.error(`加载情感映射配置失败: HTTP ${response.status}`, await response.text().catch(() => ''));
-                applyDefaultConfig();
-                showStatus(t('mmdEmotionManager.configLoadFailed', '配置加载失败'), 'error');
-                return;
+                throw new Error(`HTTP ${response.status}`);
             }
 
             const data = await response.json();
 
-            if (selectionId != null && selectionId !== currentSelectionId) return;
+            if (selectionId != null && selectionId !== currentSelectionId) return false;
 
-            if (data.success && data.mapping && Object.keys(data.mapping).length > 0) {
+            if (data?.success !== true || !data.mapping || typeof data.mapping !== 'object' || Array.isArray(data.mapping)) {
+                throw new Error('Invalid emotion mapping response');
+            }
+            if (Object.keys(data.mapping).length > 0) {
                 const config = data.mapping;
                 const savedMorphs = emotions.flatMap(emotion => {
                     const names = config[emotion];
@@ -519,11 +519,14 @@
                 applyDefaultConfig();
                 showStatus(t('mmdEmotionManager.configUseDefault', '使用默认配置'), 'info');
             }
+            return true;
         } catch (error) {
             console.error('加载情感映射配置失败:', error);
             if (selectionId == null || selectionId === currentSelectionId) {
                 applyDefaultConfig();
+                showStatus(t('mmdEmotionManager.configLoadFailed', '配置加载失败'), 'error');
             }
+            return false;
         }
     }
 
@@ -596,6 +599,18 @@
                     localStorage.removeItem('neko_mmd_emotion_mapping_changed');
                 } catch (error) {
                     console.warn('[MMD Emotion] 跨窗口配置通知失败，尝试通知父窗口:', error);
+                    // Storage may be unavailable even in a same-origin detached window.
+                    // This sender owns no listener and releases its channel immediately.
+                    let channel = null;
+                    try {
+                        channel = new BroadcastChannel('neko_mmd_emotion_mapping_changed');
+                        channel.postMessage({ model: modelName });
+                        return;
+                    } catch (broadcastError) {
+                        console.warn('[MMD Emotion] Broadcast notification unavailable:', broadcastError);
+                    } finally {
+                        channel?.close();
+                    }
                     if (window.opener && !window.opener.closed) {
                         const parentManager = window.opener.mmdManager;
                         if (parentManager?.currentModel?.configName === modelName) {
