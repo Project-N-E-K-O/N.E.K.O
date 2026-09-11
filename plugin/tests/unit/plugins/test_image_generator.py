@@ -3992,3 +3992,47 @@ async def test_windows_thumbnail_reads_original_bytes_from_stdin(tmp_path):
     result = await plugin._generate_thumbnail(assets / filename, filename, "png", source_data=PNG_BYTES)
     assert result == plugin._asset_url("thumb_" + filename)
     assert (assets / ("thumb_" + filename)).is_file()
+
+
+@pytest.mark.asyncio
+async def test_locked_cache_rejects_lower_limit_without_saving(monkeypatch, tmp_path):
+    plugin, _, store = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    for name in ("a", "b"):
+        (assets / (name * 32 + ".png")).write_bytes(PNG_BYTES)
+    def locked(filename):
+        raise PermissionError("locked")
+    monkeypatch.setattr(plugin, "_unlink_cached_file", locked)
+    before = plugin._settings_snapshot()
+    payload = await encrypted_save_payload(plugin, cache_max_count=1)
+    assert (await plugin.save_settings(**payload)).is_err()
+    assert plugin._settings_snapshot() == before
+    assert "settings" not in store.data
+
+
+def test_history_links_rebase_to_current_origin(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    filename = "a" * 32 + ".png"
+    (assets / filename).write_bytes(PNG_BYTES)
+    old = plugin._asset_url(filename)
+    monkeypatch.setattr(plugin, "_resolve_public_origin", lambda: "https://new.example:443")
+    projected = plugin._project_history_record({"result_url": old})
+    assert projected["result_url"] == "https://new.example:443/plugin/image_generator/ui/generated/" + filename
+
+
+@pytest.mark.asyncio
+async def test_finalize_geometry_runs_outside_event_loop(monkeypatch, tmp_path):
+    import threading
+    plugin, _, _ = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    prepare_asset_cache(plugin, tmp_path)
+    install_client(plugin, monkeypatch, FakeClient([FakeResponse(generation_payload())]))
+    main_thread = threading.get_ident()
+    observed = []
+    original = image_generator_module._image_geometry
+    def geometry(data):
+        observed.append(threading.get_ident())
+        return original(data)
+    monkeypatch.setattr(image_generator_module, "_image_geometry", geometry)
+    assert (await plugin.generate_image(prompt="cat")).is_ok()
+    assert observed and all(identity != main_thread for identity in observed)

@@ -2517,12 +2517,8 @@
         if (!window.confirm(t('confirm.reset', '确定恢复默认设置？API 密钥将继续保留。'))) return;
         setBusy(true);
         try {
-          const result = await callPlugin('reset_settings');
-          if (result && (result.settings || result.defaults)) {
-            renderState({ ...currentState, ...result });
-          } else {
-            await refreshState();
-          }
+          await callPlugin('reset_settings');
+          await refreshState();
           showToast(t('status.reset_done', '已恢复默认设置，API 密钥保持不变'), 'success');
         } catch (error) {
           showToast(errorMessage(error), 'error');
@@ -2537,7 +2533,7 @@
         setBusy(true);
         try {
           await callPlugin('clear_api_key');
-          await refreshState();
+          await refreshState({ populateForm: false });
           showToast(t('status.key_cleared', 'API 密钥已清除'), 'success');
         } catch (error) {
           showToast(errorMessage(error), 'error');

@@ -3331,7 +3331,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         if (
             parsed is None
             or not parsed.path.startswith(prefix)
-            or _origin_tuple(result_url) != _origin_tuple(self._resolve_public_origin())
+            or parsed.query or parsed.fragment
         ):
             projected["result_url"] = ""
             return projected
@@ -3347,6 +3347,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         ):
             projected["result_url"] = ""
         else:
+            projected["result_url"] = self._asset_url(filename)
             thumb_name = f"thumb_{filename.rsplit('.', 1)[0]}.png"
             thumb = asset_dir / thumb_name
             if thumb.is_file() and not thumb.is_symlink():
@@ -3874,7 +3875,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             if auto_show_override is None
             else auto_show_override
         )
-        geometry = _image_geometry(image_bytes)
+        geometry = await asyncio.to_thread(_image_geometry, image_bytes)
         push_attempted = False
         if should_show:
             push_attempted = self._push_chat_image(
@@ -4083,6 +4084,21 @@ class ImageGeneratorPlugin(NekoPluginBase):
         }
         return Ok(_redact_structure(payload, secrets))
 
+    async def _prepare_cache_limits(self, settings: Mapping[str, Any]) -> bool:
+        current = self._settings_snapshot()
+        if not any(settings[key] < current[key] for key in ("cache_max_count", "cache_max_bytes")):
+            return True
+        await self._acquire_lock(self._cache_lock)
+        try:
+            stats = await self._drain_on_cancel(asyncio.to_thread(self._prune_cache_sync, settings))
+            return (stats["count"] <= settings["cache_max_count"]
+                    and stats["total_bytes"] <= settings["cache_max_bytes"])
+        except Exception as exc:
+            self.logger.warning("Cache limit enforcement failed: failure_class={}", type(exc).__name__)
+            return False
+        finally:
+            self._cache_lock.release()
+
     async def _sanitize_history_before_secret_change(
         self,
         *,
@@ -4218,6 +4234,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     and (not self._settings_available or _origin_tuple(validated["api_base_url"])
                          != _origin_tuple(old_runtime_settings["api_base_url"]))):
                 return Err(SdkError("切换服务地址时请提供新 API 密钥或明确清除原密钥"))
+            if not await self._prepare_cache_limits(validated):
+                return Err(SdkError("无法执行新的缓存限额，请关闭占用图片的程序后重试"))
             await self._acquire_lock(self._history_lock)
             try:
                 # Snapshot the stored history BEFORE any mutation so a
@@ -4388,13 +4406,6 @@ class ImageGeneratorPlugin(NekoPluginBase):
             finally:
                 self._history_lock.release()
 
-        try:
-            await self._prune_cache()
-        except Exception as exc:
-            self.logger.warning(
-                "ImageGenerator cache prune after save failed: failure_class={}",
-                type(exc).__name__,
-            )
         key_configured = bool(effective_api_key)
         self.logger.info(
             "ImageGenerator settings saved: output_format={} "
@@ -4454,6 +4465,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         "请检查 plugin.toml"
                     )
                 )
+            if not await self._prepare_cache_limits(target_settings):
+                return Err(SdkError("无法执行默认缓存限额，请关闭占用图片的程序后重试"))
             async def commit_reset():
                 await self._acquire_lock(self._history_lock)
                 try:
@@ -4493,13 +4506,6 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 key_configured = bool(_validate_api_key(api_key)) if api_key else False
             except SdkError:
                 key_configured = False
-        try:
-            await self._prune_cache()
-        except Exception as exc:
-            self.logger.warning(
-                "ImageGenerator cache prune after reset failed: failure_class={}",
-                type(exc).__name__,
-            )
         return Ok(
             _redact_structure(
                 {

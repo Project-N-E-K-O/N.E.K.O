@@ -435,6 +435,10 @@ async function main() {
           result_url: '/plugin/image_generator/ui/generated/' + 'a'.repeat(32) + '.png',
           preview_url: '/plugin/image_generator/ui/generated/thumb_' + 'a'.repeat(32) + '.png',
         };
+      } else if (body.entry_id === 'clear_api_key') {
+        data = { api_key_configured: false };
+      } else if (body.entry_id === 'reset_settings') {
+        data = { reset: true, settings: panelState(old.envelope, true, 'reset-model').settings };
       } else if (body.entry_id === 'get_secret_envelope') {
         const issued = fresh[envelopeCallCount];
         check(issued, 'the panel requested more than two fresh envelopes');
@@ -569,6 +573,16 @@ async function main() {
     check(elements.get('model').value === 'unsaved-after-save', 'test discarded unsaved form edits');
     check(elements.get('testPreview').children[0].src.includes('/thumb_'), 'test card loaded original');
     check(!elements.get('testResultLink').dataset.url.includes('/thumb_'), 'lightbox lost original');
+    const beforeClear = entryCalls.filter((entry) => entry === 'get_panel_state').length;
+    elements.get('clearKeyButton').dispatchEvent(new FakeEvent('click'));
+    await waitFor(() => entryCalls.filter((entry) => entry === 'get_panel_state').length > beforeClear
+      && !elements.get('clearKeyButton').disabled, 'clear key refresh');
+    check(elements.get('model').value === 'unsaved-after-save', 'clear key discarded unsaved fields');
+    const beforeReset = entryCalls.filter((entry) => entry === 'get_panel_state').length;
+    elements.get('resetButton').dispatchEvent(new FakeEvent('click'));
+    await waitFor(() => entryCalls.filter((entry) => entry === 'get_panel_state').length > beforeReset
+      && !elements.get('resetButton').disabled, 'authoritative reset refresh');
+    check(elements.get('model').value === 'persisted-model-after-refresh', 'reset did not fetch authoritative state');
     check(
       elements.get('credentialValue').textContent.includes('已配置'),
       `credential status is not configured: ${elements.get('credentialValue').textContent}`,
@@ -676,7 +690,7 @@ def test_save_uses_fresh_envelopes_retries_once_and_refreshes_panel(
 
     assert result["envelopeCallCount"] == 2
     assert result["saveCallCount"] == 2
-    assert result["model"] == "unsaved-after-save"
+    assert result["model"] == "persisted-model-after-refresh"
     assert result["apiKey"] == ""
     assert "已配置" in str(result["credential"])
 
