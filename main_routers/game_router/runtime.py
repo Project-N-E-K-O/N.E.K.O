@@ -2420,6 +2420,7 @@ async def game_sdk_context_read(game_type: str, request: Request):
             scopes.append(scope)
 
     available: dict[str, Any] = {}
+    scope_metadata: dict[str, Any] = {}
     unavailable: list[str] = []
     for scope in scopes:
         if scope not in _SDK_GAME_CONTEXT_SCOPES:
@@ -2446,9 +2447,13 @@ async def game_sdk_context_read(game_type: str, request: Request):
             available[scope] = state.get("last_state") if isinstance(state.get("last_state"), dict) else {}
         elif scope == "pregame-context":
             available[scope] = state.get("preGameContext") if isinstance(state.get("preGameContext"), dict) else {}
+            scope_metadata[scope] = {
+                "source": _normalize_short_text(state.get("pre_game_context_source"), max_chars=80),
+                "error": _normalize_short_text(state.get("pre_game_context_error"), max_chars=500),
+            }
     try:
         bounded = _sdk_bounded_json_copy(
-            available,
+            {"scopes": available, "scope_metadata": scope_metadata},
             field="context_response",
             maximum_bytes=_SDK_GAME_PROTOCOL_MAX_BYTES,
         )
@@ -2457,7 +2462,8 @@ async def game_sdk_context_read(game_type: str, request: Request):
     return {
         "ok": True,
         "session_id": session_id,
-        "scopes": bounded,
+        "scopes": bounded["scopes"],
+        "scope_metadata": bounded["scope_metadata"],
         "unavailable_scopes": unavailable,
     }
 
