@@ -81,6 +81,17 @@ def test_numeric_v2_rejects_more_than_four_metrics():
         normalize_metric_drafts([{"name": str(index)} for index in range(5)])
 
 
+@pytest.mark.parametrize("convert", [normalize_metric_drafts, metrics_to_package])
+def test_duplicate_metric_ids_cannot_silently_drop_author_definitions(convert):
+    from copy import deepcopy
+    metric = preset_metric_catalog()[0]
+    metrics = [metric, {**metric, "name": "Different definition"}]
+    original = deepcopy(metrics)
+    with pytest.raises(ValueError, match="duplicate_metric_id"):
+        convert(metrics)
+    assert metrics == original
+
+
 def test_numeric_v2_generator_compiler_uses_neko_contract():
     source = numeric_v2_story()
     source["metric_schema"]["trust"]["visibility"] = "public"

@@ -123,6 +123,14 @@ def test_run_pending_storage_migration_commits_policy_and_copies_runtime_entries
     source_root = config_manager.app_docs_dir
     target_root = tmp_path / "target-selected" / "N.E.K.O"
 
+    theater_files = ["numeric_v2/packages/story.json", "numeric_v2/sessions/session.json",
+                     "numeric_v2/end_receipts/receipt.json", "numeric_v2/public_archives/archive.json",
+                     "workshop/projects/author.json", "numeric_v2/forget_transactions/pending.json"]
+    for relative in theater_files:
+        path = source_root / "theater" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative, encoding="utf-8")
+
     (source_root / "config").mkdir(parents=True, exist_ok=True)
     (source_root / "memory" / "A").mkdir(parents=True, exist_ok=True)
     (source_root / "card_faces").mkdir(parents=True, exist_ok=True)
@@ -150,6 +158,9 @@ def test_run_pending_storage_migration_commits_policy_and_copies_runtime_entries
     assert result["payload"]["status"] == STORAGE_MIGRATION_STATUS_COMPLETED
     assert result["payload"]["retained_source_root"] == str(source_root.resolve())
     assert result["payload"]["retained_source_mode"] == "manual_retention"
+    for relative in theater_files:
+        assert (target_root / "theater" / relative).read_text(encoding="utf-8") == relative
+        assert (source_root / "theater" / relative).read_text(encoding="utf-8") == relative
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == '{"current":"A"}'
     assert (target_root / "memory" / "A" / "recent.json").read_text(encoding="utf-8") == '[{"role":"user","content":"hi"}]'
     assert (target_root / "card_faces" / "YUI.png").read_bytes() == b"fake-png"

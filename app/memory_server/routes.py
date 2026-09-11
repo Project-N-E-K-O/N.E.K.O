@@ -135,18 +135,10 @@ def _theater_index_events(lanlan_name: str, messages: list) -> dict[str, tuple[s
     }
 
 
-def _contains_message_batch(history: list, batch: list) -> bool:
-    """检查完整消息批次是否已经连续出现，用于恢复 recent 写成但索引未提交的窗口。"""  # noqa: DOCSTRING_CJK
+def _contains_cache_event(history: list, event_id: str) -> bool:
+    """Recover an append by event identity, allowing identical text in distinct turns."""
 
-    serialized_history = messages_to_dict(history)
-    serialized_batch = messages_to_dict(batch)
-    batch_size = len(serialized_batch)
-    if not batch_size or batch_size > len(serialized_history):
-        return False
-    return any(
-        serialized_history[index:index + batch_size] == serialized_batch
-        for index in range(len(serialized_history) - batch_size + 1)
-    )
+    return any(message_metadata(message).get("cache_event_id") == event_id for message in history)
 
 
 def _theater_memory_render_state(history: list):
@@ -1109,11 +1101,13 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                             ),
                         )
                     elif stable_event_id:
+                        for message in input_history:
+                            message.metadata["cache_event_id"] = stable_event_id
                         current_history = await runtime.recent_history_manager.aget_recent_history(
                             lanlan_name
                         )
                         # 如果上次在 recent 写成后中断，只补 time-indexed，不再追加正文。
-                        if not _contains_message_batch(current_history, input_history):
+                        if not _contains_cache_event(current_history, stable_event_id):
                             await runtime.recent_history_manager.update_history(
                                 input_history,
                                 lanlan_name,

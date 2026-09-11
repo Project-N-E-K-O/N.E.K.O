@@ -57,6 +57,56 @@ class NumericV2ArchiveStore:
     def _session_path(self, session_id: str) -> Path:
         return self.root / f"session-{self._session_key(session_id)}.json"
 
+    def _forget_path(self, story_id: str, character_id: str) -> Path:
+        key = json.dumps([story_id, character_id], ensure_ascii=False)
+        return self.root.parent / "forget_transactions" / f"{self._session_key(key)}.json"
+
+    def pending_forget(self, story_id: str, character_id: str) -> dict[str, Any] | None:
+        """Return the durable, scoped intent left by an interrupted forget request."""
+        pending = self._read(self._forget_path(story_id, character_id))
+        if pending is not None and (
+            pending.get("schema") != "neko.theater.forget.v1"
+            or pending.get("story_id") != story_id
+            or pending.get("character_id") != character_id
+        ):
+            raise NumericV2ArchiveError("numeric_forget_transaction_invalid")
+        return pending
+
+    def prepare_forget(self, *, story_id: str, character_id: str,
+                       legacy_catgirl_name: str, session: Any = None) -> dict[str, Any]:
+        """Freeze targets and the revision boundary before either service deletes data."""
+        pending = self.pending_forget(story_id, character_id)
+        if pending is not None:
+            return pending
+        scope = dict(story_id=story_id, character_id=character_id,
+                     legacy_catgirl_name=legacy_catgirl_name)
+        archives = self.list_public_archives(**scope, raise_on_io_error=True)
+        receipts = self.receipt_paths_for_scope(**scope, raise_on_io_error=True)
+        pending = {
+            "schema": "neko.theater.forget.v1", "story_id": story_id,
+            "character_id": character_id,
+            "session_id": session.session_id if session is not None else "",
+            "through_revision": session.revision if session is not None else -1,
+            "archive_files": [Path(archive["path"]).name for archive in archives],
+            "receipt_files": [path.name for path in receipts],
+        }
+        self._write(self._forget_path(story_id, character_id), pending)
+        return pending
+
+    def delete_forget_files(self, pending: Mapping[str, Any]) -> None:
+        """Retry the original deletion list, including pointers orphaned by an interruption."""
+        targets = []
+        for key, root in (("archive_files", self.public_archive_root), ("receipt_files", self.root)):
+            for name in pending[key]:
+                if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_-]+\.json", name):
+                    raise NumericV2ArchiveError("numeric_forget_transaction_invalid")
+                targets.append(root / name)
+        for path in targets:
+            path.unlink(missing_ok=True)
+
+    def complete_forget(self, story_id: str, character_id: str) -> None:
+        self._forget_path(story_id, character_id).unlink(missing_ok=True)
+
     def _receipt_path(self, receipt_id: str) -> Path:
         # 回执 ID 只能采用服务端生成的固定格式，禁止路径分隔符和父目录片段逃逸回执根目录。
         if not _RECEIPT_ID_RE.fullmatch(str(receipt_id or "")):

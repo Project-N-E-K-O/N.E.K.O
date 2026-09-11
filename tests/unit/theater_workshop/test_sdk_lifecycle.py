@@ -340,7 +340,8 @@ async def test_maintenance_install_writes_no_formal_package(opened):
     assert not (config.app_docs_dir / "theater/numeric_v2/packages").exists()
 
 
-def test_model_configuration_is_explicit_and_request_budget_has_no_hidden_retry(monkeypatch):
+@pytest.mark.parametrize("api_key", ["test-key", "", None])
+def test_model_configuration_is_explicit_and_request_budget_has_no_hidden_retry(monkeypatch, api_key):
     from types import SimpleNamespace
     from utils import llm_client
     calls = []
@@ -360,7 +361,7 @@ def test_model_configuration_is_explicit_and_request_budget_has_no_hidden_retry(
         NekoWorkshopModel({})([], **options)
     with pytest.raises(WorkshopError, match="workshop_model_endpoint_required"):
         NekoWorkshopModel({"model":"selected-model", "api_key":"test-key"})([], **options)
-    reply = NekoWorkshopModel({"model":"selected-model", "api_key":"test-key",
+    reply = NekoWorkshopModel({"model":"selected-model", "api_key":api_key,
                               "max_input_tokens":16000,
                               "base_url":"https://example.invalid/v1"})([], **options)
     assert reply.model == "selected-model"
@@ -369,6 +370,7 @@ def test_model_configuration_is_explicit_and_request_budget_has_no_hidden_retry(
     assert calls[0]["max_retries"] == 0
     assert calls[0]["max_completion_tokens"] == 16000
     assert calls[0]["timeout"] == 120
+    assert calls[0]["api_key"] == (api_key or "")
     assert calls[1] == {"response_format":{"type":"json_object"}}
 
 

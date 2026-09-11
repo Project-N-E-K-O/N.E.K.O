@@ -84,6 +84,9 @@ class CharactersMixin:
                     current_mtime = os.path.getmtime(character_json_path)
                 except OSError:
                     current_mtime = None
+                if cache_dirty and current_mtime is None:
+                    # An unreadable source cannot supersede an unpersisted identity.
+                    return deepcopy(cache)
                 if current_mtime == cache_mtime and (
                     current_mtime is not None or cache_dirty
                 ):
@@ -121,10 +124,15 @@ class CharactersMixin:
                 except OSError:
                     loaded_mtime = None
             except FileNotFoundError:
+                if cache_dirty and cache is not None and cache_path == character_json_path:
+                    return deepcopy(cache)
                 logger.info("未找到猫娘配置文件 %s，使用默认配置。", character_json_path)
                 character_data = self.get_default_characters()
                 loaded_mtime = None
             except Exception as e:
+                if cache_dirty and cache is not None and cache_path == character_json_path:
+                    # Preserve the dirty flag and original mtime for a later retry.
+                    return deepcopy(cache)
                 logger.error("读取猫娘配置文件出错: %s，使用默认人设。", e)
                 # 故障回退不是磁盘文件的权威内容，后续迁移只能在内存中使用，绝不能反写覆盖原文件。
                 character_data = (

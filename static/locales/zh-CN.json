@@ -2995,6 +2995,7 @@
         "paused": "已退出",
         "sessionHintPaused": "上次演绎已退出，可以继续原进度或开始新的演绎。",
         "sessionHintPausedRestart": "上次演绎已退出，可以继续原进度或重新开始。",
+        "sessionHintPackageChanged": "剧本已更新，旧进度无法继续；结束旧演绎后可以重新开始。",
         "sessionHintEndedRestart": "本次演绎已结束，点击“重新开始”创建新的演绎。",
         "selectorReturnFailed": "已退出演绎，但剧本页面打开失败。请点击“返回剧本页”重试。",
         "rememberPerformanceRetentionBody": "猫娘的日常记忆只保留公开摘要，完整公开演绎保存在小剧场档案中；隐藏数值与路线条件不会写入。",

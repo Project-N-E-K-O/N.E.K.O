@@ -344,6 +344,47 @@ def test_selector_opens_identity_checked_performance_archive(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("status", ["active", "ended"])
+def test_upgraded_save_offers_cleanup_without_continuation(mock_page: Page, running_server: str, status):
+    _install_selector_routes(mock_page, session={
+        "session_id": "old-package", "revision": 4, "status": status,
+        "ended_reason": "user_exit" if status == "ended" else "",
+        "continuation_allowed": False,
+    })
+    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
+    expect(mock_page.locator("#theater-continue-btn")).to_be_disabled()
+    expect(mock_page.locator("#theater-session-hint")).to_contain_text("剧本已更新")
+    if status == "active":
+        expect(mock_page.locator("#theater-end-btn")).to_be_enabled()
+    else:
+        expect(mock_page.locator("#theater-start-btn")).to_be_enabled()
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("operation", ["start", "input"])
+def test_transport_keeps_slow_valid_requests_alive(mock_page: Page, running_server: str, operation):
+    _install_selector_routes(mock_page)
+    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
+    mock_page.clock.install()
+    mock_page.evaluate("""operation => {
+        window.__requestAborted = false;
+        const originalFetch = window.fetch.bind(window);
+        const target = '/api/theater-numeric/session/' + operation;
+        window.fetch = (url, options) => url !== target ? originalFetch(url, options) : new Promise((resolve, reject) => {
+            window.__finishRequest = () => resolve({ status: 200, json: async () => ({ ok: true }) });
+            options.signal.addEventListener('abort', () => { window.__requestAborted = true; reject(new Error('aborted')); });
+        });
+        window.nekoTheaterTransport.requestJson('/api/theater-numeric/session/' + operation, { method: 'POST', body: {} })
+            .then(result => { window.__requestResult = result; }).catch(() => {});
+    }""", operation)
+    mock_page.wait_for_function("typeof window.__finishRequest === 'function'")
+    mock_page.clock.fast_forward(90000)
+    assert mock_page.evaluate("window.__requestAborted") is False
+    mock_page.evaluate("window.__finishRequest()")
+    mock_page.wait_for_function("window.__requestResult && window.__requestResult.ok")
+
+
+@pytest.mark.frontend
 def test_active_story_only_enables_continue(mock_page: Page, running_server: str):
     _install_selector_routes(
         mock_page,

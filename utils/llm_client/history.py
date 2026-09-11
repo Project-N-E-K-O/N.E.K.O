@@ -113,6 +113,8 @@ class SQLChatMessageHistory:
 
         from sqlalchemy import delete, insert
 
+        if not messages:
+            raise ValueError("empty_conversation_replacement")
         rows = [
             {"session_id": self.session_id, "message": self._serialize(message)}
             for message in messages

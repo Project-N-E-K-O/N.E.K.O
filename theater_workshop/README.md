@@ -26,6 +26,8 @@ async def open_authoring(config_manager, selected_model_config, input_budget):
     )
 ```
 
+所选模型可使用无密钥的兼容端点；宿主向统一客户端显式传空密钥，不继承进程环境中的凭据。需要鉴权的端点仍由供应商返回认证失败。作者配置中的数值 ID 必须唯一，重复 ID 在保存和编译前的字典投影阶段报 `duplicate_metric_id`，不会静默覆盖较早定义。
+
 不传模型也可以管理、编译现有项目，但生成／评分会报 `workshop_model_required`。同根再次显式传入不同模型会报 `workshop_model_mismatch`，不能在已有请求中间切换模型；先等待 `host.close()` 完成，再用新配置打开。读取同根已有宿主可调用 `open_workshop(config_manager)`。
 
 异步业务使用 `host.call()`，它把同步核心放进工作线程。调用方持有模型配置和宿主生命周期；不要在每次请求结束后关闭其他调用方仍在使用的工坊。

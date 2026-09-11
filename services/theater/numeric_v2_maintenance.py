@@ -15,7 +15,7 @@ import uuid
 from typing import Any, Callable, Mapping
 
 from .numeric_v2_archive import NumericV2ArchiveStore
-from .numeric_v2_registry import NumericV2PackageRegistry
+from .numeric_v2_registry import NumericV2PackageRegistry, NumericV2PackageError, NumericV2PackageNotFoundError
 from .numeric_v2_runtime import NumericV2RuntimeError
 from .numeric_v2_store import (
     NumericV2SessionStore,
@@ -319,6 +319,7 @@ def audit_numeric_v2_storage(
     valid: list[tuple[Path, dict[str, str], int, int, str]] = []
     quarantined = 0
     engine_cache: dict[str, Any] = {}
+    unloadable_stories: set[str] = set()
     for path in sorted(session_root.glob("*.json")):
         try:
             summary = _read_numeric_v2_session_summary(
@@ -328,6 +329,8 @@ def audit_numeric_v2_storage(
             if summary is None or summary["session_id"] != path.stem:
                 raise NumericV2StoreError("numeric_session_summary_invalid")
             story_id = summary["story_id"]
+            if story_id in unloadable_stories:
+                continue
             if story_id not in engine_cache:
                 package_path = registry.package_path(story_id)
                 try:
@@ -337,7 +340,16 @@ def audit_numeric_v2_storage(
                     raise NumericV2StoreError(
                         "numeric_session_story_missing"
                     ) from None
-                engine_cache[story_id] = registry.load_engine(story_id)
+                try:
+                    engine_cache[story_id] = registry.load_engine(story_id)
+                except NumericV2PackageNotFoundError:
+                    raise
+                except NumericV2PackageError as exc:
+                    if _caused_by_os_error(exc):
+                        raise
+                    # An unusable package says nothing about the validity of its saves.
+                    unloadable_stories.add(story_id)
+                    continue
             store = NumericV2SessionStore(theater_root, engine_cache[story_id])
             stored = store._read(path)
             try:
@@ -368,7 +380,7 @@ def audit_numeric_v2_storage(
                     effective_character_id,
                 )
             )
-        except Exception as exc:
+        except (NumericV2StoreError, NumericV2RuntimeError, NumericV2PackageError, NumericV2PackageNotFoundError, OSError) as exc:
             if _caused_by_os_error(exc):
                 # 权限、挂载或设备故障可能只是暂时状态；本轮中止，绝不移动仍可能有效的数据。
                 raise NumericV2StoreError(
@@ -393,7 +405,10 @@ def audit_numeric_v2_storage(
     for item in valid:
         slots.setdefault((item[1]["story_id"], item[4]), []).append(item)
 
-    rebuilt: dict[str, dict[str, str]] = {}
+    rebuilt: dict[str, dict[str, str]] = {
+        story_id: dict(old_index[story_id])
+        for story_id in unloadable_stories if story_id in old_index
+    }
     for (story_id, character_id), candidates in slots.items():
         indexed_id = old_index.get(story_id, {}).get(character_id, "")
         selected = next(
@@ -424,7 +439,7 @@ def audit_numeric_v2_storage(
 
     _write_story_session_slots(index_path, rebuilt)
     _trim_quarantine_safely(quarantine_root)
-    return {"valid": sum(len(slots) for slots in rebuilt.values()), "quarantined": quarantined}
+    return {"valid": sum(len(slots) for story_id, slots in rebuilt.items() if story_id not in unloadable_stories), "quarantined": quarantined}
 
 
 def maintain_numeric_v2_storage_once(

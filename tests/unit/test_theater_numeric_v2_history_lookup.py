@@ -49,6 +49,24 @@ def test_lookup_pages_keep_complete_original_fields_and_stable_ids():
 
 
 @pytest.mark.asyncio
+async def test_history_paging_does_not_block_the_serving_event_loop(monkeypatch):
+    import threading
+    original = history._pages
+    loop_thread = threading.get_ident()
+    observed = []
+    def pages(*args):
+        observed.append(threading.get_ident())
+        return original(*args)
+    async def no_model(_):
+        raise RuntimeError("No provider needed for this paging check")
+    monkeypatch.setattr(history, "_pages", pages)
+    monkeypatch.setattr(history, "_model_config", no_model)
+    result = await history.lookup_history(object(), _session(), "许可是否撤回？")
+    assert observed and observed[0] != loop_thread
+    assert result["pages_total"] == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['found', 'unknown', 'invented_id', 'timeout'])
 async def test_lookup_selects_real_records_and_reports_failures(monkeypatch, mode):
     calls = []

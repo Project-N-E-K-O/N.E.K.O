@@ -2995,6 +2995,7 @@
         "paused": "Exited",
         "sessionHintPaused": "The previous performance was exited. Continue from its progress or start a new one.",
         "sessionHintPausedRestart": "The previous performance was exited. Continue from its progress or restart.",
+        "sessionHintPackageChanged": "The script has changed, so this save cannot continue. End the old performance to start again.",
         "sessionHintEndedRestart": "This performance has ended. Select Restart to create a new one.",
         "selectorReturnFailed": "You exited the performance, but the story page could not open. Select Return to stories to try again.",
         "rememberPerformanceRetentionBody": "Daily memory keeps only the public summary. The full public performance is saved in Theater archives; hidden values and route conditions are excluded.",

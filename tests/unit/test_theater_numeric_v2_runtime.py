@@ -1093,6 +1093,39 @@ async def test_numeric_v2_startup_audit_quarantines_missing_story_session(tmp_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["upgrade", "compile", "io", "unknown"])
+async def test_audit_keeps_all_sessions_when_package_cannot_be_loaded(tmp_path, monkeypatch, failure):
+    from services.theater.numeric_v2_registry import NumericV2PackageError
+    story = _branch_story()
+    registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
+    registry.import_package(story)
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    for i in range(8):
+        await runtime.start_session(session_id=f"preserve_{i}", catgirl_binding=_binding(), opening_performance=_opening())
+    index = tmp_path / "numeric_v2/story_sessions.json"
+    before = {path: path.read_bytes() for path in runtime.store.root.glob("*.json")}
+    original_index = index.read_bytes()
+    calls = []
+    def load(story_id):
+        calls.append(story_id)
+        if failure == "unknown":
+            raise RuntimeError("unexpected loader failure")
+        if failure == "io":
+            raise NumericV2PackageError("read failed") from OSError("unreadable")
+        raise NumericV2PackageError("numeric_v2_upgrade_required" if failure == "upgrade" else "compile failed")
+    monkeypatch.setattr(registry, "load_engine", load)
+    if failure in {"io", "unknown"}:
+        with pytest.raises((numeric_v2_store.NumericV2StoreError, RuntimeError)):
+            audit_numeric_v2_storage(tmp_path, registry)
+    else:
+        assert audit_numeric_v2_storage(tmp_path, registry) == {"valid": 0, "quarantined": 0}
+    assert len(calls) == 1
+    assert json.loads(index.read_bytes()) == json.loads(original_index)
+    assert all(path.read_bytes() == contents for path, contents in before.items())
+    assert not list((tmp_path / "numeric_v2/quarantine").glob("*"))
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_recovers_prepared_story_delete_after_interruption(tmp_path):
     story = _branch_story()
     registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")

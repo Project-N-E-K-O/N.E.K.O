@@ -100,14 +100,16 @@
             : t(startKey, '开始');
         startButton.setAttribute('data-i18n', startKey);
         startButton.disabled = state.busy || !state.storyId || kind === 'active';
-        $('theater-continue-btn').disabled = state.busy || (kind !== 'active' && kind !== 'paused');
+        $('theater-continue-btn').disabled = state.busy || (state.session && state.session.continuation_allowed === false) || (kind !== 'active' && kind !== 'paused');
         var endButton = $('theater-end-btn');
         endButton.hidden = kind !== 'active';
         endButton.disabled = state.busy || kind !== 'active';
         $('theater-delete-btn').disabled = state.busy || !state.storyId;
         startButton.classList.toggle('is-current-primary', kind === 'new' || kind === 'ended');
         $('theater-continue-btn').classList.toggle('is-current-primary', kind === 'active' || kind === 'paused');
-        $('theater-session-hint').textContent = kind === 'active'
+        $('theater-session-hint').textContent = state.session && state.session.continuation_allowed === false
+            ? t('theater.sessionHintPackageChanged', '剧本已更新，旧进度无法继续；结束旧演绎后可以重新开始。')
+            : kind === 'active'
             ? t('theater.sessionHintActive', '演绎正在进行，点击“继续”返回演绎。')
             : kind === 'paused'
                 ? t('theater.sessionHintPausedRestart', '上次演绎已退出，可以继续原进度或重新开始。')

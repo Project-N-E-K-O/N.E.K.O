@@ -840,11 +840,32 @@ async def execute_numeric_v2_turn(
         3,
     )
     diagnostics["completed"] = True
+    # Reviews can quote private player/candidate text. Logs accept only these
+    # numeric timings, counters and flags; detailed diagnostics stay with the caller.
+    log_diagnostics = {
+        key: diagnostics[key]
+        for key in (
+            "evaluator_model_attempts", "actor_generation_attempts", "actor_provider_calls",
+            "actor_suggestion_fill_attempts", "actor_suggestion_fill_provider_calls",
+            "transition_judge_calls", "dispute_review_attempts", "semantic_rewrite_attempts",
+            "transition_cancellations", "missed_initiation_recoveries", "unsafe_suggestions_removed",
+            "transition_judge_degraded", "dispute_review_degraded", "semantic_review_fallback",
+            "evaluator_degraded", "completed",
+        )
+        if type(diagnostics.get(key)) in (int, bool)
+    }
+    log_diagnostics["timings_ms"] = {
+        key: value for key in (
+            "evaluator_work", "runtime_prepare_work", "actor_work", "transition_judge_work",
+            "history_lookup_work", "commit_work", "total_wall",
+        )
+        if type(value := diagnostics["timings_ms"].get(key)) in (int, float)
+    }
     logger.info(
         "Numeric v2 workflow timing: session_id=%s revision=%s diagnostics=%s",
         current.session.session_id,
         stored.session.revision,
-        diagnostics,
+        log_diagnostics,
     )
     return NumericV2TurnWorkflowResult(
         stored=stored,

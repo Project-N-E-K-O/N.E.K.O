@@ -2553,6 +2553,10 @@ def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
 def test_numeric_v2_can_end_session_after_story_package_upgrade(tmp_path, monkeypatch):
     """剧本更新后旧 Session 不可继续，但仍必须能够原子结束。"""  # noqa: DOCSTRING_CJK
 
+    from types import SimpleNamespace
+    async def cache(*args, **kwargs):
+        return SimpleNamespace(content=b"{}", is_success=True, json=lambda: {"status": "cached"})
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=cache))
     client = _client(tmp_path, monkeypatch)
     with client:
         started = client.post(
@@ -2574,6 +2578,12 @@ def test_numeric_v2_can_end_session_after_story_package_upgrade(tmp_path, monkey
             json.dumps(upgraded_story, ensure_ascii=False),
             encoding="utf-8",
         )
+
+        recovered = client.get("/api/theater-numeric/session/active", params={"story_id": "numeric_v2_contract"})
+        assert recovered.status_code == 200
+        assert recovered.json()["session"]["session_id"] == "old_package_exit"
+        assert recovered.json()["session"]["continuation_allowed"] is False
+        assert recovered.json()["scene"] is None
 
         ended = client.post(
             "/api/theater-numeric/session/end",
@@ -2602,6 +2612,19 @@ def test_numeric_v2_can_end_session_after_story_package_upgrade(tmp_path, monkey
         )
         assert resumed.status_code == 409
         assert resumed.json()["reason"] == "story_package_revision_mismatch"
+
+        archived = client.post("/api/theater-numeric/session/archive", json={
+            "story_id": "numeric_v2_contract", "session_id": "old_package_exit", "revision": 0,
+            "end_receipt_id": ended.json()["end_receipt_id"], "archive_request_id": ended.json()["archive_request_id"],
+        })
+        assert archived.status_code == 200
+        assert archived.json()["status"] == "written"
+
+        restarted = client.post("/api/theater-numeric/session/start", json={
+            "story_id": "numeric_v2_contract", "session_id": "after_upgrade", "replace_existing": True,
+        })
+        assert restarted.status_code == 200
+        assert restarted.json()["session"]["session_id"] == "after_upgrade"
 
 
 def test_numeric_v2_resume_rechecks_catgirl_inside_lifecycle_locks(
@@ -3029,6 +3052,135 @@ def test_numeric_v2_archive_skip_holds_lifecycle_locks(tmp_path, monkeypatch):
     assert skipped.status_code == 200
     assert skipped.json()["status"] == "skipped"
     assert observed == {"story_guard": True, "character_guard": True}
+
+
+def test_skip_archive_rechecks_owner_after_waiting_for_character_lock(tmp_path, monkeypatch):
+    class Config(_ConfigManager):
+        current_name = "测试猫娘"
+        def load_characters(self):
+            data = super().load_characters()
+            data["猫娘"]["新猫娘"] = _catgirl_profile("新猫娘", "另一个角色")
+            data["当前猫娘"] = self.current_name
+            return data
+    config = Config(tmp_path)
+    client = _client(tmp_path, monkeypatch, config)
+    with client:
+        client.post("/api/theater-numeric/session/start", json={"story_id": "numeric_v2_contract", "session_id": "skip_owner"})
+        ended = client.post("/api/theater-numeric/session/end", json={
+            "story_id": "numeric_v2_contract", "session_id": "skip_owner", "base_revision": 0, "base_lifecycle_revision": 0,
+        }).json()
+        original_lock = numeric_theater_router.character_config_mutation_lock
+        @asynccontextmanager
+        async def switch_at_lock():
+            async with original_lock:
+                config.current_name = "新猫娘"
+                yield
+        monkeypatch.setattr(numeric_theater_router, "character_config_mutation_lock", switch_at_lock())
+        skipped = client.post("/api/theater-numeric/session/archive/skip", json={
+            "story_id": "numeric_v2_contract", "session_id": "skip_owner", "revision": 0,
+            "end_receipt_id": ended["end_receipt_id"],
+        })
+    assert skipped.status_code == 409
+    assert skipped.json()["reason"] == "numeric_end_receipt_character_mismatch"
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    assert store.load(ended["end_receipt_id"])["status"] == "pending"
+
+
+def test_forget_preserves_maintenance_error_for_the_common_handler(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    error = MaintenanceModeError("applying_snapshot", operation="save", target="theater/memory")
+    async def blocked(*args):
+        raise error
+    monkeypatch.setattr(numeric_theater_router, "_assert_numeric_writable", blocked)
+    with client, pytest.raises(MaintenanceModeError) as caught:
+        client.post("/api/theater-numeric/memory/forget", json={
+            "story_id": "numeric_v2_contract", "character_id": "character_" + "1" * 32,
+        })
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("failure", ["watermark", "remote", "partial_files", "completion"])
+def test_forget_transaction_recovers_after_interruption_and_blocks_archival(tmp_path, monkeypatch, failure):
+    from services.theater.numeric_v2_store import NumericV2SessionStore
+    from types import SimpleNamespace
+    remote_calls = []
+    async def post(url, **kwargs):
+        if url.endswith("/theater/forget"):
+            remote_calls.append(url)
+            if failure == "remote" and len(remote_calls) == 1:
+                raise OSError("lost response after remote deletion")
+            return SimpleNamespace(content=b"{}", is_success=True, json=lambda: {"ok": True})
+        return SimpleNamespace(content=b"{}", is_success=True, json=lambda: {"status": "cached"})
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: SimpleNamespace(post=post))
+    client = _client(tmp_path, monkeypatch)
+    store = NumericV2ArchiveStore(tmp_path / "theater")
+    scope = {"story_id": "numeric_v2_contract", "character_id": "character_" + "1" * 32}
+    with client:
+        client.post("/api/theater-numeric/session/start", json={"story_id": scope["story_id"], "session_id": "forget_retry"})
+        ended = client.post("/api/theater-numeric/session/end", json={
+            "story_id": scope["story_id"], "session_id": "forget_retry", "base_revision": 0, "base_lifecycle_revision": 0,
+        }).json()
+        archive_payload = {"story_id": scope["story_id"], "session_id": "forget_retry", "revision": 0,
+                           "end_receipt_id": ended["end_receipt_id"], "archive_request_id": ended["archive_request_id"]}
+        assert client.post("/api/theater-numeric/session/archive", json=archive_payload).status_code == 200
+        with monkeypatch.context() as broken:
+            if failure == "watermark":
+                async def fail_watermark(*args, **kwargs):
+                    raise OSError("watermark write failed")
+                broken.setattr(NumericV2SessionStore, "forget_history_through_current_revision", fail_watermark)
+            elif failure == "partial_files":
+                def fail_files(self, pending):
+                    self._receipt_path(ended["end_receipt_id"]).unlink()
+                    raise OSError("interrupted before pointer cleanup")
+                broken.setattr(NumericV2ArchiveStore, "delete_forget_files", fail_files)
+            elif failure == "completion":
+                def fail_completion(*args):
+                    raise OSError("interrupted before intent removal")
+                broken.setattr(NumericV2ArchiveStore, "complete_forget", fail_completion)
+            first = client.post("/api/theater-numeric/memory/forget", json=scope)
+        assert first.status_code == 502
+        pending = NumericV2ArchiveStore(tmp_path / "theater").pending_forget(**scope)
+        assert pending is not None and pending["through_revision"] == 0
+        blocked = client.post("/api/theater-numeric/session/archive", json=archive_payload)
+        assert blocked.status_code != 200
+        retry = client.post("/api/theater-numeric/memory/forget", json=scope)
+        assert retry.status_code == 200
+        assert store.pending_forget(**scope) is None
+        assert store.list_public_archives(**scope) == []
+        active = client.get("/api/theater-numeric/session/active", params={"story_id": scope["story_id"]})
+        assert active.status_code == 200
+        assert active.json()["archive_status"] == "skipped"
+        session_data = json.loads((tmp_path / "theater/numeric_v2/sessions/forget_retry.json").read_text())
+        assert session_data["session"]["forgotten_through_revision"] == 0
+    if failure == "watermark":
+        assert len(remote_calls) == 1
+
+
+def test_workflow_timing_log_never_serializes_review_or_candidate_text(tmp_path, monkeypatch):
+    from services.theater import numeric_v2_workflow
+    logs = []
+    client = _client(tmp_path, monkeypatch)
+    async def review(*args, **kwargs):
+        return NumericV2TransitionOfferReview(offer_present=False, valid=False,
+            body_violations=(), unsafe_suggestion_indexes=(), failure_reason="PRIVATE_REVIEW_TEXT")
+    async def actor(*args, **kwargs):
+        return _performance("PRIVATE_CANDIDATE_TEXT")
+    monkeypatch.setattr(numeric_theater_router.NumericV2MetricEvaluator, "validate_transition_offer", review)
+    monkeypatch.setattr(numeric_theater_router.NumericV2Actor, "generate_turn", actor)
+    monkeypatch.setattr(numeric_v2_workflow.logger, "info", lambda *args: logs.append(args))
+    with client:
+        client.post("/api/theater-numeric/session/start", json={"story_id": "numeric_v2_contract", "session_id": "private_logs"})
+        response = client.post("/api/theater-numeric/session/input", json={
+            "story_id": "numeric_v2_contract", "session_id": "private_logs", "base_revision": 0,
+            "client_turn_id": "private_turn", "message": "PRIVATE_PLAYER_TEXT",
+        })
+    assert response.status_code == 200
+    assert logs and "PRIVATE_" not in str(logs)
+    payload = logs[-1][-1]
+    assert payload["completed"] is True
+    assert payload["actor_generation_attempts"] == 1
+    assert payload["timings_ms"]["total_wall"] >= 0
+    assert "transition_review_results" not in payload
 
 
 def test_numeric_v2_actor_failure_does_not_commit_half_turn(tmp_path, monkeypatch):
@@ -4517,6 +4669,8 @@ def test_sql_history_replaces_theater_story_event_atomically(tmp_path):
         SystemMessage(content="新周目一"),
         SystemMessage(content="新周目二"),
     ])
+    with pytest.raises(ValueError, match="empty_conversation_replacement"):
+        history.replace_messages([])
 
     with create_engine(connection_string).connect() as connection:
         rows = connection.execute(

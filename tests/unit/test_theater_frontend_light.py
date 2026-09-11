@@ -513,6 +513,7 @@ def test_theater_assets_are_scoped_to_selector_and_main_chat_hosts():
     index = _source("templates/index.html")
     chat = _source("templates/chat.html")
     transport_path = "/static/js/theater_transport.js"
+    assert chat.count('/static/app/app-chat-adapter.js?') == 1
 
     assert "/static/js/theater_selector.js" in selector
     assert "/static/app/app-theater-runtime.js" not in selector
@@ -537,8 +538,8 @@ def test_theater_transport_owns_shared_request_and_message_protocol():
     assert "async function requestJson" in transport
     assert "async function mutationHeaders" in transport
     assert "function createMessage" in transport
-    assert "TURN_TIMEOUT_MS = 60000" in transport
-    assert "START_TIMEOUT_MS = 45000" in transport
+    assert "TURN_TIMEOUT_MS = 660000" in transport
+    assert "START_TIMEOUT_MS = 180000" in transport
     assert "path === '/api/theater-numeric/session/input'" in transport
     assert "path === '/api/theater-numeric/session/start'" in transport
     assert "function createId" not in selector

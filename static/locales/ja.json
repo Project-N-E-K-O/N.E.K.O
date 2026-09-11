@@ -2996,6 +2996,7 @@
         "paused": "退出済み",
         "sessionHintPaused": "前回の演技から退出しました。続きから再開するか、新しく開始できます。",
         "sessionHintPausedRestart": "前回の演技から退出しました。続きから再開するか、最初からやり直せます。",
+        "sessionHintPackageChanged": "脚本が更新されたため、以前の進行状況からは続けられません。以前の演目を終了すると、最初から始められます。",
         "sessionHintEndedRestart": "今回の演技は終了しました。「もう一度始める」で新しい演技を作成できます。",
         "selectorReturnFailed": "演技から退出しましたが、シナリオページを開けませんでした。「シナリオへ戻る」で再試行してください。",
         "rememberPerformanceRetentionBody": "日常記憶には公開要約のみを保存し、完全な公開演技は小劇場アーカイブに保存します。隠し数値やルート条件は含みません。",

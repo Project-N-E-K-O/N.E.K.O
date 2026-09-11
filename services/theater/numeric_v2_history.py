@@ -61,7 +61,9 @@ async def lookup_history(config_manager: Any, session: Any, query: str) -> dict[
     budget = numeric_v2_actor_budget(session.actor_budget_profile)
     result: dict[str, Any] = {"status": "not_found", "evidence": [], "calls": 0,
                               "pages_read": 0, "record_count": len(records)}
-    pages, omitted = _pages(records, query, budget["evaluator_input_max_tokens"])
+    pages, omitted = await asyncio.to_thread(
+        _pages, records, query, budget["evaluator_input_max_tokens"],
+    )
     result["pages_total"] = len(pages)
     selected: set[int] = set()
     errors: list[str] = []

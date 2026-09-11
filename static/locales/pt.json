@@ -2996,6 +2996,7 @@
         "paused": "Saiu",
         "sessionHintPaused": "Você saiu da apresentação anterior. Continue do mesmo ponto ou inicie uma nova.",
         "sessionHintPausedRestart": "Você saiu da apresentação anterior. Continue do mesmo ponto ou reinicie.",
+        "sessionHintPackageChanged": "O roteiro mudou, por isso esta sessão não pode continuar. Encerre a apresentação anterior para começar de novo.",
         "sessionHintEndedRestart": "Esta apresentação terminou. Selecione “Reiniciar” para criar uma nova.",
         "selectorReturnFailed": "Você saiu da apresentação, mas a página de histórias não abriu. Selecione Voltar às histórias para tentar novamente.",
         "rememberPerformanceRetentionBody": "A memória diária guarda apenas o resumo público. A apresentação pública completa fica no arquivo do teatro; valores ocultos e condições de rota são excluídos.",

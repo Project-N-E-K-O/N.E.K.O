@@ -58,9 +58,6 @@ class NekoWorkshopModel:
             # Do not send a selected provider's credential to an implicit
             # client default endpoint when the caller omitted its URL.
             raise WorkshopError("workshop_model_endpoint_required")
-        if not str(settings.get("api_key") or "").strip():
-            return LLMCallFailure("model_auth_failed", error_code="model_auth_failed",
-                                  exception_type="MissingWorkshopCredential")
         input_max_tokens = settings.get("max_input_tokens")
         if type(input_max_tokens) is not int or input_max_tokens <= 0:
             raise WorkshopError("workshop_model_input_budget_required")
@@ -75,7 +72,8 @@ class NekoWorkshopModel:
         slop_token = set_dialog_slop_lang(None)
         try:
             client = create_chat_llm(model=model, base_url=settings.get("base_url"),
-                api_key=settings.get("api_key"), provider_type=settings.get("provider_type"),
+                # Explicit keyless endpoints must not inherit a process-wide key.
+                api_key=settings.get("api_key") or "", provider_type=settings.get("provider_type"),
                 timeout=self.TIMEOUT, max_retries=0,
                 max_completion_tokens=max_tokens)
             # User-selected providers use the host's token/thinking/temperature

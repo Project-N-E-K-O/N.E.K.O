@@ -562,13 +562,12 @@ async def test_cache_idempotency_retry_does_not_repeat_recent_after_index_failur
     """recent 已写成但 time-indexed 失败时，重试只能补索引。"""  # noqa: DOCSTRING_CJK
 
     from app import memory_server
-    from utils.llm_client import convert_to_messages
 
     payload = _build_history_request_payload([
         {"role": "human", "content": "这是一次需要恢复的演绎。"},
         {"role": "ai", "content": "我已经先记进最近历史了。"},
     ])
-    committed_batch = convert_to_messages(json.loads(payload))
+    committed_batch = []
     fake_time_manager = MagicMock()
     fake_time_manager.ahas_conversation_event = AsyncMock(
         side_effect=[False, False, False, False]
@@ -577,10 +576,10 @@ async def test_cache_idempotency_retry_does_not_repeat_recent_after_index_failur
         side_effect=[RuntimeError("time-indexed unavailable"), None]
     )
     fake_recent_history_manager = MagicMock()
-    fake_recent_history_manager.aget_recent_history = AsyncMock(
-        side_effect=[[], committed_batch]
+    fake_recent_history_manager.aget_recent_history = AsyncMock(return_value=committed_batch)
+    fake_recent_history_manager.update_history = AsyncMock(
+        side_effect=lambda messages, *args, **kwargs: committed_batch.extend(messages)
     )
-    fake_recent_history_manager.update_history = AsyncMock(return_value=None)
     fake_spawn_outbox = AsyncMock(return_value=None)
     request = memory_server.HistoryRequest(
         input_history=payload,
@@ -599,6 +598,32 @@ async def test_cache_idempotency_retry_does_not_repeat_recent_after_index_failur
     fake_recent_history_manager.update_history.assert_awaited_once()
     assert fake_time_manager.astore_conversation.await_count == 2
     fake_spawn_outbox.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_identical_text_with_distinct_cache_events_is_preserved_in_both_stores():
+    from app import memory_server
+    recent = []
+    fake_recent = MagicMock()
+    fake_recent.aget_recent_history = AsyncMock(return_value=recent)
+    fake_recent.update_history = AsyncMock(side_effect=lambda batch, *args, **kwargs: recent.extend(batch))
+    fake_time = MagicMock()
+    fake_time.ahas_conversation_event = AsyncMock(return_value=False)
+    fake_time.astore_conversation = AsyncMock()
+    payload = _build_history_request_payload([{"role": "human", "content": "你好"}])
+    with patch.object(memory_server.runtime, "time_manager", fake_time), \
+         patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", AsyncMock()), \
+         patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock()):
+        for key in ("first", "second"):
+            result = await memory_server.cache_conversation(memory_server.HistoryRequest(
+                input_history=payload, idempotency_key=key,
+            ), "测试角色")
+            assert result["status"] == "cached"
+    assert [message.content for message in recent] == ["你好", "你好"]
+    event_ids = [message.metadata["cache_event_id"] for message in recent]
+    assert len(set(event_ids)) == 2
+    assert [call.args[0] for call in fake_time.astore_conversation.await_args_list] == event_ids
 
 
 @pytest.mark.unit

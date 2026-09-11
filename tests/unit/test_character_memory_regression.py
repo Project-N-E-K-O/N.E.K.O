@@ -187,6 +187,29 @@ def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_b
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("failure", ["mtime", "read", "missing"])
+def test_dirty_character_identity_survives_subsequent_source_read_failure(tmp_path, failure):
+    cm = _make_config_manager(tmp_path)
+    cm.save_characters({"当前猫娘": "Legacy", "猫娘": {"Legacy": {}}, "主人": {}}, bypass_write_fence=True)
+    cm._characters_cache = None
+    with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+        first = cm.load_characters()
+    assert cm._characters_dirty
+    if failure == "mtime":
+        with patch("utils.config_manager.characters.os.path.getmtime", side_effect=OSError("unreadable")):
+            loaded = cm.load_characters()
+    else:
+        error = FileNotFoundError("missing") if failure == "missing" else OSError("unreadable")
+        with patch("utils.config_manager.characters.os.path.getmtime", return_value=-1), \
+             patch("builtins.open", side_effect=error):
+            loaded = cm.load_characters()
+    assert loaded == first
+    assert cm._characters_dirty
+    assert cm.load_characters() == first
+    assert not cm._characters_dirty
+
+
+@pytest.mark.unit
 def test_character_read_failure_never_persists_fallback_defaults(tmp_path):
     """损坏的角色文件只能触发内存回退，不能被默认角色覆盖。"""  # noqa: DOCSTRING_CJK
 

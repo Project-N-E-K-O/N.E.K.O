@@ -2996,6 +2996,7 @@
         "paused": "나감",
         "sessionHintPaused": "이전 공연에서 나왔습니다. 이어서 진행하거나 새 공연을 시작할 수 있습니다.",
         "sessionHintPausedRestart": "이전 공연에서 나왔습니다. 이어서 진행하거나 다시 시작할 수 있습니다.",
+        "sessionHintPackageChanged": "대본이 변경되어 이전 진행 상황을 이어갈 수 없습니다. 이전 공연을 종료한 후 다시 시작하세요.",
         "sessionHintEndedRestart": "이번 공연이 끝났습니다. ‘다시 시작’을 눌러 새 공연을 만드세요.",
         "selectorReturnFailed": "공연에서 나왔지만 극본 페이지를 열지 못했습니다. ‘극본으로 돌아가기’를 눌러 다시 시도하세요.",
         "rememberPerformanceRetentionBody": "일상 기억에는 공개 요약만 남기고, 전체 공개 공연은 소극장 보관함에 저장합니다. 숨겨진 수치와 루트 조건은 제외됩니다.",

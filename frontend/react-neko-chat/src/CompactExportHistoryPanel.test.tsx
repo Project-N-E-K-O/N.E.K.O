@@ -51,7 +51,7 @@ describe('CompactExportHistoryPanel', () => {
     const { queryByText, rerender } = renderPanel({ mode: 'theater', previewOpen: false, theaterTokenUsage: usage });
     expect(queryByText(usage.summary)).not.toBeNull();
     expect(queryByText(usage.detail)).not.toBeNull();
-    rerender(<CompactExportHistoryPanel {...createPanelProps({ mode: 'chat', theaterTokenUsage: usage })} />);
+    rerender(<CompactExportHistoryPanel {...createPanelProps({ mode: 'chat', previewOpen: false, theaterTokenUsage: usage })} />);
     expect(queryByText(usage.summary)).toBeNull();
   });
 

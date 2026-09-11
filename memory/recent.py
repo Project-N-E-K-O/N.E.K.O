@@ -1209,26 +1209,15 @@ class CompressedRecentHistoryManager:
                     # ⚠️ 这个回调**必须**留在所有临界区之外：dead-letter 分支会同步
                     # 调 enforce_hard_cap，那条路径要拿同一把文件锁，而 threading.Lock
                     # 不可重入 —— 挪进任何一个临界区就是 worker 线程上的无超时死锁。
-                    if preserved_theater:
-                        # 后台任务会按完整快照定位提交，仅把普通消息交给摘要模型，
-                        # 因而可在保留剧场来源元数据的同时继续进行失败重试。
-                        await self._notify_compress_done(
-                            on_compress_done,
-                            lanlan_name,
-                            snapshot,
-                            False,
-                            detailed,
-                            admission_generation,
-                        )
-                    else:
-                        await self._notify_compress_done(
-                            on_compress_done,
-                            lanlan_name,
-                            snapshot,
-                            False,
-                            detailed,
-                            admission_generation,
-                        )
+                    # 后台任务按完整快照定位提交，只把普通消息交给摘要模型。
+                    await self._notify_compress_done(
+                        on_compress_done,
+                        lanlan_name,
+                        snapshot,
+                        False,
+                        detailed,
+                        admission_generation,
+                    )
                 else:
                     # CS-2：读盘 + 定位 + splice + 落盘，一个临界区。
                     splice_status = await _await_recent_mutation_to_completion(

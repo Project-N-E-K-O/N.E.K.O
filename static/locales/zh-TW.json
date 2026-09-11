@@ -2995,6 +2995,7 @@
         "paused": "已退出",
         "sessionHintPaused": "上次演繹已退出，可以繼續原進度或開始新的演繹。",
         "sessionHintPausedRestart": "上次演繹已退出，可以繼續原進度或重新開始。",
+        "sessionHintPackageChanged": "劇本已更新，舊進度無法繼續；結束舊演繹後可以重新開始。",
         "sessionHintEndedRestart": "本次演繹已結束，點擊「重新開始」建立新的演繹。",
         "selectorReturnFailed": "已退出演繹，但劇本頁面開啟失敗。請點擊「返回劇本頁」重試。",
         "rememberPerformanceRetentionBody": "貓娘的日常記憶只保留公開摘要，完整公開演繹儲存在小劇場檔案中；隱藏數值與路線條件不會寫入。",

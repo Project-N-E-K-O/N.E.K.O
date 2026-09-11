@@ -2996,6 +2996,7 @@
         "paused": "Saliste",
         "sessionHintPaused": "Saliste de la actuación anterior. Puedes continuar el progreso o comenzar una nueva.",
         "sessionHintPausedRestart": "Saliste de la actuación anterior. Puedes continuar el progreso o reiniciarla.",
+        "sessionHintPackageChanged": "El guion ha cambiado y esta partida no puede continuar. Termina la actuación anterior para empezar de nuevo.",
         "sessionHintEndedRestart": "Esta actuación terminó. Pulsa «Reiniciar» para crear una nueva.",
         "selectorReturnFailed": "Saliste de la actuación, pero no se pudo abrir la página de historias. Pulsa Volver a las historias para intentarlo de nuevo.",
         "rememberPerformanceRetentionBody": "La memoria diaria solo conserva el resumen público. La actuación pública completa se guarda en el archivo del teatro; se excluyen los valores ocultos y las condiciones de ruta.",

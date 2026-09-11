@@ -5,8 +5,13 @@
     // 这里只收纳选择页与本体运行时完全一致的传输规则，不接管各页面的业务状态和发送目标。
     var MESSAGE_SCHEMA = 'neko.theater.interpage.v1';
     var DEFAULT_TIMEOUT_MS = 30000;
-    var START_TIMEOUT_MS = 45000;
-    var TURN_TIMEOUT_MS = 60000;
+    // Existing worst-case opening: two bodies, two suggestion fills and two reviews (156s).
+    var START_TIMEOUT_MS = 180000;
+    // Up to three generation passes (initial, missed transition, shared rewrite):
+    // each allows four 35s body attempts plus one 35s suggestion fill. Add
+    // evaluator/history (24s), four fast reviews (32s), one dispute (30s), and I/O margin.
+    // This is only the transport ceiling; it does not add calls or delay fast responses.
+    var TURN_TIMEOUT_MS = 660000;
 
     function defaultTimeoutMs(url) {
         var path = String(url || '').split('?', 1)[0];

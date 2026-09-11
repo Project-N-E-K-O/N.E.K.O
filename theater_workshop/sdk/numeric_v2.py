@@ -133,6 +133,8 @@ def normalize_metric_drafts(metrics: list[Mapping[str, Any]]) -> list[dict[str, 
         metric_id = str(metric.get("id") or "").strip()
         if not metric_id and name:
             metric_id = allocate_metric_id(name, existing_ids)
+        if metric_id in existing_ids:
+            raise ValueError("duplicate_metric_id")
         metric["id"] = metric_id
         metric.setdefault("preset", None)
         preset = next((item for item in _PRESETS if item.id == metric.get("preset")), None)
@@ -171,6 +173,9 @@ def metrics_to_package(metrics: list[Mapping[str, Any]]) -> tuple[dict[str, Any]
     initial: dict[str, int] = {}
     for metric in metrics:
         metric_id = str(metric["id"])
+        # Direct callers must not silently collapse author definitions either.
+        if metric_id in schema:
+            raise ValueError("duplicate_metric_id")
         schema[metric_id] = {
             "name": metric.get("name"),
             "description": metric.get("description"),

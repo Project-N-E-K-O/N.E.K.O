@@ -66,6 +66,7 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "vrm",
     "mmd",
     "workshop",
+    "theater",
     "character_cards",
     "card_faces",
     "jukebox",
