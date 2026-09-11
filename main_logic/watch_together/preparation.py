@@ -37,8 +37,8 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
 
     async def run():
         staging = library.root / "preparations"
-        engine = Engine(staging, synthesize, character)
         try:
+            engine = Engine(staging, synthesize, character)
             async with asyncio.timeout(1800):
                 await engine.prepare(job, url, character, automatic=automatic, confirmed_duration=confirmed_duration)
         except asyncio.CancelledError:
@@ -49,9 +49,15 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
             print(f"Watch preparation failed: {type(exc).__name__}")
         finally:
             folder = staging / job["id"]
-            if folder.exists():
-                (folder / "timeline.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
-                await asyncio.to_thread(library.import_sources, [staging])
+            try:
+                if folder.exists():
+                    (folder / "timeline.json").write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+                    await asyncio.to_thread(library.import_sources, [staging])
+            except Exception as exc:
+                # Keep staged artifacts for recovery, but give polling clients a
+                # terminal state even when the history transaction never commits.
+                job.update(status="error", stage="Saving preparation failed", error=type(exc).__name__)
+                print(f"Watch preparation persistence failed: {type(exc).__name__}")
 
     task = asyncio.create_task(run())
     tasks.add(task)
