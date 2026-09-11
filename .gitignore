@@ -192,14 +192,6 @@ data/browser_use_extensions/
 .coverage
 .VSCodeCounter
 
-# Local galgame vision training data/checkpoints. Keep runtime ONNX and reports in git.
-plugin/plugins/galgame_plugin/training/data/train.jsonl
-plugin/plugins/galgame_plugin/training/data/val.jsonl
-plugin/plugins/galgame_plugin/training/data/raw/
-plugin/plugins/galgame_plugin/models/vision/screen_classifier/best.pth
-plugin/plugins/galgame_plugin/models/vision/screen_classifier/live_validation_v1.json
-plugin/plugins/galgame_plugin/models/vision/screen_classifier/phase1_coverage_v1.json
-
 # 插件服务器运行时生成的凭证文件
 plugin/.plugin_server_admin_code
 
@@ -221,18 +213,15 @@ plugin/plugins/music_tester/
 plugin/plugins/web_radio/
 
 # QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
-plugin/plugins/qq_auto_reply/NapCat.Shell/*
+plugin/plugins/qq_auto_reply
 plugin/plugins/writer_power_analysis
 plugin/plugins/sts2_autoplay
-plugin/plugins/qq_auto_reply
+plugin/plugins/bilibili_danmaku
 
 # QQ 自动回复 测试数据
 plugin/plugins/qq_auto_reply/static/cache/
 plugin/plugins/qq_auto_reply/data/
 
-# bilibili_danmaku 插件运行时数据（凭据、用户画像），不入库
-plugin/plugins/bilibili_danmaku/data/bili_credential.*
-plugin/plugins/bilibili_danmaku/data/user_profiles/
 !plugin/plugins/qq_auto_reply/NapCat.Shell/.gitkeep
 # Ignore local temporary Steam/launcher environment dumps
 .tmp_env_*

@@ -11,7 +11,7 @@ import re as _re
 import httpx
 import websockets
 
-from .qq_connection import QQConnectionBase
+from .onebot_connection import OneBotConnectionBase
 
 _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
 
@@ -155,8 +155,8 @@ def pick_actor_id(author: Any, keys: tuple[str, ...]) -> str:
     return ""
 
 
-class QQOpenPlatformConnection(QQConnectionBase):
-    #: Observed transport (see QQClient.CHANNEL). Never a key.
+class QQOpenPlatformConnection(OneBotConnectionBase):
+    #: Observed transport (see OneBotClient.CHANNEL). Never a key.
     CHANNEL: str = "open"
 
     """Official QQ Open Platform Bot API connection.
@@ -183,7 +183,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
         #: immediately without reconnecting.
         self._identity_probe = identity_probe
         #: The plugin's in-memory log ring (what the UI "runtime logs" page reads).
-        #: No-op by default, same convention as QQClient.
+        #: No-op by default, same convention as OneBotClient.
         self._emit_log = emit_log or (lambda level, msg: None)
         self._identity_probe_emitted = 0
         #: Connection-mode marker, so runtime knows whether it must rebuild the

@@ -1,7 +1,7 @@
-"""QQ connector factory + connection interface Protocol.
+"""OneBot connector factory + connection interface Protocol.
 
-The chat plugin calls :func:`create_qq_connection` to build the right concrete
-connection from transport settings, then holds it as a :class:`QQConnector`.
+The chat plugin calls :func:`create_onebot_connection` to build the right concrete
+connection from transport settings, then holds it as a :class:`OneBotConnector`.
 The connector owns the transport + message-handling chain; the plugin owns
 message enrichment (reply/forward/voice/file + VLM/STT, via ``QQMessageEnricher``)
 and consumes the normalized messages / send API.
@@ -11,18 +11,18 @@ from __future__ import annotations
 
 from typing import Any, Optional, Protocol, runtime_checkable
 
-from .qq_client import QQClient
-from .qq_connection import QQConnectionBase
+from .onebot_client import OneBotClient
+from .onebot_connection import OneBotConnectionBase
 from .qq_open_plat import QQOpenPlatformConnection
 
 
-def create_qq_connection(
+def create_onebot_connection(
     settings_or_reader: Any,
     *,
     logger: Any = None,
     emit_log: Any = None,
-) -> QQConnectionBase:
-    """Build the concrete QQ connection from transport settings.
+) -> OneBotConnectionBase:
+    """Build the concrete OneBot connection from transport settings.
 
     ``settings_or_reader`` is either a settings dict or a zero-arg callable that
     returns the live settings dict. Passing a callable keeps the open-platform
@@ -44,7 +44,7 @@ def create_qq_connection(
             emit_log=emit_log,
         )
 
-    return QQClient(
+    return OneBotClient(
         onebot_url=str(settings.get("onebot_url") or "ws://0.0.0.0:6199"),
         token=str(settings.get("token") or ""),
         logger=logger,
@@ -56,10 +56,10 @@ def create_qq_connection(
 
 
 @runtime_checkable
-class QQConnector(Protocol):
+class OneBotConnector(Protocol):
     """The connection surface any plugin consumes.
 
-    Concrete instances are ``QQClient`` (OneBot) or ``QQOpenPlatformConnection``
+    Concrete instances are ``OneBotClient`` (OneBot) or ``QQOpenPlatformConnection``
     (open platform). Both already expose every member below; the Protocol is a
     type annotation only (checked structurally, not at construction).
     """

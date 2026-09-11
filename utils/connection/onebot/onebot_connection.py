@@ -1,4 +1,4 @@
-"""QQ connection abstract base -- unifies NapCat (OneBot) and the QQ Open Platform."""
+"""Connection abstract base -- unifies the OneBot v11 client and the QQ Open Platform."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 
-class QQConnectionBase(ABC):
-    """Abstract base for every QQ access method.
+class OneBotConnectionBase(ABC):
+    """Abstract base for every connection type.
 
     Both NapCat (OneBot) and the QQ Open Platform implement this interface and
     output a unified internal message format to the upper layers

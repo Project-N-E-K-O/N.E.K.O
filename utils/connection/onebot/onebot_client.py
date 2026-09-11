@@ -1,5 +1,5 @@
 """
-OneBot-protocol QQ client (reverse WebSocket server / forward WebSocket client).
+OneBot-protocol client (reverse WebSocket server / forward WebSocket client).
 
 Supports two WS directions (``direction``):
 - **reverse** (default): start a reverse WebSocket server and wait for any
@@ -29,10 +29,10 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from .qq_connection import QQConnectionBase
+from .onebot_connection import OneBotConnectionBase
 
 
-class QQClient(QQConnectionBase):
+class OneBotClient(OneBotConnectionBase):
     #: Observed transport for this connection. Stamped at INGEST, never read
     #: from live config at flush time: a session buffer can span a transport
     #: switch (the switch is immediate and does not clear buffers), so a
