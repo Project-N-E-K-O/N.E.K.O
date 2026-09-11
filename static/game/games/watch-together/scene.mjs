@@ -16,6 +16,7 @@ export async function run(game, character) {
     $('discover-button').disabled=preparing || nextQueue.busy;
   };
   const nextQueue=createNextVideoQueue(game,state=>{
+    if(state.candidate)seenVideos.add(state.candidate);
     if(state.history)renderHistory(state.history.analyses);
     if(state.status) {
       const key={idle:'nextIdle',searching:'nextSearching',preparing:'nextPreparing',ready:'nextReady',empty:'noCandidates',error:'nextFailed'}[state.status];

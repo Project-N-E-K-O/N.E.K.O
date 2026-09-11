@@ -351,7 +351,20 @@ def _mini_game_launch_url(game_type: str, lanlan_name: str, session_id: str) -> 
     return f"{url_template}{separator}{_urlencode(query)}"
 
 
-def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
+def _watch_together_available(manager) -> bool:
+    from main_logic.watch_together.engine import media_binary
+    try:
+        media_binary('ffmpeg')
+        media_binary('ffprobe')
+        if manager is None or not manager._config_manager.get_model_api_config('vision').get('api_key'):
+            return False
+        worker, key, _voice, provider, disabled, config = manager._resolve_tts_worker_spec()
+        return bool(not disabled and key and manager._tts_worker_supports_completion(worker, provider, config))
+    except Exception:
+        return False
+
+
+def _pick_mini_game_type(lanlan_name: str | None = None, *, manager=None) -> str | None:
     """Pick an available mini-game type with invite copy configured.
 
     Games missing invite lines are skipped, and character-specific cooldowns are
@@ -361,13 +374,8 @@ def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
         g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
         if g in MINI_GAME_INVITE_LINES_BY_GAME
     ]
-    if 'watch-together' in candidates:
-        from main_logic.watch_together.engine import media_binary
-        try:
-            media_binary('ffmpeg')
-            media_binary('ffprobe')
-        except FileNotFoundError:
-            candidates.remove('watch-together')
+    if 'watch-together' in candidates and not _watch_together_available(manager):
+        candidates.remove('watch-together')
     if lanlan_name:
         candidates = [
             g for g in candidates
@@ -492,7 +500,7 @@ async def _attempt_mini_game_invite_delivery(
             and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
         )
 
-        game_type = _pick_mini_game_type(lanlan_name)
+        game_type = _pick_mini_game_type(lanlan_name, manager=mgr)
         if game_type is None:
             logger.warning(
                 "[%s] mini-game invite skipped: no game_type available "

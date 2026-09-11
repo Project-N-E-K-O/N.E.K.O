@@ -14,6 +14,7 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
         const found=await game.media.request('discover',{topic,exclude});
         if(disposed || game.disposed || token!==generation)return;
         if(!found.video){publish(token,{status:'empty',busy:true});return;}
+        changed({candidate:found.video.bvid});
         const title=found.video.title;
         publish(token,{status:'preparing',title,busy:true});
         const job=await game.media.request('prepare',{url:found.video.url,source:'discovery',lanlan_name:character,render_language});

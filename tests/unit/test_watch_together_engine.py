@@ -64,6 +64,13 @@ def test_confidence_range(confidence, accepted):
 
 
 @pytest.mark.parametrize('field', ['at', 'evidence_at', 'confidence'])
+@pytest.mark.parametrize('value', [True, False])
+def test_boolean_model_fields_are_rejected(field, value):
+    event = dict(at=1, evidence_at=0, kind='laugh', reason='visual gag', confidence=1)
+    assert normalize_events([{**event, field:value}], 60) == []
+
+
+@pytest.mark.parametrize('field', ['at', 'evidence_at', 'confidence'])
 def test_overflowing_model_cue_does_not_discard_valid_cues(field):
     event = dict(at=2, evidence_at=1, kind='laugh', reason='visual gag', confidence=.8)
     invalid = {**event, field: 10**1000}

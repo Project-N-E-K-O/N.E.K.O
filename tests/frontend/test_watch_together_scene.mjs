@@ -186,3 +186,25 @@ window.close=()=>{closed=true;window.closed=true;};
 await exiting.elements.get('exit').onclick();
 assert.equal(disposed,true);assert.equal(closed,true);
 console.log('watch-together scene: stale discovery ignored and failed shutdown still closes');
+let finishCandidate, discoveries=0;
+const exclusions=await fixture(false,false,{total_tokens:1},()=>{
+  discoveries++;
+  return discoveries===1 ? {video:{bvid:'candidate',url:'candidate',title:'Candidate'}} : {video:null};
+});
+const originalRequest=exclusions.game.media.request;
+exclusions.game.media.request=(action,payload)=>{
+  if(action==='prepare')return Promise.resolve({id:'candidate-job'});
+  if(action==='preparation')return new Promise(resolve=>{finishCandidate=resolve;});
+  if(action==='history')return Promise.resolve({analyses:[{job:'candidate-job',version:'v',status:'ready'}]});
+  return originalRequest(action,payload);
+};
+const enabled=exclusions.elements.get('prefetch-enabled');enabled.checked=true;
+await exclusions.elements.get('play').onclick();
+await new Promise(resolve=>setTimeout(resolve,0));
+enabled.checked=false;enabled.onchange();enabled.checked=true;enabled.onchange();
+finishCandidate({status:'ready'});
+await new Promise(resolve=>setTimeout(resolve,0));
+const discoveryCalls=exclusions.calls.filter(call=>call.action==='discover');
+assert.equal(discoveryCalls.length,2);
+assert.ok(discoveryCalls[1].payload.exclude.includes('candidate'),'invalidated candidate must be excluded from next search');
+exclusions.handlers['runtime-inactive']();

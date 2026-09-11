@@ -260,6 +260,8 @@ def normalize_events(raw, length):
     """Reject hallucinated timing, weak evidence, spoilers and overlapping cues."""
     result = []
     for item in raw:
+        if not isinstance(item, dict) or any(isinstance(item.get(key), bool) for key in ('at', 'evidence_at', 'confidence')):
+            continue
         try:
             at, evidence_at = float(item["at"]), float(item["evidence_at"])
             confidence = float(item.get("confidence", 0))
