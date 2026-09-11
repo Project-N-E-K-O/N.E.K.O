@@ -983,19 +983,23 @@ async def test_cancelled_save_drains_staged_store_operation_and_rolls_back():
     await plugin.startup()
     args = await encrypted_save_args(plugin, secret=NEW_SECRET, provider="custom", api_base_url="https://new-provider.example/v1")
     save = asyncio.create_task(plugin.save_settings(**args))
-    await started.wait()
-    save.cancel()
-    await asyncio.sleep(0)
-    assert not save.done()
-    assert plugin._config_lock.locked()
-    release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await save
-    assert store.data == original
-    settings, key = await plugin._generation_config_snapshot()
-    assert settings["api_base_url"] == old_settings["api_base_url"]
-    assert key == OLD_SECRET
-    await plugin.shutdown()
+    try:
+        await started.wait()
+        save.cancel()
+        await asyncio.sleep(0)
+        assert not save.done()
+        assert plugin._config_lock.locked()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await save
+        assert store.data == original
+        settings, key = await plugin._generation_config_snapshot()
+        assert settings["api_base_url"] == old_settings["api_base_url"]
+        assert key == OLD_SECRET
+    finally:
+        release.set()
+        await asyncio.gather(save, return_exceptions=True)
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -1500,10 +1504,8 @@ async def test_real_http_provider_cached_static_asset_and_markdown_contract(
             assert request["authorization"] == f"Bearer {OLD_SECRET}"
             assert request["body"]["response_format"] == "b64_json"
 
-            # On successful push the result no longer echoes image_url /
-            # display_markdown back to the model (that caused a duplicate
-            # render). The canonical image URL now lives on the pushed image
-            # part; pull it from there.
+            # Inspect the pushed image independently of the result links,
+            # which remain available if local submission is not delivered.
             assert len(context.pushed) == 1
             canonical = translate_push_message(**context.pushed[0])
             assert canonical["visibility"] == ["chat"]
@@ -1527,7 +1529,7 @@ async def test_real_http_provider_cached_static_asset_and_markdown_contract(
             # aspect-ratio; the part must carry the sniffed geometry.
             assert image_part.get("width") == 13
             assert image_part.get("height") == 8
-            # The model is told NOT to re-emit the image; no markdown leaks.
+            # Local submission retains links and Markdown for delivery fallback.
             assert generated.value["display_markdown"]
             assert generated.value["image_url"]
             static_config = plugin.get_static_ui_config()

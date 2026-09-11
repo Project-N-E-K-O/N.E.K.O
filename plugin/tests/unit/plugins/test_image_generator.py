@@ -188,6 +188,20 @@ async def test_task_json_is_bounded_while_streaming():
     assert error.value.failure_class == "ProviderResponseTooLarge"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["POST", "GET"])
+async def test_task_json_preserves_timeout_classification(method):
+    plugin, _, _ = make_plugin()
+
+    class TimeoutClient:
+        def stream(self, *args, **kwargs):
+            raise httpx.ReadTimeout("provider timed out")
+
+    with pytest.raises(image_generator_module._GenerationFailure) as error:
+        await plugin._request_task_json(TimeoutClient(), method, "https://dashscope.aliyuncs.com/api/v1/tasks/id")
+    assert error.value.failure_class == "ProviderTimeout"
+
+
 def test_static_probe_satisfies_registration_index_contract(monkeypatch, tmp_path):
     plugin, _, _ = make_plugin()
     monkeypatch.setattr(plugin, "data_path", lambda *parts: tmp_path.joinpath(*parts))

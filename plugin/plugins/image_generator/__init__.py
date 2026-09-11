@@ -2625,6 +2625,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
             return payload
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise _GenerationFailure("图片服务响应格式无效", "InvalidProviderJson") from None
+        except httpx.TimeoutException:
+            raise _GenerationFailure("生成图片超时，请稍后重试", "ProviderTimeout") from None
         except httpx.RequestError:
             raise _GenerationFailure("无法连接图片服务", "ProviderNetworkError") from None
 
