@@ -733,6 +733,10 @@ async function main() {
   await new Promise(resolve => setImmediate(resolve));
   transport.publishGameProtocol = originalPublishProtocol;
 
+  const recoveredProtocol = await game.events.emit('round-started', { round: 11 });
+  assert(recoveredProtocol.ok === true && recoveredProtocol.data.accepted === true,
+    'protocol request did not succeed after abandoned response bodies settled');
+
   protocolPendingMode = true;
   const pendingProtocolRequests = Array.from({ length: 8 }, (_, index) => (
     game.events.emit('round-started', { round: index + 1 })

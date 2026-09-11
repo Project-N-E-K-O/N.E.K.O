@@ -255,16 +255,21 @@ async function main() {
   // A timed-out waiter is gone before route exit, but its raw query still blocks.
   const timedOutRoute = await fixture();
   try {
+    const errors = [];
+    timedOutRoute.game.voice.onError(error => errors.push(error));
     const start = timedOutRoute.game.runtime.start();
     await settle(); timedOutRoute.finishStart(); await start; await settle();
     [...timedOutRoute.timers.values()][0].fn();
     await settle();
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].error.code, 'timeout');
     await timedOutRoute.game.runtime.end();
     const successor = timedOutRoute.game.runtime.start();
     await settle(); timedOutRoute.finishStart(); await successor; await settle();
     assert.equal(timedOutRoute.requests.length, 1, 'route restart bypassed timed-out raw query capacity');
     timedOutRoute.requests[0].reject(new Error('late timeout rejection'));
     await settle();
+    assert.equal(errors.length, 1, 'late rejection reported a second voice error');
     assert.equal(timedOutRoute.requests.length, 2, 'timed-out predecessor left the new route unsynchronized');
     timedOutRoute.requests[1].resolve(timedOutRoute.state());
     await settle();
