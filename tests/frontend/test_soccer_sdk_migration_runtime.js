@@ -7,8 +7,13 @@ const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '../..');
 const read = (name) => fs.readFileSync(path.join(root, name), 'utf8');
 const page = read('static/game/games/soccer/soccer-demo.js');
-const manifestStart = page.indexOf('window.NekoMiniGame.connect(') + 'window.NekoMiniGame.connect('.length;
-const manifest = vm.runInThisContext('(' + page.slice(manifestStart, page.indexOf('}, {', manifestStart) + 1) + ')');
+const connectAnchor = 'window.NekoMiniGame.connect(';
+const connectIndex = page.indexOf(connectAnchor);
+assert.notEqual(connectIndex, -1, 'soccer-demo.js is missing the SDK connect anchor');
+const manifestStart = connectIndex + connectAnchor.length;
+const manifestEnd = page.indexOf('}, {', manifestStart);
+assert.notEqual(manifestEnd, -1, 'soccer-demo.js is missing the manifest end anchor');
+const manifest = vm.runInThisContext('(' + page.slice(manifestStart, manifestEnd + 1) + ')');
 const response = (data) => ({ ok: true, status: 200, json: async () => data, clone: () => response(data) });
 
 async function main() {
@@ -112,7 +117,13 @@ async function main() {
       },
       _recordFallbackDiagnostic() {}, soccerRecoverableLog() {},
     });
-    const install = (start, end) => vm.runInThisContext(page.slice(page.indexOf(start), page.indexOf(end, page.indexOf(start))));
+    const install = (start, end) => {
+      const from = page.indexOf(start);
+      assert.notEqual(from, -1, `Missing start anchor: ${start}`);
+      const to = page.indexOf(end, from);
+      assert.notEqual(to, -1, `Missing end anchor: ${end}`);
+      return vm.runInThisContext(page.slice(from, to));
+    };
     install('function _gameRoutePayload(', 'async function _sendGameRouteHeartbeat(');
     install('async function _startGameRoute()', 'function _scoreDiffOf(');
     install('function _gameRouteEndPayload(', 'async function _endGameLLMSession(');
