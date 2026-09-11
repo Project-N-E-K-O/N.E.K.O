@@ -33,7 +33,7 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
           await delay();
         }
       } catch(error) {publish(token,{status:'error',error:error.message,busy:true});}
-      finally {busy=false;if(!disposed)changed({busy:false});}
+      finally {busy=false;if(!disposed)changed({busy:false,released:true});}
     }
   };
 }

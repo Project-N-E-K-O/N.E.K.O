@@ -23,7 +23,7 @@ export async function run(game, character) {
       $('next-video').disabled=!nextRow;
     }
     updatePrepareButtons();
-    if(state.busy===false && media && !$('video').paused)prefetchNext();
+    if(state.released && media && !$('video').paused)prefetchNext();
   });
   function prefetchNext() {
     if(!$('prefetch-enabled').checked || !selected || nextQueue.busy || preparing || queuedFor===selected.id)return;
