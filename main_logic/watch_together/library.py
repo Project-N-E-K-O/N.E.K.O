@@ -196,7 +196,18 @@ class Library:
             if isinstance(value, list):
                 return [remap(v) for v in value]
             return value
-        return {**remap(data), "id": job, "version": version}
+        timeline = {**remap(data), "id": job, "version": version}
+        if timeline.get('status') == 'ready':
+            manifest = self.manifest(job, version)
+            references = [timeline.get('video')]
+            references.extend(cue.get('audio') for cue in timeline.get('events', []) if cue.get('audio'))
+            for url in references:
+                name = url[len(prefix):] if isinstance(url, str) and url.startswith(prefix) else None
+                entry = manifest.get(name)
+                if entry is None or not (self.objects / entry['sha256']).is_file():
+                    timeline['status'] = 'incomplete'
+                    break
+        return timeline
 
     def history(self) -> list[dict]:
         with self.connect() as db:

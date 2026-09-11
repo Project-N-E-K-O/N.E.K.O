@@ -16,6 +16,9 @@ async def test_download_confirmation_pauses_same_job_and_checks_owner(tmp_path, 
     analyzed = []
 
     class Engine:
+        async def vision_config(self):
+            return {'api_key': 'configured'}
+
         def __init__(self, root, *_args, **_kwargs):
             self.root = root
 
@@ -69,6 +72,9 @@ async def test_preparation_freezes_render_locale_for_director_and_tts(tmp_path, 
                               game_speech_audio_cache_identity=identity, preload_game_speech_audio=preload)
 
     class Engine:
+        async def vision_config(self):
+            return {'api_key': 'configured'}
+
         def __init__(self, root, synthesize, character, *, language, persona):
             assert language == expected
             assert persona == 'Current persona'
@@ -101,6 +107,9 @@ async def test_import_failure_is_terminal_and_preserves_staging(tmp_path, monkey
         raise failure
 
     class Engine:
+        async def vision_config(self):
+            return {'api_key': 'configured'}
+
         def __init__(self, root, *_args, **_kwargs):
             self.root = root
 
@@ -158,6 +167,9 @@ async def test_speech_preflight_checks_provider_before_cache(disabled, supported
 async def test_unavailable_speech_prevents_video_analysis(tmp_path, monkeypatch):
     analyzed = []
     class Engine:
+        async def vision_config(self):
+            return {'api_key': 'configured'}
+
         def __init__(self, *args, **kwargs):
             pass
         async def prepare(self, *args, **kwargs):
@@ -173,4 +185,27 @@ async def test_unavailable_speech_prevents_video_analysis(tmp_path, monkeypatch)
     result = await preparation.prepare('video', manager, 'cat')
     await asyncio.gather(*preparation.tasks)
     assert not analyzed
+    assert preparation.jobs[result['id']]['status'] == 'error'
+
+
+@pytest.mark.asyncio
+async def test_missing_vision_prevents_paid_speech_probe(tmp_path, monkeypatch):
+    probes = []
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def vision_config(self):
+            raise RuntimeError('missing vision key')
+    async def probe(*args, **kwargs):
+        probes.append(True)
+        return {'ok': True}
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=probe,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    assert not probes
     assert preparation.jobs[result['id']]['status'] == 'error'

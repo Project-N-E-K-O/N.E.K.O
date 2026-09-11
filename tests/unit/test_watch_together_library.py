@@ -9,6 +9,25 @@ from main_logic.watch_together.library import Library
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
 
 
+@pytest.mark.parametrize('missing', ['video.mp4', 'laugh.mp3', None])
+def test_partial_ready_history_is_incomplete(tmp_path, missing):
+    archive = source(tmp_path, 'partial')
+    folder = archive / JOB
+    timeline = json.loads((folder / 'timeline.json').read_text())
+    timeline['video'] = f'/media/{JOB}/video.mp4'
+    (folder / 'timeline.json').write_text(json.dumps(timeline))
+    (folder / 'video.mp4').write_bytes(b'video')
+    if missing:
+        (folder / missing).unlink()
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    row = library.history()[0]
+    assert row['status'] == ('incomplete' if missing else 'ready')
+    if not missing:
+        library.resource(JOB, row['version'], 'video.mp4').unlink()
+        assert library.history()[0]['status'] == 'incomplete'
+
+
 @pytest.mark.parametrize("value", [None, [], 3, "text"])
 def test_non_object_legacy_timeline_remains_incomplete(tmp_path, value):
     src = source(tmp_path, "legacy")

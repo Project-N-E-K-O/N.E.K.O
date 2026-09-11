@@ -173,17 +173,19 @@ export async function run(game, character) {
   };
   $('discover').onsubmit = async event => {
     event.preventDefault();if(nextQueue.busy || preparing)return;
+    const generation=selectionGeneration;
     preparing=true;updatePrepareButtons();
     try {
       status(t('searching'));
       const topic = $('topic').value.trim() || selected?.title || '';
       const result = await game.media.request('discover',{topic,exclude:[...seenVideos].slice(-128)});
+      if(generation!==selectionGeneration || game.disposed)return;
       if (!result.video) {status(t('noCandidates'));return;}
       const info = result.video;
       $('url').value=info.url;
       $('discovery-result').textContent=`${info.title} · ${info.duration}s · ${info.danmaku_per_minute.toFixed(1)} ${t('density')}`;
       await prepareVideo(info.url,'discovery');
-    } catch(error) {status(error.message);}
+    } catch(error) {if(generation===selectionGeneration && !game.disposed)status(error.message);}
     finally {preparing=false;updatePrepareButtons();}
   };
   $('prefetch-enabled').onchange=()=>{
@@ -197,8 +199,12 @@ export async function run(game, character) {
   };
   $('exit').onclick = async () => {
     nextQueue.dispose();
-    await end(); game.dispose(); window.close();
-    setTimeout(()=>{if(!window.closed)location.href='/';},100);
+    try { await end(); }
+    catch(error) { status(error.message); }
+    finally {
+      game.dispose(); window.close();
+      setTimeout(()=>{if(!window.closed)location.href='/';},100);
+    }
   };
   async function refreshWatches() {
     try { renderWatches((await game.media.request('watches')).watches); }

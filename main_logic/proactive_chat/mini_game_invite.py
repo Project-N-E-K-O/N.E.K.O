@@ -361,6 +361,13 @@ def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
         g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
         if g in MINI_GAME_INVITE_LINES_BY_GAME
     ]
+    if 'watch-together' in candidates:
+        from main_logic.watch_together.engine import media_binary
+        try:
+            media_binary('ffmpeg')
+            media_binary('ffprobe')
+        except FileNotFoundError:
+            candidates.remove('watch-together')
     if lanlan_name:
         candidates = [
             g for g in candidates

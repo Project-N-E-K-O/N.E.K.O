@@ -72,6 +72,7 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
         try:
             engine = Engine(staging, synthesize, character, language=language, persona=persona)
             async with asyncio.timeout(1800):
+                await engine.vision_config()
                 from config.prompts.prompts_watch_together import LAUGH_TEXT_BY_LANGUAGE
                 probe = LAUGH_TEXT_BY_LANGUAGE.get(language, LAUGH_TEXT_BY_LANGUAGE["en"])
                 speech = await manager.preflight_game_speech_audio(probe, render_language=language)

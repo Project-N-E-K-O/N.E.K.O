@@ -164,3 +164,25 @@ finishShutdown();await Promise.all([firstSelection,secondSelection]);
 assert.match(shutdown.elements.get('status').textContent,/ready/);
 assert.equal(shutdown.elements.get('play').disabled,false);
 console.log('watch-together scene: overlapping selections serialize active shutdown');
+for(const fail of [false,true]) {
+  let resolveDiscovery,rejectDiscovery;
+  const discovering=await fixture(false,false,{total_tokens:1},()=>new Promise((resolve,reject)=>{resolveDiscovery=resolve;rejectDiscovery=reject;}));
+  const pending=discovering.elements.get('discover').onsubmit({preventDefault(){}});
+  await discovering.elements.get('history').children[0].onclick();
+  await discovering.elements.get('play').onclick();
+  if(fail)rejectDiscovery(Error('stale discovery'));
+  else resolveDiscovery({video:{url:'old',title:'Old result',duration:60,danmaku_per_minute:200}});
+  await pending;
+  assert.equal(discovering.calls.filter(c=>c.action==='prepare').length,0);
+  assert.match(discovering.elements.get('status').textContent,/playing/);
+  discovering.handlers['runtime-inactive']();
+}
+const exiting=await fixture(false,false,{total_tokens:1});
+await exiting.elements.get('play').onclick();
+let disposed=false,closed=false;
+exiting.game.runtime.end=async()=>{throw Error('shutdown failed');};
+exiting.game.dispose=()=>{disposed=true;};
+window.close=()=>{closed=true;window.closed=true;};
+await exiting.elements.get('exit').onclick();
+assert.equal(disposed,true);assert.equal(closed,true);
+console.log('watch-together scene: stale discovery ignored and failed shutdown still closes');
