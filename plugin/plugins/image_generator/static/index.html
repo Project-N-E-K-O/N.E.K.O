@@ -1383,6 +1383,7 @@
       const PLUGIN_ID = 'image_generator';
       const RUNS_URL = '/runs';
       const NORMAL_RUN_TIMEOUT_MS = 60000;
+      const SETTINGS_RUN_TIMEOUT_MS = 630000;
       const GENERATION_RUN_TIMEOUT_MS = 300000;
       const EXPORT_RETRIES = 4;
       const MAX_ERROR_TEXT = 420;
@@ -1902,7 +1903,7 @@
       async function saveEncryptedSettings(savePayload) {
         const envelope = await requestFreshSecretEnvelope();
         const encryptedArgs = await encryptSavePayload(savePayload, envelope);
-        return callPlugin('save_settings', encryptedArgs);
+        return callPlugin('save_settings', encryptedArgs, SETTINGS_RUN_TIMEOUT_MS);
       }
 
       function updateActionAvailability() {
@@ -2517,7 +2518,7 @@
         if (!window.confirm(t('confirm.reset', '确定恢复默认设置？API 密钥将继续保留。'))) return;
         setBusy(true);
         try {
-          await callPlugin('reset_settings');
+          await callPlugin('reset_settings', {}, SETTINGS_RUN_TIMEOUT_MS);
           await refreshState();
           showToast(t('status.reset_done', '已恢复默认设置，API 密钥保持不变'), 'success');
         } catch (error) {

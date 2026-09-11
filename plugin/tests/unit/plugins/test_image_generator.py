@@ -882,6 +882,8 @@ def test_panel_methods_are_real_entries_not_llm_tools(
     assert entry.metadata.get("agent_hidden") is True
     if method_name == "test_generation":
         assert entry.timeout == 300.0
+    if method_name in {"save_settings", "reset_settings"}:
+        assert entry.timeout == 600.0
 
 
 @pytest.mark.asyncio
@@ -2712,7 +2714,7 @@ def test_static_panel_is_self_contained_accessible_and_calls_real_entries() -> N
     assert "currentState.secret_envelope" not in html
     assert "encrypted_payload:" in html
     assert "wrapped_key:" in html
-    assert "callPlugin('save_settings', encryptedArgs)" in html
+    assert "callPlugin('save_settings', encryptedArgs, SETTINGS_RUN_TIMEOUT_MS)" in html
     assert "transientSecret" not in html
     assert "args.api_key" not in html
     assert "api_key_hint" not in html
@@ -4125,3 +4127,43 @@ async def test_unreadable_cache_rejects_limit_save(monkeypatch, tmp_path):
     assert original.read_bytes() == PNG_BYTES
     with pytest.raises(PermissionError):
         plugin._cache_stats_sync(strict=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_finalization_preserves_accessible_history(monkeypatch, tmp_path):
+    plugin, _, store = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    assets = prepare_asset_cache(plugin, tmp_path)
+    install_client(plugin, monkeypatch, FakeClient([FakeResponse(generation_payload())]))
+    started, release = threading.Event(), threading.Event()
+    original = image_generator_module._image_geometry
+    def delayed_geometry(data):
+        started.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("geometry test was not released")
+        return original(data)
+    monkeypatch.setattr(image_generator_module, "_image_geometry", delayed_geometry)
+    task = asyncio.create_task(plugin._execute_generation(
+        prompt="cat", action="test", auto_show_override=False,
+    ))
+    try:
+        assert await asyncio.to_thread(started.wait, 3)
+        assert list(assets.glob("*.png"))
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        history = store.data["recent_generations"]
+        assert len(history) == 1 and history[0]["status"] == "succeeded"
+        assert plugin._project_history_record(history[0])["result_url"]
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+def test_cache_settings_panel_deadline_exceeds_entry_timeout():
+    html = PANEL_HTML.read_text(encoding="utf-8")
+    assert "const SETTINGS_RUN_TIMEOUT_MS = 630000;" in html
+    assert "callPlugin('save_settings', encryptedArgs, SETTINGS_RUN_TIMEOUT_MS)" in html
+    assert "callPlugin('reset_settings', {}, SETTINGS_RUN_TIMEOUT_MS)" in html

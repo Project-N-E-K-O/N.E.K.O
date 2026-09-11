@@ -3871,7 +3871,10 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 )
                 return Err(SdkError("生成图片时发生内部错误，请稍后重试"))
 
-            return await self._finalize_success(
+            # Once paid bytes are installed, finish publishing their history
+            # even if the caller stops waiting. This also avoids deleting a
+            # file whose chat delivery may already have been submitted.
+            return await self._drain_on_cancel(self._finalize_success(
                 settings=settings,
                 api_key=api_key,
                 cleaned_prompt=cleaned_prompt,
@@ -3881,7 +3884,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 thumb_url=thumb_url,
                 revised_prompt=revised_prompt,
                 auto_show_override=auto_show_override,
-            )
+            ))
 
         try:
             return await _run_generation()
@@ -4228,6 +4231,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             "消费一次性 RSA-OAEP + AES-GCM 加密载荷，原子保存设置和 API 密钥。"
         ),
         input_schema=_SAVE_SETTINGS_SCHEMA,
+        timeout=600.0,
         metadata={"agent_hidden": True},
     )
     async def save_settings(
@@ -4530,6 +4534,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         name="恢复图片生成器默认设置",
         description="恢复 plugin.toml 中的非秘密默认设置；不会清除 API 密钥。",
         input_schema=_EMPTY_SCHEMA,
+        timeout=600.0,
         metadata={"agent_hidden": True},
     )
     async def reset_settings(self, **_: Any):
