@@ -48,6 +48,11 @@
   const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
   const DEFAULT_PENDING_REQUEST_LIMIT = 64;
   const DEFAULT_PROTOCOL_QUEUE_LIMIT = 64;
+  const HOST_COMMAND_ROUTE_LIMIT = 64;
+  const DEFAULT_COMMAND_REQUEST_BYTES = 256 * 1024;
+  const MAX_COMMAND_REQUEST_BYTES = 2 * 1024 * 1024;
+  const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
+  const MAX_COMMAND_TIMEOUT_MS = 6 * 60 * 1000;
   const DEFAULT_SPEECH_RESTART_DELAY_MS = 350;
   const DEFAULT_SPEECH_SLOT_LIMIT = 4;
   // Leave headroom above the host's 12s microphone start/stop confirmation so
@@ -62,7 +67,20 @@
   const GAME_STORAGE_TOTAL_BYTES = 1024 * 1024;
   const HOST_LAUNCH_REGISTRY_LIMIT = 64;
   const HOST_REGISTRATION_CAPABILITY_LIMIT = 32;
+  const AVATAR_CHARACTER_LIMIT = 256;
+  const AVATAR_CHARACTER_NAME_CHARS = 128;
+  const AVATAR_MODEL_PATH_CHARS = 2048;
+  const AVATAR_MODEL_TYPES = Object.freeze(['live2d', 'vrm', 'mmd', 'pngtuber']);
   const GLOBAL_CONSOLE_CAPTURE_REGISTRIES = new WeakMap();
+  // Keep this set symmetric with the SDK's command-contract rejection. These
+  // fields are removed before trusted route identity is attached.
+  const COMMAND_PAYLOAD_HOST_IDENTITY_KEYS = Object.freeze([
+    'session_id', 'sessionId', 'game_type', 'gameType',
+    'lanlan_name', 'lanlanName', 'character_name', 'characterName',
+    'window_lanlan_name', 'windowLanlanName',
+    'sdk_route_instance_id', 'sdkRouteInstanceId',
+    'sdk_route_instance_ids', 'routeInstanceId',
+  ]);
   const MEMORY_POLICY_NORMALIZED_SUFFIXES = Object.freeze([
     'gamememoryenabled',
     'gameplayerinteractionmemoryenabled',
@@ -122,6 +140,9 @@
   // require a completed connectGame() and a granted capability rather than a
   // bare read off a freshly constructed host.
   const HOST_CAPABILITY_PROVIDERS = new WeakMap();
+  const HOST_AVATAR_PROVIDERS = new WeakMap();
+  const HOST_COMMAND_ROUTES = new WeakMap();
+  const HOST_DECLARED_COMMANDS = new WeakMap();
 
   const TRUSTED_PAYLOAD_MAX_DEPTH = 24;
   const TRUSTED_PAYLOAD_MAX_NODES = 4096;
@@ -151,14 +172,23 @@
     }
   }
 
-  function cloneTrustedJsonData(value, state = { nodes: 0, bytes: 0, seen: new Set() }, depth = 0) {
+  function cloneTrustedJsonData(
+    value,
+    state = {
+      nodes: 0,
+      bytes: 0,
+      seen: new Set(),
+      maxBytes: TRUSTED_PAYLOAD_MAX_CONTENT_BYTES,
+    },
+    depth = 0,
+  ) {
     if (depth > TRUSTED_PAYLOAD_MAX_DEPTH || state.nodes >= TRUSTED_PAYLOAD_MAX_NODES) {
       throw new TypeError('invalid_payload');
     }
     state.nodes += 1;
     if (typeof value === 'string') {
       state.bytes = (state.bytes || 0) + utf8ByteLength(value);
-      if (state.bytes > TRUSTED_PAYLOAD_MAX_CONTENT_BYTES) throw new TypeError('invalid_payload');
+      if (state.bytes > state.maxBytes) throw new TypeError('invalid_payload');
       return value;
     }
     if (value == null || typeof value === 'boolean') return value;
@@ -180,7 +210,7 @@
         if (key === 'toJSON') continue;
         // Keys carry bytes too, and a payload can be all keys and no values.
         state.bytes = (state.bytes || 0) + utf8ByteLength(key);
-        if (state.bytes > TRUSTED_PAYLOAD_MAX_CONTENT_BYTES) throw new TypeError('invalid_payload');
+        if (state.bytes > state.maxBytes) throw new TypeError('invalid_payload');
         const cloned = cloneTrustedJsonData(descriptor.value, state, depth + 1);
         if (cloned !== TRUSTED_PAYLOAD_OMIT) result[key] = cloned;
       }
@@ -226,18 +256,106 @@
       : unescape(encodeURIComponent(text)).length;
   }
 
+  function normalizeCommandRoutes(value) {
+    if (value === undefined) return Object.freeze({});
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const entries = Object.entries(value);
+    if (entries.length > HOST_COMMAND_ROUTE_LIMIT) return null;
+    const routes = Object.create(null);
+    for (const [name, rawPolicy] of entries) {
+      if (!/^[a-z][a-z0-9:-]{0,63}$/.test(name)) return null;
+      if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) return null;
+      if (Object.keys(rawPolicy).some((key) => !['path', 'maxRequestBytes', 'maxTimeoutMs'].includes(key))) {
+        return null;
+      }
+      const path = rawPolicy.path;
+      if (
+        typeof path !== 'string'
+        || !/^[a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)*$/.test(path)
+      ) return null;
+      const maxRequestBytes = rawPolicy.maxRequestBytes === undefined
+        ? DEFAULT_COMMAND_REQUEST_BYTES
+        : rawPolicy.maxRequestBytes;
+      const maxTimeoutMs = rawPolicy.maxTimeoutMs === undefined
+        ? DEFAULT_COMMAND_TIMEOUT_MS
+        : rawPolicy.maxTimeoutMs;
+      if (
+        !Number.isInteger(maxRequestBytes)
+        || maxRequestBytes < 1
+        || maxRequestBytes > MAX_COMMAND_REQUEST_BYTES
+        || !Number.isInteger(maxTimeoutMs)
+        || maxTimeoutMs < 250
+        || maxTimeoutMs > MAX_COMMAND_TIMEOUT_MS
+      ) return null;
+      routes[name] = Object.freeze({ path, maxRequestBytes, maxTimeoutMs });
+    }
+    return Object.freeze(routes);
+  }
+
+  function normalizeAvatarCharacterDescriptor(value) {
+    if (value == null) return null;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TypeError('invalid_avatar_descriptor');
+    }
+    if (typeof value.name !== 'string') throw new TypeError('invalid_avatar_descriptor');
+    const name = value.name.trim();
+    if (!name || name.length > AVATAR_CHARACTER_NAME_CHARS) {
+      throw new TypeError('invalid_avatar_descriptor');
+    }
+    let model = null;
+    if (value.model != null) {
+      if (!value.model || typeof value.model !== 'object' || Array.isArray(value.model)) {
+        throw new TypeError('invalid_avatar_descriptor');
+      }
+      if (typeof value.model.type !== 'string' || typeof value.model.path !== 'string') {
+        throw new TypeError('invalid_avatar_descriptor');
+      }
+      const type = value.model.type.trim().toLowerCase();
+      const path = value.model.path.trim();
+      if (!AVATAR_MODEL_TYPES.includes(type) || !path || path.length > AVATAR_MODEL_PATH_CHARS) {
+        throw new TypeError('invalid_avatar_descriptor');
+      }
+      model = Object.freeze({ type, path });
+    }
+    return Object.freeze({
+      name,
+      model,
+      rendererAvailable: Boolean(model && value.rendererAvailable !== false),
+    });
+  }
+
+  function normalizeAvatarCharacterNames(value) {
+    if (!Array.isArray(value) || value.length > AVATAR_CHARACTER_LIMIT) {
+      throw new TypeError('invalid_avatar_character_list');
+    }
+    const names = [];
+    const seen = new Set();
+    for (const rawName of value) {
+      if (typeof rawName !== 'string') throw new TypeError('invalid_avatar_character_list');
+      const name = rawName.trim();
+      if (!name || name.length > AVATAR_CHARACTER_NAME_CHARS || seen.has(name)) continue;
+      seen.add(name);
+      names.push(name);
+    }
+    return Object.freeze(names);
+  }
+
   function normalizeLaunchRegistration(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const gameId = String(value.gameId || '').trim();
+    const routeGameType = String(value.routeGameType || gameId).trim();
     const version = String(value.version || '').trim();
     const mode = String(value.mode || '').trim();
     if (
       !gameId
       || gameId.length > 128
+      || !/^[a-z][a-z0-9_-]{0,127}$/.test(routeGameType)
       || !version
       || version.length > 64
       || !['registered', 'development'].includes(mode)
     ) return null;
+    const commandRoutes = normalizeCommandRoutes(value.commandRoutes);
+    if (!commandRoutes) return null;
     const allowedCapabilities = Object.freeze([
       ...new Set(
         (Array.isArray(value.allowedCapabilities) ? value.allowedCapabilities : [])
@@ -248,12 +366,14 @@
     return Object.freeze({
       mode,
       gameId,
+      routeGameType,
       publisherId: (
         String(value.publisherId || '').trim().slice(0, 128)
         || (mode === 'development' ? 'local-development' : 'unknown-publisher')
       ),
       version,
       allowedCapabilities,
+      commandRoutes,
     });
   }
 
@@ -276,6 +396,9 @@
       capabilityProviders.set(registration.gameId, Object.freeze({
         quickLines: typeof rawProviders?.quickLines === 'function'
           ? rawProviders.quickLines
+          : null,
+        avatarHostFactory: typeof rawProviders?.avatarHostFactory === 'function'
+          ? rawProviders.avatarHostFactory
           : null,
       }));
     }
@@ -301,14 +424,26 @@
       // may request an identity/capability, but cannot mint a registered result
       // from its own values. A future marketplace can replace the bootstrap's
       // resolver without changing the public game handshake.
-      this._launchRegistration = normalizeLaunchRegistration(options.launchRegistration);
-      if (!this._launchRegistration) {
+      const normalizedLaunchRegistration = normalizeLaunchRegistration(options.launchRegistration);
+      if (!normalizedLaunchRegistration) {
         throw new NekoMiniGameHostError(
           'game_unregistered',
           'A host-issued launchRegistration is required',
           { operation: 'construct' },
         );
       }
+      HOST_COMMAND_ROUTES.set(this, normalizedLaunchRegistration.commandRoutes);
+      HOST_DECLARED_COMMANDS.set(this, new Set());
+      // Endpoint policies stay in the bootstrap-owned WeakMap rather than on
+      // the transport object exposed to same-origin game code.
+      this._launchRegistration = Object.freeze({
+        mode: normalizedLaunchRegistration.mode,
+        gameId: normalizedLaunchRegistration.gameId,
+        routeGameType: normalizedLaunchRegistration.routeGameType,
+        publisherId: normalizedLaunchRegistration.publisherId,
+        version: normalizedLaunchRegistration.version,
+        allowedCapabilities: normalizedLaunchRegistration.allowedCapabilities,
+      });
       const requestedGameType = String(options.gameType || '').trim();
       const requestedGameVersion = String(options.gameVersion || '').trim();
       if (
@@ -322,6 +457,12 @@
         );
       }
       this.gameType = this._launchRegistration.gameId;
+      Object.defineProperty(this, 'routeGameType', {
+        value: this._launchRegistration.routeGameType,
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
       this.gameVersion = this._launchRegistration.version || DEFAULT_GAME_VERSION;
       this.source = String(options.source || '').trim() || `${this.gameType}_demo`;
       this.displayName = String(options.displayName || '').trim() || this.gameType || 'Mini-game';
@@ -344,7 +485,10 @@
       this._window = options.windowImpl || window;
       this._console = this._window.console || console;
       this._grantedCapabilities = new Set();
-      this._avatarHost = options.avatarHost || null;
+      // Renderer providers are selected only from the bootstrap-owned registry.
+      // A same-origin game can call the factory, so its options cannot mint or
+      // replace the privileged Avatar capability.
+      HOST_AVATAR_PROVIDERS.set(this, options.trustedAvatarHost || null);
       this._audioHost = options.audioHost || null;
       const capabilityProviders = options.capabilityProviders && typeof options.capabilityProviders === 'object'
         ? options.capabilityProviders
@@ -355,6 +499,7 @@
           : null,
       }));
       this._disposed = false;
+      this._activeCommandRouteIdentity = null;
       this._memoryConsentEnabled = false;
       this._controlBridge = {
         active: false,
@@ -507,10 +652,28 @@
           message: `The requested ${this.displayName} game identity is not registered by this host`,
         };
       }
+      const commandRoutes = HOST_COMMAND_ROUTES.get(this) || {};
+      const declaredCommands = manifest.contracts?.commands;
+      const commandNames = declaredCommands && typeof declaredCommands === 'object'
+        && !Array.isArray(declaredCommands)
+        ? Object.keys(declaredCommands)
+        : [];
+      const missingCommandRoutes = commandNames.filter(
+        (name) => !Object.prototype.hasOwnProperty.call(commandRoutes, name),
+      );
+      if (missingCommandRoutes.length) {
+        return {
+          accepted: false,
+          code: 'capability_unavailable',
+          message: `The ${this.displayName} host does not provide every declared game command`,
+        };
+      }
+      HOST_DECLARED_COMMANDS.set(this, new Set(commandNames));
       const requested = [
         ...(Array.isArray(manifest.requiredCapabilities) ? manifest.requiredCapabilities : []),
         ...(Array.isArray(manifest.optionalCapabilities) ? manifest.optionalCapabilities : []),
       ];
+      const avatarProvider = HOST_AVATAR_PROVIDERS.get(this);
       const locallyAvailable = new Set([
         'runtime',
         'dialogue',
@@ -522,7 +685,7 @@
         'memory',
         ...(this._canUseGameStorage() ? ['storage'] : []),
         ...(this._canUseGameStorage() && this._canUseGameStorageLock() ? ['leaderboard-local'] : []),
-        ...(this._avatarHost ? ['avatar-renderer'] : []),
+        ...(avatarProvider?.mount ? ['avatar-renderer'] : []),
         ...(this._audioHost ? ['audio'] : []),
       ]);
       const allowedCapabilities = new Set(registration.allowedCapabilities);
@@ -815,12 +978,82 @@
           operation: 'avatar.mount',
         });
       }
-      if (!this._avatarHost || typeof this._avatarHost.mount !== 'function') {
+      const provider = HOST_AVATAR_PROVIDERS.get(this);
+      if (!provider || typeof provider.mount !== 'function') {
         throw this._hostError('capability_unavailable', 'Avatar renderer host is unavailable', {
           operation: 'avatar.mount',
         });
       }
-      return this._avatarHost.mount(config);
+      return provider.mount(config);
+    }
+
+    async getAvatarCharacter(name = '') {
+      this._requireGrantedCapability('avatar-renderer', 'avatar.getCharacter');
+      if (this._disposed) {
+        throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, {
+          operation: 'avatar.getCharacter',
+        });
+      }
+      if (typeof name !== 'string') {
+        throw this._hostError('invalid_request', 'Avatar character name must be a string', {
+          operation: 'avatar.getCharacter',
+        });
+      }
+      const requestedName = name.trim();
+      if (requestedName.length > AVATAR_CHARACTER_NAME_CHARS) {
+        throw this._hostError('invalid_request', 'Avatar character name is too long', {
+          operation: 'avatar.getCharacter',
+        });
+      }
+      const provider = HOST_AVATAR_PROVIDERS.get(this);
+      if (!provider || (
+        requestedName
+          ? typeof provider.getCharacter !== 'function'
+          : typeof provider.getCharacter !== 'function'
+            && typeof provider.getCurrentCharacter !== 'function'
+      )) {
+        throw this._hostError('capability_unavailable', 'Avatar character provider is unavailable', {
+          operation: 'avatar.getCharacter',
+        });
+      }
+      try {
+        const value = requestedName
+          ? await provider.getCharacter?.(requestedName)
+          : await (provider.getCurrentCharacter?.() ?? provider.getCharacter?.(''));
+        return normalizeAvatarCharacterDescriptor(value);
+      } catch (error) {
+        if (error instanceof NekoMiniGameHostError) throw error;
+        throw this._hostError(
+          error?.code || 'request_failed',
+          'Avatar character lookup failed',
+          { operation: 'avatar.getCharacter', cause: error },
+        );
+      }
+    }
+
+    async listAvatarCharacters() {
+      this._requireGrantedCapability('avatar-renderer', 'avatar.listCharacters');
+      if (this._disposed) {
+        throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, {
+          operation: 'avatar.listCharacters',
+        });
+      }
+      const provider = HOST_AVATAR_PROVIDERS.get(this);
+      if (!provider || typeof provider.listCharacters !== 'function') {
+        throw this._hostError('capability_unavailable', 'Avatar character provider is unavailable', {
+          operation: 'avatar.listCharacters',
+        });
+      }
+      try {
+        return normalizeAvatarCharacterNames(await provider.listCharacters());
+      } catch (error) {
+        if (error instanceof NekoMiniGameHostError) throw error;
+        throw this._hostError(
+          error?.code || 'request_failed',
+          'Avatar character listing failed',
+          { operation: 'avatar.listCharacters', cause: error },
+        );
+      }
     }
 
     mountAudio(config) {
@@ -839,7 +1072,7 @@
     }
 
     _gameEndpoint(path) {
-      return `/api/game/${encodeURIComponent(this.gameType)}/${path}`;
+      return `/api/game/${encodeURIComponent(this.routeGameType)}/${path}`;
     }
 
     _hostError(code, message, details = {}) {
@@ -958,6 +1191,7 @@
     }
 
     resetSession({ newSession = false } = {}) {
+      this._activeCommandRouteIdentity = null;
       if (newSession || !this._session.id) {
         this._cancelVoiceControlRequests('cancelled');
         // Same entropy as the constructor's generator: a reset that mints a
@@ -974,18 +1208,36 @@
     applyRouteState(state = {}) {
       const sessionId = String(state?.session_id || state?.sessionId || '').trim();
       const lanlanName = String(state?.lanlan_name || '').trim();
+      if (
+        this._activeCommandRouteIdentity
+        && (
+          (sessionId && sessionId !== this._activeCommandRouteIdentity.sessionId)
+          || (lanlanName && lanlanName !== this._activeCommandRouteIdentity.lanlanName)
+        )
+      ) {
+        this._activeCommandRouteIdentity = null;
+      }
       if (sessionId) this._session.id = sessionId;
       if (lanlanName) this._session.lanlanName = lanlanName;
       return { sessionId: this.sessionId, lanlanName: this.routeLanlanName };
     }
 
-    _trustedRuntimePayload(payload = {}) {
+    _trustedRuntimePayload(payload = {}, options = {}) {
       const source = payload && typeof payload === 'object' && !Array.isArray(payload)
         ? payload
         : {};
       let trusted;
       try {
-        trusted = cloneTrustedJsonData(source);
+        trusted = cloneTrustedJsonData(source, {
+          nodes: 0,
+          bytes: 0,
+          seen: new Set(),
+          maxBytes: boundedPositiveInteger(
+            options.maxContentBytes,
+            TRUSTED_PAYLOAD_MAX_CONTENT_BYTES,
+            MAX_COMMAND_REQUEST_BYTES,
+          ),
+        });
       } catch (cause) {
         throw this._hostError('invalid_payload', `${this.displayName} host payload is invalid`, {
           operation: 'trusted_runtime_payload',
@@ -1003,6 +1255,9 @@
       return {
         ...trusted,
         session_id: this.sessionId,
+        // Public manifest ids may differ from legacy backend route slugs. The
+        // bootstrap-owned alias controls both the URL and payload identity.
+        game_type: this.routeGameType,
         ...(this.routeLanlanName ? { lanlan_name: this.routeLanlanName } : {}),
         game_memory_enabled: memoryEnabled,
         game_memory_player_interaction_enabled: memoryEnabled,
@@ -1098,24 +1353,59 @@
       });
     }
 
-    start(payload, options = {}) {
+    async start(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_start');
-      return this._post(this._gameEndpoint('route/start'), {
-        ...this._trustedRuntimePayload(payload),
-      }, {
+      const trustedPayload = this._trustedRuntimePayload(payload);
+      const requestedRouteInstanceId = String(trustedPayload.sdk_route_instance_id || '').trim();
+      const response = await this._post(this._gameEndpoint('route/start'), trustedPayload, {
         timeoutMs: 60000,
         operation: 'route_start',
         ...options,
       });
+      let data = null;
+      try { data = await response.clone().json(); }
+      catch (_) { /* the public SDK still owns response validation */ }
+      const routeState = data?.state && typeof data.state === 'object' ? data.state : null;
+      const routeActive = routeState?.game_route_active === true || data?.active === true;
+      if (response.ok && data?.ok !== false && routeActive) {
+        this._activeCommandRouteIdentity = Object.freeze({
+          gameType: this.routeGameType,
+          sessionId: String(routeState?.session_id || trustedPayload.session_id || '').trim(),
+          lanlanName: String(routeState?.lanlan_name || trustedPayload.lanlan_name || '').trim(),
+          routeInstanceId: requestedRouteInstanceId,
+        });
+      } else if (response.ok && data?.ok !== false) {
+        this._activeCommandRouteIdentity = null;
+      }
+      return response;
     }
 
-    heartbeat(payload, options = {}) {
+    _retireCommandRouteIfRuntimeInactive(data, routeInstanceId) {
+      const state = data?.state && typeof data.state === 'object' ? data.state : null;
+      const explicitlyInactive = data?.active === false || state?.game_route_active === false;
+      if (!explicitlyInactive || !this._activeCommandRouteIdentity) return false;
+      const requestedGeneration = String(routeInstanceId || '').trim();
+      if (
+        requestedGeneration
+        && requestedGeneration !== this._activeCommandRouteIdentity.routeInstanceId
+      ) return false;
+      this._activeCommandRouteIdentity = null;
+      return true;
+    }
+
+    async heartbeat(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_heartbeat');
-      return this._post(this._gameEndpoint('route/heartbeat'), this._trustedRuntimePayload(payload), {
+      const trustedPayload = this._trustedRuntimePayload(payload);
+      const response = await this._post(this._gameEndpoint('route/heartbeat'), trustedPayload, {
         timeoutMs: DEFAULT_HEARTBEAT_TIMEOUT_MS,
         operation: 'route_heartbeat',
         ...options,
       });
+      try {
+        const data = await response.clone().json();
+        this._retireCommandRouteIfRuntimeInactive(data, trustedPayload.sdk_route_instance_id);
+      } catch (_) { /* the public SDK still owns response validation */ }
+      return response;
     }
 
     async drain(payload, options = {}) {
@@ -1137,6 +1427,7 @@
       try {
         const data = await response.clone().json();
         this._dispatchGameControls(data?.outputs, sourceRoute);
+        this._retireCommandRouteIfRuntimeInactive(data, sourceRoute.routeInstanceId);
       } catch (_) { /* the SDK still owns response validation */ }
       return response;
     }
@@ -1181,6 +1472,118 @@
       return result.finally(() => {
         this._protocolQueueDepth = Math.max(0, this._protocolQueueDepth - 1);
       });
+    }
+
+    async executeGameCommand(nameInput, envelope = {}, options = {}) {
+      this._requireGrantedCapability('runtime', 'game_command');
+      const name = String(nameInput || '').trim();
+      const commandRoutes = HOST_COMMAND_ROUTES.get(this) || {};
+      const policy = Object.prototype.hasOwnProperty.call(commandRoutes, name)
+        ? commandRoutes[name]
+        : null;
+      if (!policy || !HOST_DECLARED_COMMANDS.get(this)?.has(name)) {
+        throw this._hostError(
+          'capability_denied',
+          `The ${this.displayName} command is not declared for this launch`,
+          { operation: 'game_command' },
+        );
+      }
+      if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
+        throw this._hostError(
+          'invalid_payload',
+          `${this.displayName} command envelope must be an object`,
+          { operation: 'game_command' },
+        );
+      }
+      const protocolVersion = String(envelope.protocolVersion || envelope.protocol_version || '');
+      const envelopeType = String(envelope.type || '').trim();
+      const sequence = Number(envelope.sequence);
+      const requestedSessionId = String(envelope.sessionId || envelope.session_id || '').trim();
+      const routeInstanceId = String(
+        envelope.routeInstanceId || envelope.sdk_route_instance_id || '',
+      ).trim();
+      if (
+        protocolVersion !== SDK_PROTOCOL_VERSION
+        || envelopeType !== name
+        || !Number.isSafeInteger(sequence)
+        || sequence <= 0
+      ) {
+        throw this._hostError(
+          'invalid_payload',
+          `${this.displayName} command envelope is invalid`,
+          { operation: 'game_command' },
+        );
+      }
+      const activeRouteIdentity = this._activeCommandRouteIdentity;
+      const routeIdentityIsCurrent = () => (
+        !!activeRouteIdentity
+        && this._activeCommandRouteIdentity === activeRouteIdentity
+        && activeRouteIdentity.gameType === this.routeGameType
+        && activeRouteIdentity.sessionId === this.sessionId
+        && activeRouteIdentity.lanlanName === this.routeLanlanName
+        && activeRouteIdentity.routeInstanceId === routeInstanceId
+        && requestedSessionId === activeRouteIdentity.sessionId
+      );
+      if (!requestedSessionId || !routeInstanceId || !routeIdentityIsCurrent()) {
+        throw this._hostError(
+          'session_invalid',
+          `${this.displayName} command does not match the active runtime identity`,
+          { operation: 'game_command' },
+        );
+      }
+      if (!envelope.payload || typeof envelope.payload !== 'object' || Array.isArray(envelope.payload)) {
+        throw this._hostError(
+          'invalid_payload',
+          `${this.displayName} same-origin command payload must be an object`,
+          { operation: 'game_command' },
+        );
+      }
+      let payload;
+      try {
+        const commandPayload = cloneTrustedJsonData(envelope.payload, {
+          nodes: 0,
+          bytes: 0,
+          seen: new Set(),
+          maxBytes: policy.maxRequestBytes,
+        });
+        for (const key of COMMAND_PAYLOAD_HOST_IDENTITY_KEYS) delete commandPayload[key];
+        if (utf8ByteLength(JSON.stringify(commandPayload)) > policy.maxRequestBytes) {
+          throw new TypeError('invalid_payload');
+        }
+        payload = this._trustedRuntimePayload({
+          ...commandPayload,
+          sdk_route_instance_id: routeInstanceId,
+        }, { maxContentBytes: policy.maxRequestBytes });
+      } catch (cause) {
+        if (cause instanceof NekoMiniGameHostError) throw cause;
+        throw this._hostError(
+          'invalid_payload',
+          `${this.displayName} command payload is invalid`,
+          { operation: 'game_command', cause },
+        );
+      }
+      const requestedTimeoutMs = boundedPositiveInteger(
+        options.timeoutMs,
+        DEFAULT_COMMAND_TIMEOUT_MS,
+        MAX_COMMAND_TIMEOUT_MS,
+      );
+      const response = await this._postWithCsrf(
+        this._gameEndpoint(policy.path),
+        payload,
+        {
+          timeoutMs: Math.min(requestedTimeoutMs, policy.maxTimeoutMs),
+          signal: options.signal,
+          operation: 'game_command',
+        },
+      );
+      if (!routeIdentityIsCurrent()) {
+        throw this._hostError(
+          'session_invalid',
+          `${this.displayName} command response belongs to a retired runtime identity`,
+          { operation: 'game_command' },
+        );
+      }
+      return response;
     }
 
     startGameControlBridge(options = {}) {
@@ -1507,7 +1910,7 @@
             bridge.seenMessageIds.delete(bridge.seenMessageOrder.shift());
           }
         }
-        if (String(data.game_type || '') !== this.gameType) return;
+        if (String(data.game_type || '') !== this.routeGameType) return;
         if (data.session_id && String(data.session_id) !== this.sessionId) return;
         if (data.type === 'game_voice_transcript') {
           const text = String(data.text || '').trim();
@@ -1692,7 +2095,7 @@
           request_id: requestId,
           timestamp: Date.now(),
           action: normalizedAction,
-          game_type: this.gameType,
+          game_type: this.routeGameType,
           session_id: this.sessionId,
           ...(routeInstanceId ? { sdk_route_instance_id: routeInstanceId } : {}),
         });
@@ -2051,7 +2454,7 @@
       if (!transport.overflowContext && payload && typeof payload === 'object') {
         transport.overflowContext = {
           session_id: String(payload.session_id || this.sessionId || ''),
-          game_type: String(payload.game_type || this.gameType),
+          game_type: String(payload.game_type || this.routeGameType),
           lanlan_name: String(payload.lanlan_name || this.routeLanlanName || ''),
           source: String(payload.source || this.source),
         };
@@ -2083,7 +2486,7 @@
       transport.overflowNotified = false;
       const payload = {
         session_id: context.session_id || this.sessionId,
-        game_type: context.game_type || this.gameType,
+        game_type: context.game_type || this.routeGameType,
         lanlan_name: context.lanlan_name || this.routeLanlanName,
         source: context.source || this.source,
         level: 'warning',
@@ -2238,7 +2641,7 @@
       const context = this._loggerContext();
       const payload = {
         session_id: context.sessionId,
-        game_type: this.gameType,
+        game_type: this.routeGameType,
         lanlan_name: context.lanlanName,
         source: this.source,
         level,
@@ -2339,7 +2742,7 @@
       const original = entry.payload || {};
       return {
         session_id: original.session_id || this.sessionId,
-        game_type: original.game_type || this.gameType,
+        game_type: original.game_type || this.routeGameType,
         lanlan_name: original.lanlan_name || this.routeLanlanName,
         source: original.source || this.source,
         level: event === 'repeated_log_recovered' ? 'info' : 'warning',
@@ -2485,7 +2888,7 @@
       const debugLogMutationHeaders = { ...mutationHeaders };
       const payload = {
         session_id: context.sessionId,
-        game_type: this.gameType,
+        game_type: this.routeGameType,
         lanlan_name: context.lanlanName,
         source: this.source,
         reason,
@@ -2797,6 +3200,8 @@
 
     async end(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_end');
+      const endingCommandRoute = this._activeCommandRouteIdentity;
+      if (options.useBeacon) this._activeCommandRouteIdentity = null;
       let parsedPayload = payload;
       if (typeof payload === 'string') {
         try {
@@ -2902,7 +3307,16 @@
       });
       const data = await response.json().catch(() => ({ ok: response.ok, status: response.status }));
       const projected = this._projectRouteEndResponse(data);
-      if (response.ok) return projected;
+      if (response.ok) {
+        if (
+          projected?.ok !== false
+          && endingCommandRoute
+          && this._activeCommandRouteIdentity === endingCommandRoute
+        ) {
+          this._activeCommandRouteIdentity = null;
+        }
+        return projected;
+      }
       // A non-2xx body is usually FastAPI's `{"detail": ...}`: it parses fine,
       // carries no `ok`, and no field the projection keeps -- so it arrived as
       // `{}`, and the SDK reads a plain object without `ok` as SUCCESS. The
@@ -2927,11 +3341,15 @@
       const preserveOperations = new Set(options.preservePendingOperations || []);
       this.cancelPendingRequests('disposed', { preserveOperations });
       this.stopAllSpeechRecognition();
+      this._activeCommandRouteIdentity = null;
       this.stopSpeechPlaybackBridge();
       this.stopVoiceControlBridge('disposed');
       this._grantedCapabilities.clear();
+      HOST_DECLARED_COMMANDS.set(this, new Set());
       this.stopGameControlBridge();
-      try { this._avatarHost?.dispose?.(); }
+      const avatarProvider = HOST_AVATAR_PROVIDERS.get(this);
+      HOST_AVATAR_PROVIDERS.delete(this);
+      try { avatarProvider?.dispose?.(); }
       catch (error) { this._console.warn(`[${this.displayName}Host] avatar host dispose failed:`, error); }
       try { this._audioHost?.dispose?.(); }
       catch (error) { this._console.warn(`[${this.displayName}Host] audio host dispose failed:`, error); }
@@ -2942,10 +3360,23 @@
 
   const createNekoMiniGameSameOriginHost = function createNekoMiniGameSameOriginHost(options = {}) {
     const gameType = String(options.gameType || '').trim();
+    const capabilityProviders = HOST_BOOTSTRAP.capabilityProviders.get(gameType) || null;
+    let trustedAvatarHost = null;
+    if (typeof capabilityProviders?.avatarHostFactory === 'function') {
+      const windowImpl = options.windowImpl || window;
+      trustedAvatarHost = capabilityProviders.avatarHostFactory(Object.freeze({
+        windowImpl,
+        documentImpl: windowImpl.document,
+        fetchImpl: options.fetchImpl || windowImpl.fetch?.bind(windowImpl),
+      }));
+    }
     return new NekoMiniGameSameOriginHost({
       ...options,
+      // Deliberately overwrite any caller-provided renderer after the spread.
+      avatarHost: undefined,
+      trustedAvatarHost,
       launchRegistration: HOST_BOOTSTRAP.registrations.get(gameType) || null,
-      capabilityProviders: HOST_BOOTSTRAP.capabilityProviders.get(gameType) || null,
+      capabilityProviders,
     });
   };
   Object.defineProperty(window, FACTORY_PROPERTY, {

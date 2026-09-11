@@ -41,6 +41,7 @@ from main_logic.tts_client import (
     dummy_tts_worker,
     TTS_SHUTDOWN_SENTINEL,
     TTS_AUDIO_DONE_SENTINEL,
+    TTS_SOFT_FLUSH_SENTINEL,
     TTS_PROVIDER_REGISTRY,
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
@@ -320,6 +321,79 @@ class TtsRuntimeMixin:
         self.tts_request_queue.put((speech_id, text))
         self._remember_tts_sent_chunk(speech_id, text)
         self._remember_pending_ai_voice_echo(speech_id, text)
+        # 每个入队的 chunk 都把空闲定时器重新拨到 idle 秒之后：文本停了、done
+        # 又迟迟不来，就让 worker 先把攒着的尾句合成出来。
+        self._arm_tts_soft_flush(speech_id)
+
+    @staticmethod
+    def _tts_soft_flush_idle_seconds() -> float:
+        """How long the turn's text may go quiet before the worker is told to flush.
+
+        Measured on lanlan.app: gaps between transcript deltas inside one reply
+        stay under ~0.6s, while ``response.done`` trails the last delta by 1.2s
+        in the good case and 9.5s in the bad one. 1s sits between the two.
+        Overridable via ``NEKO_TTS_SOFT_FLUSH_IDLE_SECONDS`` (floored at 0.3s so
+        a typo cannot turn every inter-word pause into a synthesizer rebuild).
+        """
+        import os
+        raw = os.environ.get("NEKO_TTS_SOFT_FLUSH_IDLE_SECONDS", "").strip()
+        if not raw:
+            return 1.0
+        try:
+            return max(0.3, float(raw))
+        except ValueError:
+            return 1.0
+
+    def _arm_tts_soft_flush(self, speech_id) -> None:
+        """(Re)start the idle timer that asks the worker to flush the held tail.
+
+        Only for realtime voice sessions on a provider whose worker understands
+        ``TTS_SOFT_FLUSH_SENTINEL``. In text mode the completion callback lands
+        right behind the last chunk, so there is nothing to bridge; a worker
+        that does not know the sentinel would read it as a new speech id.
+        """
+        if not getattr(self, "_tts_soft_flush_supported", False):
+            return
+        if getattr(self, "input_mode", None) != "audio":
+            return
+        self._cancel_tts_soft_flush()
+        try:
+            self._tts_soft_flush_task = self._fire_task(
+                self._tts_soft_flush_after_idle(speech_id)
+            )
+        except RuntimeError:
+            # 没有运行中的事件循环（同步测试夹具直接调用入队）：不兜底，就是不发
+            self._tts_soft_flush_task = None
+
+    def _cancel_tts_soft_flush(self) -> None:
+        task = getattr(self, "_tts_soft_flush_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        self._tts_soft_flush_task = None
+
+    async def _tts_soft_flush_after_idle(self, speech_id) -> None:
+        """Fire the soft flush if the turn is still open and still this speech.
+
+        Everything that would make the flush wrong is re-checked under the
+        cache lock after the sleep: the round already has its done sentinel
+        queued (or deferred until the worker is ready — the pending chunks will
+        re-arm this timer when they flush), the speech id moved on (barge-in /
+        rotation), the worker went away, or chunks are still waiting to be
+        replayed to it.
+        """
+        await asyncio.sleep(self._tts_soft_flush_idle_seconds())
+        async with self.tts_cache_lock:
+            if self._tts_done_queued_for_turn or self._tts_done_pending_until_ready:
+                return
+            if speech_id is None or speech_id != self.current_speech_id:
+                return
+            if not (self.tts_ready and self.tts_thread and self.tts_thread.is_alive()):
+                return
+            if self.tts_pending_chunks:
+                return
+            self.tts_request_queue.put((TTS_SOFT_FLUSH_SENTINEL, speech_id))
+        logger.debug("TTS 文本空闲 %.1fs 且 done 未到，发软 flush speech_id=%s",
+                     self._tts_soft_flush_idle_seconds(), speech_id)
 
     def _reset_tts_stream_normalizer(self) -> None:
         """Clear all TTS text stripper state. Called on interrupt / turn end / session rebuild."""
@@ -342,6 +416,9 @@ class TtsRuntimeMixin:
         worker_alive = bool(self.tts_thread and self.tts_thread.is_alive())
         if not worker_alive:
             return "no_worker"
+
+        # 本轮要收尾了（立即排入或等 ready 后补发都算）：空闲软 flush 没有意义了
+        self._cancel_tts_soft_flush()
 
         if not self.tts_ready or self.tts_pending_chunks:
             self._tts_replay_done = True
@@ -951,6 +1028,9 @@ class TtsRuntimeMixin:
         # 调用方在本函数返回后的重复清零保留不动：那是给 sleep 窗口内被并发
         # 置回 True 的情况兜底，与这里要修的取消残留是两件事。
         self._tts_done_queued_for_turn = False
+        # 打断作废的是这一轮的一切，包括还没到点的空闲软 flush；同样在第一个
+        # await 之前同步取消，让它和 __interrupt__ 入队一起落地。
+        self._cancel_tts_soft_flush()
         self._cancel_game_speech_completion_wait()
         self._clear_game_speech_correlation()
         GAME_SPEECH_AUDIO_CACHE.discard_owner(self)
@@ -1139,6 +1219,9 @@ class TtsRuntimeMixin:
         # 因为 free 国外模式走 Gemini 后端，需要 CJK 空格清理。
         meta = TTS_PROVIDER_REGISTRY.get(provider_key) if provider_key else None
         self._tts_normalize_enabled = not meta or meta.category != "ws_bistream"
+        # 文本空闲软 flush 只发给认这个哨兵的 worker（能力位在注册表）。
+        self._tts_soft_flush_supported = bool(meta and meta.soft_flush)
+        self._cancel_tts_soft_flush()
         self._tts_replay_progress_supported = bool(
             meta and meta.category == "http_sentence"
         )
@@ -1266,6 +1349,7 @@ class TtsRuntimeMixin:
         if notified_error_keys is not None:
             notified_error_keys.clear()
         self._tts_done_queued_for_turn = False
+        self._cancel_tts_soft_flush()
         self._tts_fallback_uses_default_voice = False
         self._reset_tts_replay_state()
         self._tts_done_pending_until_ready = False
@@ -1325,6 +1409,7 @@ class TtsRuntimeMixin:
         # 只在被拆除的 runtime 仍是当前 runtime 时才清全局 TTS 状态，
         # 避免新 session 已创建新队列/worker 后被旧 teardown 误重置
         if resp_queue_ref is self.tts_response_queue:
+            self._cancel_tts_soft_flush()
             self._cancel_game_speech_completion_wait()
             self._clear_game_speech_correlation()
             self.cancel_game_speech_preloads()

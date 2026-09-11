@@ -630,11 +630,24 @@ def running_on_event_loop() -> bool:
     return True
 
 
-def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
-    """Replace the target, briefly retrying Windows' "target is busy" errors."""
+def _with_busy_retry(attempt) -> None:
+    """Run ``attempt`` under the shared Windows "target is busy" backoff.
+
+    One policy, two entry points. The replacing and no-replace publishes
+    had the same loop written out twice -- same error set, same event-loop
+    rule, same delays -- so changing the policy meant changing both and
+    noticing that it had to be changed in both.
+
+    Anything that is not a BUSY error propagates on the first attempt,
+    which is already the whole rule for the no-replace publish: a
+    destination that won the race raises FileExistsError, whose winerror
+    is 183 on Windows and absent on POSIX, so it is never in the busy set.
+    A "terminal exceptions" parameter was written here and taken back
+    out after checking what it did: nothing, on either platform.
+    """
     for delay in _REPLACE_RETRY_BACKOFF_S:
         try:
-            os.replace(temp_path, target_path)
+            attempt()
             return
         except OSError as exc:
             if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
@@ -644,7 +657,71 @@ def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
             if running_on_event_loop():
                 raise
         time.sleep(delay)
-    os.replace(temp_path, target_path)
+    # One last go, so the caller sees the real error rather than a
+    # silent give-up.
+    attempt()
+
+
+def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
+    """Replace the target, briefly retrying Windows' "target is busy" errors."""
+    _with_busy_retry(lambda: os.replace(temp_path, target_path))
+
+
+def _publish_once(source: str, target_path: Path) -> None:
+    """One no-replace attempt, by whichever primitive the platform has."""
+    if os.name == "nt":
+        # os.rename ALREADY refuses an existing destination on Windows,
+        # which is exactly the semantics wanted here.
+        os.rename(source, target_path)
+        return
+    # POSIX rename replaces, so claim the name with a hard link -- which
+    # raises FileExistsError instead -- and drop the staged name after.
+    os.link(source, target_path)
+    try:
+        os.unlink(source)
+    except OSError:
+        # The destination is published either way; the staged name is
+        # inside a workspace that comes down with it.
+        pass
+
+
+def publish_without_replacing(
+    source: str | os.PathLike[str], target_path: Path
+) -> None:
+    """Move a file onto a name that must NOT already exist.
+
+    :func:`replace_with_busy_retry` overwrites, and a destination can
+    appear between a caller's last check and the call -- another
+    application process, or a cloud import writing back the managed file
+    it is restoring. Where an existing entry is authoritative, losing
+    that race has to mean abandoning the source: FileExistsError is
+    raised and nothing is overwritten.
+
+    A hard link would serve on Windows too, and must not be used there:
+    the source then shares an inode with the published file, so clearing
+    the read-only attribute to remove the source changes the mode of the
+    published one. Measured -- a 0o444 seed published as 0o666.
+
+    Same Windows busy window and same backoff as the replacing form --
+    literally the same, through :func:`_with_busy_retry`, rather than a
+    second copy of the error set and the delays.
+    """
+    source = str(source)
+    # FileExistsError is the destination winning: an answer, not a
+    # failure to retry around -- and it needs no special case, because
+    # it is not a busy error and the backoff only retries those.
+    _with_busy_retry(lambda: _publish_once(source, target_path))
+
+
+def replace_with_busy_retry(temp_path: str | os.PathLike[str], target_path: Path) -> None:
+    """Replace ``target_path``, briefly retrying Windows' "target is busy".
+
+    The public name for :func:`_replace_with_busy_retry`. The migration
+    path publishes through it, and a private name would have made the
+    retry semantics a convention that a rename in here could break
+    silently rather than a contract.
+    """
+    _replace_with_busy_retry(str(temp_path), target_path)
 
 
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:

@@ -648,7 +648,13 @@ export default {
     returnedLines: '返却行数',
     connected: '接続済み',
     disconnected: '未接続',
-    connectionFailed: 'ログストリームの接続に失敗しました'
+    connectionFailed: 'ログストリームの接続に失敗しました',
+    exportLog: 'ログアーカイブをエクスポート',
+    openLogDirectory: 'ログディレクトリを開く',
+    exportSuccess: 'ログのエクスポートに成功しました',
+    exportFailed: 'ログのエクスポートに失敗しました',
+    openDirectoryFailed: 'ディレクトリを開けませんでした',
+    noLogFileToExport: 'エクスポートするログファイルがありません'
   },
   runs: {
     title: '実行履歴',
@@ -724,7 +730,9 @@ export default {
     resourceNotFound: '要求されたリソースが見つかりません',
     internalServerError: 'サーバー内部エラー',
     serviceUnavailable: 'サービスが利用できません',
-    networkError: 'ネットワークエラー。接続を確認してください。'
+    networkError: 'ネットワークエラー。接続を確認してください。',
+    requestTimeout: 'リクエストがタイムアウトしました。もう一度お試しください。',
+    pluginLifecycleTimeout: 'プラグインの起動または再起動がタイムアウトしました。プラグインログを確認してください。'
   },
   welcome: {
     about: {

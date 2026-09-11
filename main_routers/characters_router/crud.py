@@ -87,7 +87,12 @@ from utils.new_character_greeting_state import (
     remove_pending as remove_new_character_greeting_pending,
     rename_pending as rename_new_character_greeting_pending,
 )
-from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable, is_cloudsave_disabled
+from utils.cloudsave_runtime import (
+    MaintenanceModeError,
+    assert_cloudsave_writable,
+    is_cloudsave_disabled,
+    is_cloudsave_disabled_due_to_local_state_unavailable,
+)
 
 
 DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
@@ -462,9 +467,25 @@ def _restore_snapshot_paths(records) -> None:
 
 
 def _build_character_tombstones_state(config_manager, character_name: str) -> dict:
-    if is_cloudsave_disabled():
+    # Built whether cloudsave is ON or merely off by preference. The
+    # tombstone stopped being a cloudsave artifact when the seed migration
+    # started reading it: it is the only durable record that a character's
+    # memory was deleted ON PURPOSE rather than never migrated, and without it
+    # a restart republishes the project seed and the deleted memory comes
+    # back. Skipping it for everyone with cloudsave off was a silent hole
+    # rather than a smaller feature -- nothing reported that the deletion had
+    # gone unrecorded.
+    #
+    # The ONE reason that still skips it is the local state being unavailable,
+    # which is a broken directory rather than a preference: reading or writing
+    # the tombstone there fails and takes the delete with it.
+    if is_cloudsave_disabled_due_to_local_state_unavailable():
         return config_manager.build_default_character_tombstones_state()
 
+    # The sequence number still comes from cloudsave local state. That file is
+    # created on every install regardless (see ensure_local_state_directory),
+    # so reading it costs nothing here, and a later enable continues the same
+    # sequence instead of restarting it.
     cloud_state = config_manager.load_cloudsave_local_state()
     sequence_number = max(1, int(cloud_state.get("next_sequence_number") or 1))
     tombstone_state = config_manager.load_character_tombstones_state()
@@ -1696,7 +1717,16 @@ async def _delete_catgirl_by_name_serialized(name: str):
             if snapshot_cancelled:
                 raise asyncio.CancelledError
 
-            if not is_cloudsave_disabled():
+            # Captured wherever the write below happens, and skipped
+            # wherever it does not. A record written without a snapshot to
+            # restore would survive a failed delete -- leaving a tombstone for
+            # a character who still exists, which suppresses her seed and
+            # would propagate a deletion that never happened if cloudsave were
+            # enabled and uploaded later.
+            #
+            # The unavailable-local-state case reads nothing here for the same
+            # reason it writes nothing: the directory is broken.
+            if not is_cloudsave_disabled_due_to_local_state_unavailable():
                 tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
 
             try:
@@ -1732,7 +1762,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
             if meta_path.exists():
                 await _await_thread_mutation(meta_path.unlink)
 
-            if not is_cloudsave_disabled():
+            if not is_cloudsave_disabled_due_to_local_state_unavailable():
                 await _await_thread_mutation(
                     _config_manager.save_character_tombstones_state,
                     _build_character_tombstones_state(_config_manager, name),

@@ -16,6 +16,209 @@
 
     window.appUi = window.appUi || {};
     const I = window.__appUiParts || (window.__appUiParts = {});
+    const PROGRAMMATIC_GOODBYE_RETURN_TIMEOUT_MS = 15000;
+    let programmaticGoodbyeReturnPromise = null;
+
+    function getVisibleGoodbyeReturnContainer() {
+        if (typeof I.getVisibleIdleReturnBallContainer === 'function') {
+            const container = I.getVisibleIdleReturnBallContainer();
+            if (container) return container;
+        }
+        return document.querySelector(
+            '[id$="-return-button-container"][data-neko-return-visible="true"]'
+        );
+    }
+
+    function isGoodbyeRuntimeActive() {
+        if (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive()) {
+            return true;
+        }
+        return !!(
+            (window.live2dManager && window.live2dManager._goodbyeClicked)
+            || (window.vrmManager && window.vrmManager._goodbyeClicked)
+            || (window.mmdManager && window.mmdManager._goodbyeClicked)
+        );
+    }
+
+    function isModelCatTransitionActive(direction) {
+        return typeof I.isNekoModelCatTransitionActive === 'function'
+            && I.isNekoModelCatTransitionActive(direction);
+    }
+
+    function isReturnBallViewportActive() {
+        const pendingRestoreBounds = typeof I.getPendingModelViewportRestoreBounds === 'function'
+            ? I.getPendingModelViewportRestoreBounds()
+            : null;
+        if (pendingRestoreBounds) return true;
+        return !!(
+            window.nekoPetDrag
+            && typeof I.isNativeReturnBallViewportSize === 'function'
+            && I.isNativeReturnBallViewportSize(window.innerWidth, window.innerHeight)
+        );
+    }
+
+    function resolveGoodbyeReturnModelType(container) {
+        const visibleTypeMatch = container && String(container.id || '')
+            .match(/^(live2d|vrm|mmd|pngtuber)-return-button-container$/);
+        if (visibleTypeMatch) return visibleTypeMatch[1];
+
+        const configuredType = String(window.lanlan_config?.model_type || 'live2d').toLowerCase();
+        const live3dSubType = String(window.lanlan_config?.live3d_sub_type || '').toLowerCase();
+        if (configuredType === 'live3d') {
+            return live3dSubType === 'mmd' ? 'mmd' : 'vrm';
+        }
+        return ['live2d', 'vrm', 'mmd', 'pngtuber'].includes(configuredType)
+            ? configuredType
+            : 'live2d';
+    }
+
+    function waitForGoodbyeReturnTerminal(options) {
+        const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+            ? Math.max(1000, Number(options.timeoutMs))
+            : PROGRAMMATIC_GOODBYE_RETURN_TIMEOUT_MS;
+
+        return new Promise((resolve) => {
+            let settled = false;
+            let timeoutId = null;
+            const waitForTransitionToSettle = async (direction) => {
+                while (!settled && isModelCatTransitionActive(direction)) {
+                    const transition = I.nekoModelCatTransitionActive;
+                    if (transition && transition.promise && typeof transition.promise.then === 'function') {
+                        try {
+                            await transition.promise;
+                        } catch (_) {
+                            // A rejected transition may remain registered until
+                            // its owner's cleanup runs. Yield before rechecking
+                            // so the loop cannot starve that cleanup or timeout.
+                            await new Promise((resume) => window.setTimeout(resume, 16));
+                        }
+                    } else {
+                        await new Promise((resume) => window.setTimeout(resume, 16));
+                    }
+                }
+            };
+            const finish = (restored) => {
+                if (settled) return;
+                settled = true;
+                if (timeoutId !== null) window.clearTimeout(timeoutId);
+                window.removeEventListener('neko:cat-return-complete', handleComplete);
+                window.removeEventListener('neko:cat-return-abort', handleAbort);
+                resolve(restored === true);
+            };
+            const handleComplete = () => {
+                // The canonical handler publishes complete from inside its
+                // finally-protected lifecycle. Let that stack unwind and wait
+                // for the concurrently running cat-to-model smoke transition
+                // before allowing a model reload to replace its container.
+                Promise.resolve().then(async () => {
+                    await waitForTransitionToSettle('cat-to-model');
+                    const fullyRestored = !isGoodbyeRuntimeActive()
+                        && !getVisibleGoodbyeReturnContainer()
+                        && !isReturnBallViewportActive()
+                        && !I.nekoCatReturnInProgress
+                        && !isModelCatTransitionActive('model-to-cat')
+                        && !isModelCatTransitionActive('cat-to-model');
+                    finish(fullyRestored);
+                }).catch((error) => {
+                    console.error('[App] 等待猫咪返回过渡结束失败:', error);
+                    finish(false);
+                });
+            };
+            const handleAbort = () => finish(false);
+
+            window.addEventListener('neko:cat-return-complete', handleComplete);
+            window.addEventListener('neko:cat-return-abort', handleAbort);
+            timeoutId = window.setTimeout(() => {
+                console.warn('[App] 程序化恢复模型超时:', options.source || 'unknown');
+                finish(false);
+            }, timeoutMs);
+
+            const dispatchReturnWhenReady = async () => {
+                // “请她离开”会先置 goodbye 标志，再播放 model-to-cat 动画；
+                // 统一 return handler 在动画结束前会忽略事件，因此这里先加入动画。
+                await waitForTransitionToSettle('model-to-cat');
+                if (settled) return;
+
+                // 用户可能已先点了“请她回来”。此时只等待同一条标准返回链的
+                // terminal event，不能再派发一次并发恢复。
+                if (I.nekoCatReturnInProgress) {
+                    return;
+                }
+                if (isModelCatTransitionActive('cat-to-model')) {
+                    // A manual return may have already published its terminal
+                    // event just before this helper installed listeners. Join
+                    // the remaining visual transition, then adjudicate state.
+                    await waitForTransitionToSettle('cat-to-model');
+                    if (settled) return;
+                    if (!isGoodbyeRuntimeActive()
+                        && !getVisibleGoodbyeReturnContainer()
+                        && !isReturnBallViewportActive()) {
+                        finish(true);
+                        return;
+                    }
+                }
+
+                const visibleReturnContainer = getVisibleGoodbyeReturnContainer();
+                if (!isGoodbyeRuntimeActive()
+                    && !visibleReturnContainer
+                    && !isReturnBallViewportActive()) {
+                    finish(true);
+                    return;
+                }
+
+                const activeType = resolveGoodbyeReturnModelType(visibleReturnContainer);
+                let returnButtonRect = null;
+                if (visibleReturnContainer && typeof visibleReturnContainer.getBoundingClientRect === 'function') {
+                    const clientRect = visibleReturnContainer.getBoundingClientRect();
+                    const transitionRect = typeof I.toNekoVirtualTransitionRect === 'function'
+                        ? (I.toNekoVirtualTransitionRect(clientRect) || clientRect)
+                        : clientRect;
+                    returnButtonRect = {
+                        left: transitionRect.left,
+                        top: transitionRect.top,
+                        width: transitionRect.width,
+                        height: transitionRect.height
+                    };
+                }
+                window.dispatchEvent(new CustomEvent(`${activeType}-return-click`, {
+                    detail: {
+                        source: options.source || 'programmatic-return',
+                        retryViewportRestore: options.retryViewportRestore === true,
+                        returnButtonRect
+                    }
+                }));
+            };
+
+            dispatchReturnWhenReady().catch((error) => {
+                console.error('[App] 程序化恢复模型失败:', error);
+                finish(false);
+            });
+        });
+    }
+
+    I.returnFromGoodbye = function returnFromGoodbye(options = {}) {
+        options = options && typeof options === 'object' ? options : {};
+        if (programmaticGoodbyeReturnPromise) return programmaticGoodbyeReturnPromise;
+
+        const hasReturnState = isGoodbyeRuntimeActive()
+            || !!getVisibleGoodbyeReturnContainer()
+            || !!I.nekoCatReturnInProgress
+            || isModelCatTransitionActive('model-to-cat')
+            || isModelCatTransitionActive('cat-to-model')
+            || isReturnBallViewportActive();
+        if (!hasReturnState) return Promise.resolve(true);
+
+        const returnPromise = waitForGoodbyeReturnTerminal(options);
+        programmaticGoodbyeReturnPromise = returnPromise;
+        const clearProgrammaticReturn = () => {
+            if (programmaticGoodbyeReturnPromise === returnPromise) {
+                programmaticGoodbyeReturnPromise = null;
+            }
+        };
+        returnPromise.then(clearProgrammaticReturn, clearProgrammaticReturn);
+        return returnPromise;
+    };
+
     function initFloatingButtonListeners() {
         // DOM refs from orchestrator
         const micButton = I.S.dom.micButton;
@@ -1424,6 +1627,29 @@
                 console.log('[App] 模型正在切换为猫形态，忽略本次请她回来事件');
                 return;
             }
+            if (I.nekoCatReturnInProgress) {
+                console.log('[App] 请她回来流程已在执行，忽略重复事件');
+                return;
+            }
+            I.nekoCatReturnInProgress = true;
+            const publishReturnAbort = () => {
+                window.dispatchEvent(new CustomEvent('neko:cat-return-abort', {
+                    detail: {
+                        source: event && event.type ? event.type : 'return-click',
+                        reason: 'return-incomplete',
+                        timestamp: Date.now()
+                    }
+                }));
+            };
+            const abortReturnBeforeTerminalGuard = () => {
+                I.nekoCatReturnInProgress = false;
+                publishReturnAbort();
+            };
+            let live2DPeekRestoreAnchor = null;
+            try {
+            const returnDetail = event && event.detail && typeof event.detail === 'object'
+                ? event.detail
+                : {};
             const hadPendingGoodbyeReset = !!window._goodbyeResetClickTimerId;
             if (hadPendingGoodbyeReset) {
                 clearTimeout(window._goodbyeResetClickTimerId);
@@ -1436,15 +1662,28 @@
             }
             const preReturnViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
             if (!preReturnViewportReady.ready) {
-                console.warn('[App] 请她回来已暂缓：Pet viewport 仍处于猫形态小窗口，保留 return 状态');
-                restoreReturnBallAfterBlockedModelViewport(event);
-                if (hadPendingGoodbyeReset) {
-                    runGoodbyeResetClickIfActive('return-viewport-blocked');
+                let retryViewportReady = preReturnViewportReady;
+                if (returnDetail.retryViewportRestore === true) {
+                    // Electron 的 Pet carrier 从 160x160 恢复到完整 viewport 是异步的。
+                    // 托盘触发时额外给有限次数重试，避免 resize 通知略晚于首轮等待。
+                    for (let attempt = 0; attempt < 2 && !retryViewportReady.ready; attempt += 1) {
+                        await new Promise((resolve) => window.setTimeout(resolve, 50));
+                        retryViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
+                    }
                 }
-                return;
+                if (retryViewportReady.ready) {
+                    console.log('[App] Pet viewport 重试后已恢复，继续请她回来流程');
+                } else {
+                    console.warn('[App] 请她回来已暂缓：Pet viewport 仍处于猫形态小窗口，保留 return 状态');
+                    restoreReturnBallAfterBlockedModelViewport(event);
+                    if (hadPendingGoodbyeReset) {
+                        runGoodbyeResetClickIfActive('return-viewport-blocked');
+                    }
+                    abortReturnBeforeTerminalGuard();
+                    return;
+                }
             }
             let hadCatCycle = false;
-            let live2DPeekRestoreAnchor = null;
             try {
                 const returnContainer = I.getVisibleIdleReturnBallContainer();
                 hadCatCycle = !!(returnContainer &&
@@ -1472,6 +1711,10 @@
                     timestamp: Date.now()
                 }
             }));
+            } catch (error) {
+                abortReturnBeforeTerminalGuard();
+                throw error;
+            }
             let returnTerminalPublished = false;
             try {
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
@@ -1958,6 +2201,7 @@
 
             console.log('[App] 请她回来完成，未自动开始会话，等待用户主动发起对话');
             } finally {
+                I.nekoCatReturnInProgress = false;
                 if (!returnTerminalPublished) {
                     window.dispatchEvent(new CustomEvent('neko:cat-return-abort', {
                         detail: {
@@ -1978,6 +2222,7 @@
     }
 
     I.mod.initFloatingButtonListeners = initFloatingButtonListeners;
+    I.mod.returnFromGoodbye = I.returnFromGoodbye;
 
     // ================================================================
     //  5. ensureHiddenElements & final UI init  (app.js lines 11354-11420)

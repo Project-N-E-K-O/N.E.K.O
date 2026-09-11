@@ -2928,7 +2928,9 @@ async def test_grok_server_vad_three_states_and_clear_reconnect(monkeypatch) -> 
     for text, is_final, speech_final in (
         ("mutable", False, False),
         ("locked", True, False),
-        ("utterance", True, True),
+        # The terminal event restates the whole utterance, locked chunk
+        # included -- appending it would say "locked" twice.
+        ("lockedutterance", True, True),
     ):
         await first.server_send(
             {
@@ -2943,9 +2945,8 @@ async def test_grok_server_vad_three_states_and_clear_reconnect(monkeypatch) -> 
     locked = await _next_event(responses, "partial")
     final = await _next_event(responses, "final")
     assert started.utterance_id == 1
-    # The locked segment (is_final without speech_final) is retained and the
-    # terminal event only carries the trailing segment, so the Core final is
-    # the concatenation of both.
+    # The locked segment (is_final without speech_final) is retained for the
+    # preview, and the terminal event's restatement becomes the Core final.
     assert (mutable.text, locked.text, final.text) == (
         "mutable",
         "locked",
@@ -2975,7 +2976,7 @@ async def test_grok_server_vad_three_states_and_clear_reconnect(monkeypatch) -> 
     )
 
 
-async def test_grok_server_vad_concatenates_locked_segments_into_final(
+async def test_grok_server_vad_final_replaces_locked_segments(
     monkeypatch,
 ) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
@@ -3007,7 +3008,11 @@ async def test_grok_server_vad_concatenates_locked_segments_into_final(
         ("seg1", True, False),
         ("tail", False, False),
         ("seg2", True, False),
-        ("seg3", True, True),
+        # A terminal event restates the whole utterance, locked chunks
+        # included -- a tail-only payload here would be a shape xAI never
+        # sends, and asserting on it would freeze "drop the locked prefix"
+        # into the guard.
+        ("seg1seg2seg3", True, True),
     ):
         await websocket.server_send(
             {
@@ -3022,6 +3027,9 @@ async def test_grok_server_vad_concatenates_locked_segments_into_final(
     # the preview always matches what the final will say.
     for expected in ("draft", "seg1", "seg1tail", "seg1seg2"):
         assert (await _next_event(responses, "partial")).text == expected
+    # The terminal event restates the whole utterance, so it replaces the
+    # locked segments instead of being appended to them (appending would
+    # say "seg1seg2" twice).
     final = await _next_event(responses, "final")
     assert (final.utterance_id, final.text) == (1, "seg1seg2seg3")
 
@@ -3046,6 +3054,278 @@ async def test_grok_server_vad_concatenates_locked_segments_into_final(
     next_final = await _next_event(responses, "final")
     assert (next_final.utterance_id, next_final.text) == (2, "done")
     assert responses.empty()
+    await _stop_worker(task, requests, responses)
+
+
+async def test_grok_server_vad_final_does_not_repeat_locked_chunks(
+    monkeypatch,
+) -> None:
+    """Replay of a captured wss://api.x.ai/v1/stt utterance.
+
+    Two chunk finals are locked, each interim in between covers only the
+    audio after the last lock, and the terminal event restates both chunks.
+    The Core final must carry that restatement once, not the locked chunks
+    plus a second copy of them.
+    """
+
+    head = "那 那你 你觉得最骚的骚话是什么？"
+    tail = "我今天下午本来打算去图书馆看书。"
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "audio.done":
+            await ws.server_send({"type": "transcript.done", "duration": 1.0})
+
+    websocket = _FakeWebSocket(
+        initial=[{"type": "transcript.created"}], on_send=on_send
+    )
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(grok.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        grok.grok_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=b"\0\0")
+    )
+    await _wait_until(lambda: any(isinstance(item, bytes) for item in websocket.sent))
+    for text, is_final, speech_final in (
+        (head[:4], False, False),
+        (head, True, False),
+        (tail[:5], False, False),
+        (tail, True, False),
+        (head + tail, True, True),
+    ):
+        await websocket.server_send(
+            {
+                "type": "transcript.partial",
+                "text": text,
+                "is_final": is_final,
+                "speech_final": speech_final,
+            }
+        )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+    for expected in (head[:4], head, head + tail[:5], head + tail):
+        assert (await _next_event(responses, "partial")).text == expected
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (1, head + tail)
+    assert responses.empty()
+    await _stop_worker(task, requests, responses)
+
+
+async def test_grok_server_vad_empty_final_keeps_locked_chunks(monkeypatch) -> None:
+    """A blank terminal event must not discard already locked speech."""
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "audio.done":
+            await ws.server_send({"type": "transcript.done", "duration": 1.0})
+
+    websocket = _FakeWebSocket(
+        initial=[{"type": "transcript.created"}], on_send=on_send
+    )
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(grok.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        grok.grok_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=b"\0\0")
+    )
+    await _wait_until(lambda: any(isinstance(item, bytes) for item in websocket.sent))
+    for text, is_final, speech_final in (
+        ("seg1", True, False),
+        ("", True, True),
+    ):
+        await websocket.server_send(
+            {
+                "type": "transcript.partial",
+                "text": text,
+                "is_final": is_final,
+                "speech_final": speech_final,
+            }
+        )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+    assert (await _next_event(responses, "partial")).text == "seg1"
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (1, "seg1")
+    await _stop_worker(task, requests, responses)
+
+
+async def test_grok_manual_preview_keeps_locked_chunk_and_final_replaces_it(
+    monkeypatch,
+) -> None:
+    """Manual mode follows the same split: preview concatenates, final replaces."""
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if not isinstance(payload, str):
+            return
+        message = json.loads(payload)
+        if message["type"] == "finalize":
+            await ws.server_send(
+                {
+                    "type": "transcript.partial",
+                    "text": "seg1tail",
+                    "is_final": True,
+                    "speech_final": True,
+                }
+            )
+        elif message["type"] == "audio.done":
+            await ws.server_send({"type": "transcript.done", "duration": 1.0})
+
+    websocket = _FakeWebSocket(
+        initial=[{"type": "transcript.created"}], on_send=on_send
+    )
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(grok.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        grok.grok_asr_worker(requests, responses, "key", AsrSessionConfig())
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=b"\0\0")
+    )
+    await _wait_until(lambda: b"\0\0" in websocket.sent)
+    # Chunk final locks "seg1"; the interim after it carries only the tail,
+    # so the preview has to keep the locked head to stay readable.
+    await websocket.server_send(
+        {
+            "type": "transcript.partial",
+            "text": "seg1",
+            "is_final": True,
+            "speech_final": False,
+        }
+    )
+    assert (await _next_event(responses, "partial")).text == "seg1"
+    await websocket.server_send(
+        {
+            "type": "transcript.partial",
+            "text": "tail",
+            "is_final": False,
+            "speech_final": False,
+        }
+    )
+    assert (await _next_event(responses, "partial")).text == "seg1tail"
+
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+    final = await _next_event(responses, "final")
+    assert final.text == "seg1tail"
+    await _stop_worker(task, requests, responses)
+
+
+async def test_grok_server_vad_empty_partials_start_no_utterance(monkeypatch) -> None:
+    """Non-speech audio must not open a phantom utterance.
+
+    xAI answers room noise with empty transcript.partial events -- interim
+    and is_final chunk finals alike -- and never sends speech_final for
+    them. An utterance opened on one of those can never be closed, and it
+    blocks every real utterance queued behind it.
+    """
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "audio.done":
+            await ws.server_send({"type": "transcript.done", "duration": 1.0})
+
+    websocket = _FakeWebSocket(
+        initial=[{"type": "transcript.created"}], on_send=on_send
+    )
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(grok.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        grok.grok_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=b"\0\0")
+    )
+    await _wait_until(lambda: any(isinstance(item, bytes) for item in websocket.sent))
+    for is_final, speech_final in ((False, False), (True, False), (True, True)):
+        await websocket.server_send(
+            {
+                "type": "transcript.partial",
+                "text": "",
+                "is_final": is_final,
+                "speech_final": speech_final,
+            }
+        )
+    # Real speech afterwards still opens the FIRST utterance id: nothing was
+    # consumed by the noise, and no event was emitted for it.
+    for text, is_final, speech_final in (("hi", False, False), ("hi there", True, True)):
+        await websocket.server_send(
+            {
+                "type": "transcript.partial",
+                "text": text,
+                "is_final": is_final,
+                "speech_final": speech_final,
+            }
+        )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+    assert (await _next_event(responses, "partial")).text == "hi"
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (1, "hi there")
+    assert responses.empty()
+    await _stop_worker(task, requests, responses)
+
+
+async def test_grok_manual_empty_final_still_completes_commit(monkeypatch) -> None:
+    """A silent PTT hold must still deliver its (empty) final."""
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if not isinstance(payload, str):
+            return
+        message = json.loads(payload)
+        if message["type"] == "finalize":
+            await ws.server_send(
+                {
+                    "type": "transcript.partial",
+                    "text": "",
+                    "is_final": True,
+                    "speech_final": True,
+                }
+            )
+        elif message["type"] == "audio.done":
+            await ws.server_send({"type": "transcript.done", "duration": 1.0})
+
+    websocket = _FakeWebSocket(
+        initial=[{"type": "transcript.created"}], on_send=on_send
+    )
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(grok.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        grok.grok_asr_worker(requests, responses, "key", AsrSessionConfig())
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=b"\0\0")
+    )
+    await _wait_until(lambda: b"\0\0" in websocket.sent)
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+    final = await _next_event(responses, "final")
+    assert (final.utterance_id, final.text) == (1, "")
     await _stop_worker(task, requests, responses)
 
 
@@ -3305,7 +3585,7 @@ async def test_grok_server_vad_partials_refresh_stalled_deadline(
     await websocket.server_send(
         {
             "type": "transcript.partial",
-            "text": "c",
+            "text": "abc",
             "is_final": True,
             "speech_final": True,
         }

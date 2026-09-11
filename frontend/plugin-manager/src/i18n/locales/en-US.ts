@@ -648,7 +648,13 @@ export default {
     returnedLines: 'Returned Lines',
     connected: 'Connected',
     disconnected: 'Disconnected',
-    connectionFailed: 'Log stream connection failed'
+    connectionFailed: 'Log stream connection failed',
+    exportLog: 'Export Logs Archive',
+    openLogDirectory: 'Open Log Directory',
+    exportSuccess: 'Log exported successfully',
+    exportFailed: 'Failed to export log',
+    openDirectoryFailed: 'Failed to open directory',
+    noLogFileToExport: 'No log file to export'
   },
   runs: {
     title: 'Runs',
@@ -724,7 +730,9 @@ export default {
     resourceNotFound: 'Requested resource not found',
     internalServerError: 'Internal server error',
     serviceUnavailable: 'Service unavailable',
-    networkError: 'Network error. Please check your connection.'
+    networkError: 'Network error. Please check your connection.',
+    requestTimeout: 'The request timed out. Please try again.',
+    pluginLifecycleTimeout: 'Plugin startup or restart timed out. Please check the plugin logs.'
   },
   welcome: {
     about: {

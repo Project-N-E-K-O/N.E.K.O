@@ -7267,7 +7267,9 @@ describe('App', () => {
 
   it('gives the compact surface the full chat liquid-glass edge hierarchy', () => {
     const steadyFrameRule = compactChatStyles.match(/\.compact-chat-surface-frame\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(compactChatStyles).toContain('--compact-chat-surface-edge-top: rgba(255, 255, 255, 0.7);');
+    expect(compactChatStyles).toContain(
+      '--compact-chat-surface-edge-top: rgba(255, 255, 255, calc(0.7 * var(--neko-chat-opacity-factor, 1)));',
+    );
     expect(compactChatStyles).toContain('border-width: 2px 1px 1px 1px;');
     expect(compactChatStyles).toContain('box-shadow: var(--compact-chat-surface-shadow);');
     expect(steadyFrameRule).not.toContain('clip-path: inset(0 round 999px);');
@@ -7278,7 +7280,9 @@ describe('App', () => {
     expect(compactChatStyles).toMatch(
       /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.compact-chat-surface-frame::after\s*\{\s*animation: none;/,
     );
-    expect(compactChatStyles).toContain('--compact-chat-surface-edge-top: rgba(196, 228, 255, 0.44);');
+    expect(compactChatStyles).toContain(
+      '--compact-chat-surface-edge-top: rgba(196, 228, 255, calc(0.44 * var(--neko-chat-opacity-factor, 1)));',
+    );
   });
 
   it('keeps the backdrop layer pill-clipped while compact reveal masks are active', () => {
@@ -7289,19 +7293,19 @@ describe('App', () => {
 
   it('frosts the backdrop while strengthening compact surface opacity', () => {
     expect(compactChatStyles).toMatch(
-      /\.compact-chat-surface-frame\s*\{[\s\S]*?background-clip: padding-box;[\s\S]*?background-color: rgba\(255, 255, 255, 0\.035\);[\s\S]*?backdrop-filter: blur\(36px\) saturate\(0\.9\) contrast\(0\.78\) brightness\(1\.08\);/,
+      /\.compact-chat-surface-frame\s*\{[\s\S]*?background-clip: padding-box;[\s\S]*?background-color: rgba\(255, 255, 255, calc\(0\.035 \* var\(--neko-chat-opacity-factor, 1\)\)\);[\s\S]*?backdrop-filter: blur\(36px\) saturate\(0\.9\) contrast\(0\.78\) brightness\(1\.08\);/,
     );
     expect(compactChatStyles).toContain(
-      'linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(242, 249, 255, 0.42) 46%, rgba(219, 238, 253, 0.48))',
+      'linear-gradient(180deg,\n      rgba(255, 255, 255, calc(0.58 * var(--neko-chat-opacity-factor, 1))),\n      rgba(242, 249, 255, calc(0.42 * var(--neko-chat-opacity-factor, 1))) 46%,\n      rgba(219, 238, 253, calc(0.48 * var(--neko-chat-opacity-factor, 1))))',
     );
     expect(compactChatStyles).toContain(
-      'linear-gradient(180deg, rgba(31, 48, 66, 0.80), rgba(15, 29, 46, 0.76) 58%, rgba(8, 17, 30, 0.72))',
+      'linear-gradient(180deg,\n      rgba(31, 48, 66, calc(0.80 * var(--neko-chat-opacity-factor, 1))),\n      rgba(15, 29, 46, calc(0.76 * var(--neko-chat-opacity-factor, 1))) 58%,\n      rgba(8, 17, 30, calc(0.72 * var(--neko-chat-opacity-factor, 1))))',
     );
     expect(compactChatStyles).toContain(
-      '--compact-chat-capsule-surface-bg:\n    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(242, 249, 255, 0.68) 46%, rgba(219, 238, 253, 0.72));',
+      '--compact-chat-capsule-surface-bg:\n    linear-gradient(180deg,\n      rgba(255, 255, 255, calc(0.78 * var(--neko-chat-opacity-factor, 1))),\n      rgba(242, 249, 255, calc(0.68 * var(--neko-chat-opacity-factor, 1))) 46%,\n      rgba(219, 238, 253, calc(0.72 * var(--neko-chat-opacity-factor, 1))));',
     );
     expect(compactChatStyles).toContain(
-      '--compact-chat-capsule-surface-bg:\n    linear-gradient(180deg, rgba(31, 48, 66, 0.86), rgba(15, 29, 46, 0.82) 58%, rgba(8, 17, 30, 0.78));',
+      '--compact-chat-capsule-surface-bg:\n    linear-gradient(180deg,\n      rgba(31, 48, 66, calc(0.86 * var(--neko-chat-opacity-factor, 1))),\n      rgba(15, 29, 46, calc(0.82 * var(--neko-chat-opacity-factor, 1))) 58%,\n      rgba(8, 17, 30, calc(0.78 * var(--neko-chat-opacity-factor, 1))));',
     );
     expect(compactChatStyles).toMatch(
       /\.compact-chat-surface-frame\[data-compact-chat-state="default"\]::before,[\s\S]*?\.compact-chat-surface-frame\[data-compact-chat-state="options"\]::before,[\s\S]*?\.compact-chat-surface-frame\[data-compact-chat-state="input"\]::before\s*\{[\s\S]*?background: var\(--compact-chat-capsule-surface-bg\);/,
@@ -7348,6 +7352,31 @@ describe('App', () => {
     );
     expect(compactChatStyles).toMatch(
       /\.message-link-copy\s*\{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/,
+    );
+  });
+
+  it('gives compact history link cards a bounded readable width', () => {
+    expect(compactChatStyles).toContain('--compact-export-history-edge-gutter: 12px;');
+    expect(compactChatStyles).toContain('--compact-export-history-viewport-gutter: 24px;');
+    expect(compactChatStyles).toContain('--compact-export-history-shadow-gutter-right: 32px;');
+    expect(compactChatStyles).toContain('--compact-export-history-shadow-gutter-left: 12px;');
+    expect(compactChatStyles).toContain('--compact-export-link-card-min-inline-size: 170px;');
+    expect(compactChatStyles).toContain('--compact-export-link-bubble-chrome-inline-size: 23px;');
+    expect(compactChatStyles).toContain('--compact-export-link-row-reserve-inline-size: 48px;');
+    expect(compactChatStyles).toMatch(
+      /--compact-export-link-history-min-inline-size:\s*calc\([\s\S]*?var\(--compact-export-link-card-min-inline-size\)[\s\S]*?var\(--compact-export-link-bubble-chrome-inline-size\)[\s\S]*?var\(--compact-export-link-row-reserve-inline-size\)[\s\S]*?var\(--compact-export-history-shadow-gutter-left\) \+ var\(--compact-export-history-shadow-gutter-right\)[\s\S]*?\);/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.compact-export-history-anchor:has\(\.compact-export-history-content > \.message-block-link\)\s*\{[\s\S]*?max\(var\(--compact-export-history-inline-size\), var\(--compact-export-link-history-min-inline-size\)\)[\s\S]*?var\(--compact-export-history-max-inline-size\)/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.compact-export-history-bubble:has\(> \.compact-export-history-content > \.message-block-link\)\s*\{[\s\S]*?width: calc\(100% - var\(--compact-export-link-row-reserve-inline-size\)\);[\s\S]*?min-width: min\(/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.compact-export-history-content > \.message-block-link\s*\{[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;[\s\S]*?min-width: 0;/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.compact-export-history-content > \.message-block-link \.message-link-copy\s*\{[\s\S]*?min-width: 0;[\s\S]*?overflow-wrap: anywhere;/,
     );
   });
 

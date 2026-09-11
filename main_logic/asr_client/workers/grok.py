@@ -54,6 +54,24 @@ def _grok_is_auth_rejection(exc: BaseException) -> bool:
     return is_auth_rejection(exc)
 
 
+def _utterance_final_text(terminal_text: str, chunk_texts: list[str]) -> str:
+    """Transcript for one xAI utterance that ended with ``speech_final``.
+
+    xAI's utterance final restates the WHOLE utterance -- every chunk final
+    (``is_final=true, speech_final=false``) locked inside it is included
+    again. Measured against wss://api.x.ai/v1/stt: two locked chunks were
+    followed by a terminal event carrying both, so concatenating the locked
+    chunks onto it repeated the whole locked prefix in the transcript.
+    Interim events are the opposite -- they only cover the audio after the
+    last lock -- which is why the preview still concatenates and only the
+    final replaces.
+
+    An empty restatement falls back to the locked chunks so a blank terminal
+    event cannot swallow speech the provider already committed.
+    """
+    return terminal_text or "".join(chunk_texts)
+
+
 async def grok_asr_worker(
     request_queue: asyncio.Queue[_AsrWorkerRequest],
     response_queue: asyncio.Queue[_AsrWorkerEvent],
@@ -137,7 +155,12 @@ async def grok_asr_worker(
 
         latest_audio_key: _UtteranceKey | None = None
         pending_manual_commits: deque[_UtteranceKey] = deque()
+        # Completed utterances of a PTT hold (one entry per ``speech_final``
+        # natural endpointing fired mid-hold), kept apart from the chunk
+        # finals of the utterance still in flight: separate utterances
+        # concatenate, chunks of one utterance are superseded by its final.
         manual_locked_segments: dict[_UtteranceKey, list[str]] = {}
+        manual_chunk_segments: dict[_UtteranceKey, list[str]] = {}
         active_server_key: _UtteranceKey | None = None
         server_locked_segments: list[str] = []
         stalled_deadline: float | None = None
@@ -185,6 +208,19 @@ async def grok_asr_worker(
                     is_final = event.get("is_final") is True
                     speech_final = event.get("speech_final") is True
 
+                    if not text and not (is_final and speech_final):
+                        # xAI transcribes non-speech audio as EMPTY partials
+                        # rather than staying quiet: 25 s of room-noise-level
+                        # input produced 34 transcript.partial events (interim
+                        # AND is_final chunk finals), all with text="", and no
+                        # speech_final at all. Acting on one starts a phantom
+                        # utterance that no final can ever close, which stalls
+                        # every real utterance queued behind it. They carry no
+                        # transcript, so skipping loses nothing. A terminal
+                        # event is exempt: an empty utterance final is how a
+                        # real turn legitimately ends with nothing said.
+                        continue
+
                     if config.endpointing_mode == "manual":
                         key = (
                             pending_manual_commits[0]
@@ -194,10 +230,15 @@ async def grok_asr_worker(
                         if key is None:
                             continue
                         if is_final and speech_final:
+                            # The terminal event restates this utterance whole,
+                            # so its own chunk finals are dropped here instead
+                            # of being concatenated onto it.
+                            chunk_texts = manual_chunk_segments.pop(key, [])
+                            utterance_text = _utterance_final_text(text, chunk_texts)
                             if pending_manual_commits:
                                 final_key = pending_manual_commits.popleft()
                                 segments = manual_locked_segments.pop(final_key, [])
-                                segments.append(text)
+                                segments.append(utterance_text)
                                 await response_queue.put(
                                     _AsrWorkerEvent(
                                         kind="final",
@@ -213,7 +254,7 @@ async def grok_asr_worker(
                                 # the public commit still sends ``finalize`` so
                                 # later speech cannot be lost or overwritten.
                                 segments = manual_locked_segments.setdefault(key, [])
-                                segments.append(text)
+                                segments.append(utterance_text)
                                 await response_queue.put(
                                     _AsrWorkerEvent(
                                         kind="partial",
@@ -226,6 +267,16 @@ async def grok_asr_worker(
                             continue
                         # Both mutable interim results and locked chunks
                         # (is_final=true, speech_final=false) remain partial.
+                        # A locked chunk is retained because the interim
+                        # events that follow it only carry the audio after
+                        # the lock; without it the preview would lose the
+                        # already-spoken head mid-hold.
+                        chunk_texts = manual_chunk_segments.setdefault(key, [])
+                        if is_final:
+                            chunk_texts.append(text)
+                            tail = ""
+                        else:
+                            tail = text
                         await response_queue.put(
                             _AsrWorkerEvent(
                                 kind="partial",
@@ -233,7 +284,11 @@ async def grok_asr_worker(
                                 buffer_epoch=key[1],
                                 utterance_id=key[2],
                                 text="".join(
-                                    [*manual_locked_segments.get(key, []), text]
+                                    [
+                                        *manual_locked_segments.get(key, []),
+                                        *chunk_texts,
+                                        tail,
+                                    ]
                                 ),
                             )
                         )
@@ -249,6 +304,12 @@ async def grok_asr_worker(
                         continue
                     if active_server_key is None:
                         if latest_audio_key is None:
+                            continue
+                        if not text:
+                            # Empty terminal event with no utterance in
+                            # flight: nothing to close and nothing to say.
+                            # Opening one here would report speech for
+                            # silence.
                             continue
                         if next_server_utterance_id is None:
                             next_server_utterance_id = latest_audio_key[2] or 1
@@ -271,14 +332,13 @@ async def grok_asr_worker(
 
                     key = active_server_key
                     if is_final and speech_final:
-                        # xAI segments long utterances: every earlier
-                        # is_final=true / speech_final=false event locked one
-                        # segment and the terminal event carries only the
-                        # trailing segment's text, so concatenate the locked
-                        # segments (same joiner as the manual branch) into
-                        # the Core final.
-                        server_locked_segments.append(text)
-                        final_text = "".join(server_locked_segments)
+                        # The terminal event restates the whole utterance,
+                        # locked segments included, so it REPLACES them (same
+                        # rule as the manual branch). Appending here is what
+                        # made every locked chunk show up twice in one turn.
+                        final_text = _utterance_final_text(
+                            text, server_locked_segments
+                        )
                         server_locked_segments.clear()
                         active_server_key = None
                         stalled_deadline = None
@@ -517,8 +577,13 @@ async def grok_asr_worker(
             "interim_results": "true",
         }
         if config.endpointing_mode == "provider":
-            # Pin xAI's documented default so provider behavior cannot drift
-            # silently if the upstream default changes.
+            # Silence (ms) before xAI fires speech_final. Pinned so provider
+            # behaviour cannot drift silently -- this is NOT the upstream
+            # default (400 ms), it is deliberately far shorter: measured
+            # against wss://api.x.ai/v1/stt, 10 ms ends the utterance at the
+            # pause between two sentences and transcribes each cleanly, while
+            # 400 ms merged a 14 s take into one utterance whose final came
+            # back mangled.
             query["endpointing"] = 10
         if language is not None:
             query["language"] = language

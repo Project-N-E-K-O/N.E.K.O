@@ -802,11 +802,10 @@ async def test_maybe_deliver_uses_localized_template(monkeypatch):
     history = sr_history._proactive_chat_history[LANLAN]
     _, message, _ = history[0]
     assert 'Alice' in message
-    assert (
-        'soccer' in message.lower()
-        or 'badminton' in message.lower()
-        or 'rally challenge' in message.lower()
-    )
+    from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
+
+    expected = MINI_GAME_INVITE_LINES_BY_GAME[out["game_type"]]["en"].format(master_name="Alice")
+    assert message == expected
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1532,8 +1531,7 @@ def test_maybe_apply_keyword_later_resets_state():
 
 
 def test_keyword_matcher_no_false_positive_on_substring_words():
-    """codex P1：英文短词 'yes' / 'no' / 'okay' 必须 word-boundary 匹配，不能
-    被 'yesterday' / 'no idea' / 'book' 这种 substring 凑巧命中。"""
+    """Match short English replies on word boundaries, not inside other words."""
     # 'yes' 不该命中 'yesterday'
     assert sr._match_mini_game_invite_keyword('yesterday i talked to him') is None
     # 'no' 不该命中 'no idea' —— '"no idea"' 的 'no' 是单独 token，应该命中 decline
@@ -1579,8 +1577,7 @@ async def test_button_endpoint_pushes_resolved_ws_for_all_actions(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_push_resolved_includes_game_url_for_open_game(monkeypatch):
-    """accept outcome 的 resolved WS 同时带 game_url——前端按 action=='open_game'
-    + game_url 决定 window.open。单一 event 兼当 lifecycle dismiss + launch 信号。"""
+    """Include the launch URL in the resolved WebSocket event for acceptance."""
     mgr = MagicMock()
     mgr.websocket = MagicMock()
     mgr.websocket.send_json = AsyncMock()
@@ -1598,7 +1595,7 @@ async def test_push_resolved_includes_game_url_for_open_game(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['action'] == 'open_game'
     assert payload['game_url'].startswith('/soccer_demo?')
-    assert payload['game_type'] in ('soccer', 'badminton')
+    assert payload['game_type'] == 'soccer'
 
 
 @pytest.mark.asyncio
@@ -1612,8 +1609,7 @@ async def test_push_resolved_noop_without_session_id():
 
 
 def test_advance_response_returns_outcome_for_caller_ws_push():
-    """advance_response 不再仅 mutate state，要 return result dict 让 caller
-    push WS（用户隐式 dismiss 也要 cross-window 通知）。"""
+    """Return an outcome so the caller can notify every window over WebSocket."""
     fixed_now = 1_700_020_000.0
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = fixed_now - 60
@@ -1634,6 +1630,7 @@ def test_advance_response_returns_outcome_for_caller_ws_push():
 async def test_invite_short_circuit_returns_options_for_router(monkeypatch):
     """Successful delivery returns options; the Router owns WebSocket sending."""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_AVAILABLE_GAMES', ('drawing_guess',))
     mgr = _make_mgr()
     mgr.websocket = MagicMock()
     mgr.websocket.send_json = AsyncMock()
@@ -1655,7 +1652,7 @@ async def test_invite_short_circuit_returns_options_for_router(monkeypatch):
     assert payload is not None
     assert payload['type'] == 'mini_game_invite_options'
     assert payload['session_id'] == out['invite_session_id']
-    assert payload['game_type'] in ('soccer', 'badminton')
+    assert payload['game_type'] == 'drawing_guess'
     assert isinstance(payload['options'], list) and len(payload['options']) == 3
     choices = [opt['choice'] for opt in payload['options']]
     assert choices == ['accept', 'decline', 'later']
@@ -1719,20 +1716,27 @@ def test_keywords_cover_all_native_locales():
             )
 
 
-def test_badminton_invite_config_and_i18n_complete():
+def test_invite_game_configs_and_i18n_complete():
     from config import MINI_GAME_INVITE_AVAILABLE_GAMES, MINI_GAME_LAUNCH_URL_BY_GAME
     from config.prompts.prompts_activity import WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
 
-    assert 'badminton' in MINI_GAME_INVITE_AVAILABLE_GAMES
-    assert MINI_GAME_LAUNCH_URL_BY_GAME['badminton'] == '/badminton_demo'
-    for lang in ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
-        assert MINI_GAME_INVITE_LINES_BY_GAME['badminton'][lang].strip()
-        work_break_prompt = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME['badminton'][lang]
-        assert work_break_prompt.strip()
-        assert '{master}' in work_break_prompt
-        assert '{app}' in work_break_prompt
-        assert '{minutes}' in work_break_prompt
+    expected_urls = {
+        'soccer': '/soccer_demo',
+        'badminton': '/badminton_demo',
+        'drawing_guess': '/drawing_guess_demo',
+    }
+    assert set(MINI_GAME_INVITE_AVAILABLE_GAMES) == set(expected_urls)
+    for game in MINI_GAME_INVITE_AVAILABLE_GAMES:
+        url = expected_urls[game]
+        assert MINI_GAME_LAUNCH_URL_BY_GAME[game] == url
+        for lang in ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
+            assert MINI_GAME_INVITE_LINES_BY_GAME[game][lang].strip()
+            work_break_prompt = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME[game][lang]
+            assert work_break_prompt.strip()
+            assert '{master}' in work_break_prompt
+            assert '{app}' in work_break_prompt
+            assert '{minutes}' in work_break_prompt
 
 
 def test_accept_badminton_invite_returns_badminton_url():
@@ -1749,3 +1753,18 @@ def test_accept_badminton_invite_returns_badminton_url():
     assert result['game_url'].startswith('/badminton_demo?')
     assert 'mode=duel' not in result['game_url']
     assert 'session_id=bd-sess' in result['game_url']
+
+
+def test_accept_drawing_guess_invite_returns_drawing_guess_url():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 3
+    state['responded_at'] = None
+    state['pending_session_id'] = 'dg-sess'
+    state['last_game_type'] = 'drawing_guess'
+
+    result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='unit')
+
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'drawing_guess'
+    assert result['game_url'].startswith('/drawing_guess_demo?')
+    assert 'session_id=dg-sess' in result['game_url']

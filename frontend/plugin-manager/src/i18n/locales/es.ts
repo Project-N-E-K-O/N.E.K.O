@@ -648,7 +648,13 @@ export default {
     returnedLines: 'Líneas devueltas',
     connected: 'Conectado',
     disconnected: 'Desconectado',
-    connectionFailed: 'Error de conexión al flujo de registros'
+    connectionFailed: 'Error de conexión al flujo de registros',
+    exportLog: 'Exportar archivo de registros',
+    openLogDirectory: 'Abrir directorio de registros',
+    exportSuccess: 'Registro exportado con éxito',
+    exportFailed: 'Error al exportar el registro',
+    openDirectoryFailed: 'Error al abrir el directorio',
+    noLogFileToExport: 'No hay archivo de registro para exportar'
   },
   runs: {
     title: 'Ejecuciones',
@@ -724,7 +730,9 @@ export default {
     resourceNotFound: 'Recurso solicitado no encontrado',
     internalServerError: 'Error interno del servidor',
     serviceUnavailable: 'Servicio no disponible',
-    networkError: 'Error de red. Comprueba tu conexión.'
+    networkError: 'Error de red. Comprueba tu conexión.',
+    requestTimeout: 'La solicitud agotó el tiempo de espera. Inténtalo de nuevo.',
+    pluginLifecycleTimeout: 'El inicio o reinicio del plugin agotó el tiempo de espera. Revisa los registros del plugin.'
   },
   welcome: {
     about: {

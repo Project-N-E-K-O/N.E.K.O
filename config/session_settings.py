@@ -33,19 +33,47 @@ SESSION_TURN_THRESHOLD = 10
 - 设计依据：~10 轮约对应 5500 token 总量，跟 token 触发对齐。"""
 
 USER_DIRECTIVE_TTL_SECONDS = 3 * 86400
-"""用户显式 ban-topic 指令（"别再提 X / stop saying X"）的存活时长。
+"""用户显式 ban-topic 指令（"别再提 X / stop saying X"）的**基础**存活时长。
 - 用途：memory/user_directives.py 的 active 判定 + render_prompt_block
   注入到下次 session 启动的 system prompt。
 - 设计依据：用户态度的有效期介于"本轮结束"和"永久偏好"之间——3 天足够覆盖
   连续几天的会话上下文又不至于把一时情绪固化成长期人设。
+- ⚠️ 这是 hit_count==1（只说过一次）时的时长。重复说同一条会按
+  USER_DIRECTIVE_TTL_MAX_SECONDS 封顶线性递增，见该常量。
 - 上游：main_logic/core.py:_build_initial_prompt 注入；
   memory/user_directives.py:UserDirectivesManager 内部判活 + 清理。"""
+
+USER_DIRECTIVE_TTL_MAX_SECONDS = 30 * 86400
+"""ban-topic 指令按重复次数递增后的 TTL 上限（30 天）。
+- 用途：memory/user_directives.py:_effective_ttl —— 实际 TTL =
+  min(USER_DIRECTIVE_TTL_SECONDS * hit_count, 本常量)。说 1 次 3 天，
+  说 2 次 6 天，说 10 次及以上封顶 30 天。
+- 设计依据：说一次可能是当下情绪，反复说就是稳定偏好，两者不该同一个
+  有效期——但递增必须封顶，否则刷几十次就等于写进人设，而 ban list 是
+  纯 prompt 约束、用户今天还没有界面能删（管理面另行补）。30 天足够长到
+  "用户真的不想听"能被尊重，又短到一次误抽取不会长期占位。
+- ⚠️ 只有**再次命中**才会刷新 expire_at；沉默不续期。所以封顶值是
+  "最后一次说完之后还能记多久"，不是累计寿命。"""
 
 USER_DIRECTIVE_MAX_ACTIVE = 20
 """注入到 system prompt 的活跃 ban-topic 上限。
 - 用途：UserDirectivesManager.get_active 截断到 last_seen 最新的 N 条。
 - 设计依据：超过 20 个不同 ban-topic 同时活跃几乎一定是抽取出错或用户在
-  故意刷指令——截断比把 prompt 塞爆好。"""
+  故意刷指令——截断比把 prompt 塞爆好。
+- ⚠️ 这是**读取/注入**侧的上限，不是落盘上限；落盘见
+  USER_DIRECTIVE_MAX_STORED。"""
+
+USER_DIRECTIVE_MAX_STORED = 60
+"""user_directives.json 的落盘条数上限，超限按 last_seen_at 从旧到新淘汰。
+- 用途：UserDirectivesManager.record 写入后 rotate。
+- 为什么需要：在 TTL 递增之前，条目最多活 3 天，文件靠过期自然收敛；递增到
+  最长 30 天之后，一个爱刷指令的用户能把文件堆到上千条——每次 record 都要
+  全量读+全量写，而落盘跑在**同步 fan-out** 链上（见 _save_unlocked 注释），
+  文件越大越拖慢用户每条消息的处理。
+- 取值依据：MAX_ACTIVE（20）的 3 倍。注入只取最新 20 条，多留两倍是给
+  "旧条目被冷落一阵又被重新提起"留回旋余地；再多则纯属占磁盘。
+- 淘汰序与 get_active 的排序**对偶**：都按 last_seen_at，一个取最新 N 条
+  注入，一个丢最旧的。最久没被提起的先走。"""
 
 # ── 防复读（anti-repeat）BM25 相关 ─────────────────────────────────
 ANTI_REPEAT_BG_WINDOW = 100

@@ -165,6 +165,7 @@ import {
 } from '@/api/config'
 import { usePluginStore } from '@/stores/plugin'
 import PluginConfigForm from '@/components/plugin/PluginConfigForm.vue'
+import { isRequestTimeout } from '@/utils/request'
 
 interface Props {
   pluginId: string
@@ -689,7 +690,9 @@ async function save() {
             await pluginStore.reload(pluginId)
             ElMessage.success(t('messages.pluginReloaded'))
           } catch (reloadErr: any) {
-            ElMessage.error(reloadErr?.message || t('messages.reloadFailed'))
+            if (!isRequestTimeout(reloadErr)) {
+              ElMessage.error(reloadErr?.message || t('messages.reloadFailed'))
+            }
           }
         }
         // e === 'close' 时用户关闭了对话框，不做任何操作

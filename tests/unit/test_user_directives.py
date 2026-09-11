@@ -21,12 +21,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from config import USER_DIRECTIVE_TTL_SECONDS
+from config import (
+    USER_DIRECTIVE_MAX_STORED,
+    USER_DIRECTIVE_TTL_MAX_SECONDS,
+    USER_DIRECTIVE_TTL_SECONDS,
+)
 from config.prompts.prompts_directives import (
     DIRECTIVE_PATTERNS,
     extract_directives,
     render_directives_block,
 )
+from memory.user_directives import _effective_ttl
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -161,13 +166,181 @@ def test_record_dedup_refreshes_existing(tmp_path):
     second = mgr.record(name, locale="en", kind="ban_topic", term="加班", now=2000.0)
     assert second["hit_count"] == 2
     assert second["last_seen_at"] == 2000.0
-    assert second["expire_at"] == 2000.0 + USER_DIRECTIVE_TTL_SECONDS
+    # 续期用的是**递增之后**的次数：这一次重复本身就是"用户又说了一遍"的
+    # 证据，该立刻算进本次续期，而不是等下一次命中才生效。
+    assert second["expire_at"] == 2000.0 + _effective_ttl(2)
     # 首次 locale 不被覆盖（保留诊断信号）
     assert second["locale"] == "zh"
 
     # 磁盘上只有一条
     data = _read_file(tmp_path, name)
     assert len(data["directives"]) == 1
+
+
+# ── 2b. TTL 随重复次数递增 + 封顶 ─────────────────────────────────
+
+
+def test_effective_ttl_grows_with_hits_and_caps():
+    """Repeats buy a longer window, and the growth must be capped."""
+    # ⚠️ 不把实现公式抄进断言（那样改常量=改测试，变异永远见不了红）。这里
+    # 钉的是三条**性质**：起点等于基础 TTL、严格单调增到封顶、封顶后不再涨。
+    assert _effective_ttl(1) == USER_DIRECTIVE_TTL_SECONDS
+    # 严格单调，直到撞上封顶
+    growing = [_effective_ttl(h) for h in range(1, 12)]
+    assert growing == sorted(growing)
+    assert growing[1] > growing[0], "重复一次必须比只说一次记得久"
+    # 封顶：任意大的次数都不越过上限，且确实**能**达到上限
+    assert _effective_ttl(10_000) == USER_DIRECTIVE_TTL_MAX_SECONDS
+    assert max(growing) == USER_DIRECTIVE_TTL_MAX_SECONDS, (
+        "递增必须能在合理次数内达到封顶，否则封顶常量形同虚设"
+    )
+    # 常量本身的关系（防止有人把 MAX 调到比基础值还小）
+    assert USER_DIRECTIVE_TTL_MAX_SECONDS > USER_DIRECTIVE_TTL_SECONDS
+    # 脏输入不炸、退回基础窗口
+    assert _effective_ttl(None) == USER_DIRECTIVE_TTL_SECONDS
+    assert _effective_ttl("abc") == USER_DIRECTIVE_TTL_SECONDS
+    assert _effective_ttl(0) == USER_DIRECTIVE_TTL_SECONDS
+    assert _effective_ttl(-5) == USER_DIRECTIVE_TTL_SECONDS
+
+
+def test_repeated_directive_outlives_a_one_off(tmp_path):
+    """Behavioural: a twice-said directive outlives a once-said one."""
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=0.0)
+    mgr.record(name, locale="zh", kind="ban_topic", term="股票", now=0.0)
+    # "加班" 被再说一遍
+    mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=1.0)
+
+    # 基础窗口刚过：只说过一次的 "股票" 没了，说过两次的 "加班" 还在
+    later = USER_DIRECTIVE_TTL_SECONDS + 100.0
+    terms = {e["term"] for e in mgr.get_active(name, now=later)}
+    assert terms == {"加班"}
+
+
+def test_normalize_entry_backfills_ttl_from_hit_count(tmp_path):
+    """Backfilled expire_at must use the row's own hit_count, not the base TTL."""
+    # 历史文件没有 expire_at 字段；若回填时把说过 N 次的指令当成说过一次，
+    # 续期长度会在一次重启后当场退化。
+    from memory.user_directives import _normalize_entry
+
+    entry = _normalize_entry({
+        "term": "加班", "kind": "ban_topic",
+        "created_at": 0.0, "last_seen_at": 100.0, "hit_count": 4,
+    })
+    assert entry is not None
+    assert entry["expire_at"] == 100.0 + _effective_ttl(4)
+    assert entry["expire_at"] > 100.0 + USER_DIRECTIVE_TTL_SECONDS
+
+
+# ── 2c. 落盘条数上限 + 从旧到新 rotate ────────────────────────────
+
+
+def test_stored_cap_rotates_oldest_first(tmp_path):
+    """Past MAX_STORED, evict least-recently-seen; the newest write must survive."""
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    total = USER_DIRECTIVE_MAX_STORED + 10
+    for i in range(total):
+        # last_seen 递增：t0 最旧
+        mgr.record(name, locale="zh", kind="ban_topic", term=f"t{i:03d}", now=float(i))
+    data = _read_file(tmp_path, name)
+    stored = [e["term"] for e in data["directives"]]
+    assert len(stored) == USER_DIRECTIVE_MAX_STORED
+    # 最新的留下、最旧的走人
+    assert f"t{total - 1:03d}" in stored
+    assert "t000" not in stored
+    # 留下来的正好是 last_seen 最新的那批（与 get_active 的排序同一个键）
+    assert set(stored) == {
+        f"t{i:03d}" for i in range(total - USER_DIRECTIVE_MAX_STORED, total)
+    }
+
+
+def test_refresh_branch_also_rotates(tmp_path):
+    """An over-cap store must come back under cap even with no new terms."""
+    # 存量文件是在有 cap 之前长起来的（老用户可能几百行），而一个只会重复既有
+    # 指令的用户永远走不到新增分支。不在刷新分支也 rotate 的话，那份文件永远
+    # 收不回 cap——而每次 record 都要全量读+全量写，还跑在用户每条消息的同步链上。
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    over = USER_DIRECTIVE_MAX_STORED + 20
+    for i in range(over):
+        mgr.record(name, locale="zh", kind="ban_topic", term=f"t{i:03d}", now=float(i))
+    # 直接把超限状态灌进 cache，模拟"升级前就已超限"的存量文件
+    mgr._cache[name] = [
+        {"term": f"old{i:03d}", "kind": "ban_topic", "locale": "zh",
+         "created_at": 0.0, "last_seen_at": float(i),
+         "expire_at": 1e12, "hit_count": 1, "source": "regex"}
+        for i in range(over)
+    ]
+    # 只刷新一条**已存在**的指令（不新增）
+    mgr.record(name, locale="zh", kind="ban_topic", term="old000", now=1e6)
+    stored = _read_file(tmp_path, name)["directives"]
+    assert len(stored) == USER_DIRECTIVE_MAX_STORED
+
+
+def test_new_entry_rotated_out_immediately_is_not_reported_as_recorded(tmp_path):
+    """record() must not claim success for a row rotate just evicted."""
+    # 触发条件：已有 cap 条活条目、且它们的 last_seen 都 >= 本次 ts —— 系统时钟
+    # 回拨（NTP 校正 / 休眠恢复 / 双系统时区，这是个 Windows 桌面应用）或同一
+    # 毫秒并列都够。稳定排序下并列组保持原序，而新条目 append 在末尾，切片正好
+    # 从尾部切掉它。无条件报成功的话，调用方会据此置待注入标记、去渲染一个根本
+    # 不存在的 term。
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    mgr._cache[name] = [
+        {"term": f"full{i:03d}", "kind": "ban_topic", "locale": "zh",
+         "created_at": 0.0, "last_seen_at": 9000.0,
+         "expire_at": 1e12, "hit_count": 1, "source": "regex"}
+        for i in range(USER_DIRECTIVE_MAX_STORED)
+    ]
+    # 时钟回拨：新条目的 ts 比在库的每一条都旧
+    result = mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=1000.0)
+    stored = {e["term"] for e in _read_file(tmp_path, name)["directives"]}
+    assert "加班" not in stored, "前提：这条确实被 rotate 挤掉了"
+    assert result == {}, "被挤掉就不能报告成功，否则上游会去渲染一个不存在的 term"
+
+
+def test_refreshed_entry_rotated_out_is_not_reported_as_recorded(tmp_path):
+    """The refresh branch needs the same eviction guard as the insert branch."""
+    # ⚠️ 对偶漏洞：刷新分支的 rotate 是后加的（修"存量超限收不回 cap"），加的
+    # 时候没回头看它的返回值仍是无条件 `return dict(e)` —— greptile P1 抓到。
+    # 触发：时钟回拨使刷新后的 last_seen 比在库每一条都旧，rotate 把它挤掉，
+    # 而调用方据此置待注入标记，去渲染一个盘上根本不存在的 term。
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    mgr._cache[name] = [
+        {"term": "加班", "kind": "ban_topic", "locale": "zh", "created_at": 0.0,
+         "last_seen_at": 9000.0, "expire_at": 1e12, "hit_count": 1, "source": "regex"}
+    ] + [
+        {"term": f"x{i:03d}", "kind": "ban_topic", "locale": "zh", "created_at": 0.0,
+         "last_seen_at": 9000.0 + i + 1, "expire_at": 1e12, "hit_count": 1,
+         "source": "regex"}
+        for i in range(USER_DIRECTIVE_MAX_STORED)
+    ]
+    # 时钟回拨：刷新 "加班" 时 ts 比在库每一条都旧
+    result = mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=1000.0)
+
+    stored = {e["term"] for e in mgr._cache[name]}
+    assert "加班" not in stored, "前提：这条确实被 rotate 挤掉了"
+    assert result == {}, "被挤掉就不能报告成功，否则上游会去渲染一个不存在的 term"
+
+
+def test_rotate_drops_expired_before_live_entries(tmp_path):
+    """Expired rows go first — dead data must not evict a live directive."""
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    # 先塞满 cap 条早已过期的
+    for i in range(USER_DIRECTIVE_MAX_STORED):
+        mgr.record(name, locale="zh", kind="ban_topic", term=f"old{i:03d}", now=float(i))
+    # 时间推到全部过期之后，再写一条新的
+    fresh_at = USER_DIRECTIVE_TTL_SECONDS + 10_000.0
+    mgr.record(name, locale="zh", kind="ban_topic", term="新话题", now=fresh_at)
+
+    stored = {e["term"] for e in _read_file(tmp_path, name)["directives"]}
+    assert "新话题" in stored
+    # 过期的那批被整体清掉，而不是只挤掉一条来给新条目腾位
+    assert not any(t.startswith("old") for t in stored)
 
 
 def test_record_case_insensitive_dedup(tmp_path):
@@ -275,6 +448,61 @@ def test_get_active_respects_limit(tmp_path):
     assert [e["term"] for e in active] == [
         "term-29", "term-28", "term-27", "term-26", "term-25"
     ]
+
+
+# ── 3b. 会话中途注入的待办标记 ───────────────────────────────────
+
+
+def test_record_from_text_marks_pending_injection(tmp_path):
+    """A extracted directive raises the flag main_logic consumes to inject."""
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    assert mgr.take_pending_injection(name) is False  # 起始干净
+    written = mgr.record_from_text(name, "别再提小明了")
+    assert written and any(written)
+    assert mgr.take_pending_injection(name) is True
+
+
+def test_take_pending_injection_is_take_once(tmp_path):
+    """The flag is consumed once; otherwise every later turn re-injects it."""
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    mgr.record_from_text(name, "别再提小明了")
+    assert mgr.take_pending_injection(name) is True
+    assert mgr.take_pending_injection(name) is False
+
+
+def test_no_directive_hit_leaves_no_pending_flag(tmp_path):
+    """Ordinary chat must not arm an injection (it would pad the prompt)."""
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    assert mgr.record_from_text(name, "今天天气不错啊") == []
+    assert mgr.take_pending_injection(name) is False
+
+
+def test_out_of_range_term_leaves_no_pending_flag(tmp_path):
+    """A term rejected by the length check must not leave an empty-injection flag."""
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    # record 直接被边界校验拒绝 → 返回 {}
+    assert mgr.record(name, locale="zh", kind="ban_topic", term="x") == {}
+    assert mgr.take_pending_injection(name) is False
+
+
+def test_pending_flag_is_per_character(tmp_path):
+    mgr = _build_manager(tmp_path)
+    mgr.record_from_text("Neko", "别再提小明了")
+    assert mgr.take_pending_injection("Other") is False
+    assert mgr.take_pending_injection("Neko") is True
+
+
+def test_clear_drops_pending_flag(tmp_path):
+    """After clear there is nothing to inject, so the flag must go too."""
+    mgr = _build_manager(tmp_path)
+    name = "Neko"
+    mgr.record_from_text(name, "别再提小明了")
+    mgr.clear(name)
+    assert mgr.take_pending_injection(name) is False
 
 
 # ── 4. prompt render ─────────────────────────────────────────────

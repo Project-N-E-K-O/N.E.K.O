@@ -648,7 +648,13 @@ export default {
     returnedLines: '반환된 줄 수',
     connected: '연결됨',
     disconnected: '연결 안 됨',
-    connectionFailed: '로그 스트림 연결에 실패했습니다'
+    connectionFailed: '로그 스트림 연결에 실패했습니다',
+    exportLog: '로그 아카이브 내보내기',
+    openLogDirectory: '로그 디렉터리 열기',
+    exportSuccess: '로그를 성공적으로 내보냈습니다',
+    exportFailed: '로그 내보내기에 실패했습니다',
+    openDirectoryFailed: '디렉터리를 열지 못했습니다',
+    noLogFileToExport: '내보낼 로그 파일이 없습니다'
   },
   runs: {
     title: '실행 기록',
@@ -724,7 +730,9 @@ export default {
     resourceNotFound: '요청한 리소스를 찾을 수 없습니다',
     internalServerError: '서버 내부 오류',
     serviceUnavailable: '서비스를 사용할 수 없습니다',
-    networkError: '네트워크 오류. 연결을 확인하세요.'
+    networkError: '네트워크 오류. 연결을 확인하세요.',
+    requestTimeout: '요청 시간이 초과되었습니다. 다시 시도하세요.',
+    pluginLifecycleTimeout: '플러그인 시작 또는 재시작 시간이 초과되었습니다. 플러그인 로그를 확인하세요.'
   },
   welcome: {
     about: {

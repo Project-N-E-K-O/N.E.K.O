@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import axios from 'axios'
 import type { AxiosError, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios'
 
 const requestMocks = vi.hoisted(() => ({
@@ -278,8 +279,27 @@ describe('hosted panel error suppression', () => {
     consoleError.mockRestore()
   })
 
+  it('does not repeat a network error when shared probe waiters are already disconnected', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const healthProbe = vi.spyOn(axios, 'get').mockRejectedValue(new Error('health unavailable'))
+    requestMocks.connectionStore.disconnected = true
+
+    const results = await Promise.allSettled([
+      rejectWith({ message: 'Network Error', request: {} }),
+      rejectWith({ message: 'Network Error', request: {} }),
+      rejectWith({ message: 'Network Error', request: {} }),
+    ])
+
+    expect(results.every((result) => result.status === 'rejected')).toBe(true)
+    expect(healthProbe).toHaveBeenCalledTimes(1)
+    expect(requestMocks.errorMessage).not.toHaveBeenCalled()
+    healthProbe.mockRestore()
+    consoleError.mockRestore()
+  })
+
   it('does not hide a network error from an automatic panel request', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const healthProbe = vi.spyOn(axios, 'get').mockRejectedValue(new Error('health unavailable'))
 
     await expect(rejectWith({
       message: 'Network Error',
@@ -290,6 +310,63 @@ describe('hosted panel error suppression', () => {
 
     expect(consoleError).toHaveBeenCalledWith('Response error:', expect.anything())
     expect(requestMocks.errorMessage).toHaveBeenCalledWith('messages.networkError')
+    expect(requestMocks.connectionStore.markDisconnected).toHaveBeenCalledTimes(1)
+    healthProbe.mockRestore()
+    consoleError.mockRestore()
+  })
+
+  it('keeps the connection marked healthy when the failed endpoint is followed by a successful health check', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const healthProbe = vi.spyOn(axios, 'get').mockResolvedValue({ status: 200 })
+
+    await expect(rejectWith({
+      message: 'Network Error',
+      request: {},
+    })).rejects.toThrow('Network Error')
+
+    expect(healthProbe).toHaveBeenCalledWith('/health', expect.objectContaining({ timeout: 5000 }))
+    expect(requestMocks.connectionStore.markConnected).toHaveBeenCalledTimes(1)
+    expect(requestMocks.connectionStore.markDisconnected).not.toHaveBeenCalled()
+    expect(requestMocks.errorMessage).toHaveBeenCalledWith('messages.requestFailed')
+    healthProbe.mockRestore()
+    consoleError.mockRestore()
+  })
+
+  it('counts a shared failed health probe only once', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const healthProbe = vi.spyOn(axios, 'get').mockRejectedValue(new Error('health unavailable'))
+
+    const results = await Promise.allSettled([
+      rejectWith({ message: 'Network Error', request: {} }),
+      rejectWith({ message: 'Network Error', request: {} }),
+      rejectWith({ message: 'Network Error', request: {} }),
+    ])
+
+    expect(results).toHaveLength(3)
+    expect(results.every((result) => result.status === 'rejected')).toBe(true)
+    expect(healthProbe).toHaveBeenCalledTimes(1)
+    expect(requestMocks.connectionStore.markDisconnected).toHaveBeenCalledTimes(1)
+    healthProbe.mockRestore()
+    consoleError.mockRestore()
+  })
+
+  it.each([
+    ['ECONNABORTED', {}, 'messages.requestTimeout'],
+    ['ETIMEDOUT', { timeoutErrorMessageKey: 'messages.pluginLifecycleTimeout' }, 'messages.pluginLifecycleTimeout'],
+  ] as const)('reports %s as a timeout without probing health or marking a disconnect', async (code, config, messageKey) => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const healthProbe = vi.spyOn(axios, 'get')
+
+    await expect(rejectWith({
+      message: 'timeout exceeded',
+      code,
+      request: {},
+    }, config as AxiosRequestConfig)).rejects.toMatchObject({ code })
+
+    expect(healthProbe).not.toHaveBeenCalled()
+    expect(requestMocks.connectionStore.markDisconnected).not.toHaveBeenCalled()
+    expect(requestMocks.errorMessage).toHaveBeenCalledWith(messageKey)
+    healthProbe.mockRestore()
     consoleError.mockRestore()
   })
 

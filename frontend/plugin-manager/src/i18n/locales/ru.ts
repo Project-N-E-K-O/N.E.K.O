@@ -648,7 +648,13 @@ export default {
     returnedLines: 'Возвращено строк',
     connected: 'Подключено',
     disconnected: 'Отключено',
-    connectionFailed: 'Ошибка подключения к потоку логов'
+    connectionFailed: 'Ошибка подключения к потоку логов',
+    exportLog: 'Экспортировать архив логов',
+    openLogDirectory: 'Открыть директорию логов',
+    exportSuccess: 'Лог успешно экспортирован',
+    exportFailed: 'Не удалось экспортировать лог',
+    openDirectoryFailed: 'Не удалось открыть директорию',
+    noLogFileToExport: 'Нет файла лога для экспорта'
   },
   runs: {
     title: 'Запуски',
@@ -724,7 +730,9 @@ export default {
     resourceNotFound: 'Запрошенный ресурс не найден',
     internalServerError: 'Внутренняя ошибка сервера',
     serviceUnavailable: 'Сервис недоступен',
-    networkError: 'Ошибка сети. Проверьте подключение.'
+    networkError: 'Ошибка сети. Проверьте подключение.',
+    requestTimeout: 'Время ожидания запроса истекло. Повторите попытку.',
+    pluginLifecycleTimeout: 'Время запуска или перезапуска плагина истекло. Проверьте журналы плагина.'
   },
   welcome: {
     about: {

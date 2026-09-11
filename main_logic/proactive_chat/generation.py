@@ -17,6 +17,7 @@
 
 import asyncio
 import logging
+import unicodedata
 import re
 from dataclasses import dataclass
 from functools import partial
@@ -36,6 +37,8 @@ from config import (
     leaks_thinking_in_content,
 )
 from config.prompts.prompts_directives import (
+    is_semantically_empty_term,
+    term_needs_case_sensitive_match,
     render_format_fix_instruction,
     render_regen_avoid_instruction,
 )
@@ -67,6 +70,7 @@ from .contracts import (
     PROACTIVE_REASON_PASS_DUPLICATE,
     PROACTIVE_REASON_PASS_GENERATION_EMPTY,
     PROACTIVE_REASON_PASS_MODEL_PASS,
+    PROACTIVE_REASON_PASS_USER_DIRECTIVE,
     ProactiveChatResult,
     _proactive_pass_body,
 )
@@ -99,6 +103,178 @@ def _proactive_silence_since(mgr: Any) -> float | None:
     )
     valid = [float(value) for value in timestamps if value is not None]
     return max(valid) if valid else None
+
+
+def _append_directives_section(
+    memory_context: str, lanlan_name: str, lang: str,
+) -> str:
+    """Append the active ban-topic block to a Phase 2 memory context.
+
+    Phase 2 assembles its own system prompt and never goes through
+    ``_build_initial_prompt``, so without this the one path where the character
+    speaks unprompted is also the one path blind to "stop bringing X up".
+
+    Soft constraint only — the output-side gate is ``_proactive_directive_hits``.
+    Never raises: on failure the caller keeps the unmodified context.
+    """
+    try:
+        from memory.user_directives import get_user_directives_manager
+        block = get_user_directives_manager().render_prompt_block(
+            lanlan_name or "default", lang,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("[UserDirectives] proactive prompt injection skipped: %s", exc)
+        return memory_context
+    if not block:
+        return memory_context
+    return (memory_context or "") + block
+
+
+# 有词边界的文字 vs 没有的。CJK / 假名 / 谚文连写不分词，只能子串匹配；拉丁、
+# 西里尔、希腊这些用空格分词的，子串匹配会撞进更长的词里 —— ban 掉 ``it`` 会
+# 让 ``favorite`` / ``waiting`` 全部命中，主动搭话直接全静默（对抗审查实测
+# 3/3 草稿被 drop）。判据是 term 里**有没有**连写文字，有就退回子串。
+_BOUNDARYLESS_SCRIPT_RE = re.compile(
+    r"[⺀-鿿぀-ヿ가-힯豈-﫿ｦ-ﾟ]"
+)
+
+# 分词文字的字符集：ASCII + 拉丁扩展（西 / 葡的重音字母）+ 希腊 + 西里尔。
+# ⚠️⚠️ **不能用 ``\b``**。Python 的 ``\w`` 把汉字也算词字符，于是 ``\b`` 在字母
+# 与汉字的交界处**不触发**：``今天work很累`` 里 ``work`` 两侧都是 ``\w``，
+# ``\bwork\b`` 整个匹配不上 —— 而中英混说（用户说 "stop talking about
+# work"、角色输出"今天work怎么样"）恰恰是 prompts_directives 反复声明
+# **明确支持**的路径，一刀切用 \b 等于在主用例上漏杀（coderabbit 抳到，
+# 实测 3/3 全漏）。判据要的是"两侧有没有**同一族**的分词字符"，不是"是不是 \w"。
+_LATIN_WORD_CHAR = r"0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ"
+_LATIN_EDGE_RE = re.compile(rf"[{_LATIN_WORD_CHAR}]")
+
+
+def _normalize_for_match(text: str) -> str:
+    """Unicode-normalize so composed and decomposed accents compare equal.
+
+    A term captured from decomposed input (``e`` + combining acute) and a draft
+    written in composed form (``é``) are different strings byte-for-byte, so an
+    accented Spanish/Portuguese ban would silently never match.
+    """
+    return unicodedata.normalize("NFC", text)
+
+
+def _directive_term_in_draft(
+    term: str, draft_folded: str, *, fold_case: bool = True,
+) -> bool:
+    """Whether ``term`` occurs in a draft the caller already normalized.
+
+    Latin/Cyrillic/Greek terms match only when not glued to another letter of
+    the same family; CJK/kana/hangul are written without spaces and can only
+    be matched as substrings.
+
+    ⚠️ ``fold_case`` must agree with how the caller prepared ``draft_folded``:
+    True expects a casefolded draft, False expects one that kept its case. A
+    capitalized term (``US``, ``Us``, ``Her``) is a proper name, and matching it
+    case-insensitively would fire on every ordinary ``us`` / ``her`` in the
+    draft — the pronoun-silencing P1 all over again. See
+    ``term_needs_case_sensitive_match``.
+    """
+    normalized_term = _normalize_for_match(term)
+    folded_term = normalized_term.casefold() if fold_case else normalized_term
+    if not folded_term:
+        return False
+    if _BOUNDARYLESS_SCRIPT_RE.search(folded_term):
+        return folded_term in draft_folded
+    # ⚠️ 边界只对**两端本身就是分词字符**的 term 有意义。``my ex`` 两端是
+    # 字母，没问题；而 term 若以标点收尾（正则抽取是宽松的），lookaround 会贴
+    # 在标点外侧、几乎匹配不上任何东西 —— 那种情况退回子串，宁可多拦。
+    if not (_LATIN_EDGE_RE.match(folded_term[0])
+            and _LATIN_EDGE_RE.match(folded_term[-1])):
+        return folded_term in draft_folded
+    # re 模块自带编译缓存，不用再包一层 lru_cache。
+    return re.search(
+        rf"(?<![{_LATIN_WORD_CHAR}]){re.escape(folded_term)}"
+        rf"(?![{_LATIN_WORD_CHAR}])",
+        draft_folded,
+    ) is not None
+
+
+def _proactive_directive_hits(lanlan_name: str, draft: str) -> list[str]:
+    """Active ban-topic terms that literally appear in a proactive draft.
+
+    Matching is case-insensitive and script-folded on both sides, on word
+    boundaries for Latin-script terms and as substrings for the boundaryless
+    scripts (see ``_directive_term_in_draft``). Extraction upstream deliberately
+    over-kills, on the grounds that a false positive costs one skipped proactive
+    message while a miss costs the user being annoyed again by the exact thing
+    they just asked about — and this stays consistent with that.
+
+    Bare referents (the demonstratives, "this", "it") are skipped: matching on
+    the most common word in the language would silence proactive chat wholesale
+    for the directive's whole lifetime. They stay in the soft prompt block,
+    where the model has the context needed to interpret them.
+
+    Never raises: recall failures degrade to "no hit" so the anti-repeat gates
+    downstream keep their existing behaviour.
+    """
+    if not draft or not draft.strip():
+        return []
+    try:
+        from memory.user_directives import get_user_directives_manager
+        terms = get_user_directives_manager().get_active_terms(
+            lanlan_name or "default",
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("[UserDirectives] proactive gate skipped: %s", exc)
+        return []
+    if not terms:
+        return []
+    # 延迟 import：memory 层在偏窄的 entrypoint 下未必加载，与本函数其余
+    # 部分对 memory 的取用方式一致。
+    # ⚠️ import **和**调用都必须在 try 内。docstring 承诺 "Never raises"，而这个
+    # 延迟 import 的理由恰恰是"memory 层未必加载"—— 它自己举的那个场景正是会抛
+    # 的场景，放在 try 外等于契约在唯一相关的情况下不成立（上面那次
+    # get_active_terms 已经护住了，唯独这里漏了）。
+    def _no_fold(text: str) -> str:
+        return text
+
+    # ⚠️ 繁简折叠两侧都做。用户换个输入法说"别再提遊戲"，落盘 term 是繁体，
+    # 而角色按 locale 输出简体"游戏"——不折的话逐字不等、直接漏杀，用户明确
+    # 禁掉的话题照样被推到脸上。项目里 memory.script_fold 就是为这条造的
+    # （#2584 召回侧同款问题）；新代码直接用，不重蹈 anti_repeat 那边"两套
+    # 分词各走各的"的覆辙。
+    # ⚠️ 还要 Unicode 归一：西 / 葡的重音字母可能以分解形式（e + 组合重音符）
+    # 落盘，与合成形式（é）逐字节不等，重音 term 会静默永不命中（codex）。
+    try:
+        from memory.script_fold import fold_script
+        folded = _normalize_for_match(fold_script(draft)).casefold()
+    except Exception as exc:  # pragma: no cover - defensive
+        # ⚠️ 降级成**不折叠继续匹配**，不是放弃整道闸。折叠只解决跨字形
+        # （遊戲/游戏）那一档，丢了它仍能拦住同字形的绝大多数命中；而直接
+        # return [] 会把用户明确禁掉的话题原样推到脸上 —— 两者严格可比，
+        # 降级那侧在任何输入上都不比放弃更差。
+        logger.debug("[UserDirectives] script fold unavailable: %s", exc)
+        fold_script = _no_fold
+        folded = _normalize_for_match(draft).casefold()
+    # ⚠️ 纯指代词（``这个`` / ``this`` / ``それ``）只走软约束，不参与硬拦截。
+    # 抽取侧是会存下它们的（"别再讲这个了"），而且那个行为被既有测试成片钉着，
+    # 不该由这条改动顺手动；但拿汉语最高频的词去做子串匹配，等于让主动搭话在
+    # 这条指令的整个生命周期里（递增 TTL 后最长 30 天）全面静默，而用户今天
+    # 没有界面能看到、更别说删掉它。判据与危害都在消费侧，就在消费侧收口。
+    # ⚠️ 保留大小写的那一份草稿，专给专名 term 用（``US`` / ``Us`` / ``Her``）。
+    # 它们在表里的小写形态是代词，casefold 之后会命中草稿里每一个普通的
+    # ``us`` / ``her``；反过来若把它们当代词豁免，用户明确 ban 掉的话题就直接
+    # 放行了。两条路都是 P1，所以判据落在 term 自己的大小写上，两侧配套。
+    cased = _normalize_for_match(fold_script(draft))
+    hits: list[str] = []
+    for t in terms:
+        if not t or is_semantically_empty_term(t):
+            continue
+        folded_t = fold_script(t)
+        case_sensitive = term_needs_case_sensitive_match(folded_t)
+        if _directive_term_in_draft(
+            folded_t,
+            cased if case_sensitive else folded,
+            fold_case=not case_sensitive,
+        ):
+            hits.append(t)
+    return hits
 
 
 def _merge_regen_avoid_terms(*term_groups: Any) -> list[str]:
@@ -572,11 +748,19 @@ async def _run_phase2_generation(
     actual_model = (
         model_config.vision_model if use_vision else model_config.conversation_model
     )
+    # ⚠️ **不打印 prompt 正文**。这行 print 本身是既有的调试输出，但本 PR 往
+    # Phase 2 的 system prompt 里注入了用户 ban-topic 禁令块，于是它开始把
+    # "用户明说不想再听的东西"（前任 / 病名 / 逝者姓名）原样刷到 stdout ——
+    # 与本 PR 已经修过两次的那条判据同族（proactive 出口闸、_report_if_kept
+    # 都改成只输出计数），只是这次是**经由 prompt 间接**进去的，第一次自检
+    # 只搜直接变量所以漏了（coderabbit outside-diff）。
+    # 顺带说明：prompt 里本来就还有记忆上下文与活动状态，同样不该无条件落
+    # stdout；这里保留调试所需的模型 / 模态 / 规模，去掉正文。
     print(
         f"\n{'=' * 60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: "
         f"model={actual_model} | vision={use_vision} | "
-        f"img={'yes' if use_vision else 'no'}\n{'=' * 60}\n"
-        f"{system_prompt}\n{'=' * 60}\n"
+        f"img={'yes' if use_vision else 'no'} | "
+        f"prompt_chars={len(system_prompt)}\n{'=' * 60}\n"
     )
 
     make_llm = partial(_make_proactive_llm, model_config)
@@ -790,31 +974,26 @@ async def _generate_phase2_stream(
 
                     if not tag_parsed:
                         buffer += content
-                        if (
-                            len(buffer) < 80
-                            and "\n" not in buffer[min(len(buffer) - 1, 10) :]
-                        ):
+                        if "[PASS]" in buffer.upper():
+                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                            break
+                        parsed = _parse_proactive_phase2_prefix(buffer)
+                        if parsed is None:
+                            # Recovery needs the complete output: a chunk may
+                            # end inside a label, separator, or ordinary path.
+                            # Bound pending data by the provider's generation
+                            # budget; the cleaned body keeps its stricter limit.
+                            if (
+                                sum(buffer.count(mark) for mark in ("|", "｜")) >= 2
+                                or count_tokens(buffer)
+                                > PROACTIVE_PHASE2_GENERATE_MAX_TOKENS
+                            ):
+                                _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
+                                break
                             continue
-                        cleaned = buffer
-                        prefix_match = re.search(r"主动搭话\s*\n", cleaned)
-                        if prefix_match:
-                            cleaned = cleaned[prefix_match.end() :]
-                        cleaned = cleaned.lstrip()
-                        tag_match = re.match(
-                            r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
-                            cleaned,
-                            re.IGNORECASE,
-                        )
-                        if tag_match:
-                            source_tag = tag_match.group(1).upper()
-                            cleaned = cleaned[tag_match.end() :]
-                        else:
-                            cleaned, leak_tag = _strip_proactive_screen_tag_leak(
-                                cleaned
-                            )
-                            if leak_tag:
-                                source_tag = leak_tag
+                        cleaned, source_tag = parsed
                         tag_parsed = True
+                        buffer = ""
 
                         if (
                             source_tag == "PASS"
@@ -886,23 +1065,7 @@ async def _generate_phase2_stream(
             buffer += residual
 
     if not tag_parsed and buffer and not aborted:
-        cleaned = buffer
-        prefix_match = re.search(r"主动搭话\s*\n", cleaned)
-        if prefix_match:
-            cleaned = cleaned[prefix_match.end() :]
-        cleaned = cleaned.lstrip()
-        tag_match = re.match(
-            r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
-            cleaned,
-            re.IGNORECASE,
-        )
-        if tag_match:
-            source_tag = tag_match.group(1).upper()
-            cleaned = cleaned[tag_match.end() :]
-        else:
-            cleaned, leak_tag = _strip_proactive_screen_tag_leak(cleaned)
-            if leak_tag:
-                source_tag = leak_tag
+        cleaned, source_tag = _parse_proactive_phase2_prefix(buffer, final=True)
         if (
             source_tag == "PASS"
             or "[PASS]" in cleaned.upper()
@@ -958,23 +1121,7 @@ async def _generate_phase2_stream(
                 )
                 fix_text = ""
             fixed = (fix_text or "").strip()
-            prefix_match = re.search(r"主动搭话\s*\n", fixed)
-            if prefix_match:
-                fixed = fixed[prefix_match.end() :]
-            fixed = fixed.lstrip()
-            fix_tag = ""
-            tag_match = re.match(
-                r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
-                fixed,
-                re.IGNORECASE,
-            )
-            if tag_match:
-                fix_tag = tag_match.group(1).upper()
-                fixed = fixed[tag_match.end() :]
-            else:
-                fixed, leak_tag = _strip_proactive_screen_tag_leak(fixed)
-                if leak_tag:
-                    fix_tag = leak_tag
+            fixed, fix_tag = _parse_proactive_phase2_prefix(fixed, final=True)
             if (
                 fix_tag
                 and fix_tag != "PASS"
@@ -995,9 +1142,13 @@ async def _generate_phase2_stream(
                 else:
                     _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
 
+    # ⚠️ 不打印草稿正文。这两处（还有下面那处 response_text）在**禁令闸之前**
+    # 执行：草稿命中 ban term 时，term 会先落进 stdout，然后才被闸丢掉 —— 拦住了
+    # 投递，没拦住泄漏。与本 PR 已经收口的另外两处（出口闸日志、prompt 正文）同
+    # 一条判据，这里补齐，免得留下"prompt 不打但草稿打"这种说不通的半拉子状态。
     print(
         "\n[PROACTIVE-DEBUG] Phase 2 STREAM output "
-        f"(aborted={aborted}, tag={source_tag}): {full_text[:300]}\n"
+        f"(aborted={aborted}, tag={source_tag}, chars={len(full_text)})\n"
     )
     if aborted or not full_text.strip():
         final_reason = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY
@@ -1048,7 +1199,10 @@ async def _generate_phase2_stream(
         phase2_use_vision,
         len(response_text),
     )
-    print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
+    print(
+        "\n[PROACTIVE-DEBUG] Phase 2 STREAM output "
+        f"chars={len(response_text)}\n"
+    )
     return Phase2Generation(
         result=None,
         full_text=full_text,
@@ -1137,6 +1291,55 @@ async def _guard_phase2_output(
             dedup_tag,
             source_tag,
             material_key or "(none)",
+        )
+
+    # ── 用户显式 ban-topic 硬闸 ────────────────────────────────────
+    # Phase 2 prompt 里已经有一段软约束（service.py 注入），这里是出口兜底：
+    # 草稿里仍然逐字出现被 ban 的话题就直接 drop。
+    #
+    # ⚠️ **drop 而不是 regen**：regen 是一次额外的 LLM 调用，直接进账单，而
+    # 这道闸命中的前提已经是"模型看过禁令还是提了"，再花一次钱赌它改口不划算。
+    # drop 零成本，且语义正确——用户明说不想听，这次不搭话就是对的。
+    #
+    # ⚠️ **不受 exempt_text_dedup 豁免**。那个豁免的判据是"素材新鲜就别拿
+    # 台词复读度卡它"，针对的是 BM25 误杀模板化开场白；而用户 ban 的话题跟
+    # 素材新不新鲜无关——推歌台词里提到用户说过别提的事，照样该拦。
+    #
+    # ⚠️⚠️ **必须排在所有复读检测之前**（字面查重 / BM25 / 未回应长窗）。
+    # 那几道闸 drop 时会调 ``record_anti_repeat_decision``，而它带的
+    # ``RepeatSignature`` 含 ``phrase`` / ``normalized_phrase`` —— **草稿片段
+    # 原文**，并且经 store **落盘**到 anti_repeat_effects.json。草稿同时命中
+    # 禁令与复读时，排在后面的 ban 闸只拦住了投递，那段含 ban term 的片段早已
+    # 被写进磁盘（比 stdout 严重：会话结束也不会消失）。
+    # 顺带这也是让下面那句"防复读没有做决策"成立的前提 —— 闸排在后面时那句话
+    # 是假的：复读检测已经跑过、已经记过了（coderabbit）。
+    directive_hits = _proactive_directive_hits(lanlan_name, response_text)
+    if directive_hits:
+        # ⚠️ **不打印 term 原文**。被 ban 的话题按定义就是用户明说了不想再听
+        # 的东西——前任、病名、裁员、逝者姓名。日志会落盘（logs/ 下持久化），
+        # 用户报 bug 时可能整包交出去，而这批词恰恰是全流程里最敏感的一类文本。
+        # 只记条数，够定位"这次是被禁令闸拦的"，不够复原用户说了什么。
+        active_logger.info(
+            "[%s] proactive blocked by user ban-topic directive (%d term(s) matched)",
+            lanlan_name,
+            len(directive_hits),
+        )
+        print(
+            f"[{lanlan_name}] 主动搭话命中用户明确要求回避的话题，已拦截 "
+            f"({len(directive_hits)} 项)"
+        )
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return _output(
+            result=ProactiveChatResult(
+                body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_USER_DIRECTIVE,
+                    message="主动搭话命中用户明确要求回避的话题，已拦截",
+                    # 同上：只回条数，不回原文。这个 body 会经 /api/proactive_chat
+                    # 出到前端。
+                    directive_match_count=len(directive_hits),
+                )
+            )
         )
 
     # One scan, not two: the guard verdict and the evidence fragment used by the
@@ -1409,22 +1612,7 @@ async def _guard_phase2_output(
             )
 
         cleaned = (regen_text or "").strip()
-        regen_source_tag = ""
-        prefix_match = re.search(r"主动搭话\s*\n", cleaned)
-        if prefix_match:
-            cleaned = cleaned[prefix_match.end() :]
-        tag_match = re.match(
-            r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
-            cleaned,
-            re.IGNORECASE,
-        )
-        if tag_match:
-            regen_source_tag = tag_match.group(1).upper()
-            cleaned = cleaned[tag_match.end() :]
-        else:
-            cleaned, leak_tag = _strip_proactive_screen_tag_leak(cleaned)
-            if leak_tag:
-                regen_source_tag = leak_tag
+        cleaned, regen_source_tag = _parse_proactive_phase2_prefix(cleaned, final=True)
         cleaned = _strip_proactive_intent_label_leak(cleaned)
         if (
             regen_source_tag == "PASS"
@@ -1469,6 +1657,43 @@ async def _guard_phase2_output(
                 regen_material_key,
             )
         )
+
+        # 与出稿侧那道 ban-topic 闸对偶：走到 regen 的草稿本来是干净的，但
+        # 重写可能把被 ban 的话题引进来（avoidance prompt 只针对 BM25 词，
+        # 不认用户禁令）。同样是纯字符串匹配，零额外 LLM。
+        #
+        # ⚠️⚠️ 必须排在**所有** regen 侧复读检测之前（BM25 评分、未回应长窗、
+        # 字面查重），而不只是排在 ``record_regen_effect("regen_guard_passed")``
+        # 之前。理由与出稿侧同一条：那几道闸 drop 时记的
+        # ``record_anti_repeat_decision`` 带着**草稿片段原文**并落盘到
+        # anti_repeat_effects.json；排在它们后面的话，含 ban term 的片段已经
+        # 进了磁盘，闸只拦住投递。
+        # （"所有闸都过了才记 passed"那条也顺带成立，它是这个位置的推论。）
+        regen_directive_hits = _proactive_directive_hits(lanlan_name, cleaned)
+        if regen_directive_hits:
+            # ⚠️ 这里**刻意不记** record_regen_effect。它写的是
+            # ``record_anti_repeat_decision``（#2876 的本地重复表达洞察），而
+            # ban-topic 不是复读判定，是另一个维度的用户禁令。往那个面板记一条
+            # 非复读原因的 outcome，会把这条 regen 的归因指向错误的检测器 ——
+            # 面板上"这条被判定为复读"是假的。真实情况是防复读**没有**做决策：
+            # 草稿被另一个系统提前终止了，所以它在该面板上不出现才是对的。
+            active_logger.info(
+                "[%s] proactive regen hit user ban-topic directive "
+                "(%d term(s) matched), drop",
+                lanlan_name,
+                len(regen_directive_hits),
+            )
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return _output(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_PASS_USER_DIRECTIVE,
+                        message="改写后仍命中用户明确要求回避的话题，已 drop",
+                        directive_match_count=len(regen_directive_hits),
+                    )
+                )
+            )
 
         regen_total, regen_bm25_terms = _score_regenerated_draft(
             anti_repeat_corpus,
@@ -1839,19 +2064,98 @@ _PROACTIVE_LEGAL_TAG_RE = re.compile(
 )
 
 
-_PROACTIVE_KNOWN_PREFIX_TAG_LEAKS = (
-    (re.compile(r"^/(?i:chat)(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
-    (re.compile(r"^(?i:chat)/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
-    (re.compile(r"^chat[ \t]*(?:\r?\n|$)\s*", re.IGNORECASE), "CHAT"),
-    (re.compile(r"^/(?i:music)(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
-    (re.compile(r"^(?i:music)/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
-    (re.compile(r"^/聊天中(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
-    (re.compile(r"^/?聊天中\s*/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
-    (re.compile(r"^聊天中(?=\s|$)\s*"), "CHAT"),
-    (re.compile(r"^/屏幕观察(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
-    (re.compile(r"^屏幕观察/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
-    (re.compile(r"^/屏幕(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
-    (re.compile(r"^屏幕\s*/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+def _parse_proactive_phase2_prefix(
+    text: str, *, final: bool = False,
+) -> tuple[str, str] | None:
+    """Return body/source, or None while nonstandard framing is incomplete.
+
+    A complete leading legal tag commits once its body starts (PASS aborts
+    immediately); waiting through whitespace keeps split separators intact.
+    Recovery of leaked labels and the legacy heading waits for EOF so arbitrary provider
+    chunk boundaries cannot change path preservation or source selection.
+    At EOF an unrecognized prefix is returned as ordinary text with no source.
+    """
+    cleaned = text.lstrip()
+    if final:
+        heading_text = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", cleaned, count=1)
+        heading = re.match(r"主动搭话\s*\n", heading_text)
+        if heading:
+            cleaned = heading_text[heading.end() :].lstrip()
+    match = _PROACTIVE_LEGAL_TAG_RE.match(cleaned)
+    if match:
+        source = match.group(1).upper()
+        if not final and match.end() == len(cleaned) and source != "PASS":
+            return None
+        return cleaned[match.end() :], source
+    if not final:
+        return None
+    return _strip_proactive_screen_tag_leak(cleaned)
+
+
+_PROACTIVE_SLASHES = "/／"
+
+
+# Unicode White_Space characters that are horizontal layout only. Keep CR/LF,
+# vertical tab, form feed, NEL and Unicode line/paragraph separators excluded
+# so a separator on the reply's next line can never be consumed here.
+_PROACTIVE_HORIZONTAL_SPACES = (
+    " \t\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u202f\u205f\u3000"
+)
+_PROACTIVE_HSPACE_PATTERN = rf"[{re.escape(_PROACTIVE_HORIZONTAL_SPACES)}]"
+
+
+# Source-ish prefixes observed from weaker models. Matching is longest-first in
+# ``_strip_proactive_source_prefix`` so ``屏幕`` can never partially consume
+# ``屏幕观察`` / ``当前屏幕观察``.
+_PROACTIVE_SOURCE_PREFIX_LABELS = (
+    ("current screen observation", "CHAT"),
+    ("screen observation", "CHAT"),
+    ("current screen", "CHAT"),
+    ("screen content", "CHAT"),
+    ("screen display", "CHAT"),
+    ("active window", "CHAT"),
+    ("当前屏幕观察", "CHAT"),
+    ("当前活跃窗口", "CHAT"),
+    ("屏幕观察", "CHAT"),
+    ("当前屏幕", "CHAT"),
+    ("屏幕内容", "CHAT"),
+    ("屏幕显示", "CHAT"),
+    ("当前界面", "CHAT"),
+    ("屏幕", "CHAT"),
+    ("screenshot", "CHAT"),
+    ("screen", "CHAT"),
+    ("vision", "CHAT"),
+    ("window", "CHAT"),
+    ("聊天中", "CHAT"),
+    ("music", "MUSIC"),
+    ("chat", "CHAT"),
+)
+
+
+_PROACTIVE_BARE_PREFIX_LABELS = frozenset(
+    label
+    for label, source_tag in _PROACTIVE_SOURCE_PREFIX_LABELS
+    if source_tag == "CHAT"
+    and label not in {"screen", "screenshot", "vision", "window"}
+)
+
+
+_PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS = frozenset(
+    label.casefold()
+    for label, _source_tag in _PROACTIVE_SOURCE_PREFIX_LABELS
+    if label.isascii() and " " not in label
+)
+
+
+_PROACTIVE_SPACED_BARE_PREFIX_LABELS = frozenset({"聊天中"})
+
+
+_PROACTIVE_LEADING_INVISIBLES = "\ufeff\u200b\u200c\u200d\u2060"
+
+
+_PROACTIVE_LEADING_IGNORABLE_RE = re.compile(
+    rf"^[\s{re.escape(_PROACTIVE_LEADING_INVISIBLES)}]*"
 )
 
 
@@ -1892,16 +2196,76 @@ def _label_prefix_boundary_ok(label: str, rest: str) -> bool:
     if not rest:
         return True
     ch = rest[0]
-    if ch.isspace() or ch in "/：:":
+    if ch.isspace() or ch in _PROACTIVE_SLASHES + "：:":
         return True
     return (not label.isascii()) and (not ch.isascii())
+
+
+def _normalize_proactive_label_gap(rest: str) -> str:
+    """Drop invisibles in a known label's same-line horizontal gap."""
+    gap_end = 0
+    horizontal: list[str] = []
+    for char in rest:
+        if char in _PROACTIVE_HORIZONTAL_SPACES:
+            horizontal.append(char)
+            gap_end += 1
+            continue
+        if char in _PROACTIVE_LEADING_INVISIBLES:
+            gap_end += 1
+            continue
+        break
+    if not gap_end:
+        return rest
+    return "".join(horizontal) + rest[gap_end:]
+
+
+def _starts_with_proactive_source_tag(text: str) -> bool:
+    """Return whether text begins with a legal or known screen source tag."""
+    match = _PROACTIVE_BRACKET_TAG_RE.match(text)
+    if not match:
+        return False
+    tag = match.group(1).upper()
+    return tag in _PROACTIVE_LEGAL_SOURCE_TAGS or tag in _PROACTIVE_SCREEN_TAG_LEAKS
+
+
+def _strip_proactive_label_tail(rest: str) -> str:
+    """Strip label punctuation without consuming a spaced reply path."""
+    body = rest
+    first_separator = True
+    # Bounded consumption handles malformed combinations such as ``/ :``
+    # without turning arbitrary reply punctuation into an unbounded rewrite.
+    for _ in range(4):
+        same_line = body.lstrip(_PROACTIVE_HORIZONTAL_SPACES)
+        had_spacing = same_line != body
+        marker = same_line[:1]
+        if marker in "：:":
+            body = same_line[1:]
+            first_separator = False
+            continue
+        if marker not in _PROACTIVE_SLASHES:
+            break
+        slash_tail = same_line[1:2]
+        slash_is_separator = (
+            (first_separator and not had_spacing)
+            or not slash_tail
+            or slash_tail.isspace()
+            or not slash_tail.isascii()
+            or _starts_with_proactive_source_tag(
+                _PROACTIVE_LEADING_IGNORABLE_RE.sub("", same_line[1:], count=1)
+            )
+        )
+        if not slash_is_separator:
+            break
+        body = same_line[1:]
+        first_separator = False
+    return body.lstrip()
 
 
 def _strip_proactive_label_slash_prefix(
     body: str,
     labels: frozenset[str],
 ) -> str | None:
-    """Strip a known leading internal label written as ``label/`` or ``/label``."""
+    """Strip a known label using an ASCII or full-width slash separator."""
     if not body:
         return None
     folded = body.casefold()
@@ -1909,17 +2273,20 @@ def _strip_proactive_label_slash_prefix(
         if not label:
             continue
         if folded.startswith(label):
-            rest = body[len(label) :]
-            sep = re.match(r"\s*/", rest)
+            rest = _normalize_proactive_label_gap(body[len(label) :])
+            sep = re.match(
+                rf"{_PROACTIVE_HSPACE_PATTERN}*"
+                rf"[{re.escape(_PROACTIVE_SLASHES)}]",
+                rest,
+            )
             if sep:
-                return rest[sep.end() :].lstrip()
-        if body.startswith("/") and folded[1:].startswith(label):
-            rest = body[1 + len(label) :]
+                return _strip_proactive_label_tail(rest)
+        if body.startswith(tuple(_PROACTIVE_SLASHES)) and folded[1:].startswith(
+            label
+        ):
+            rest = _normalize_proactive_label_gap(body[1 + len(label) :])
             if _label_prefix_boundary_ok(label, rest):
-                rest = rest.lstrip()
-                if rest[:1] in "/：:":
-                    rest = rest[1:]
-                return rest.lstrip()
+                return _strip_proactive_label_tail(rest)
     return None
 
 
@@ -1927,7 +2294,12 @@ def _strip_proactive_orphan_slash_prefix(body: str) -> str | None:
     """Strip a lone leading slash separator left after a leaked label."""
     if not body:
         return None
-    match = re.match(r"^/(?:[ \t]+|\r?\n[ \t]*|$)", body)
+    match = re.match(
+        rf"^[{re.escape(_PROACTIVE_SLASHES)}]"
+        rf"(?:{_PROACTIVE_HSPACE_PATTERN}+|"
+        rf"\r?\n{_PROACTIVE_HSPACE_PATTERN}*|$)",
+        body,
+    )
     if not match:
         return None
     rest = body[match.end() :].lstrip()
@@ -1936,31 +2308,153 @@ def _strip_proactive_orphan_slash_prefix(body: str) -> str | None:
     return None
 
 
+def _strip_proactive_source_prefix(body: str) -> tuple[str, str] | None:
+    """Peel one known source label without guessing inside normal prose."""
+    if not body:
+        return None
+    folded = body.casefold()
+    for label, source_tag in sorted(
+        _PROACTIVE_SOURCE_PREFIX_LABELS,
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        folded_label = label.casefold()
+
+        # ``label/正文`` / ``label／正文``.
+        if folded.startswith(folded_label):
+            rest = _normalize_proactive_label_gap(body[len(label) :])
+            slash = re.match(
+                rf"{_PROACTIVE_HSPACE_PATTERN}*"
+                rf"[{re.escape(_PROACTIVE_SLASHES)}]",
+                rest,
+            )
+            if slash:
+                after_slash = rest[slash.end() :]
+                after = after_slash.lstrip()
+                slash_is_adjacent = rest[:1] in _PROACTIVE_SLASHES
+                # A single-word ASCII label may also be a route segment. Keep
+                # ``screen/share`` intact, but treat ``screen/ share`` as an
+                # explicitly separated leaked label.
+                if (
+                    folded_label in _PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS
+                    and slash_is_adjacent
+                    and after_slash == after
+                    and after
+                    and after[0].isascii()
+                    and not after[0].isupper()
+                    and not _starts_with_proactive_source_tag(after)
+                ):
+                    continue
+                return _strip_proactive_label_tail(rest), source_tag
+
+            # A colon is a strong separator for lowercase / all-caps internal
+            # source labels. Preserve title-cased English prose such as
+            # ``Current screen: the colors look unusual``.
+            colon = re.match(
+                rf"^{_PROACTIVE_HSPACE_PATTERN}*[：:]",
+                rest,
+            )
+            matched_label = body[: len(label)]
+            if colon and (
+                not label.isascii()
+                or matched_label == label
+                or matched_label.isupper()
+            ):
+                return rest[colon.end() :].lstrip(), source_tag
+
+            # Only the conservative bare-label subset may stand alone or as
+            # an entire line. A glued phrase such as ``当前屏幕观察到……``
+            # deliberately does not match this branch.
+            if folded_label in _PROACTIVE_BARE_PREFIX_LABELS:
+                if not rest.strip(_PROACTIVE_HORIZONTAL_SPACES):
+                    return "", source_tag
+                newline = re.match(
+                    rf"^{_PROACTIVE_HSPACE_PATTERN}*\r?\n"
+                    rf"{_PROACTIVE_HSPACE_PATTERN}*",
+                    rest,
+                )
+                if newline:
+                    return rest[newline.end() :].lstrip(), source_tag
+                if folded_label in _PROACTIVE_SPACED_BARE_PREFIX_LABELS:
+                    space = re.match(
+                        rf"^{_PROACTIVE_HSPACE_PATTERN}+",
+                        rest,
+                    )
+                    if space:
+                        return rest[space.end() :].lstrip(), source_tag
+
+        # ``/label正文`` / ``／label正文``. The leading slash is a strong
+        # marker, so preserve the existing glued-CJK recovery while rejecting
+        # ordinary words such as ``/chatbot``.
+        if body.startswith(tuple(_PROACTIVE_SLASHES)) and folded[1:].startswith(
+            folded_label
+        ):
+            rest = _normalize_proactive_label_gap(body[1 + len(label) :])
+            if (
+                folded_label in _PROACTIVE_AMBIGUOUS_ASCII_PREFIX_LABELS
+                and rest[:1] in _PROACTIVE_SLASHES
+            ):
+                route_tail = rest[1:]
+                if (
+                    route_tail
+                    and not route_tail[0].isspace()
+                    and route_tail[0].isascii()
+                    and not route_tail[0].isupper()
+                    and not _starts_with_proactive_source_tag(route_tail)
+                ):
+                    continue
+            if not (
+                not rest
+                or rest[0].isspace()
+                or rest[0] in _PROACTIVE_SLASHES + "：:"
+                or rest[0].isupper()
+                or not rest[0].isascii()
+            ):
+                continue
+            return _strip_proactive_label_tail(rest), source_tag
+    return None
+
+
 def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
     """Strip known leading source-label leaks such as ``/chat`` from Phase 2 text."""
     if not text:
         return "", ""
-    leading_len = len(text) - len(text.lstrip())
-    leading = text[:leading_len]
-    body = text[leading_len:]
-    cleaned = _strip_proactive_label_slash_prefix(
-        body,
-        _get_proactive_context_leak_labels(),
-    )
-    if cleaned is not None:
-        return leading + cleaned, "CHAT"
-    cleaned = _strip_proactive_orphan_slash_prefix(body)
-    if cleaned is not None:
-        return leading + cleaned, "CHAT"
-    for pattern, source_tag in _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS:
-        match = pattern.match(body)
-        if match:
-            rest = body[match.end() :].lstrip()
-            cleaned_rest = _strip_proactive_orphan_slash_prefix(rest)
-            if cleaned_rest is not None:
-                rest = cleaned_rest
-            return leading + rest, source_tag
-    return text, ""
+    body = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", text, count=1)
+    recovered_tag = ""
+    context_labels = _get_proactive_context_leak_labels()
+
+    # Bounded peeling handles stacked new-line prefixes without allowing a
+    # malformed response to turn this guard into an unbounded rewrite loop.
+    for _ in range(4):
+        cleaned = _strip_proactive_label_slash_prefix(
+            body,
+            context_labels,
+        )
+        source_tag = "CHAT"
+        if cleaned is None:
+            # A whole context-label line is framing, independently of whether
+            # the next line starts with prose, a route or another source tag.
+            first, newline, rest = body.partition("\n")
+            if newline and first.strip(
+                _PROACTIVE_HORIZONTAL_SPACES + "\r" + _PROACTIVE_LEADING_INVISIBLES
+            ).casefold() in context_labels:
+                cleaned = rest
+        if cleaned is None:
+            source_prefix = _strip_proactive_source_prefix(body)
+            if source_prefix is not None:
+                cleaned, source_tag = source_prefix
+        if cleaned is None:
+            cleaned = _strip_proactive_orphan_slash_prefix(body)
+            source_tag = "CHAT"
+        if cleaned is None:
+            break
+        body = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", cleaned, count=1)
+        if not recovered_tag or source_tag != "CHAT":
+            recovered_tag = source_tag
+
+    if not recovered_tag:
+        return text, ""
+    return body, recovered_tag
 
 
 def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
@@ -1984,24 +2478,49 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     if not text:
         return "", ""
     text, prefix_tag = _strip_proactive_known_prefix_tag_leak(text)
-    if prefix_tag:
-        return text, prefix_tag
     leading_len = len(text) - len(text.lstrip())
     leading = text[:leading_len]
     body = text[leading_len:]
     match = _PROACTIVE_BRACKET_TAG_RE.match(body)
+    normalized_leading = False
     if not match:
-        return text, ""
+        # ``str.lstrip`` does not remove BOM / zero-width characters. Only
+        # adopt the broader normalization after it exposes a recognized tag;
+        # otherwise normal prose and unknown bracket text remain byte-for-byte
+        # unchanged below.
+        normalized_body = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", text, count=1)
+        normalized_match = _PROACTIVE_BRACKET_TAG_RE.match(normalized_body)
+        if normalized_match:
+            normalized_tag = normalized_match.group(1).upper()
+            if (
+                normalized_tag in _PROACTIVE_LEGAL_SOURCE_TAGS
+                or normalized_tag in _PROACTIVE_SCREEN_TAG_LEAKS
+            ):
+                leading = ""
+                body = normalized_body
+                match = normalized_match
+                normalized_leading = True
+    if not match:
+        return text, prefix_tag
     tag = match.group(1).upper()
-    if tag in _PROACTIVE_LEGAL_SOURCE_TAGS or tag not in _PROACTIVE_SCREEN_TAG_LEAKS:
+    if tag in _PROACTIVE_LEGAL_SOURCE_TAGS:
+        if prefix_tag or normalized_leading:
+            return leading + body[match.end() :].lstrip(), tag
         return text, ""
+    if tag not in _PROACTIVE_SCREEN_TAG_LEAKS:
+        return text, prefix_tag
     rest = body[match.end() :].lstrip()
+    rest, nested_prefix_tag = _strip_proactive_known_prefix_tag_leak(rest)
+    normalized_rest = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", rest, count=1)
     # 兼容 [Screen][CHAT] 组合：泄漏标签后若紧跟合法来源标签，剥掉并采用真实 tag
     # （否则该 [CHAT] 字面会作为正文漏给 TTS）；没有则按 CHAT 兜底。
-    legal = _PROACTIVE_LEGAL_TAG_RE.match(rest)
+    legal = _PROACTIVE_LEGAL_TAG_RE.match(normalized_rest)
     if legal:
-        return leading + rest[legal.end() :].lstrip(), legal.group(1).upper()
-    return leading + rest, "CHAT"
+        return (
+            leading + normalized_rest[legal.end() :].lstrip(),
+            legal.group(1).upper(),
+        )
+    return leading + rest, nested_prefix_tag or prefix_tag or "CHAT"
 
 
 # Decoration a model may wrap a leaked label in (markdown bold/heading/bullet,

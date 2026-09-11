@@ -894,3 +894,83 @@ def test_asyncio_module_is_used_for_the_thread_hop():
     assert asyncio.iscoroutinefunction(atomic_write_text_async)
     assert asyncio.iscoroutinefunction(atomic_write_json_async)
     assert asyncio.iscoroutinefunction(read_json_async)
+
+
+def test_both_publishes_share_one_busy_backoff(tmp_path):
+    """The replacing and no-replace forms must not drift apart.
+
+    They had the same loop written out twice -- same error set, same
+    event-loop rule, same delays -- so a change to the policy had to be made
+    in both places AND noticed to be needed in both. Pinned behaviourally
+    rather than by looking for a shared symbol: each entry point is made to
+    hit the Windows busy window and the attempt counts have to match.
+
+    FileExistsError is the one asymmetry, and it is an ANSWER rather than a
+    failure to retry around -- so the no-replace form must raise it on the
+    first attempt, not after working through the backoff.
+    """
+    from utils import file_utils
+
+    def _count_attempts(call, primitive, error):
+        attempts = []
+
+        def _always_busy(*args, **kwargs):
+            attempts.append(1)
+            raise error()
+
+        real_primitive = getattr(file_utils.os, primitive)
+        real_sleep = file_utils.time.sleep
+        setattr(file_utils.os, primitive, _always_busy)
+        file_utils.time.sleep = lambda _delay: None
+        try:
+            call()
+        except OSError:
+            # The point is the attempt COUNT, and every attempt raises here
+            # by construction; the last one comes back out to the caller.
+            pass
+        finally:
+            setattr(file_utils.os, primitive, real_primitive)
+            file_utils.time.sleep = real_sleep
+        return len(attempts)
+
+    def _busy():
+        error = OSError(13, "The process cannot access the file")
+        error.winerror = 32
+        return error
+
+    source = tmp_path / "staged"
+    source.write_text("[1]", encoding="utf-8")
+    target = tmp_path / "published"
+
+    replacing = _count_attempts(
+        lambda: file_utils.replace_with_busy_retry(source, target),
+        "replace",
+        _busy,
+    )
+    no_replace = _count_attempts(
+        lambda: file_utils.publish_without_replacing(source, target),
+        "rename" if os.name == "nt" else "link",
+        _busy,
+    )
+
+    assert replacing > 1, "the replacing form did not back off at all"
+    assert no_replace == replacing, (
+        "the two publishes no longer share one backoff policy: %d attempts "
+        "against %d" % (no_replace, replacing)
+    )
+
+    # And the asymmetry, in the direction that matters: a destination that
+    # won the race is an ANSWER, so it comes back on the first attempt
+    # rather than after working through the backoff. It needs no special
+    # case to do that -- FileExistsError is not a busy error -- and a
+    # "terminal exceptions" parameter written for it was taken back out
+    # after checking that it changed nothing on either platform.
+    first_only = _count_attempts(
+        lambda: file_utils.publish_without_replacing(source, target),
+        "rename" if os.name == "nt" else "link",
+        lambda: FileExistsError(17, "File exists"),
+    )
+    assert first_only == 1, (
+        "a destination that won the race was retried %d times instead of "
+        "being taken as the answer" % first_only
+    )

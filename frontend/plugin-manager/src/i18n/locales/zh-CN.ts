@@ -648,7 +648,13 @@ export default {
     returnedLines: '返回行数',
     connected: '已连接',
     disconnected: '未连接',
-    connectionFailed: '日志流连接失败'
+    connectionFailed: '日志流连接失败',
+    exportLog: '导出日志压缩包',
+    openLogDirectory: '打开日志目录',
+    exportSuccess: '日志导出成功',
+    exportFailed: '日志导出失败',
+    openDirectoryFailed: '打开目录失败',
+    noLogFileToExport: '没有可导出的日志文件'
   },
   runs: {
     title: '运行记录',
@@ -724,7 +730,9 @@ export default {
     resourceNotFound: '请求的资源不存在',
     internalServerError: '服务器内部错误',
     serviceUnavailable: '服务不可用',
-    networkError: '网络错误，请检查网络连接'
+    networkError: '网络错误，请检查网络连接',
+    requestTimeout: '请求超时，请稍后重试',
+    pluginLifecycleTimeout: '插件启动或重载超时，请查看插件日志'
   },
   welcome: {
     about: {

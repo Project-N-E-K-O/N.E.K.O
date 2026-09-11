@@ -13,7 +13,48 @@
 
   const REGISTRATION_LIMIT = 64;
   const CAPABILITY_LIMIT = 32;
+  const COMMAND_ROUTE_LIMIT = 64;
+  const DEFAULT_COMMAND_REQUEST_BYTES = 256 * 1024;
+  const MAX_COMMAND_REQUEST_BYTES = 2 * 1024 * 1024;
+  const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
+  const MAX_COMMAND_TIMEOUT_MS = 6 * 60 * 1000;
   const DEFAULT_ADAPTER_URL = '/static/game/sdk/neko-minigame-same-origin-host.js';
+
+  function normalizeCommandRoutes(value) {
+    if (value === undefined) return Object.freeze({});
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const entries = Object.entries(value);
+    if (entries.length > COMMAND_ROUTE_LIMIT) return null;
+    const routes = Object.create(null);
+    for (const [name, rawPolicy] of entries) {
+      if (!/^[a-z][a-z0-9:-]{0,63}$/.test(name)) return null;
+      if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) return null;
+      if (Object.keys(rawPolicy).some((key) => !['path', 'maxRequestBytes', 'maxTimeoutMs'].includes(key))) {
+        return null;
+      }
+      const path = rawPolicy.path;
+      if (
+        typeof path !== 'string'
+        || !/^[a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)*$/.test(path)
+      ) return null;
+      const maxRequestBytes = rawPolicy.maxRequestBytes === undefined
+        ? DEFAULT_COMMAND_REQUEST_BYTES
+        : rawPolicy.maxRequestBytes;
+      const maxTimeoutMs = rawPolicy.maxTimeoutMs === undefined
+        ? DEFAULT_COMMAND_TIMEOUT_MS
+        : rawPolicy.maxTimeoutMs;
+      if (
+        !Number.isInteger(maxRequestBytes)
+        || maxRequestBytes < 1
+        || maxRequestBytes > MAX_COMMAND_REQUEST_BYTES
+        || !Number.isInteger(maxTimeoutMs)
+        || maxTimeoutMs < 250
+        || maxTimeoutMs > MAX_COMMAND_TIMEOUT_MS
+      ) return null;
+      routes[name] = Object.freeze({ path, maxRequestBytes, maxTimeoutMs });
+    }
+    return Object.freeze(routes);
+  }
 
   function normalizeRegistrations(value, providerRegistry = {}) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return Object.freeze({});
@@ -22,16 +63,20 @@
       if (Object.keys(result).length >= REGISTRATION_LIMIT) break;
       if (!rawRegistration || typeof rawRegistration !== 'object' || Array.isArray(rawRegistration)) continue;
       const gameId = String(rawRegistration.gameId || '').trim();
+      const routeGameType = String(rawRegistration.routeGameType || gameId).trim();
       const version = String(rawRegistration.version || '').trim();
       const mode = String(rawRegistration.mode || '').trim();
       if (
         !gameId
         || gameId !== String(rawKey || '').trim()
         || gameId.length > 128
+        || !/^[a-z][a-z0-9_-]{0,127}$/.test(routeGameType)
         || !version
         || version.length > 64
         || !['registered', 'development'].includes(mode)
       ) continue;
+      const commandRoutes = normalizeCommandRoutes(rawRegistration.commandRoutes);
+      if (!commandRoutes) continue;
       const allowedCapabilities = Object.freeze([
         ...new Set(
           (Array.isArray(rawRegistration.allowedCapabilities)
@@ -46,13 +91,18 @@
         quickLines: typeof rawProviders?.quickLines === 'function'
           ? rawProviders.quickLines
           : null,
+        avatarHostFactory: typeof rawProviders?.avatarHostFactory === 'function'
+          ? rawProviders.avatarHostFactory
+          : null,
       });
       result[gameId] = Object.freeze({
         mode,
         gameId,
+        routeGameType,
         publisherId: String(rawRegistration.publisherId || '').trim().slice(0, 128),
         version,
         allowedCapabilities,
+        commandRoutes,
         capabilityProviders,
       });
     }

@@ -3350,31 +3350,57 @@ if (window.parent === window) {
 
 // Tooltip 动态定位功能
 function positionTooltip(iconElement, tooltipElement) {
+    const viewportMargin = 20;
+    const tooltipGap = 10;
     const iconRect = iconElement.getBoundingClientRect();
-    const tooltipRect = tooltipElement.getBoundingClientRect();
+    tooltipElement.style.removeProperty('--tooltip-max-height');
+    let tooltipRect = tooltipElement.getBoundingClientRect();
+
+    const spaceAbove = Math.max(0, iconRect.top - viewportMargin - tooltipGap);
+    const spaceBelow = Math.max(0, window.innerHeight - iconRect.bottom - viewportMargin - tooltipGap);
+    let opensBelow = false;
+
+    if (tooltipRect.height > spaceAbove) {
+        opensBelow = tooltipRect.height <= spaceBelow || spaceBelow > spaceAbove;
+    }
+
+    const availableHeight = opensBelow ? spaceBelow : spaceAbove;
+    // The outer card keeps overflow visible so its arrow is not clipped; only
+    // the inner content scrolls when neither side can fit the full explanation.
+    tooltipElement.style.setProperty(
+        '--tooltip-max-height',
+        Math.max(0, Math.floor(availableHeight - 2)) + 'px'
+    );
+    tooltipRect = tooltipElement.getBoundingClientRect();
 
     let left = iconRect.left + iconRect.width / 2 - tooltipRect.width / 2;
-    let top = iconRect.top - tooltipRect.height - 10;
+    let top = opensBelow
+        ? iconRect.bottom + tooltipGap
+        : iconRect.top - tooltipRect.height - tooltipGap;
 
     let iconCenter = iconRect.left + iconRect.width / 2;
 
-    if (left < 20) {
-        left = 20;
+    if (left < viewportMargin) {
+        left = viewportMargin;
     }
 
-    if (left + tooltipRect.width > window.innerWidth - 20) {
-        left = window.innerWidth - tooltipRect.width - 20;
+    if (left + tooltipRect.width > window.innerWidth - viewportMargin) {
+        left = window.innerWidth - tooltipRect.width - viewportMargin;
     }
 
     let arrowLeft = iconCenter - left;
     arrowLeft = Math.max(15, Math.min(arrowLeft, tooltipRect.width - 15));
 
-    if (top < 20) {
-        top = iconRect.bottom + 10;
+    if (opensBelow) {
         tooltipElement.setAttribute('data-position', 'bottom');
     } else {
         tooltipElement.setAttribute('data-position', 'top');
     }
+
+    top = Math.max(
+        viewportMargin,
+        Math.min(top, window.innerHeight - tooltipRect.height - viewportMargin)
+    );
 
     tooltipElement.style.left = left + 'px';
     tooltipElement.style.top = top + 'px';
@@ -3547,7 +3573,26 @@ function initTooltips() {
 
         if (!icon || !tooltip) return;
 
+        let hideTimeout = null;
+
+        function cancelHide() {
+            if (hideTimeout !== null) {
+                clearTimeout(hideTimeout);
+                hideTimeout = null;
+            }
+        }
+
+        function scheduleHide() {
+            cancelHide();
+            hideTimeout = setTimeout(() => {
+                hideTimeout = null;
+                tooltip.style.opacity = '0';
+                tooltip.style.visibility = 'hidden';
+            }, 180);
+        }
+
         icon.addEventListener('mouseenter', function () {
+            cancelHide();
             tooltip.style.visibility = 'visible';
             tooltip.style.opacity = '0';
 
@@ -3557,14 +3602,13 @@ function initTooltips() {
             });
         });
 
-        icon.addEventListener('mouseleave', function () {
-            tooltip.style.opacity = '0';
-            setTimeout(() => {
-                if (tooltip.style.opacity === '0') {
-                    tooltip.style.visibility = 'hidden';
-                }
-            }, 300);
+        icon.addEventListener('mouseleave', scheduleHide);
+        tooltip.addEventListener('mouseenter', function () {
+            cancelHide();
+            tooltip.style.visibility = 'visible';
+            tooltip.style.opacity = '1';
         });
+        tooltip.addEventListener('mouseleave', scheduleHide);
     });
 
     let resizeTimeout;

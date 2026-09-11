@@ -641,6 +641,155 @@ async def test_system_prompt_bundles_only_latest_frame_with_mime():
 
 
 @pytest.mark.asyncio
+async def test_state_burst_body_matches_who_is_actually_acting():
+    """The state burst must not tell her she is finishing her own previous
+    action when the only thing moving is mc-agent's autonomous play.
+
+    Regression: the burst had two bodies (IDLE / BUSY) and mc-agent's own
+    activity borrowed the BUSY one, whose text is ``You're still doing the
+    previous action``. With no dispatched task that is simply false, and it
+    held for the whole busy-latch TTL — she kept narrating instead of
+    dispatching while the user asked her to move.
+    """
+    from plugin.plugins.game_agent_minecraft import prompts
+
+    def _body_of(push):
+        return [p for p in push["parts"] if p["type"] == "text"][-1]["text"]
+
+    idle = prompts.t("SYSTEM_PROMPT_IDLE_BODY", lang="en")
+    busy = prompts.t("SYSTEM_PROMPT_BUSY_BODY", lang="en")
+    autonomous = prompts.t("SYSTEM_PROMPT_AUTONOMOUS_BODY", lang="en")
+    # A set, not a chain: ``idle != busy != autonomous`` is
+    # ``idle != busy and busy != autonomous``, which never compares idle with
+    # autonomous -- the one pair whose collapse would make the assertions below
+    # pass while the autonomous branch silently served the idle body.
+    assert len({idle, busy, autonomous}) == 3
+
+    # 1. Nothing running anywhere → invite her to dispatch.
+    service, push_calls = _make_service()
+    service.configure({})
+    service._lang = "en"
+    await service._fire_system_prompt()
+    assert idle in _body_of(push_calls[-1])
+
+    # 2. A task WE dispatched is in flight → "you're still doing it" is true.
+    claimed = await service.try_claim_pending("chop wood", overwrite=False)
+    assert claimed is not None
+    await service._fire_system_prompt()
+    assert busy in _body_of(push_calls[-1])
+
+    # 3. mc-agent is off doing its own thing, nothing pending on our side →
+    #    say that, not "your previous action".
+    service._pending = None
+    service._task_finished = True
+    await service._on_bot_status({"text": "🤖[自主] wandering around", "skill": "explore"})
+    assert service._mc_agent_busy() is True
+    await service._fire_system_prompt()
+    body = _body_of(push_calls[-1])
+    assert autonomous in body
+    assert busy not in body
+
+    # The burst is a snapshot: it must coalesce so bursts can't stack up in
+    # the delivery queue ahead of the user's own turn.
+    assert push_calls[-1]["coalesce_key"] == "mc_state"
+
+
+@pytest.mark.asyncio
+async def test_state_burst_resends_log_lines_for_the_delivery_ttl():
+    """A coalesced burst must not take the game's recent events with it.
+
+    These bursts collapse on ``mc_state`` (latest wins) and a collapsed burst is
+    dropped whole, so lines drained into it would never reach the model. They are
+    not snapshot data like the inventory; they are incremental events.
+
+    The window is the host's cue TTL rather than a generation count: the playback
+    gate routinely stays shut across several bursts (the queue has been seen at
+    depth 25), so three collapsing in a row is normal and a one-generation carry
+    would still lose the older two. Past the TTL the host would have dropped the
+    cue anyway, so the line stops riding along.
+    """
+    from plugin.plugins.game_agent_minecraft import service as service_mod
+
+    service, push_calls = _make_service()
+    service.configure({})
+    service._lang = "en"
+
+    def _body_of(push):
+        return [p for p in push["parts"] if p["type"] == "text"][-1]["text"]
+
+    await service._on_log("chopped an oak log")
+    await service._fire_system_prompt()
+    assert "chopped an oak log" in _body_of(push_calls[-1])
+
+    # Three bursts in a row: whichever one survives coalescing carries them all.
+    await service._on_log("picked up a sapling")
+    await service._fire_system_prompt()
+    await service._on_log("crafted planks")
+    await service._fire_system_prompt()
+    body = _body_of(push_calls[-1])
+    assert "chopped an oak log" in body
+    assert "picked up a sapling" in body
+    assert "crafted planks" in body
+
+    # Past the TTL they stop riding along -- the host drops a cue that old too,
+    # so they were never going to arrive as news. Age the entries directly rather
+    # than leaning on the clock: these bursts all land inside one tick of
+    # ``time.time()`` on Windows, so a zero TTL would not expire anything.
+    assert service_mod._LOG_CARRY_TTL_SECONDS > 0
+    aged = [(ts - service_mod._LOG_CARRY_TTL_SECONDS - 1.0, line) for ts, line in service._log_carry]
+    service._log_carry.clear()
+    service._log_carry.extend(aged)
+
+    await service._on_log("mined iron ore")
+    await service._fire_system_prompt()
+    body = _body_of(push_calls[-1])
+    assert "chopped an oak log" not in body
+    assert "crafted planks" not in body
+    assert "mined iron ore" in body
+
+
+@pytest.mark.asyncio
+async def test_alert_without_text_falls_back_to_the_cause():
+    """A text-less alert still has to reach her; only a truly empty one is dropped.
+
+    ``text`` is best-effort on mc-agent's side, and the handler used to return on
+    an empty one -- throwing away a ``cause`` that had already been rendered into
+    a usable phrase, for the single most important event that can happen to her
+    (death). This is the highest-severity channel in the plugin; a silent return
+    on it is never acceptable, so the drop that remains is logged.
+    """
+    service, push_calls = _make_service()
+    service.configure({})
+    service._lang = "en"
+
+    # No prose, but a cause we can render.
+    await service._on_alert({
+        "severity": "critical",
+        "cause": {"attacker": {"kind": "mob", "name": "zombie", "distance": 1.4}},
+    })
+    assert len(push_calls) == 1
+    pushed = push_calls[0]
+    assert pushed["priority"] == 9
+    assert pushed["coalesce_key"] == "mc_alert"
+    body = [p for p in pushed["parts"] if p["type"] == "text"][0]["text"]
+    assert "nearby" in body and "1.4" in body
+    # The cause became the headline, so it must not also appear as a duplicate
+    # "Cause hint:" line -- she would just say the same thing twice.
+    assert body.count("1.4") == 1
+
+    # Nothing usable at all: dropped, but the warning says so.
+    warnings: list[str] = []
+    service._log_warning = lambda msg, *a: warnings.append(msg)  # type: ignore[assignment]
+    await service._on_alert({"severity": "warn"})
+    assert len(push_calls) == 1
+    assert warnings and "alert dropped" in warnings[0]
+
+    # A normal alert is unaffected.
+    await service._on_alert({"severity": "warn", "text": "took 3 damage"})
+    assert len(push_calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_log_cache_is_bounded():
     """Without a cap, an idle ``skip_system_prompt_if_busy=True`` plus a
     chatty agent would balloon the log cache without bound. The cap
@@ -784,10 +933,32 @@ async def test_log_callback_tracks_task_state_from_strings():
     service, _ = _make_service()
     service.configure({})
 
+    # A task WE dispatched is in flight — "action selection" just confirms it,
+    # so it may clear the finished flag.
+    claimed = await service.try_claim_pending("chop wood", overwrite=False)
+    assert claimed is not None
+    service._task_finished = True  # stale True; the log must clear it
     await service._on_log("action selection: chop wood")
     assert service._task_finished is False
+
+    # Drop the slot the way a terminal path would.
+    service._pending = None
+    service._task_finished = True
+
+    # Autonomous action selection (nothing pending) must NOT touch
+    # ``_task_finished``: nothing would ever reset it (``task run ended`` needs
+    # a real task run, the terminal paths need a pending slot), so the
+    # keep-going branch — gated on that flag — would be dead for the rest of
+    # the session and the state burst would keep telling her she is mid-action.
+    # It arms the TTL-bounded busy latch instead.
+    await service._on_log("action selection: wander off on its own")
+    assert service._task_finished is True
+    assert service._mc_agent_busy() is True
+
     await service._on_log("task run ended")
     assert service._task_finished is True
+    # A local terminal drops the stale busy latch too.
+    assert service._mc_agent_busy() is False
     await service._on_log("Connection lost and re-established.")
     assert service._task_finished is True
 
@@ -1872,3 +2043,205 @@ async def test_autonomous_status_rearms_busy_without_pending():
     )
 
     assert service._agent_busy is True
+
+
+# ---------------------------------------------------------------------------
+# duplicate frames — "same instruction already running" is not a completion
+# ---------------------------------------------------------------------------
+
+
+async def _dispatch_and_get_id(service, task: str) -> tuple[asyncio.Task, str]:
+    runner = asyncio.create_task(service.execute_minecraft_task(task=task))
+    for _ in range(50):
+        if service._pending is not None and service._pending.task_text == task:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("_pending was never set")
+    return runner, service._pending.task_id
+
+
+@pytest.mark.asyncio
+async def test_duplicate_frame_keeps_pending_and_resolves_via_original_id():
+    """Regression for the 2026-09-07 resend loop: a re-dispatch of text that
+    mc-agent is still running gets ``status=duplicate``. That frame must NOT
+    clear the slot nor wake the handler as a failure; the eventual
+    ``task_finished`` for the ORIGINAL dispatch id resolves the new slot."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    runner1, first_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    # First dispatch drops out of the slot (e.g. plugin-side timeout) while
+    # mc-agent keeps running it. Simulate by timing the wait out directly.
+    service._pending.result = {"status": "timeout", "query": "mine 10 logs"}
+    service._pending.event.set()
+    service._pending = None
+    await asyncio.wait_for(runner1, timeout=2.0)
+
+    runner2, second_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    assert second_id != first_id
+
+    await service._on_task_finished({
+        "status": "duplicate",
+        "task_id": second_id,
+        "message": "收到。相同指令已在执行中（已运行20秒），请勿重发。",
+    })
+    await asyncio.sleep(0.05)
+
+    assert not runner2.done(), "duplicate frame must not resolve the handler"
+    assert service._pending is not None
+    assert service._pending.task_id == second_id
+    assert service._pending.alias_task_id == first_id
+    assert any("相同指令已在执行中" in line for line in service._log_cache)
+
+    await service._on_task_finished(
+        {"status": "ok", "task_id": first_id, "text": "done"}
+    )
+    out = await asyncio.wait_for(runner2, timeout=2.0)
+    assert out["status"] == "ok"
+    assert service._pending is None
+
+
+@pytest.mark.asyncio
+async def test_duplicate_chain_aliases_root_not_sibling_duplicate():
+    """Three dispatches of one long task: the first really runs, the second
+    and third both get ``duplicate``. The third must alias the FIRST id (the
+    running one), not the second (which never ran and whose id no completion
+    frame will ever carry) — otherwise the root's completion routes to the
+    retroactive bucket and the third slot waits until timeout."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    async def _drop_slot_as_timeout(runner):
+        service._pending.result = {"status": "timeout", "query": "mine 10 logs"}
+        service._pending.event.set()
+        service._pending = None
+        await asyncio.wait_for(runner, timeout=2.0)
+
+    runner1, first_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    await _drop_slot_as_timeout(runner1)
+
+    runner2, second_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    await service._on_task_finished({"status": "duplicate", "task_id": second_id})
+    await asyncio.sleep(0.02)
+    assert service._pending.alias_task_id == first_id
+    await _drop_slot_as_timeout(runner2)
+
+    runner3, third_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    await service._on_task_finished({"status": "duplicate", "task_id": third_id})
+    await asyncio.sleep(0.02)
+    assert service._pending.alias_task_id == first_id, (
+        "third slot aliased a sibling duplicate instead of the running root"
+    )
+
+    await service._on_task_finished({"status": "ok", "task_id": first_id})
+    out = await asyncio.wait_for(runner3, timeout=2.0)
+    assert out["status"] == "ok"
+    assert service._pending is None
+
+
+@pytest.mark.asyncio
+async def test_duplicate_frame_without_prior_dispatch_keeps_pending():
+    """No earlier dispatch of the same text in history (mc-agent is running
+    its own task, or the history rolled over): still hold the slot; the
+    slot's own id resolves it later."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    runner, task_id = await _dispatch_and_get_id(service, "go to the village")
+    await service._on_task_finished({"status": "duplicate", "task_id": task_id})
+    await asyncio.sleep(0.05)
+
+    assert not runner.done()
+    assert service._pending is not None
+    assert service._pending.alias_task_id == ""
+
+    await service._on_task_finished({"status": "ok", "task_id": task_id})
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_frame_for_historical_id_stays_retroactive():
+    """A duplicate echoing an id that is no longer pending is not our slot's
+    business — it must not disturb the current pending task."""
+    service, push_calls = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    runner, task_id = await _dispatch_and_get_id(service, "mine 10 logs")
+    await service._on_task_finished({"status": "duplicate", "task_id": "ghost-id"})
+    await asyncio.sleep(0.05)
+
+    assert not runner.done()
+    assert service._pending is not None and service._pending.task_id == task_id
+
+    await service._on_task_finished({"status": "ok", "task_id": task_id})
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# identifier-shaped task text is refused at the entry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "mine_block",
+        "query_inventory",
+        "GET_DIAMOND",
+        "mineDiamonds",
+        "goToCoordinates(118,64,-115,1)",
+        "  mine_block  ",
+    ],
+)
+def test_task_looks_like_identifier_true(text):
+    from plugin.plugins.game_agent_minecraft.service import task_looks_like_identifier
+
+    assert task_looks_like_identifier(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "mine 4 oak logs nearby",
+        "挖钻石",
+        "stop",
+        "mine",
+        "Mine diamonds",
+        "walk to 120 64 -50",
+        "come here",
+        "",
+    ],
+)
+def test_task_looks_like_identifier_false(text):
+    from plugin.plugins.game_agent_minecraft.service import task_looks_like_identifier
+
+    assert task_looks_like_identifier(text) is False
+
+
+@pytest.mark.asyncio
+async def test_execute_rejects_identifier_task_before_claiming():
+    service, _ = _make_service()
+    service._client = _FakeClient()
+
+    out = await service.execute_minecraft_task(task="mine_block")
+
+    assert out["is_error"] is True
+    assert out["error"] == "INVALID_TASK"
+    assert service._pending is None
+    assert service._client.sent == []
+
+
+def test_task_tool_description_does_not_name_other_entries():
+    """The description must not contain identifier-shaped entry names the
+    model could copy into ``task`` (observed: ``query_inventory``)."""
+    from plugin.plugins.game_agent_minecraft import MINECRAFT_TASK_DESCRIPTION
+
+    assert "query_inventory" not in MINECRAFT_TASK_DESCRIPTION
+    assert "inventory" in MINECRAFT_TASK_DESCRIPTION

@@ -648,7 +648,13 @@ export default {
     returnedLines: 'Linhas retornadas',
     connected: 'Conectado',
     disconnected: 'Desconectado',
-    connectionFailed: 'Falha de conexão do fluxo de registros'
+    connectionFailed: 'Falha de conexão do fluxo de registros',
+    exportLog: 'Exportar arquivo de registros',
+    openLogDirectory: 'Abrir diretório de registros',
+    exportSuccess: 'Registro exportado com sucesso',
+    exportFailed: 'Falha ao exportar registro',
+    openDirectoryFailed: 'Falha ao abrir diretório',
+    noLogFileToExport: 'Nenhum arquivo de registro para exportar'
   },
   runs: {
     title: 'Execuções',
@@ -724,7 +730,9 @@ export default {
     resourceNotFound: 'Recurso solicitado não encontrado',
     internalServerError: 'Erro interno do servidor',
     serviceUnavailable: 'Serviço indisponível',
-    networkError: 'Erro de rede. Verifique sua conexão.'
+    networkError: 'Erro de rede. Verifique sua conexão.',
+    requestTimeout: 'A solicitação expirou. Tente novamente.',
+    pluginLifecycleTimeout: 'O início ou reinício do plugin expirou. Verifique os logs do plugin.'
   },
   welcome: {
     about: {

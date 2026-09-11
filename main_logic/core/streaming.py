@@ -611,6 +611,14 @@ class StreamingMixin:
                         is_voice_source=False,
                     )
 
+                    # 上面那次 dispatch 会同步跑完 ban-topic 抽取 + 落盘；若本
+                    # 轮真抽到了新指令，把禁令块写进 next-session 缓存，赶上正在
+                    # 预热的那次热切换（预热已定稿 prompt、swap 还要等下一个
+                    # turn-end，中间落盘的指令否则整个错过）。当前会话不写：原话
+                    # 还在 _conversation_history 里，模型看得见。语音路径在
+                    # handle_input_transcript 有对偶的一处。
+                    await self._inject_pending_user_directives()
+
                     # Mini-game 邀请的关键词文本兜底（PR #1141 follow-up E2）。
                     # 用户在 pending 邀请期间自己打字（没点 ChoicePrompt 三按钮）
                     # → 扫关键词命中就触发对应 state 转换。与语音转写路径

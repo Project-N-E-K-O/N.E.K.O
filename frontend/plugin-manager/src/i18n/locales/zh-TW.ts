@@ -648,7 +648,13 @@ export default {
     returnedLines: '返回行數',
     connected: '已連線',
     disconnected: '未連線',
-    connectionFailed: '日誌串流連線失敗'
+    connectionFailed: '日誌串流連線失敗',
+    exportLog: '匯出日誌壓縮包',
+    openLogDirectory: '開啟日誌目錄',
+    exportSuccess: '日誌匯出成功',
+    exportFailed: '日誌匯出失敗',
+    openDirectoryFailed: '開啟目錄失敗',
+    noLogFileToExport: '沒有可匯出的日誌檔案'
   },
   runs: {
     title: '執行記錄',
@@ -724,7 +730,9 @@ export default {
     resourceNotFound: '請求的資源不存在',
     internalServerError: '伺服器內部錯誤',
     serviceUnavailable: '服務不可用',
-    networkError: '網路錯誤，請檢查網路連線'
+    networkError: '網路錯誤，請檢查網路連線',
+    requestTimeout: '請求逾時，請稍後重試',
+    pluginLifecycleTimeout: '外掛啟動或重載逾時，請查看外掛日誌'
   },
   welcome: {
     about: {

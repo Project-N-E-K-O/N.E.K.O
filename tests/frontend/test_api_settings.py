@@ -75,6 +75,122 @@ def test_api_key_settings(mock_page: Page, running_server: str):
 
 
 @pytest.mark.frontend
+def test_api_help_tooltips_follow_neko_theme_and_fit_viewport(
+    mock_page: Page, running_server: str
+):
+    """API explanations use the N.E.K.O card language in both themes."""
+    mock_page.set_viewport_size({"width": 1280, "height": 720})
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    icon = mock_page.locator(".tooltip-icon").first
+    tooltip = mock_page.locator(".tooltip-content").first
+    icon.hover()
+    expect(tooltip).to_be_visible()
+
+    light = tooltip.evaluate("""
+        element => {
+            const style = getComputedStyle(element);
+            const decoration = getComputedStyle(element, '::before');
+            const rect = element.getBoundingClientRect();
+            return {
+                background: style.backgroundImage,
+                borderLeftColor: style.borderLeftColor,
+                color: style.color,
+                radius: style.borderRadius,
+                paw: decoration.backgroundImage,
+                left: rect.left,
+                right: rect.right,
+                width: rect.width,
+            };
+        }
+    """)
+    assert "linear-gradient" in light["background"]
+    assert light["borderLeftColor"] == "rgb(64, 197, 241)"
+    assert light["color"] == "rgb(54, 92, 112)"
+    assert light["radius"] == "16px"
+    assert "paw_ui.png" in light["paw"]
+    paw_response = mock_page.request.get(f"{running_server}/static/icons/paw_ui.png")
+    assert paw_response.ok
+    assert paw_response.headers["content-type"].startswith("image/png")
+    assert paw_response.body().startswith(b"\x89PNG\r\n\x1a\n")
+    assert light["left"] >= 20
+    assert light["right"] <= 1260
+    assert light["width"] <= 1240
+
+    mock_page.evaluate("document.documentElement.setAttribute('data-theme', 'dark')")
+    dark = tooltip.evaluate("""
+        element => {
+            const style = getComputedStyle(element);
+            const title = getComputedStyle(element.querySelector('strong'));
+            return {
+                background: style.backgroundImage,
+                color: style.color,
+                titleColor: title.color,
+            };
+        }
+    """)
+    assert "linear-gradient" in dark["background"]
+    assert dark["color"] == "rgb(217, 239, 248)"
+    assert dark["titleColor"] == "rgb(117, 220, 255)"
+
+    mock_page.set_viewport_size({"width": 390, "height": 720})
+    icon.hover()
+    narrow = tooltip.evaluate("""
+        element => {
+            const rect = element.getBoundingClientRect();
+            return { left: rect.left, right: rect.right, width: rect.width };
+        }
+    """)
+    assert narrow["left"] >= 20
+    assert narrow["right"] <= 370
+    assert narrow["width"] <= 350
+
+    mock_page.evaluate("window.changeLanguage('es')")
+    assist_icon = mock_page.locator(".tooltip-icon").nth(1)
+    assist_tooltip = mock_page.locator(".tooltip-content").nth(1)
+    assist_icon.scroll_into_view_if_needed()
+    assist_icon.hover()
+    expect(assist_tooltip).to_be_visible()
+    vertical = assist_tooltip.evaluate("""
+        element => {
+            const rect = element.getBoundingClientRect();
+            const scrollRegion = element.querySelector('.tooltip-scroll-content') || element;
+            return {
+                top: rect.top,
+                bottom: rect.bottom,
+                overflowY: getComputedStyle(scrollRegion).overflowY,
+                clientHeight: scrollRegion.clientHeight,
+                scrollHeight: scrollRegion.scrollHeight,
+            };
+        }
+    """)
+    assert vertical["top"] >= 20
+    assert vertical["bottom"] <= 700
+    assert vertical["overflowY"] == "auto"
+    assert vertical["scrollHeight"] > vertical["clientHeight"]
+
+    assist_tooltip.hover()
+    mock_page.wait_for_timeout(250)
+    expect(assist_tooltip).to_be_visible()
+    scroll_state = assist_tooltip.evaluate("""
+        element => {
+            const scrollRegion = element.querySelector('.tooltip-scroll-content');
+            scrollRegion.scrollTop = scrollRegion.scrollHeight;
+            return {
+                opacity: getComputedStyle(element).opacity,
+                pointerEvents: getComputedStyle(element).pointerEvents,
+                scrollTop: scrollRegion.scrollTop,
+            };
+        }
+    """)
+    assert scroll_state["opacity"] == "1"
+    assert scroll_state["pointerEvents"] == "auto"
+    assert scroll_state["scrollTop"] > 0
+
+
+@pytest.mark.frontend
 def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_server: str):
     """Collapsed custom-model headers must not borrow rounded corners from a wrapper."""
     mock_page.set_viewport_size({"width": 1280, "height": 1200})

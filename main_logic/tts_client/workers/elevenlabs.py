@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ElevenLabs TTS worker."""
+"""ElevenLabs V3 Text-to-Dialogue worker."""
 
 import numpy as np
 import soxr
@@ -84,10 +84,52 @@ def _elevenlabs_ws_base_url(base_url: str | None) -> str:
         return raw
     return "wss://" + raw
 
-def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
-    """ElevenLabs TTS worker - WebSocket stream-input PCM output."""
+def _elevenlabs_dialogue_ws_url(base_url: str, model: str, output_format: str) -> str:
     from urllib.parse import urlencode
 
+    params = urlencode({"model_id": model, "output_format": output_format})
+    return f"{_elevenlabs_ws_base_url(base_url)}/v1/text-to-dialogue/stream-input?{params}"
+
+def _elevenlabs_dialogue_init_payload(voice_id: str) -> dict:
+    return {"voices": [voice_id]}
+
+def _elevenlabs_dialogue_input_payload(voice_id: str, text: str) -> dict:
+    return {
+        "inputs": [{
+            "text": text,
+            "voice_id": voice_id,
+            "new_turn": False,
+        }],
+    }
+
+def _elevenlabs_dialogue_event_flags(payload: dict) -> tuple[bool, bool, bool]:
+    """Return (has_error, turn_audio_finished, session_finished)."""
+    event_type = payload.get("type")
+    return (
+        bool(payload.get("error") or event_type == "error"),
+        bool(payload.get("is_final_audio_for_turn")),
+        bool(
+            payload.get("isFinal")
+            or payload.get("is_final")
+            or payload.get("final")
+            or event_type in {"final", "audio.done"}
+        ),
+    )
+
+def _drain_elevenlabs_resampler(resampler, pcm_sample_rate: int) -> bytes:
+    """Return any PCM still buffered by the streaming sample-rate converter."""
+    if resampler is None:
+        return b""
+    return _resample_audio(
+        np.empty(0, dtype=np.int16),
+        pcm_sample_rate,
+        48000,
+        resampler,
+        last=True,
+    )
+
+def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
+    """ElevenLabs V3 worker using Text-to-Dialogue WebSocket PCM output."""
     normalized_voice_id = _normalize_elevenlabs_voice_id(voice_id)
     options = _get_elevenlabs_options(base_url)
     output_format = options['output_format']
@@ -100,24 +142,12 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         response_queue.put(("__ready__", False))
         return
 
-    ws_base_url = _elevenlabs_ws_base_url(options['base_url'])
-    ws_url = f"{ws_base_url}/v1/text-to-speech/{normalized_voice_id}/stream-input"
-    ws_params = urlencode({
-        "model_id": options['model'],
-        "output_format": output_format,
-    })
-    ws_url = f"{ws_url}?{ws_params}"
-    chunk_schedule = list(_ELEVENLABS_WS_CHUNK_SCHEDULE)
+    ws_url = _elevenlabs_dialogue_ws_url(
+        options['base_url'],
+        options['model'],
+        output_format,
+    )
     pcm_sample_rate = _parse_elevenlabs_pcm_sample_rate(output_format)
-
-    def _build_voice_settings() -> dict:
-        return {
-            "stability": options['stability'],
-            "similarity_boost": options['similarity_boost'],
-            "style": options['style'],
-            "use_speaker_boost": options['use_speaker_boost'],
-            "speed": 1.0,
-        }
 
     async def async_worker():
         ws = None
@@ -149,6 +179,18 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             audio_jitter.reset()
             audio_done.reset()  # 新会话重置 audio_done 去重标记
 
+        def _flush_resampler_tail() -> None:
+            nonlocal resampler
+            active_resampler = resampler
+            if active_resampler is None:
+                return
+            # Mark it consumed before appending so every normal/error cleanup path is
+            # idempotent and cannot finalize the same streaming resampler twice.
+            resampler = None
+            audio_jitter.append(
+                _drain_elevenlabs_resampler(active_resampler, pcm_sample_rate)
+            )
+
         async def _close_ws(
             send_final_empty: bool = False,
             wait_for_final: bool = False,
@@ -168,10 +210,10 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             if ws is not None:
                 if send_final_empty and not text_done_sent:
                     try:
-                        await ws.send(json.dumps({"text": ""}))
+                        await ws.send(json.dumps({"close_socket": True}))
                         text_done_sent = True
                     except Exception as exc:
-                        logger.debug("ElevenLabs WS final empty send failed: %s", exc)
+                        logger.debug("ElevenLabs V3 WS close_socket send failed: %s", exc)
                 if wait_for_final:
                     try:
                         await asyncio.wait_for(response_finished.wait(), timeout=30.0)
@@ -184,6 +226,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             ws = None
             if receive_task and not receive_task.done():
                 if not interrupt:
+                    _flush_resampler_tail()
                     audio_jitter.flush()
                 receive_task.cancel()
                 try:
@@ -211,14 +254,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             _reset_session_metrics()
             current_speech_id = speech_id
             receive_task = asyncio.create_task(_receive_ws_messages(speech_id))
-            init_payload = {
-                "text": " ",
-                "voice_settings": _build_voice_settings(),
-                "generation_config": {
-                    "chunk_length_schedule": chunk_schedule,
-                },
-                "xi_api_key": audio_api_key,
-            }
+            init_payload = _elevenlabs_dialogue_init_payload(normalized_voice_id)
             await ws.send(json.dumps(init_payload))
 
         async def _receive_ws_messages(speech_id: str) -> None:
@@ -227,6 +263,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 async for message in ws:
                     audio_bytes = None
                     is_final = False
+                    is_turn_final = False
                     payload = None
 
                     if isinstance(message, bytes):
@@ -247,6 +284,7 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
 
                     if payload is not None:
                         event_type = payload.get("type")
+                        has_error, is_turn_final, is_final = _elevenlabs_dialogue_event_flags(payload)
                         audio_b64 = payload.get("audio") or payload.get("data") or payload.get("delta") or ""
                         if audio_b64:
                             try:
@@ -254,20 +292,14 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             except Exception as exc:
                                 logger.warning("ElevenLabs WS audio decode failed: %s", exc)
                                 audio_bytes = None
-                        is_final = bool(
-                            payload.get("isFinal")
-                            or payload.get("is_final")
-                            or payload.get("final")
-                            or event_type in {"final", "audio.done"}
-                        )
-                        if event_type == "error":
+                        if has_error:
                             _enqueue_error(response_queue, {
                                 "code": "API_REQUEST_FAILED",
                                 "provider": "elevenlabs",
-                                "message": f"ElevenLabs TTS API error: {payload}",
+                                "message": f"ElevenLabs V3 dialogue API error: {payload}",
                             })
                             continue
-                        if not audio_bytes and not is_final:
+                        if not audio_bytes and not is_turn_final and not is_final:
                             preview = message if isinstance(message, str) else repr(message[:200])
                             logger.debug(
                                 "ElevenLabs WS recv unknown event type=%r raw=%s",
@@ -284,7 +316,13 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             audio_bytes = audio_bytes[:usable_len]
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
                         audio_jitter.append(_resample_audio(audio_array, pcm_sample_rate, 48000, resampler))
+                    if is_turn_final:
+                        # V3 emits a turn boundary before the session-level is_final that follows
+                        # close_socket. PCM has exact turn boundaries, so release the buffered tail
+                        # now, but keep receiving until is_final before publishing audio_done.
+                        audio_jitter.flush()
                     if is_final:
+                        _flush_resampler_tail()
                         audio_jitter.flush()  # 本轮音频结束，放掉缓冲区里不足 steady 阈值的尾音
                         # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭
                         audio_done.emit(speech_id)
@@ -305,18 +343,17 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 logger.error("ElevenLabs WS receive failed: %s", exc)
             finally:
                 if not cancelled:
+                    _flush_resampler_tail()
                     audio_jitter.flush()
                 response_finished.set()
 
         async def _send_text(text: str, speech_id: str, *, final: bool = False) -> None:
             if ws is None:
                 raise RuntimeError("ElevenLabs WS is not connected")
-            payload = {"text": text}
-            if text and text.strip():
-                payload["try_trigger_generation"] = True
-            if final and text:
+            payload = _elevenlabs_dialogue_input_payload(normalized_voice_id, text)
+            if final:
                 payload["flush"] = True
-            await ws.send(json.dumps(payload))
+            await ws.send(json.dumps(payload, ensure_ascii=False))
 
         async def _ensure_session(speech_id: str) -> None:
             nonlocal current_speech_id, pending_text_sid
@@ -404,15 +441,15 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             continue
                         pending_text.clear()
                         pending_text_sid = None
-                    # 只发 final empty，让 receive_task 在后台继续把剩余音频抽完；
+                    # close_socket 刷新 V3 服务端缓冲，让 receive_task 在后台抽完尾音；
                     # 真正的 close 由下一个 sid 切换 / __interrupt__ / shutdown 触发，
                     # 避免主循环在这里阻塞最长 30s 拖慢下一句 utterance 首音延迟喵。
                     if ws is not None and not text_done_sent:
                         try:
-                            await ws.send(json.dumps({"text": ""}))
+                            await ws.send(json.dumps({"close_socket": True}))
                             text_done_sent = True
                         except Exception as exc:
-                            logger.debug("ElevenLabs WS final empty send failed: %s", exc)
+                            logger.debug("ElevenLabs V3 WS close_socket send failed: %s", exc)
                     current_speech_id = None
                     pending_text.clear()
                     pending_text_sid = None

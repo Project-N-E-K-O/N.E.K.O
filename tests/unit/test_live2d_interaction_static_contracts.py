@@ -206,3 +206,22 @@ def test_live2d_touch_set_prefers_motion_and_uses_expression_as_fallback():
     assert motion_branch < expression_fallback
     assert "triggerLog.motions.push({" in touch_set_animation
     assert "fallbackFor: 'motion'" in touch_set_animation
+
+
+def test_live2d_touch_set_only_restores_the_expression_it_started():
+    source = _live2d_source()
+    emotion_source = (PROJECT_ROOT / "static/live2d/live2d-emotion.js").read_text(encoding="utf-8")
+    cancel_restore = _js_block(source, "Live2DManager.prototype._cancelTouchSetExpressionRestore")
+    current_restore = _js_block(source, "Live2DManager.prototype._isTouchSetExpressionRestoreCurrent")
+    touch_set_animation = _js_block(source, "Live2DManager.prototype._playTouchSetAnimation")
+    set_emotion = _js_block(emotion_source, "Live2DManager.prototype.setEmotion")
+
+    assert "clearTimeout(restoreState.timer);" in cancel_restore
+    assert "restoreState.model === this.currentModel" in current_restore
+    assert "restoreState.expressionGeneration === this._transientExpressionGeneration" in current_restore
+    assert "const touchExpressionGeneration = this._transientExpressionGeneration;" in touch_set_animation
+    assert "const shouldRestore = this._isTouchSetExpressionRestoreCurrent();" in touch_set_animation
+    assert "this._touchSetExpressionRestoreState = null;" in touch_set_animation
+    assert "this.expressionTimer" not in touch_set_animation
+    assert "const shouldReplaceTouchSetExpression = touchSetOwnsCurrentExpression" in set_emotion
+    assert "!shouldReplaceTouchSetExpression" in set_emotion
