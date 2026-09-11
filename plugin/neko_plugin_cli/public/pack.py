@@ -303,7 +303,9 @@ class PluginPacker:
         package_path.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(staging_root.rglob("*")):
-                if path.is_dir():
+                if (path.is_dir()
+                        or "__pycache__" in path.relative_to(staging_root).parts
+                        or path.suffix in {".pyc", ".pyo"}):
                     continue
                 archive.write(path, arcname=path.relative_to(staging_root).as_posix())
 
@@ -314,7 +316,9 @@ class PluginPacker:
         # posix path string and would yield a payload-hash mismatch on Windows.
         entries: list[tuple[str, Path]] = []
         for path in payload_dir.rglob("*"):
-            if path.is_dir():
+            if (path.is_dir()
+                    or "__pycache__" in path.relative_to(payload_dir).parts
+                    or path.suffix in {".pyc", ".pyo"}):
                 continue
             entries.append((path.relative_to(payload_dir).as_posix(), path))
 

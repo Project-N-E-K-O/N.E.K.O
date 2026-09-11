@@ -370,6 +370,8 @@ class PluginBuilder:
             (normalize_relative_posix(path, staging_root), path)
             for path in staging_root.rglob("*")
             if not path.is_dir()
+            and "__pycache__" not in path.relative_to(staging_root).parts
+            and path.suffix not in {".pyc", ".pyo"}
         ]
         with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for arcname, path in sorted(file_entries, key=lambda item: item[0]):
@@ -387,6 +389,8 @@ class PluginBuilder:
             (normalize_relative_posix(path, payload_dir), path)
             for path in payload_dir.rglob("*")
             if not path.is_dir()
+            and "__pycache__" not in path.relative_to(payload_dir).parts
+            and path.suffix not in {".pyc", ".pyo"}
         ]
         for relative, path in sorted(file_entries, key=lambda item: item[0]):
             digest.update(relative.encode("utf-8"))

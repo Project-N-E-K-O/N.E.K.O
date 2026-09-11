@@ -2775,6 +2775,30 @@ def test_built_archive_contains_backend_panel_readme_and_all_locales(
     assert "payload/dependencies.toml" in names
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_packaging_excludes_bytecode_created_after_staging(tmp_path, legacy):
+    from plugin.neko_plugin_cli.core.build import PluginBuilder
+    from plugin.neko_plugin_cli.public.pack import PluginPacker
+    from plugin.neko_plugin_cli.core.archive_utils import compute_archive_payload_hash
+
+    builder = PluginPacker() if legacy else PluginBuilder()
+    staging = tmp_path / "staging"
+    payload = staging / "payload"
+    plugin_dir = payload / "plugins" / "example"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "__init__.py").write_text("value = 1\n", encoding="utf-8")
+    expected_hash = builder.compute_payload_hash(payload)
+    # A metadata import happens after source filtering and can emit bytecode.
+    cache = plugin_dir / "__pycache__"
+    cache.mkdir()
+    (cache / "__init__.cpython-311.pyc").write_bytes(b"compiled")
+    (plugin_dir / "legacy.pyo").write_bytes(b"compiled")
+    assert builder.compute_payload_hash(payload) == expected_hash
+    archive_path = tmp_path / "example.neko-plugin"
+    builder.export_package(staging, archive_path)
+    with zipfile.ZipFile(archive_path) as archive:
+        assert archive.namelist() == ["payload/plugins/example/__init__.py"]
+        assert compute_archive_payload_hash(archive) == expected_hash
 # ---------------------------------------------------------------------------
 # DashScope native (aliyun_bailian) flow
 # ---------------------------------------------------------------------------
