@@ -195,10 +195,36 @@ async function queries() {
           assert.deepEqual(await game.avatar.getCurrentCharacter(), value);
           assert.deepEqual(await game.avatar.getCharacter(name), value);
         } else {
-          await assert.rejects(game.avatar.listCharacters());
-          await assert.rejects(game.avatar.getCurrentCharacter());
+          await assert.rejects(game.avatar.listCharacters(), { code: 'invalid_response' });
+          await assert.rejects(game.avatar.getCurrentCharacter(), { code: 'invalid_response' });
           await assert.rejects(game.avatar.getCharacter(name), { code: 'invalid_request' });
         }
+      } finally { game.dispose(); }
+      assert.equal(env.timers.size, 0);
+    }
+  }
+  for (const name of ['', '   ', 42, '🐈'.repeat(129)]) {
+    for (const customTransport of [false, true]) {
+      let calls = 0;
+      const malformed = () => { calls++; return { ...descriptor, name }; };
+      const names = () => { calls++; return [name]; };
+      const env = await environment(() => ({
+        mount() {}, dispose() {},
+        getCurrentCharacter: malformed, getCharacter: malformed, listCharacters: names,
+      }));
+      const host = env.host();
+      if (customTransport) {
+        host.getAvatarCharacter = malformed;
+        host.listAvatarCharacters = names;
+      }
+      const game = await env.game(host);
+      try {
+        await assert.rejects(game.avatar.getCharacter(name), { code: 'invalid_request' });
+        assert.equal(calls, 0, 'invalid caller name reached the host');
+        await assert.rejects(game.avatar.getCurrentCharacter(), { code: 'invalid_response' });
+        await assert.rejects(game.avatar.getCharacter('Neko'), { code: 'invalid_response' });
+        await assert.rejects(game.avatar.listCharacters(), { code: 'invalid_response' });
+        assert.equal(game.avatar.pendingQueryCount, 0, 'invalid responses retained query capacity');
       } finally { game.dispose(); }
       assert.equal(env.timers.size, 0);
     }
@@ -260,6 +286,11 @@ async function queries() {
     if (action !== 'body') assert(signals.every(s => s.aborted), `${action}: provider did not receive cancellation`);
     gate.resolve(action === 'body' ? { lanlan_name: 'Neko' } : descriptor);
     await tick();
+    if (!['end', 'dispose', 'page-exit'].includes(action)) {
+      assert.equal((await client.avatar.getCurrentCharacter()).name, 'Neko',
+        `${action}: query did not succeed after abandoned work settled`);
+      assert.equal(client.avatar.pendingQueryCount, 0, `${action}: completed query retained capacity`);
+    }
     client.dispose();
     assert.equal(actual.timers.size, 0);
   }

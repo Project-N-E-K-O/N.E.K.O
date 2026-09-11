@@ -135,6 +135,7 @@
     'invalid_manifest',
     'invalid_handshake',
     'invalid_contract',
+    'invalid_response',
     'incompatible_version',
     'game_unregistered',
     'game_disabled',
@@ -5054,10 +5055,10 @@
       }
     }
 
-    function avatarCharacterName(value) {
+    function avatarCharacterName(value, errorCode = 'invalid_request') {
       if (typeof value !== 'string' || !value.trim()
         || value.length > 256 || Array.from(value).length > 128) {
-        fail('invalid_request', 'Avatar character name must contain 1 to 128 characters');
+        fail(errorCode, 'Avatar character name must contain 1 to 128 characters');
       }
       return value.trim();
     }
@@ -5065,7 +5066,7 @@
     function avatarCharacterDescriptor(value) {
       if (value == null) return null;
       if (!plainObject(value)) fail('invalid_response', 'Invalid avatar character descriptor');
-      const name = avatarCharacterName(value.name);
+      const name = avatarCharacterName(value.name, 'invalid_response');
       let model = null;
       if (value.model != null) {
         const raw = value.model;
@@ -5129,7 +5130,7 @@
       listCharacters(options = {}) {
         return queryAvatar('avatar.listCharacters', 'listAvatarCharacters', [], options, value => {
           if (!Array.isArray(value) || value.length > 256) fail('invalid_response', 'Invalid character list');
-          return Object.freeze([...new Set(value.map(avatarCharacterName))]);
+          return Object.freeze([...new Set(value.map(name => avatarCharacterName(name, 'invalid_response')))]);
         });
       },
       async mount(configInput) {
