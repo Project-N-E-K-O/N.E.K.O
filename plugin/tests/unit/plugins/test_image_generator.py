@@ -4338,3 +4338,47 @@ def test_readonly_existing_cache_uses_writable_fallback(monkeypatch, tmp_path):
     assert plugin._register_writable_static_ui()
     assert plugin._asset_dir == tmp_path / "static_ui" / "generated"
     assert not list(plugin._asset_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_save_history_rollback_failure_keeps_recovery(monkeypatch, tmp_path):
+    plugin, _, store = make_plugin()
+    for index in range(3):
+        await plugin._record_history(prompt=str(index), model="m", status="failed", result_url="", api_key="")
+    original = copy.deepcopy(store.data["recent_generations"])
+    store.fail_set_keys.add("settings")
+    store_set = store.set
+    writes = 0
+    async def fail_restore(key, value):
+        nonlocal writes
+        if key == "recent_generations":
+            writes += 1
+            if writes == 2:
+                return Err(SdkError("store unavailable"))
+        return await store_set(key, value)
+    monkeypatch.setattr(store, "set", fail_restore)
+    mkstemp = image_generator_module.tempfile.mkstemp
+    monkeypatch.setattr(image_generator_module.tempfile, "mkstemp", lambda **kwargs: mkstemp(dir=tmp_path, **kwargs))
+    payload = await encrypted_save_payload(plugin, history_limit=1)
+    assert (await plugin.save_settings(**payload)).is_err()
+    recovery = list(tmp_path.glob("neko-image-history-recovery-*.json"))
+    assert len(recovery) == 1
+    assert json.loads(recovery[0].read_text(encoding="utf-8")) == original
+    assert not plugin._settings_available
+
+
+@pytest.mark.asyncio
+async def test_provider_json_parsing_runs_off_event_loop(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    prepare_asset_cache(plugin, tmp_path)
+    install_client(plugin, monkeypatch, FakeClient([FakeResponse(generation_payload())]))
+    parse = json.loads
+    event_thread = threading.get_ident()
+    observed = []
+    def tracked_parse(data, *args, **kwargs):
+        if isinstance(data, (bytes, bytearray)) and b'"b64_json"' in data:
+            observed.append(threading.get_ident())
+        return parse(data, *args, **kwargs)
+    monkeypatch.setattr(json, "loads", tracked_parse)
+    assert (await plugin.test_generation(prompt="cat")).is_ok()
+    assert observed and all(thread != event_thread for thread in observed)

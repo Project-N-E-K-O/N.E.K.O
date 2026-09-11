@@ -2993,7 +2993,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     if len(body) + len(chunk) > 1_048_576:
                         raise _GenerationFailure("图片服务响应过大", "ProviderResponseTooLarge")
                     body.extend(chunk)
-            payload = json.loads(body)
+            payload = await asyncio.to_thread(json.loads, body)
             if not isinstance(payload, dict):
                 raise _GenerationFailure("图片服务响应格式无效", "MalformedResponse")
             return payload
@@ -3350,7 +3350,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 )
 
         try:
-            payload = json.loads(raw_response)
+            payload = await asyncio.to_thread(json.loads, raw_response)
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
             raise _GenerationFailure(
                 "图片服务返回了无法解析的数据",
@@ -4321,6 +4321,21 @@ class ImageGeneratorPlugin(NekoPluginBase):
             self.logger.warning("Cache limit enforcement failed: failure_class={}", type(exc).__name__)
             return False
 
+    @staticmethod
+    def _write_history_recovery_sync(history: Any) -> Path:
+        descriptor, filename = tempfile.mkstemp(prefix="neko-image-history-recovery-", suffix=".json")
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(history, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        return Path(filename)
+
+    async def _discard_history_recovery(self, recovery: Path) -> None:
+        try:
+            await self._drain_on_cancel(asyncio.to_thread(recovery.unlink))
+        except OSError:
+            self.logger.warning("History backup cleanup failed; recovery file retained at {}", recovery)
+
     async def _sanitize_history_before_secret_change(
         self,
         *,
@@ -4458,6 +4473,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 if not cache_transaction["ready"] or not await self._prepare_cache_limits(validated):
                     return Err(SdkError("无法执行新的缓存限额，请关闭占用图片的程序后重试"))
                 await self._acquire_lock(self._history_lock)
+                history_recovery = None
+                history_recovery_safe = False
                 try:
                     # Snapshot the stored history BEFORE any mutation so a
                     # mid-transaction Store failure can roll it back: the
@@ -4472,11 +4489,21 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         return Err(
                             SdkError("无法在保存前安全读取生成历史（StoreError）")
                         )
+                    try:
+                        history_recovery = await self._drain_on_cancel(asyncio.to_thread(self._write_history_recovery_sync, old_history))
+                    except Exception:
+                        return Err(SdkError("无法备份生成历史，已取消保存"))
                     async def restore_history() -> bool:
+                        nonlocal history_recovery_safe
                         if old_history is None:
                             restored, _ = await self._store_delete(_HISTORY_STORE_KEY)
-                            return restored
-                        return await self._store_set(_HISTORY_STORE_KEY, old_history)
+                        else:
+                            restored = await self._store_set(_HISTORY_STORE_KEY, old_history)
+                        history_recovery_safe = restored
+                        if not restored:
+                            self._settings_available = False
+                            self.logger.error("History rollback failed; original history retained at {}", history_recovery)
+                        return restored
 
                     async def restore_previous_configuration() -> tuple[bool, bool]:
                         history_restored = await restore_history()
@@ -4635,8 +4662,13 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     self._remember_secrets(effective_api_key)
                     self._settings_available = True
                     cache_transaction["committed"] = True
+                    history_recovery_safe = True
                 finally:
-                    self._history_lock.release()
+                    try:
+                        if history_recovery is not None and history_recovery_safe:
+                            await self._discard_history_recovery(history_recovery)
+                    finally:
+                        self._history_lock.release()
 
         key_configured = bool(effective_api_key)
         self.logger.info(
@@ -4709,23 +4741,10 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         )
                         if not read_ok:
                             return False
-                        def backup_history():
-                            descriptor, filename = tempfile.mkstemp(prefix="neko-image-history-recovery-", suffix=".json")
-                            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                                json.dump(old_history, stream, ensure_ascii=False)
-                                stream.flush()
-                                os.fsync(stream.fileno())
-                            return Path(filename)
                         try:
-                            recovery = await asyncio.to_thread(backup_history)
+                            recovery = await asyncio.to_thread(self._write_history_recovery_sync, old_history)
                         except OSError:
                             return False
-
-                        async def discard_recovery():
-                            try:
-                                await asyncio.to_thread(recovery.unlink)
-                            except OSError:
-                                self.logger.warning("History backup cleanup failed; recovery file retained at {}", recovery)
 
                         async def restore_reset_history():
                             if old_history is None:
@@ -4733,7 +4752,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                             else:
                                 restored = await self._store_set(_HISTORY_STORE_KEY, old_history)
                             if restored:
-                                await discard_recovery()
+                                await self._discard_history_recovery(recovery)
                             else:
                                 self._settings_available = False
                                 self.logger.error("History rollback failed; original history retained at {}", recovery)
@@ -4758,7 +4777,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                                 else "生成图片缓存不可用；管理面板可能可读，但生成已降级"
                             )
                         cache_transaction["committed"] = True
-                        await discard_recovery()
+                        await self._discard_history_recovery(recovery)
                         return True
                     finally:
                         self._history_lock.release()
