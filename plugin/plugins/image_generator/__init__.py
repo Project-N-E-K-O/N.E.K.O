@@ -779,7 +779,8 @@ def _normalize_manifest_settings(raw: Any) -> dict[str, Any]:
 
 
 def _validate_png_scanlines(data: bytes, width: int, height: int,
-                            depth: int, color: int, interlace: int) -> None:
+                            depth: int, color: int, interlace: int,
+                            palette_entries: int = 0) -> None:
     if (width < 1 or height < 1 or width > _MAX_IMAGE_DIMENSION
             or height > _MAX_IMAGE_DIMENSION or width * height > _MAX_IMAGE_PIXELS):
         raise _GenerationFailure("生成图片的尺寸或像素数量超过安全上限", "ImagePixelLimit")
@@ -796,11 +797,38 @@ def _validate_png_scanlines(data: bytes, width: int, height: int,
             if not columns:
                 continue
             row_size = 1 + (columns * channels * depth + 7) // 8
+            previous = bytearray(row_size - 1)
             for _ in range(rows):
                 row = decoder.decompress(pending, row_size)
                 pending = decoder.unconsumed_tail
                 if len(row) != row_size or row[0] > 4:
                     raise ValueError("invalid PNG scanline")
+                if color == 3:
+                    # Indexed PNGs have one byte per filtering unit, even
+                    # when individual samples are packed at 1/2/4 bits.
+                    restored = bytearray(row[1:])
+                    for index in range(len(restored)):
+                        left = restored[index - 1] if index else 0
+                        up = previous[index]
+                        upper_left = previous[index - 1] if index else 0
+                        prediction = 0
+                        if row[0] == 1:
+                            prediction = left
+                        elif row[0] == 2:
+                            prediction = up
+                        elif row[0] == 3:
+                            prediction = (left + up) // 2
+                        elif row[0] == 4:
+                            p = left + up - upper_left
+                            distances = [abs(p - left), abs(p - up), abs(p - upper_left)]
+                            prediction = (left, up, upper_left)[distances.index(min(distances))]
+                        restored[index] = (restored[index] + prediction) & 255
+                    for column in range(columns):
+                        bit = column * depth
+                        sample = (restored[bit // 8] >> (8 - depth - bit % 8)) & ((1 << depth) - 1)
+                        if sample >= palette_entries:
+                            raise ValueError("PNG sample references missing palette entry")
+                    previous = restored
         extra = decoder.decompress(pending, 1)
         if extra or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
             raise ValueError("invalid PNG stream length")
@@ -833,6 +861,7 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
     has_image_data = False
     seen_header = False
     seen_palette = False
+    palette_entries = 0
     seen_idat = False
     ended_idat = False
     image_chunks = []
@@ -857,6 +886,7 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
                     or (data[25] == 3 and length // 3 > 2 ** data[24])):
                 break
             seen_palette = True
+            palette_entries = length // 3
         elif kind == b"IDAT":
             if ended_idat or (data[25] == 3 and not seen_palette):
                 break
@@ -872,7 +902,7 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
             if not has_image_data or end != len(data):
                 break
             _validate_png_scanlines(b"".join(image_chunks), width, height,
-                                    data[24], data[25], data[28])
+                                    data[24], data[25], data[28], palette_entries)
             return width, height, animated
         offset = end
     raise _GenerationFailure("图片数据不完整", "InvalidImageData")
@@ -2447,7 +2477,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             if _GENERATED_FILE_PATTERN.fullmatch(path.name)
         ]
 
-    def _prune_cache_sync(self, settings: Mapping[str, Any]) -> dict[str, int]:
+    def _prune_cache_sync(self, settings: Mapping[str, Any], *, newest: str | None = None) -> dict[str, int]:
         files_with_stats: list[tuple[Path, int, float]] = []
         for path in self._cache_files():
             if _GENERATED_TEMP_FILE_PATTERN.fullmatch(path.name):
@@ -2474,14 +2504,14 @@ class ImageGeneratorPlugin(NekoPluginBase):
             key = name.removeprefix("thumb_").rsplit(".", 1)[0]
             group = groups.setdefault(
                 key,
-                {"paths": [], "size": 0, "mtime": 0.0},
+                {"paths": [], "size": 0, "mtime": 0.0, "newest": key == (newest or "").rsplit(".", 1)[0]},
             )
             group["paths"].append(path)
             group["size"] += size
             group["mtime"] = max(group["mtime"], mtime)
         ordered_groups = sorted(
             groups.values(),
-            key=lambda group: group["mtime"],
+            key=lambda group: (group["newest"], group["mtime"]),
             reverse=True,
         )
 
@@ -2645,7 +2675,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         "本地图片缓存路径在写入期间发生变化，已拒绝结果",
                         "AssetCacheUnsafe",
                     )
-                return self._prune_cache_sync(settings)
+                return self._prune_cache_sync(settings, newest=filename)
 
             worker = asyncio.create_task(
                 asyncio.to_thread(write_and_prune)
@@ -2694,7 +2724,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 if stats["total_bytes"] > int(settings["cache_max_bytes"]):
                     self._unlink_cached_file(f"thumb_{filename.rsplit('.', 1)[0]}.png")
                     preview = None
-                stats = self._prune_cache_sync(settings)
+                stats = self._prune_cache_sync(settings, newest=filename)
                 if (not target.is_file() or stats["count"] > int(settings["cache_max_count"])
                         or stats["total_bytes"] > int(settings["cache_max_bytes"])):
                     raise _GenerationFailure("无法执行图片缓存容量限制", "AssetCacheLimit")

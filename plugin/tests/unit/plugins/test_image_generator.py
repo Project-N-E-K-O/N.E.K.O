@@ -6,6 +6,7 @@ import asyncio
 import base64
 import copy
 import io
+import os
 import json
 import re
 import shutil
@@ -3889,3 +3890,42 @@ def test_final_reservation_release_clears_aggregate_state(monkeypatch):
     plugin._release_generation()
     assert plugin._api_state == "ok"
     assert reports[-1] == {"status": "running"}
+
+
+@pytest.mark.parametrize("depth", [1, 2, 4, 8])
+@pytest.mark.parametrize("filter_type", [0, 1, 2, 3, 4])
+def test_indexed_png_rejects_undefined_palette_samples(depth, filter_type):
+    def chunk(kind, body):
+        return len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+    header = (1).to_bytes(4, "big") + (2).to_bytes(4, "big") + bytes([depth, 3, 0, 0, 0])
+    # First row is index zero, second row index one after any of the filters.
+    stream = zlib.compress(bytes([0, 0, filter_type, 1 << (8 - depth)]))
+    def png(entries):
+        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"PLTE", b"\x00\x00\x00" * entries) + chunk(b"IDAT", stream) + chunk(b"IEND", b"")
+    with pytest.raises(image_generator_module._GenerationFailure):
+        image_generator_module._verified_image_format(png(1))
+    assert image_generator_module._verified_image_format(png(2)) == "PNG"
+
+
+@pytest.mark.asyncio
+async def test_save_preserves_new_asset_when_timestamps_tie(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    plugin._settings["cache_max_count"] = 1
+    old = assets / ("f" * 32 + ".png")
+    old.write_bytes(PNG_BYTES)
+    os.utime(old, (100, 100))
+    real_write = image_generator_module._atomic_write_bytes
+    def write(root, identity, temporary, filename, data):
+        real_write(root, identity, temporary, filename, data)
+        os.utime(assets / filename, (100, 100))
+    class FixedUuid:
+        hex = "a" * 32
+    async def no_thumbnail(*args):
+        return None
+    monkeypatch.setattr(image_generator_module, "uuid4", FixedUuid)
+    monkeypatch.setattr(image_generator_module, "_atomic_write_bytes", write)
+    monkeypatch.setattr(plugin, "_generate_thumbnail", no_thumbnail)
+    await plugin._save_asset(PNG_BYTES, extension="png")
+    assert (assets / ("a" * 32 + ".png")).is_file()
+    assert not old.exists()
