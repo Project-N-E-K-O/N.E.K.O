@@ -205,7 +205,7 @@ def _infer_mode(settings: dict[str, Any]) -> str:
     """Infer the preset matching every currently effective proactive setting."""
 
     for mode_name, preset in PROACTIVE_PRESETS.items():
-        if all(settings.get(k) == v for k, v in preset.items()):
+        if all(_value_matches(settings.get(k), v) for k, v in preset.items()):
             return mode_name
     return "custom"
 

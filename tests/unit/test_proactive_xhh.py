@@ -94,6 +94,15 @@ def test_proactive_presets_route_xhh_through_news():
         assert PROACTIVE_PRESETS[mode]["proactiveNewsChatEnabled"] is True
 
 
+def test_infer_mode_rejects_integer_boolean_values():
+    from main_routers.proactive_router import PROACTIVE_PRESETS, _infer_mode
+
+    settings = dict(PROACTIVE_PRESETS["off"])
+    settings["proactiveChatEnabled"] = 0
+
+    assert _infer_mode(settings) == "custom"
+
+
 def test_infer_mode_reports_custom_when_community_flag_is_missing():
     from main_routers.proactive_router import PROACTIVE_PRESETS, _infer_mode
 
