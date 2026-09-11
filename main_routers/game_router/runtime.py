@@ -3666,8 +3666,11 @@ async def _route_external_transcript_to_game(
         )
         if is_duplicate:
             logger.info(
-                "🎮 游戏语音转写去重: lanlan=%s key=%s text=%s",
-                lanlan_name, idempotency_key, text[:40],
+                "🎮 游戏语音转写去重: lanlan=%s "
+                "request_id_present=%s text_length=%s",
+                lanlan_name,
+                bool(current_request_id),
+                len(text),
             )
             return True
         # 3. Inserting a new key (or a no_id repeat past 1s window) — only
@@ -3756,6 +3759,38 @@ async def _route_external_transcript_to_game(
             await mgr.send_user_activity()
         except Exception as exc:
             logger.debug("🎮 游戏外部输入打断当前语音失败: %s", exc)
+
+    if game_type == "drawing_guess":
+        if kind == "user-voice":
+            # The drawing page is the sole consumer of host-owned final ASR.
+            # The mirror above becomes the SDK ``voice.onTranscript`` event and
+            # the page submits it through the declared ``round:input`` command.
+            # Do not also append a generic output or run ``_run_game_chat``
+            # here: the page intentionally monitors with ``outputs: false``,
+            # and a second backend consumer would judge/reply twice.
+            return True
+
+        # Main-window text has no SDK transcript relay. Keep it in the drawing
+        # feature's own input policy instead of exposing its private round state
+        # (notably ``user_draw_answer``) to the generic game LLM.
+        try:
+            from .drawing_guess import handle_external_drawing_guess_transcript
+
+            await handle_external_drawing_guess_transcript(
+                lanlan_name,
+                session_id,
+                text,
+                route_state=state,
+                request_id=request_id,
+                source=source,
+                kind=kind,
+            )
+        except Exception as exc:
+            logger.warning(
+                "drawing_guess external text handling failed: error_type=%s",
+                type(exc).__name__,
+            )
+        return True
 
     event = (
         _build_external_voice_event(state, text)

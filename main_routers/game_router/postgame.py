@@ -1317,7 +1317,10 @@ async def _finalize_game_route_state_inner(
             logger.warning("⚠️ 游戏路由退出状态通知失败: %s", exc)
 
     skip_memory_reason = _game_archive_memory_skip_reason(state, reason)
-    if skip_memory_reason == "game_memory_archive_disabled":
+    if skip_memory_reason in {
+        "game_memory_archive_disabled",
+        "game_memory_archive_owned_by_feature",
+    }:
         await _cancel_game_context_organizer_before_disabled_archive(state)
     else:
         await _settle_game_context_organizer_before_archive(state)

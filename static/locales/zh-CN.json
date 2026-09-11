@@ -5336,5 +5336,177 @@
             "label": "本局对话进入记忆（默认不开启）",
             "hint": "关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。"
         }
+    },
+    "drawingGuess": {
+        "title": "你画我猜",
+        "eyebrow": "陪伴活动",
+        "subtitle": "和猫娘一起画画、猜图和聊天。",
+        "status": {
+            "loadingCharacter": "正在读取当前角色",
+            "missingCharacter": "等待角色信息",
+            "ready": "准备好了",
+            "starting": "正在启动游戏路由",
+            "active": "路由已接管",
+            "ending": "正在结束",
+            "ended": "已结束",
+            "failed": "路由启动失败",
+            "heartbeatLost": "路由已失效"
+        },
+        "layout": {
+            "character": "角色",
+            "session": "会话",
+            "canvasTitle": "画布",
+            "tools": "绘画工具",
+            "canvasWaitingTitle": "画布准备中",
+            "canvasWaiting": "开始后会先由猫娘画，你来猜；随后你有 5 分钟画图给她猜。",
+            "actions": "游戏操作",
+            "sideResize": "调整模型和聊天区域占比",
+            "modelTitle": "猫娘在场",
+            "modelFallbackTitle": "模型槽位已预留",
+            "modelFallback": "后续会在这里加载当前角色 Live2D 或 VRM；加载失败时也会保留同位置 fallback。",
+            "chatTitle": "游戏聊天"
+        },
+        "tools": {
+            "brush": "画笔",
+            "eraser": "橡皮",
+            "bucket": "油漆桶",
+            "undo": "撤销",
+            "redo": "重做",
+            "color": "颜色",
+            "size": "粗细",
+            "eyedropper": "取色器",
+            "basicColors": "基础颜色",
+            "historyColors": "历史颜色"
+        },
+        "tutorial": {
+            "title": "开始前",
+            "intro": "这一局会各画一次、各猜一次。你可以边画边聊天，画满 5 分钟会自动交给她猜。",
+            "memoryTitle": "记忆选项",
+            "memoryNone": "不记录，仅本次玩。",
+            "memorySummary": "可以记录一句游戏概要。",
+            "quickTitle": "简易玩法",
+            "quickDraw": "轮到你画时，抽一张题目牌，在画布上画完后点“画好了”。",
+            "quickGuess": "轮到你猜时，在聊天框里输入猜测，也可以一边聊天一边要提示。",
+            "quickSummary": "每轮结算会保留缩略图，最终结算里可以保存画作。",
+            "voiceHint": "想用语音时，直接点击聊天输入框左侧的麦克风按钮。"
+        },
+        "actions": {
+            "start": "开始",
+            "end": "结束",
+            "retryCharacter": "重新读取角色",
+            "send": "发送",
+            "done": "画好了",
+            "nextRound": "下一轮",
+            "clearCanvas": "清空画布",
+            "saveNekoSvg": "保存为 SVG",
+            "saveNekoPng": "保存为 PNG",
+            "saveUserPng": "保存我的画"
+        },
+        "voice": {
+            "connected": "本局语音已开启，点击可关闭。",
+            "connectHint": "点击为这一局开启语音。",
+            "connectedNotice": "本局语音已开启。",
+            "connectHintNotice": "本局语音已关闭。",
+            "starting": "正在切换语音输入…",
+            "unavailable": "当前环境不支持局内语音。",
+            "controlFailed": "语音操作失败：{{reason}}",
+            "routeNotReady": "先等游戏路由准备好，再使用语音。",
+            "buttonLabel": "语音输入"
+        },
+        "exitConfirm": {
+            "title": "要离开吗？",
+            "message": "最终结算已经整理好了。要离开这个小游戏页面吗？",
+            "stay": "待会",
+            "leave": "离开页面",
+            "reopen": "离开？"
+        },
+        "memory": {
+            "noneShort": "不记录",
+            "summaryShort": "概要"
+        },
+        "phases": {
+            "tutorial": "教程",
+            "loading_round": "加载中",
+            "ended": "已结束",
+            "ai_drawing": "猫娘作画中",
+            "user_guessing": "你来猜",
+            "drawing_pick": "抽题中",
+            "user_drawing": "你来画",
+            "ai_guessing": "猫娘猜图中",
+            "ai_guess_feedback": "给她提示",
+            "summary": "结算",
+            "final_summary": "最终结算"
+        },
+        "modelStates": {
+            "loading": "模型加载中",
+            "idle": "待机中",
+            "drawing": "画画中",
+            "thinking": "思考中",
+            "guessing": "猜图中",
+            "talking": "聊天中",
+            "happy": "开心中"
+        },
+        "modelControls": {
+            "group": "模型视图调节",
+            "scale": "模型大小",
+            "x": "水平位置",
+            "y": "垂直位置",
+            "reset": "重置模型视图"
+        },
+        "messages": {
+            "welcome": "准备好后，我们会先确认当前角色并接管小游戏路由。",
+            "missingCharacter": "请带角色打开这个页面，或先读取当前角色。",
+            "startFailed": "路由启动失败：{{reason}}",
+            "routeActive": "{{name}} 的游戏路由已接管。",
+            "roundStart": "新一轮开始。",
+            "aiDrawingReady": "她画好了，轮到你猜。",
+            "roundFailed": "这一轮启动失败：{{reason}}",
+            "requestTimeout": "请求超时了，再试一次吧。",
+            "guessTimeout": "时间到，答案是 {{answer}}。",
+            "inputFailed": "这句话没送到，再试一次。",
+            "answerReveal": "答案：{{answer}}",
+            "drawingPickTitle": "抽取题目中",
+            "drawingPickSubtitle": "先别动笔，她正在从牌库里抽几张题目牌。",
+            "drawingPickReady": "选一张题目牌来画。",
+            "drawingPickReveal": "已选：{{answer}}",
+            "userDrawPrompt": "你的题目是：{{answer}}。画给她猜吧。",
+            "blankCanvas": "先给她画几笔吧。",
+            "aiDrawingWaiting": "猫娘正在绘画中",
+            "aiGuessing": "她正在看你的画...",
+            "aiGuessLine": "她猜：{{guess}}",
+            "aiGuessCorrect": "她猜对了。",
+            "aiGuessWrong": "没猜中。",
+            "aiGuessMissAnswer": "她没猜中。答案：{{answer}}",
+            "aiNeedsHint": "可以先继续聊天；想让她再猜时再给提示。",
+            "summaryReady": "结算页准备好了。",
+            "canvasCleared": "画布已清空。",
+            "userSupplemented": "你补画好了，她会立刻再猜一次。"
+        },
+        "input": {
+            "placeholder": "先等路由准备好",
+            "guessPlaceholder": "输入你的猜测，或者要一个提示",
+            "drawingPlaceholder": "画画时也可以聊天",
+            "hintPlaceholder": "先继续聊天；想让她再猜时再给提示",
+            "summaryPlaceholder": "可以聊聊这一局，或者开始下一轮",
+            "ariaLabel": "聊天输入框"
+        },
+        "timer": {
+            "seconds": "{{seconds}} 秒"
+        },
+        "summary": {
+            "title": "本轮结算",
+            "outcome": {
+                "userWin": "你赢啦，但这局重点是一起玩。",
+                "nekoWin": "她赢啦，可以允许她小小得意一下。",
+                "tie": "平局，刚好很适合再来一轮。"
+            },
+            "score": "你 {{user}} - {{neko}} 猫娘",
+            "userDrawAnswer": "你的画题：{{answer}}",
+            "nekoArt": "猫娘画作",
+            "userArt": "你的画作",
+            "finalTitle": "最终结算",
+            "roundLabel": "第 {{round}} 轮",
+            "noRounds": "还没有完成的轮次。"
+        }
     }
 }

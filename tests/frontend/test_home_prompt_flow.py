@@ -322,6 +322,89 @@ def _has_playwright_browser() -> bool:
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize("activity_context", ("play", "work"))
+def test_context_prompt_is_skipped_while_internal_game_route_is_active(
+    mock_page: Page,
+    activity_context: str,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = {
+                gameRouteActive: true,
+                proactiveChatEnabled: false,
+                proactiveVisionChatEnabled: false,
+            };
+            window.nekoTelemetryBranch = 'main';
+            window.__contextPromptCalls = 0;
+            window.showDecisionPrompt = async function() {
+                window.__contextPromptCalls += 1;
+                return 'decline';
+            };
+        """,
+        script_names=("app/app-context-prompt.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async (context) => {
+            await window.appContextPrompt.handle(context);
+            window.appState.gameRouteActive = false;
+            await window.appContextPrompt.handle(context);
+            return { calls: window.__contextPromptCalls };
+        }
+        """,
+        activity_context,
+    )
+
+    assert result["calls"] == 0
+
+
+@pytest.mark.frontend
+def test_open_context_prompt_is_dismissed_when_internal_game_opens(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = {
+                gameRouteActive: false,
+                proactiveChatEnabled: false,
+                proactiveVisionChatEnabled: false,
+            };
+            window.nekoTelemetryBranch = 'main';
+        """,
+        script_names=("common_dialogs.js", "app/app-context-prompt.js"),
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.__contextPromptSettled = false;
+            window.appContextPrompt.handle('play').then(function () {
+                window.__contextPromptSettled = true;
+            });
+        }
+        """
+    )
+    mock_page.wait_for_selector(".modal-overlay")
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.appState.gameRouteActive = true;
+            window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+                detail: { action: 'opened', gameType: 'drawing_guess' },
+            }));
+        }
+        """
+    )
+
+    mock_page.wait_for_function(
+        "() => window.__contextPromptSettled && !document.querySelector('.modal-overlay')",
+        timeout=5000,
+    )
+
+
+@pytest.mark.frontend
 def test_yui_intro_activation_targets_compact_chat_input_shell_without_click_whitelist(mock_page: Page):
     _bootstrap_page(
         mock_page,

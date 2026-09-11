@@ -325,6 +325,16 @@ async def badminton_demo(request: Request):
     })
 
 
+@router.get("/drawing_guess_demo", response_class=HTMLResponse)
+async def drawing_guess_demo(request: Request):
+    """Drawing Guess companion mini-game."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/drawing_guess.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
 @router.get("/live2d_emotion_manager", response_class=HTMLResponse)
 async def live2d_emotion_manager(request: Request):
     """Live2D emotion mapping manager page."""
