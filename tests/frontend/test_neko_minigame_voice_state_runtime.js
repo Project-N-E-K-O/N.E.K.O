@@ -15,7 +15,7 @@ async function settle() {
   for (let i = 0; i < 30; i += 1) await Promise.resolve();
 }
 
-async function fixture({ voice = true, endOk = true } = {}) {
+async function fixture({ voice = true, endOk = true, endThrows = false } = {}) {
   const timers = new Map();
   let timerId = 0;
   const window = {
@@ -52,7 +52,10 @@ async function fixture({ voice = true, endOk = true } = {}) {
       startResult = deferred();
       return startResult.promise;
     },
-    end: async () => ({ ok: endOk }),
+    end() {
+      if (endThrows) throw new Error('synchronous end failure');
+      return Promise.resolve({ ok: endOk });
+    },
     heartbeat: async () => ({ ok: true, active }),
     drain: async () => ({ ok: true, outputs: [] }),
     startVoiceControlBridge(options) { bridge = options; return true; },
@@ -236,21 +239,32 @@ async function main() {
     assert.equal(timeout.requests.length, 1, 'timeout must not start an unbounded retry loop');
   } finally { timeout.game.dispose(); }
 
-  const recovering = await fixture({ endOk: false });
-  try {
-    const start = recovering.game.runtime.start();
-    await settle(); recovering.finishStart(); await start; await settle();
-    const cancelled = recovering.requests[0];
-    await recovering.game.runtime.end();
-    await settle();
-    assert.equal(cancelled.options.signal.aborted, true);
-    assert.equal(recovering.requests.length, 2, 'failed end resynchronizes the still-owned route');
-    const states = [];
-    recovering.game.voice.onState((state) => states.push(state));
-    recovering.requests[1].resolve(recovering.state());
-    await settle();
-    assert.equal(states.length, 1);
-  } finally { recovering.game.dispose(); }
+  for (const endThrows of [false, true]) {
+    const recovering = await fixture({ endOk: false, endThrows });
+    try {
+      const start = recovering.game.runtime.start();
+      await settle(); recovering.finishStart(); await start; await settle();
+      const cancelled = recovering.requests[0];
+      const errors = [];
+      recovering.game.voice.onError((error) => errors.push(error));
+      if (endThrows) await assert.rejects(recovering.game.runtime.end(), /synchronous end failure/);
+      else await recovering.game.runtime.end();
+      await settle();
+      assert.equal(cancelled.options.signal.aborted, true);
+      assert.equal(recovering.requests.length, 2, 'failed end resynchronizes the still-owned route');
+      assert.equal(errors.length, 0, 'recovery must wait for cancellation cleanup instead of reporting busy');
+      assert.equal(recovering.timers.size, 1, 'only the recovery query timeout remains');
+      const states = [];
+      recovering.game.voice.onState((state) => states.push(state));
+      recovering.requests[1].resolve(recovering.state());
+      await settle();
+      assert.equal(states.length, 1);
+      assert.equal(recovering.timers.size, 0, 'recovered query releases its timer');
+      cancelled.resolve(recovering.state({ reason: 'stale cancelled reply' }));
+      await settle();
+      assert.equal(states.length, 1, 'canceled reply cannot replace the recovered snapshot');
+    } finally { recovering.game.dispose(); }
+  }
 
   const failed = await fixture();
   try {

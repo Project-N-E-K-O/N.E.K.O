@@ -2081,7 +2081,7 @@
     function synchronizeVoiceState() {
       if (disposed || disposing || !voiceBridgeStarted || !grantedSet.has('voice-input')
           || !runtimeRouteEstablished || !['running', 'degraded'].includes(runtimePhase)
-          || voiceStateSync) return;
+          || voiceStateSync || voiceStatePendingRequests.size) return;
       const sync = { routeInstanceId: runtimeRouteInstanceId, revision: voiceStateRevision };
       voiceStateSync = sync;
       const isCurrent = () => voiceStateSync === sync && !disposed && !disposing
@@ -2106,7 +2106,14 @@
           emit('voice-error', Object.freeze({ error, source: 'state-sync' }));
         }
       }).finally(() => {
-        if (voiceStateSync === sync) voiceStateSync = null;
+        if (voiceStateSync === sync) {
+          voiceStateSync = null;
+        } else if (!voiceStateSync) {
+          // A synchronous end failure can restore the route before the aborted
+          // managed request releases its slot. Recover only after that cleanup;
+          // ordinary query failures/timeouts above never trigger retries.
+          synchronizeVoiceState();
+        }
       });
     }
     const heartbeatLifecycle = {
