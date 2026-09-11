@@ -227,7 +227,7 @@ class Engine:
             raise ValueError("视频没有这个分 P")
         part = pages[page]
         length = float(part["duration"])
-        from .discovery import enforce_policy
+        from .discovery import enforce_policy, enforce_download_policy
         if not enforce_policy({"duration": length, "parts": len(pages),
                                "danmaku": info.get("stat", {}).get("danmaku")},
                               automatic=automatic, confirmed_duration=confirmed_duration):
@@ -303,10 +303,9 @@ class Engine:
             else:
                 raise ValueError("未获取到可播放视频，请检查 B 站登录和视频权限")
         length = await asyncio.to_thread(duration, target)
-        if not math.isfinite(length) or not 0 < length <= MAX_SECONDS:
-            raise ValueError("Downloaded video duration exceeds the supported limit")
-        if not enforce_policy({"duration": length, "parts": len(pages),
+        if not enforce_download_policy({"duration": length, "parts": len(pages),
                                "danmaku": info.get("stat", {}).get("danmaku")},
+                              metadata_duration=float(part["duration"]),
                               automatic=automatic, confirmed_duration=confirmed_duration):
             raise ValueError("Downloaded duration requires renewed confirmation")
         job["duration"] = length

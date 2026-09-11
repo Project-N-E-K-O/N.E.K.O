@@ -51,6 +51,20 @@ def enforce_policy(info, *, automatic=False, confirmed_duration=None):
     return True
 
 
+def enforce_download_policy(info, *, metadata_duration, automatic=False, confirmed_duration=None):
+    """Recheck stream limits without equating container timestamps to metadata.
+
+    The caller has already validated metadata for this video's selected part.
+    Long-video consent applies to that selection, not an exact floating duration.
+    """
+    seconds = info["duration"]
+    if not math.isfinite(seconds) or not 0 < seconds <= MAX_SECONDS:
+        raise ValueError("Downloaded video duration exceeds the supported limit")
+    consent = metadata_duration > 300 and confirmed_duration == metadata_duration
+    return enforce_policy(info, automatic=automatic,
+                          confirmed_duration=seconds if consent else None)
+
+
 async def discover(topic, exclude=()):
     from bilibili_api import hot, search
     seen = set(exclude)

@@ -32,6 +32,28 @@ def test_long_confirmation_and_changed_duration():
         discovery.enforce_policy(info, automatic=True)
 
 
+@pytest.mark.parametrize("metadata,actual,confirmed,allowed", [
+    (301, 301.25, 301, True), (301, 300.9, 301, True),
+    (301, 301.25, None, False), (300, 300.01, None, False),
+    (300, 300.01, 300, False), (302, 302.1, 301, False),
+])
+def test_downloaded_duration_preserves_consent_without_float_equality(metadata, actual, confirmed, allowed):
+    assert discovery.enforce_download_policy(
+        {"duration": actual, "parts": 1, "danmaku": 1000},
+        metadata_duration=metadata, confirmed_duration=confirmed) is allowed
+
+
+@pytest.mark.parametrize("seconds,count,automatic", [
+    (180, 1000, True), (179, 298, True), (1200.01, 10000, False),
+    (float('nan'), 1000, False), (0, 1000, False),
+])
+def test_downloaded_limits_cannot_be_bypassed_by_consent(seconds, count, automatic):
+    with pytest.raises(ValueError):
+        discovery.enforce_download_policy(
+            {"duration": seconds, "parts": 1, "danmaku": count},
+            metadata_duration=301, confirmed_duration=301, automatic=automatic)
+
+
 @pytest.mark.asyncio
 async def test_discovery_rechecks_metadata_and_never_relaxes(monkeypatch):
     rows = [{"bvid": "first", "duration": "1:00", "video_review": 101},
