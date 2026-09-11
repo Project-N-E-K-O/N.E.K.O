@@ -1250,7 +1250,7 @@ async function main() {
     scalarCommandResponseGame.dispose();
   }
 
-  for (const action of ['end', 'reset', 'dispose']) {
+  for (const action of ['end', 'end-then-reset', 'dispose']) {
     let releaseBody;
     let bodySignal;
     const commandTransport = {
@@ -1281,8 +1281,14 @@ async function main() {
       assert(typeof releaseBody === 'function', 'command did not reach its response body');
       if (action === 'dispose') commandGame.dispose();
       else {
+        if (action === 'end-then-reset') {
+          let activeResetError;
+          try { commandGame.runtime.reset(); } catch (error) { activeResetError = error; }
+          assert(activeResetError?.code === 'invalid_state' && !bodySignal.aborted,
+            'active reset must reject without cancelling the current command');
+        }
         await commandGame.runtime.end();
-        if (action === 'reset') commandGame.runtime.reset();
+        if (action === 'end-then-reset') commandGame.runtime.reset();
       }
       const result = await Promise.race([pending, new Promise(resolve => {
         watchdog = setTimeout(() => resolve('hung'), 1000);
