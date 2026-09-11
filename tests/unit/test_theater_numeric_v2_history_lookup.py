@@ -1,4 +1,4 @@
-"""按需历史查找的来源、容量、失败继续和本回合共享边界。"""
+"""Verify provenance, capacity, failure continuation and same-turn sharing for on-demand history lookup."""
 
 import asyncio
 import json
@@ -86,7 +86,7 @@ def test_lookup_evidence_rejects_foreign_text_and_prioritizes_original():
 
 
 def test_actor_and_guard_pack_the_same_retrieved_original_with_fixed_budgets():
-    """实际打包后的两个消费者都包含撤回原文；六块 Actor 和容量约束保持生效。"""
+    """Both packed consumers must receive the withdrawal verbatim while preserving the Actor's six blocks and budget limits."""
     session = _session(); engine = _engine()
     fact = next(row for row in performance_history_records(session) if '许可撤回' in row['text'])
     lookup = {'status': 'found', 'evidence': [fact]}
@@ -117,7 +117,7 @@ def test_evaluator_lookup_request_is_optional_and_not_a_runtime_decision(query):
 @pytest.mark.parametrize('formal', [False, True])
 @pytest.mark.parametrize('requested,status', [(False, 'found'), (True, 'found'), (True, 'partial')])
 async def test_workflow_shares_one_lookup_across_rewrite_and_dispute(monkeypatch, tmp_path, requested, status, formal):
-    """普通回合零查找；失败仍提交末稿，原文结果既不重复调用也不变成新存档字段。"""
+    """Ordinary turns perform no lookup; failed lookup still permits final-draft submission without duplicate calls or new archive fields."""
     engine = _engine(); runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(session_id='lookup_flow', catgirl_binding=_binding(), opening_performance=_opening())
     lookups, generations, reviews = [], [], []

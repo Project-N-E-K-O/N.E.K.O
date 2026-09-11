@@ -1,4 +1,4 @@
-"""按需复核方案的文字、字段和保留要求；不生成补丁或扩大已有执行权限。"""
+"""Review plan wording, fields and preservation requirements on demand without generating patches or expanding execution permissions."""
 from copy import deepcopy
 from typing import Any, Mapping
 
@@ -40,7 +40,7 @@ reason给具体原文依据，保留模型的单条复核说明与组合冲突�
 
 
 def validate_plan_review(context: Mapping[str, Any], plans: list[dict], payload: Mapping[str, Any]) -> dict[str, dict]:
-    """必须逐个覆盖原方案；遗漏字段仅供展示，绝不并入 repair_targets。"""
+    """Cover every original plan; omitted fields remain display-only and must not enter repair_targets."""
     nodes = context_nodes(context)
     expected = {plan["issue_id"]: plan for plan in plans}
     result = {}

@@ -327,7 +327,7 @@ def test_numeric_v2_validates_optional_acting_contract():
 
 
 def test_numeric_v2_validates_opening_only_boundaries():
-    """临时开场边界是显式作者字段，旧边界字段仍保持原语义。"""
+    """Temporary opening restrictions are explicit author fields; existing boundary fields retain their semantics."""
 
     story = numeric_v2_story()
     beat = story["nodes"][0]["story_beat"]

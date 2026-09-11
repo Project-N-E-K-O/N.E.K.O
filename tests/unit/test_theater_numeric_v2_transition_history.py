@@ -1,4 +1,4 @@
-"""转场文字必须保留实际历史，不能被静态作者旁白覆盖；语义效果另做真实模型复测。"""
+"""Transition prose must retain actual history rather than be overwritten by static author narration; retest semantics with real models separately."""
 
 import json
 
@@ -64,7 +64,7 @@ def test_evaluator_uses_current_narrative_instead_of_transition_title():
 
 
 def test_ending_preview_keeps_active_boundaries_and_target_direction():
-    """已过时的来源入场限制不阻塞结束，目标入场及双方角色限制仍须检查。"""
+    """Expired source entrance restrictions do not block ending, while target entrance and both characters' boundaries still require review."""
     engine = _engine()
     source = engine.nodes['start']['story_beat']
     target = engine.nodes['ending_leave']['story_beat']
@@ -84,7 +84,7 @@ def test_ending_preview_keeps_active_boundaries_and_target_direction():
 
 @pytest.mark.parametrize('reason', [None, '双方已达成约定。', '依据' * 1000])
 def test_ending_reason_never_grants_runtime_authorization(reason):
-    """即使诊断声称完成，也不能替代明确的结束布尔授权；旧输出可不带理由。"""
+    """A diagnostic claim of completion cannot replace explicit ending authorization; legacy output may omit the reason."""
     from services.theater.numeric_v2_evaluator import _parse_output as parse_evaluation
     from utils.tokenize import count_tokens
 
@@ -104,7 +104,7 @@ def test_ending_reason_never_grants_runtime_authorization(reason):
 
 @pytest.mark.parametrize('reason', [True, [], {}])
 def test_ending_reason_rejects_non_text(reason):
-    """不把结构错误的模型字段转成可读诊断。"""
+    """Do not turn malformed model fields into readable diagnostics."""
     from services.theater.numeric_v2_evaluator import _parse_output as parse_evaluation, NumericV2EvaluatorOutputError
 
     with pytest.raises(NumericV2EvaluatorOutputError, match='ending_reason_invalid'):
@@ -114,7 +114,7 @@ def test_ending_reason_rejects_non_text(reason):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('verdict', ['pass', 'repair', 'reject', 'unavailable'])
 async def test_dynamic_transition_reviews_whole_candidate_before_atomic_commit(monkeypatch, tmp_path, verdict):
-    """终局无按钮也复核；持续语义冲突采用末稿，技术故障仍不写入任何文件。"""
+    """Review final nodes even without buttons; persistent semantic conflicts adopt the final draft, while technical failures write no files."""
     from services.theater import numeric_v2_workflow as workflow
     from services.theater.numeric_v2_evaluator import NumericV2EvaluationResult, NumericV2TransitionOfferReview, NumericV2EvaluatorError
     from services.theater.numeric_v2_runtime import NumericV2Runtime
@@ -194,7 +194,7 @@ def test_transition_review_keeps_source_history_and_actual_destination():
 @pytest.mark.asyncio
 @pytest.mark.parametrize('requirement', ['optional', 'authored_bridge', 'independent_delivery'])
 async def test_compact_bridge_contract_through_actor_commit_and_restore(monkeypatch, tmp_path, requirement):
-    """真实Actor解析入口接收合同许可；缺必要桥段不建半轮，空桥段不占播放/TTS索引。"""
+    """The real Actor parser accepts contract-permitted output; missing required bridges cannot create partial turns, and empty bridges consume no playback or TTS index."""
     from services.theater import numeric_v2_actor as actor_module
     from services.theater.numeric_v2_performance import performance_content_blocks
     from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime

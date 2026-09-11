@@ -1,4 +1,4 @@
-"""补查只修复本轮未提交候选，仍需出处核验、正式复核和唯一原子提交。"""
+"""Recover only the current uncommitted candidate, still requiring source verification, formal review and one atomic commit."""
 
 import json
 

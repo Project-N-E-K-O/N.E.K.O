@@ -1,4 +1,4 @@
-"""复查和改稿次数有界；持续语义否定后采用末稿，技术故障仍保护原子提交。"""
+"""Bound review and rewrite attempts; adopt the final draft after persistent semantic rejection while keeping technical failures atomic."""
 
 import asyncio
 import json
@@ -18,7 +18,7 @@ from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 @pytest.mark.parametrize('formal', [False, True])
 @pytest.mark.parametrize('mode', ['safe', 'buttons', 'release', 'offer', 'invalid_offer', 'reject', 'timeout', 'protocol'])
 async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_path, formal, mode):
-    """持续否定最多复查一次、改稿一次；采用末稿并只计分一次，显示与冷恢复一致。"""
+    """After at most one dispute review and rewrite, adopt the final draft and score once, keeping display and cold recovery consistent."""
     engine = _engine()
     runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(session_id='dispute', catgirl_binding=_binding(), opening_performance=_opening())
@@ -91,7 +91,7 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_dispute_model_options_are_local_and_evidence_identical(monkeypatch):
-    """快速→思考→快速的参数不互相污染；消息和解析协议保持相同。"""
+    """Keep fast, thinking and final fast-review parameters isolated while sharing messages and the parsing contract."""
     factories, evidence = [], []
 
     class Client:
@@ -138,7 +138,7 @@ async def test_dispute_model_options_are_local_and_evidence_identical(monkeypatc
 
 @pytest.mark.asyncio
 async def test_dispute_real_timeout_becomes_evaluator_error(monkeypatch):
-    """实际等待超时走既有错误类型，工作流才能保留原拦截而非误判放行。"""
+    """Map real timeouts to existing errors so the workflow retains the initial rejection instead of treating failure as approval."""
     class SlowClient:
         async def __aenter__(self):
             return self

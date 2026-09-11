@@ -1,4 +1,4 @@
-"""验证 Guard 的字段归属和入口投影。"""
+"""Verify Guard field ownership and entrance projections."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 
 def test_transition_deduplicates_only_complete_projected_target_boundaries():
-    """完整重复禁令只传一次；超过摘要长度/数量的原文、正向授权和原包均须保留。"""
+    """Send each complete prohibition once while preserving long source evidence, positive authorization and the original package."""
     from copy import deepcopy
     from services.theater.numeric_v2_runtime import TurnRequestV2
     from tests.unit.test_theater_numeric_v2_natural_ending import _engine
@@ -42,7 +42,7 @@ def test_transition_deduplicates_only_complete_projected_target_boundaries():
 
 
 def _verdict(**changes):
-    """只有正文枚举与按钮索引是安全判断来源，不再维护重复总类。"""
+    """Derive safety only from body-violation enums and suggestion indices, without a duplicate overall category."""
 
     return {
         "offer_present": False,
@@ -55,7 +55,7 @@ def _verdict(**changes):
 
 
 def _messages(candidate):
-    """构造入口和目标幕后续方向不同的通用夹具，不读取正式故事或存档。"""
+    """Build generic fixtures whose entrance and target-scene continuation differ, without reading installed stories or archives."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     source = engine.nodes["start"]
@@ -173,7 +173,7 @@ def test_guard_offer_and_button_responsibilities_do_not_overlap():
 
 
 def test_guard_no_offer_does_not_skip_body_or_button_checks():
-    """无转场不是正文或推荐安全结论，按钮要在正文判定后独立核对。"""
+    """No transition does not imply safe prose or suggestions; check buttons independently after the body."""
 
     system = _messages(_BUTTON_ONLY_CANDIDATE)[0].content
     assert "没有提议也须检查正文" in system
@@ -182,7 +182,7 @@ def test_guard_no_offer_does_not_skip_body_or_button_checks():
 
 
 def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
-    """五字段协议只讲一次；已做、尝试和未来邀请不混为同一时态。"""
+    """Describe the five-field protocol once and distinguish completed actions, attempts and future invitations."""
 
     system = _messages(_BUTTON_ONLY_CANDIDATE)[0].content
     example, _ = json.JSONDecoder().raw_decode(system[system.index("{"):])

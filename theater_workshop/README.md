@@ -10,17 +10,19 @@ SDK 不启动网页或 HTTP 服务，不读取相邻 InkAI 仓库，不修改正
 
 N.E.K.O 服务进程在需要工坊时显式打开，持有并复用返回实例。项目写入使用当前存储根下的 `theater/workshop/projects/`；同根第二进程会收到 `workshop_root_in_use`。
 
-模型由调用方选择后传入。当前不提供独立的工坊模型设置页面，也不新增隐式默认模型。`model_config` 可取自调用方明确选择的 `ConfigManager.get_model_api_config(...)` 结果；支持 `model`、`base_url`、`api_key`、`provider_type`。配置作为打开工坊时的快照，不写入作者项目、日志或独立密钥文件。
+模型由调用方选择后传入。当前不提供独立的工坊模型设置页面，也不新增隐式默认模型。`model_config` 可取自调用方明确选择的 `ConfigManager.get_model_api_config(...)` 结果；支持 `model`、`base_url`、`api_key`、`provider_type`，另须由调用方补充正整数 `max_input_tokens`。配置作为打开工坊时的快照，不写入作者项目、日志或独立密钥文件。
+
+`max_input_tokens` 是工坊单次请求的完整输入上限，没有默认值。宿主使用本体分词器统计全部消息及其 JSON/角色字段，超限在创建客户端前报 `workshop_model_input_budget_exceeded`，不截断剧本、不发送请求。未提供有效上限时报 `workshop_model_input_budget_required`。调用方按所选供应商的上下文容量预留输出及分词差异的余量；这不是供应商原生计数保证，也不改变小剧场演员和复核的既有上限。自行注入 `model_call` 时，其模型适配器负责同等输入预算检查。
 
 ```python
 import asyncio
 from theater_workshop.host import open_workshop
 
-async def open_authoring(config_manager, selected_model_config):
+async def open_authoring(config_manager, selected_model_config, input_budget):
     return await asyncio.to_thread(
         open_workshop,
         config_manager,
-        model_config=selected_model_config,
+        model_config={**selected_model_config, "max_input_tokens": input_budget},
     )
 ```
 

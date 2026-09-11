@@ -1,4 +1,4 @@
-"""执行真实剧场前端模块，验证提交恢复；所有请求均由内存假 fetch 接管。"""
+"""Run the real theater frontend module to verify submit recovery, with every request handled by an in-memory fake fetch."""
 
 from pathlib import Path
 import shutil

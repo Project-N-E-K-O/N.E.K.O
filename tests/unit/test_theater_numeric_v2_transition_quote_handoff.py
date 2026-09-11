@@ -1,4 +1,4 @@
-"""公开原文跨判定/复核传递，不替代玩家意愿检查，也不进入存档。"""
+"""Pass public quotations through evaluation and review without replacing player-intent checks or persisting them in archives."""
 import json
 import pytest
 from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
@@ -11,7 +11,7 @@ QUOTE = '左侧走廊通往阅览室，通道已经开放。'
 
 
 def test_evaluation_retains_only_verified_initiation_quote():
-    """只传递实际引文，作者摘要和不确定意图都不能挂上已验证材料。"""
+    """Pass only actual quotations; author summaries and uncertain intent cannot be attached as verified evidence."""
     c=initiation_case()
     for intent,quote,expected in [('initiate',QUOTE,QUOTE),('initiate','作者安排去阅览室。',''),('unclear',QUOTE,'')]:
         payload=dict(scene_complete=False,metric_changes={},transition_intent=intent,public_destination_quote=quote)
@@ -21,7 +21,7 @@ def test_evaluation_retains_only_verified_initiation_quote():
 
 @pytest.mark.parametrize('quote', [QUOTE,'作者安排去阅览室。'])
 def test_formal_guard_quote_is_verified_again_at_projection(quote):
-    """调用方即使传入错误原文，复核材料也不会将其标成已核对证据。"""
+    """Even if the caller supplies an incorrect quotation, review input must not label it verified evidence."""
     c=initiation_case();engine=c['engine'];session=c['session']
     outcome=engine.resolve_turn(session,TurnRequestV2('go',0,c['message']),(),transition_intent='initiate')
     messages=ev._build_transition_judge_messages(engine,session,actor_performance={'segments':[],'suggested_inputs':[]},player_input=c['message'],transition_outcome=outcome,public_destination_quote=quote)
@@ -32,7 +32,7 @@ def test_formal_guard_quote_is_verified_again_at_projection(quote):
 
 @pytest.mark.asyncio
 async def test_same_quote_reaches_fast_and_dispute_but_not_persistent_state(tmp_path,monkeypatch):
-    """实际Workflow在首次争议中传递同一原文，成功提交后Session/Ledger不新增证据状态。"""
+    """The real Workflow passes the same quotation during the first dispute; successful commits add no evidence state to Session or Ledger."""
     c=initiation_case();engine=c['engine'];runtime=NumericV2Runtime(engine,tmp_path)
     current=await runtime.start_session(session_id='quote_handoff',catgirl_binding=_binding(),opening_performance=c['session'].opening_performance)
     calls=[]

@@ -78,7 +78,7 @@ def numeric_v2_catgirl_binding(
 
 
 def numeric_v2_authoring_names(config_manager: Any) -> dict[str, str]:
-    """向作者侧提供一次名称快照；真实昵称不代表剧情已完成姓名披露。"""
+    """Provide the author with one name snapshot; knowing the nickname does not disclose it within the story."""
 
     binding = numeric_v2_catgirl_binding(config_manager)
     return {"player_name": binding["player_address"], "catgirl_name": binding["catgirl_name"]}

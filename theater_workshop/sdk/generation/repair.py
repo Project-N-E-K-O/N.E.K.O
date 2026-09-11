@@ -1,4 +1,4 @@
-"""评分建议的明确修改范围；不从自然语言猜字段，也不扩大节点修订权限。"""
+"""Use explicit assessment repair scopes without inferring field paths from prose or expanding node-edit permissions."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -16,7 +16,7 @@ REPAIR_PLAN_RULE = """每条问题和人物关系建议必须列repair_targets:[
 
 
 def text_repair_fields(node: Mapping[str, Any]) -> list[str]:
-    """把实际节点的可改字段映射为评分投影路径；缺失状态结构不借作者缓存开放权限。"""
+    """Map editable fields of the actual node to assessment paths; missing state structures cannot gain edit permissions from author caches."""
     fields = ["/title", "/summary", "/opening_scene", "/must_not_happen", "/relationship_state", "/transition_goal"]
     if node.get("type") == "ending":
         fields.append("/scene_summary")
@@ -36,7 +36,7 @@ def context_nodes(context: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def classify_repair(context: Mapping[str, Any], issue: Mapping[str, Any], *, protected: list[dict] | None = None, require_plan_review: bool = False) -> dict[str, Any]:
-    """原建议完整保留；字段不明或越权只关闭直接修订，不丢弃问题或伪造可执行方案。"""
+    """Preserve original suggestions completely; unclear or unauthorized fields disable direct repair without dropping findings or inventing executable plans."""
     result = deepcopy(dict(issue))
     # 原方案留作展示，实际执行范围以逐字段复核为准；未复核的事实不能直接执行。
     targets = effective_targets(issue) if issue.get("source") == "facts" else issue.get("repair_targets")
@@ -79,7 +79,7 @@ def classify_repair(context: Mapping[str, Any], issue: Mapping[str, Any], *, pro
 
 
 def assign_shared_plans(report: dict[str, Any]) -> None:
-    """只合并精确相同的修改位置、方案和执行权限；保留每条问题和影响，不作语义去重。"""
+    """Merge only identical locations, plans and execution permissions; retain every issue and impact without semantic deduplication."""
     seen = {}
     for issue in [*report["issues"], *report["relationship_advice"]]:
         targets = issue.get("repair_targets") or []
@@ -98,7 +98,7 @@ def assign_shared_plans(report: dict[str, Any]) -> None:
 
 
 def changed_fields(before: Any, after: Any, path: str = "") -> list[str]:
-    """比较实际评分投影中的变化，防止修订顺带改动未列入方案的正确字段。"""
+    """Compare changes in the actual assessment projection to prevent incidental edits to correct fields outside the plan."""
     if before == after:
         return []
     if isinstance(before, Mapping) and isinstance(after, Mapping) and set(before) == set(after):

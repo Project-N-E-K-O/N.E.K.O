@@ -1,4 +1,4 @@
-"""用户显式触发的六维剧情评分与单节点优化。"""
+"""User-triggered six-dimension story assessment and single-node optimization."""
 
 from __future__ import annotations
 
@@ -161,7 +161,7 @@ _NODE_OPTIMIZATION_PROMPT = SCORING_RUNTIME_RULES + "\n" + """# Role: N.E.K.O �
 
 
 class QualityAssessmentError(RuntimeError):
-    """评分或用户确认后的节点优化没有返回可安全使用的结果。"""
+    """Assessment or user-confirmed node optimization did not return a safely usable result."""
 
     def __init__(self, code: str, *, provider_details: Mapping[str, Any] | None = None, phase: str | None = None) -> None:
         super().__init__(code)
@@ -186,7 +186,7 @@ def _content_hash(value: Mapping[str, Any]) -> str:
 
 
 class NumericV2QualityAssessor(ModelAgent):
-    """显式评分完整故事，并在用户确认后定向优化一个节点。"""
+    """Explicitly assess the full story and optimize one selected node after user confirmation."""
 
     def __init__(self, model_call=None) -> None:
         super().__init__("NEKO_Numeric_drama Quality Assessor", model_call)
@@ -285,7 +285,7 @@ class NumericV2QualityAssessor(ModelAgent):
         return report
 
     def _review_plans(self, context: Mapping[str, Any], report: Mapping[str, Any]) -> dict[str, Any]:
-        """有合规候选时统一复核一次；任一请求/格式失败都不返回可保存的半份报告。"""
+        """Review eligible candidates once as a group; request or format failures must not return a partially savable report."""
         result = deepcopy(dict(report))
         rows = [*result["issues"], *result["relationship_advice"]]
         protected = protected_targets(result["issues"])
@@ -328,7 +328,7 @@ class NumericV2QualityAssessor(ModelAgent):
         return result
 
     def _assess_literature(self, context: Mapping[str, Any], facts: Mapping[str, Any]) -> dict[str, Any]:
-        """文学阶段使用同一作者稿及已校验事实报告，仍保留全部文学问题与原有分数校验。"""
+        """Use the same author draft and validated factual report for literary assessment, retaining all literary findings and existing score validation."""
         response = self.call_llm(
             [
                 {"role": "system", "content": _ASSESSMENT_PROMPT},
@@ -373,7 +373,7 @@ class NumericV2QualityAssessor(ModelAgent):
         assessment: Mapping[str, Any],
         node_id: str,
     ) -> dict[str, Any]:
-        """合并当前节点的可执行评分建议，并在一次模型调用中只修改该节点。"""
+        """Combine executable assessment suggestions for the current node and modify only that node in one model call."""
 
         if assessment.get("repair_plan_version") != 3:
             raise QualityAssessmentError("quality_reassessment_required")

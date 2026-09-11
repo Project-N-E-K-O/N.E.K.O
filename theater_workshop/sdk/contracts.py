@@ -4,7 +4,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 class StrictPayload(BaseModel):
-    """拒绝未声明字段，避免作者请求被静默改写。"""
+    """Reject undeclared fields instead of silently rewriting author requests."""
 
     model_config = ConfigDict(extra="forbid")
 

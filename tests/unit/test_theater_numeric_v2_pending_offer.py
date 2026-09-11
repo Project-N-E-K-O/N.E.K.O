@@ -1,4 +1,4 @@
-"""通过实际提交、恢复和分叉复现：保留提议的后续对白不能取代最初的邀请。"""
+"""Reproduce through real commits, recovery and forks that later offer-preserving dialogue cannot replace the original invitation."""
 
 import json
 
@@ -12,7 +12,7 @@ from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
 
 async def _commit(runtime, stored, text, *, offer=False, intent="unclear", narration="", invalidate=False):
-    """使用正式 Runtime 的锁存和写盘，避免手写历史漏掉此次根因中的状态合并。"""
+    """Use production Runtime latching and persistence so handwritten history cannot omit the state merge behind the failure."""
 
     outcome = runtime.prepare_turn(stored,
         TurnRequestV2(f"turn_{stored.session.revision + 1}", stored.session.revision, "我先问个细节。"),
@@ -28,7 +28,7 @@ async def _commit(runtime, stored, text, *, offer=False, intent="unclear", narra
 @pytest.mark.asyncio
 @pytest.mark.parametrize("new_offer", [False, True])
 async def test_invalid_invitation_is_not_revived_by_followup_restore_or_fork(tmp_path, new_offer):
-    """已确认的错误邀请形成历史边界；同轮更正的新邀请仍可正常接受或重新考虑。"""
+    """A confirmed invalid invitation establishes a history boundary; a corrected invitation in the same turn can still be accepted or reconsidered."""
     from services.theater.numeric_v2_context import pending_transition_record
 
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(numeric_v2_story()), tmp_path)
@@ -112,7 +112,7 @@ async def test_restore_rejects_invalidation_boundary_missing_from_ledger(tmp_pat
 @pytest.mark.asyncio
 @pytest.mark.parametrize("narrated", [False, True])
 async def test_pending_offer_survives_followups_restore_and_fork(tmp_path, narrated):
-    """不靠最新正文猜提议；旁白邀请与普通对白邀请都要保留原始出处。"""
+    """Retain original sources for both narrated and spoken invitations instead of guessing from the latest body."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     runtime = NumericV2Runtime(engine, tmp_path)
@@ -148,7 +148,7 @@ async def test_pending_offer_survives_followups_restore_and_fork(tmp_path, narra
 
 @pytest.mark.asyncio
 async def test_reject_then_new_offer_uses_new_origin_even_when_all_records_are_true(tmp_path):
-    """同轮拒绝旧提议再提出新提议时，必须读取 Ledger 的态度边界，不能只找连续 true 的开头。"""
+    """When rejecting an old offer and proposing a new one in one turn, use the Ledger attitude boundary rather than the first continuous true flag."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     runtime = NumericV2Runtime(engine, tmp_path)
@@ -165,7 +165,7 @@ async def test_reject_then_new_offer_uses_new_origin_even_when_all_records_are_t
 
 @pytest.mark.asyncio
 async def test_withdrawn_offer_can_be_explicitly_accepted_without_reinviting(tmp_path):
-    """拒绝仍清除活跃提议；后来明确接受真实旧邀请可直接推进，并能冷恢复与分叉重放。"""
+    """Rejection clears the active offer; explicit later acceptance of the original invitation can advance and replay through cold recovery and forks."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     runtime = NumericV2Runtime(engine, tmp_path)
@@ -198,7 +198,7 @@ async def test_withdrawn_offer_can_be_explicitly_accepted_without_reinviting(tmp
 
 @pytest.mark.asyncio
 async def test_withdrawn_offer_does_not_cross_a_scene_visit(tmp_path):
-    """已离开的场景不能为新场景的自由输入提供换幕授权。"""
+    """A departed scene cannot authorize a transition for free input in the new scene."""
 
     from dataclasses import replace
     from services.theater.numeric_v2_context import pending_transition_record
@@ -216,7 +216,7 @@ async def test_withdrawn_offer_does_not_cross_a_scene_visit(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['safe', 'buttons', 'repair', 'fallback', 'dispute_timeout', 'fast_failure', 'actor_failure'])
 async def test_pending_reply_is_reviewed_without_losing_invitation_or_recounting(tmp_path, monkeypatch, mode):
-    """已有邀请不免除正文复核；安全追问保留旧邀请，错误稿仍共用原纠错/提交边界。"""
+    """Review prose even with an existing invitation; safe questions preserve it and unsafe drafts share the existing correction and commit limits."""
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
     from services.theater.numeric_v2_actor import NumericV2ActorOutputError
     from services.theater.numeric_v2_runtime import MetricChangeV2

@@ -1,4 +1,4 @@
-"""Numeric v2 全剧本确定性数值与路线作者诊断。"""
+"""Provide deterministic author diagnostics for whole-story Numeric v2 metrics and routes."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ _COMPARATORS = {
 
 @dataclass(frozen=True)
 class NumericV2AnalysisWarning:
-    """可随编译结果展示、但不会写入 Story Package 的作者侧提示。"""
+    """Show author hints alongside compilation results without writing them into Story Package."""
 
     code: str
     path: str
@@ -67,7 +67,7 @@ def _structural_reachable_nodes(
     start_node_ids: set[str],
     nodes_by_id: Mapping[str, Mapping[str, Any]],
 ) -> set[str]:
-    """沿结构出边求保守闭包，用于承接无法继续精确分析的节点。"""
+    """Compute a conservative closure over structural outgoing edges when precise analysis cannot continue."""
 
     reachable: set[str] = set()
     stack = [node_id for node_id in start_node_ids if node_id in nodes_by_id]
@@ -87,7 +87,7 @@ def _structural_reachable_nodes(
 
 
 def _cyclic_node_ids(nodes_by_id: Mapping[str, Mapping[str, Any]]) -> set[str]:
-    """返回位于任意有向循环中的节点；循环节奏统一降级为未知。"""
+    """Return nodes in any directed cycle; classify cyclic pacing as unknown."""
 
     adjacency = {
         node_id: {
@@ -160,7 +160,7 @@ def _representative_values(
     bounds: tuple[int, int],
     routes: list[Mapping[str, Any]],
 ) -> list[int]:
-    """返回足以覆盖所有比较条件真假分区的有限整数代表点。"""
+    """Return finite integer representatives covering the true and false partitions of every comparison condition."""
 
     minimum, maximum = bounds
     values = {minimum, maximum}
@@ -187,7 +187,7 @@ def _selected_bounds_from_points(
     dimensions: list[list[int]],
     bounds: Mapping[str, tuple[int, int]],
 ) -> tuple[dict[str, tuple[int, int]] | None, bool]:
-    """只把完整、连续的笛卡尔积压成区间；非凸集合必须保留为未知。"""
+    """Collapse only complete, contiguous Cartesian products into intervals; nonconvex sets must remain unknown."""
 
     if not points:
         return None, False
@@ -215,7 +215,7 @@ def _route_selection(
     node: Mapping[str, Any],
     bounds: Mapping[str, tuple[int, int]],
 ) -> dict[str, Any]:
-    """精确枚举 priority 结果；只在入口集合可安全压成区间时继续传播。"""
+    """Enumerate priority outcomes exactly and propagate only when entrance sets can safely collapse into intervals."""
 
     routes = [route for route in node.get("route_gates") or [] if isinstance(route, Mapping)]
     states = {
@@ -289,7 +289,7 @@ def _expanded_bounds(
     *,
     extra_turns: int = 0,
 ) -> dict[str, tuple[int, int]]:
-    """按软推荐回合扩张可能区间；结果只用于节奏提示，不限制 Runtime。"""
+    """Expand possible intervals using soft recommended turn counts for pacing hints only, without constraining Runtime."""
 
     minimum_turns = int(node.get("min_turns", 0) or 0)
     recommended_turns = int(node.get("recommended_turns", minimum_turns) or minimum_turns)
@@ -309,7 +309,7 @@ def _minimum_extra_turns(
     entry: Mapping[str, tuple[int, int]],
     definitions: Mapping[str, Mapping[str, int]],
 ) -> tuple[int | None, bool]:
-    """寻找超过软推荐值后首次可能选中路线的额外回合数。"""
+    """Find the first additional turn count beyond the soft recommendation at which a route can become selectable."""
 
     maximum_span = max(
         (definition["max"] - definition["min"] for definition in definitions.values()),
@@ -373,7 +373,7 @@ def _duplicate_transition_warnings(
 
 
 def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2AnalysisWarning, ...]:
-    """分析全图数值可达性、软节奏风险、priority 遮蔽和转场可辨识性。"""
+    """Analyze graph-wide metric reachability, soft pacing risks, priority shadowing and transition distinguishability."""
 
     definitions = _metric_definitions(story)
     ordered_nodes, nodes_by_id = _nodes(story)
@@ -636,7 +636,7 @@ def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analys
 
 
 def analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2AnalysisWarning, ...]:
-    """保留极限可达性检查，另按每轮两点估算推荐节奏，不改变运行时加分。"""
+    """Retain extreme reachability checks and estimate recommended pacing at two points per turn without changing runtime scoring."""
     warnings = _analyze_numeric_v2_story(story)
     definitions = _metric_definitions(story)
     if not definitions:

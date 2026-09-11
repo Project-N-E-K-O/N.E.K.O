@@ -33,8 +33,9 @@ from .numeric_v2_fixture import numeric_v2_setup
     _MAINLINE_PROMPT, _MAINLINE_CONTINUATION_PROMPT, _NODE_ENHANCEMENT_PROMPT,
     _BRANCH_ENDING_PROMPT, _BRANCH_PATH_PROMPT,
     _NODE_OPTIMIZATION_PROMPT,
-])
+], ids=["mainline", "continuation", "enhancement", "branch-ending", "branch-path", "optimization"])
 def test_concrete_process_rule_covers_generation_and_revision_entries(prompt):
+    # Short IDs keep PYTEST_CURRENT_TEST below Windows' environment-value limit.
     # 修补、完善与支线入口同样会产出边界，不能仅修首次主线生成后又被旧合同覆盖。
     assert prompt.count(_SCENE_PROCESS_AUTHORING_RULE) == 1
     assert prompt.endswith(_SCENE_PROCESS_AUTHORING_RULE)
@@ -126,7 +127,7 @@ def test_concrete_process_rule_covers_generation_and_revision_entries(prompt):
 
 
 def test_mainline_player_decision_example_matches_actionable_exit_rule():
-    """示例保留普通换幕选择，只对没有未决选择的最终收束允许空值。"""
+    """Keep ordinary transition choices in the example; permit null only for final closure with no unresolved choice."""
 
     assert '"player_decision": "普通换幕保留可执行选择；最后一幕自然收束且没有未决选择时为空字符串"' in _MAINLINE_PROMPT
 
@@ -474,7 +475,7 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
 
 
 def test_numeric_v2_generator_does_not_publish_planned_prop_change_as_entry_state():
-    """本章末的签署/换主规划不能抢先覆盖开场尚未选择的玩家状态。"""
+    """Planned chapter-end signing or ownership changes must not overwrite the player's undecided opening state."""
 
     generator = NumericV2Generator()
     candidate = _idea_outline()
@@ -1620,7 +1621,7 @@ def test_numeric_v2_generator_rejects_mainline_outside_length_range(preset, coun
     ("long", 10, 10, 16), ("long", 16, 10, 16),
 ])
 def test_mainline_length_boundaries_generate_without_padding(preset, count, minimum, maximum):
-    """合法幕数直达故事投影，不能为了旧下限进入续写并补造章节。"""
+    """Project valid chapter counts directly into the story instead of invoking continuation to invent chapters for an obsolete minimum."""
 
     generator = NumericV2Generator()
     calls = []
@@ -1841,7 +1842,7 @@ def _ending_enhancement_case():
 
 @pytest.mark.parametrize("copies", [1, 3])
 def test_node_enhancement_does_not_accumulate_existing_state_prefix(copies):
-    """模型沿用已组装说明时，两次完善均保留一份状态及独立补充，不改输入。"""
+    """When the model reuses assembled instructions, both enhancements retain one state description and independent supplements without mutating input."""
     from copy import deepcopy
 
     generator, story, candidate = _ending_enhancement_case()
@@ -1870,7 +1871,7 @@ def test_node_enhancement_does_not_accumulate_existing_state_prefix(copies):
 
 
 def test_character_context_preserves_nonprefix_and_different_state_text():
-    """只去掉完整相同的组装前缀，不把引用、部分相同或旧状态当成可删事实。"""
+    """Remove only an exactly matching assembled prefix; quotations, partial matches and older states are not disposable facts."""
     generator, _story, candidate = _ending_enhancement_case()
     stage = candidate["character_state"]
     state_text = "".join(stage[key] for key in (

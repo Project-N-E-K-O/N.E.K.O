@@ -1,4 +1,4 @@
-"""验证来源、访问边界和真实计分解析，不把 Prompt 文案断言当作模型质量通过。"""
+"""Verify provenance, visit boundaries and actual scoring parsing; prompt-text assertions do not establish model quality."""
 
 import json
 from dataclasses import replace
@@ -152,7 +152,7 @@ def test_guard_uses_claim_to_find_original_and_later_changes(facts, claim):
 
 @pytest.mark.parametrize('object_name', ['徽章', '唱片', '手账'])
 def test_short_object_query_is_not_displaced_by_question_filler(monkeypatch, object_name):
-    """对象只占一个中文二元片段时，常用问句不应优先于实际持有记录。"""
+    """For an object matching only one Chinese bigram, generic questions must not outrank actual possession records."""
     _, session = _long_session()
     fact = f'{object_name}在莉莉的布袋里。'
     records = ({'revision': 1, 'from_node_id': 'old', 'to_node_id': 'old', 'performance': fact},
@@ -167,7 +167,7 @@ def test_short_object_query_is_not_displaced_by_question_filler(monkeypatch, obj
 
 
 def test_query_filler_alone_does_not_recall_unrelated_old_questions():
-    """过滤只影响检索排序，不把常用代词当成某个道具或已发生事件的证据。"""
+    """Filtering affects retrieval ranking only; common pronouns are not evidence of a specific prop or completed event."""
     _, session = _long_session()
     session = replace(session, performance_history=({'revision': 1, 'from_node_id': 'old',
         'to_node_id': 'old', 'input_text': '我们现在已经到了哪里？'},))
@@ -178,7 +178,7 @@ def test_query_filler_alone_does_not_recall_unrelated_old_questions():
     ('青瓷茶杯', '旧书店'), ('银纹胸针', '修鞋铺'), ('儿童画册', '社区图书馆'),
 ])
 def test_followup_retrieves_source_of_previous_visible_object(object_name, place):
-    """追问省略全名时，上一轮公开的对象可以辅助找回跨幕来源；不预制剧本别名。"""
+    """Use the previous public object to recover cross-scene sources when a follow-up omits its full name, without predefined story aliases."""
     _, session = _long_session()
     fact = f'{object_name}是从{place}借来的。'
     records = ({'revision': 1, 'from_node_id': 'old', 'to_node_id': 'old', 'performance': fact},

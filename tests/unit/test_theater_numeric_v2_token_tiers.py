@@ -1,4 +1,4 @@
-"""整链路预算、完整证据与请求级实耗隔离；不以离线断言替代模型压测。"""
+"""Verify budgets, complete evidence and request-level usage isolation across the chain; offline assertions do not replace model stress tests."""
 import asyncio
 import json
 from dataclasses import replace
@@ -56,7 +56,7 @@ def test_legacy_profile_names_use_identical_fixed_budget_and_evidence():
 
 
 class UsageClient:
-    """客户端返回真实协议形状；缺报用量和取消请求必须能被单独观察。"""
+    """Use actual client response shapes and observe missing usage and cancelled requests separately."""
     def __init__(self, usage=None, cancel=False):
         self.usage, self.cancel = usage, cancel
 

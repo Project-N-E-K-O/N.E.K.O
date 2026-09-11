@@ -1,4 +1,4 @@
-"""独立事实核对的提示词与引用校验；不执行修稿或文学评分。"""
+"""Provide independent factual-check prompts and citation validation without rewriting or literary scoring."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ _LOCATOR_FIELDS = {"id", "target_node_id", "source_node_id", "entry_from", "dest
 
 
 def build_fact_sources(context: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
-    """为可引用的字符串叶子编号；定位元数据保留原值，不充当冲突证据。"""
+    """Number citable string leaves; retain location metadata verbatim without treating it as conflict evidence."""
     # 保留完整投影和原路径，只把主线放在结局前、开场状态放在目标与出口前，减少跨时点误读。
     # 未知字段仍原样保留，支线按已有作者顺序处理，不猜测图的实际游玩顺序或目标是否完成。
     def ordered(value, keys):
@@ -74,7 +74,7 @@ def build_fact_sources(context: Mapping[str, Any]) -> tuple[dict[str, Any], dict
 
 
 def _resolve_pointer(context: Mapping[str, Any], pointer: str) -> Any:
-    """按显式字段路径读取原文，不从说明文字猜位置。"""
+    """Read source text by explicit field path instead of inferring locations from explanation text."""
     if not isinstance(pointer, str) or not pointer.startswith("/"):
         raise ValueError("invalid_fact_evidence_path")
     value: Any = context
@@ -91,7 +91,7 @@ def _resolve_pointer(context: Mapping[str, Any], pointer: str) -> Any:
 
 def validate_fact_review(context: Mapping[str, Any], payload: Any, node_ids: set[str], *,
                          evidence_sources: Mapping[str, Mapping[str, str]] | None = None) -> dict[str, Any]:
-    """完整校验后返回副本；失败由调用方按事实阶段报错，不能保存半份有效报告。"""
+    """Return a copy after full validation; callers report failures at the factual stage rather than save a partially valid report."""
     try:
         if not isinstance(payload, Mapping):
             raise ValueError("invalid_fact_review")

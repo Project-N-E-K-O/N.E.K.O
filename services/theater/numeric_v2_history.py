@@ -1,4 +1,4 @@
-"""按需从 Session 演绎记录查找原文；模型只选编号，不生成第二份剧情事实。"""
+"""Look up Session source records on demand; the model selects IDs rather than generating another set of story facts."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def _messages(query: str, rows: list[dict[str, Any]]) -> list[Any]:
 
 
 def _pages(records: list[dict[str, Any]], query: str, limit: int) -> tuple[list[list[dict[str, Any]]], bool]:
-    """完整字段分页；单条超限不截掉可能存在的否定，并明确标记查找不完整。"""
+    """Page complete fields; mark lookup incomplete instead of truncating an oversized record and losing a possible negation."""
 
     pages: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
@@ -55,7 +55,7 @@ def _pages(records: list[dict[str, Any]], query: str, limit: int) -> tuple[list[
 
 
 async def lookup_history(config_manager: Any, session: Any, query: str) -> dict[str, Any]:
-    """每回合仅在请求时执行一次；长记录分页并发读取，总等待限12秒，不阻塞演绎到无限重试。"""
+    """Perform at most one requested lookup per turn, paging long records concurrently within a total 12-second timeout and without unbounded retries."""
 
     records = performance_history_records(session)
     budget = numeric_v2_actor_budget(session.actor_budget_profile)

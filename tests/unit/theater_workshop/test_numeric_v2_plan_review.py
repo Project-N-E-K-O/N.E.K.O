@@ -1,4 +1,4 @@
-"""方案复核只关闭执行权限，不能重写原意见、扩充授权或覆盖旧报告。"""
+"""Plan review may only disable execution, not rewrite original feedback, expand authorization or overwrite the previous report."""
 from copy import deepcopy
 import json
 import pytest

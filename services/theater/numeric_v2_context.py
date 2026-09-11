@@ -66,7 +66,7 @@ HISTORY_EVIDENCE_RULE = (
 
 
 def _history_terms(text: str) -> set[str]:
-    """用通用文字片段检索原文，不硬编码剧本人物、物件或情绪分类。"""
+    """Search source records using generic text fragments, without hardcoded characters, props or emotion categories."""
 
     words = re.findall(r"[a-z0-9_]+|[\u3400-\u9fff]+", text.casefold())
     return {term for word in words for term in (
@@ -83,7 +83,7 @@ _HISTORY_QUERY_FILLER = re.compile(
 
 
 def performance_history_records(session: Any) -> list[dict[str, Any]]:
-    """从唯一 Session 投影完整演出原文；不取推荐、作者计划或未提交候选，也不另写存档。"""
+    """Project complete performances from the sole Session; exclude suggestions, author plans and uncommitted drafts, and create no separate archive."""
 
     current_records, _ = current_scene_records(session)
     current_revisions = {record.get("revision") for record in current_records}
@@ -114,7 +114,7 @@ def performance_history_records(session: Any) -> list[dict[str, Any]]:
 
 
 def history_lookup_note(lookup: Mapping[str, Any] | None) -> str:
-    """只传查找状态，不把模型判断或作者预期伪装成历史事实。"""
+    """Expose lookup status without presenting model judgments or author expectations as historical facts."""
 
     if lookup is None:
         return ""
@@ -128,7 +128,7 @@ def history_lookup_note(lookup: Mapping[str, Any] | None) -> str:
 
 def history_evidence(session: Any, query: str, *, focus: str = "", claims: str = "", max_tokens: int | None = None,
                      lookup: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-    """按当前问题与方向找回完整原话，保留来源及访问边界，绝不截断句尾否定。"""
+    """Retrieve complete source statements for the current question and direction, retaining provenance, visit boundaries and final negations."""
 
     # 三个消费者共用档位和完整原文条数；显式剩余预算只能收窄，不能越过档位上限。
     budget = numeric_v2_actor_budget(getattr(session, "actor_budget_profile", NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE))
@@ -184,7 +184,7 @@ def history_evidence(session: Any, query: str, *, focus: str = "", claims: str =
 
 
 def scene_opening_text(beat: Mapping[str, Any]) -> str:
-    """播放、复核与改写共用作者开场；旧包只回退到摘要或角色处境的首句。"""
+    """Share the author's opening across playback, review and rewriting; fall back to the first summary or character-situation sentence for legacy packages."""
 
     opening = str(beat.get("opening_scene") or "").strip()
     if opening:
@@ -246,12 +246,7 @@ def scene_narrative_focus(beat: Mapping[str, Any]) -> str:
 
 
 def scene_narrative_summary(beat: Mapping[str, Any]) -> str:
-    """投影普通 Actor 的当前处境，避免把整幕动作清单当成待办事项。
-
-    opening_scene 负责交付开场可观察事实，当前幕后续进展由 story_so_far 承接；
-    只有剧本尚未提供开场字段时才回退到 summary。这样不会丢失作者事实，
-    但能阻止模型在每轮重新扫描整幕计划并逐项执行。
-    """
+    """Project the ordinary Actor's current situation without turning the scene plan into a checklist. opening_scene supplies observable opening facts and story_so_far supplies subsequent progress. Fall back to summary only when the package has no opening field, preserving author facts without rescanning and executing the entire scene plan each turn."""
 
     for key in ("narrative_summary", "opening_scene", "summary"):
         value = str(beat.get(key) or "").strip()
@@ -266,7 +261,7 @@ def pending_transition_record(
     ledger_events: tuple[Mapping[str, Any], ...] = (),
     include_withdrawn: bool = False,
 ) -> Mapping[str, Any] | None:
-    """从当前访问的锁存记录和 Ledger 态度边界定位原提议，不把后续追问当成新邀请。"""
+    """Locate the original offer using this visit's latched record and Ledger attitude boundary, without treating follow-up questions as new invitations."""
 
     if not bool(getattr(session, "transition_offered", False)) and not include_withdrawn:
         return None
@@ -302,11 +297,7 @@ def pending_transition_performance(
     ledger_events: tuple[Mapping[str, Any], ...] = (),
     include_withdrawn: bool = False,
 ) -> str:
-    """返回当前待确认提议的原始可见正文，供 Actor 和判定器复用。
-
-    转场提议属于已经展示给玩家的正文事实；把它从长历史中单独投影出来，
-    只是在上下文中提升可见性，不新增独立状态，也不依据关键词猜测玩家意图。
-    """
+    """Return the original visible pending offer for the Actor and evaluator. Projecting this already displayed fact separately improves its visibility in long histories without introducing independent state or guessing intent from keywords."""
 
     record = pending_transition_record(session, ledger_events=ledger_events, include_withdrawn=include_withdrawn)
     if record is None:

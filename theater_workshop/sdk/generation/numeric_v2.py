@@ -1,4 +1,4 @@
-"""Numeric v2 剧情结构的一次生成与确定性收口。"""
+"""Generate Numeric v2 story structure and finalize its deterministic contract."""
 
 from __future__ import annotations
 
@@ -530,7 +530,7 @@ def _validate_goal_runtime_fields(
     *,
     issues: list[dict[str, str]],
 ) -> str:
-    """校验长程演绎需要的交付时机、玩家来源与发声状态。"""
+    """Validate delivery timing, player-action provenance and speech state needed for long performances."""
 
     timing = str(goal.get("timing") or "turn")
     owner = str(goal.get("owner") or "")
@@ -556,7 +556,7 @@ def _validate_character_state_stage(
     continuity_required: bool,
     cast_names: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """校验作者状态线；只认显式角色槽位，不从自然语言猜伤情或记忆归属。"""
+    """Validate author state arcs using explicit character slots, without inferring injury or memory ownership from prose."""
 
     if not isinstance(value, Mapping):
         issues.append({"code": "expected_object", "path": path, "message": "角色状态阶段必须是对象。"})
@@ -615,7 +615,7 @@ def _validate_character_state_stage(
         issues.append({"code": "character_state_fresh_boot_inconsistent", "path": f"{path}.acting_contract", "message": "首次启动必须同时使用空记忆、系统中性自称、仅人格风格和至少一条可确认自身事实。"})
     return stage
 def _chapter_ordered_goals(chapter: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """读取生成模型明确给出的 v2.2 目标，不从自由文本猜主体或证据位置。"""
+    """Read explicit model-produced v2.2 goals without guessing actors or evidence locations from free text."""
 
     rows = chapter.get("ordered_goals")
     if not isinstance(rows, list):
@@ -655,7 +655,7 @@ def _set_value_at_path(value: dict[str, Any], path: str, replacement: Any) -> bo
 
 
 def _continuation_paths(issues: list[dict[str, Any]]) -> list[str]:
-    """折叠父子问题路径，避免同一无效段被重复请求。"""
+    """Collapse parent and child issue paths to avoid repeatedly requesting the same invalid segment."""
 
     ordered = sorted(
         {
@@ -910,11 +910,7 @@ _LENGTH_PRESETS = {
 _SCENE_PACING_SOFT_LIMIT = 8
 _SCENE_PACING_HARD_LIMIT = 40
 def _pacing_diagnostics_for_outline(candidate: Mapping[str, Any]) -> dict[str, Any]:
-    """根据作者已经声明的目标和出口，给每幕生成作者侧节奏诊断。
-
-    这里故意只使用结构字段，不从摘要或自然语言猜测模型将如何演绎；诊断
-    只用于作者界面，不能变成 Runtime 的换幕条件。
-    """
+    """Generate author pacing diagnostics from declared goals and exits using structured fields only. Do not infer model performance from summaries or prose; these author-interface diagnostics must not become Runtime transition conditions."""
 
     chapters = candidate.get("mainline_chapters")
     if not isinstance(chapters, list):
@@ -1001,7 +997,7 @@ def _validate_idea_outline(
     scene_expected_turns_target: int | None = None,
     cast_names: Mapping[str, str] | None = None,
 ) -> list[dict[str, str]]:
-    """只检查结构合同和章节数量，不把语言长度变成阻断规则。"""
+    """Check structural contracts and chapter counts without turning prose length into a blocking rule."""
 
     issues: list[dict[str, str]] = []
 
@@ -1453,7 +1449,7 @@ def _validate_node_enhancement(
     candidate: Mapping[str, Any], *, node_type: str,
     cast_names: Mapping[str, str] | None = None,
 ) -> list[dict[str, str]]:
-    """节点完善只接受显式 v2.2 字段，避免把新节点退回自由文本目标。"""
+    """Accept only explicit v2.2 fields for node enhancement instead of reverting new nodes to free-text goals."""
 
     issues: list[dict[str, str]] = []
     opening_scene = candidate.get("opening_scene")
@@ -1542,7 +1538,7 @@ def _validate_node_enhancement(
 
 
 class NumericV2GenerationError(RuntimeError):
-    """模型或确定性合同失败；调用方不得覆盖已有剧情草稿。"""
+    """Report model or deterministic-contract failure without allowing callers to overwrite existing story drafts."""
 
     def __init__(
         self,
@@ -1562,7 +1558,7 @@ class NumericV2GenerationError(RuntimeError):
 
 
 class NumericV2Generator(ModelAgent):
-    """一次生成主线与一个 Normal 结局，再投影为可继续编辑的地图草稿。"""
+    """Generate a mainline and one Normal ending, then project an editable map draft."""
 
     def __init__(self, model_call=None) -> None:
         super().__init__("NEKO_Numeric_drama Generator", model_call)
@@ -1582,7 +1578,7 @@ class NumericV2Generator(ModelAgent):
         checkpoint: Mapping[str, Any] | None = None,
         cast_names: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """首次生成完整候选；后续只续写校验失败路径，最多调用模型三次。"""
+        """Generate a complete initial candidate, then continue only failed validation paths within at most three model calls."""
 
         normalized_setup = deepcopy(dict(setup))
         normalized_idea = str(normalized_setup.get("brief") or "").strip()
@@ -1849,7 +1845,7 @@ class NumericV2Generator(ModelAgent):
         node_id: str,
         key_props: list[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """单次完善幕或结局节点，只返回可由 AI 回填的 story_beat 字段。"""
+        """Enhance one scene or ending, returning only story_beat fields eligible for AI updates."""
 
         story_data = deepcopy(dict(story))
         nodes = list(story_data.get("nodes") or [])
@@ -2006,7 +2002,7 @@ class NumericV2Generator(ModelAgent):
         }
 
     def generate_branch_ending(self, *, context: Mapping[str, Any]) -> dict[str, Any]:
-        """新结局只生成可编辑终点，不在同一次调用中生成过程。"""
+        """Generate only an editable new ending, without generating its path in the same call."""
 
         return self._generate_branch_json(
             prompt=_BRANCH_ENDING_PROMPT,
@@ -2016,7 +2012,7 @@ class NumericV2Generator(ModelAgent):
         )
 
     def generate_branch_path(self, *, context: Mapping[str, Any]) -> dict[str, Any]:
-        """固定终点后一次生成 1—3 幕正向语义过程。"""
+        """Generate a forward semantic path of one to three scenes in one call after fixing its ending."""
 
         return self._generate_branch_json(
             prompt=_BRANCH_PATH_PROMPT,
@@ -2064,7 +2060,7 @@ class NumericV2Generator(ModelAgent):
         outline: Mapping[str, Any],
         tone: list[str],
     ) -> dict[str, Any]:
-        """空条件单出口表达确定性的顺序推进，多出口分支再由作者配置数值。"""
+        """An unconditional single exit expresses deterministic sequence; authors configure metrics for multi-exit branches."""
 
         metric_schema, initial_metrics = metrics_to_package(list(setup.get("metrics") or []))
         world = outline["world"]
@@ -2262,7 +2258,7 @@ class NumericV2Generator(ModelAgent):
 
     @staticmethod
     def _join_profile_parts(*parts: Any) -> str:
-        """连接身份简介片段，只保留各片段自身的句号。"""
+        """Join identity-introduction fragments while retaining only their existing sentence terminators."""
 
         normalized: list[str] = []
         for part in parts:
@@ -2275,7 +2271,7 @@ class NumericV2Generator(ModelAgent):
 
     @staticmethod
     def _project_relationship_arc(value: Mapping[str, Any]) -> dict[str, Any]:
-        """把模型章节序号投影为稳定节点引用，作为作者侧规划保存。"""
+        """Project model chapter numbers into stable node references stored as author planning data."""
 
         return {
             "opening_relationship": str(value["opening_relationship"]).strip(),
@@ -2291,7 +2287,7 @@ class NumericV2Generator(ModelAgent):
 
     @staticmethod
     def _project_character_state_arc(value: Mapping[str, Any]) -> dict[str, Any]:
-        """保存作者状态线供支线和质量审查使用，不把规划字段塞进 Runtime Session。"""
+        """Store author state arcs for branching and quality assessment without inserting planning fields into Runtime Sessions."""
 
         return {
             "stages": [
@@ -2306,7 +2302,7 @@ class NumericV2Generator(ModelAgent):
 
     @staticmethod
     def _relationship_role_overlay(stage: Mapping[str, Any], *, player_name: str = "男主") -> str:
-        """只把首幕已经成立的结构化关系边界写入角色投影。"""
+        """Project only structured relationship boundaries already established in the opening scene."""
 
         ceiling = _RELATIONSHIP_STAGE_LABELS[str(stage["stage_ceiling"])]
         address = _RELATIONSHIP_ADDRESS_LABELS[str(stage["address_state"])]
@@ -2322,7 +2318,7 @@ class NumericV2Generator(ModelAgent):
         catgirl_situation: Any,
         *, player_name: str = "男主",
     ) -> str:
-        """把关系上限和认知边界压入现有场景字段，不扩展 Story Package。"""
+        """Pack relationship ceilings and knowledge boundaries into existing scene fields without extending Story Package."""
 
         ceiling = _RELATIONSHIP_STAGE_LABELS[str(stage["stage_ceiling"])]
         address = _RELATIONSHIP_ADDRESS_LABELS[str(stage["address_state"])]
@@ -2346,7 +2342,7 @@ class NumericV2Generator(ModelAgent):
         stage: Mapping[str, Any],
         existing_context: Any,
     ) -> str:
-        """把三方入幕状态压入现有场景字段，让 Actor 不必从摘要猜主体。"""
+        """Pack the three parties' entrance states into existing scene fields so the Actor need not infer subjects from summaries."""
 
         state_context = NumericV2Generator._join_profile_parts(
             str(stage.get("catgirl_state") or "").strip(),
@@ -2362,7 +2358,7 @@ class NumericV2Generator(ModelAgent):
 
     @staticmethod
     def _project_chapter_goals(node_id: str, chapter: Mapping[str, Any]) -> list[dict[str, Any]]:
-        """把作者模型的显式职责投影为稳定合同，不分析目标自然语言。"""
+        """Project explicit author-model responsibilities into stable contracts without parsing natural-language goals."""
 
         projected: list[dict[str, Any]] = []
         for index, goal in enumerate(_chapter_ordered_goals(chapter)):
@@ -2404,7 +2400,7 @@ class NumericV2Generator(ModelAgent):
 
     @staticmethod
     def _transition_reason(exit_plan: Mapping[str, Any], *, catgirl_name: str = "女主") -> str:
-        """把作者侧的因果计划投影成 Actor 已有的转场方向，不规定具体台词。"""
+        """Project author causal plans into the Actor's existing transition direction without prescribing exact dialogue."""
 
         def clean(value: Any) -> str:
             return str(value or "").strip().rstrip("。；; ")
@@ -2424,7 +2420,7 @@ class NumericV2Generator(ModelAgent):
 
     @staticmethod
     def _project_key_props(value: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-        """把首次生成使用的章节序号转换成编辑期稳定节点引用。"""
+        """Convert initial-generation chapter numbers into stable editing-time node references."""
 
         projected: list[dict[str, Any]] = []
         for raw_prop in value:
@@ -2448,7 +2444,7 @@ class NumericV2Generator(ModelAgent):
         chapter_index: int,
         include_planned_state: bool = True,
     ) -> list[str]:
-        """区分固定道具资料与规划的出幕状态；本章变化不等于本章入幕事实。"""
+        """Distinguish fixed prop information from planned exit states; chapter changes are not chapter entrance facts."""
 
         props_by_id = {
             str(prop.get("id") or "").strip(): prop

@@ -1,4 +1,4 @@
-"""Numeric v2 终点先行支线的确定性作者侧合同。"""
+"""Deterministic author contract for ending-first Numeric v2 branches."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ _PLACEHOLDER_BAND_LABELS = {
     "current",
 }
 class NumericV2BranchError(ValueError):
-    """支线来源、终点、草稿或模型结果不满足确定性合同。"""
+    """A branch source, ending, draft or model result failed the deterministic contract."""
 
     def __init__(self, code: str, details: Mapping[str, Any] | None = None):
         super().__init__(code)
@@ -78,7 +78,7 @@ def _canonical(value: Any) -> str:
 
 
 def _estimate_tokens(value: Any) -> int:
-    """中文按一字符一 token 保守估算；调用前仍需使用实际模型能力复核。"""
+    """Estimate Chinese conservatively at one token per character; still check actual model capacity before calling it."""
 
     return len(_canonical(value))
 
@@ -106,7 +106,7 @@ def condition_and_complement(
     metric: Mapping[str, Any],
     band: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """按初始值到目标 band 的方向生成累计条件及严格整数补集。"""
+    """Generate cumulative conditions toward the target band from initial values, with strict integer complements."""
 
     minimum = int(metric["min"])
     maximum = int(metric["max"])
@@ -139,7 +139,7 @@ def condition_and_complement(
 
 
 class NumericV2BranchService:
-    """只做候选、上下文、模型结果校验和原子应用前的 Story 构造。"""
+    """Validate candidates, context and model results, and construct Story data before atomic application."""
 
     def __init__(self, id_factory: Callable[[], str] | None = None):
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex[:10])
@@ -730,7 +730,7 @@ class NumericV2BranchService:
         metric: Mapping[str, Any],
         band: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """按每条可达入口路线独立估算数值支线，并产出作者侧诊断。"""
+        """Estimate metric branches independently for each reachable entrance route and produce author diagnostics."""
 
         entry = self._entry_scenarios(project, source_node_id, metric_id)
         if entry["unknown_reasons"]:
@@ -819,7 +819,7 @@ class NumericV2BranchService:
         band: Mapping[str, Any],
         current_value: int,
     ) -> int:
-        """按每轮约 2 点估算进入 band；限幅低于 2 时使用实际限幅。"""
+        """Estimate band entry at about two points per turn, using the actual cap when below two."""
 
         band_min = int(band["min"])
         band_max = int(band["max"])
@@ -842,7 +842,7 @@ class NumericV2BranchService:
         source_node_id: str,
         metric_id: str,
     ) -> dict[str, Any]:
-        """枚举到来源幕的前序路线，保留每条路线的条件代表值。"""
+        """Enumerate upstream routes to the source scene, preserving representative condition values for each route."""
 
         story = self._story(project)
         nodes = _nodes(story)
@@ -905,7 +905,7 @@ class NumericV2BranchService:
         metric_id: str,
         current_value: int,
     ) -> list[int] | None:
-        """把 all/any 的 metric_compare 条件投影为可解释的代表入口值。"""
+        """Project all/any metric_compare conditions into interpretable representative entrance values."""
 
         if not isinstance(conditions, Mapping):
             return None if conditions not in (None, {}) else [current_value]
@@ -982,7 +982,7 @@ class NumericV2BranchService:
 
     @staticmethod
     def _public_pacing_diagnostic(diagnostic: Mapping[str, Any]) -> dict[str, Any]:
-        """隐藏数值阈值，只向作者显示路线来源、状态和回合估算。"""
+        """Hide metric thresholds and show authors only route provenance, state and turn estimates."""
 
         diagnostic = diagnostic.get("pacing_diagnostic") or diagnostic
         return {
@@ -1004,7 +1004,7 @@ class NumericV2BranchService:
         band_label: str,
         metric_id: str,
     ) -> str:
-        """让作者看到累计方向，避免把中段条件误解为只能停在该区间。"""
+        """Show cumulative direction so authors do not mistake intermediate bands for a requirement to remain within the interval."""
 
         metric_name = metric.get("name") or metric_id
         if int(band["min"]) > initial:
@@ -1020,7 +1020,7 @@ class NumericV2BranchService:
         project: Mapping[str, Any],
         source_node_id: str,
     ) -> dict[str, int] | None:
-        """计算走到来源幕时已经拥有的剧情幕数和理论回合预算。"""
+        """Count story scenes and theoretical turn budgets already accumulated at the source scene."""
 
         story = self._story(project)
         nodes = _nodes(story)
@@ -1047,7 +1047,7 @@ class NumericV2BranchService:
         band: Mapping[str, Any],
         pacing: Mapping[str, int] | None,
     ) -> dict[str, Any]:
-        """区分正常节奏可达、仅理论可达和数学上不可达的 band。"""
+        """Distinguish bands reachable at normal pacing, only theoretically reachable, and mathematically unreachable."""
 
         if pacing is None:
             return {"status": "unknown", "scene_count": 0}
@@ -1378,7 +1378,7 @@ class NumericV2BranchService:
         project: Mapping[str, Any],
         source_node_id: str,
     ) -> list[dict[str, Any]]:
-        """只向支线暴露来源节点及其上游已经成立的道具状态。"""
+        """Expose only prop states already established at the branch source and its upstream nodes."""
 
         ancestor_ids = self._upstream_node_ids(project, source_node_id)
 
@@ -1694,7 +1694,7 @@ class NumericV2BranchService:
 
     @staticmethod
     def _pacing_diagnostics(scenes: list[Mapping[str, Any]]) -> dict[str, Any]:
-        """按支线每幕的普通目标数量，提示自然出口和预计展开长度。"""
+        """Suggest natural exits and expected expansion length from each branch scene's ordinary goal count."""
 
         rows: list[dict[str, Any]] = []
         warning_codes: list[str] = []
@@ -1781,7 +1781,7 @@ class NumericV2BranchService:
     def _validate_character_state(
         cls, value: Any, *, path: str, cast_names: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """支线沿用主线状态线合同，禁止在自由文本里省略角色主体。"""
+        """Branches reuse the mainline state-arc contract; free text must not omit character subjects."""
 
         if not isinstance(value, Mapping):
             raise NumericV2BranchError("invalid_branch_generation", {"path": path})
@@ -1909,7 +1909,7 @@ class NumericV2BranchService:
 
     @classmethod
     def _validate_ordered_goals(cls, value: Any, *, path: str) -> list[dict[str, Any]]:
-        """校验支线模型的显式职责，禁止再从自然语言猜 owner 或输出位置。"""
+        """Validate explicit responsibilities from branch models without inferring owner or output location from prose."""
 
         if not isinstance(value, list) or not value or len(value) > 6:
             raise NumericV2BranchError("invalid_branch_generation", {"path": path})

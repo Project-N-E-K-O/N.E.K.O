@@ -1,4 +1,4 @@
-"""复核证据格式与正式输出容量回归；语义准确性另用真实模型对照。"""
+"""Regress review evidence formatting and formal-output capacity; compare semantic accuracy separately with real models."""
 import json
 from dataclasses import replace
 from types import SimpleNamespace

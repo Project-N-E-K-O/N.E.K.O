@@ -9,8 +9,8 @@
 | 当前演绎、模型权限、存档与前端合同 | 本文；模型调用与失败处理集中在第10节 |
 | 问题、原始证据、修复与否决原因 | [实测问题与解决方案](./neko-theater-issues-and-solutions.md)；按问题编号检索 |
 | SDK 目录、宿主、发布与迁移状态 | [工坊 SDK 迁移与接入说明](./neko-theater-workshop-sdk-migration.md) |
-| 程序如何调用工坊 | [SDK 使用说明](../../theater_workshop/README.md) |
-| 创作、评分、证据、修订与原独立工作台 | [InkAI 生成器开发文档](../../../InkAI-/docs/superpowers/specs/2026-08-06-neko-theater-numeric-v2-generator-design.md) |
+| 程序如何调用工坊 | SDK 使用说明（`theater_workshop/README.md`） |
+| 创作、评分、证据、修订与原独立工作台 | InkAI 生成器开发文档（`InkAI-/docs/superpowers/specs/2026-08-06-neko-theater-numeric-v2-generator-design.md`） |
 
 现行合同直接修改对应章节；实验结果只在问题文档完整记录，其他入口保留结论和链接。历史测试数量不是本轮复跑结果，仓库外实验链接仅在原文件仍存在时可作证据。
 
@@ -493,7 +493,7 @@ memory server 对当前猫娘使用 settle lock 串行 recent 与时间索引更
 
 ## 8. 剧本工坊 SDK 与 InkAI 协作边界
 
-本体工坊已位于 `theater_workshop/sdk/`，`host.py` 提供名字、显式模型、作者目录、写栅栏和受保护安装。它与 `services/theater/` 的演绎状态分开，正式包只由本体编译器裁定。接口、锁顺序、完整作者项目导入、发行验收见[SDK 迁移与接入说明](./neko-theater-workshop-sdk-migration.md)，调用示例见[SDK 使用说明](../../theater_workshop/README.md)。
+本体工坊已位于 `theater_workshop/sdk/`，`host.py` 提供名字、显式模型、作者目录、写栅栏和受保护安装。它与 `services/theater/` 的演绎状态分开，正式包只由本体编译器裁定。接口、锁顺序、完整作者项目导入、发行验收见[SDK 迁移与接入说明](./neko-theater-workshop-sdk-migration.md)，调用示例见SDK 使用说明（`theater_workshop/README.md`）。
 
 - 创建作者项目并生成初始主线与一个 Normal 结局；支线、多个结局、评分与修订由调用方分别发起。
 - 作者项目写入 `<app_docs_dir>/theater/workshop/projects/`，安装产物写入 `theater/numeric_v2/packages/`；生成不自动发布。

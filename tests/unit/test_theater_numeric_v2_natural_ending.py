@@ -1,4 +1,4 @@
-"""自然结局只影响明确就绪的终局，旧记录、普通幕及失败事务仍保持原语义。"""
+"""Natural ending affects only explicitly ready final nodes; legacy records, ordinary scenes and failed transactions retain their semantics."""
 from copy import deepcopy
 from dataclasses import replace
 import json
@@ -122,7 +122,7 @@ def test_natural_ending_actor_receives_authorization_without_fake_acceptance():
 @pytest.mark.asyncio
 @pytest.mark.parametrize('suggestions', [[], ['下次再一起做一个吧。']])
 async def test_terminal_actor_never_fills_unusable_followup_choices(monkeypatch, suggestions):
-    """已结束 Session 不需要补按钮，模型误附的新邀约也不能进入可见候选。"""
+    """Ended Sessions need no suggestion refill, and mistakenly generated new invitations must stay out of visible choices."""
     from services.theater.numeric_v2_actor import NumericV2Actor
 
     engine = _engine()

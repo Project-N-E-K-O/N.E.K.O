@@ -1,4 +1,4 @@
-"""转场演员要获得来源互动的完整方向，不能只凭章节标题猜角色回应。"""
+"""Give the transition Actor the complete source-interaction direction rather than making it infer reactions from chapter titles."""
 
 import json
 

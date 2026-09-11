@@ -1,4 +1,4 @@
-"""建议范围、共享修法和实际修改边界；与自然语言语义压测分开验证。"""
+"""Verify suggestion scope, shared repair plans and actual modification boundaries separately from natural-language semantic stress tests."""
 from copy import deepcopy
 import json
 import pytest

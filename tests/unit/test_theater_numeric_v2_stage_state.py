@@ -1,4 +1,4 @@
-"""阶段边界、已公开去向和最新状态必须同时进入真实消费者；语义另做模型重放。"""
+"""Deliver stage boundaries, public destinations and latest state to real consumers together; replay model semantics separately."""
 
 import json
 
@@ -46,7 +46,7 @@ def test_acceptance_still_checks_actual_exit_in_evaluator_contract():
 
 
 def test_player_fact_rule_reaches_all_suggestion_generation_paths():
-    """推荐主调用、换幕、开场和补全均不能为填写资料而编造玩家姓名与特长。"""
+    """Main suggestions, transitions, openings and refills must not invent player names or abilities to complete personal information."""
     engine = _engine()
     session = engine.create_session(session_id='suggestion_facts', catgirl_binding=_binding(),
         opening_performance=_opening())

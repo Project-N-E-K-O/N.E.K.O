@@ -1,4 +1,4 @@
-"""事实证据及两阶段评分的保存前边界；不以伪造模型测试代替语义压测。"""
+"""Verify pre-save boundaries for factual evidence and two-stage assessment; mocked models do not replace semantic stress tests."""
 from copy import deepcopy
 import json
 import pytest

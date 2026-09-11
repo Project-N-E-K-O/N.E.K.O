@@ -1,4 +1,4 @@
-"""验证小剧场工作流的状态合并和降级边界。"""
+"""Verify state merging and fallback boundaries in the theater workflow."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 @pytest.mark.asyncio
 async def test_scoped_opening_is_reviewed_and_rewritten_before_session(monkeypatch) -> None:
-    """开场临时边界失败时只改写一次，通过前不能创建正式 Session。"""
+    """Rewrite failed temporary opening boundaries only once and do not create a formal Session before approval."""
 
     story = numeric_v2_story()
     story["nodes"][0]["story_beat"]["opening_only_boundaries"] = [
@@ -81,7 +81,7 @@ async def test_scoped_opening_is_reviewed_and_rewritten_before_session(monkeypat
 
 @pytest.mark.asyncio
 async def test_scoped_opening_drops_only_unsafe_suggestions(monkeypatch) -> None:
-    """开场正文安全但推荐越过作者边界时保留正文并去掉按钮。"""
+    """Retain safe opening prose and remove suggestions that exceed author boundaries."""
 
     story = numeric_v2_story()
     story["nodes"][0]["story_beat"]["opening_only_boundaries"] = [
@@ -133,7 +133,7 @@ async def test_scoped_opening_drops_only_unsafe_suggestions(monkeypatch) -> None
 
 @pytest.mark.asyncio
 async def test_unscoped_opening_skips_semantic_review(monkeypatch) -> None:
-    """旧包未声明开场临时边界时维持原调用成本和启动行为。"""
+    """Legacy packages without temporary opening boundaries retain their call cost and startup behavior."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     review_calls = 0
@@ -166,7 +166,7 @@ async def test_unscoped_opening_skips_semantic_review(monkeypatch) -> None:
 
 
 def test_transition_boundary_repair_receives_bridge_and_target_opening() -> None:
-    """边界改写必须知道作者桥段和下一幕开场，但只把它们当作停止边界。"""
+    """Boundary rewrites receive the author bridge and next opening only as stopping boundaries."""
 
     engine = SimpleNamespace(
         nodes={
@@ -197,7 +197,7 @@ def test_transition_boundary_repair_receives_bridge_and_target_opening() -> None
 
 
 def test_transition_boundary_retry_receives_specific_failure_reason() -> None:
-    """边界改写应携带具体冲突，同时明确它不是可新增的剧情事实。"""
+    """Carry the specific conflict into boundary rewrites while making clear it is not a new story fact."""
 
     context = _transition_review_failure_context(
         NumericV2TransitionOfferReview(
@@ -217,7 +217,7 @@ def test_transition_boundary_retry_receives_specific_failure_reason() -> None:
 
 
 def test_transition_boundary_repair_uses_same_legacy_opening_as_playback() -> None:
-    """旧包省略开场字段时，改写仍须知道实际播放的摘要首句边界。"""
+    """When legacy packages omit the opening field, rewrites still need the actual played summary-first-sentence boundary."""
 
     engine = SimpleNamespace(
         nodes={"current": {"story_beat": {"summary": "来源阶段。"}},
@@ -233,7 +233,7 @@ def test_transition_boundary_repair_uses_same_legacy_opening_as_playback() -> No
 
 
 def test_boundary_repair_uses_updated_route_and_preserves_its_proposal() -> None:
-    """同轮数值越过分支门槛后，修复上下文须与演员及复核看到同一路线。"""
+    """After same-turn metrics cross a branch threshold, correction context must match the route seen by the Actor and reviewer."""
     engine = SimpleNamespace(
         nodes={"current": {"story_beat": {"summary": "眼前交流已完成。"}},
                "low": {"story_beat": {"opening_scene": "次日回接待室。"}},
@@ -251,7 +251,7 @@ def test_boundary_repair_uses_updated_route_and_preserves_its_proposal() -> None
 
 
 def test_unsafe_suggestion_drop_preserves_all_visible_body_fields() -> None:
-    """按钮定点删除不能顺带删改正文、场景更新或提议标记。"""
+    """Targeted suggestion removal must not alter body text, scene updates or offer flags."""
 
     candidate = {
         "performance": "（望向门边）我们还在屋内。",
@@ -267,7 +267,7 @@ def test_unsafe_suggestion_drop_preserves_all_visible_body_fields() -> None:
 
 
 def test_invalid_unsafe_suggestion_index_drops_buttons_without_touching_body() -> None:
-    """无法定位坏按钮时清空按钮，不把索引错误当成正文安全证据或另开复核。"""
+    """If unsafe buttons cannot be located, clear suggestions without treating invalid indices as body-safety evidence or starting another review."""
 
     candidate = {
         "performance": "（指向门口）我们去阅览室，好吗？",
@@ -283,7 +283,7 @@ def test_invalid_unsafe_suggestion_index_drops_buttons_without_touching_body() -
 
 
 def test_actor_rewrite_candidate_context_marks_rejected_output_as_uncommitted() -> None:
-    """唯一一次边界改写必须看到待编辑原文，但不能把它写进剧情事实。"""
+    """The sole boundary rewrite must see the original text to edit without promoting it to story facts."""
 
     context = _actor_rewrite_candidate_context({
         "performance": "（抬眼）这是尚未获准公开的信息。",
@@ -299,7 +299,7 @@ def test_actor_rewrite_candidate_context_marks_rejected_output_as_uncommitted() 
 
 @pytest.mark.asyncio
 async def test_actor_output_retry_changes_hint_for_each_attempt() -> None:
-    """重复正文连续失败时，每次重试都必须收到不同的改写角度。"""
+    """Give each retry a different rewriting angle after repeated body failures."""
 
     class RetryActor:
         def __init__(self) -> None:
@@ -331,7 +331,7 @@ async def test_actor_output_retry_changes_hint_for_each_attempt() -> None:
 
 @pytest.mark.asyncio
 async def test_actor_output_retry_preserves_required_boundary_rewrite() -> None:
-    """边界改写稿格式失败后，后续重试不能丢掉原始边界要求。"""
+    """A format failure in a boundary rewrite must not make later retries lose the original boundary requirements."""
 
     class RetryActor:
         def __init__(self) -> None:

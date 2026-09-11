@@ -1,4 +1,4 @@
-"""在真实胶囊中验证来源旁白的播放顺序、TTS 索引与刷新恢复。"""
+"""Verify source narration order, TTS indices and refresh recovery in the real capsule."""
 
 import json
 

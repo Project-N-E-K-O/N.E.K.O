@@ -130,7 +130,7 @@ def _output_retry_hint(
     retry_number: int,
     route_changed: bool,
 ) -> str:
-    """为每一次正文重试提供不同的改写角度，避免模型沿用同一采样路径。"""
+    """Give each body retry a distinct rewriting angle to avoid repeating the same sampling path."""
 
     if route_changed:
         # 重试承接真实授权，兼容接受、主动前往与自然结束，不虚构邀请。

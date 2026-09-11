@@ -46,6 +46,7 @@ class NekoWorkshopModel:
             set_dialog_slop_lang, reset_dialog_slop_lang,
             _anthropic_usage_with_openai_aliases,
         )
+        from utils.tokenize import count_tokens
 
         if max_retries != 1:
             raise WorkshopError("workshop_attempt_budget_invalid")
@@ -60,6 +61,13 @@ class NekoWorkshopModel:
         if not str(settings.get("api_key") or "").strip():
             return LLMCallFailure("model_auth_failed", error_code="model_auth_failed",
                                   exception_type="MissingWorkshopCredential")
+        input_max_tokens = settings.get("max_input_tokens")
+        if type(input_max_tokens) is not int or input_max_tokens <= 0:
+            raise WorkshopError("workshop_model_input_budget_required")
+        # Count the complete messages, including role/JSON overhead. The caller
+        # chooses the cap for its provider; never trim author facts to make it fit.
+        if count_tokens(json.dumps(messages, ensure_ascii=False)) > input_max_tokens:
+            raise WorkshopError("workshop_model_input_budget_exceeded")
         client = None
         # asyncio.to_thread copies the caller's context. Author prompts must not
         # inherit normal-chat name substitution or style filtering.
@@ -72,7 +80,7 @@ class NekoWorkshopModel:
                 max_completion_tokens=max_tokens)
             # User-selected providers use the host's token/thinking/temperature
             # policy; preserve the operation budget and do not add retries.
-            response = client.invoke(messages, response_format=response_format)
+            response = client.invoke(messages, response_format=response_format)  # noqa: LLM_INPUT_BUDGET # Complete messages are counted and rejected above against the caller's max_input_tokens.
             usage = (response.response_metadata or {}).get("token_usage") or None
             if usage and "input_tokens" in usage and "prompt_tokens" not in usage:
                 usage = _anthropic_usage_with_openai_aliases(usage)

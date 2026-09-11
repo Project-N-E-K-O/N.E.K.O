@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def numeric_v2_story() -> dict:
-    """构造一个供 NEKO_Numeric_drama 项目与 API 测试复用的最小合法包。"""
+    """Build a minimal valid package shared by NEKO_Numeric_drama project and API tests."""
 
     def beat(summary: str, goal: str) -> dict:
         return {

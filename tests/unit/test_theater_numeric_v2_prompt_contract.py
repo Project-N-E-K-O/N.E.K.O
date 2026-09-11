@@ -1,4 +1,4 @@
-"""验证普通 Numeric v2 Actor 使用六块上下文，而不是旧的内部状态树。"""
+"""Verify the ordinary Numeric v2 Actor uses six context blocks rather than the obsolete internal state tree."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from tests.unit.test_theater_numeric_v2_contract import numeric_v2_1_story, nume
 
 
 def _session(engine: NumericV2Engine):
-    """构造当前 v2.2 Prompt 合同使用的最小 Session。"""
+    """Build a minimal Session for the current v2.2 prompt contract."""
 
     return engine.create_session(
         session_id="prompt_contract",
@@ -46,7 +46,7 @@ def _session(engine: NumericV2Engine):
 
 
 def _payload(messages):
-    """读取 Human Prompt 中的六块 JSON，避免测试依赖消息对象的具体实现。"""
+    """Read the Human prompt's six-block JSON without depending on the message object's implementation."""
 
     return json.loads(messages[1].content.split("：\n", 1)[1])
 
@@ -118,7 +118,7 @@ def test_numeric_v2_turn_prompt_uses_six_blocks_in_fixed_order():
 
 
 def test_numeric_v2_prompts_do_not_embed_story_specific_playbooks():
-    """运行时 Prompt 只保留通用语义，不能累积历史剧本的专用操作清单。"""
+    """Keep runtime prompts generic instead of accumulating script-specific action lists from historical stories."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
@@ -190,7 +190,7 @@ def test_numeric_v2_prompts_do_not_embed_story_specific_playbooks():
 
 
 def test_numeric_v2_opening_suggestions_only_use_visible_opening_facts():
-    """首轮按钮不能给玩家注入开场没有建立的地点、身份或状态。"""
+    """Initial suggestions must not assign the player locations, identities or states absent from the opening."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     messages = numeric_v2_actor._opening_messages(
@@ -206,7 +206,7 @@ def test_numeric_v2_opening_suggestions_only_use_visible_opening_facts():
 
 
 def test_numeric_v2_prompts_separate_direct_stage_attempt_from_its_result():
-    """新时空或明确禁令保留结果边界；同地已做动作不因分幕被否认。"""
+    """Preserve result boundaries for new settings or explicit prohibitions; scene splitting must not deny actions already completed in the same place."""
 
     actor_prompt = numeric_v2_actor._system_prompt(
         catgirl_name="测试猫娘",
@@ -235,7 +235,7 @@ def test_numeric_v2_prompts_separate_direct_stage_attempt_from_its_result():
 
 
 def test_numeric_v2_prompts_reject_assumed_new_stage_without_story_playbook():
-    """新地点或时段不能由自由输入补成事实，复核仍须识别偏航提议。"""
+    """Free input cannot establish a new place or time as fact; review must still detect invitations that depart from the plan."""
 
     actor_prompt = numeric_v2_actor._system_prompt(
         catgirl_name="测试猫娘",
@@ -263,7 +263,7 @@ def test_numeric_v2_prompts_reject_assumed_new_stage_without_story_playbook():
 
 
 def test_numeric_v2_prompts_match_boundaries_by_actor_object_action_and_stage():
-    """复核不能用相似动词混淆玩家动作、角色动作和不同对象。"""
+    """Similar verbs must not conflate player actions, character actions or distinct objects during review."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     actor_prompt = numeric_v2_actor._system_prompt(
@@ -290,7 +290,7 @@ def test_numeric_v2_prompts_match_boundaries_by_actor_object_action_and_stage():
 
 
 def test_numeric_v2_prompts_do_not_treat_last_source_action_as_transition():
-    """本幕最后一个前置动作完成后，仍需公开提出真正的阶段跨越。"""
+    """Finishing the scene's final prerequisite still requires publicly proposing the actual next stage."""
 
     actor_prompt = numeric_v2_actor._system_prompt(
         catgirl_name="测试猫娘",
@@ -317,7 +317,7 @@ def test_numeric_v2_prompts_do_not_treat_last_source_action_as_transition():
 
 
 def test_numeric_v2_prompts_keep_prerequisites_and_future_offers_in_separate_fields():
-    """作者前提约束 Actor；未来提议不能被复核器误判为已播放结果。"""
+    """Author premises constrain the Actor; review must not mistake future proposals for results already played."""
 
     actor_prompt = numeric_v2_actor._system_prompt(
         catgirl_name="测试猫娘",
@@ -355,7 +355,7 @@ def test_numeric_v2_prompts_keep_prerequisites_and_future_offers_in_separate_fie
 
 
 def test_numeric_v2_actor_finishes_low_risk_micro_action_instead_of_stalling():
-    """低风险微调不能被拆成连续的等价等待回合。"""
+    """Do not split low-risk adjustments into repeated equivalent waiting turns."""
 
     actor_prompt = numeric_v2_actor._system_prompt(
         catgirl_name="测试猫娘",
@@ -369,7 +369,7 @@ def test_numeric_v2_actor_finishes_low_risk_micro_action_instead_of_stalling():
 
 
 def test_numeric_v2_prompts_preserve_entity_ownership_across_the_turn():
-    """玩家刚改变实体状态时，Actor 不能同时把同一实体交给另一主体。"""
+    """After the player changes an entity's state, the Actor must not simultaneously assign that entity to another holder."""
 
     actor_prompt = numeric_v2_actor._system_prompt(
         catgirl_name="测试猫娘",
@@ -392,7 +392,7 @@ def test_numeric_v2_prompts_preserve_entity_ownership_across_the_turn():
 
 
 def test_numeric_v2_actor_uses_ephemeral_interaction_intent_in_pacing():
-    """交互意图只进入本轮节奏提示，不增加 Prompt 块或 Runtime 状态。"""
+    """Interaction intent affects only this turn's pacing hint, without new prompt blocks or Runtime state."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
@@ -472,7 +472,7 @@ def test_numeric_v2_actor_uses_ephemeral_interaction_intent_in_pacing():
 
 @pytest.mark.parametrize("suggestions_only", [False, True])
 def test_numeric_v2_suggestion_prompts_preserve_current_action_roles(suggestions_only):
-    """普通推荐与轻量补全都不能把猫娘的职责和持物套给玩家。"""
+    """Neither ordinary suggestions nor lightweight refill may assign the catgirl's duties or possessions to the player."""
 
     if suggestions_only:
         messages = numeric_v2_actor._suggestion_fill_messages(
@@ -501,7 +501,7 @@ def test_numeric_v2_suggestion_prompts_preserve_current_action_roles(suggestions
 
 
 def test_numeric_v2_retry_places_correction_last_without_progress_pressure():
-    """普通修稿以纠错收尾，保留六块及轮数，但不再同时要求交付或收束。"""
+    """Ordinary rewrites focus on correction, retaining six blocks and attempt limits without also demanding delivery or closure."""
 
     story = numeric_v2_story()
     story["nodes"][0]["route_gates"] = [story["nodes"][0]["route_gates"][1]]
@@ -540,7 +540,7 @@ def test_numeric_v2_retry_places_correction_last_without_progress_pressure():
 
 
 def test_numeric_v2_actor_turns_natural_closure_into_offer_without_auto_advance():
-    """自然收束只要求公开提议，不能把 scene_complete 当作自动换幕授权。"""
+    """Natural closure requires a public proposal; scene_complete is not automatic transition authorization."""
 
     story = numeric_v2_story()
     story["nodes"][0]["route_gates"] = [story["nodes"][0]["route_gates"][1]]
@@ -579,7 +579,7 @@ def test_numeric_v2_actor_turns_natural_closure_into_offer_without_auto_advance(
 
 
 def test_numeric_v2_transition_suggestion_fill_drops_consumed_source_input():
-    """正式换幕后缺失推荐时只看目标开场，不能被已消费的旧幕输入拉回去。"""
+    """Refill missing suggestions after formal transition from the target opening alone, without reviving consumed source-scene input."""
 
     messages = numeric_v2_actor._suggestion_fill_messages(
         catgirl_name="测试猫娘",
@@ -625,7 +625,7 @@ def test_numeric_v2_repeated_long_clause_is_rejected_without_fuzzy_semantics():
 
 @pytest.mark.asyncio
 async def test_numeric_v2_actor_accepts_safe_chat_repeat_on_final_retry(monkeypatch):
-    """只有玩家自己重复原输入时才允许纯闲聊使用安全短确认。"""
+    """Allow a safe short chat-only acknowledgment only when the player repeats the original input."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = replace(
@@ -769,7 +769,7 @@ def test_numeric_v2_turn_prompt_keeps_hard_boundaries_without_allowed_checklist(
 
 
 def test_numeric_v2_turn_prompt_distinguishes_entry_state_from_committed_changes():
-    """作者入幕快照不能覆盖已发生变化，持续身份、能力和硬边界仍须保留。"""
+    """Author entrance snapshots must not overwrite actual changes; persistent identity, abilities and hard boundaries remain."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     beat = engine.nodes["start"]["story_beat"]
@@ -833,7 +833,7 @@ def test_numeric_v2_turn_prompt_distinguishes_entry_state_from_committed_changes
 
 
 def test_numeric_v2_opening_only_boundary_expires_after_public_opening():
-    """开场临时边界只进入开场和正式换场开场，不污染后续普通回合。"""
+    """Temporary opening boundaries apply only to openings and formal target openings, not later ordinary turns."""
 
     story = numeric_v2_story()
     beat = story["nodes"][0]["story_beat"]
@@ -1014,7 +1014,7 @@ def test_numeric_v2_turn_prompt_keeps_real_current_scene_history():
 
 
 def test_numeric_v2_first_turn_after_transition_keeps_only_short_source_tail():
-    """新幕首回合只承接旧幕末尾的可见余波，不恢复旧输入或旧任务。"""
+    """The new scene's first turn carries only the previous scene's visible aftermath, without restoring old input or tasks."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     transition_record = {
@@ -1072,7 +1072,7 @@ def test_numeric_v2_first_turn_after_transition_keeps_only_short_source_tail():
 
 
 def test_numeric_v2_previous_scene_tail_disappears_after_first_current_scene_turn():
-    """新幕已经产生普通回合后，旧幕尾声不再重复注入 Prompt。"""
+    """Stop injecting the previous scene's tail after the new scene has an ordinary turn."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = replace(
@@ -1134,7 +1134,7 @@ def test_numeric_v2_previous_scene_tail_disappears_after_first_current_scene_tur
 
 
 def test_numeric_v2_turn_prompt_separates_opening_facts_from_scene_direction():
-    """普通回合保留完整方向，但明确它不是事实或逐项任务。"""
+    """Ordinary turns receive the full direction explicitly as guidance, not facts or a task checklist."""
 
     story = numeric_v2_story()
     story["nodes"][0]["story_beat"]["summary"] = (
@@ -1196,7 +1196,7 @@ def test_numeric_v2_turn_prompt_keeps_ineligible_next_scene_unknown():
 
 
 def test_numeric_v2_turn_prompt_only_exposes_next_scene_direction():
-    """普通回合只收到下一幕方向，不能提前读取下一幕完整摘要。"""
+    """Ordinary turns receive only the next scene's direction, not its complete summary in advance."""
 
     next_scene = numeric_v2_actor._next_scene_summary_text({
         "status": "after_acceptance_only",
@@ -1214,7 +1214,7 @@ def test_numeric_v2_turn_prompt_only_exposes_next_scene_direction():
 
 @pytest.mark.parametrize("changed_field", ["reason", "bridge_scene_narration", "must_deliver"])
 def test_same_target_different_contracts_preview_uses_eligible_route(changed_field):
-    """同目标不同合同也按条件选取，不依赖列表顺序，预览不改动引擎。"""
+    """Select different contracts for the same target by condition rather than list order; previews must not mutate the engine."""
 
     from copy import deepcopy
 
@@ -1262,7 +1262,7 @@ def test_actor_receives_actual_entry_movement_without_target_plot():
 
 @pytest.mark.parametrize("trust,route_index", [(20, 1), (80, 0)])
 def test_preview_does_not_lock_runtime_selection_after_acceptance(trust, route_index):
-    """邀请预览与接受时可走不同路线：预览无写入，接受仍按新数值选路。"""
+    """Offer preview and acceptance may choose different routes; previews do not write state and acceptance uses updated metrics."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     source = engine.nodes["start"]
@@ -1281,7 +1281,7 @@ def test_preview_does_not_lock_runtime_selection_after_acceptance(trust, route_i
 
 @pytest.mark.parametrize("trust", [20, 80])
 def test_multiroute_completed_scene_gets_current_direction_and_closure(trust):
-    """Actor 与同轮 Guard 共用变化后数值；完成信号不再因出口数量被丢弃。"""
+    """The Actor and same-turn Guard share updated metrics; exit count no longer discards completion signals."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = replace(_session(engine), metrics={"trust": 100 - trust})
@@ -1297,7 +1297,7 @@ def test_multiroute_completed_scene_gets_current_direction_and_closure(trust):
 
 
 def test_guard_current_opening_is_not_the_whole_legacy_scene_summary():
-    """开场与整幕方向分别投影，不把摘要后续事件误当作已播放开场。"""
+    """Project the opening separately from whole-scene direction so later summary events do not become an already played opening."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     engine.nodes["start"]["story_beat"]["summary"] = "猫娘站在门边。随后才解释旧信。"
@@ -1315,7 +1315,7 @@ def test_guard_current_opening_is_not_the_whole_legacy_scene_summary():
     (None, "", "她在门边等待。"),
 ])
 def test_actor_and_guard_share_actual_opening_fallback(opening, summary, expected):
-    """正文播放与复核必须读取同一开场，不能把整幕摘要当成开场。"""
+    """Playback and review must read the same opening rather than treating the whole-scene summary as opening facts."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     beat = engine.nodes["ending_leave"]["story_beat"]
@@ -1336,7 +1336,7 @@ def test_actor_and_guard_share_actual_opening_fallback(opening, summary, expecte
 
 
 def test_numeric_v2_turn_prompt_allows_same_place_ending_closure():
-    """结局节点即使不改变地点，也要给 Actor 一个可执行的收束方向。"""
+    """Give the Actor an actionable closure direction for ending nodes even without a change of location."""
 
     story = numeric_v2_story()
     # 只保留一个结局出口，使普通回合能够确定这是结局收束而非未决分支。
@@ -1374,7 +1374,7 @@ def test_numeric_v2_turn_prompt_allows_same_place_ending_closure():
 
 
 def test_numeric_v2_prompts_share_a_non_task_narrative_focus():
-    """Actor 与 Evaluator 都能看到同一条叙事重心，但不产生目标字段。"""
+    """Expose the same narrative focus to the Actor and Evaluator without producing goal fields."""
 
     story = numeric_v2_story()
     story["nodes"][0]["story_beat"]["narrative_focus"] = "先听完她对旧信的解释。"
@@ -1408,7 +1408,7 @@ def test_numeric_v2_prompts_share_a_non_task_narrative_focus():
 
 
 def test_numeric_v2_legacy_focus_prefers_scene_direction_over_opening():
-    """旧剧本没有显式重心时，应避免每回合重复把开场画面当作创作重点。"""
+    """For legacy stories without explicit focus, avoid repeatedly making the opening image the creative focus of every turn."""
 
     beat = {
         "opening_scene": "门边的旧灯正在闪烁，桌上放着一枚未开启的徽章。",
@@ -1420,7 +1420,7 @@ def test_numeric_v2_legacy_focus_prefers_scene_direction_over_opening():
 
 
 def test_numeric_v2_pending_transition_is_highlighted_for_recommendations():
-    """待确认转场的具体正文应从长历史中单独投影，避免推荐只看到布尔状态。"""
+    """Project the concrete pending offer separately from long history so suggestions can see more than a boolean."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = replace(
@@ -1494,7 +1494,7 @@ def test_numeric_v2_simple_prompt_packing_drops_oldest_complete_history():
 
 
 def test_numeric_v2_scene_fact_index_keeps_early_committed_progress() -> None:
-    """长幕完整历史被裁剪后，早期已经完成的玩家行动仍须作为可见事实保留。"""
+    """Preserve earlier completed player actions as visible facts when trimming a long scene's full history."""
 
     session = type("Session", (), {
         "current_node_id": "medical",
@@ -1526,7 +1526,7 @@ def test_numeric_v2_scene_fact_index_keeps_early_committed_progress() -> None:
 def test_numeric_v2_turn_only_builds_fact_index_after_history_preselection(
     monkeypatch, trim_history,
 ):
-    """完整历史只出现一次；预选窗口删掉旧记录后才计算连续性摘录。"""
+    """Include full history only once; compute continuity excerpts after the selected window removes old records."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     records = tuple({
@@ -1566,7 +1566,7 @@ def test_numeric_v2_turn_only_builds_fact_index_after_history_preselection(
 
 
 def test_numeric_v2_fact_index_is_budgeted_when_final_packing_drops_history():
-    """总预算触发索引后要重新计费，不能溢出或截断最新真实回合。"""
+    """Recount after the total budget triggers indexing; do not overflow or truncate the latest actual turn."""
 
     history = [
         {"revision": 1, "player_input": "很早的对话。" * 150, "performance": "旧回复。"},
@@ -1597,7 +1597,7 @@ def test_numeric_v2_fact_index_is_budgeted_when_final_packing_drops_history():
 
 
 def test_numeric_v2_fact_index_does_not_displace_oversized_latest_turn():
-    """剩余固定内容仍超限时明确失败，不静默截掉玩家最新输入。"""
+    """Fail explicitly if fixed content still exceeds budget instead of silently truncating the player's latest input."""
 
     with pytest.raises(numeric_v2_actor.NumericV2ActorError,
                        match="fixed_context_budget_exceeded"):
@@ -1610,7 +1610,7 @@ def test_numeric_v2_fact_index_does_not_displace_oversized_latest_turn():
 
 @pytest.mark.parametrize("pure_chat", [False, True])
 def test_numeric_v2_rejected_or_chat_turn_has_no_competing_closure_instruction(pure_chat):
-    """自然收束和超期不能覆盖拒绝或闲聊；旧提议也不能把闲聊推荐变成接受按钮。"""
+    """Natural closure and pacing overruns must not override refusal or chat; an old offer cannot turn chat suggestions into acceptance buttons."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     # 单出口保证不是因为路线未决而跳过自然收束提示。
@@ -1637,7 +1637,7 @@ def test_numeric_v2_rejected_or_chat_turn_has_no_competing_closure_instruction(p
 
 
 def test_numeric_v2_next_scene_projection_excludes_future_story_fields():
-    """中间投影只携带当前合格出口方向，不携带目标幕正文。"""
+    """Intermediate projections carry only the eligible exit direction, not target-scene prose."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     cast = NumericV2CastProjection.from_story(
@@ -1654,7 +1654,7 @@ def test_numeric_v2_next_scene_projection_excludes_future_story_fields():
 
 
 def test_numeric_v2_simple_prompt_packing_drops_previous_scene_tail_first():
-    """预算紧张时优先舍弃临时旧幕余波，不删除换场事实或当前输入。"""
+    """Under budget pressure, discard temporary previous-scene aftermath before transition facts or current input."""
 
     history = [{
         "revision": 1,
@@ -1819,7 +1819,7 @@ def test_numeric_v2_actor_suggestion_fill_is_limited_to_one_lightweight_call(mon
 
 @pytest.mark.parametrize("player_input", ["", "我先看看门边。"], ids=["opening", "turn"])
 def test_numeric_v2_suggestion_fill_includes_visible_scene_narration(player_input):
-    """普通回合和开场的补推荐都必须看到已播放的环境/NPC 结果。"""
+    """Ordinary and opening suggestion refills must see environment and NPC results already played."""
 
     messages = numeric_v2_actor._suggestion_fill_messages(
         catgirl_name="测试猫娘",
@@ -1839,7 +1839,7 @@ def test_numeric_v2_suggestion_fill_includes_visible_scene_narration(player_inpu
 
 
 def test_numeric_v2_opening_suggestion_fill_only_uses_visible_performance(monkeypatch):
-    """开场轻量补全只承接最终可见正文，不需要完整作者方向。"""
+    """Lightweight opening refill uses the final visible body without requiring complete author direction."""
 
     actor = NumericV2Actor(object())
     calls = []
@@ -1879,7 +1879,7 @@ def test_numeric_v2_opening_suggestion_fill_only_uses_visible_performance(monkey
 
 
 def test_numeric_v2_generate_opening_preserves_valid_base_suggestions(monkeypatch):
-    """开场主调用已有合法按钮时直接保留，不固定追加补全请求。"""
+    """Keep valid opening suggestions from the main call without always adding a refill request."""
 
     actor = NumericV2Actor(object())
     calls = []
@@ -1918,7 +1918,7 @@ def test_numeric_v2_generate_opening_preserves_valid_base_suggestions(monkeypatc
 
 
 def test_numeric_v2_actor_drops_recommendation_that_repeats_current_input():
-    """玩家已经发送的原句不能再次成为下一轮可点击推荐。"""
+    """Do not offer the player's already submitted sentence again as a next-turn clickable suggestion."""
 
     actor = NumericV2Actor(object())
 
@@ -2012,7 +2012,7 @@ def test_numeric_v2_suggestion_fill_boundaries_come_from_authored_scene():
 
 
 def test_numeric_v2_actor_preserves_valid_suggestions_after_transition_offer(monkeypatch):
-    """正文提出转场时保留主调用的合法推荐，不做结构性刷新。"""
+    """Keep valid main-call suggestions when the body proposes a transition; do not structurally refresh them."""
 
     actor = NumericV2Actor(object())
     calls = []
@@ -2076,7 +2076,7 @@ def test_numeric_v2_transition_suggestion_source_uses_final_target_opening_only(
 
 
 def test_numeric_v2_compact_transition_suggestion_source_excludes_source_and_bridge():
-    """兼容紧凑换幕正文时，来源回应和桥段不能混入目标推荐。"""
+    """Compact transition output must not mix source responses or bridge text into target suggestions."""
 
     visible = numeric_v2_actor._suggestion_source_text({
         "source_performance": "（起身）那我们现在离开教室。",
@@ -2088,7 +2088,7 @@ def test_numeric_v2_compact_transition_suggestion_source_excludes_source_and_bri
 
 
 def test_numeric_v2_compact_transition_declares_sendable_suggestion_format():
-    """正式换幕与严格解析器使用同一按钮合同，不能只要求字符串数组再固定补全。"""
+    """Formal transitions and strict parsing share the same suggestion contract, rather than requiring string arrays and always refilling them."""
 
     system = numeric_v2_actor._system_prompt(
         catgirl_name="测试猫娘", player_address="你", phase="transition_compact",
@@ -2200,7 +2200,7 @@ def test_numeric_v2_transition_suggestion_fill_keeps_acceptance_first():
 
 
 def test_numeric_v2_actor_counts_real_provider_requests(monkeypatch):
-    """供应商计数只在真正调用 ainvoke 时增加，供推测成本报告使用。"""
+    """Increase provider-call counts only when ainvoke is actually called, for speculative-cost reporting."""
 
     class FakeClient:
         async def __aenter__(self):
@@ -2365,7 +2365,7 @@ def test_numeric_v2_evaluator_distinguishes_followup_topic_shift_and_action():
 
 
 def test_numeric_v2_evaluator_parses_ephemeral_interaction_intent():
-    """交互意图允许旧输出降级，但拒绝未知分类。"""
+    """Interaction intent supports legacy-output fallback but rejects unknown categories."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
@@ -2492,7 +2492,7 @@ def test_numeric_v2_actor_does_not_force_transition_offer_when_route_is_unresolv
 
 
 def test_numeric_v2_actor_overdue_focus_still_requires_mature_exit():
-    """单出口超期时聚焦当前因果，只有出口成熟后才提出下一步。"""
+    """Past the suggested turn count with one exit, focus current causality and propose the next step only when the exit is ready."""
 
     story = numeric_v2_story()
     story["nodes"][0]["route_gates"] = [story["nodes"][0]["route_gates"][1]]
@@ -2526,7 +2526,7 @@ def test_numeric_v2_actor_overdue_focus_still_requires_mature_exit():
 
 
 def test_numeric_v2_transition_judge_receives_visible_offer_and_scene_context():
-    """转场复核必须看到正文、推荐、当前历史和下一幕方向，而不是只看布尔值。"""
+    """Transition review must see body text, suggestions, current history and next-scene direction, not just booleans."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
@@ -2624,7 +2624,7 @@ def test_numeric_v2_transition_judge_uses_route_reason_and_actual_nonending_entr
 
 
 def test_numeric_v2_transition_judge_receives_positive_author_fact_authority():
-    """边界复核不能只看禁止项而把作者明确授权的角色状态判成虚构。"""
+    """Boundary review must consider authorized character states as well as prohibitions, rather than labeling those states invented."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     beat = engine.nodes["start"]["story_beat"]
@@ -2662,7 +2662,7 @@ def test_numeric_v2_transition_judge_receives_positive_author_fact_authority():
 
 @pytest.mark.parametrize("budget", [None, 1])
 def test_numeric_v2_transition_judge_long_history_preserves_latest_complete_evidence(monkeypatch, budget):
-    """旧索引不能挤空最近完整回合，装箱按整条历史裁剪而非截断最新证据。"""
+    """Old indices must not crowd out recent complete turns; pack by removing whole history items rather than truncating latest evidence."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     engine.nodes["start"]["story_beat"]["must_not_happen"] = ["不得让猫娘替玩家确认去留。"]
@@ -2745,7 +2745,7 @@ def test_numeric_v2_transition_judge_keeps_compact_facts_from_early_scene_turns(
 @pytest.mark.parametrize("fence", ["```json", "```JSON", "```"])
 @pytest.mark.parametrize("body_violations", [[], ["author_boundary", "player_action"]])
 def test_numeric_v2_transition_judge_unwraps_one_complete_json_fence(fence, body_violations):
-    """格式围栏不应丢掉完整安全结论，解包前后使用相同字段校验。"""
+    """Unwrapping a formatting fence must preserve complete safety conclusions and apply the same field validation."""
 
     raw = json.dumps({
         "offer_present": False, "valid": False,
@@ -2767,14 +2767,14 @@ def test_numeric_v2_transition_judge_unwraps_one_complete_json_fence(fence, body
     '```json\n{"offer_present": "false", "valid": false, "body_violations": [], "unsafe_suggestion_indexes": []}\n```',
 ])
 def test_numeric_v2_transition_judge_does_not_extract_or_repair_invalid_json(content):
-    """不从解释文字中捞 JSON，不补闭合符，也不放宽原协议。"""
+    """Do not extract JSON from explanation text, supply missing delimiters or loosen the protocol."""
 
     with pytest.raises(NumericV2EvaluatorOutputError):
         _parse_transition_judge_output(content)
 
 
 def test_numeric_v2_transition_judge_requires_strict_review_fields():
-    """提议使用严格布尔，安全结论从正文枚举和按钮索引分别派生。"""
+    """Require strict offer booleans and derive body and suggestion safety from their separate enums and indices."""
 
     accepted = _parse_transition_judge_output(
         '{"offer_present":true,"valid":true,"body_violations":[],"unsafe_suggestion_indexes":[],"failure_reason":""}'
@@ -2849,7 +2849,7 @@ def test_numeric_v2_transition_judge_requires_strict_review_fields():
     },
 ])
 def test_numeric_v2_transition_judge_rejects_obsolete_safety_protocol(obsolete_fields):
-    """总违规和直接安全布尔均已退役，不能再与当前分工字段形成双重真值。"""
+    """Retired overall-violation and direct-safety flags must not become a second source of truth alongside current fields."""
 
     payload = {
         "offer_present": False,
@@ -2864,7 +2864,7 @@ def test_numeric_v2_transition_judge_rejects_obsolete_safety_protocol(obsolete_f
 
 
 def test_guard_compacts_recent_history_before_discarding_early_operation(monkeypatch):
-    """同样预算下先压缩旧完整回合，早期交接证据与最新完整状态同时保留。"""
+    """Within the same budget, compact older complete turns first while retaining early handoff evidence and the latest complete state."""
 
     ev = numeric_v2_evaluator
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
@@ -2886,7 +2886,7 @@ def test_guard_compacts_recent_history_before_discarding_early_operation(monkeyp
 
 
 def test_guard_marks_truncated_index_and_keeps_short_negation_complete():
-    """原文摘录不能伪装成完整事实；常规长句中的最终拒绝也应得到保留。"""
+    """Do not present excerpts as complete facts; preserve the final refusal in ordinary long sentences."""
 
     ev = numeric_v2_evaluator
     text = "公开日记可以先整理几页、配上星图，再挂到展板上，但这只是方案，我没有同意公开，今天请保密。"

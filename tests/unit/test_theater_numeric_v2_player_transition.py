@@ -1,4 +1,4 @@
-"""主动转场保持数值选路、提交复核和历史重放；语义夹具另用于真实模型正反例。"""
+"""Player initiation retains metric routing, commit review and history replay; semantic fixtures support separate real-model comparisons."""
 
 from dataclasses import replace
 import json
@@ -12,7 +12,7 @@ from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 
 
 def initiation_case(place='档案接待台', target='阅览室', *, public=True, message='带路吧。'):
-    """目标只在公开对白有/无这一处变化；作者预览一直有目标，检验是否偷用未来信息。"""
+    """Vary only whether public dialogue names the destination; the author preview always names it, exposing misuse of future information."""
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     source = engine.nodes['start']
     source['story_beat'] = {'opening_scene': f'两人在{place}。', 'summary': f'办妥眼前事务后可以去{target}，后续操作属于下一幕。'}
@@ -29,7 +29,7 @@ def initiation_case(place='档案接待台', target='阅览室', *, public=True,
 
 
 def initiation_cases():
-    """三个题材的直接请求与询问、准备、含糊同意、隐藏目的地对照，不给模型期望标签。"""
+    """Compare direct requests with questions, preparation, vague agreement and hidden destinations across three genres without expected labels in model input."""
     for place, target in [('档案接待台', '阅览室'), ('排练后台', '演奏厅'), ('花园值班室', '温室')]:
         for name, message, public, intent in [
             ('direct', '带路吧。', True, 'initiate'),
@@ -43,7 +43,7 @@ def initiation_cases():
 
 @pytest.mark.asyncio
 async def test_initiation_commits_without_offer_and_replays(tmp_path):
-    """从真实初始 Session 提交新意图，冷恢复与测试分叉都由同一 Runtime 重放。"""
+    """Submit new intent from a real initial Session and replay cold recovery and test forks through the same Runtime."""
     case = initiation_case(); engine = case['engine']; runtime = NumericV2Runtime(engine, tmp_path)
     stored = await runtime.start_session(session_id='initiation', catgirl_binding=_binding(), opening_performance=case['session'].opening_performance)
     assert not stored.session.transition_offered
@@ -64,14 +64,14 @@ async def test_initiation_commits_without_offer_and_replays(tmp_path):
 
 @pytest.mark.parametrize('intent', ['accept','unclear'])
 def test_plain_accept_without_offer_still_stays(intent):
-    """新增主动请求不能放宽原有空口 accept 的防线。"""
+    """Player initiation must not weaken the existing rejection of unsupported accept intent."""
     c = initiation_case(); result = c['engine'].resolve_turn(c['session'],TurnRequestV2('wait',0,'好。'),(),transition_intent=intent)
     assert result.session.current_node_id == 'start'
     assert result.ledger_event['transition_intent'] == 'unclear'
 
 
 def test_initiation_uses_updated_metrics_and_does_not_offer_unavailable_route():
-    """主动请求仍按更新后的数值选路；所有路线不可达时不能假装已提出邀请。"""
+    """Initiation still selects routes using updated metrics; unreachable exits cannot masquerade as a public invitation."""
     c = initiation_case(); engine = c['engine']; session = replace(c['session'],metrics={'trust':69})
     # 使用与普通接受相同的数值边界，避免新增另一套锁路状态。
     change = MetricChangeV2('trust',2,'玩家兑现承诺','已按约完成。')
@@ -85,7 +85,7 @@ def test_initiation_uses_updated_metrics_and_does_not_offer_unavailable_route():
 
 
 def test_initiation_reaches_actor_and_formal_guard_without_becoming_natural_ending():
-    """普通转场即使伴随错误的结束布尔值，也不能被 Actor 标成自然结局。"""
+    """An erroneous ending flag must not make the Actor mark an ordinary transition as a natural ending."""
     c = initiation_case(); engine,session = c['engine'],c['session']
     parsed = _parse_output(json.dumps(dict(scene_complete=False,metric_changes={},transition_intent='initiate',public_destination_quote='左侧走廊通往阅览室，通道已经开放。')),engine,c['message'],session)
     outcome = engine.resolve_turn(session,TurnRequestV2('go',0,c['message']),(),transition_intent=parsed.transition_intent,natural_ending_ready=True)
@@ -102,7 +102,7 @@ def test_initiation_reaches_actor_and_formal_guard_without_becoming_natural_endi
 
 @pytest.mark.parametrize('quote', ['', None, '作者计划下一幕去阅览室。', '带我去阅览室吧。'])
 def test_fabricated_or_missing_public_quote_cannot_authorize(quote):
-    """原文核对只限制主动请求，旧 accept 仍按既有邀请规则交给 Runtime；复查也不能放过伪证据。"""
+    """Source verification constrains initiation only; existing accept intent follows Runtime invitation rules, and dispute review must still reject fabricated evidence."""
     from services.theater.numeric_v2_evaluator import _parse_transition_judge_output
     c = initiation_case()
     payload = dict(scene_complete=False, metric_changes={}, transition_intent='initiate', public_destination_quote=quote)

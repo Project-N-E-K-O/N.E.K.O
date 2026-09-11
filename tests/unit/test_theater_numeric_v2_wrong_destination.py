@@ -1,4 +1,4 @@
-"""主动转场或接受邀请去向错误时共用一次留幕改稿；不重复计分与提交。"""
+"""Wrong destinations in initiation and acceptance share one stay-in-scene rewrite, without duplicate scoring or commits."""
 import json
 import pytest
 
@@ -29,7 +29,7 @@ def test_pending_invitation_invalidation_requires_boolean(value):
 
 
 async def _commit_invitation(runtime, current, text):
-    """通过真实提交建立待确认邀请，开场布尔字段本身不会锁存邀请。"""
+    """Establish a pending offer through real submission; an opening boolean alone does not latch an invitation."""
     outcome = runtime.prepare_turn(current, TurnRequestV2('invite', current.session.revision, '接下来呢？'), ())
     outcome, performance = runtime.engine.finalize_transition_offer_state(outcome,
         {'performance': text, 'suggested_inputs': [], 'transition_offered': True}, new_offer=True)
@@ -38,7 +38,7 @@ async def _commit_invitation(runtime, current, text):
 
 @pytest.mark.parametrize('quote,rejected', [('', True), ('虚构的公开去向。', True), ('左侧走廊通往阅览室，通道已经开放。', False)])
 def test_formal_quote_rejection_is_structured_and_keeps_reason(quote, rejected):
-    """依原文核验结果标记，不能靠解析中文错误理由决定改路。"""
+    """Route changes use source-verification flags, not parsed Chinese failure explanations."""
     c = initiation_case()
     payload = dict(offer_present=False, valid=False, body_violations=['player_action'],
                    unsafe_suggestion_indexes=[], failure_reason='玩家只答应去店铺，没有答应返回住处。',
@@ -54,7 +54,7 @@ def test_formal_quote_rejection_is_structured_and_keeps_reason(quote, rejected):
 @pytest.mark.parametrize('ordinary_result', ['pass', 'body', 'technical', 'new_offer', 'bad_offer'])
 @pytest.mark.parametrize('invalid_invitation', [False, True])
 async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(tmp_path, monkeypatch, intent, dispute, ordinary_result, invalid_invitation):
-    """复核纠正后只写一条原节点记录；争议放行、改稿失败和剩余语义兜底分别验收。"""
+    """After correction, write one source-node record; separately verify dispute approval, rewrite failure and remaining semantic fallback."""
     c = initiation_case(); engine = c['engine']; runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(session_id='wrong_destination', catgirl_binding=_binding(),
         opening_performance=c['session'].opening_performance)
@@ -145,7 +145,7 @@ async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(t
 
 
 def test_real_quote_can_still_reject_wrong_destination():
-    """复现真实快检：茶店引文真实存在，但候选去了别处，不能由出处有效推导授权。"""
+    """Reproduce a real fast review: a genuine tea-shop quote cannot authorize a candidate that goes elsewhere."""
     c = initiation_case()
     review = ev._parse_transition_judge_output(json.dumps(dict(
         offer_present=False, valid=False, body_violations=[], unsafe_suggestion_indexes=[],
@@ -159,7 +159,7 @@ def test_real_quote_can_still_reject_wrong_destination():
     ('左侧走廊通往阅览室，通道已经开放。', True), ('虚构的公开去向。', False),
 ])
 def test_authorized_move_keeps_separate_action_review_and_requires_real_quote(quote, expected):
-    """获准移动不代表可替玩家操作；伪造出处也不能凭 true 获准。"""
+    """Authorized movement does not authorize extra player operations; a true flag cannot validate fabricated provenance."""
     c = initiation_case()
     review = ev._parse_transition_judge_output(json.dumps(dict(offer_present=False, valid=False,
         body_violations=['player_action'], unsafe_suggestion_indexes=[],
@@ -169,7 +169,7 @@ def test_authorized_move_keeps_separate_action_review_and_requires_real_quote(qu
 
 
 def test_legacy_review_does_not_infer_destination_rejection_from_action_violation():
-    """旧输出缺少移动判断时保持未知，不能把任意玩家行动问题误当成取消路线。"""
+    """Legacy output without movement judgment stays unknown; arbitrary player-action violations must not cancel routes."""
     c = initiation_case()
     review = ev._parse_transition_judge_output(json.dumps(dict(offer_present=False, valid=False,
         body_violations=['player_action'], unsafe_suggestion_indexes=[],
@@ -179,7 +179,7 @@ def test_legacy_review_does_not_infer_destination_rejection_from_action_violatio
 
 @pytest.mark.parametrize('value', ['false', 0, None])
 def test_authorization_boolean_is_not_coerced(value):
-    """只接受真正布尔值，错误协议不变成留幕或放行授权。"""
+    """Accept only actual booleans; malformed protocol data cannot authorize staying or proceeding."""
     c = initiation_case()
     with pytest.raises(ev.NumericV2EvaluatorOutputError):
         ev._parse_transition_judge_output(json.dumps(dict(offer_present=False, valid=False,
@@ -211,7 +211,7 @@ def test_acceptance_authorization_requires_boolean_and_formal_acceptance_mode(va
 @pytest.mark.asyncio
 @pytest.mark.parametrize('disputed', [False, True])
 async def test_real_acceptance_review_call_supplies_original_invitation_and_parses_result(tmp_path, monkeypatch, disputed):
-    """快检与争议走真实装箱/解析链；错误接受不再因未知字段降级丢失取消结论。"""
+    """Use real packing and parsing for fast and dispute review; unknown-field fallback must not discard erroneous-acceptance cancellation decisions."""
     from types import SimpleNamespace
     c = initiation_case(); engine = c['engine']
     runtime = NumericV2Runtime(engine, tmp_path)
@@ -257,7 +257,7 @@ def test_cancelled_review_checks_fresh_invitation_without_requiring_acceptance()
 @pytest.mark.asyncio
 @pytest.mark.parametrize('late_rejection', [False, True])
 async def test_acceptance_body_repair_preserves_route_and_shares_rewrite_budget(tmp_path, monkeypatch, late_rejection):
-    """合法转场的额外动作只改正文；共享改稿已耗尽时也不能另开一次取消改稿。"""
+    """For an authorized transition with extra actions, rewrite only prose; an exhausted shared rewrite budget cannot open another cancellation rewrite."""
     c = initiation_case(); runtime = NumericV2Runtime(c['engine'], tmp_path)
     current = await runtime.start_session(session_id='accepted', catgirl_binding=_binding(), opening_performance=c['session'].opening_performance)
     current = await _commit_invitation(runtime, current, '（收好工具）咱们去阅览室看看，好吗？')

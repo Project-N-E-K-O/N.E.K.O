@@ -1,4 +1,4 @@
-"""小剧场单次 HTTP 请求的用量观察；不写剧情、存档或全局 token 账本。"""
+"""Observe usage for one theater HTTP request without writing story state, archives or the global token ledger."""
 
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -14,7 +14,7 @@ _usage_calls: ContextVar[list[dict[str, Any]] | None] = ContextVar("numeric_v2_u
 
 @contextmanager
 def numeric_v2_usage_scope():
-    """在请求结束（含取消和异常）时归还上下文，不把上一轮用量带进下一轮。"""
+    """Reset context at request completion, including cancellation and errors, so usage cannot leak into the next turn."""
     calls: list[dict[str, Any]] = []
     token = _usage_calls.set(calls)
     try:
@@ -24,7 +24,7 @@ def numeric_v2_usage_scope():
 
 
 async def invoke_with_usage(client: Any, messages: list[Any], *, stage: str):
-    """只读取客户端已有 usage；超时或供应商缺报记为未知，绝不以估算冒充实耗。"""
+    """Read only reported client usage; timeout or missing provider data stays unknown rather than becoming an estimate presented as actual consumption."""
     # Actor/Evaluator 在调用前已按会话档位检查完整 messages；这里仅观察，不二次裁剪或改写证据。
     calls = _usage_calls.get()
     if calls is None:
@@ -45,7 +45,7 @@ async def invoke_with_usage(client: Any, messages: list[Any], *, stage: str):
 
 
 def with_numeric_v2_usage(response: Any, calls: list[dict[str, Any]]):
-    """成功和已映射失败都报告本次调用；幂等重放无模型请求时显示零次，不重复计费。"""
+    """Report successful and mapped failed calls; idempotent replays with no model request report zero calls without charging twice."""
     usage = {
         "input_tokens": sum(row["input_tokens"] or 0 for row in calls),
         "output_tokens": sum(row["output_tokens"] or 0 for row in calls),

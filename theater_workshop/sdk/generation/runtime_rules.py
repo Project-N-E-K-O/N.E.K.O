@@ -1,4 +1,4 @@
-"""评分与修订共用的运行语义及创作取向；不替作者增加剧情条件。"""
+"""Share runtime semantics and creative direction between assessment and repair without adding plot conditions for the author."""
 
 # 依据 N.E.K.O services/theater/numeric_v2_runtime.py 的 resolve_turn（选路、拒绝、自然结束）
 # 及 numeric_v2_evaluator.py 的 _build_messages（目标为素材、同轮收束、行动主体）。

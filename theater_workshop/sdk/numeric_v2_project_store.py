@@ -1,4 +1,4 @@
-"""Numeric v2 作者项目的 revision、派生状态和原子持久化。"""
+"""Manage Numeric v2 author-project revisions, derived state and atomic persistence."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from .numeric_v2 import (
 
 
 class NumericV2ProjectError(ValueError):
-    """作者项目无法读取、保存或定位。"""
+    """An author project could not be located, read or saved."""
 
 
 class NumericV2ProjectNotFoundError(NumericV2ProjectError):
@@ -43,7 +43,7 @@ def _now() -> str:
 
 
 def _normalize_editor(value: Any) -> dict[str, Any]:
-    """只保存作者画布坐标，避免编辑器状态混入 Story Package。"""
+    """Store only author canvas coordinates, keeping editor state out of Story Package."""
 
     source = value if isinstance(value, Mapping) else {}
     raw_positions = source.get("node_positions")
@@ -63,7 +63,7 @@ def _normalize_editor(value: Any) -> dict[str, Any]:
 
 
 def _infer_unambiguous_mainline(story: Any) -> list[str]:
-    """只在从开场到结局始终唯一时，为导入项目恢复作者主线顺序。"""
+    """Restore imported mainline order only when the path remains unique from opening to ending."""
 
     if not isinstance(story, Mapping):
         return []
@@ -99,7 +99,7 @@ def _infer_unambiguous_mainline(story: Any) -> list[str]:
 
 
 def _normalize_authoring(value: Any, story: Any) -> dict[str, Any]:
-    """作者元数据不进入 Story Package，但需要和当前节点、路线保持引用安全。"""
+    """Keep author metadata outside Story Package while ensuring references to current nodes and routes remain valid."""
 
     source = value if isinstance(value, Mapping) else {}
     nodes = {
@@ -241,7 +241,7 @@ def _route_signatures(story: Any) -> dict[str, tuple[Any, Any, Any]]:
 
 
 def derive_project_status(project: Mapping[str, Any]) -> str:
-    """状态只由项目内容、revision 和 package hash 推导。"""
+    """Derive state only from project content, revision and package hash."""
 
     if project.get("generation_state") == "running":
         return "generating"
@@ -267,7 +267,7 @@ def derive_project_status(project: Mapping[str, Any]) -> str:
 
 
 class NumericV2ProjectStore:
-    """每个项目一个 JSON 文件，写入时不覆盖并发编辑产生的新 revision。"""
+    """Store one JSON file per project without overwriting newer revisions from concurrent edits."""
 
     def __init__(self, root: Path, *, transaction, compiler):
         self.root = Path(root)
@@ -459,7 +459,7 @@ class NumericV2ProjectStore:
 
 
     def begin_generation(self, project_id: str, *, base_revision: int) -> dict[str, Any]:
-        """记录一次显式生成，不改变内容 revision。"""
+        """Record an explicit generation attempt without changing the content revision."""
 
         with self.transaction():
             project = self._read_path(self._path(project_id))
@@ -472,7 +472,7 @@ class NumericV2ProjectStore:
 
 
     def generation_checkpoint(self, project_id: str) -> dict[str, Any] | None:
-        """只向生成服务返回内部续写检查点，不进入公开项目 DTO。"""
+        """Expose internal continuation checkpoints only to the generation service, not public project DTOs."""
 
         with self._lock:
             project = self._read_path(self._path(project_id))
@@ -492,7 +492,7 @@ class NumericV2ProjectStore:
         key_props: list[Mapping[str, Any]] | None = None,
         pacing_diagnostics: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """主线候选完整后原子替换地图与模型派生的设定字段。"""
+        """Atomically replace the map and model-derived setup fields after the mainline candidate is complete."""
 
         with self.transaction():
             project = self._read_path(self._path(project_id))
@@ -543,7 +543,7 @@ class NumericV2ProjectStore:
         *,
         base_revision: int,
     ) -> dict[str, Any]:
-        """显式评分只更新作者元数据，不改变 Story Package revision。"""
+        """Explicit assessment updates only author metadata, without changing Story Package revision."""
 
         with self.transaction():
             project = self._read_path(self._path(project_id))
@@ -570,7 +570,7 @@ class NumericV2ProjectStore:
         base_revision: int,
         node_ids: list[str],
     ) -> dict[str, Any]:
-        """保存作者确认的主线路径；不修改 Story Package。"""
+        """Save the author-confirmed mainline path without modifying Story Package."""
 
         with self.transaction():
             project = self._read_path(self._path(project_id))
@@ -634,7 +634,7 @@ class NumericV2ProjectStore:
         base_revision: int,
         draft: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """持久化作者侧草稿但不改变正式内容 revision。"""
+        """Persist author drafts without changing the published-content revision."""
 
         with self.transaction():
             project = self._read_path(self._path(project_id))
@@ -669,7 +669,7 @@ class NumericV2ProjectStore:
         route_semantics: Mapping[str, Any],
         key_props: list[Mapping[str, Any]],
     ) -> dict[str, Any]:
-        """一次写入完整支线；重复应用同一草稿不会再次创建节点。"""
+        """Write a complete branch once; reapplying the same draft must not create nodes again."""
 
         with self.transaction():
             project = self._read_path(self._path(project_id))
@@ -713,7 +713,7 @@ class NumericV2ProjectStore:
         error: Mapping[str, Any],
         checkpoint: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """失败只记录诊断，不覆盖作者设定、现有剧情或 revision。"""
+        """Record failure diagnostics without overwriting author setup, existing story content or revision."""
 
         with self.transaction():
             project = self._read_path(self._path(project_id))

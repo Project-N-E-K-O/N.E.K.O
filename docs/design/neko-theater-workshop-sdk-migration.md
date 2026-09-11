@@ -5,13 +5,13 @@
 | 当前问题 | 结论与入口 |
 | --- | --- |
 | 模块是否已迁入 | 已迁入；目录与能力见第3—5节，不再按“仅修姓名”的准备阶段理解 |
-| 怎样调用／选择模型 | [SDK使用说明](../../theater_workshop/README.md)；调用方显式传模型，不新增设置页或默认工坊模型 |
+| 怎样调用／选择模型 | SDK使用说明（`theater_workshop/README.md`）；调用方显式传模型，不新增设置页或默认工坊模型 |
 | 是否还需要工坊前端 | SDK无界面；原InkAI网页继续独立存在，不是本体依赖 |
 | 旧作者数据是否迁完 | 完整导入接口和8份真实旧项目的隔离验证已完成；不等于正式目录已批量切换 |
 | InkAI是否冻结 | 尚未冻结；按用户后续要求，共享创作与评改规则继续同步两端，见4.1 |
 | 是否整体交付验收通过 | 源码／宿主与真实模型链路有证据；发行二进制、各平台及全路线质量不能据此推定 |
 
-运行权限、模型链和当前停止条件以[小剧场架构](./neko-theater-architecture.md)为准；作者协议见[InkAI生成器设计](../../../InkAI-/docs/superpowers/specs/2026-08-06-neko-theater-numeric-v2-generator-design.md)。第1—8节为当前接入合同与验收状态，第9节按原编号保留迁移证据和问题索引，不再重复维护全部演绎实验。
+运行权限、模型链和当前停止条件以[小剧场架构](./neko-theater-architecture.md)为准；作者协议见InkAI生成器设计（`InkAI-/docs/superpowers/specs/2026-08-06-neko-theater-numeric-v2-generator-design.md`）。第1—8节为当前接入合同与验收状态，第9节按原编号保留迁移证据和问题索引，不再重复维护全部演绎实验。
 
 ## 1. 产品定位与迁移范围
 
@@ -81,12 +81,12 @@ SDK 不反向导入 `host.py`，不直接初始化 ConfigManager，不启动服�
 
 ### 3.1 宿主写入保护与锁顺序
 
-现行[小剧场导入入口](../../main_routers/numeric_theater_router.py)在 `numeric_v2_story_session_guard` 内检查可写状态，再调用注册表。`NumericV2PackageRegistry.import_package` 本身只负责包校验及文件写入；直接复用它不会自动获得维护态保护或剧本生命周期锁。
+现行小剧场导入入口（`main_routers/numeric_theater_router.py`）在 `numeric_v2_story_session_guard` 内检查可写状态，再调用注册表。`NumericV2PackageRegistry.import_package` 本身只负责包校验及文件写入；直接复用它不会自动获得维护态保护或剧本生命周期锁。
 
 宿主当前落实以下边界：
 
 1. 作者项目的创建、更新、删除、生成状态、检查点、评分／编译／复验／安装回执都经宿主提供的写入事务提交。保护不能只放在 HTTP 路由或最终安装入口，否则程序直接调用 SDK 会绕过它。
-2. 宿主复用[全局写栅栏](../../utils/cloudsave_runtime/fence.py)的 `cloudsave_writable_transaction`，在最终文件变更期间覆盖可写检查与落盘。遇到维护、恢复等禁止写入状态，返回现有维护态错误，不能写回旧目录、建立另一份默认项目目录或自动重试提交。
+2. 宿主复用全局写栅栏（`utils/cloudsave_runtime/fence.py`）的 `cloudsave_writable_transaction`，在最终文件变更期间覆盖可写检查与落盘。遇到维护、恢复等禁止写入状态，返回现有维护态错误，不能写回旧目录、建立另一份默认项目目录或自动重试提交。
 3. 模型调用前取得项目 revision、名称快照和运行根快照；模型调用期间不持有文件事务锁。提交前重新核对运行根、可写状态及 revision；根目录已变化或稿件已更新时拒绝提交，保留已有项目，不将旧候选写进新根。
 4. 正式包安装由 N.E.K.O 宿主处理，复用同一 `numeric_v2_story_session_guard(theater_root, story_id)`，与同剧本删除、恢复及其他生命周期操作协调。不能从工作线程另建事件循环去取得这把 `asyncio.Lock`，也不能在 SDK 内绕过宿主直接调用 CLI 安装。
 5. 安装锁顺序固定为：宿主事件循环取得剧本生命周期锁 → 工作线程进入云存档可写事务 → 取得共享 Store 的短时锁 → 复验当前 revision/hash、安装及记录回执。普通项目写入只走后两层；禁止持有 Store 锁后等待事件循环取得剧本锁。同步文件事务在同一工作线程进入和退出，不能跨 `await` 持有线程锁。
@@ -150,7 +150,7 @@ N.E.K.O 的 `theater_workshop/sdk/` 是本体创作能力维护入口，`host.py
 
 ### 5.2 发布复验与产物一致性
 
-第一版明确保留“编译 → 发布复验 → 导出或安装”。迁入进程内只改变调用位置，不删除现有 `validate-neko` 的业务步骤，也不新增模型调用。现行依据是 [InkAI API](../../../InkAI-/theater_generator/api.py) 与 [Store](../../../InkAI-/theater_generator/numeric_v2_project_store.py) 中的 `compile_result`、`neko_validation` 和 hash 校验。
+第一版明确保留“编译 → 发布复验 → 导出或安装”。迁入进程内只改变调用位置，不删除现有 `validate-neko` 的业务步骤，也不新增模型调用。现行依据是 InkAI API（`InkAI-/theater_generator/api.py`） 与 Store（`InkAI-/theater_generator/numeric_v2_project_store.py`） 中的 `compile_result`、`neko_validation` 和 hash 校验。
 
 | 操作 | 迁移后必须满足的合同 |
 | --- | --- |
@@ -170,6 +170,8 @@ SDK发布门禁核对成功状态、非空hash和revision；两个缺失hash均�
 宿主复用 N.E.K.O 的配置和 `utils.llm_client` 能力；生成器不携带独立密钥文件或修改正常聊天模型配置。接入时逐项核对现有 `operation`、输入输出预算、超时、重试、结构化输出和用量记录，不把“换成统一客户端”解释为更换模型或叠加重试。
 
 用户最终确认由调用方选择模型，暂不改本体现有模型设置页面。`open_workshop(config_manager, model_config=...)` 接收调用方明确选定的模型、地址、凭据和供应商类型；也可注入 `model_call` 供测试或上层适配。没有配置时仍可管理／编译项目，但生成、评分明确报错，不自动占用聊天或演员模型。配置仅作工坊实例内的快照，不创建独立密钥文件；更换配置须先关闭在途实例再重开。
+
+调用方还须在 `model_config.max_input_tokens` 明确提供正整数输入上限；没有默认容量，不能只传本体现有模型配置而遗漏此项。宿主按本体分词器统计完整消息及 JSON/角色字段，缺少有效预算或超限时在创建模型客户端前报错，保留作者内容、不截断后发送。上限按所选模型预留输出与分词差异的余量；注入 `model_call` 的自定义适配器自行落实同等检查。此项只约束工坊请求，不改变小剧场的输入上限或模型分工。
 
 各操作的输出预算、主线最多三次模型调用和显式恢复规则保留；单次网络请求的客户端重试为0、超时120秒，不与核心恢复次数相乘。宿主保留输出预算与JSON响应校验，供应商参数由本体统一客户端处理；`NekoWorkshopModel` 不把旧工坊传入的固定温度或 `thinking` 参数原样透传。此为用户确认模型可选后的接入差异，不能将新旧模型输出差异计成纯代码迁移回归，也不据此宣称任意自定义端点已实测兼容。
 
@@ -250,13 +252,13 @@ SDK发布门禁核对成功状态、非空hash和revision；两个缺失hash均�
 
 ### 8.1 正式发行链路
 
-当前桌面后端主线是 Nuitka，依据[打包说明](../contributing/nuitka-packaging.md)、[跨平台工作流](../../.github/workflows/build-desktop.yml)和[Linux 工作流](../../.github/workflows/build-desktop-linux.yml)；Windows 独立工作流复用跨平台工作流。[桌面发布脚本](../../scripts/build-desktop-release.ps1)使用已构建的 Nuitka 后端。仓库同时保留 [PyInstaller 配置](../../specs/launcher.spec)，不能只更新后者就认为正式发行已覆盖。
+当前桌面后端主线是 Nuitka，依据[打包说明](/contributing/nuitka-packaging.md)、跨平台工作流（`.github/workflows/build-desktop.yml`）和Linux 工作流（`.github/workflows/build-desktop-linux.yml`）；Windows 独立工作流复用跨平台工作流。桌面发布脚本（`scripts/build-desktop-release.ps1`）使用已构建的 Nuitka 后端。仓库同时保留 PyInstaller 配置（`specs/launcher.spec`），不能只更新后者就认为正式发行已覆盖。
 
 以下发行合同中，Nuitka包含参数、launcher入口和检查脚本已经接入；实际冻结二进制运行仍待验证：
 
 - 将 `theater_workshop` 及其动态使用的生成、检查、修订模块纳入实际后端编译和导入验证；同步两个 Nuitka 工作流中的实际参数入口。Python 代码按包编译，不能用 `--include-data-dir` 复制源码代替；只有实际新增的非代码资源才补数据包含规则。
 - 核对 SDK 最终依赖与本体锁定环境，去除对旧工坊 Flask、顶层 `config` 和独立密钥文件的依赖；不因旧 BaseAgent 曾依赖某供应商库就整份照搬依赖。通过编译产物的运行入口验证导入，不能要求 Nuitka 发行目录一定存在对应 `.py` 源文件。
-- 保持既有插件 staging 流程；工坊是独立领域，不塞进 `prepare_nuitka_plugins.py` 的插件包清单。按需要扩展 [发行检查](../../scripts/check_nuitka_dist.py)的资源检查及对应运行验证。若此次仍交付 PyInstaller 目标，同步其收集规则并单独验收；未交付的历史入口注明边界。
+- 保持既有插件 staging 流程；工坊是独立领域，不塞进 `prepare_nuitka_plugins.py` 的插件包清单。按需要扩展 发行检查（`scripts/check_nuitka_dist.py`）的资源检查及对应运行验证。若此次仍交付 PyInstaller 目标，同步其收集规则并单独验收；未交付的历史入口注明边界。
 - 在源码和相邻 InkAI 目录均不可访问、未设置跨仓环境变量的干净环境中，通过安装版本体实际使用的宿主入口调用 SDK。先注入固定模型响应，执行创建、生成、续写、复验、导出、安装、重启读取及维护态拒写，确认安装产物可被同一发行版小剧场列出和打开；再完成计划内真实模型验收。TTS 不属于 SDK 迁移准入项。不得退回开发机 Python、CLI 或旧 Flask 服务替安装版完成调用。
 - 对本次实际交付的 Windows、Linux、macOS 及架构分别记录构建版本、产物 hash 和运行结果；未验证的平台明确保留待验状态。通过构建、源码单测或静态资源检查中的某一项，不等于安装版端到端验证完成。本阶段准备发行物，不自动上传、签发或发布版本。
 

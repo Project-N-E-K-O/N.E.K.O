@@ -244,7 +244,7 @@ def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
 
 
 def _has_public_transition_quote(quote: Any, session: ScriptSessionV2 | None) -> bool:
-    """主动请求须引用本次场景实际演出的原文；作者预览和当前输入不能伪充公开证据。"""
+    """Require an initiation quote from this scene visit's actual performance; author previews and current input are not public evidence."""
     if not isinstance(quote, str) or not quote.strip() or session is None:
         return False
     # 模型看到的检索原文含括号动作，历史校验却按动作/对白分块；两端用同一解析器对齐。
@@ -341,7 +341,7 @@ def _pending_transition_for_evaluator(
     *,
     recent_ledger_events: tuple[Mapping[str, Any], ...] = (),
 ) -> str:
-    """与 Actor 共用提议来源；只有已公开正文能够成为下一轮接受的对象。"""
+    """Share the Actor's offer provenance; only public body text can become the next turn's acceptance target."""
 
     return pending_transition_performance(session,
         max_tokens=NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS,
@@ -353,7 +353,7 @@ def _pending_transition_suggestions_for_evaluator(
     *,
     recent_ledger_events: tuple[Mapping[str, Any], ...] = (),
 ) -> list[str]:
-    """推荐必须与原始提议来自同一记录，不能用后续闲聊按钮替换接受路径。"""
+    """Keep suggestions tied to the original offer record instead of substituting later chat buttons."""
 
     record = pending_transition_record(session, ledger_events=recent_ledger_events, include_withdrawn=True)
     suggestions = record.get("suggested_inputs") if record is not None else None
@@ -419,7 +419,7 @@ def _recent_metric_awards(
     engine: NumericV2Engine,
     ledger_events: tuple[Mapping[str, Any], ...],
 ) -> list[dict[str, Any]]:
-    """保留最近实际奖励的事件原话；新事件可以使用同一依据连续获奖。"""
+    """Retain the latest rewarded event verbatim; new events may earn consecutive rewards under the same criterion."""
 
     # 不按四个空聊回合让旧事件消失，也不再只提供缺乏语义内容的 criterion_id。
     # 同一句话在不同对象或时点可能对应新事件，必须与当前演出一起核对，而不能直接按字符串拦截。

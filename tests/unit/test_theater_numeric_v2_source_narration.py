@@ -1,4 +1,4 @@
-"""来源 NPC 答复须完整经历解析、复核、提交与恢复，旧三段记录保持兼容。"""
+"""Carry source NPC responses through parsing, review, commit and recovery while retaining compatibility with older three-segment records."""
 
 from copy import deepcopy
 import json

@@ -1,4 +1,4 @@
-"""正式转场扩容不改变普通复核、完整证据保护或现有调用策略。"""
+"""Formal-transition capacity changes must not alter ordinary review, complete-evidence protection or call policy."""
 
 from dataclasses import replace
 import json
@@ -14,7 +14,7 @@ from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
 
 def _fixture(repetitions=700):
-    """长正文只用于测实际分词长度，不代表文学或事实检查已经通过。"""
+    """Long prose tests actual token length, not literary or factual correctness."""
     engine = _engine()
     session = engine.create_session(session_id='capacity', catgirl_binding=_binding(), opening_performance=_opening(), actor_budget_profile='economy')
     outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '好。'), (), scene_complete=True, natural_ending_ready=True)
@@ -26,7 +26,7 @@ def _fixture(repetitions=700):
 @pytest.mark.parametrize('disputed', [False, True])
 @pytest.mark.parametrize('repetitions,allowed', [(700, True), (950, True), (2000, False)])
 async def test_formal_capacity_applies_before_fast_and_dispute_calls(monkeypatch, repetitions, allowed, disputed):
-    """正式复核按现行8000上限送审，覆盖超过普通6000的正文及正式超限拒绝。"""
+    """Use the current 8000-token formal-review limit, covering input above ordinary review's 6000 tokens and rejection above the formal cap."""
     calls = []
 
     class Client:
@@ -75,7 +75,7 @@ async def test_formal_capacity_applies_before_fast_and_dispute_calls(monkeypatch
 
 
 def test_formal_packing_keeps_more_history_without_changing_ordinary_review(monkeypatch):
-    """正式容量实验不能连带改变已确认的普通6000预算。"""
+    """Formal-capacity experiments must not change the confirmed ordinary 6000-token budget."""
     engine, session, outcome, candidate = _fixture(200)
     history = tuple({'revision': i, 'from_node_id': 'start', 'to_node_id': 'start', 'performance_contract_version': 3,
         'input_text': '我听见了。', 'performance': '（' + '她整理好手边的工具。' * 80 + '）'} for i in range(1, 7))

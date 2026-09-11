@@ -332,7 +332,7 @@ def test_numeric_v2_interaction_intent_reaches_actor_but_not_persisted(
     tmp_path,
     monkeypatch,
 ):
-    """交互意图只服务当前 Actor 调用，不能进入 Session 或 Ledger。"""
+    """Interaction intent serves only the current Actor call and must not enter Session or Ledger state."""
 
     captured: dict[str, str] = {}
     client = _client(tmp_path, monkeypatch)
@@ -406,7 +406,7 @@ def test_numeric_v2_suggested_input_bypasses_chat_pacing_only_when_current(
     tmp_path,
     monkeypatch,
 ):
-    """推荐点击承接公开选择；伪造或过期推荐不能借来源字段改变 Actor 节奏。"""
+    """Suggestion clicks follow public choices; forged or stale suggestions cannot change Actor pacing through the source field."""
 
     captured: dict[str, str] = {}
     client = _client(tmp_path, monkeypatch)
@@ -489,7 +489,7 @@ def test_numeric_v2_scene_complete_does_not_trigger_second_actor_call(
     tmp_path,
     monkeypatch,
 ):
-    """自然收束只进入基础 Actor 提示，不再事后补生成提议。"""
+    """Natural closure enters the base Actor prompt without generating a proposal afterward."""
 
     actor_calls = 0
     client = _client(tmp_path, monkeypatch)
@@ -568,7 +568,7 @@ def test_numeric_v2_overdue_turns_do_not_trigger_second_actor_call(
     monkeypatch,
     failure_reason,
 ):
-    """超过推荐回合只影响基础 Actor pacing，不再调用事后聚焦生成。"""
+    """Exceeding recommended turns changes only base Actor pacing, without a later focus-generation call."""
 
     actor_calls = 0
     client = _client(tmp_path, monkeypatch)
@@ -655,7 +655,7 @@ def test_numeric_v2_drops_reviewed_invalid_transition_suggestions(
     tmp_path,
     monkeypatch,
 ):
-    """未登记但已确认冲突的推荐不能继续作为可点击死路公开。"""
+    """Suggestions with confirmed conflicts must not remain clickable dead ends even if not registered as offers."""
 
     client = _client(tmp_path, monkeypatch)
 
@@ -718,7 +718,7 @@ def test_numeric_v2_filters_unsafe_future_suggestions_without_body_rereview(
     tmp_path,
     monkeypatch,
 ):
-    """推荐的违规只删除对应按钮，不重审正文或在复核后补推荐。"""
+    """Suggestion violations remove only the affected buttons, without reviewing the body again or refilling after review."""
 
     actor_calls = 0
     review_calls = 0
@@ -803,7 +803,7 @@ def test_numeric_v2_removes_only_reported_unsafe_suggestion(
     tmp_path,
     monkeypatch,
 ):
-    """结构化索引只删除坏选项，不能放弃同组安全选择或重写正文。"""
+    """Structured indices remove unsafe choices without dropping safe siblings or rewriting the body."""
 
     actor_calls = 0
     review_calls = 0
@@ -884,7 +884,7 @@ def test_numeric_v2_reviews_and_filters_target_opening_suggestions(
     tmp_path,
     monkeypatch,
 ):
-    """正式换幕后只过滤目标开场坏按钮，不重写来源回应和作者桥段。"""
+    """After formal transition, filter unsafe target-opening suggestions without rewriting the source response or author bridge."""
 
     bad_suggestion = "（使用未持有的设备）我来检查新场景。"
     client = _client(tmp_path, monkeypatch)
@@ -1009,7 +1009,7 @@ def test_numeric_v2_preserves_safe_body_when_flagged_retry_only_has_invalid_sugg
     tmp_path,
     monkeypatch,
 ):
-    """唯一改写后若只剩失效按钮，保留安全正文而不是让整轮发送失败。"""
+    """If only invalid suggestions remain after the sole rewrite, retain safe prose instead of failing the entire input turn."""
 
     actor_calls = 0
     client = _client(tmp_path, monkeypatch)
@@ -1089,7 +1089,7 @@ def test_numeric_v2_confirmed_body_violation_cannot_be_erased_by_later_review_dr
     tmp_path,
     monkeypatch,
 ):
-    """同次复核已定位正文越界时必须改写，不能被后续随机安全结论覆盖。"""
+    """A body violation identified by the current review requires rewriting; a later random safe judgment must not erase it."""
 
     actor_calls = 0
     unsafe_body_only_reviews = 0
@@ -1182,7 +1182,7 @@ def test_numeric_v2_unflagged_played_result_is_rewritten_once(
     tmp_path,
     monkeypatch,
 ):
-    """Actor 漏写提议布尔也不能让已经抵达下一地点的正文通过。"""
+    """Missing Actor offer flags must not let prose that already reaches the next location pass review."""
 
     actor_calls = 0
     client = _client(tmp_path, monkeypatch)
@@ -1407,7 +1407,7 @@ def test_numeric_v2_filters_only_unsafe_suggestions_after_body_retry(
     tmp_path,
     monkeypatch,
 ):
-    """边界改稿后只剩推荐违规时按索引删除，安全正文不再采样或复核。"""
+    """If only suggestion violations remain after a boundary rewrite, filter by index without resampling or reviewing safe prose again."""
 
     actor_calls = 0
     review_calls = 0
@@ -1496,7 +1496,7 @@ def test_numeric_v2_body_violation_with_unsafe_suggestion_requires_rewrite(
     tmp_path,
     monkeypatch,
 ):
-    """同次主复核同时定位正文和推荐违规，必须改稿，不能删按钮后重判。"""
+    """When the same main review finds both body and suggestion violations, rewrite instead of removing buttons and judging again."""
 
     actor_calls = 0
     review_calls = 0
@@ -1584,7 +1584,7 @@ def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
     monkeypatch,
     remaining_violation,
 ):
-    """旁白违规不删除后重判；改稿仍有其他问题时采用末稿，不增加纠错额度。"""
+    """Do not delete narration and judge again; adopt the final draft if the rewrite still has problems, without extra correction attempts."""
 
     actor_calls = 0
     review_calls = 0
@@ -1706,7 +1706,7 @@ def test_numeric_v2_boundary_repair_keeps_diagnostic_without_rejected_candidate(
     tmp_path,
     monkeypatch,
 ):
-    """唯一一次普通修复保留具体诊断，从原上下文重写，不沿用被拒候选。"""
+    """The sole ordinary correction retains specific diagnostics but rewrites from original context instead of reusing the rejected candidate."""
 
     actor_calls = 0
     client = _client(tmp_path, monkeypatch)
@@ -1775,7 +1775,7 @@ def test_numeric_v2_boundary_repair_commits_last_reply_after_correction_budget(
     monkeypatch,
     remove_conflict,
 ):
-    """修稿要求删除冲突；持续否定则正式采用末稿，显示、历史及数值不能分叉。"""
+    """Request removal of conflicts; persistent rejection adopts the final draft with consistent display, history and metrics."""
 
     actor_calls = 0
     review_calls = 0
@@ -1885,7 +1885,7 @@ def test_numeric_v2_unsafe_button_does_not_override_body_offer_validity(
     monkeypatch,
     offer_valid,
 ):
-    """坏按钮独立删除；合法正文邀约仍锁存，无效正文邀约仍须改写。"""
+    """Remove unsafe buttons independently; latch valid body invitations and still rewrite invalid ones."""
 
     actor_calls = 0
     review_calls = 0
@@ -1979,7 +1979,7 @@ def test_numeric_v2_clears_phantom_transition_flag_without_actor_retry(
     tmp_path,
     monkeypatch,
 ):
-    """可见内容没有提议时只清内部误标，不能重采样合法正文。"""
+    """If visible prose has no offer, clear only the erroneous internal flag without resampling valid prose."""
 
     actor_calls = 0
     client = _client(tmp_path, monkeypatch)
@@ -2052,7 +2052,7 @@ def test_numeric_v2_offer_uses_one_guard_and_never_rewrites_service_failure(
     actor_flag,
     review_failed,
 ):
-    """合法提议不依赖 Actor 布尔；Guard 服务故障只撤销信号，不能重采样正文。"""
+    """Valid offers do not depend on the Actor flag; Guard failure withdraws only the signal, without resampling the body."""
 
     actor_calls = 0
     review_calls = 0
@@ -2134,7 +2134,7 @@ def test_numeric_v2_premature_scene_update_requires_the_single_actor_rewrite(
     tmp_path,
     monkeypatch,
 ):
-    """场景更新越幕也属于正文违规，必须交由唯一改稿处理，不得先删字段重判。"""
+    """A scene update crossing the scene boundary is a body violation requiring the sole rewrite, not field deletion followed by review."""
 
     actor_calls = 0
     review_calls = 0
@@ -2217,7 +2217,7 @@ def test_numeric_v2_rewrites_fact_boundary_without_structured_field_scope(
     tmp_path,
     monkeypatch,
 ):
-    """作者事实违规不能靠诊断文案删字段，必须只改写一次。"""
+    """Author-fact violations require one rewrite, not diagnostic-driven field deletion."""
 
     actor_calls = 0
     review_calls = 0
@@ -5195,7 +5195,7 @@ def test_numeric_turn_preserves_player_address_fact_during_model_wait(
 
 
 def test_numeric_v2_review_fallback_replay_and_next_turn_keep_same_history(tmp_path, monkeypatch):
-    """兜底回复经HTTP正式提交：重试不多计分/调用，下一轮演员和判定器都看到末稿。"""
+    """Commit fallback prose through HTTP; retries neither rescore nor recall the model, and next-turn Actor and evaluator see the final draft."""
     client = _client(tmp_path, monkeypatch)
     calls = {"actor": 0, "review": 0, "evaluator": 0}
     last_reply = "（指向窗外）雨已经停了，我们可以继续聊天。"

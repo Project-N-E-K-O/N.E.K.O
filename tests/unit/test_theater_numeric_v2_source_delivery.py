@@ -1,4 +1,4 @@
-"""跨题材固定材料：目标模板不能证明来源结果；模型语义效果另做真实采样。"""
+"""Cross-genre fixtures cannot use a target template as proof of source results; assess model semantics through real sampling separately."""
 
 from copy import deepcopy
 from dataclasses import replace
@@ -28,7 +28,7 @@ DELIVERY_TOPICS = {
 
 
 def delivery_case(topic, variant):
-    """预先固定正常稿和反例，供确定性投影测试及独立真实复核共用。"""
+    """Freeze normal drafts and counterexamples for deterministic projection tests and independent real review."""
     place, destination, pending, permission, delivery, result = DELIVERY_TOPICS[topic]
     engine = _engine(ordinary=True)
     source, target = engine.nodes['start'], engine.nodes['middle']
@@ -73,7 +73,7 @@ def delivery_case(topic, variant):
 @pytest.mark.parametrize('topic', DELIVERY_TOPICS)
 @pytest.mark.parametrize('variant', ['missing', 'history', 'deliver_now', 'omit', 'extra_player_action'])
 def test_source_evidence_stays_separate_from_author_template_and_candidate(topic, variant):
-    """实际状态与作者预期都完整送审；打包不能改原包或把模板混入已提交历史。"""
+    """Send complete actual state and author expectations to review without mutating the package or mixing templates into committed history."""
     engine, session, outcome, message, candidate = delivery_case(topic, variant)
     before = deepcopy(engine.story)
     actor = _turn_messages(engine, session, outcome, message, '谨慎友好。', '小葵', '你',
@@ -94,7 +94,7 @@ def test_source_evidence_stays_separate_from_author_template_and_candidate(topic
 
 @pytest.mark.parametrize('truncated,missing', [(False, False), (True, False), (False, True)])
 def test_review_history_coverage_never_claims_missing_or_packed_records_are_complete(monkeypatch, truncated, missing):
-    """覆盖标记必须随真实记录及预算裁剪更新，检索命中不能伪装成完整历史。"""
+    """Update coverage markers with actual records and budget trimming; retrieval hits cannot stand in for complete history."""
     from services.theater import numeric_v2_evaluator as evaluator
 
     engine, session, outcome, message, candidate = delivery_case('parcel', 'missing')
@@ -116,7 +116,7 @@ def test_review_history_coverage_never_claims_missing_or_packed_records_are_comp
 
 
 def test_pacing_does_not_promote_authored_exit_preconditions_to_current_results():
-    """回合节奏是运行信息，不能把旧包出口的‘已经完成’偷偷混成当前事实。"""
+    """Turn pacing is runtime information; do not smuggle completed-action wording from legacy exits into current facts."""
     engine, session, _, _, _ = delivery_case('parcel', 'missing')
     beat = engine.nodes['start']['story_beat']
     beat.pop('narrative_focus', None)

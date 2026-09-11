@@ -1,4 +1,4 @@
-"""条件复核、完整报告、扣分关联与保留字段；伪造模型仅验证确定性边界。"""
+"""Verify conditional review, complete reports, score deductions and preserved fields; mock models test deterministic boundaries only."""
 from copy import deepcopy
 import json
 import pytest

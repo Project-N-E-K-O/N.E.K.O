@@ -5,7 +5,7 @@ from typing import Any, Dict
 
 class JSONResponseParser:
     def parse_json_response(self, response: str) -> Dict[str, Any]:
-        """解析JSON响应，确保返回结构化数据"""
+        """Parse a JSON response into structured data."""
         try:
             # 尝试直接解析
             return json.loads(response)
@@ -68,7 +68,7 @@ class JSONResponseParser:
 
 
     def _fix_json_format(self, json_str: str) -> str:
-        """修复常见的JSON格式问题 - 简化版"""
+        """Repair common JSON formatting problems with a simplified strategy."""
         import re
 
         # 【关键强化】第一步：去除首尾空白字符（包括换行符、制表符、空格）
@@ -146,7 +146,7 @@ class JSONResponseParser:
 
 
     def _fix_missing_delimiters_simple(self, json_str: str) -> str:
-        """简单的缺失定界符修复"""
+        """Repair simple missing delimiters."""
         # 启发式修复：如果以逗号或冒号结尾，尝试添加 }
         stripped = json_str.rstrip()
         if stripped.endswith((',', ':')):
@@ -156,7 +156,7 @@ class JSONResponseParser:
 
 
     def _smart_fix_json_by_error(self, json_str: str, error: json.JSONDecodeError) -> str:
-        """根据JSON解析错误信息智能修复"""
+        """Repair JSON using the parser's error details."""
         error_msg = str(error)
         print(f"🔧 智能修复JSON错误: {error_msg}")
 
@@ -204,7 +204,7 @@ class JSONResponseParser:
 
 
     def _escape_control_char(self, char: str) -> str:
-        """将控制字符转义为JSON可接受的格式"""
+        """Escape control characters into JSON-compatible representations."""
         escape_map = {
             '\n': '\\n',
             '\r': '\\r',
@@ -216,7 +216,7 @@ class JSONResponseParser:
 
 
     def _fix_control_chars_in_strings(self, json_str: str) -> str:
-        """只在字符串值内转义控制字符，不影响JSON结构"""
+        """Escape control characters only within string values, preserving JSON structure."""
         import re
 
         # 匹配字符串值，并在其中转义控制字符
@@ -244,7 +244,7 @@ class JSONResponseParser:
 
 
     def _escape_inner_quotes_in_strings(self, json_str: str) -> str:
-        """使用状态机转义JSON字符串内部的未转义双引号"""
+        """Use a state machine to escape unescaped double quotes inside JSON strings."""
         result = []
         in_string = False  # 是否在字符串内
         escape_next = False  # 下一个字符是否被转义

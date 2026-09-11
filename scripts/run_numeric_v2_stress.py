@@ -121,7 +121,7 @@ def _visible_performance_text(performance: Mapping[str, Any]) -> str:
 
 
 def _player_visible_history(recent_turns: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
-    """生成与净化共用完整可见记录；推荐、隐藏路线和数值不会进入模型。"""
+    """Share complete visible records between generation and grounding; exclude suggestions, hidden routes and metrics."""
 
     return [
         {
@@ -138,7 +138,7 @@ def _player_visible_history(recent_turns: Sequence[Mapping[str, Any]]) -> list[d
 
 
 def _player_prompt(system_prompt: str, data: Mapping[str, Any]) -> list[Any]:
-    """在请求前核对完整预算；保留原文，不把半句摘要当成事实依据。"""
+    """Check the complete request budget without truncating source facts into partial sentences."""
 
     messages = [
         SystemMessage(content=system_prompt),
@@ -332,7 +332,7 @@ class _DynamicPlayerGenerator:
             )
             self.provider_call_count += 1
             response = await asyncio.wait_for(
-                client.ainvoke(messages),
+                client.ainvoke(messages),  # noqa: LLM_INPUT_BUDGET # _player_prompt rejects complete input above DYNAMIC_PLAYER_MAX_INPUT_TOKENS.
                 timeout=DYNAMIC_PLAYER_TIMEOUT_SECONDS,
             )
             player_input = _parse_dynamic_player_input(getattr(response, "content", None))
@@ -345,7 +345,7 @@ class _DynamicPlayerGenerator:
                 )
                 self.provider_call_count += 1
                 response = await asyncio.wait_for(
-                    client.ainvoke(messages),
+                    client.ainvoke(messages),  # noqa: LLM_INPUT_BUDGET # _player_prompt checks the complete chat rewrite input before this call.
                     timeout=DYNAMIC_PLAYER_TIMEOUT_SECONDS,
                 )
                 player_input = _parse_dynamic_player_input(
@@ -360,7 +360,7 @@ class _DynamicPlayerGenerator:
                 )
                 self.provider_call_count += 1
                 response = await asyncio.wait_for(
-                    client.ainvoke(messages),
+                    client.ainvoke(messages),  # noqa: LLM_INPUT_BUDGET # _player_prompt checks the complete grounding input before this call.
                     timeout=DYNAMIC_PLAYER_TIMEOUT_SECONDS,
                 )
                 player_input = _parse_dynamic_player_input(
@@ -1283,7 +1283,7 @@ def _resolve_story_selection(
 
 
 def _legacy_package_ids(package_root: Path) -> list[str]:
-    """找出磁盘上仍需升级的旧包，避免空压测被误报为成功。"""
+    """Find legacy packages still needing migration so an empty stress run cannot count as success."""
 
     if not package_root.is_dir():
         return []

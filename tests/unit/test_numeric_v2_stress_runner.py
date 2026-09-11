@@ -119,7 +119,7 @@ def test_numeric_v2_stress_uses_first_slot_when_no_advance_metadata():
 
 
 def test_numeric_v2_stress_freeform_uses_latest_visible_context():
-    """真实轨迹的自由输入应引用最近正文，而不是循环固定话术。"""
+    """Generate free input from the latest public performance instead of cycling fixed phrases."""
 
     player_input, source = run_numeric_v2_stress.choose_player_input(
         strategy="freeform",
@@ -254,7 +254,7 @@ def test_numeric_v2_stress_dynamic_player_only_receives_visible_history():
 
 
 def test_numeric_v2_stress_chat_strategy_stays_in_visible_scene():
-    """纯闲聊输入不得因待确认提议自动点击推荐或推进剧情。"""
+    """Pending offers must not make a chat-only player click suggestions or advance the story."""
 
     player_input, source = run_numeric_v2_stress.choose_player_input(
         strategy="chat",
@@ -293,7 +293,7 @@ def test_numeric_v2_stress_chat_strategy_stays_in_visible_scene():
 
 
 def test_numeric_v2_stress_grounded_rewrite_only_uses_visible_facts():
-    """正常自由输入也要二次复核，不能让动态玩家自行补库存或外部结果。"""
+    """Ground ordinary free input a second time so the dynamic player cannot invent inventory or external results."""
 
     messages = run_numeric_v2_stress._grounded_player_rewrite_messages(
         latest_performance={"performance": "（看向熄灭的终端）来源还不知道。"},
@@ -318,7 +318,7 @@ def test_numeric_v2_stress_grounded_rewrite_only_uses_visible_facts():
     ("_chat_player_rewrite_messages", True, 1),
 ])
 async def test_dynamic_player_budget_failure_counts_only_started_calls(monkeypatch, stage, chat_only, expected_calls):
-    """三个装箱入口都可能超预算，失败的本地准备不能冒充一次供应商调用。"""
+    """All three packing paths can exceed budget; failed local preparation must not count as a provider call."""
 
     calls = []
 
@@ -361,7 +361,7 @@ def test_numeric_v2_stress_dynamic_player_parses_one_strict_input():
 
 
 def test_numeric_v2_stress_player_and_reviewer_keep_early_visible_facts():
-    """超过三轮的交接仍须同时供玩家生成和输入复核使用，不能净化成失忆反问。"""
+    """Keep handoffs older than three turns available to player generation and grounding rather than rewriting them as forgetful questions."""
 
     turns = [{
         "player_input": "我把借来的针放回木盒，归还给你。",
@@ -391,7 +391,7 @@ def test_numeric_v2_stress_player_and_reviewer_keep_early_visible_facts():
 
 
 def test_numeric_v2_stress_player_over_budget_stops_without_truncation(monkeypatch):
-    """超预算不能静默删除早期事实；模拟器应把它作为自身失败报告。"""
+    """Report excess context as a simulator failure instead of silently dropping earlier facts."""
 
     monkeypatch.setattr(run_numeric_v2_stress, "DYNAMIC_PLAYER_MAX_INPUT_TOKENS", 1, raising=False)
     with pytest.raises(ValueError, match="dynamic_player_context_over_budget"):
@@ -403,7 +403,7 @@ def test_numeric_v2_stress_player_over_budget_stops_without_truncation(monkeypat
 
 @pytest.mark.asyncio
 async def test_numeric_v2_stress_fork_player_reads_committed_history_and_stops_on_failure(monkeypatch):
-    """续跑要读取 Session 的真实前情；玩家生成失败不允许用推荐或固定话术继续。"""
+    """Resume from actual Session history; player-generation failure must not fall back to suggestions or fixed phrases."""
 
     session = SimpleNamespace(
         session_id="stress_fork", revision=8, status="active", current_node_id="start",

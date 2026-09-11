@@ -1,4 +1,4 @@
-"""完整收束范围与后续方向的投影回归；固定材料也用于真实模型正反例。"""
+"""Regress complete closure scope and subsequent direction projections; reuse the fixtures for real-model positive and negative comparisons."""
 from dataclasses import replace
 import json
 import pytest
@@ -16,7 +16,7 @@ SCENES = (
 
 
 def closure_cases():
-    """同题材正反例只改变提交结果，不把期望标签提供给模型。"""
+    """Vary only the submitted result within each genre and do not expose expected labels to the model."""
     rows = []
     for place, task, done, unfinished, target, future in SCENES:
         engine = NumericV2Engine.from_mapping(numeric_v2_story())
@@ -42,7 +42,7 @@ def closure_cases():
 
 @pytest.mark.parametrize('case', closure_cases(), ids=lambda c: c['name'])
 def test_evaluator_keeps_full_closure_scope_and_route_reason(case):
-    """保留完整因果方向且仍在5200预算内，既不截尾也不删除当前完整证据。"""
+    """Keep the full causal direction within the 5200-token budget without truncating its tail or removing complete current evidence."""
     engine, session = case['engine'], case['session']
     messages = ev._build_messages(engine, session, case['message'])
     data = json.loads(messages[1].content.split('：', 1)[1])
@@ -55,7 +55,7 @@ def test_evaluator_keeps_full_closure_scope_and_route_reason(case):
 
 @pytest.mark.parametrize('phase', ['opening', 'turn', 'transition_compact'])
 def test_actor_identity_instruction_does_not_use_framework_name(phase):
-    """演员身份由剧本提供，实现标识不出现在首句身份指令中。"""
+    """Use the script's performer identity without exposing implementation identifiers in the first identity instruction."""
     from services.theater.numeric_v2_actor import _system_prompt
     prompt = _system_prompt(catgirl_name='测试猫娘', player_address='你', phase=phase)
     if phase == 'transition_compact':

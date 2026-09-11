@@ -1,4 +1,4 @@
-"""事实复核的完整性与执行边界；模型判语义，程序不按关键词删问题。"""
+"""Verify factual-review completeness and execution boundaries; models judge semantics, and code does not delete findings by keyword."""
 from copy import deepcopy
 from typing import Any, Mapping
 
@@ -21,7 +21,7 @@ verdict三选一：supported（原文能证明该问题），unsupported（原�
 
 
 def review_targets(issue: Mapping[str, Any]) -> list[dict[str, str]]:
-    """复核只接收原方案中可识别的位置，缺失/非法位置仍留在原报告且不会伪造补齐。"""
+    """Review receives only identifiable locations from the original plan; missing or invalid locations stay in the report without fabricated repairs."""
     targets = issue.get("repair_targets")
     result = []
     for item in targets if isinstance(targets, list) else []:
@@ -33,7 +33,7 @@ def review_targets(issue: Mapping[str, Any]) -> list[dict[str, str]]:
 
 
 def validate_evidence_review(issues: list[dict], payload: Any) -> list[dict]:
-    """必须逐问题、逐字段完整返回，未知/重复/扩权或非布尔结论让整次复核失败。"""
+    """Require complete results for each issue and field; unknown, duplicate, expanded or non-boolean decisions fail the entire review."""
     def fail():
         raise ValueError("invalid_fact_evidence_review")
     if not isinstance(payload, Mapping) or not isinstance(payload.get("checks"), list):
@@ -75,7 +75,7 @@ def validate_evidence_review(issues: list[dict], payload: Any) -> list[dict]:
 
 
 def effective_targets(issue: Mapping[str, Any]) -> list[dict[str, str]]:
-    """事实仅执行受支持且确认需改的原字段；文学建议沿用原字段范围。"""
+    """Apply factual repairs only to supported original fields confirmed as needing changes; literary suggestions retain their original field scope."""
     if issue.get("source") != "facts":
         return review_targets(issue)
     review = issue.get("evidence_review") or {}
@@ -88,7 +88,7 @@ def effective_targets(issue: Mapping[str, Any]) -> list[dict[str, str]]:
 
 
 def protected_targets(issues: list[dict]) -> list[dict[str, str]]:
-    """复核要求保留的字段也约束同节点文学建议，避免换个建议来源又被重写。"""
+    """Fields marked for preservation also constrain literary suggestions on the same node, preventing rewrites through a different suggestion source."""
     return [{"node_id": row["node_id"], "field": row["field"]}
             for issue in issues if issue.get("source") == "facts"
             for row in (issue.get("evidence_review") or {}).get("target_checks", [])
@@ -96,5 +96,5 @@ def protected_targets(issues: list[dict]) -> list[dict[str, str]]:
 
 
 def fields_overlap(left: str, right: str) -> bool:
-    """父级数组/对象替换也会触及受保护子字段，不能用较宽路径绕过保留要求。"""
+    """Replacing a parent array or object touches protected children and cannot bypass preservation through a broader path."""
     return left == right or left.startswith(right + "/") or right.startswith(left + "/")

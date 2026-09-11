@@ -361,6 +361,7 @@ def test_model_configuration_is_explicit_and_request_budget_has_no_hidden_retry(
     with pytest.raises(WorkshopError, match="workshop_model_endpoint_required"):
         NekoWorkshopModel({"model":"selected-model", "api_key":"test-key"})([], **options)
     reply = NekoWorkshopModel({"model":"selected-model", "api_key":"test-key",
+                              "max_input_tokens":16000,
                               "base_url":"https://example.invalid/v1"})([], **options)
     assert reply.model == "selected-model"
     assert reply.usage["prompt_tokens"] == 10
@@ -369,6 +370,87 @@ def test_model_configuration_is_explicit_and_request_budget_has_no_hidden_retry(
     assert calls[0]["max_completion_tokens"] == 16000
     assert calls[0]["timeout"] == 120
     assert calls[1] == {"response_format":{"type":"json_object"}}
+
+
+@pytest.mark.parametrize("budget", [None, True, 0, -1, 1.5, "16000"])
+def test_model_requires_explicit_positive_input_budget_before_opening_client(monkeypatch, budget):
+    from utils import llm_client
+
+    def unexpected_client(**kwargs):
+        pytest.fail("invalid input budget must not open a provider client")
+    monkeypatch.setattr(llm_client, "create_chat_llm", unexpected_client)
+    model = NekoWorkshopModel({"model": "selected-model", "api_key": "test-key",
+        "base_url": "https://example.invalid/v1", "max_input_tokens": budget})
+    with pytest.raises(WorkshopError, match="workshop_model_input_budget_required"):
+        model([], max_tokens=100, max_retries=1, response_format={"type": "json_object"},
+              thinking=None, operation="numeric_v2_mainline_generation")
+
+
+@pytest.mark.parametrize("operation", ["numeric_v2_mainline_generation", "numeric_v2_quality_assessment"])
+@pytest.mark.parametrize("margin", [-1, 0, 1])
+def test_model_counts_complete_input_and_never_truncates_it(monkeypatch, operation, margin):
+    from types import SimpleNamespace
+    from utils import llm_client
+    from utils.tokenize import count_tokens
+
+    messages = [{"role": "system", "content": "保留完整作者合同。"},
+                {"role": "user", "content": "Long story context. " * 80 + "最终不要离开。"}]
+    original = deepcopy(messages)
+    size = count_tokens(json.dumps(messages, ensure_ascii=False))
+    calls = []
+    class Client:
+        def invoke(self, actual, **options):
+            assert actual == original
+            calls.append("invoke")
+            return SimpleNamespace(content="{}", response_metadata={})
+        def close(self):
+            calls.append("close")
+    def create(**kwargs):
+        calls.append("create")
+        return Client()
+    monkeypatch.setattr(llm_client, "create_chat_llm", create)
+    model = NekoWorkshopModel({"model": "selected-model", "api_key": "test-key",
+        "base_url": "https://example.invalid/v1", "max_input_tokens": size + margin})
+    options = dict(max_tokens=100, max_retries=1, response_format={"type": "json_object"},
+                   thinking=None, operation=operation)
+    if margin < 0:
+        with pytest.raises(WorkshopError, match="workshop_model_input_budget_exceeded"):
+            model(messages, **options)
+        assert calls == []
+    else:
+        assert model(messages, **options).content == "{}"
+        assert calls == ["create", "invoke", "close"]
+    assert messages == original
+
+
+def test_over_budget_generation_and_quality_preserve_author_content(tmp_path, monkeypatch):
+    from utils import llm_client
+
+    config = TestConfig(tmp_path)
+    author = open_workshop(config, model_call=fixed_model)
+    try:
+        draft = setup_project(author.sdk)
+        project = author.sdk.generate(draft["project_id"], base_revision=draft["revision"])["project"]
+    finally:
+        author.sdk.close()
+    def unexpected_client(**kwargs):
+        pytest.fail("oversized author input must not reach a provider")
+    monkeypatch.setattr(llm_client, "create_chat_llm", unexpected_client)
+    host = open_workshop(config, model_config={"model": "selected-model",
+        "api_key": "test-key", "base_url": "https://example.invalid/v1", "max_input_tokens": 1})
+    try:
+        with pytest.raises(WorkshopError, match="workshop_model_input_budget_exceeded"):
+            host.sdk.assess_quality(project["project_id"], base_revision=project["revision"])
+        assert host.sdk.get_project(project["project_id"]) == project
+
+        with pytest.raises(WorkshopError, match="workshop_model_input_budget_exceeded"):
+            host.sdk.generate(project["project_id"], base_revision=project["revision"])
+        failed = host.sdk.get_project(project["project_id"])
+        for field in ("revision", "story", "setup"):
+            assert failed[field] == project[field]
+        assert failed["generation_state"] == "failed"
+    finally:
+        host.sdk.close()
 
 
 def test_public_quality_revision_and_failure_preserve_previous_report(tmp_path):

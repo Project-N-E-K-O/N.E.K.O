@@ -1,4 +1,4 @@
-"""Numeric v2 作者 DTO、metric 预设和 N.E.K.O 合同适配。"""
+"""Provide Numeric v2 author DTOs, metric presets and N.E.K.O contract adaptation."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ class PresetMetric:
     relationship_effect: str = "none"
 
     def to_draft(self) -> dict[str, Any]:
-        """预设只负责起始文案，作者保存后仍可完整修改。"""
+        """Presets supply initial wording only; authors can edit it fully after saving."""
 
         low_label, middle_label, high_label = _PRESET_BAND_LABELS[self.id]
         # 关系数值需要跨多轮建立，默认限幅低于线索、压力等剧情数值；
@@ -108,7 +108,7 @@ def preset_metric_catalog() -> list[dict[str, Any]]:
 
 
 def allocate_metric_id(name: str, existing_ids: set[str]) -> str:
-    """服务端只在首次保存自定义 metric 时分配稳定 ID。"""
+    """Allocate a stable custom-metric ID server-side only on its first save."""
 
     ascii_hint = _METRIC_ID_RE.sub("_", name.lower()).strip("_")
     base = ascii_hint or f"metric_{hashlib.sha256(name.encode('utf-8')).hexdigest()[:8]}"
@@ -121,7 +121,7 @@ def allocate_metric_id(name: str, existing_ids: set[str]) -> str:
 
 
 def normalize_metric_drafts(metrics: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """应用已确认默认值并为自定义 metric 分配稳定 ID。"""
+    """Apply confirmed defaults and allocate stable IDs for custom metrics."""
 
     if len(metrics) > 4:
         raise ValueError("metric_limit_exceeded")
@@ -195,7 +195,7 @@ def scene_turn_budget(
     goals: list[Mapping[str, Any]],
     expected_turns: int | None = None,
 ) -> tuple[int, int]:
-    """返回短篇节点固定的三回合预算；作者估算只用于诊断。"""
+    """Return the fixed three-turn budget for short-story nodes; author estimates are diagnostic only."""
 
     # 两个参数只保留在内部计算签名中，不能把目标数量或 expected_turns
     # 投影到 Story Package；Runtime 的每幕推荐回合始终固定为 3。
@@ -205,7 +205,7 @@ def scene_turn_budget(
 
 
 def _is_actionable_player_exit(value: Any) -> bool:
-    """判断离幕说明是否真的留下了玩家可亲自执行的动作。"""
+    """Determine whether an exit description leaves an action the player can actually perform."""
 
     text = re.sub(r"\s+", "", str(value or "")).strip()
     if not text:
@@ -216,7 +216,7 @@ def _is_actionable_player_exit(value: Any) -> bool:
 
 
 def acting_contract_to_package(value: Mapping[str, Any]) -> dict[str, Any]:
-    """把作者状态线投影为现有 Runtime 合同；空的可确认事实不写入严格字段。"""
+    """Project author state arcs into the existing Runtime contract, omitting empty confirmable facts from strict fields."""
 
     contract = {
         "cognition_state": str(value.get("cognition_state") or ""),
@@ -246,7 +246,7 @@ def acting_contract_to_package(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def character_state_to_package(value: Mapping[str, Any]) -> dict[str, Any]:
-    """把作者状态线投影为 N.E.K.O 可直接读取的入幕状态，不复制演绎合同。"""
+    """Project author state arcs into N.E.K.O entrance states without copying the acting contract."""
 
     return {
         "catgirl_state": str(value.get("catgirl_state") or "").strip(),
@@ -266,7 +266,7 @@ def character_state_to_package(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class NumericV2Compiler:
-    """NEKO_Numeric_drama 工作台使用的统一 Numeric v2 合同入口。"""
+    """Unified Numeric v2 contract entry point for the NEKO_Numeric_drama workshop."""
 
     def __init__(self, bridge: PackageGateway):
         self.bridge = bridge

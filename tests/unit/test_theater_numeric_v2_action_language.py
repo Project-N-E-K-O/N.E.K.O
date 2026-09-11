@@ -1,4 +1,4 @@
-"""玩家口语行动的固定正反例；模型是否理解正确由真实压测单独判断。"""
+"""Fixed positive and negative examples of colloquial player actions; real stress tests assess model understanding separately."""
 
 from dataclasses import replace
 
@@ -11,7 +11,7 @@ from tests.unit.test_theater_numeric_v2_prompt_contract import _session
 
 
 def build_action_language_cases(builder=None):
-    """先固定授权范围与答案，口语/动作格式只改变玩家表达，不改现场前提。"""
+    """Fix authorization and expected answers first; colloquial or action formatting changes expression without changing scene premises."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     opening = "登记台有一份白色登记表和一支可用的笔，玩家已看完条款；两者就在手边，登记表还未签署。猫娘刚请玩家签白色登记表；旁边另有一份蓝色表格，留待另行决定。"
@@ -46,7 +46,7 @@ def build_action_language_cases(builder=None):
 
 
 def test_action_language_rule_reaches_actor_evaluator_and_guard():
-    """校验实际打包链路共享同一合同，不能只改 Actor 后又被另一消费者按旧语义拒绝。"""
+    """Verify that actual packing paths share the contract so another consumer cannot reject Actor output using obsolete semantics."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
@@ -101,7 +101,7 @@ def test_post_opening_state_rule_reaches_formal_transition_actor_and_guard():
 
 
 def test_action_language_keeps_late_condition_in_current_input():
-    """长输入尾部的否定必须传到三个消费者，不能只保留开头的签署意向。"""
+    """Deliver a long input's final refusal to all three consumers instead of keeping only its initial intention to sign."""
 
     import json
 
@@ -119,7 +119,7 @@ def test_action_language_keeps_late_condition_in_current_input():
 
 
 def test_action_language_control_pairs_keep_identical_author_facts():
-    """反例只改变执行意图或越权结果，避免用不同前提伪造改善。"""
+    """Change only execution intent or unauthorized results in counterexamples, avoiding apparent improvements caused by different premises."""
 
     import json
 

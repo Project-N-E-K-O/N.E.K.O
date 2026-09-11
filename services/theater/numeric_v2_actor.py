@@ -11,7 +11,10 @@ import logging
 import time
 from typing import Any, Callable, Mapping
 
-from config.prompts.prompts_theater import NUMERIC_V2_ACTOR_JSON_INSTRUCTION
+from config.prompts.prompts_theater import (
+    NUMERIC_V2_ACTOR_JSON_INSTRUCTION,
+    NUMERIC_V2_ACTOR_NARRATION_BREVITY_INSTRUCTION,
+)
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 from .numeric_v2_usage import invoke_with_usage
@@ -62,14 +65,6 @@ NUMERIC_V2_ACTOR_SUGGESTION_FILL_MAX_OUTPUT_TOKENS = 260
 NUMERIC_V2_ACTOR_SLOW_CALL_SECONDS = 15.0
 NUMERIC_V2_PREVIOUS_SCENE_TAIL_MAX_BLOCKS = 2
 NUMERIC_V2_PREVIOUS_SCENE_TAIL_MAX_TOKENS = 80
-NUMERIC_V2_ACTOR_NARRATION_BREVITY_INSTRUCTION = (
-    "performance 中全角括号只写当前猫娘一个必要的即时动作，括号外只写她实际说出的对白；"
-    "对白不用引号，不写‘她说’、人物名动作或小说旁白。performance 通常一至三句，以自然对白为主，默认纯对白；"
-    "最终全角动作括号最多一对。"
-    "不写内心或罗列身体反应，不复述玩家刚做过的动作。环境变化写 scene_update；"
-    "同一结果不在 performance 与 scene_update 重复。"
-    "普通回合不得自行改变地点或进入 next，无新可见结果就省略 scene_update。"
-)
 _RESTRICTED_KNOWLEDGE_SCOPE = (
     "只把 current_story_beat、recent_context、player_input 与 acting_context 明确允许的可观察状态视为已知；"
     "其余身份、历史和关系未知。"
