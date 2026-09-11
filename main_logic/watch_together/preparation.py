@@ -15,19 +15,22 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
     if tasks:
         raise ValueError("A video is already being prepared")
     library = application_library()
-    voice_signature = manager.current_game_speech_audio_runtime_signature()
     from utils.language_utils import get_global_language_full, normalize_language_code
-    language = normalize_language_code(getattr(manager, "user_language", None) or get_global_language_full(), format="full")
+    language = normalize_language_code(
+        getattr(manager, "_conversation_render_language", None)
+        or getattr(manager, "_conversation_turn_language", None)
+        or getattr(manager, "user_language", None) or get_global_language_full(), format="full")
+    voice_signature = manager.game_speech_audio_cache_identity("", render_language=language)[1]
     job = {"id": uuid.uuid4().hex, "status": "working", "stage": "Preparing", "stage_key": "checking", "events": []}
     jobs[job["id"]] = job
 
     async def synthesize(text, output):
         from main_logic.core.game_speech_audio_cache import GAME_SPEECH_AUDIO_CACHE
-        key, signature = manager.game_speech_audio_cache_identity(text)
+        key, signature = manager.game_speech_audio_cache_identity(text, render_language=language)
         if signature != voice_signature:
             raise ValueError("Character voice changed during preparation")
-        result = await manager.preload_game_speech_audio([text])
-        if not result.get("ok") or manager.game_speech_audio_cache_identity(text) != (key, signature):
+        result = await manager.preload_game_speech_audio([text], render_language=language)
+        if not result.get("ok") or manager.game_speech_audio_cache_identity(text, render_language=language) != (key, signature):
             raise ValueError("Character voice changed or synthesis failed")
         chunks = GAME_SPEECH_AUDIO_CACHE.get(key)
         if not chunks:

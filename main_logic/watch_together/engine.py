@@ -8,12 +8,12 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 from urllib.parse import urlparse, parse_qs
 
 import httpx
 from config.prompts.prompts_watch_together import (
-    LAUGH_INSTRUCTION as LAUGH_INSTRUCTION,
     LAUGH_TEXT,
     LAUGH_TEXT_BY_LANGUAGE,
     WATCH_TOGETHER_DIRECTOR_PROMPT,
@@ -24,8 +24,32 @@ FRAME_SECONDS = 5
 MAX_SECONDS = 1200
 
 
+def media_binary(name):
+    configured = os.environ.get(f"NEKO_{name.upper()}_PATH")
+    resolved = shutil.which(configured or name)
+    if not resolved:
+        raise FileNotFoundError(f"Install {name} or set NEKO_{name.upper()}_PATH to its executable")
+    return resolved
+
+
+def subtitle_priority(track, language):
+    def canonical(value):
+        value = str(value).lower().replace("_", "-").removeprefix("ai-")
+        return {"zh-hans": "zh-cn", "zh-hant": "zh-tw"}.get(value, value)
+    wanted, actual = canonical(language), canonical(track.get("lan", ""))
+    return 0 if actual == wanted else 1 if actual.split('-')[0] == wanted.split('-')[0] else 2
+
+
+def dash_audio(dash):
+    streams = list(dash.get("audio") or [])
+    for group in ("dolby", "flac"):
+        audio = (dash.get(group) or {}).get("audio")
+        streams.extend(audio if isinstance(audio, list) else [audio] if isinstance(audio, dict) else [])
+    return min(streams, key=lambda s: s.get("bandwidth", 0)) if streams else None
+
+
 def run_media(*args):
-    result = subprocess.run(list(map(str, args)), capture_output=True, timeout=600,
+    result = subprocess.run([media_binary(args[0]), *map(str, args[1:])], capture_output=True, timeout=600,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode:
         raise RuntimeError("媒体处理失败：" + result.stderr.decode("utf-8", "replace")[-350:])
@@ -176,6 +200,9 @@ class Engine:
         return result.value
 
     async def prepare(self, job, url, voice_name, *, automatic=False, confirmed_duration=None):
+        # Fail before downloading or paying for analysis when prerequisites are absent.
+        media_binary("ffmpeg")
+        media_binary("ffprobe")
         folder = self.cache / job["id"]
         folder.mkdir()
         job["usage"] = {"calls": [], "input_tokens": 0, "output_tokens": 0,
@@ -214,7 +241,7 @@ class Engine:
         async with httpx.AsyncClient(headers=headers, timeout=60, follow_redirects=True) as client:
             try:
                 tracks = (await asyncio.wait_for(v.get_subtitle(cid=cid), 25)).get("subtitles", [])
-                tracks.sort(key=lambda t: 0 if t.get("lan", "").startswith(self.language.split('-')[0]) else 1)
+                tracks.sort(key=lambda t: subtitle_priority(t, self.language))
                 if tracks:
                     sub_url = tracks[0]["subtitle_url"]
                     if sub_url.startswith("//"):
@@ -256,13 +283,17 @@ class Engine:
             if dash:
                 streams = [s for s in dash["video"] if s.get("codecid") == 7] or dash["video"]
                 stream = min(streams, key=lambda s: abs(s.get("height", 720) - 720))
-                sound = min(dash["audio"], key=lambda s: s.get("bandwidth", 0))
+                sound = dash_audio(dash)
                 await download(stream.get("baseUrl") or stream.get("base_url"), folder / "video.m4s")
-                await download(sound.get("baseUrl") or sound.get("base_url"), folder / "audio.m4s")
-                await asyncio.to_thread(run_media, "ffmpeg", "-y", "-i", folder / "video.m4s", "-i", folder / "audio.m4s",
+                audio_args = []
+                if sound:
+                    await download(sound.get("baseUrl") or sound.get("base_url"), folder / "audio.m4s")
+                    audio_args = ["-i", folder / "audio.m4s"]
+                await asyncio.to_thread(run_media, "ffmpeg", "-y", "-i", folder / "video.m4s", *audio_args,
                                         "-c", "copy", "-movflags", "+faststart", target)
                 (folder / "video.m4s").unlink()
-                (folder / "audio.m4s").unlink()
+                if sound:
+                    (folder / "audio.m4s").unlink()
             elif urls.get("durl"):
                 if len(urls["durl"]) != 1:
                     raise ValueError("暂不支持这种多段旧视频流")
@@ -272,6 +303,12 @@ class Engine:
             else:
                 raise ValueError("未获取到可播放视频，请检查 B 站登录和视频权限")
         length = await asyncio.to_thread(duration, target)
+        if not math.isfinite(length) or not 0 < length <= MAX_SECONDS:
+            raise ValueError("Downloaded video duration exceeds the supported limit")
+        if not enforce_policy({"duration": length, "parts": len(pages),
+                               "danmaku": info.get("stat", {}).get("danmaku")},
+                              automatic=automatic, confirmed_duration=confirmed_duration):
+            raise ValueError("Downloaded duration requires renewed confirmation")
         job["duration"] = length
         progress("extractingFrames", 35)
         frames_dir = folder / "frames"

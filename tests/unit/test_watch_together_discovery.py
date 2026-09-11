@@ -1,4 +1,5 @@
 import sys
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -45,6 +46,11 @@ async def test_discovery_rechecks_metadata_and_never_relaxes(monkeypatch):
     monkeypatch.setattr(discovery, "inspect_video", inspect)
     result = await discovery.discover("cats")
     assert result["video"]["duration"] == 179
+    inspect.side_effect = [RuntimeError("unavailable"), {"duration": 60, "danmaku": 101, "parts": 1}]
+    assert (await discovery.discover("cats"))["video"]["duration"] == 60
+    inspect.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await discovery.discover("cats")
     inspect.reset_mock()
     inspect.side_effect = None
     assert (await discovery.discover("cats", exclude=["first", "second"]))["video"] is None

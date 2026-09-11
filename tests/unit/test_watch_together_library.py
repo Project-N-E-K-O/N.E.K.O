@@ -23,6 +23,11 @@ def test_single_job_import_skips_old_jobs_and_report(tmp_path):
     other = src / ("a" * 32)
     other.mkdir()
     (other / "timeline.json").write_text('{}')
+    (src / "backup-manifest.json").write_text(json.dumps([
+        {"path": file.relative_to(src).as_posix(), "bytes": file.stat().st_size,
+         "sha256": hashlib.sha256(file.read_bytes()).hexdigest()}
+        for file in src.glob('*/*') if file.is_file()
+    ]))
     library = Library(tmp_path / "data")
     result = library.import_sources([src], only_job=JOB, write_report=False)
     assert result["jobs"] == 1
@@ -103,5 +108,8 @@ def test_viewing_is_separate_and_completion_survives_exit(tmp_path):
     library.record_watch(watch, 42, {'type':'ended'})
     library.record_watch(watch, 42, {'type':'exit'})
     saved = library.watches()[0]
+    assert 'events' not in saved
+    with library.connect() as db:
+        assert len(json.loads(db.execute('SELECT events FROM watches WHERE id=?', (watch,)).fetchone()['events'])) == 3
     assert saved['completed'] == 1 and saved['last_watched']
     assert library.history()[0]['last_watched'] is None

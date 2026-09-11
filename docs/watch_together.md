@@ -43,6 +43,17 @@ request the memory capability.
 
 ## Playback and preparation
 
+New video preparation requires FFmpeg and FFprobe. Install both executables
+and add their directory to PATH, or configure `NEKO_FFMPEG_PATH` and
+`NEKO_FFPROBE_PATH` with their absolute executable paths before starting N.E.K.O.
+For Windows, an FFmpeg distribution must contain both `bin/ffmpeg.exe` and
+`bin/ffprobe.exe`; point the two variables at those files. Packaged launchers
+must supply these prerequisites or set the variables to their bundled tools.
+This repository does not bundle media binaries. Preparation checks both tools
+before downloading or making paid model calls; existing history can still play.
+The downloaded duration is checked again before frame extraction and analysis.
+If it no longer satisfies selection or confirmation, preparation stops safely.
+
 The trusted media host preloads reaction files, owns the only reaction audio
 output, and uses `video.currentTime` for scheduling. Pause/buffering stops audio,
 resume uses the current offset, seek discards stale reactions and rearms future

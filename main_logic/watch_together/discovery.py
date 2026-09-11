@@ -81,7 +81,9 @@ async def discover(topic, exclude=()):
             try:
                 info = await inspect_video(bvid)
                 enforce_policy(info, automatic=True)
-            except ValueError:
+            except Exception:
+                # An unavailable candidate must not hide later valid results.
+                # CancelledError inherits BaseException and still propagates.
                 continue
             return {"video": info, "topic": topic}
     return {"video": None, "topic": topic}

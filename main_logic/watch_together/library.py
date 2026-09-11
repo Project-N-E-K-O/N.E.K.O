@@ -99,6 +99,9 @@ class Library:
                     parts = name.split('/')
                     if len(parts) < 2 or not JOB_ID.fullmatch(parts[0]) or any(p in {'', '.', '..'} for p in parts):
                         raise ValueError("Invalid archive manifest path")
+                if only_job is not None:
+                    expected = {name: item for name, item in expected.items() if name.split('/')[0] == only_job}
+                for name in expected:
                     if not (source / name).is_file():
                         raise ValueError("Archive is missing files recorded by backup-manifest.json")
             encountered = set()
@@ -234,7 +237,8 @@ class Library:
 
     def watches(self) -> list[dict]:
         with self.connect() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM watches ORDER BY last_watched DESC")]
+            return [dict(row) for row in db.execute(
+                "SELECT id,job,version,character,progress,last_watched,completed FROM watches ORDER BY last_watched DESC")]
 
     def verify(self) -> dict:
         failures, checked = [], {}

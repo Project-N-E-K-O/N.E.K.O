@@ -1,5 +1,30 @@
 import pytest
 from main_logic.watch_together.engine import Engine
+from main_logic.watch_together.engine import subtitle_priority, dash_audio, media_binary
+
+
+def test_subtitle_script_and_generated_language_priority():
+    tracks = [{"lan": "en"}, {"lan": "zh-Hans"}, {"lan": "zh-Hant"}]
+    assert min(tracks, key=lambda t: subtitle_priority(t, "zh-TW"))["lan"] == "zh-Hant"
+    assert min(tracks, key=lambda t: subtitle_priority(t, "zh-CN"))["lan"] == "zh-Hans"
+    assert subtitle_priority({"lan": "ai-en"}, "en") == 0
+
+
+def test_dash_silent_and_alternate_audio():
+    assert dash_audio({}) is None
+    assert dash_audio({"audio": []}) is None
+    sound = {"baseUrl": "audio", "bandwidth": 10}
+    assert dash_audio({"flac": {"audio": sound}}) == sound
+    assert dash_audio({"dolby": {"audio": [sound]}}) == sound
+
+
+def test_configured_media_binary_and_missing_prerequisite(monkeypatch):
+    from main_logic.watch_together import engine
+    monkeypatch.setenv("NEKO_FFMPEG_PATH", "C:/media tools/ffmpeg.exe")
+    monkeypatch.setattr(engine.shutil, "which", lambda value: value if value == "C:/media tools/ffmpeg.exe" else None)
+    assert media_binary("ffmpeg") == "C:/media tools/ffmpeg.exe"
+    with pytest.raises(FileNotFoundError, match="NEKO_FFPROBE_PATH"):
+        media_binary("ffprobe")
 from main_logic.watch_together.engine import normalize_events, parse_video_url, danmaku_hotspots, hotspot_frame_times
 
 
