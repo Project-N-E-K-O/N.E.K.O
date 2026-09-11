@@ -14,7 +14,7 @@ docker compose up -d
 
 Entrypoint は `/app/config/core_config.json` がない時、または `NEKO_FORCE_ENV_UPDATE` 指定時だけ初期 config を生成します。API env は live universal override ではありません。
 
-Persistent mounts は `./neko-home` → `/home/neko`（設定、データ、TLS 証明書と秘密鍵、OpenFang runtime state）、`./logs` → `/app/logs`。更新前に backup し、data/private key を公開しません。
+Persistent mounts は `./neko-home` → `/home/neko`（設定、データ、TLS 証明書と秘密鍵）、`./logs` → `/app/logs`。更新前に backup し、data/private key を公開しません。
 
 ::: danger 旧 2 マウント構成からの移行
 旧版は `./N.E.K.O` と `./ssl` を別々に mount していました。移行せずに新しい image を pull すると、container は**空の** data directory で起動します。サービスは正常に立ち上がり API key も環境変数から再生成されるため一見問題なく見えますが、キャラクター・記憶・plugin が全て存在しない状態です。旧 data は削除されておらず、mount されなくなっただけです。
@@ -23,12 +23,11 @@ Persistent mounts は `./neko-home` → `/home/neko`（設定、データ、TLS 
 
 ```bash
 # 1. container 内にしかないものを先に export（削除前に必ず実行）。
-#    旧レイアウトでは OpenFang の workspace を mount していませんでした。また host 側の
-#    N.E.K.O/ が空の場合は旧 README の quickstart のケースで、その mount 先
+#    host 側の N.E.K.O/ が空の場合は旧 README の quickstart のケースで、その mount 先
 #    （/root/Documents/N.E.K.O）はサービスの実際の書き込み先と一致していなかったため、
 #    アプリケーション data も container 内にあります。
 #    末尾の /. は directory の中身をコピーする指定で、N.E.K.O/N.E.K.O のようなネストを防ぎます。
-mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
+mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl
 # 判断は「host 側 directory の中身」ではなく「container が実際に何を mount しているか」で
 # 行います：旧 README は ./N.E.K.O を /root/Documents/N.E.K.O に mount しており、そこは
 # サービスが書き込まない path なので、その host directory に自分で置いた file があっても
@@ -49,11 +48,6 @@ else
     docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
     EXPORTED_APP_DATA=1
   fi
-  # OpenFang state はその次で、致命的ではありません：一度も初期化していない container
-  # には該当 directory がなく、docker cp は存在しない SRC_PATH で失敗します。上の
-  # 重要な export が済んだ後にそれで中断させてはいけません。
-  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ \
-    || echo "（container に .openfang がないか export に失敗しました。上の application data には影響しません）"
 fi
 ```
 

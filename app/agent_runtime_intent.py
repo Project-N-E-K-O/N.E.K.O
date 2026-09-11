@@ -14,16 +14,15 @@
 
 """User-level persistence for agent runtime toggles.
 
-The agent server keeps six in-memory switches:
+The agent server keeps five in-memory switches:
 
     analyzer_enabled         — master gate (the "cat paw" master switch)
     computer_use_enabled     — keyboard/mouse control sub flag
     browser_use_enabled      — browser control sub flag
     user_plugin_enabled      — user plugin sub flag
     openclaw_enabled         — OpenClaw sub flag
-    openfang_enabled         — OpenFang sub flag
 
-Historically all six were re-zeroed on every process start, so the user had
+Historically all five were re-zeroed on every process start, so the user had
 to re-toggle every switch after restart. This module persists the user's
 **intent** (last explicit toggle) under the config dir as
 ``agent_runtime_intent.json``, and a restore path at first ``greeting_check``
@@ -68,7 +67,6 @@ INTENT_KEYS: frozenset[str] = frozenset({
     "browser_use_enabled",
     "user_plugin_enabled",
     "openclaw_enabled",
-    "openfang_enabled",
 })
 
 _cache_lock = threading.Lock()

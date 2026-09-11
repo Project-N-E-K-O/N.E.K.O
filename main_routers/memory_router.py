@@ -35,11 +35,16 @@ import re
 import json
 from contextlib import suppress
 from pathlib import Path
+from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
-from utils.character_name import validate_character_name
+from pydantic import BaseModel, Field
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.character_memory import (
+    is_legacy_vector_store_dir,
     character_memory_exists,
+    iter_character_memory_roots,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import is_supported_language_code, normalize_language_code
@@ -72,6 +77,234 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
 PATH_ERROR_INVALID_REQUEST = "INVALID_REQUEST"
 PATH_ERROR_NOT_FOUND = "NOT_FOUND"
+REPETITION_INSIGHT_LANGUAGES = frozenset(
+    {"en", "es", "pt", "ru", "ja", "ko", "zh-CN", "zh-TW"}
+)
+
+
+class RepetitionInsightsRequest(BaseModel):
+    character_name: str
+    language: str
+    assistant_message_limit: int = Field(default=100, ge=3, le=100)
+    # Kept only for compatibility with older clients. Message-scoped reports
+    # no longer use this value.
+    effect_days: Literal[7, 30, 90] = 30
+
+
+class RepetitionEffectsResetRequest(BaseModel):
+    character_name: str
+
+
+def _empty_repetition_effects(days: int) -> dict:
+    return {
+        "schema_version": "anti-repeat-effects/v1",
+        "source_available": False,
+        "started_at": 0.0,
+        "period_days": days,
+        "totals": {
+            "soft_hint_injected": 0,
+            "detected": 0,
+            "regen_triggered": 0,
+            "regen_guard_passed": 0,
+            "blocked_delivery": 0,
+            "break_reminder_suppressed": 0,
+            "abandoned_user_interaction": 0,
+            "unattributed": 0,
+        },
+        "reason_counts": {
+            "bm25": 0,
+            "literal_similarity": 0,
+            "unanswered_repeat": 0,
+        },
+        "bm25": {
+            "pair_count": 0,
+            "average_before": 0.0,
+            "average_after": 0.0,
+            "reduction_ratio": 0.0,
+        },
+        "patterns": [],
+    }
+
+
+def _empty_message_scoped_repetition_effects(limit: int) -> dict:
+    effects = _empty_repetition_effects(30)
+    effects.pop("period_days", None)
+    effects.update(
+        {
+            "scope_type": "assistant_messages",
+            "assistant_message_limit": limit,
+            "linked_message_count": 0,
+        }
+    )
+    return effects
+
+
+def _is_safe_containment_phrase(language: str, phrase: str) -> bool:
+    compact = re.sub(r"\s+", "", phrase)
+    if language in {"ja", "ko", "zh-CN", "zh-TW"}:
+        return len(compact) >= 4
+    return len(phrase) >= 4 and len(phrase.split()) >= 2
+
+
+def _is_runtime_detector_signature(language: str, phrase: str, reasons: object) -> bool:
+    if not isinstance(reasons, dict) or not any(
+        int(reasons.get(reason, 0)) > 0 for reason in ("bm25", "unanswered_repeat")
+    ):
+        return False
+    compact = re.sub(r"\s+", "", phrase)
+    if language in {"ja", "ko", "zh-CN", "zh-TW"}:
+        return len(compact) in {2, 3}
+    return len(phrase) >= 2 and len(phrase.split()) == 1
+
+
+def _repetition_association_language(language: str) -> str:
+    """Use one comparison key for legacy Simplified Chinese effect records."""
+    return "zh-CN" if language in {"zh", "zh-CN"} else language
+
+
+def _phrases_contain_each_other(language: str, left: str, right: str) -> bool:
+    left_tokens = left.split()
+    right_tokens = right.split()
+    use_token_boundaries = language in {"en", "es", "pt", "ru"} or (
+        language == "ko" and len(left_tokens) > 1 and len(right_tokens) > 1
+    )
+    if not use_token_boundaries:
+        return left in right or right in left
+
+    shorter, longer = sorted((left_tokens, right_tokens), key=len)
+    width = len(shorter)
+    return any(
+        longer[start : start + width] == shorter
+        for start in range(len(longer) - width + 1)
+    )
+
+
+def _aggregate_repetition_associations(associations: list[dict]) -> list[dict]:
+    """Fold per-pattern associations into one row per candidate.
+
+    The panel only ever reduces these to four totals plus an "any at all?"
+    test (``static/js/memory_browser.js`` at 1208 and 1461); no consumer reads
+    the per-pattern fields. Shipping one row per (candidate, pattern) pair made
+    the payload the PRODUCT of two capped lists -- 200 candidates against up to
+    1920 window patterns -- measured at 5,366 rows / 1.62 MiB at that cap, and
+    24,036 rows / 7.94 MiB for a character whose n-grams all contain one
+    another. Folding bounds it by the candidate count instead, and every
+    displayed number stays identical because the panel was summing anyway.
+
+    Capping the list instead would have been wrong: a truncated array turns
+    those sums into silently WRONG totals on the card, which is worse than a
+    large payload.
+
+    Nothing becomes unrecoverable. Associations are derived per request from
+    the mined candidates and the effects sidecar; no store and no export keeps
+    them, so restoring per-pattern detail later is a server-side change and a
+    re-run, not a migration.
+    """
+    folded: dict[tuple[str, str], dict] = {}
+    for association in associations:
+        key = (association["language"], association["normalized_phrase"])
+        row = folded.get(key)
+        if row is None:
+            row = {
+                "normalized_phrase": association["normalized_phrase"],
+                "language": association["language"],
+                # "exact" wins over "contained": the card's meaning is "the
+                # runtime has handled this phrase", and an exact hit is the
+                # stronger claim.
+                "association_type": association["association_type"],
+                "effect_pattern_count": 0,
+                "detected_count": 0,
+                "regen_triggered_count": 0,
+                "regen_guard_passed_count": 0,
+                "blocked_count": 0,
+                "residual_occurrence_count": association[
+                    "residual_occurrence_count"
+                ],
+                "residual_message_count": association["residual_message_count"],
+            }
+            folded[key] = row
+        if association["association_type"] == "exact":
+            row["association_type"] = "exact"
+        row["effect_pattern_count"] += 1
+        for field in (
+            "detected_count",
+            "regen_triggered_count",
+            "regen_guard_passed_count",
+            "blocked_count",
+        ):
+            row[field] += association[field]
+    return list(folded.values())
+
+
+def _associate_repetition_effects(
+    candidates: list,
+    patterns: list,
+) -> list[dict]:
+    associations: list[dict] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        language = candidate.get("language")
+        candidate_phrase = candidate.get("normalized_phrase")
+        if not isinstance(language, str) or not isinstance(candidate_phrase, str):
+            continue
+        association_language = _repetition_association_language(language)
+        for pattern in patterns:
+            if not isinstance(pattern, dict):
+                continue
+            pattern_language = pattern.get("language")
+            if (
+                not isinstance(pattern_language, str)
+                or _repetition_association_language(pattern_language)
+                != association_language
+            ):
+                continue
+            effect_phrase = pattern.get("normalized_phrase")
+            if not isinstance(effect_phrase, str):
+                continue
+            association_type = None
+            if effect_phrase == candidate_phrase:
+                association_type = "exact"
+            elif (
+                _is_safe_containment_phrase(language, candidate_phrase)
+                and (
+                    _is_safe_containment_phrase(language, effect_phrase)
+                    or _is_runtime_detector_signature(
+                        language,
+                        effect_phrase,
+                        pattern.get("reasons"),
+                    )
+                )
+                and _phrases_contain_each_other(
+                    association_language,
+                    candidate_phrase,
+                    effect_phrase,
+                )
+            ):
+                association_type = "contained"
+            if association_type is None:
+                continue
+            associations.append(
+                {
+                    "normalized_phrase": candidate_phrase,
+                    "language": language,
+                    "effect_normalized_phrase": effect_phrase,
+                    "association_type": association_type,
+                    "detected_count": int(pattern.get("detected_count", 0)),
+                    "regen_triggered_count": int(
+                        pattern.get("regen_triggered_count", 0)
+                    ),
+                    "regen_guard_passed_count": int(
+                        pattern.get("regen_guard_passed_count", 0)
+                    ),
+                    "blocked_count": int(pattern.get("blocked_count", 0)),
+                    "residual_occurrence_count": int(
+                        candidate.get("occurrence_count", 0)
+                    ),
+                    "residual_message_count": int(candidate.get("message_count", 0)),
+                }
+            )
+    return associations
 
 
 async def _await_browser_save_transaction(coro):
@@ -110,15 +343,30 @@ def iter_recent_memory_files(base_dir: Path) -> list[str]:
 
     logical_names: set[str] = set()
 
+    # REAL entries only, on both branches. ``is_file()`` and ``is_dir()``
+    # follow links, and this list is what the insights selector and the
+    # memory browser both enumerate from -- so a link in the memory root
+    # was offered as a character and its target read from outside the root.
+    # Filtering only the caller's own directory scan left this path to
+    # re-admit it, by BOTH shapes: a linked directory and a linked
+    # recent_<name>.json.
     for flat_file in base_dir.glob('recent_*.json'):
-        if flat_file.is_file():
+        if flat_file.is_file() and not flat_file.is_symlink():
             logical_names.add(flat_file.name)
 
     for child in base_dir.iterdir():
-        if not child.is_dir():
+        if not child.is_dir() or child.is_symlink():
+            continue
+        # And not another character's vector store. This is the SECOND door
+        # into the same candidate set: filtering only the selector's own
+        # directory scan left "semantic_memory_Alice/recent.json" to come
+        # back through here as "recent_semantic_memory_Alice.json" -- the
+        # exact re-admission the symlink note above already warns about, one
+        # shape later.
+        if is_legacy_vector_store_dir(base_dir, child.name):
             continue
         recent_file = child / 'recent.json'
-        if recent_file.is_file():
+        if recent_file.is_file() and not recent_file.is_symlink():
             logical_names.add(build_recent_filename(child.name))
 
     return sorted(logical_names)
@@ -338,6 +586,206 @@ def safe_memory_path(memory_dir: Path, filename: str) -> tuple[Path | None, str]
 logger = get_module_logger(__name__, "Main")
 
 
+@router.post('/repetition_insights')
+async def repetition_insights(request: RepetitionInsightsRequest):
+    """Run an explicit, local-only review of persisted assistant text."""
+    # The same cap the INTERNAL analysis route enforces. Without it an
+    # over-long name passed here, failed there with 400, and got remapped
+    # to "local memory analysis unavailable" -- a 503 that sends the user
+    # hunting a memory-server fault that does not exist.
+    validation = validate_character_name(
+        request.character_name,
+        allow_dots=True,
+        max_units=PROFILE_NAME_MAX_UNITS,
+    )
+    if not validation.ok and validation.code != "reserved_route_name":
+        return JSONResponse(
+            {"success": False, "error": "invalid character name"},
+            status_code=422,
+        )
+    character_name = validation.normalized
+    if request.language not in REPETITION_INSIGHT_LANGUAGES:
+        return JSONResponse(
+            {"success": False, "error": "unsupported analysis language"},
+            status_code=422,
+        )
+
+    try:
+        from config import MEMORY_SERVER_PORT
+        from utils.config_manager import get_config_manager
+        from utils.internal_http_client import get_internal_http_client
+
+        config_manager = get_config_manager()
+        characters = await config_manager.aload_characters()
+        configured_characters = (
+            characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+        )
+        # The configured KEY, not the normalized request name: they differ
+        # when a hand-edited characters.json carries padding, and reading
+        # the normalized form there lands on an unrelated orphan directory.
+        configured_key = _configured_character_key(
+            configured_characters, character_name
+        )
+        if configured_key is None and not character_memory_exists(
+            config_manager, character_name
+        ):
+            return JSONResponse(
+                {"success": False, "error": "character not found"},
+                status_code=404,
+            )
+        if configured_key is not None:
+            character_name = configured_key
+        if _default_memory_dir_escapes_root(config_manager, character_name):
+            # Reported as absent rather than as a link: what is on the
+            # far end is not this panel's to describe either.
+            return JSONResponse(
+                {"success": False, "error": "character not found"},
+                status_code=404,
+            )
+
+        response = await get_internal_http_client().post(
+            "http://127.0.0.1:"
+            f"{MEMORY_SERVER_PORT}/internal/memory/"
+            f"{quote(character_name, safe='')}/repetition_insights",
+            json={
+                "language": request.language,
+                "assistant_message_limit": request.assistant_message_limit,
+            },
+            timeout=30.0,
+        )
+        if response.status_code != 200:
+            status_code = response.status_code
+            if status_code not in {404, 422, 503}:
+                status_code = 503
+            return JSONResponse(
+                {"success": False, "error": "local memory analysis unavailable"},
+                status_code=status_code,
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("invalid local memory analysis response")
+        response_ids = payload.pop("_anti_repeat_response_ids", None)
+        message_scoped = isinstance(response_ids, list)
+        # The local budget can narrow the window, so the requested limit is what
+        # the user asked for while `analyzed_message_count` is what was actually
+        # mined. The effect scope must be labelled with the latter, or the panel
+        # says "the latest 100 replies" over an aggregate covering ten.
+        payload_summary = payload.get("summary")
+        analyzed_limit = request.assistant_message_limit
+        if isinstance(payload_summary, dict):
+            analyzed = payload_summary.get("analyzed_message_count")
+            if isinstance(analyzed, int) and analyzed > 0:
+                analyzed_limit = analyzed
+        effects = (
+            _empty_message_scoped_repetition_effects(analyzed_limit)
+            if message_scoped
+            else _empty_repetition_effects(request.effect_days)
+        )
+        try:
+            from memory.anti_repeat_effects import get_anti_repeat_effect_store
+
+            effect_store = get_anti_repeat_effect_store()
+            if message_scoped:
+                queried_effects = await asyncio.to_thread(
+                    effect_store.query_effects_for_responses,
+                    character_name,
+                    response_ids,
+                    analyzed_limit,
+                )
+            else:
+                queried_effects = await asyncio.to_thread(
+                    effect_store.query_effects,
+                    character_name,
+                    request.effect_days,
+                )
+            if isinstance(queried_effects, dict):
+                effects = queried_effects
+            else:
+                effects["query_failed"] = True
+        except Exception as exc:
+            effects["query_failed"] = True
+            logger.warning(
+                "Local anti-repeat effects unavailable for %s: %s",
+                character_name,
+                type(exc).__name__,
+            )
+        candidates = payload.get("candidates")
+        patterns = effects.get("patterns")
+        payload["effectiveness"] = effects
+        payload["associations"] = _aggregate_repetition_associations(
+            _associate_repetition_effects(
+                candidates if isinstance(candidates, list) else [],
+                patterns if isinstance(patterns, list) else [],
+            )
+        )
+        return payload
+    except Exception as exc:
+        logger.warning(
+            "Local repetition analysis unavailable for %s: %s",
+            character_name,
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            {"success": False, "error": "local memory analysis unavailable"},
+            status_code=503,
+        )
+
+
+@router.post('/repetition_effects/reset')
+async def reset_repetition_effects(request: RepetitionEffectsResetRequest):
+    """Clear only local anti-repeat aggregates for one existing character."""
+    validation = validate_character_name(request.character_name, allow_dots=True)
+    if not validation.ok and validation.code != "reserved_route_name":
+        return JSONResponse(
+            {"success": False, "error": "invalid character name"},
+            status_code=422,
+        )
+    character_name = validation.normalized
+    try:
+        from memory.anti_repeat_effects import get_anti_repeat_effect_store
+        from utils.config_manager import get_config_manager
+
+        config_manager = get_config_manager()
+        characters = await config_manager.aload_characters()
+        configured_characters = (
+            characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+        )
+        # The configured KEY, not the normalized request name: they differ
+        # when a hand-edited characters.json carries padding, and reading
+        # the normalized form there lands on an unrelated orphan directory.
+        configured_key = _configured_character_key(
+            configured_characters, character_name
+        )
+        if configured_key is None and not character_memory_exists(
+            config_manager, character_name
+        ):
+            return JSONResponse(
+                {"success": False, "error": "character not found"},
+                status_code=404,
+            )
+        if configured_key is not None:
+            character_name = configured_key
+        await asyncio.to_thread(
+            get_anti_repeat_effect_store().clear_effects,
+            character_name,
+        )
+        logger.info("Cleared anti-repeat effects for character=%s", character_name)
+        return {
+            "success": True,
+            "character_name": character_name,
+            "cleared": True,
+        }
+    except Exception as exc:
+        logger.warning(
+            "Could not clear anti-repeat effects for %s: %s",
+            character_name,
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            {"success": False, "error": "local anti-repeat effects unavailable"},
+            status_code=503,
+        )
+
 def _recent_browser_fingerprint(content: str) -> str:
     """Return the optimistic-concurrency token for one browser snapshot."""
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -442,6 +890,224 @@ def _recent_browser_conflict_response(
         },
         status_code=409,
     )
+
+
+def _default_memory_dir_escapes_root(config_manager, name: str) -> bool:
+    """Whether this character's DEFAULT directory resolves outside the root.
+
+    A CONFIGURED character skips the existence check entirely, so the
+    symlink filter in the selector never sees it -- configured names are
+    added before directory enumeration. The read-only lookup then builds
+    memory_dir/<name>/time_indexed.db and follows the link, and the panel
+    renders and exports assistant-shaped rows from a database outside the
+    memory root.
+
+    The sidecar stores are not reachable this way because they already
+    ask ``_is_within_memory_root``, which resolves both sides with
+    realpath. The read-only time index does not, because it has to honour
+    ``time_store`` -- where a character can be deliberately pointed
+    elsewhere. So the same rule is asked here instead, and only about the
+    DEFAULT path: an explicitly registered one is a choice, not a leak.
+
+    MEMBERSHIP in ``time_store`` is not that choice. ``get_character_data``
+    builds it as ``{name: memory_dir/name/time_indexed.db}`` for every
+    configured character, so treating a present key as an override made
+    this return False for exactly the case it exists to catch -- the
+    check never ran outside its own test, which supplied an empty store.
+    What counts is the path being DIFFERENT from the default one.
+
+    Compared without resolving links, deliberately: realpath on a linked
+    default path lands on the far end, which then reads as "somewhere
+    else on purpose" and waves through precisely the case in hand.
+    """
+    try:
+        time_store = config_manager.get_character_data()[6]
+    except Exception:
+        # Unreadable configuration is not evidence of a deliberate
+        # override, so fall through to the containment check.
+        time_store = {}
+    registered = time_store.get(name) if isinstance(time_store, dict) else None
+    if registered:
+        default = os.path.join(
+            str(config_manager.memory_dir), name, "time_indexed.db"
+        )
+        if os.path.normcase(os.path.abspath(str(registered))) != os.path.normcase(
+            os.path.abspath(default)
+        ):
+            return False
+    from memory import character_dir_is_within_memory_root
+
+    try:
+        if not character_dir_is_within_memory_root(
+            config_manager.memory_dir, name
+        ):
+            return True
+        # And the DATABASE under it. A real memory/<name>/ directory
+        # passes containment while holding "time_indexed.db -> /outside",
+        # and the read-only path follows a file link exactly as it would
+        # a directory one. Resolved rather than islink-tested, so an
+        # intermediate link is caught the same way.
+        character_dir = os.path.join(str(config_manager.memory_dir), name)
+        database = os.path.join(character_dir, "time_indexed.db")
+        return os.path.normcase(
+            os.path.dirname(os.path.realpath(database))
+        ) != os.path.normcase(os.path.realpath(character_dir))
+    except Exception:
+        # Cannot resolve it, so cannot vouch for it. Refusing costs a
+        # panel; waving it through is the direction that leaks, and this
+        # module treats that as the only unacceptable one.
+        return True
+
+
+def _configured_character_key(configured, character_name: str) -> str | None:
+    """The characters.json key this request name identifies, if any.
+
+    Both routes normalize what they are asked for, and the panel offers
+    what ``_insight_selectable_name`` returns, which is normalized too --
+    the frontend trims it again before posting. characters.json keys are
+    NOT normalized: nothing in this repo writes a padded one, but nothing
+    rejects a hand-edited config either. Such a key was offered as its
+    trimmed form and then failed the raw membership test, 404ing on a name
+    the panel had just listed -- the drift the selector docstring says
+    cannot happen.
+
+    Worse than the 404: an unrelated memory/<trimmed>/ left over from a
+    delete satisfied the existence arm instead, so the panel read that
+    orphan and the reset button cleared ITS aggregates rather than the
+    configured character's.
+
+    Exactly inverts the offering rule, so the two cannot drift again, and
+    an exact key always wins -- with both "Bob" and " Bob" configured, the
+    request for "Bob" means "Bob".
+    """
+    if character_name in configured:
+        return character_name
+    for key in configured:
+        if not isinstance(key, str) or not key:
+            continue
+        if _insight_selectable_name(key) == character_name:
+            return key
+    return None
+
+
+def _insight_selectable_name(name: str) -> str | None:
+    """Return the name the analysis route would accept, or None.
+
+    The selector and the route have to share one admission rule. Building
+    the list from any non-empty configured string offered names the route
+    then rejected with 422 -- a historical unsafe name such as "." is a
+    supported state that the delete route deliberately keeps a rescue path
+    for, so it really can still be in characters.json. The reserved-route
+    exception is intentional and shared with the route.
+    """
+    validation = validate_character_name(
+        name, allow_dots=True, max_units=PROFILE_NAME_MAX_UNITS
+    )
+    if not validation.ok and validation.code != "reserved_route_name":
+        return None
+    return validation.normalized or None
+
+
+@router.get('/insight_characters')
+async def get_insight_characters():
+    """List the identities the repetition-insights route will accept.
+
+    The panel selector used to be built from the recent-memory file list,
+    which only knows characters that have a ``recent.json``. A configured
+    character, or one restored from a cloud snapshot carrying time-indexed
+    history without the optional recent file, was therefore missing from the
+    panel even though the analysis route supports it.
+
+    Reuses that route's own admission rule -- configured OR has character
+    memory on disk -- so the two cannot drift into offering a name the route
+    rejects, or hiding one it accepts.
+    """
+    from utils.config_manager import get_config_manager
+
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    configured = (
+        characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+    )
+    names = {
+        selectable
+        for name in configured
+        if isinstance(name, str) and name
+        for selectable in (_insight_selectable_name(name),)
+        if selectable
+    }
+
+    # Raw, not selectable: this is compared against directory names on disk,
+    # which carry the character name as configured.
+    configured_names = {
+        name for name in configured if isinstance(name, str) and name
+    }
+
+    # Enumerate through the same roots the predicate reads, so a root added
+    # there cannot silently become invisible here.
+    candidates: set[str] = set()
+    for base_dir in iter_character_memory_roots(config_manager):
+        if not base_dir.exists():
+            continue
+        for child in base_dir.iterdir():
+            # A REAL directory. ``Path.is_dir()`` follows links, so a
+            # symlink in the memory root was offered as a character and
+            # ``character_memory_exists`` confirmed it -- the panel would
+            # then read, render and export assistant-shaped rows from
+            # whatever database the link points at, outside the memory root
+            # entirely. Measured with a link to a sibling directory.
+            #
+            # Fixed HERE rather than in the shared reader on purpose:
+            # ``_resolve_expected_db_path`` honours ``time_store``, which
+            # exists so a character CAN register a database outside
+            # memory_dir, and a blanket containment check there would break
+            # that. What is new on this branch is enumerating the root and
+            # offering what it finds, so that is what learns to be careful.
+            #
+            # And a REAL character directory, not merely a namesake. A legacy
+            # "semantic_memory_Alice/" vector store is one of the paths
+            # ``character_memory_exists`` checks for a character of that
+            # name, so it confirms itself: the selector offered
+            # "semantic_memory_Alice", and analysing it read
+            # memory/semantic_memory_Alice/time_indexed.db rather than
+            # Alice's, reporting no history for a character that has plenty.
+            #
+            # Configured characters keep their own path below and are not
+            # subject to this -- an empty configured character is still hers.
+            #
+            # And not another character's vector store. A legacy
+            # "semantic_memory_Alice/" is one of the paths
+            # ``character_memory_exists`` checks for a character of that
+            # name, so it confirms itself: the selector offered
+            # "semantic_memory_Alice", and analysing it read that vector
+            # store rather than Alice's history. Only the ENUMERATING side
+            # can tell the difference, because only it can see the owner.
+            if (
+                child.is_dir()
+                and not child.is_symlink()
+                and not is_legacy_vector_store_dir(base_dir, child.name)
+            ):
+                candidates.add(child.name)
+            # No legacy decoding here. The flat layout was retired in
+            # 2026-03 together with the startup migration that replaces it,
+            # and that migration now covers unconfigured owners as well --
+            # so by the time this runs, a legacy root file has already
+            # become memory/<name>/ and the directory branch above sees it.
+            # Decoding here made the READ path carry a second layout, and
+            # got it wrong: "time_indexed_Carol.db-wal" decoded to a
+            # character named "Carol.db-wal", which the existence check then
+            # confirmed, so the panel offered it.
+        for logical_name in iter_recent_memory_files(base_dir):
+            candidate = extract_catgirl_name_from_recent_filename(logical_name)
+            if candidate:
+                candidates.add(candidate)
+
+    for candidate in candidates - names:
+        selectable = _insight_selectable_name(candidate)
+        if selectable and character_memory_exists(config_manager, selectable):
+            names.add(selectable)
+
+    return {"characters": sorted(names)}
 
 
 @router.get('/recent_files')

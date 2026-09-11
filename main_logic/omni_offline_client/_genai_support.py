@@ -358,6 +358,22 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
 
 
 class _GenaiMixin:
+    def _ensure_genai_client(self) -> None:
+        """Build the genai client if nothing holds one right now.
+
+        Called at every point that dereferences it, not once up front: a tool
+        that hands back a picture makes the host call
+        ``prepare_for_tool_images``, whose ``switch_model`` drops the client
+        because the vision slot may carry its own key and endpoint. Anything
+        that cached the client above the tool loop would then be holding None.
+        """
+        if self._genai_client is not None:
+            return
+        try:
+            self._genai_client = _genai.Client(api_key=self.api_key or None)
+        except Exception as e:
+            raise _GenaiToolsUnsupported(f"genai.Client init failed: {e}") from e
+
     async def _astream_genai_with_tools(self, messages, **overrides):
         """google-genai streaming with tool support. Yields
         ``LLMStreamChunk``-shaped objects so the caller can be agnostic
@@ -375,16 +391,12 @@ class _GenaiMixin:
         cannot handle tools — caller falls back to OpenAI-compat."""
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
+        tool_image_slots = overrides.pop("_tool_image_slots", None)
+        tool_bus_frames = overrides.pop("_tool_bus_frames", None)
+        tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         if not _ensure_genai():
             raise _GenaiToolsUnsupported("google-genai SDK not importable")
         types = _genai_types
-
-        # Lazy client init — re-use across turns.
-        if self._genai_client is None:
-            try:
-                self._genai_client = _genai.Client(api_key=self.api_key or None)
-            except Exception as e:
-                raise _GenaiToolsUnsupported(f"genai.Client init failed: {e}") from e
 
         # Build tools once per session (registry is identity-stable
         # across iterations within one stream_text call).
@@ -407,6 +419,7 @@ class _GenaiMixin:
         # 迭代被耗尽（cap=3 时我们可能在第 1 轮就跳出）。
         zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
+            self._ensure_genai_client()
             system_instruction, contents = _genai_messages_to_contents(
                 _slop_reduced_for_genai(messages)
             )
@@ -469,7 +482,15 @@ class _GenaiMixin:
             iter_block_reason: Optional[str] = None
 
             try:
+                # 与 OpenAI 路径对偶：上一轮注入的工具图，等本轮 SDK 真的
+                # 吐出东西才算送到。
+                tool_frames_published = False
                 async for chunk in stream:
+                    if not tool_frames_published:
+                        tool_frames_published = True
+                        self._publish_pending_tool_frames(
+                            tool_bus_frames, turn_id=tool_frames_turn_id
+                        )
                     # prompt_feedback.block_reason：Gemini 整段 input 被 safety
                     # 拦掉时填这个，candidate 可能根本没出现。
                     pf = getattr(chunk, "prompt_feedback", None)
@@ -685,6 +706,7 @@ class _GenaiMixin:
                     "tool_calls": tool_calls_dict,
                 })
                 executed_tool_calls += len(collected_tool_calls)
+                image_results = []
                 for i, (tc_id, tc_name, tc_args, tc_raw, _tc_extra) in enumerate(collected_tool_calls):
                     tool_call = ToolCall(
                         name=tc_name,
@@ -702,12 +724,26 @@ class _GenaiMixin:
                             output={"error": f"{type(e).__name__}: {e}"},
                             is_error=True, error_message=str(e),
                         )
-                    messages.append({
+                    tool_result_message = {
                         "role": "tool",
                         "tool_call_id": tool_call.call_id,
                         "name": tc_name,
                         "content": result.output_as_json_string(),
-                    })
+                    }
+                    messages.append(tool_result_message)
+                    if getattr(result, "images", None):
+                        image_results.append((result, tool_result_message))
+                # Symmetric with the OpenAI-compat path: every tool reply
+                # first, then multimodal user turns. ``_genai_parts_from_content``
+                # maps ``image_url`` data URLs onto ``inline_data`` parts.
+                for result, tool_result_message in image_results:
+                    self._append_tool_result_images(
+                        messages,
+                        result,
+                        slots=tool_image_slots,
+                        tool_result_message=tool_result_message,
+                        bus_frames=tool_bus_frames,
+                    )
                 # Sentinel：与 OpenAI 路径对偶，告诉上游 stream_text 把
                 # final-segment buffer 清掉（pre-tool 文本已被持久化进
                 # assistant turn 的 content 字段）。
@@ -764,6 +800,10 @@ class _GenaiMixin:
         if final_system_instruction:
             final_cfg_kw["system_instruction"] = final_system_instruction
         final_config = types.GenerateContentConfig(**final_cfg_kw)
+        # Same reason as inside the loop: the forced finalize is reached after
+        # the tool iterations, so a switch_model that happened in one of them
+        # has already dropped the client.
+        self._ensure_genai_client()
         final_stream = await self._genai_client.aio.models.generate_content_stream(
             model=self.model,
             contents=final_contents,
@@ -773,7 +813,14 @@ class _GenaiMixin:
         final_block_reason: Optional[str] = None
         final_prompt_tokens: Optional[int] = None
         final_had_text = False
+        # 与 OpenAI 路径对偶：封顶后这一次同样带着尚未 release 的工具图。
+        tool_frames_published = False
         async for chunk in final_stream:
+            if not tool_frames_published:
+                tool_frames_published = True
+                self._publish_pending_tool_frames(
+                    tool_bus_frames, turn_id=tool_frames_turn_id
+                )
             # 与常规 genai 分支对偶地采集空回复诊断：block_reason / finish_reason /
             # prompt_tokens。否则若 forced-finalize 也被 safety / recitation /
             # max-tokens 挡住而无文本，上层只能引用上一轮 tool-iteration 的过期

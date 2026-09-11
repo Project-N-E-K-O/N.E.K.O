@@ -347,6 +347,9 @@ async def test_two_phase_handoff_keeps_audio_input_and_asr_state_alive(
         transcript="what is this",
         images=("raw-image",),
         turn_id="turn-1",
+        # 真实的 MultimodalTurn 是 frozen dataclass，source 是必填字段——
+        # 替身缺了它，「帧总线的通道标签跟着帧走」这条就只在替身上不成立。
+        source="screen",
     )
 
     handoff = manager._handoff_to_offline_vlm_and_submit(
@@ -385,6 +388,7 @@ async def test_two_phase_handoff_keeps_audio_input_and_asr_state_alive(
         "what is this",
         ("raw-image",),
         turn_id="turn-1",
+        source="screen",
     )
     candidate.close.assert_not_awaited()
 
@@ -407,6 +411,9 @@ async def test_handoff_candidate_failure_preserves_realtime_session() -> None:
         transcript="what is this",
         images=("raw-image",),
         turn_id="turn-1",
+        # 真实的 MultimodalTurn 是 frozen dataclass，source 是必填字段——
+        # 替身缺了它，「帧总线的通道标签跟着帧走」这条就只在替身上不成立。
+        source="screen",
     )
 
     delivered = await manager._handoff_to_offline_vlm_and_submit(
@@ -478,6 +485,9 @@ async def test_handoff_listener_cancel_timeout_fail_closes_active_session() -> N
         transcript="what is this",
         images=("raw-image",),
         turn_id="turn-1",
+        # 真实的 MultimodalTurn 是 frozen dataclass，source 是必填字段——
+        # 替身缺了它，「帧总线的通道标签跟着帧走」这条就只在替身上不成立。
+        source="screen",
     )
     real_wait_for = asyncio.wait_for
     # 不再 monkeypatch wait_for：这个 listener 真的会吞掉 CancelledError 并挂住，
@@ -550,6 +560,7 @@ async def test_new_user_turn_during_candidate_connect_cancels_old_handoff() -> N
     turn_owned = True
     turn = SimpleNamespace(
         transcript="old turn",
+        source="screen",
         images=("old-frame",),
         turn_id="turn-old",
     )
@@ -623,6 +634,7 @@ async def test_new_user_turn_during_listener_cancel_restores_realtime_listener()
     )
     turn = SimpleNamespace(
         transcript="old turn",
+        source="screen",
         images=("old-frame",),
         turn_id="turn-old",
     )
@@ -693,6 +705,7 @@ async def test_new_user_turn_during_old_close_fail_closes_handoff() -> None:
     )
     turn = SimpleNamespace(
         transcript="old turn",
+        source="screen",
         images=("old-frame",),
         turn_id="turn-old",
     )
@@ -762,6 +775,7 @@ async def test_new_user_turn_after_promotion_skips_multimodal_submit() -> None:
     )
     turn = SimpleNamespace(
         transcript="old turn",
+        source="screen",
         images=("old-frame",),
         turn_id="turn-old",
     )
@@ -824,6 +838,7 @@ async def test_tts_failure_after_promotion_keeps_offline_listener_coherent() -> 
     )
     turn = SimpleNamespace(
         transcript="what is this",
+        source="screen",
         images=("raw-frame",),
         turn_id="turn-1",
     )
@@ -874,6 +889,7 @@ async def test_existing_offline_fast_path_does_not_repeat_turn_preparation() -> 
     manager.session = session
     turn = SimpleNamespace(
         transcript="what is this",
+        source="screen",
         images=("raw-frame",),
         turn_id="turn-1",
     )
@@ -894,6 +910,7 @@ async def test_existing_offline_fast_path_does_not_repeat_turn_preparation() -> 
         "what is this",
         ("raw-frame",),
         turn_id="turn-1",
+        source="screen",
     )
 
 
@@ -915,6 +932,7 @@ async def test_offline_replacement_wins_and_receives_multimodal_turn() -> None:
     manager.session = expected
     turn = SimpleNamespace(
         transcript="what is this",
+        source="screen",
         images=("raw-frame",),
         turn_id="turn-1",
     )
@@ -941,6 +959,7 @@ async def test_offline_replacement_wins_and_receives_multimodal_turn() -> None:
         "what is this",
         ("raw-frame",),
         turn_id="turn-1",
+        source="screen",
     )
     manager.handle_new_message.assert_awaited_once_with()
     manager.ensure_tts_pipeline_alive.assert_awaited_once_with()
@@ -986,6 +1005,7 @@ async def test_realtime_replacement_wins_and_continues_handoff() -> None:
     )
     turn = SimpleNamespace(
         transcript="what is this",
+        source="screen",
         images=("raw-frame",),
         turn_id="turn-1",
     )
@@ -1009,6 +1029,7 @@ async def test_realtime_replacement_wins_and_continues_handoff() -> None:
         "what is this",
         ("raw-frame",),
         turn_id="turn-1",
+        source="screen",
     )
     candidate.close.assert_not_awaited()
 
@@ -1026,6 +1047,7 @@ async def test_handoff_entry_session_close_fails_without_candidate() -> None:
     prepared = SimpleNamespace(close=AsyncMock())
     turn = SimpleNamespace(
         transcript="what is this",
+        source="screen",
         images=("raw-frame",),
         turn_id="turn-1",
     )
@@ -1061,6 +1083,7 @@ async def test_existing_offline_multimodal_submit_retries_tts_each_turn() -> Non
     manager.session = session
     turn = SimpleNamespace(
         transcript="what is this",
+        source="screen",
         images=("raw-frame",),
         turn_id="turn-1",
     )
@@ -1087,6 +1110,7 @@ async def test_existing_offline_multimodal_submit_retries_tts_each_turn() -> Non
         "what is this",
         ("raw-frame",),
         turn_id="turn-1",
+        source="screen",
     )
 
 
@@ -1147,6 +1171,9 @@ async def test_handoff_losing_frame_ownership_midflight_still_delivers_the_text(
         transcript="what is this",
         images=("raw-image",),
         turn_id="turn-1",
+        # 真实的 MultimodalTurn 是 frozen dataclass，source 是必填字段——
+        # 替身缺了它，「帧总线的通道标签跟着帧走」这条就只在替身上不成立。
+        source="screen",
     )
 
     delivered = await manager._handoff_to_offline_vlm_and_submit(
@@ -1212,6 +1239,9 @@ async def test_handoff_keeping_ownership_still_submits_the_frames():
         transcript="what is this",
         images=("raw-image",),
         turn_id="turn-1",
+        # 真实的 MultimodalTurn 是 frozen dataclass，source 是必填字段——
+        # 替身缺了它，「帧总线的通道标签跟着帧走」这条就只在替身上不成立。
+        source="screen",
     )
 
     delivered = await manager._handoff_to_offline_vlm_and_submit(
@@ -1228,6 +1258,7 @@ async def test_handoff_keeping_ownership_still_submits_the_frames():
         "what is this",
         ("raw-image",),
         turn_id="turn-1",
+        source="screen",
     )
     candidate.submit_external_voice_turn.assert_not_awaited()
 
@@ -1264,6 +1295,7 @@ async def test_existing_offline_fast_path_also_downgrades_on_lost_ownership():
     manager.session = session
     turn = SimpleNamespace(
         transcript="what is this",
+        source="screen",
         images=("raw-frame",),
         turn_id="turn-1",
     )

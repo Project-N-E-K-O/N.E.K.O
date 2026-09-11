@@ -14,7 +14,6 @@
 | `NEKO_USER_PLUGIN_SERVER_PORT` | 48916 | 用户插件宿主 |
 | `NEKO_AGENT_MQ_PORT` | 48917 | Agent 消息传输 |
 | `NEKO_MAIN_AGENT_EVENT_PORT` | 48918 | 主服务/Agent 事件传输 |
-| `NEKO_OPENFANG_PORT` | 50051 | OpenFang A2A |
 
 Electron 的 `port_config.json` 位于平台配置目录；显式环境变量优先。
 

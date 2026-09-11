@@ -22,6 +22,7 @@ import re
 import time
 from contextlib import suppress
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -86,15 +87,15 @@ def _source_history_path(*, memory_dir: str | Path | None = None) -> Path:
     return _resolve_memory_dir(memory_dir) / _SOURCE_HISTORY_FILENAME
 
 
-def _source_hash(url: str = '', fallback_title: str = '') -> str:
+def _source_hash(url: str = "", fallback_title: str = "") -> str:
     """Return a stable URL hash, falling back to a normalized title."""
-    norm = (url or '').strip().lower().rstrip('/')
+    norm = (url or "").strip().lower().rstrip("/")
     if norm:
-        return hashlib.sha256(norm.encode('utf-8')).hexdigest()
-    title_norm = re.sub(r'\s+', ' ', (fallback_title or '').strip().lower())
+        return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+    title_norm = re.sub(r"\s+", " ", (fallback_title or "").strip().lower())
     if title_norm:
-        return hashlib.sha256(('t::' + title_norm).encode('utf-8')).hexdigest()
-    return ''
+        return hashlib.sha256(("t::" + title_norm).encode("utf-8")).hexdigest()
+    return ""
 
 
 def _half_life_for(kind: str) -> float:
@@ -197,7 +198,7 @@ async def _ensure_source_history_loaded(
             # 否则旧根的历史会去压新根的候选。
             _source_history_authoritative = False
             return False
-        entries = data.get('entries') if isinstance(data, dict) else None
+        entries = data.get("entries") if isinstance(data, dict) else None
         if isinstance(entries, dict):
             now = time.time()
             damaged = 0
@@ -205,10 +206,10 @@ async def _ensure_source_history_loaded(
                 if not isinstance(entry, dict):
                     continue
                 try:
-                    age = now - float(entry.get('ts', 0.0) or 0.0)
+                    age = now - float(entry.get("ts", 0.0) or 0.0)
                     probability = _source_skip_probability(
                         age,
-                        _half_life_for(entry.get('kind', 'web')),
+                        _half_life_for(entry.get("kind", "web")),
                     )
                 except (ValueError, TypeError, OverflowError):
                     # 逐条跳过而不是整份作废：ts 是字符串抛 ValueError、kind 不可 hash
@@ -267,7 +268,7 @@ async def _record_source_used(
     *,
     url: str,
     kind: str,
-    title: str = '',
+    title: str = "",
     memory_dir: str | Path | None = None,
 ) -> None:
     """Update, prune and persist one consumed source record."""
@@ -332,15 +333,15 @@ async def _record_source_used(
         _source_history[source_hash] = {
             "ts": time.time(),
             "kind": kind,
-            "title": (title or '')[:80],
+            "title": (title or "")[:80],
         }
         now = time.time()
         forgotten = [
             existing_hash
             for existing_hash, entry in _source_history.items()
             if _source_skip_probability(
-                now - float(entry.get('ts', 0.0) or 0.0),
-                _half_life_for(entry.get('kind', 'web')),
+                now - float(entry.get("ts", 0.0) or 0.0),
+                _half_life_for(entry.get("kind", "web")),
             )
             < PROACTIVE_SOURCE_FORGET_P
         ]
@@ -433,7 +434,7 @@ def _recent_proactive_chat_entries(lanlan_name: str) -> tuple[tuple, ...]:
     return tuple(history) if history else ()
 
 
-def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
+def _format_recent_proactive_chats(lanlan_name: str, lang: str = "zh") -> str:
     """
     Format recent proactive-chat records into a text block injectable into the prompt (with relative time and source channel).
     Logic:
@@ -446,12 +447,16 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
     if not history:
         return ""
     now = time.time()
-    recent = [entry for entry in history if now - entry[0] < _RECENT_CHAT_MAX_AGE_SECONDS]
+    recent = [
+        entry for entry in history if now - entry[0] < _RECENT_CHAT_MAX_AGE_SECONDS
+    ]
     if not recent:
         return ""
 
-    tl = RECENT_PROACTIVE_TIME_LABELS.get(lang, RECENT_PROACTIVE_TIME_LABELS['en'])
-    cl = RECENT_PROACTIVE_CHANNEL_LABELS.get(lang, RECENT_PROACTIVE_CHANNEL_LABELS['en'])
+    tl = RECENT_PROACTIVE_TIME_LABELS.get(lang, RECENT_PROACTIVE_TIME_LABELS["en"])
+    cl = RECENT_PROACTIVE_CHANNEL_LABELS.get(
+        lang, RECENT_PROACTIVE_CHANNEL_LABELS["en"]
+    )
 
     def _rel(ts):
         """
@@ -466,17 +471,17 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
             return tl[0]
         m = d // 60
         if m < 60:
-            return tl['m'].format(m)
-        return tl['h'].format(m // 60)
+            return tl["m"].format(m)
+        return tl["h"].format(m // 60)
 
     header = _loc(RECENT_PROACTIVE_CHATS_HEADER, lang)
     footer = _loc(RECENT_PROACTIVE_CHATS_FOOTER, lang)
     lines = []
     for entry in recent:
         ts, msg = entry[0], entry[1]
-        ch = entry[2] if len(entry) > 2 else ''
+        ch = entry[2] if len(entry) > 2 else ""
         # 过滤掉 vision 通道的记录，避免 AI 引用已过期的屏幕内容产生幻觉
-        if ch == 'vision':
+        if ch == "vision":
             continue
         tag = _rel(ts)
         if ch:
@@ -529,7 +534,7 @@ def _record_reminiscence_usage(lanlan_name: str) -> None:
     _reminiscence_usage_history[lanlan_name].append(time.time())
 
 
-def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
+def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ""):
     """
     Record one successful proactive chat (with its source channel).
     Logic:
@@ -554,6 +559,7 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     # proactive_fired 时刻与用户消息活动 timestamp 关联粗估；精确配对另行设计。
     try:
         from utils.instrument import counter as _instr_counter
+
         _instr_counter("proactive_fired", channel=(str(channel) or "default")[:24])
     except Exception:
         # 埋点失败不能影响主动搭话投递
@@ -563,7 +569,7 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
 def _normalize_material_key(raw: str) -> str:
     """Normalize a material identity string for exact-match dedup (lowercase + collapse whitespace)."""
     s = (raw or "").strip().lower()
-    return re.sub(r'\s+', ' ', s)
+    return re.sub(r"\s+", " ", s)
 
 
 def _proactive_material_key(
@@ -580,12 +586,12 @@ def _proactive_material_key(
 
     Empty/unknown → "" (caller treats as non-repeat, i.e. always exempt).
     """
-    if source_tag == 'MUSIC' and selected_music_link:
-        title = (selected_music_link.get('title') or '').strip()
-        artist = (selected_music_link.get('artist') or '').strip()
+    if source_tag == "MUSIC" and selected_music_link:
+        title = (selected_music_link.get("title") or "").strip()
+        artist = (selected_music_link.get("artist") or "").strip()
         return _normalize_material_key(f"{title}|{artist}") if (title or artist) else ""
-    if source_tag == 'MEME' and meme_content:
-        return _normalize_material_key(meme_content.get('keyword') or '')
+    if source_tag == "MEME" and meme_content:
+        return _normalize_material_key(meme_content.get("keyword") or "")
     return ""
 
 
@@ -600,10 +606,7 @@ def _is_recent_proactive_material(lanlan_name: str, source_tag: str, key: str) -
     if not bucket:
         return False
     now = time.time()
-    return any(
-        k == key and now - ts < _RECENT_CHAT_MAX_AGE_SECONDS
-        for ts, k in bucket
-    )
+    return any(k == key and now - ts < _RECENT_CHAT_MAX_AGE_SECONDS for ts, k in bucket)
 
 
 def _record_proactive_material(lanlan_name: str, source_tag: str, key: str) -> None:
@@ -667,9 +670,7 @@ def _proactive_feed_rejected_for_takeover(
     )
 
 
-def _proactive_chat_totals_path(
-    *, memory_dir: str | Path | None = None
-) -> Path:
+def _proactive_chat_totals_path(*, memory_dir: str | Path | None = None) -> Path:
     return _resolve_memory_dir(memory_dir) / _PROACTIVE_CHAT_TOTALS_FILENAME
 
 
@@ -690,27 +691,21 @@ async def _ensure_proactive_chat_totals_loaded(
     a one-off v1→v2 migration cost and needs no dedicated migration script."""
     global _proactive_chat_totals_loaded, _proactive_chat_totals_loaded_path
     path = _proactive_chat_totals_path(memory_dir=memory_dir)
-    if (
-        _proactive_chat_totals_loaded
-        and _proactive_chat_totals_loaded_path == path
-    ):
+    if _proactive_chat_totals_loaded and _proactive_chat_totals_loaded_path == path:
         return
     async with _proactive_chat_totals_lock:
-        if (
-            _proactive_chat_totals_loaded
-            and _proactive_chat_totals_loaded_path == path
-        ):
+        if _proactive_chat_totals_loaded and _proactive_chat_totals_loaded_path == path:
             return
         _proactive_chat_totals.clear()
         _invite_ever_delivered.clear()
         try:
             data = await asyncio.to_thread(read_json, path)
-            totals = data.get('totals') if isinstance(data, dict) else None
+            totals = data.get("totals") if isinstance(data, dict) else None
             if isinstance(totals, dict):
                 for k, v in totals.items():
                     if isinstance(k, str) and isinstance(v, (int, float)):
                         _proactive_chat_totals[k] = int(v)
-            ever = data.get('ever_delivered') if isinstance(data, dict) else None
+            ever = data.get("ever_delivered") if isinstance(data, dict) else None
             if isinstance(ever, dict):
                 for k, v in ever.items():
                     if isinstance(k, str) and bool(v):
@@ -740,17 +735,15 @@ def _was_invite_ever_delivered(lanlan_name: str) -> bool:
     return bool(_invite_ever_delivered.get(lanlan_name, False))
 
 
-async def _persist_totals_unlocked(
-    *, memory_dir: str | Path | None = None
-) -> None:
+async def _persist_totals_unlocked(*, memory_dir: str | Path | None = None) -> None:
     """Persist totals + ever_delivered to disk. The caller must hold _proactive_chat_totals_lock."""
     try:
         await atomic_write_json_async(
             _proactive_chat_totals_path(memory_dir=memory_dir),
             {
-                'version': _PROACTIVE_CHAT_TOTALS_SCHEMA_VERSION,
-                'totals': dict(_proactive_chat_totals),
-                'ever_delivered': dict(_invite_ever_delivered),
+                "version": _PROACTIVE_CHAT_TOTALS_SCHEMA_VERSION,
+                "totals": dict(_proactive_chat_totals),
+                "ever_delivered": dict(_invite_ever_delivered),
             },
             indent=2,
             ensure_ascii=False,
@@ -841,7 +834,7 @@ def _clear_channel_from_proactive_history(lanlan_name: str, channel: str) -> int
     cleared = 0
     for entry in history:
         if len(entry) >= 3 and entry[2] == channel:
-            rewritten.append((entry[0], entry[1], ''))
+            rewritten.append((entry[0], entry[1], ""))
             cleared += 1
         else:
             rewritten.append(entry)
@@ -860,24 +853,42 @@ def _normalize_text_for_similarity(text: str) -> str:
     Only light normalization, to avoid false kills from over-cleaning.
     """
     text = (text or "").strip().lower()
-    return re.sub(r'\s+', ' ', text)
+    return re.sub(r"\s+", " ", text)
 
 
-def _is_similar_to_recent_proactive_chat(lanlan_name: str, message: str) -> tuple[bool, float]:
-    """
-    Check whether message is highly similar to recent proactive chats (high threshold against false kills).
-    Returns (is_duplicate, best_score).
+@dataclass(frozen=True, slots=True)
+class ProactiveSimilarityMatch:
+    """Detailed evidence for the recent-proactive literal similarity guard."""
+
+    is_duplicate: bool = False
+    best_score: float = 0.0
+    matched_text: str = ""
+    common_fragment: str = ""
+
+
+def _find_similar_recent_proactive_chat(
+    lanlan_name: str,
+    message: str,
+) -> ProactiveSimilarityMatch:
+    """Return the best recent literal-similarity match and bounded evidence.
+
+    The existing compatibility wrapper below intentionally keeps returning the
+    historical ``(bool, score)`` tuple.  Runtime observability needs the matched
+    text only long enough to derive a privacy-bounded repeat fragment; callers
+    must not persist ``matched_text`` itself.
     """
     history = _proactive_chat_history.get(lanlan_name)
     if not history or not message.strip():
-        return False, 0.0
+        return ProactiveSimilarityMatch()
 
     now = time.time()
     current = _normalize_text_for_similarity(message)
     if not current:
-        return False, 0.0
+        return ProactiveSimilarityMatch()
 
-    best = 0.0
+    best_score = 0.0
+    best_text = ""
+    best_fragment = ""
     for entry in history:
         ts, old_msg = entry[0], entry[1]
         if now - ts >= _RECENT_CHAT_MAX_AGE_SECONDS:
@@ -885,9 +896,30 @@ def _is_similar_to_recent_proactive_chat(lanlan_name: str, message: str) -> tupl
         old_norm = _normalize_text_for_similarity(old_msg)
         if not old_norm:
             continue
-        score = difflib.SequenceMatcher(None, current, old_norm).ratio()
-        if score > best:
-            best = score
-        if score >= _PROACTIVE_SIMILARITY_THRESHOLD:
-            return True, score
-    return False, best
+        matcher = difflib.SequenceMatcher(None, current, old_norm)
+        score = matcher.ratio()
+        if score <= best_score:
+            continue
+        blocks = matcher.get_matching_blocks()
+        longest = max(blocks, key=lambda block: block.size)
+        best_score = score
+        best_text = old_msg
+        best_fragment = current[longest.a : longest.a + longest.size].strip()
+
+    return ProactiveSimilarityMatch(
+        is_duplicate=best_score >= _PROACTIVE_SIMILARITY_THRESHOLD,
+        best_score=best_score,
+        matched_text=best_text,
+        common_fragment=best_fragment,
+    )
+
+
+def _is_similar_to_recent_proactive_chat(
+    lanlan_name: str, message: str
+) -> tuple[bool, float]:
+    """
+    Check whether message is highly similar to recent proactive chats (high threshold against false kills).
+    Returns (is_duplicate, best_score).
+    """
+    match = _find_similar_recent_proactive_chat(lanlan_name, message)
+    return match.is_duplicate, match.best_score

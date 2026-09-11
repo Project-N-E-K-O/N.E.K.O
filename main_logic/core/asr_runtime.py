@@ -58,6 +58,7 @@ from main_logic.voice_turn.audio_input import (
     ProcessedVoiceFrame,
     VoiceInputAudioPipeline,
 )
+from utils.game_route_state import get_active_game_route_generation_identity
 from main_logic import core as _core_facade
 
 from ._shared import logger
@@ -368,6 +369,9 @@ class AsrRuntimeMixin:
         registry = VoiceInputRegistry()
         core_chat = CoreChatVoiceInputConsumer(
             session_ref=lambda: getattr(self, "session", None),
+            game_route_identity=lambda: get_active_game_route_generation_identity(
+                str(getattr(self, "lanlan_name", "core"))
+            ),
             on_prepare=lambda token, context: self._prepare_core_voice_turn(
                 token,
                 session_ref=context.session_ref,
@@ -377,6 +381,7 @@ class AsrRuntimeMixin:
             on_final_event=lambda event, context: self._dispatch_core_asr_transcript(
                 event,
                 session_ref=context.session_ref,
+                source_game_route_identity=context.source_game_route_identity,
             ),
             on_cancelled_event=self._cancel_core_chat_voice_turn,
         )
@@ -3781,6 +3786,7 @@ class AsrRuntimeMixin:
         event: VoiceTranscriptEvent,
         *,
         session_ref: object | None = None,
+        source_game_route_identity: tuple[str, str, str] | None = None,
     ) -> None:
         token = event.turn_token.ingress
         external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
@@ -3837,11 +3843,17 @@ class AsrRuntimeMixin:
                 external_turn_id,
                 event.text,
             )
+            transcript_kwargs = {
+                "is_voice_source": True,
+                "source": "independent_asr",
+                "metadata": {"provider": event.provider},
+            }
+            transcript_kwargs["source_game_route_identity"] = (
+                source_game_route_identity
+            )
             accepted = await self.handle_input_transcript(
                 event.text,
-                is_voice_source=True,
-                source="independent_asr",
-                metadata={"provider": event.provider},
+                **transcript_kwargs,
             )
             def route_still_core() -> bool:
                 """The route-identity half, re-checkable across an await.
@@ -4027,6 +4039,12 @@ class AsrRuntimeMixin:
                                     multimodal_turn.transcript,
                                     multimodal_turn.images,
                                     turn_id=multimodal_turn.turn_id,
+                                    # The channel frozen with these frames,
+                                    # not the one the session is on now: a
+                                    # session-side read drifts to the next
+                                    # utterance's channel across the trim /
+                                    # queue / send awaits.
+                                    source=multimodal_turn.source,
                                     # Gemini 那条路在真正送出之前还有一段
                                     # 压缩 await，后继发声可以在其中拿走帧。
                                     # 与 Offline 交接同源的判据。

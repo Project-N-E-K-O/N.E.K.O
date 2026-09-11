@@ -16,7 +16,7 @@ docker compose up -d
 
 | 宿主 | 容器 | 用途 |
 | --- | --- | --- |
-| `./neko-home` | `/home/neko` | 配置、角色、记忆、用户插件及其状态、功能数据、TLS 证书与私钥、OpenFang 运行状态 |
+| `./neko-home` | `/home/neko` | 配置、角色、记忆、用户插件及其状态、功能数据、TLS 证书与私钥 |
 | `./logs` | `/app/logs` | 日志 |
 
 `TZ` 默认是 `Asia/Shanghai`，可在 `.env` 改为任意 IANA 时区（例如 `Etc/UTC`）。升级前备份 `neko-home` 和 `logs`；严禁公开数据或私钥目录。不要用 `PLUGIN_CONFIG_ROOT`、`PLUGIN_PACKAGES_ROOT` 或 `PACKAGE_PROFILES_ROOT` 指向 `neko-home` 之外的路径，否则对应用户插件数据不会随容器持久化。
@@ -28,11 +28,11 @@ docker compose up -d
 
 ```bash
 # 1. 先导出只存在于容器内的东西，必须赶在删容器之前。
-#    旧布局从没挂载 OpenFang 的工作目录；另外，若宿主机的 N.E.K.O/ 是空的，说明
-#    此前跟的是旧版 README 的快速开始，其挂载目标（/root/Documents/N.E.K.O）与服务
-#    实际写入的位置从来对不上，应用数据也在容器里。
+#    若宿主机的 N.E.K.O/ 是空的，说明此前跟的是旧版 README 的快速开始，其挂载
+#    目标（/root/Documents/N.E.K.O）与服务实际写入的位置从来对不上，应用数据也
+#    在容器里。
 #    末尾的 /. 表示复制目录内容，避免出现 N.E.K.O/N.E.K.O 这样多套一层。
-mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
+mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl
 # 判据用「容器实际挂了什么」，而不是「宿主目录里有没有东西」：旧版 README 把
 # ./N.E.K.O 挂到了 /root/Documents/N.E.K.O，那是服务从不写入的路径，所以那个宿主
 # 目录里可能有你自己放的文件，而真数据仍然只在容器可写层里。
@@ -73,21 +73,6 @@ else
     fi
     EXPORTED_APP_DATA=1
   fi
-  # 只有源目录确实不存在时，OpenFang 状态才可忽略；检查或复制失败都可能导致状态丢失。
-  if ! OPENFANG_STATE=$(docker exec neko sh -c 'if [ -d /home/neko/.openfang ]; then printf present; elif [ -e /home/neko/.openfang ]; then printf invalid; else printf missing; fi'); then
-    echo "无法检查 OpenFang 状态；请停止迁移。" >&2
-    exit 1
-  fi
-  case "$OPENFANG_STATE" in
-    present)
-      if ! docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/; then
-        echo "OpenFang 状态导出失败；请停止迁移，切勿删除容器。" >&2
-        exit 1
-      fi
-      ;;
-    missing) echo "（容器内没有 .openfang）" ;;
-    *) echo "OpenFang 状态不是目录；请停止迁移。" >&2; exit 1 ;;
-  esac
 fi
 ```
 

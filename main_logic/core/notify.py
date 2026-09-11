@@ -57,6 +57,7 @@ released. ``AsrRuntimeMixin._fail_closed_voice_route`` owns that order for
 the fail-closed route exits.
 """
 
+import hashlib
 import json
 from typing import Optional
 from fastapi import WebSocketDisconnect
@@ -79,7 +80,7 @@ class NotifyMixin:
 
     def _has_connected_websocket(self) -> bool:
         websocket = self.websocket
-        if not websocket or not hasattr(websocket, 'client_state'):
+        if not websocket or not hasattr(websocket, "client_state"):
             return False
         try:
             return websocket.client_state == websocket.client_state.CONNECTED
@@ -113,12 +114,16 @@ class NotifyMixin:
     async def send_user_activity(self, interrupted_speech_id: Optional[str] = None):
         """Send the user-activity signal, attaching the interrupted speech_id for precise interruption control"""
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
                 if interrupted_speech_id is None:
                     interrupted_speech_id = self.current_speech_id
                 message = {
                     "type": "user_activity",
-                    "interrupted_speech_id": interrupted_speech_id  # 告诉前端应丢弃哪个 speech_id
+                    "interrupted_speech_id": interrupted_speech_id,  # 告诉前端应丢弃哪个 speech_id
                 }
                 await self.websocket.send_json(message)
         except WebSocketDisconnect:
@@ -136,7 +141,7 @@ class NotifyMixin:
 
     async def _build_initial_prompt(self) -> str:
         """Build the system prompt and inject active task summary when agent is enabled."""
-        _lang = normalize_language_code(self.user_language, format='short')
+        _lang = normalize_language_code(self.user_language, format="short")
         if self._is_agent_enabled():
             # Keep the current wrapper structure but revert prompt semantics:
             # do not distinguish browser/computer/plugin in the initial capability text.
@@ -156,9 +161,15 @@ class NotifyMixin:
             #     name=self.lanlan_name,
             #     capabilities=caps_text,
             # ) + self.lanlan_prompt
-            prompt = _loc(SESSION_INIT_PROMPT_AGENT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
+            prompt = (
+                _loc(SESSION_INIT_PROMPT_AGENT, _lang).format(name=self.lanlan_name)
+                + self.lanlan_prompt
+            )
         else:
-            prompt = _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
+            prompt = (
+                _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name)
+                + self.lanlan_prompt
+            )
         if self._is_agent_enabled():
             # Plugin summary (with plugin ids) is intentionally disabled to avoid
             # exposing implementation identifiers in the general agent prompt.
@@ -186,12 +197,15 @@ class NotifyMixin:
         # 这里只读。空时 render_prompt_block 返回 ""，对 prompt 长度无影响。
         try:
             from memory.user_directives import get_user_directives_manager
+
             prompt += get_user_directives_manager().render_prompt_block(
-                _directives_key, _lang,
+                _directives_key,
+                _lang,
             )
         except Exception as _exc:  # pragma: no cover - defensive
             logger.debug(
-                "[UserDirectives] prompt injection skipped: %s", _exc,
+                "[UserDirectives] prompt injection skipped: %s",
+                _exc,
             )
 
         # ── 防复读 soft hint 注入 ──────────────────────────────────
@@ -203,28 +217,166 @@ class NotifyMixin:
         try:
             from memory.anti_repeat import get_anti_repeat_corpus
             from config.prompts.prompts_directives import render_recent_topics_block
+
             anti_repeat_corpus = get_anti_repeat_corpus()
             await anti_repeat_corpus.apreload(_directives_key)
             topics = anti_repeat_corpus.top_recent_topics(_directives_key)
-            prompt += render_recent_topics_block(topics, _lang)
+            topic_block = render_recent_topics_block(topics, _lang)
+            prompt += topic_block
+            if topic_block:
+                from memory.anti_repeat_effects import (
+                    record_anti_repeat_soft_hint,
+                )
+
+                record_anti_repeat_soft_hint(_directives_key)
         except Exception as _exc:  # pragma: no cover - defensive
             logger.debug(
-                "[AntiRepeat] soft hint injection skipped: %s", _exc,
+                "[AntiRepeat] soft hint injection skipped: %s",
+                _exc,
             )
 
         return prompt
+
+    async def _inject_pending_user_directives(self) -> None:
+        """Carry freshly recorded ban-topic directives into the NEXT session.
+
+        ``_build_initial_prompt`` reads the directive store once per session,
+        and for a hot swap that read happens during background warm-up
+        (``lifecycle._background_prepare_pending_session``) — a full user turn
+        before the swap actually lands, because the final swap waits for the
+        next turn-end (``turn.py`` step 4). A directive recorded inside that
+        gap misses the very session it was about to configure: the new session
+        starts with a fresh ``_conversation_history`` (the user's original
+        words are gone with the old one) and a system prompt that predates the
+        directive, so nothing carries it for up to another archive cycle.
+
+        Writing it into the next-session cache closes exactly that gap. It is
+        deliberately NOT injected into the live session — see the ``lifetime``
+        comment below.
+
+        Called from both user-utterance entry points (text and voice), right
+        after the plugin-bus publish that drives the recording sink.
+        """
+        # 分层：``memory``（L3）不能向上 import ``main_logic``（L4），所以
+        # sink 只负责落盘 + 置一个待办标记，真正的注入在这里（L4）完成。
+        # 与 app/runtime_bindings.py 挂 sink 是同一个理由的两半。
+        try:
+            from memory.user_directives import get_user_directives_manager
+            manager = get_user_directives_manager()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] manager unavailable: %s", exc)
+            return
+        # 与 _build_initial_prompt 的读取 key 对齐（sink 在 lanlan 为空 /
+        # "default" 时落到 "default" bucket）。
+        key = self.lanlan_name or "default"
+        try:
+            if not manager.take_pending_injection(key):
+                return
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] pending flag read failed: %s", exc)
+            return
+        try:
+            _lang = normalize_language_code(self.user_language, format='short')
+            # ⚠️ 渲染的是**全量活跃列表**，不是本轮新抽到的那几个 term——与
+            # _build_initial_prompt 注入的是同一段文本。只注入增量的话，模型
+            # 在本会话里看到的禁令集合会取决于"哪几条恰好是这一轮说的"，跟
+            # 会话重建后看到的集合不一致。
+            active_terms = manager.get_active_terms(key)
+            block = manager.render_prompt_block(key, _lang)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] mid-session render failed: %s", exc)
+            return
+        block = block.strip()
+        if not block:
+            return
+        # ⚠️ lifetime='next_session'：**只**写 next-session 缓存，不进当前会话。
+        # 两条路径（文字 / 语音）在这里收敛到同一个值，不按会话类型分叉。
+        #
+        # 当前会话不需要它。``_conversation_history`` 在会话生命周期内是
+        # append-only（唯一会砍它的是复读恢复，见 omni_offline_client/
+        # _streaming.py 那处 reset），所以用户那句"别再提 X"的原话一直待在
+        # 上下文里，模型每一轮都看得见；而会话开头 ``_build_initial_prompt``
+        # 已经注入过**全量**活跃列表，本轮的真实增量只有刚抽到的那一条 ——
+        # 恰恰是模型从原话里已经知道的那条。跨会话才是真缺口（新会话不继承
+        # 旧 history），而那正是这份缓存管的事。
+        #
+        # 而写进当前会话是有代价的：``append_context`` 把 role='system' 渲染成
+        # ``HumanMessage("system: ...")``，**以用户消息的形态**落进 history。
+        # 别的 source（游戏结果 / 主动搭话素材）带的是模型不知道的新信息，这条
+        # 带的却是模型刚看过的用户原话的复述 —— 模型很容易顺着回一句"好的我
+        # 不会再提了"，而用户这一轮真正想聊的往往是后半句。
+        #
+        # 语音（realtime）侧本来就收不了：``append_context`` 对没有
+        # ``_conversation_history`` 的会话回落到 ``prime_context``，而 Gemini
+        # 那条路会 ``send_client_content(turn_complete=True)`` 另开一个 user
+        # turn 并置 ``_skip_until_next_response`` —— 本轮所有
+        # output_transcription 与 audio delta 被整段吞掉，用户刚说完禁令句、
+        # 角色一个音都不发，恰好坏在这功能最该起作用的那一刻。
+        lifetime = "next_session"
+        try:
+            # request_id 让 append_context 的去重生效：用户**重复说**同一条指令
+            # （E 那半按 hit_count 递增 TTL，整个设计就预期他会重复）同样会置待
+            # 注入标记。不给 id 的话每次都原样再追加一份到 next-session 缓存，
+            # 下个会话开头就会连着看到同一段禁令块好几遍。
+            #
+            # ⚠️ 去重窗口是 **120 秒**（`_CONTEXT_APPEND_DEDUP_TTL_SECONDS`，
+            # append_context 的既有契约），不是永久 —— 别把这里读成"同一组 term
+            # 一辈子只注入一次"（codex 指出我原先的注释就是这么写的，过强了）。
+            # 而这个窗口恰好是对的：用户连着说两遍属于同一次表态，去噪；隔了半小时
+            # 再说一遍，往往说明模型期间又踩了雷，那时**重新注入一次强化**才是想要
+            # 的行为。所以这里不自己另造一层永久去重。
+            #
+            # ⚠️ 指纹取的是**规范化后的 term 集合**，不是渲染出来的块。块里的
+            # term 按 ``last_seen_at`` 降序排，于是「重复说较旧的那一条」会把它
+            # 顶到最前 —— 集合没变、字节变了 → 新 id → 又追加一份完整拷贝。而
+            # 那恰恰是延长 TTL 的常规路径，等于去重在最该生效的场景下被绕过
+            # （codex P2）。排序 + casefold 之后，只有集合真的变了才拿到新 id。
+            # ⚠️ 用 JSON 数组序列化，**不能**拿分隔符 join：``_normalize_term``
+            # 只做 strip + 长度校验，term 里什么字符都可能有。拿 " | " 拼的话
+            # ``["aa | bb", "cc"]`` 与 ``["aa", "bb | cc"]`` 得到同一个指纹 →
+            # 同一个 request_id → 新的禁令集合被 append_context 当成重复跳过、
+            # 本会话不生效（coderabbit）。JSON 自带引号与转义，天然无歧义。
+            fingerprint = json.dumps(
+                sorted(t.casefold() for t in active_terms if t),
+                ensure_ascii=False,
+            )
+            request_id = (
+                f"user_directives:{key}:"
+                f"{hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:16]}"
+            )
+            # timing='when_ready'：会话还没建好时排队，不丢。
+            result = await self.append_context(
+                source="user_directives",
+                role="system",
+                text=block,
+                audience="model",
+                timing="when_ready",
+                lifetime=lifetime,
+                request_id=request_id,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[UserDirectives] mid-session inject failed: %s", exc)
+            return
+        if getattr(result, "appended", False):
+            logger.info(
+                "[%s] user directives injected (lifetime=%s targets=%s)",
+                self.lanlan_name, lifetime, getattr(result, "targets", ()),
+            )
 
     def _is_agent_enabled(self):
         try:
             gate_ok, _ = self._config_manager.is_agent_api_ready()
         except Exception:
             gate_ok = False
-        return gate_ok and self.agent_flags['agent_enabled'] and (
-            self.agent_flags['computer_use_enabled']
-            or self.agent_flags.get('browser_use_enabled', False)
-            or self.agent_flags.get('user_plugin_enabled', False)
-            or self.agent_flags.get('openclaw_enabled', False)
-            or self.agent_flags.get('openfang_enabled', False)
+        return (
+            gate_ok
+            and self.agent_flags["agent_enabled"]
+            and (
+                self.agent_flags["computer_use_enabled"]
+                or self.agent_flags.get("browser_use_enabled", False)
+                or self.agent_flags.get("user_plugin_enabled", False)
+                or self.agent_flags.get("openclaw_enabled", False)
+            )
         )
 
     async def _fetch_plugin_summary_prompt(self) -> str:
@@ -270,9 +422,11 @@ class NotifyMixin:
         # TOOL_SERVER_PORT 也是 127.0.0.1 内部服务
         try:
             from utils.internal_http_client import get_internal_http_client
+
             client = get_internal_http_client()
             resp = await client.get(
-                f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks", timeout=1.5,
+                f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks",
+                timeout=1.5,
             )
             if resp.status_code != 200:
                 return ""
@@ -281,12 +435,21 @@ class NotifyMixin:
             active = [t for t in tasks if t.get("status") in ("running", "queued")]
             if not active:
                 return ""
-            _lang = normalize_language_code(self.user_language, format='short')
+            _lang = normalize_language_code(self.user_language, format="short")
             lines = []
             for t in active:
                 params = t.get("params") or {}
-                desc = params.get("query") or params.get("instruction") or t.get("original_query") or t.get("id", "")[:8]
-                status = _loc(AGENT_TASK_STATUS_RUNNING, _lang) if t.get("status") == "running" else _loc(AGENT_TASK_STATUS_QUEUED, _lang)
+                desc = (
+                    params.get("query")
+                    or params.get("instruction")
+                    or t.get("original_query")
+                    or t.get("id", "")[:8]
+                )
+                status = (
+                    _loc(AGENT_TASK_STATUS_RUNNING, _lang)
+                    if t.get("status") == "running"
+                    else _loc(AGENT_TASK_STATUS_QUEUED, _lang)
+                )
                 lines.append(f"  - [{status}] {desc}")
             if len(lines) > 0:
                 return (
@@ -303,13 +466,14 @@ class NotifyMixin:
         """Get the translation service instance (lazily initialized)"""
         if self._translation_service is None:
             from utils.language_utils import get_translation_service
+
             self._translation_service = get_translation_service(self._config_manager)
         return self._translation_service
-    
+
     def set_user_language(self, language: str):
         """
         Set the user language (reuses normalize_language_code for normalization)
-        
+
         Supported normalization rules:
         - 'zh', 'zh-CN', 'zh-TW' and anything starting with 'zh' → 'zh-CN'
         - 'en', 'en-US', 'en-GB' and anything starting with 'en' → 'en'
@@ -331,7 +495,7 @@ class NotifyMixin:
             return
 
         # 使用公共函数进行语言代码归一化
-        normalized_lang = normalize_language_code(language, format='full')
+        normalized_lang = normalize_language_code(language, format="full")
 
         self.user_language = normalized_lang
         self._user_language_explicit = True
@@ -356,9 +520,9 @@ class NotifyMixin:
         """Apply a request/UI fallback without marking it as durable preference."""
         if not language or not is_supported_language_code(language):
             return
-        normalized_lang = normalize_language_code(language, format='full')
+        normalized_lang = normalize_language_code(language, format="full")
         self._conversation_render_language = normalized_lang
-        if getattr(self, '_user_language_explicit', False):
+        if getattr(self, "_user_language_explicit", False):
             return
         # Deliberately unconditional, mirroring set_user_language.  A "skip the
         # repeat" optimisation was tried and removed: the fields are assigned
@@ -401,7 +565,7 @@ class NotifyMixin:
         self._set_conversation_turn_language(None)
         self._register_builtin_tools()
         self._fire_task(self._sync_tools_to_active_session())
-    
+
     def _voice_owner_socket(self):
         """Return the socket holding the voice lease, when it is not the current one.
 
@@ -461,13 +625,19 @@ class NotifyMixin:
         """
         delivered = False
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
                 data = json.dumps({"type": "status", "message": message})
                 await self.websocket.send_text(data)
                 delivered = True
 
                 # 同步到同步服务器
-                self.sync_message_queue.put({'type': 'json', 'data': {"type": "status", "message": message}})
+                self.sync_message_queue.put(
+                    {"type": "json", "data": {"type": "status", "message": message}}
+                )
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             return delivered
@@ -475,7 +645,7 @@ class NotifyMixin:
             logger.error(f"💥 WS Send Status Error: {e}")
             return delivered
         return delivered
-    
+
     async def send_topic_hint(self, *, turn_id: Optional[str] = None) -> bool:
         """Show a frontend-only teaser bubble right before she opens a deep-topic hook.
 
@@ -487,16 +657,18 @@ class NotifyMixin:
         """
         if not (
             self.websocket
-            and hasattr(self.websocket, 'client_state')
+            and hasattr(self.websocket, "client_state")
             and self.websocket.client_state == self.websocket.client_state.CONNECTED
         ):
             return False
         try:
-            await self.websocket.send_json({
-                "type": "topic_hint",
-                "author": self.lanlan_name,
-                "turn_id": str(turn_id or ''),
-            })
+            await self.websocket.send_json(
+                {
+                    "type": "topic_hint",
+                    "author": self.lanlan_name,
+                    "turn_id": str(turn_id or ""),
+                }
+            )
             return True
         except WebSocketDisconnect:
             return False
@@ -513,26 +685,36 @@ class NotifyMixin:
         """
         if not (
             self.websocket
-            and hasattr(self.websocket, 'client_state')
+            and hasattr(self.websocket, "client_state")
             and self.websocket.client_state == self.websocket.client_state.CONNECTED
         ):
             return False
         try:
-            await self.websocket.send_json({
-                "type": "cancel_topic_hint",
-                "turn_id": str(turn_id or ''),
-            })
+            await self.websocket.send_json(
+                {
+                    "type": "cancel_topic_hint",
+                    "turn_id": str(turn_id or ""),
+                }
+            )
             return True
         except WebSocketDisconnect:
             return False
         except Exception as e:
-            logger.warning("[%s] send_cancel_topic_hint failed: %s", self.lanlan_name, e)
+            logger.warning(
+                "[%s] send_cancel_topic_hint failed: %s", self.lanlan_name, e
+            )
             return False
 
-    async def send_session_preparing(self, input_mode: str): # 通知前端session正在准备（静默期）
+    async def send_session_preparing(
+        self, input_mode: str
+    ):  # 通知前端session正在准备（静默期）
         payload = {"type": "session_preparing", "input_mode": input_mode}
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
                 try:
                     await self.websocket.send_text(json.dumps(payload))
                 except WebSocketDisconnect:
@@ -559,7 +741,7 @@ class NotifyMixin:
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Preparing Error: {e}")
-    
+
     async def send_session_started(
         self,
         input_mode: str,
@@ -567,7 +749,7 @@ class NotifyMixin:
         request_id: str | None = None,
         also_notify=None,
         microphone_route_override: str | None = None,
-    ): # 通知前端session已启动
+    ):  # 通知前端session已启动
         # Carry the SETTLED microphone route on the ack itself (Codex P2).
         #
         # The route verdict otherwise travels only as an ASR_INDEPENDENT_*
@@ -642,7 +824,11 @@ class NotifyMixin:
 
         display_socket = self.websocket
         try:
-            if display_socket and hasattr(display_socket, 'client_state') and display_socket.client_state == display_socket.client_state.CONNECTED:
+            if (
+                display_socket
+                and hasattr(display_socket, "client_state")
+                and display_socket.client_state == display_socket.client_state.CONNECTED
+            ):
                 # The requester can BE the display socket (it is simply the
                 # newest connection), and then this is its only copy -- so the
                 # override has to travel on this plane too when it is the one
@@ -752,11 +938,15 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send Addressed Ack Error: {e}")
 
-    async def send_session_failed(self, input_mode: str): # 通知前端session启动失败
+    async def send_session_failed(self, input_mode: str):  # 通知前端session启动失败
         """Notify the frontend that session start failed, so it hides the preparing banner and resets state"""
         payload = {"type": "session_failed", "input_mode": input_mode}
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
                 try:
                     await self.websocket.send_text(json.dumps(payload))
                 except WebSocketDisconnect:
@@ -787,30 +977,42 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send Session Failed Error: {e}")
 
-    async def send_avatar_interaction_ack(self, interaction_id: str, accepted: bool, reason: str = '', turn_id: str = ''):
+    async def send_avatar_interaction_ack(
+        self, interaction_id: str, accepted: bool, reason: str = "", turn_id: str = ""
+    ):
         """Acknowledge to the frontend the delivery result of an avatar-tap interaction, enabling retry and state wrap-up on the frontend."""
         if not interaction_id:
             return
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                await self.websocket.send_json({
-                    "type": "avatar_interaction_ack",
-                    "interaction_id": interaction_id,
-                    "accepted": bool(accepted),
-                    "reason": str(reason or ''),
-                    "turn_id": str(turn_id or ''),
-                })
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
+                await self.websocket.send_json(
+                    {
+                        "type": "avatar_interaction_ack",
+                        "interaction_id": interaction_id,
+                        "accepted": bool(accepted),
+                        "reason": str(reason or ""),
+                        "turn_id": str(turn_id or ""),
+                    }
+                )
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Avatar Interaction Ack Error: {e}")
 
-    async def send_session_ended_by_server(self): # 通知前端session已被服务器终止
+    async def send_session_ended_by_server(self):  # 通知前端session已被服务器终止
         """Notify the frontend that the session was terminated server-side (e.g. API disconnect), so it resets the session state"""
         payload = {"type": "session_ended_by_server", "input_mode": self.input_mode}
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            if (
+                self.websocket
+                and hasattr(self.websocket, "client_state")
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
                 try:
                     await self.websocket.send_text(json.dumps(payload))
                 except WebSocketDisconnect:

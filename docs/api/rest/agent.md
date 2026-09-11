@@ -8,7 +8,7 @@ The main server's browser-facing proxy for the loopback Agent Server. It owns ch
 
 ### `GET /api/agent/flags`
 
-Returns the Agent Server flag snapshot, including the master switch and supported sub-features: Computer Use, Browser Use, user plugins, OpenClaw, and OpenFang. A proxy failure returns `502` with `success: false`.
+Returns the Agent Server flag snapshot, including the master switch and supported sub-features: Computer Use, Browser Use, user plugins, and OpenClaw. A proxy failure returns `502` with `success: false`.
 
 ### `POST /api/agent/flags`
 
@@ -25,7 +25,7 @@ Preferred mutation entry point. The current commands are:
 | Command | Additional fields | Purpose |
 |---|---|---|
 | `set_agent_enabled` | `enabled`, optional `profile` | Toggle the master runtime gate |
-| `set_flag` | `key`, `value` | Toggle one of `computer_use_enabled`, `browser_use_enabled`, `user_plugin_enabled`, `openclaw_enabled`, `openfang_enabled` |
+| `set_flag` | `key`, `value` | Toggle one of `computer_use_enabled`, `browser_use_enabled`, `user_plugin_enabled`, `openclaw_enabled` |
 | `refresh_state` | none | Return and broadcast a fresh state snapshot |
 
 `request_id` and `lanlan_name` are optional. Unknown commands or flag keys are rejected by the Agent Server; upstream/proxy failure is reported as `502`.

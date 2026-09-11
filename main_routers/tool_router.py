@@ -66,6 +66,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+import asyncio
 import ipaddress
 from urllib.parse import urlparse
 
@@ -73,11 +74,26 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
-from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+from main_logic.tool_calling import (
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+    _MAX_TOOL_IMAGE_B64_BYTES,
+    _MAX_TOOL_IMAGES,
+    looks_like_tool_envelope,
+    parse_tool_images,
+    tool_result_from_envelope,
+    tool_result_output_payload,
+)
 from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
+
+# Re-export under the historical private names so existing unit tests keep
+# importing from this module.
+_parse_tool_images = parse_tool_images
+_tool_result_output_payload = tool_result_output_payload
 
 
 def _validate_local_callback_url(url: str) -> str:
@@ -388,13 +404,14 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
         body = {"output": resp.text}
     if not isinstance(body, dict):
         body = {"output": body}
-    return ToolResult(
-        call_id=call.call_id,
-        name=call.name,
-        output=body.get("output", body),
-        is_error=bool(body.get("is_error", False)),
-        error_message=str(body.get("error") or "") if body.get("is_error") else "",
-    )
+    if not looks_like_tool_envelope(body):
+        # 普通业务字典。以前这里是 body.get("output", body)，原样透传；换成
+        # tool_result_from_envelope 之后，一个返回 {"images": [...urls...]} 的
+        # 搜索类工具会被当成像素信封拆掉——images 从模型可见输出里被摘走，再
+        # 按 base64 校验失败变成一串警告。插件回调那条路（llm_tools.py）本来
+        # 就做了这个判别，这里少了一份。
+        body = {"output": body}
+    return await asyncio.to_thread(tool_result_from_envelope, call, body)
 
 
 def _ensure_dispatcher_bound(role_keys) -> None:

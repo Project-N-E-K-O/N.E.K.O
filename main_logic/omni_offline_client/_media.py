@@ -13,9 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from typing import Sequence
 
 from config import MAX_MULTIMODAL_TURN_IMAGES
+from main_logic.agent_event_bus import (
+    publish_provider_frame_observed_best_effort,
+    spawn_bounded_frame_copy,
+)
 from main_logic.proactive_delivery import (
     PLUGIN_PENDING_IMAGE_MAX_BYTES,
     PLUGIN_PENDING_IMAGE_MAX_COUNT,
@@ -30,6 +35,28 @@ from ._shared import (
     logger,
     time,
 )
+
+
+# Source labels for the frames the host copies onto the plugin bus.
+#
+# Coarse on purpose. Text mode receives every user-side frame through one
+# ``stream_image(image_b64)`` call and core/streaming.py drops ``input_type``
+# at that door, so from in here "the screen he is sharing", "his camera" and
+# "a photo he dragged in" are one indistinguishable queue. A vaguer label that
+# is true beats a precise one that is not: a plugin filtering on ``"screen"``
+# must never be handed someone's dropped photo.
+_FRAME_SOURCE_SCREEN = "screen"    # the proactive-vision screenshot
+_FRAME_SOURCE_USER = "user"        # his pending queue + this turn's own frames
+_FRAME_SOURCE_PLUGIN = "plugin"    # plugin `read` frames + passive callback media
+# 主动搭话 / 问候 / agent 回调那一轮附上的图（prompt_ephemeral）。单独一个标签，
+# 因为它和上面三个都不是一回事：这些帧不是用户分享的，用户甚至不知道有这么一轮，
+# 一个按 "user" 过滤的插件绝不能读到它们。和 realtime 那侧对齐 —— 语音路径的同
+# 一批帧就是以 source="proactive" 进总线的。
+_FRAME_SOURCE_PROACTIVE = "proactive"
+# Attribution is positional, so it only holds while the turn keeps its shape.
+# ``_streaming.py`` falls back to this the moment the budget ladder changes the
+# image count and the mapping can no longer be trusted.
+_FRAME_SOURCE_UNKNOWN = "unknown"
 
 
 class _MediaMixin:
@@ -48,6 +75,9 @@ class _MediaMixin:
         text: str,
         *,
         turn_images: tuple[str, ...] = (),
+        turn_source: str | None = None,
+        turn_source_count: int | None = None,
+        turn_id: str | None = None,
         on_turn_committed=None,
     ) -> None:
         """Run one externally transcribed turn under cancellable task ownership."""
@@ -56,6 +86,9 @@ class _MediaMixin:
             self.stream_text(
                 text,
                 turn_images=turn_images,
+                turn_source=turn_source,
+                turn_source_count=turn_source_count,
+                turn_id=turn_id,
                 on_turn_committed=on_turn_committed,
                 input_transcript_callback=(
                     self._ignore_already_recorded_external_transcript
@@ -151,12 +184,196 @@ class _MediaMixin:
             f"(source={source}, {source} total: {len(queue)})"
         )
 
+    def _fire_bus_task(self, coro):
+        """Run a best-effort bus copy off the turn, with GC protection.
+
+        Every publish on this path can end up crossing loops:
+        ``publish_session_event_threadsafe`` hands a cross-thread call to the
+        bridge's owner loop through an UN-TIMED ``run_coroutine_threadsafe``.
+        Awaiting that inside the model stream lets a stalled bridge hold up the
+        first chunk, and with it the user's reply -- for a copy that is
+        explicitly optional. The realtime client's ``_fire_task`` exists for
+        this exact reason; the offline client has no such helper, so the media
+        layer keeps its own rather than reaching across into another client.
+
+        The caller must have snapshotted everything the coroutine reads BEFORE
+        calling this. Moving the publish off the turn without freezing its
+        inputs just relocates the race: the task would read session state as it
+        is when it finally runs, not as it was at delivery.
+
+        Bounded: while the far loop is stalled every pending copy still holds
+        its base64, so past the cap new ones are refused rather than queued.
+
+        Returns the task so tests and teardown can join it; nothing on the turn
+        path does.
+        """
+        if getattr(self, "_bus_copies_closed", False):
+            # close() has begun. A copy started now would outlive the session
+            # it describes, and the drain has already run -- nothing would ever
+            # collect it. Closing the coroutine keeps it from warning.
+            coro.close()
+            return None
+        tasks = getattr(self, "_bus_bg_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._bus_bg_tasks = tasks
+        return spawn_bounded_frame_copy(coro, tasks, label="offline bus copy")
+
+    async def _cancel_bus_copies(self) -> None:
+        """End every in-flight bus copy. Called first thing in ``close()``.
+
+        Without this a copy parked in the cross-thread handoff outlives the
+        session: it keeps its base64 and its reference to ``self`` alive, and
+        if the bridge ever recovers it publishes a frame for a session that is
+        gone. Cancel then collect, so ``close()`` returns with nothing of this
+        client's still scheduled.
+
+        Collecting is what makes the cancel mean anything -- a cancelled task
+        has not stopped until it has been awaited. ``return_exceptions`` keeps
+        a copy that fails on its way out from turning into a teardown error;
+        by this point nobody is going to read it either way.
+        """
+        # Set by close() before it calls this, so the set cannot grow while
+        # it drains. Set here too for a direct caller.
+        self._bus_copies_closed = True
+        tasks = getattr(self, "_bus_bg_tasks", None)
+        if not tasks:
+            return
+        # Snapshot: the done-callback discards from the live set as they end.
+        draining = list(tasks)
+        for task in draining:
+            task.cancel()
+        try:
+            await asyncio.gather(*draining, return_exceptions=True)
+        except Exception as exc:  # pragma: no cover - gather already absorbs
+            logger.debug("bus copies did not drain cleanly: %s", exc)
+        tasks.clear()
+
+    def _publish_pending_tool_frames(
+        self,
+        pending: list | None,
+        *,
+        turn_id: str | None = None,
+    ):
+        """Publish the tool images a just-answered request carried. Best effort.
+
+        ``pending`` is filled by ``_append_tool_result_images`` at the moment
+        the pixels are written into the outgoing message list, and drained here
+        by whichever tool loop sees the provider answer next. That ordering is
+        the delivery gate: an injected image is only ever on the bus because a
+        later request came back with something, which is the earliest point the
+        host can honestly say the provider received it. A loop that runs out of
+        iterations, or breaks out, never reaches a drain -- those pixels stay
+        unpublished, and that is the correct direction. Under-publishing costs
+        a plugin a picture; over-publishing is the host asserting a delivery
+        that never happened.
+
+        The drain itself -- read the list, empty it -- is SYNCHRONOUS, and
+        only the publish moves off. Emptying it inside the task would put the
+        clear after a suspension point, and a later round could drain the same
+        frames again before the first task ever ran.
+
+        ``source`` is ``plugin`` for every one of these, which is what they
+        are: media a plugin handed the model, not a picture the user shared
+        with her. The tool's name rides ``metadata`` rather than being folded
+        into ``source`` -- the source vocabulary is a small closed set that
+        plugins compare by equality, and a per-tool value there would break
+        every such filter.
+        """
+        if not pending:
+            return None
+        drained = list(pending)
+        pending.clear()
+        return self._fire_bus_task(self._publish_provider_frames(
+            [frame[0] for frame in drained],
+            [_FRAME_SOURCE_PLUGIN] * len(drained),
+            turn_id=turn_id,
+            mimes=[frame[1] for frame in drained],
+            metadatas=[{"tool_name": frame[2]} for frame in drained],
+        ))
+
+    async def _publish_provider_frames(
+        self,
+        images: Sequence[str],
+        sources: Sequence[str],
+        *,
+        turn_id: str | None = None,
+        mimes: Sequence[str] | None = None,
+        metadatas: Sequence[dict] | None = None,
+    ) -> None:
+        """Copy this turn's outgoing frames onto the plugin bus. Best effort.
+
+        Call this with the images that were ATTACHED -- after the budget
+        ladder ran -- so what a plugin reads is byte-for-byte what the provider
+        received. The ladder normalizes every frame to the model resolution
+        profile and may re-compress it, so publishing the caller's originals
+        would put a bigger, different picture on the bus than the model ever
+        saw.
+
+        Publish only once the provider has demonstrably received the turn --
+        in ``stream_text`` that is the first streamed chunk, and it is NOT the
+        moment the message lands in ``_conversation_history``. A committed turn
+        can still die before any request is made (a raising input-transcript
+        callback, a cancellation, three failed attempts), and publishing there
+        would advertise a delivery that never happened. Under-publishing is the
+        safe direction: plugins pull frames, so silence costs them a picture,
+        while a false publish is the host asserting something untrue.
+
+        ``mimes`` and ``metadatas`` align by index with ``images``, the same
+        convention ``sources`` already uses. Both are optional because the
+        ambient path has one mime for the whole turn and nothing to annotate;
+        tool frames have neither property -- a tool may hand back a PNG, and
+        the plugin that produced it is worth naming.
+
+        Never raises into the turn. The copy is a courtesy to plugins, and a
+        bus that is absent, down or slow must not cost the user a reply. The
+        first failure ends the loop rather than retrying the rest: these
+        failures are the transport being unavailable, not this one frame.
+        Cancellation is deliberately NOT swallowed -- that is the session being
+        torn down, and it belongs to the caller.
+        """
+        if not images:
+            return
+        # __new__-built instances (tests, legacy callers) never ran __init__,
+        # read it the same defensive way the media queues are read.
+        lanlan_name = str(getattr(self, "lanlan_name", "") or "") or None
+        for index, image in enumerate(images):
+            if not image:
+                continue
+            source = (
+                sources[index]
+                if index < len(sources)
+                else _FRAME_SOURCE_UNKNOWN
+            )
+            extra: dict = {}
+            if mimes is not None and index < len(mimes) and mimes[index]:
+                extra["mime"] = str(mimes[index])
+            if metadatas is not None and index < len(metadatas) and metadatas[index]:
+                extra["metadata"] = dict(metadatas[index])
+            try:
+                await publish_provider_frame_observed_best_effort(
+                    lanlan_name,
+                    image_base64=image,
+                    source=source,
+                    turn_id=turn_id,
+                    **extra,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as publish_error:
+                logger.debug(
+                    "provider frames not copied to the plugin bus: %s",
+                    publish_error,
+                )
+                return
+
     async def submit_multimodal_turn(
         self,
         text: str,
         images: str | Sequence[str],
         *,
         turn_id: str,
+        source: str | None = None,
     ) -> bool:
         """Submit one utterance's sampled raw frames with its transcript.
 
@@ -223,6 +440,16 @@ class _MediaMixin:
                 await self._run_external_voice_stream(
                     text,
                     turn_images=staged_images,
+                    # 与 realtime 侧同源：这批帧一起冻结的采集通道，不是会话
+                    # 此刻的通道，也不是"用户附件"这个默认。只盖住抽样帧那一
+                    # 段——附件是上面刚接到 staged_images 尾巴上的，它们仍是
+                    # 用户自己给的东西。
+                    turn_source=source,
+                    turn_source_count=len(staged_images) - len(attachments),
+                    # 独立 ASR 这一轮自带一个稳定的 turn_id，一路带到帧总线上，
+                    # 插件才能把同一次发声抽出的几张帧认成一组。普通文本轮没有
+                    # 这个身份，留空即可（记录里就不带 turn_id）。
+                    turn_id=str(turn_id or "").strip() or None,
                     on_turn_committed=_mark_committed,
                 )
             except BaseException as exc:

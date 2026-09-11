@@ -137,7 +137,7 @@
             const f = this._cachedFlags;
             if (!f) return false;
             const master = !!f.agent_enabled;
-            const child = !!(f.computer_use_enabled || f.browser_use_enabled || f.user_plugin_enabled || f.openclaw_enabled || f.openfang_enabled);
+            const child = !!(f.computer_use_enabled || f.browser_use_enabled || f.user_plugin_enabled || f.openclaw_enabled);
             return master && child;
         },
 
@@ -1438,7 +1438,7 @@
 
                         window.stopAgentTaskPolling();
 
-                        if (flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled || flags.openfang_enabled) {
+                        if (flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled) {
                             console.log('[App] \u603b\u5f00\u5173\u5173\u95ed\u4f46\u68c0\u6d4b\u5230\u5b50flag\u5f00\u542f\uff0c\u5f3a\u5236\u540c\u6b65\u5173\u95ed');
                             fetch('/api/agent/flags', {
                                 method: 'POST',
@@ -1651,14 +1651,12 @@
         const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser']);
         const userPlugin = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin']);
         const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw', 'pngtuber-agent-openclaw']);
-        const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang', 'pngtuber-agent-openfang']);
 
         const domMaster = masterCheckbox ? masterCheckbox.checked : false;
         const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
             || (browserCheckbox && browserCheckbox.checked)
             || (userPlugin && userPlugin.checked)
-            || (openclawCheckbox && openclawCheckbox.checked)
-            || (openfangCheckbox && openfangCheckbox.checked);
+            || (openclawCheckbox && openclawCheckbox.checked);
 
         const snap = window._agentStatusSnapshot;
         const machineFlags = window.agentStateMachine ? window.agentStateMachine._cachedFlags : null;
@@ -1670,8 +1668,8 @@
         if (window.agent_ui_v2_state && window.agent_ui_v2_state.optimistic) {
             const opt = window.agent_ui_v2_state.optimistic;
             if ('agent_enabled' in opt) optMaster = !!opt.agent_enabled;
-            if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt || 'openclaw_enabled' in opt || 'openfang_enabled' in opt) {
-                optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled || !!opt.openclaw_enabled || !!opt.openfang_enabled;
+            if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt || 'openclaw_enabled' in opt) {
+                optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled || !!opt.openclaw_enabled;
             }
         }
 
@@ -1682,7 +1680,7 @@
 
         if (!isUiInteractive) {
             isMasterOn = optMaster !== undefined ? optMaster : (flags && !!flags.agent_enabled);
-            isChildOn = optChild !== undefined ? optChild : (flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled || flags.openfang_enabled));
+            isChildOn = optChild !== undefined ? optChild : (flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled));
         } else {
             isMasterOn = optMaster !== undefined ? optMaster : domMaster;
             isChildOn = optChild !== undefined ? optChild : domChild;
@@ -1729,7 +1727,6 @@
             const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser']);
             const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin']);
             const openclawCheckbox = getEl(['live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw', 'pngtuber-agent-openclaw']);
-            const openfangCheckbox = getEl(['live2d-agent-openfang', 'vrm-agent-openfang', 'mmd-agent-openfang', 'pngtuber-agent-openfang']);
 
             if (!keyboardCheckbox || !browserCheckbox) {
                 setTimeout(bindHUD, 500);
@@ -1747,10 +1744,6 @@
             if (openclawCheckbox) {
                 openclawCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
                 openclawCheckbox.addEventListener('change', checkAndToggleTaskHUD);
-            }
-            if (openfangCheckbox) {
-                openfangCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
-                openfangCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
 
             checkAndToggleTaskHUD();

@@ -64,6 +64,7 @@ RESERVED_ROUTE_NAMES = frozenset({
     "card_maker",
     "soccer_demo",
     "badminton_demo",
+    "drawing_guess_demo",
     "jukebox",
     # 静态资源 / 挂载路径
     "static",
@@ -165,6 +166,20 @@ def validate_character_name(
     # Windows 会静默去掉尾部点号，导致路径歧义（如 "foo." → "foo"）。
     if normalized == "." or normalized.endswith("."):
         return CharacterNameValidationResult(normalized=normalized, code="unsafe_dot")
+    # NO leading-dot rule here, deliberately, and it was tried.
+    #
+    # The migration reserves dot-prefixed names inside memory_dir for its
+    # workspaces, so it wants no character to hold one -- and CREATION
+    # already sees to that: every path that makes a character validates with
+    # ``allow_dots=False``, which refuses any dot at all. Adding the rule
+    # here as well changed nothing there and broke the other direction: this
+    # function is also the REQUEST and SNAPSHOT check, applied with
+    # ``allow_dots=True`` to names that already exist, so an install
+    # upgrading with a legacy ".Carol" would have started failing every
+    # memory call with a 400 and reporting its own cloud snapshot invalid.
+    #
+    # Forbidding a name and breaking the data already carrying it are not the
+    # same change. The first is done; the second is not wanted.
     if not allow_dots and "." in normalized:
         return CharacterNameValidationResult(normalized=normalized, code="contains_dot")
     if is_reserved_device_name(normalized):

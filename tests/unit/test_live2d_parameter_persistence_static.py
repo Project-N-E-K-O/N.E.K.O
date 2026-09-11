@@ -75,6 +75,47 @@ def _extract_js_function(source: str, name: str) -> str:
     raise AssertionError(f"unterminated JavaScript function: {name}")
 
 
+def test_set_emotion_reclaims_expression_owned_by_touch_set():
+    script = _manager_harness(
+        """
+        (async () => {
+          const manager = new context.Live2DManager();
+          manager.currentModel = {};
+          manager.currentEmotion = 'happy';
+          manager.currentExpressionFile = 'expressions/happy.exp3.json';
+          manager.emotionMapping = {
+            expressions: { happy: ['expressions/happy.exp3.json'] },
+            motions: {}
+          };
+          manager.fileReferences = { Expressions: [], Motions: {} };
+          manager.getRandomElement = values => values[0];
+          manager.hasActiveActionMotion = () => true;
+          manager._cancelSmoothReset = () => {};
+          manager._isTouchSetExpressionRestoreCurrent = () => true;
+
+          let restoreCancelled = false;
+          let replayedExpression = null;
+          manager._cancelTouchSetExpressionRestore = () => { restoreCancelled = true; };
+          manager.playExpression = async (emotion, file) => {
+            replayedExpression = { emotion, file };
+            return true;
+          };
+          manager.applyPersistentExpressionsNative = async () => true;
+
+          await manager.setEmotion('happy');
+
+          assert.strictEqual(restoreCancelled, true);
+          assert.deepStrictEqual(replayedExpression, {
+            emotion: 'happy',
+            file: 'expressions/happy.exp3.json'
+          });
+        })().catch(error => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
 def test_parameter_editor_mode_suppresses_idle_and_saved_parameter_overlay():
     model_source = LIVE2D_MODEL_PATH.read_text(encoding="utf-8")
     editor_source = PARAMETER_EDITOR_PATH.read_text(encoding="utf-8")

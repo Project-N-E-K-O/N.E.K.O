@@ -1673,6 +1673,17 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
     }
 };
 
+// 排一帧吸附动画：Electron Pet 里渲染后端切到定时器驱动时走同周期定时器
+// （frame-pacing.requestPacedFrame），否则 rAF；裸 rAF 会在动画期间把 Blink 主帧顶回刷新率
+function scheduleLive2DSnapFrame(callback) {
+    const pacing = window.nekoFramePacing;
+    if (pacing && typeof pacing.requestPacedFrame === 'function') {
+        return pacing.requestPacedFrame(callback);
+    }
+    const id = requestAnimationFrame(callback);
+    return () => cancelAnimationFrame(id);
+}
+
 /**
  * 执行平滑吸附动画
  * @param {PIXI.DisplayObject} model - Live2D 模型对象
@@ -1725,7 +1736,7 @@ Live2DManager.prototype._performSnapAnimation = function (model, snapInfo, optio
             model.y = startY + (targetY - startY) * easedProgress;
 
             if (progress < 1) {
-                requestAnimationFrame(animate);
+                scheduleLive2DSnapFrame(animate);
             } else {
                 // 确保最终位置精确
                 model.x = targetX;
@@ -1737,7 +1748,7 @@ Live2DManager.prototype._performSnapAnimation = function (model, snapInfo, optio
         };
 
         console.debug('[Live2D] 开始吸附动画:', { from: { x: startX, y: startY }, to: { x: targetX, y: targetY } });
-        requestAnimationFrame(animate);
+        scheduleLive2DSnapFrame(animate);
     });
 };
 
@@ -2658,6 +2669,12 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         const pointerCoords = getLive2DNiriPetPointerCoordinates(event);
         const pointer = pointerCoords.virtual;
         const localPointer = pointerCoords.local;
+        // 只有坐标真的变了才算「交互活动」去升帧。Electron Pet 的 preload 轮询会在光标
+        // 静止时也周期性派发合成 pointermove，不加这道闸它会把升帧的 hold 窗口无限续命，
+        // 空闲低频 tick 永远进不去。其余悬停/淡化状态逻辑照常执行，不受影响。
+        const pointerMoved = pointer.x !== this._lastMouseX || pointer.y !== this._lastMouseY;
+        // 供 live2d-core 的活动判定：isFocusing 只在光标最近真的动过时才算活动
+        if (pointerMoved) this._lastPointerMoveAt = performance.now();
         this._lastMouseX = pointer.x;
         this._lastMouseY = pointer.y;
         this._lastMouseLocalX = localPointer.x;
@@ -2813,7 +2830,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             };
 
             if (distance < threshold) {
-                if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
+                if (pointerMoved && typeof this.boostLinuxX11InteractiveFPS === 'function') {
                     this.boostLinuxX11InteractiveFPS();
                 }
                 showButtons();
@@ -2842,7 +2859,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                     }
                 }
             } else if (isFullscreenTracking) {
-                if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
+                if (pointerMoved && typeof this.boostLinuxX11InteractiveFPS === 'function') {
                     this.boostLinuxX11InteractiveFPS();
                 }
                 if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
@@ -3822,6 +3839,10 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     this._clickEffectAction = null;
     this._currentClickEffectId = null;
 
+    if (typeof this._cancelTouchSetExpressionRestore === 'function') {
+        this._cancelTouchSetExpressionRestore();
+    }
+
     // 清理页面卸载监听器（如果存在）
     if (this._unloadListener) {
         window.removeEventListener('beforeunload', this._unloadListener);
@@ -4382,6 +4403,26 @@ Live2DManager.prototype.setupHitAreaInteraction = function(model) {
     console.log(`[HitArea] HitArea 交互已设置 : ${window.live2dManager.modelName}`);
 };
 
+Live2DManager.prototype._cancelTouchSetExpressionRestore = function() {
+    this._touchSetExpressionRestoreGeneration = (this._touchSetExpressionRestoreGeneration || 0) + 1;
+    const restoreState = this._touchSetExpressionRestoreState;
+    if (restoreState?.timer) {
+        clearTimeout(restoreState.timer);
+    }
+    this._touchSetExpressionRestoreState = null;
+    return this._touchSetExpressionRestoreGeneration;
+};
+
+Live2DManager.prototype._isTouchSetExpressionRestoreCurrent = function() {
+    const restoreState = this._touchSetExpressionRestoreState;
+    return !!(
+        restoreState
+        && restoreState.generation === this._touchSetExpressionRestoreGeneration
+        && restoreState.model === this.currentModel
+        && restoreState.expressionGeneration === this._transientExpressionGeneration
+    );
+};
+
 /**
  * 根据 touchSet 配置播放 HitArea 对应的动画
  * @param {string} hitAreaId - HitArea ID
@@ -4601,7 +4642,10 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
             } else {
                 console.log(`[TouchSet] 尝试播放表情: ${faceInfo.File}`);
                 try {
-                    const expressionResult = await this.playExpression(randomExpressionName, faceInfo.File);
+                    const touchExpressionModel = this.currentModel;
+                    const expressionTask = this.playExpression(randomExpressionName, faceInfo.File);
+                    const touchExpressionGeneration = this._transientExpressionGeneration;
+                    const expressionResult = await expressionTask;
                     if (expressionResult !== false) {
                         triggerLog.expressions.push({
                             name: randomExpressionName,
@@ -4619,16 +4663,38 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
                         console.warn(`[TouchSet] 表情播放返回失败: ${randomExpressionName}`);
                     }
 
-                    clearTimeout(this.expressionTimer);
-                    const holdingTime = Number.isFinite(faceHoldingTime) && faceHoldingTime > 0 ? faceHoldingTime : 3000;
-                    this.expressionTimer = setTimeout(async () => {
-                        if (typeof this.clearExpression === 'function') {
-                            try {
-                                await this.clearExpression();
-                                console.log(`[TouchSet] 临时表情清除，准备恢复常驻状态`);
-                            } catch (_) {}
-                        }
-                    }, holdingTime);
+                    if (
+                        expressionResult !== false
+                        && this.currentModel === touchExpressionModel
+                        && this._transientExpressionGeneration === touchExpressionGeneration
+                    ) {
+                        const holdingTime = Number.isFinite(faceHoldingTime) && faceHoldingTime > 0 ? faceHoldingTime : 3000;
+                        const restoreGeneration = this._cancelTouchSetExpressionRestore();
+                        const restoreState = {
+                            generation: restoreGeneration,
+                            model: touchExpressionModel,
+                            expressionGeneration: touchExpressionGeneration,
+                            timer: null
+                        };
+                        this._touchSetExpressionRestoreState = restoreState;
+                        restoreState.timer = setTimeout(async () => {
+                            if (this._touchSetExpressionRestoreState !== restoreState) {
+                                return;
+                            }
+                            const shouldRestore = this._isTouchSetExpressionRestoreCurrent();
+                            this._touchSetExpressionRestoreState = null;
+                            if (!shouldRestore) {
+                                console.log('[TouchSet] 临时表情已被新的表情接管，跳过恢复');
+                                return;
+                            }
+                            if (typeof this.clearExpression === 'function') {
+                                try {
+                                    await this.clearExpression();
+                                    console.log(`[TouchSet] 临时表情清除，准备恢复常驻状态`);
+                                } catch (_) {}
+                            }
+                        }, holdingTime);
+                    }
                 } catch (e) {
                     triggerLog.failedExpressions.push({
                         name: randomExpressionName,

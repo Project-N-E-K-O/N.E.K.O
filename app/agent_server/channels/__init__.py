@@ -22,7 +22,7 @@ exposes the same symmetric coroutine::
     async def dispatch(result, *, messages, lanlan_name,
                        conversation_id, trigger_user_msg_sig) -> None
 
-so the facade dispatcher stays a uniform six-way branch.
+so the facade dispatcher stays a uniform five-way branch.
 """
 
-from . import computer_use, browser_use, openclaw, openfang, user_plugin, mcp  # noqa: F401
+from . import computer_use, browser_use, openclaw, user_plugin, mcp  # noqa: F401

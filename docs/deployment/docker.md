@@ -22,7 +22,7 @@ The entrypoint generates `/home/neko/.local/share/N.E.K.O/config/core_config.jso
 
 | Host path | Container path | Purpose |
 | --- | --- | --- |
-| `./neko-home` | `/home/neko` | User configuration, characters, memories, user plugins and their state, feature data, TLS certificate and private key, OpenFang runtime state |
+| `./neko-home` | `/home/neko` | User configuration, characters, memories, user plugins and their state, feature data, TLS certificate and private key |
 | `./logs` | `/app/logs` | Logs |
 
 `TZ` defaults to `Asia/Shanghai`; override it in `.env` with any IANA timezone such as `Etc/UTC`. Back up `neko-home` and `logs` before upgrades. Never expose data or private-key directories through a web server. Do not point `PLUGIN_CONFIG_ROOT`, `PLUGIN_PACKAGES_ROOT`, or `PACKAGE_PROFILES_ROOT` outside `neko-home`, or the corresponding user-plugin data will not survive container recreation.
@@ -34,12 +34,11 @@ Order matters: `docker compose down` **removes** the container, and some state e
 
 ```bash
 # 1. Export what lives only inside the container — before it is removed.
-#    OpenFang's workspace was never mounted under the old layout. And if the host
-#    N.E.K.O/ directory is empty, you followed the old README quickstart, whose
-#    mount target (/root/Documents/N.E.K.O) never matched where the services
-#    actually write — the application data is in there too.
+#    If the host N.E.K.O/ directory is empty, you followed the old README
+#    quickstart, whose mount target (/root/Documents/N.E.K.O) never matched
+#    where the services actually write — the application data is in there too.
 #    The trailing /. copies directory *contents*, avoiding a nested N.E.K.O/N.E.K.O.
-mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
+mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl
 # Decide from what the container actually mounts, not from what the host directory
 # contains: the old README mounted ./N.E.K.O at /root/Documents/N.E.K.O, a path the
 # services never write to, so that host directory can hold files you put there while
@@ -82,22 +81,6 @@ else
     fi
     EXPORTED_APP_DATA=1
   fi
-  # OpenFang is optional only when its source directory is genuinely absent.
-  # Other inspection or copy failures can lose state and must stop the migration.
-  if ! OPENFANG_STATE=$(docker exec neko sh -c 'if [ -d /home/neko/.openfang ]; then printf present; elif [ -e /home/neko/.openfang ]; then printf invalid; else printf missing; fi'); then
-    echo "Cannot inspect OpenFang state; stop the migration." >&2
-    exit 1
-  fi
-  case "$OPENFANG_STATE" in
-    present)
-      if ! docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/; then
-        echo "OpenFang-state export failed; stop the migration before removing the container." >&2
-        exit 1
-      fi
-      ;;
-    missing) echo "(no .openfang in the container)" ;;
-    *) echo "OpenFang state is not a directory; stop the migration." >&2; exit 1 ;;
-  esac
 fi
 ```
 
@@ -149,7 +132,7 @@ Set `NEKO_IMAGE=neko-local:standard` or `neko-local:full` before `docker compose
 
 ## Proxy and diagnostics
 
-The entrypoint starts the Python services and container-local OpenFang, then configures Nginx and WebSocket routes. Its generated certificate is self-signed, not public-trust TLS. Supply a managed certificate or terminate TLS at a trusted proxy for real remote deployment.
+The entrypoint starts the Python services, then configures Nginx and WebSocket routes. Its generated certificate is self-signed, not public-trust TLS. Supply a managed certificate or terminate TLS at a trusted proxy for real remote deployment.
 
 ```bash
 docker compose ps

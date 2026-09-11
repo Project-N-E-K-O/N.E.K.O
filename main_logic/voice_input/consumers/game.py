@@ -11,7 +11,7 @@ from main_logic.voice_turn.contracts import (
     VoiceTurnToken,
 )
 from utils.game_route_state import (
-    get_active_game_route_identity,
+    get_active_game_route_generation_identity as get_active_game_route_identity,
     is_game_route_active,
     route_external_voice_transcript,
 )
@@ -22,7 +22,7 @@ class GameVoiceInputConsumer:
     """Deliver identified non-empty finals to the existing game route."""
 
     lanlan_name: Callable[[], str]
-    _prepared_routes: dict[VoiceTurnToken, tuple[str, str]] = field(
+    _prepared_routes: dict[VoiceTurnToken, tuple[str, str, str]] = field(
         default_factory=dict,
         init=False,
         repr=False,
@@ -37,6 +37,8 @@ class GameVoiceInputConsumer:
         identity = get_active_game_route_identity(self.lanlan_name())
         if identity is None:
             return False
+        if len(identity) == 2:
+            identity = (identity[0], identity[1], "")
         self._prepared_routes[token] = identity
         return True
 
@@ -48,13 +50,18 @@ class GameVoiceInputConsumer:
         route_identity = self._prepared_routes.pop(token, None)
         if route_identity is None:
             raise RuntimeError("GAME_VOICE_TURN_NOT_PREPARED")
-        game_type, session_id = route_identity
+        game_type, session_id, route_instance_id = route_identity
+        route_kwargs = {
+            "request_id": f"asr-{token.ingress.session_epoch}-{token.turn_id}",
+            "game_type": game_type,
+            "session_id": session_id,
+        }
+        if route_instance_id:
+            route_kwargs["sdk_route_instance_id"] = route_instance_id
         routed = await route_external_voice_transcript(
             self.lanlan_name(),
             event.text,
-            request_id=f"asr-{token.ingress.session_epoch}-{token.turn_id}",
-            game_type=game_type,
-            session_id=session_id,
+            **route_kwargs,
         )
         if not routed:
             raise RuntimeError("GAME_VOICE_TRANSCRIPT_NOT_ROUTED")

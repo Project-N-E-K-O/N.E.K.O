@@ -93,6 +93,7 @@ from config import (
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
+from utils.natural_expression_candidates import contains_code_shape
 
 logger = get_module_logger(__name__, "Memory")
 
@@ -106,7 +107,13 @@ _SCHEMA_VERSION = 1
 _DEFAULT_KEY = "default"
 
 
+# One name, used by the write path AND by the cloud-save fence target.
+# They were separate literals and two of the three stores had already
+# drifted, so a fenced write reported a file that does not exist.
+_SIDECAR_FILENAME = "anti_repeat_corpus.json"
+
 @dataclass(frozen=True, slots=True)
+
 class UnansweredProactiveRepeatSignal:
     """Long-window evidence that the user keeps ignoring the same content shape."""
 
@@ -115,6 +122,25 @@ class UnansweredProactiveRepeatSignal:
     considered_count: int = 0
     best_similarity: float = 0.0
     repeated_terms: tuple[str, ...] = ()
+
+
+def _skip_for_code(text: str) -> bool:
+    """Whether anti-repeat should ignore this text entirely.
+
+    A draft carrying code or markup is neither scored nor ingested. The three
+    entry points share this one predicate because they have to agree: scoring
+    a draft the corpus never saw, or ingesting one that is never scored, is a
+    corpus that disagrees with itself.
+
+    Skipping the GATE, not merely the report, is a product decision resting on
+    code being rare in a character's speech. Measured before taking it: 0 of
+    9597 strings in the shipped anti-repeat corpora and 0 of 2470 stored
+    assistant replies carry any code shape. The cost when the assumption does
+    hold is that a repeated phrase which always travels with a backtick is
+    never caught -- the fixed-habit blind spot this feature already has for
+    non-proactive turns, now slightly wider.
+    """
+    return contains_code_shape(text or "")
 
 
 def _resolve_name(name: Optional[str]) -> Optional[str]:
@@ -300,14 +326,75 @@ class AntiRepeatCorpus:
         # 已摘下的落盘 task。只被局部变量引用的 task 会被 GC 回收，事件循环不保证
         # 跑完它 —— 必须由这里持强引用到完成为止。见 flush_staged_detached。
         self._detached_flushes: set = set()
+        # Names retired by ``retire_character``; see ``_write_file_path``.
+        self._retired: set[str] = set()
 
     # ── path / lock ────────────────────────────────────────
 
     def _file_path(self, name: str) -> str:
-        from memory import ensure_character_dir
+        """Return the path for READING; it never creates the directory.
+
+        Creation belongs to ``_write_file_path`` alone. Creating it here made a
+        cache MISS resurrect a directory that a delete had just removed: the
+        eviction dropped the cache, so the very next record re-read from disk
+        and ``makedirs`` the tree back before any write was attempted.
+        """
         return os.path.join(
-            ensure_character_dir(self._config_manager.memory_dir, name),
-            "anti_repeat_corpus.json",
+            str(self._config_manager.memory_dir),
+            name,
+            _SIDECAR_FILENAME,
+        )
+
+    def _write_file_path(self, name: str) -> str | None:
+        """Return the save target, or None for a retired, removed identity.
+
+        The normal path is the lazy ``ensure_character_dir`` every sibling
+        memory writer uses. The exception is a name ``retire_character``
+        retired: fencing alone only covers snapshots staged BEFORE the
+        eviction, so a write staged while a delete or rename-away was still in
+        flight would run once the lifecycle operation released its fence and
+        ``makedirs`` the directory back into existence -- making a deleted
+        identity look like it still has memory.
+
+        A retired name may only write into a directory that already exists; it
+        never creates one. Only ``evict_character`` lifts retirement, and only
+        callers that KNOW the identity is live reach for it.
+
+        A same-named identity reusing a recreated directory can still pick up
+        the old one's data through the cache. It reproduces here too; what
+        holds it shut, why it is left as is, and what a new writer has to do
+        are recorded once in ``memory/anti_repeat_effects.py``
+        ``_write_file_path`` rather than three times over.
+        """
+        from memory import _is_within_memory_root, ensure_character_dir
+        from utils.character_memory import is_character_write_fenced
+
+        # Refused for the WHOLE of an operation that will create this
+        # directory partway through. Retirement below only declines to make
+        # one, so once a rename's merge has made it, a late write from the
+        # identity that used to own the name would land on the history just
+        # moved in -- and staging copies the whole payload, so it replaces
+        # it rather than adding to it.
+        if is_character_write_fenced(name):
+            return None
+
+        memory_dir = self._config_manager.memory_dir
+        character_dir = os.path.join(str(memory_dir), name)
+        if not _is_within_memory_root(str(memory_dir), name, character_dir):
+            # A historical unsafe name resolves outside its own
+            # directory: "." lands on the memory root itself and ".."
+            # escapes it entirely, so the sidecar would be written
+            # beside -- or above -- the whole memory tree. Refused for a
+            # LIVE name as well as a retired one, and refused BEFORE
+            # ensure_character_dir below can create anything.
+            return None
+        if name in self._retired:
+            if not os.path.isdir(character_dir):
+                return None
+            return os.path.join(character_dir, _SIDECAR_FILENAME)
+        return os.path.join(
+            ensure_character_dir(memory_dir, name),
+            _SIDECAR_FILENAME,
         )
 
     def _get_lock(self, name: str) -> threading.Lock:
@@ -352,17 +439,41 @@ class AntiRepeatCorpus:
         the lock: a snapshot older than what is already on disk is dropped, so
         a late writer can never resurrect a stale window.
         """
-        with self._get_write_lock(name):
-            if seq <= self._written_seq.get(name, 0):
-                return
-            try:
-                atomic_write_json(
-                    self._file_path(name), payload, indent=2, ensure_ascii=False,
-                )
-            except Exception as exc:
-                logger.warning("[AntiRepeat] save failed for %s: %s", name, exc)
-                return
-            self._written_seq[name] = seq
+        # 写入屏障必须在临界区内建立：云存档导入会整体替换 memory/<name>/，
+        # 而一个在替换之前就 stage 好的快照，其 seq 仍然大于 _written_seq，
+        # 光靠事后驱逐拦不住它——它会拿到写锁、通过序号检查，把导入进来的
+        # 内容盖回旧数据，而事后的栅栏无法还原已被覆盖的文件。
+        # 交给 cloudsave_writable_transaction：导入围栏关闭期间它直接抛
+        # MaintenanceModeError，这次落盘就被跳过。与
+        # memory/anti_repeat_effects.py 的写入路径同款。
+        try:
+            from utils.cloudsave_runtime import cloudsave_writable_transaction
+
+            with cloudsave_writable_transaction(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{name}/{_SIDECAR_FILENAME}",
+            ):
+                with self._get_write_lock(name):
+                    if seq <= self._written_seq.get(name, 0):
+                        return
+                    target = self._write_file_path(name)
+                    if target is None:
+                        # Directory is gone (deleted or renamed away while this
+                        # turn was in flight). Fence the sequence and drop this
+                        # snapshot rather than recreating the directory.
+                        self._written_seq[name] = seq
+                        logger.debug(
+                            "[AntiRepeat] skip save for removed character %s",
+                            name,
+                        )
+                        return
+                    atomic_write_json(
+                        target, payload, indent=2, ensure_ascii=False,
+                    )
+                    self._written_seq[name] = seq
+        except Exception as exc:
+            logger.warning("[AntiRepeat] save failed for %s: %s", name, exc)
 
     # ── load / save (锁由调用方持有) ───────────────────────
 
@@ -479,6 +590,11 @@ class AntiRepeatCorpus:
         reply just committed.
         """
         if not text or not text.strip():
+            return None
+        # Not ingested either, not only unscored: a corpus holding code that
+        # scoring can never match would raise DF for those terms and dilute
+        # every real phrase's IDF.
+        if _skip_for_code(text):
             return None
         name = _resolve_name(name)
         ngrams = _ngrams(text)
@@ -677,6 +793,8 @@ class AntiRepeatCorpus:
         """
         if not draft_text or not draft_text.strip():
             return 0.0, {}
+        if _skip_for_code(draft_text):
+            return 0.0, {}
         name = _resolve_name(name)
         draft_ngrams = _ngrams(draft_text)
         if len(draft_ngrams) < ANTI_REPEAT_MIN_DRAFT_TOKENS:
@@ -714,6 +832,7 @@ class AntiRepeatCorpus:
             or not draft_text.strip()
             or window <= 0
             or min_matches <= 0
+            or _skip_for_code(draft_text)
         ):
             return UnansweredProactiveRepeatSignal()
 
@@ -822,10 +941,146 @@ class AntiRepeatCorpus:
         # 会卡在这次 fsync 上。清空也走 seq，免得它被一次在飞的旧快照写盖回去。
         self._flush_snapshot(name, payload, seq)
 
+    def _evict_unlocked(self, name: str) -> None:
+        fence = max(
+            self._staged_seq.get(name, 0),
+            self._written_seq.get(name, 0),
+        )
+        self._cache.pop(name, None)
+        self._staged_seq[name] = fence
+        self._written_seq[name] = fence
+
+    def evict_character(self, name: str) -> None:
+        """Forget a LIVE identity whose file changed underneath us.
+
+        Distinct from ``clear``, which WIPES the data and persists an empty
+        payload. Eviction is for when the file on disk changed underneath us --
+        a cloud-save import replaces ``memory/<name>/`` wholesale -- and the
+        cache would otherwise shadow the new contents and get flushed back over
+        them. The sequence fence stops a snapshot staged before the replacement
+        from doing exactly that.
+
+        This is also the explicit "the identity is live" event that lifts
+        retirement: a created, imported or renamed-to name is a real character,
+        and leaving it retired would deny it the lazy directory creation every
+        sibling memory writer gets. Directory existence never lifts retirement;
+        only this call does.
+        """
+        name = _resolve_name(name)
+        with self._get_lock(name):
+            with self._get_write_lock(name):
+                self._evict_unlocked(name)
+                self._retired.discard(name)
+
+    def revive_character(self, name: str) -> None:
+        """Mark a name live again WITHOUT dropping its cache or fencing it.
+
+        The cloud APPLY never rewrites this sidecar -- it is not in
+        ``MANAGED_MEMORY_FILENAMES`` -- so the cache still matches the file and
+        evicting would only raise the sequence fence, silently discarding a
+        snapshot that was staged and not yet flushed. What such an import DOES
+        need is the retirement lifted: a name reused after an earlier delete
+        cannot create its directory until something says it is live again.
+        """
+        name = _resolve_name(name)
+        with self._get_lock(name):
+            with self._get_write_lock(name):
+                if name not in self._retired:
+                    # Live identity: the cloud apply never rewrites this
+                    # sidecar, so the cache matches the file and the sequence
+                    # fence must not move -- moving it discards a snapshot
+                    # staged and not yet flushed.
+                    return
+                # Retired: everything cached or staged under this name belongs
+                # to the identity that was deleted -- a decision recorded
+                # between the retire and the rmtree repopulates the cache from
+                # the still-present file. Dropping and fencing it loses nothing
+                # the reused name is entitled to, and keeping it would flush a
+                # deleted character's aggregates under the new one.
+                self._evict_unlocked(name)
+                self._retired.discard(name)
+
+    def retire_character(self, name: str) -> None:
+        """Forget one identity whose directory is being REMOVED, and fence it.
+
+        The sequence fence only covers snapshots staged BEFORE this call.
+        Retirement is what stops a write staged while the delete or
+        rename-away is still in flight from recreating the directory.
+        """
+        name = _resolve_name(name)
+        with self._get_lock(name):
+            with self._get_write_lock(name):
+                self._evict_unlocked(name)
+                self._retired.add(name)
+
 
 # ── 进程级单例 ─────────────────────────────────────────────
+# A retirement recorded BEFORE the singleton exists must not be lost. Delete
+# and rename retire the identity and only then remove the tree, while the
+# singleton is built lazily on the first runtime event -- so a generation
+# already in flight could construct a fresh instance with an empty retirement
+# set, whose first flush calls ``ensure_character_dir`` and puts the deleted
+# directory straight back. Measured: retiring before construction recreated
+# ``memory/<name>/`` and its sidecar, retiring after did not.
+_PENDING_RETIREMENTS: set[str] = set()
+
+
+def _record_pending_retirement(character_names, *, retired: bool):
+    """Update the pending set and return the singleton, under ONE lock.
+
+    The lock is _GLOBAL_LOCK, deliberately, and not a second lock of its own.
+    A builder that had copied the pending set but not yet published would
+    otherwise race a concurrent retire/revive: that caller reads ``None``,
+    returns early, and leaves its update only in the set the builder had
+    already copied -- so the published instance carries stale state, and a
+    delete can be resurrected or a live character blocked from creating
+    its directory. Sharing the lock makes both interleavings safe: either
+    the update lands before the copy, or it sees the published instance.
+    """
+    with _GLOBAL_LOCK:
+        for character_name in character_names:
+            if retired:
+                _PENDING_RETIREMENTS.add(character_name)
+            else:
+                # Eviction and revival both LIFT retirement, so they have
+                # to clear the pending record too -- otherwise a name
+                # retired and revived before construction would stay
+                # retired forever.
+                _PENDING_RETIREMENTS.discard(character_name)
+        return _GLOBAL_CORPUS
+
+
 _GLOBAL_CORPUS: Optional[AntiRepeatCorpus] = None
 _GLOBAL_LOCK = threading.Lock()
+
+
+def evict_cached_anti_repeat_corpus(*character_names: str) -> None:
+    """Evict loaded identities without creating the global corpus."""
+    names = list(dict.fromkeys(character_names))
+    corpus = _record_pending_retirement(names, retired=False)
+    if corpus is None:
+        return
+    for character_name in names:
+        corpus.evict_character(character_name)
+
+def revive_cached_anti_repeat_corpus(*character_names: str) -> None:
+    """Lift retirement for live identities without touching their caches."""
+    names = list(dict.fromkeys(character_names))
+    corpus = _record_pending_retirement(names, retired=False)
+    if corpus is None:
+        return
+    for character_name in names:
+        corpus.revive_character(character_name)
+
+
+def retire_cached_anti_repeat_corpus(*character_names: str) -> None:
+    """Retire removed identities without creating the global corpus."""
+    names = list(dict.fromkeys(character_names))
+    corpus = _record_pending_retirement(names, retired=True)
+    if corpus is None:
+        return
+    for character_name in names:
+        corpus.retire_character(character_name)
 
 
 def get_anti_repeat_corpus() -> AntiRepeatCorpus:
@@ -833,5 +1088,9 @@ def get_anti_repeat_corpus() -> AntiRepeatCorpus:
     if _GLOBAL_CORPUS is None:
         with _GLOBAL_LOCK:
             if _GLOBAL_CORPUS is None:
-                _GLOBAL_CORPUS = AntiRepeatCorpus()
+                built = AntiRepeatCorpus()
+                # Already under the lock, so read the set directly: a
+                # helper that re-acquired it would deadlock.
+                built._retired.update(_PENDING_RETIREMENTS)
+                _GLOBAL_CORPUS = built
     return _GLOBAL_CORPUS

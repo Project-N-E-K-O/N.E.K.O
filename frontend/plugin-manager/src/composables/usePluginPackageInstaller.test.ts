@@ -8,7 +8,7 @@ import {
   type PluginCliInstallPlanResponse,
   type PluginCliInstallResponse,
 } from '@/api/pluginCli'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
@@ -90,6 +90,23 @@ describe('usePluginPackageInstaller', () => {
 
     expect(response).toBeNull()
     expect(discardUploadedPluginPackage).toHaveBeenCalledWith('/packages/demo.neko-plugin')
+  })
+
+  it.each([
+    ['install_source_ownership_unknown', 'package.install.blockedOwnershipUnknown'],
+    ['install_source_read_only', 'package.install.blockedInstallSourceReadOnly'],
+  ])('explains the %s blocked plan', async (reason, messageKey) => {
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...replacePlan,
+      action: 'blocked',
+      reason,
+    })
+    const installer = usePluginPackageInstaller()
+
+    const response = await installer.installPackagePath('/packages/demo.neko-plugin')
+
+    expect(response).toBeNull()
+    expect(ElMessage.error).toHaveBeenCalledWith(messageKey)
   })
 
   it('keeps the upload when the server completed install but the response was lost', async () => {
@@ -302,4 +319,32 @@ describe('usePluginPackageInstaller', () => {
       )
     },
   )
+
+  it('uses ownership-transfer copy for a manual takeover plan', async () => {
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...replacePlan,
+      reason: 'manual_takeover',
+      current_source: 'manual',
+      target_source: 'imported',
+    })
+    vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as never)
+    vi.mocked(installPluginPackage).mockResolvedValue(replaceResponse)
+    const installer = usePluginPackageInstaller()
+
+    await installer.installPackagePath('/packages/demo.neko-plugin')
+
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('package.install.manualTakeoverBody'),
+      expect.stringContaining('package.install.manualTakeoverTitle'),
+      expect.objectContaining({
+        confirmButtonText: 'package.install.manualTakeoverConfirm',
+      }),
+    )
+    expect(installPluginPackage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        confirm_upgrade: true,
+        confirmation_token: 'a'.repeat(64),
+      }),
+    )
+  })
 })

@@ -38,6 +38,11 @@ except ImportError:
 
 if __name__ == "__main__":
     _ensure_utf8_filesystem_encoding()
+    if sys.argv[1:] == ["--neko-plugin-metadata-worker"]:
+        from plugin.server.application.plugins.metadata_scanner import _worker_main
+
+        _worker_main()
+        raise SystemExit(0)
     if os.environ.get("NEKO_VOICE_IDENTITY_RELEASE_SMOKE") == "1":
         # Frozen multiprocessing children re-enter this file.  Let Python
         # consume its private child-process arguments before dispatching the

@@ -360,14 +360,6 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             controlStyle: 'slider'
         },
         {
-            id: 'agent-openfang',
-            label: window.t ? window.t('settings.toggles.openfang') : '专属桌面',
-            labelKey: 'settings.toggles.openfang',
-            initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...',
-            controlStyle: 'slider'
-        },
-        {
             id: 'agent-user-plugin',
             label: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
             labelKey: 'settings.toggles.userPlugin',
@@ -1481,8 +1473,6 @@ window.AgentHUD._createTaskCard = function (task) {
         typeName = window.t ? window.t('agent.taskHud.typeBrowserUse') : '浏览器控制';
     } else if (rawTypeName === 'mcp') {
         typeName = window.t ? window.t('agent.taskHud.typeMCP') : 'MCP工具';
-    } else if (rawTypeName === 'openfang') {
-        typeName = window.t ? window.t('agent.taskHud.typeOpenFang') : '专属桌面';
     }
 
     const typeLabel = document.createElement('span');

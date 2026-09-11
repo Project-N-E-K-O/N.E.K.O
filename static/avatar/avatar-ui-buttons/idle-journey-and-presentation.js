@@ -158,7 +158,11 @@ function _getNekoIdleDesktopCompactSurfaceRect() {
     if (!state || !state.visible || !state.screenRect) return null;
     if (_nekoIdleDesktopChatMinimizedState &&
         _nekoIdleDesktopChatMinimizedState.minimized &&
-        _isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopChatMinimizedState.sourceUpdatedAt, state)) {
+        _isNekoIdleDesktopStateNewerThan(
+            _nekoIdleDesktopChatMinimizedState.sourceUpdatedAt,
+            _nekoIdleDesktopChatMinimizedState.lifecycleSequence,
+            state
+        )) {
         return null;
     }
     if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS) return null;
@@ -191,7 +195,11 @@ function _getNekoIdleDesktopChatMinimizedRect() {
     if (!state || !state.minimized || !state.screenRect) return null;
     if (_nekoIdleDesktopCompactSurfaceState &&
         _nekoIdleDesktopCompactSurfaceState.visible &&
-        _isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt, state)) {
+        _isNekoIdleDesktopStateNewerThan(
+            _nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt,
+            _nekoIdleDesktopCompactSurfaceState.lifecycleSequence,
+            state
+        )) {
         return null;
     }
     if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS) return null;
@@ -2248,20 +2256,32 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         const receivedAt = Date.now();
         const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);
-        if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) return;
-        const screenRect = detail && detail.minimized
+        const lifecycleSequence = _getNekoIdleDesktopStateLifecycleSequence(detail);
+        const targetAvailable = !(detail && detail.available === false);
+        const lifecycleTerminal = !targetAvailable;
+        if (_isNekoIdleDesktopStateStaleAgainst(
+            sourceUpdatedAt,
+            lifecycleSequence,
+            lifecycleTerminal,
+            _nekoIdleDesktopChatMinimizedState
+        )) return;
+        const screenRect = targetAvailable && detail && detail.minimized
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
-        const nextMinimized = !!(detail && detail.minimized && screenRect);
+        const nextMinimized = !!(targetAvailable && detail && detail.minimized && screenRect);
         if (_isAnyNekoIdleCat1PlaygroundDropLifecycleActive() &&
             _isNekoIdleCat1PlaygroundPairMoveFeedback(detail)) {
             return;
         }
         const compactSurfaceCurrentlyVisible = !!_getNekoIdleDesktopCompactSurfaceRect();
-        if (nextMinimized &&
+        if ((nextMinimized || !targetAvailable) &&
             _nekoIdleDesktopCompactSurfaceState &&
-            _nekoIdleDesktopCompactSurfaceState.visible &&
-            _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) {
+            _isNekoIdleDesktopStateStaleAgainst(
+                sourceUpdatedAt,
+                lifecycleSequence,
+                lifecycleTerminal,
+                _nekoIdleDesktopCompactSurfaceState
+            )) {
             return;
         }
         const previousState = _nekoIdleDesktopChatMinimizedState;
@@ -2276,15 +2296,20 @@ function _ensureNekoIdleReturnPresentationBridge() {
             screenRect,
             receivedAt,
             sourceUpdatedAt,
-            !!(detail && !detail.minimized && !compactSurfaceCurrentlyVisible)
+            !!(targetAvailable && detail && !detail.minimized && !compactSurfaceCurrentlyVisible),
+            lifecycleSequence,
+            lifecycleTerminal
         );
-        if (nextMinimized) {
+        if (nextMinimized || !targetAvailable) {
             _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
                 false,
                 null,
                 receivedAt,
-                sourceUpdatedAt
+                sourceUpdatedAt,
+                lifecycleSequence,
+                lifecycleTerminal
             );
+            _nekoIdleCompactSurfaceDragging = false;
         }
         const pairMoveFeedback = _isNekoIdleCat1PlaygroundPairMoveFeedback(detail);
         document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
@@ -2309,16 +2334,28 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         const receivedAt = Date.now();
         const sourceUpdatedAt = _getNekoIdleDesktopStateSourceUpdatedAt(detail, receivedAt);
-        if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) return;
-        const screenRect = detail && detail.visible
+        const lifecycleSequence = _getNekoIdleDesktopStateLifecycleSequence(detail);
+        const targetAvailable = !(detail && detail.available === false);
+        const lifecycleTerminal = !targetAvailable;
+        if (_isNekoIdleDesktopStateStaleAgainst(
+            sourceUpdatedAt,
+            lifecycleSequence,
+            lifecycleTerminal,
+            _nekoIdleDesktopCompactSurfaceState
+        )) return;
+        const screenRect = targetAvailable && detail && detail.visible
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
         const heartbeat = !!(detail && detail.heartbeat);
-        const nextVisible = !!(detail && detail.visible && screenRect);
-        if (nextVisible &&
+        const nextVisible = !!(targetAvailable && detail && detail.visible && screenRect);
+        if ((nextVisible || !targetAvailable) &&
             _nekoIdleDesktopChatMinimizedState &&
-            _nekoIdleDesktopChatMinimizedState.minimized &&
-            _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) {
+            _isNekoIdleDesktopStateStaleAgainst(
+                sourceUpdatedAt,
+                lifecycleSequence,
+                lifecycleTerminal,
+                _nekoIdleDesktopChatMinimizedState
+            )) {
             return;
         }
         // heartbeat 只用于维持 compact-top-edge 贴附位置同步，不得改变可见性状态：
@@ -2334,15 +2371,19 @@ function _ensureNekoIdleReturnPresentationBridge() {
                 nextVisible,
                 screenRect,
                 receivedAt,
-                sourceUpdatedAt
+                sourceUpdatedAt,
+                lifecycleSequence,
+                lifecycleTerminal
             );
-            if (nextVisible) {
+            if (nextVisible || !targetAvailable) {
                 _nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(
                     false,
                     null,
                     receivedAt,
                     sourceUpdatedAt,
-                    false
+                    false,
+                    lifecycleSequence,
+                    lifecycleTerminal
                 );
             }
         } else if (nextVisible &&
@@ -2355,23 +2396,23 @@ function _ensureNekoIdleReturnPresentationBridge() {
                 true,
                 screenRect || _nekoIdleDesktopCompactSurfaceState.screenRect,
                 receivedAt,
-                prevCompactSourceUpdatedAt
+                prevCompactSourceUpdatedAt,
+                _nekoIdleDesktopCompactSurfaceState.lifecycleSequence,
+                _nekoIdleDesktopCompactSurfaceState.lifecycleTerminal
             );
         } else if (nextVisible &&
             _nekoIdleDesktopChatMinimizedState &&
             !_nekoIdleDesktopChatMinimizedState.minimized) {
-            // 还原后来的心跳 catch-up：Electron setMinimized(false) 早退不发布
-            // compact-surface-state，compact 缓存仍为 minimize 时写下的
-            // visible:false。心跳说 visible + minimized 已 false → 信任心跳
-            // 恢复 compact 可用性，保留原 sourceUpdatedAt 不乱排序。
-            var prevCompactSourceUpdatedAt = _nekoIdleDesktopCompactSurfaceState
-                ? _nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt
-                : sourceUpdatedAt;
+            // 首个 available:true 发布失败时，后续心跳可能是消费端收到的第一条
+            // 恢复事实。仅此 catch-up 分支提升排序水位，避免迟到的恢复前消息
+            // 再次清掉目标；普通可见心跳仍走上面的保序分支。
             _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
                 true,
                 screenRect,
                 receivedAt,
-                prevCompactSourceUpdatedAt
+                sourceUpdatedAt,
+                lifecycleSequence,
+                lifecycleTerminal
             );
         }
         _handleNekoIdleCompactSurfaceMoveState(detail);

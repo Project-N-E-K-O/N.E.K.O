@@ -388,6 +388,10 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         # 只读：读路径由引擎准入检查兜底，围栏住只会白白打断读取。
         ("/query_memory/{lanlan_name}", "POST"),
         ("/internal/memory/{lanlan_name}/scoped_context", "POST"),
+        # 用户主动触发的本机重复表达分析：只读历史 + 纯计算，不写任何角色
+        # 文件。角色正在删除/改名时，只读引擎准入检查已经会拒绝，围栏住只会
+        # 让一次用户点击白白失败。
+        ("/internal/memory/{lanlan_name}/repetition_insights", "POST"),
         ("/followup_topics/{lanlan_name}", "GET"),
         ("/get_recent_history/{lanlan_name}", "GET"),
         ("/search_for_memory/{lanlan_name}/{query}", "GET"),

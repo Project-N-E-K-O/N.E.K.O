@@ -170,7 +170,7 @@ def gate_signal_for(lanlan_name: str, user_text: str) -> Optional[float]:
     (c) carried a usable ``external_intent``.
 
     When all hold, returns ``max(external_intent, complexity)`` so a hard reasoning
-    turn (high complexity — e.g. an openfang multi-step request) keeps the gate
+    turn (high complexity — e.g. a multi-step reasoning request) keeps the gate
     open even at low external_intent.
     """
     tracker = _TRACKERS_BY_LANLAN.get(lanlan_name)

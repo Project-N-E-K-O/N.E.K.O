@@ -141,6 +141,7 @@ FACADE_MODULE_ALIAS = "_core_facade"
 OWNER_SUBMODULES = {
     "_shared",
     "callback_render",
+    "game_speech_audio_cache",
     "multimodal_turn",
     "notices",
 }
@@ -151,6 +152,13 @@ MIXIN_SUPPORT_CLASSES = {
         "_HotSwapAudioFrame",
         "_HotSwapAudioBuffer",
         "_VoiceInputPipelineFailure",
+    },
+    "tts_runtime": {
+        # Private control-flow signal for the game-speech preload batch. It has
+        # to be a distinct type from asyncio.CancelledError so that absorbing a
+        # supersede/teardown does not also swallow a real task cancellation, and
+        # it lives next to its only raiser and catcher.
+        "_GameSpeechPreloadCancelled",
     },
 }
 PATCH_CALL_NAMES = {"setattr", "patch", "delattr"}

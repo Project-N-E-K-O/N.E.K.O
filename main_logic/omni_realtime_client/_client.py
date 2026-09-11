@@ -107,6 +107,8 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         on_new_message: Optional[Callable[[], Awaitable[None]]] = None,
         on_sid_rotate: Optional[Callable[[], Awaitable[None]]] = None,
         on_input_transcript: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_input_transcript_with_route: Optional[Callable[..., Awaitable[None]]] = None,
+        get_input_route_identity: Optional[Callable[[], "tuple[str, str, str] | None"]] = None,
         on_output_transcript: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         on_connection_error: Optional[Callable[[str], Awaitable[None]]] = None,
         on_response_done: Optional[Callable[[], Awaitable[None]]] = None,
@@ -114,6 +116,10 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         on_status_message: Optional[Callable[[str], Awaitable[None]]] = None,
         on_repetition_detected: Optional[Callable[[], Awaitable[None]]] = None,
         get_host_turn_id: Optional[Callable[[], "str | None"]] = None,
+        # Which character this session belongs to. Optional because the field
+        # is only used to attribute frame copies -- a caller that does not pass
+        # it gets the previous behaviour (unattributed) rather than a crash.
+        lanlan_name: Optional[str] = None,
         extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]]] = None,
         api_type: Optional[str] = None,
         on_tool_call: Optional[OnToolCallCallback] = None,
@@ -148,6 +154,18 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.on_new_message = on_new_message
         self.on_sid_rotate = on_sid_rotate
         self.on_input_transcript = on_input_transcript
+        self.on_input_transcript_with_route = on_input_transcript_with_route
+        self.get_input_route_identity = get_input_route_identity
+        # One client-side utterance slot plus at most eight server item ids.
+        # Provider finals consume their entry; reconnect/close clears all.
+        self._input_route_identity_captured = False
+        self._input_route_identity = None
+        self._input_route_identity_by_item: dict[str, tuple[str, str, str] | None] = {}
+        # Route owning the most recent audio frame seen before an onset, used
+        # when the local onset gate never armed a snapshot. Last-write-wins, so
+        # it cannot carry a stale owner into a later utterance.
+        self._input_route_identity_stream_armed = False
+        self._input_route_identity_stream_owner = None
         self.on_output_transcript = on_output_transcript
         self.turn_detection_mode = turn_detection_mode
         self.on_connection_error = on_connection_error
@@ -156,6 +174,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.on_status_message = on_status_message
         self.on_repetition_detected = on_repetition_detected
         self.get_host_turn_id = get_host_turn_id
+        self.lanlan_name = lanlan_name
         self.extra_event_handlers = extra_event_handlers or {}
         self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
         # Tool handlers have narrower ownership than generic background work:
@@ -328,9 +347,11 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._last_speech_time = None
         self._api_type = api_type or ""
         self._livestream_mode = bool(livestream_mode)
-        # 只在 GLM 和 free 时启用静默超时；livestream 模式（主播长会话）整路跳过
+        # 判据用推断后的 api_type：api_type 为空、靠 free 模型名 + lanlan 路由
+        # 推断出来的那条也是 free，和本类其余 free 判断保持一致。
+        # livestream 模式（主播长会话）整路跳过。
         self._enable_silence_timeout = (
-            self._api_type.lower() in ['glm', 'free']
+            _effective_api_type.lower() in ['glm', 'free']
             and not self._livestream_mode
         )
         self._silence_timeout_seconds = 90  # 90秒无语音输入则自动关闭
@@ -556,6 +577,10 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Keep a distinct token because the submit coroutine itself may already
         # be finished when the next external-ASR utterance starts.
         self._gemini_external_outcome_token: Optional[object] = None
+        self._gemini_cancelled_terminal_pending = False
+        self._gemini_cancelled_terminal_deadline: Optional[float] = None
+        self._gemini_cancelled_terminal_awaiting_delivery = False
+        self._gemini_cancelled_terminal_id: Optional[object] = None
         self._gemini_external_quarantine_task: Optional[asyncio.Task] = None
         self._gemini_proactive_outcome_owner: Optional[tuple] = None
 
@@ -574,6 +599,59 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    async def _cancel_frame_copies(self) -> None:
+        """End every in-flight frame copy. The dual of the offline client's.
+
+        ``_bg_tasks`` is never cancelled on close, so without this a copy
+        parked in the cross-loop handoff outlives the session holding its
+        base64, and publishes a frame from a retired session if the bridge
+        later recovers. Cancel then collect -- a cancelled task has not
+        stopped until it has been awaited.
+        """
+        # Latch before draining, the same way the offline client does. Draining
+        # alone races: an image send already awaiting the provider (Gemini's
+        # send_realtime_input, a queued WebSocket event) resolves after the
+        # drain, fires a fresh copy, and that copy outlives the closed session
+        # with nothing left to collect it.
+        self._frame_copies_closed = True
+        tasks = getattr(self, "_frame_copy_tasks", None)
+        if not tasks:
+            return
+        # Snapshot: the done-callbacks discard from the live sets as they end.
+        draining = list(tasks)
+        for task in draining:
+            task.cancel()
+        await asyncio.gather(*draining, return_exceptions=True)
+        tasks.clear()
+
+    def _fire_frame_copy(self, coro):
+        """``_fire_task`` for frame copies only, and bounded.
+
+        The ceiling is counted in its OWN set, not in ``_bg_tasks``: that set
+        holds quarantine and lifecycle work whose whole job is to finish, and
+        capping it would drop exactly the tasks that must not be dropped. A
+        frame copy is the only thing here that is both optional and
+        multi-megabyte, so it is the only thing that gets one.
+
+        The task itself is still created through ``_fire_task``, so it stays
+        registered for teardown like every other background task, and the
+        single seam tests use to observe or refuse one keeps working.
+        """
+        from main_logic.agent_event_bus import spawn_bounded_frame_copy
+
+        if getattr(self, "_frame_copies_closed", False):
+            # close() has begun. A copy started now describes a session that is
+            # gone, and the drain has already run -- nothing would collect it.
+            coro.close()
+            return None
+        tasks = getattr(self, "_frame_copy_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._frame_copy_tasks = tasks
+        return spawn_bounded_frame_copy(
+            coro, tasks, label="realtime bus copy", spawn=self._fire_task,
+        )
 
     def _ensure_turn_admission_lock(self) -> asyncio.Lock:
         """Return the shared callback/user-turn boundary, lazily for doubles."""

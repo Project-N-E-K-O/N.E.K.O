@@ -14,7 +14,6 @@ Only variables explicitly read by current code are supported. A `NEKO_` prefix i
 | `NEKO_USER_PLUGIN_SERVER_PORT` | 48916 | User-plugin host |
 | `NEKO_AGENT_MQ_PORT` | 48917 | Agent message transport |
 | `NEKO_MAIN_AGENT_EVENT_PORT` | 48918 | Main/agent event transport |
-| `NEKO_OPENFANG_PORT` | 50051 | OpenFang A2A service |
 
 Electron stores port overrides in `port_config.json` under `%APPDATA%\N.E.K.O` on Windows, macOS Application Support, or `$XDG_CONFIG_HOME/N.E.K.O` on Linux. Explicit environment values win.
 

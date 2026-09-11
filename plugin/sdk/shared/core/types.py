@@ -26,6 +26,14 @@ EntryHandler: TypeAlias = Callable[..., object]
 
 PushMessageFailureReason: TypeAlias = Literal[
     "backpressure",
+    # The SDK measured the wire payload the way the host's ingest server does
+    # and it blew MESSAGE_PLANE_PAYLOAD_MAX_BYTES. Unlike "backpressure" this
+    # is not transient: the host would discard the WHOLE push (text parts
+    # included) and the author would only ever see it in the host log, so the
+    # SDK rejects it locally instead of reporting a submission that silently
+    # goes nowhere. Retrying an identical payload cannot help -- the push has
+    # to get smaller, which for images means ctx.images.upload().
+    "payload_too_large",
     "transport_error",
     "transport_unavailable",
 ]
@@ -106,6 +114,10 @@ class BusConversationsProtocol(Protocol):
     def get_by_id(self, conversation_id: str, max_count: int = 10, timeout: float | None = None) -> object: ...
 
 
+class BusFramesProtocol(Protocol):
+    def get(self, **kwargs: object) -> object: ...
+
+
 class BusMemoryProtocol(Protocol):
     def get(self, *, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> object: ...
 
@@ -115,6 +127,7 @@ class BusProtocol(Protocol):
     events: BusEventsProtocol | None
     lifecycle: BusLifecycleProtocol | None
     conversations: BusConversationsProtocol | None
+    frames: BusFramesProtocol | None
     memory: BusMemoryProtocol | None
 
 
@@ -260,6 +273,7 @@ class RouterProtocol(Protocol):
 
 __all__ = [
     "BusConversationsProtocol",
+    "BusFramesProtocol",
     "BusEventsProtocol",
     "BusLifecycleProtocol",
     "BusMemoryProtocol",

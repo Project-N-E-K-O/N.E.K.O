@@ -400,6 +400,11 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
 
 
 def test_locale_bootstrap_declares_a_non_empty_locale_cache_key() -> None:
+    # 这条只保“声纹文案落地时缓存键已经翻过 2026-08-07-credentials-console-guide”，
+    # 是个不会腐烂的负向断言，所以留着不动。别把它改成钉死当前取值 —— 那样每次无关的
+    # 递增都要顺手来改这一行（static/yui-guide-day1-systray-intro.test.cjs 就那么烂过）。
+    # 版本串本身的通用约束（形状、不得复用旧值、两个装载点都带 ?v=、key 结构变了必须
+    # 递增）统一放在 tests/unit/test_locale_cache_bust_contract.py。
     bootstrap = (ROOT / "static/i18n-i18next.js").read_text(encoding="utf-8")
     locale_version = re.search(r"const\s+LOCALE_VERSION\s*=\s*'([^']+)'", bootstrap)
     assert locale_version and locale_version.group(1).strip()

@@ -487,6 +487,11 @@ export default {
       overrideBuiltinTitle: '{plugin} を Market ソースに切り替えますか？',
       overrideBuiltinBody: '現在の内蔵バージョン {current} を Market バージョン {target} に置き換えます。プラグインのデータと設定は永続ストレージに保持されます。',
       overrideBuiltinConfirm: 'Market に切り替える',
+      manualTakeoverTitle: '{plugin} を N.E.K.O の管理対象にしますか？',
+      manualTakeoverBody: 'このプラグインディレクトリは現在手動で管理されています。続行するとバージョン {current} を {target} に置き換え、成功後は N.E.K.O がこのユーザープラグインの更新とアンインストールを管理します。',
+      manualTakeoverConfirm: '置き換えて管理する',
+      manualTakeoverCancelled: '手動管理プラグインの置き換えをキャンセルしました。',
+      manualTakeoverSucceeded: '{plugin} は N.E.K.O の管理対象になりました。',
       reinstallTitle: '{plugin} を再インストールしますか？',
       reinstallBody: 'バージョン {current} をバージョン {target} でもう一度置き換えます。実行中のプラグインは一時的に再起動します。',
       reinstallConfirm: 'プラグインを再インストール',
@@ -500,6 +505,8 @@ export default {
       blockedBundleConflict: 'このバンドルにはインストール済みのプラグインが含まれます。プラグインを1つずつアップグレードしてください。',
       blockedDirectoryConflict: '対象ディレクトリは別のプラグインに属するため、変更しませんでした。',
       blockedLegacyPlugin: 'このプラグインの以前のバージョンがまだインストールされています。続行する前に {plugin} をアンインストールしてください。',
+      blockedOwnershipUnknown: '既存のプラグインディレクトリの所有元を確認できません。インストール元の記録を復元してから再試行してください。',
+      blockedInstallSourceReadOnly: 'インストール元の記録を利用できないか、読み取り専用です。記録を復元してから再試行してください。',
       rollbackCompleted: 'アップグレードに失敗したため、以前のバージョンを復元しました。',
       rollbackIncomplete: 'アップグレードに失敗し、ロールバックも完了できませんでした。続行する前にプラグインの状態を確認してください。',
       error: {
@@ -641,7 +648,13 @@ export default {
     returnedLines: '返却行数',
     connected: '接続済み',
     disconnected: '未接続',
-    connectionFailed: 'ログストリームの接続に失敗しました'
+    connectionFailed: 'ログストリームの接続に失敗しました',
+    exportLog: 'ログアーカイブをエクスポート',
+    openLogDirectory: 'ログディレクトリを開く',
+    exportSuccess: 'ログのエクスポートに成功しました',
+    exportFailed: 'ログのエクスポートに失敗しました',
+    openDirectoryFailed: 'ディレクトリを開けませんでした',
+    noLogFileToExport: 'エクスポートするログファイルがありません'
   },
   runs: {
     title: '実行履歴',
@@ -717,7 +730,9 @@ export default {
     resourceNotFound: '要求されたリソースが見つかりません',
     internalServerError: 'サーバー内部エラー',
     serviceUnavailable: 'サービスが利用できません',
-    networkError: 'ネットワークエラー。接続を確認してください。'
+    networkError: 'ネットワークエラー。接続を確認してください。',
+    requestTimeout: 'リクエストがタイムアウトしました。もう一度お試しください。',
+    pluginLifecycleTimeout: 'プラグインの起動または再起動がタイムアウトしました。プラグインログを確認してください。'
   },
   welcome: {
     about: {

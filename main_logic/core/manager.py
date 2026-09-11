@@ -116,6 +116,29 @@ class LLMSessionManager(
         # request 读。
         self._pending_screenshot_avatar_position: dict | None = None
         self.current_speech_id = None
+        # Per-speech playback overrides are bounded and released on audio_done,
+        # interruption, or session teardown. Ordinary speech is absent and
+        # therefore keeps the global speaker gain unchanged.
+        self._speech_playback_gains: OrderedDict[str, float] = OrderedDict()
+        # Mini-game speech preload uses an isolated, short-lived worker so its
+        # synthesized chunks never enter the audible response handler. Batches
+        # are serialized per character and explicitly cancelled on teardown.
+        self._game_speech_preload_lock = asyncio.Lock()
+        self._game_speech_preload_pending_batches = 0
+        self._game_speech_preload_cancel_epoch = 0
+        self._game_speech_preload_active_workers: dict[Thread, Queue] = {}
+        # Mini-game audible speech is serialized by the game router through
+        # one completion slot.  The slot is resolved by audio_done and cleared
+        # on timeout, interruption, or teardown, so it cannot grow per request.
+        self._game_speech_completion_waiter: tuple[str, asyncio.Future] | None = None
+        # Delivery result for that same serialized speech.  A fixed single
+        # slot is enough because the game router never permits two audible
+        # game speeches to wait concurrently.  Cleared with the waiter on
+        # completion, cancellation, timeout, pipeline reset, or teardown.
+        self._game_speech_delivery_state: tuple[str, bool] | None = None
+        # Exact SDK playback correlation for the one serialized audible game
+        # speech.  Cleared with audio_done, interruption, or TTS teardown.
+        self._game_speech_correlation: tuple[str, str] | None = None
         self._speech_output_total = 0  # diagnostic: chunks actually sent to frontend playback
         self._last_speech_output_time = 0.0
         self._last_speech_output_bytes = 0
@@ -181,6 +204,7 @@ class LLMSessionManager(
         self.pending_use_tts = None
         self.is_hot_swap_imminent = False
         self.tts_handler_task = None
+        self._tts_handler_response_queue = None
         # 热切换相关变量
         self.background_preparation_task = None
         self.final_swap_task = None
@@ -262,7 +286,6 @@ class LLMSessionManager(
             'user_plugin_enabled': False,
             'openclaw_enabled': False,
             'openclaw_ready': False,
-            'openfang_enabled': False,
         }
         
         # 模式标志: 'audio' 或 'text'
@@ -305,6 +328,11 @@ class LLMSessionManager(
         self._tts_notified_error_keys: set[tuple[str, str]] = set()
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
+        # 文本空闲软 flush：realtime 语音 + 自定义 TTS 时，本轮转录停下 ~1s 而
+        # provider 的 response.done 还没来，就让 worker 先把攒着的尾句合成出来。
+        # 定时器由每个入队的文本 chunk 重置，done 入队 / 打断 / 拆除时取消。
+        self._tts_soft_flush_task: Optional[asyncio.Task] = None
+        self._tts_soft_flush_supported: bool = False  # 由 _start_tts_thread 按 provider 能力位设置
         # Keep one utterance ledger so a replacement worker can replay consumed text.
         # 已送入当前 worker 的原始文本账本。配置型 provider 运行时失败时，
         # 用它把本轮文本与 done 信号交给替代 worker，避免整段回复静音。

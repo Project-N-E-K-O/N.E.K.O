@@ -16,6 +16,8 @@ PR #1125), plus three PR #1127 follow-up tests:
 from __future__ import annotations
 
 import asyncio
+import gc
+import weakref
 
 import pytest
 
@@ -30,6 +32,26 @@ from .game_route_test_helpers import (
     gr_patch_all as _gr_patch_all,
     reset_game_route_state,
 )
+
+
+def test_route_lock_registries_release_idle_historical_keys() -> None:
+    route_key = grs._route_state_key("LockGcLan", "example-lock-gc")
+    route_lock = grs._get_route_lock(*route_key)
+    supersede_lock = grs._get_supersede_lock("LockGcLan")
+    route_ref = weakref.ref(route_lock)
+    supersede_ref = weakref.ref(supersede_lock)
+
+    assert grs._get_route_lock(*route_key) is route_lock
+    assert grs._get_supersede_lock("LockGcLan") is supersede_lock
+
+    del route_lock
+    del supersede_lock
+    gc.collect()
+
+    assert route_ref() is None
+    assert supersede_ref() is None
+    assert route_key not in grs._route_state_locks
+    assert "LockGcLan" not in grs._route_supersede_locks
 
 
 class _FakeOmniSession:
@@ -1120,6 +1142,132 @@ async def test_route_start_serializes_supersede_across_game_types_for_same_lanla
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cross_game_route_start_waits_for_old_route_slot_lock(monkeypatch):
+    """A cross-game supersede must wait for work already inside the old slot.
+
+    The character-level supersede lock serializes lifecycle owners, but normal
+    route publication only owns its per-game slot lock.  Finalizing without
+    that old lock lets a publication complete after the new route activates.
+    """
+    _stub_archive_calls(monkeypatch)
+
+    async def _fake_pregame(**_kwargs):
+        return (
+            gr_pregame._default_soccer_pregame_context(initial_difficulty="lv2"),
+            "fallback",
+            "",
+        )
+
+    _gr_patch_all(monkeypatch, "_build_soccer_pregame_context", _fake_pregame)
+
+    with reset_game_route_state():
+        old_state = _activate_route("Lan", "chess", "chess_old")
+        old_lock = gr_runtime._get_route_lock("Lan", "chess")
+        await old_lock.acquire()
+        start_task = asyncio.create_task(
+            gr_runtime.game_route_start(
+                "soccer",
+                _FakeRouteStartRequest({
+                    "lanlan_name": "Lan",
+                    "session_id": "soccer_new",
+                }),
+            )
+        )
+        try:
+            try:
+                for _ in range(50):
+                    await asyncio.sleep(0.01)
+                    if old_lock._waiters:  # type: ignore[attr-defined]
+                        break
+                assert old_lock._waiters, (  # type: ignore[attr-defined]
+                    "cross-game start did not wait for the old route slot lock"
+                )
+                assert not start_task.done(), (
+                    "new route activated before old-slot publication could settle"
+                )
+            finally:
+                old_lock.release()
+
+            result = await asyncio.wait_for(start_task, timeout=5.0)
+            assert result.get("ok") is True
+            assert old_state.get("game_route_active") is False
+            assert gr_runtime._get_active_game_route_state("Lan", "soccer") is not None
+        finally:
+            if not start_task.done():
+                start_task.cancel()
+                await asyncio.gather(start_task, return_exceptions=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_slow_pregame_start_cannot_publish_after_new_generation_takes_over(monkeypatch):
+    _stub_archive_calls(monkeypatch)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    external_states = []
+
+    async def _fake_pregame(*, session_id, **_kwargs):
+        if session_id == "match-A":
+            first_started.set()
+            await release_first.wait()
+        return (
+            gr_pregame._default_soccer_pregame_context(initial_difficulty="lv2"),
+            "fallback",
+            "",
+        )
+
+    async def _capture_external(_lanlan_name, _message, *, expected_state=None):
+        external_states.append(expected_state)
+        return True
+
+    class _ActiveAudioManager:
+        is_active = True
+        input_mode = "audio"
+        session = object()
+
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": _ActiveAudioManager()})
+    _gr_patch_all(monkeypatch, "_build_soccer_pregame_context", _fake_pregame)
+    _gr_patch_all(monkeypatch, "route_external_stream_message", _capture_external)
+
+    with reset_game_route_state():
+        first_task = asyncio.create_task(gr_runtime.game_route_start(
+            "soccer",
+            _FakeRouteStartRequest({
+                "lanlan_name": "Lan",
+                "session_id": "match-A",
+                "sdk_route_instance_id": "route-A",
+            }),
+        ))
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        first_state = gr_runtime._get_active_game_route_state("Lan", "soccer")
+
+        second = await asyncio.wait_for(gr_runtime.game_route_start(
+            "soccer",
+            _FakeRouteStartRequest({
+                "lanlan_name": "Lan",
+                "session_id": "match-B",
+                "sdk_route_instance_id": "route-B",
+            }),
+        ), timeout=2)
+        second_state = gr_runtime._get_active_game_route_state("Lan", "soccer")
+        release_first.set()
+        first = await asyncio.wait_for(first_task, timeout=2)
+
+        assert second["ok"] is True
+        assert first == {
+            "ok": True,
+            "reason": "superseded",
+            "state": {"game_route_active": False},
+        }
+        assert first_state is not second_state
+        assert first_state["game_route_active"] is False
+        assert second_state["game_route_active"] is True
+        assert second_state["_sdk_route_instance_id"] == "route-B"
+        assert first_state not in external_states
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_game_session_create_lock_evicted_with_session():
     """codex P2 follow-up: ``_game_session_create_locks`` must drop its
     per-key entry when the session is closed via ``_close_and_remove_session``.
@@ -1306,9 +1454,8 @@ async def test_character_switch_finalize_blocks_concurrent_route_start_for_same_
     _gr_patch_all(monkeypatch, "_build_soccer_pregame_context", _fake_pregame)
 
     with reset_game_route_state():
-        # Drop any leftover supersede / route locks so this test starts
-        # fresh — locks live across tests because they're a process-global
-        # registry by design (see comment on ``_route_state_locks``).
+        # Drop any lock still strongly referenced by a concurrently active
+        # test helper so this test starts from an explicit fresh boundary.
         from utils import game_route_state as grs_mod
         grs_mod._route_supersede_locks.pop("Lan", None)
         grs_mod._route_state_locks.pop(grs_mod._route_state_key("Lan", "soccer"), None)
@@ -2607,6 +2754,51 @@ async def test_heartbeat_sweep_rechecks_expired_inside_lock(monkeypatch):
             "sweep finalized a route whose heartbeat had recovered "
             "before the lock was acquired; in-lock recheck is missing"
         )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_heartbeat_sweep_waits_for_character_supersede_lock(monkeypatch):
+    """Expiry finalization and cross-game start share the OUTER lifecycle lock."""
+    _stub_archive_calls(monkeypatch)
+    with reset_game_route_state():
+        _gr_patch_all(monkeypatch, "_GAME_ROUTE_HEARTBEAT_SWEEP_SECONDS", 0.01)
+        finalized = asyncio.Event()
+
+        async def _track_finalize(state, *, reason, close_game_session):
+            assert reason == "heartbeat_timeout"
+            assert close_game_session is True
+            state["game_route_active"] = False
+            finalized.set()
+            return {"game_session_closed": False}
+
+        _gr_patch_all(monkeypatch, "_finalize_game_route_state", _track_finalize)
+        state = _activate_route("Lan", "soccer", "expired_match")
+        state["heartbeat_timeout_seconds"] = 1.0
+        state["last_heartbeat_at"] = gr_runtime.time.time() - 60.0
+        state["last_activity"] = gr_runtime.time.time() - 60.0
+        state["created_at"] = gr_runtime.time.time() - 60.0
+
+        supersede_lock = gr_runtime._get_supersede_lock("Lan")
+        await supersede_lock.acquire()
+        sweep_task = asyncio.create_task(gr_runtime.cleanup_expired_sessions())
+        try:
+            try:
+                await asyncio.sleep(0.08)
+                assert not finalized.is_set(), (
+                    "heartbeat sweep finalized without the character supersede lock"
+                )
+            finally:
+                supersede_lock.release()
+
+            await asyncio.wait_for(finalized.wait(), timeout=5.0)
+            sweep_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await sweep_task
+        finally:
+            if not sweep_task.done():
+                sweep_task.cancel()
+                await asyncio.gather(sweep_task, return_exceptions=True)
 
 
 @pytest.mark.unit

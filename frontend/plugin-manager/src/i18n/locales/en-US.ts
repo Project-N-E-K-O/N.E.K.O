@@ -487,6 +487,11 @@ export default {
       overrideBuiltinTitle: 'Switch {plugin} to the Market source?',
       overrideBuiltinBody: 'The active built-in version {current} will be replaced by Market version {target}. Plugin data and configuration remain in persistent storage.',
       overrideBuiltinConfirm: 'Switch to Market',
+      manualTakeoverTitle: 'Let N.E.K.O manage {plugin}?',
+      manualTakeoverBody: 'This plugin directory is maintained manually. Continuing replaces version {current} with {target}; after success, N.E.K.O will manage this user plugin and may uninstall or update it later.',
+      manualTakeoverConfirm: 'Replace and manage',
+      manualTakeoverCancelled: 'Manual plugin replacement cancelled.',
+      manualTakeoverSucceeded: '{plugin} is now managed by N.E.K.O.',
       reinstallTitle: 'Reinstall {plugin}?',
       reinstallBody: 'Version {current} will be replaced with version {target} again. A running plugin will restart briefly.',
       reinstallConfirm: 'Reinstall plugin',
@@ -500,6 +505,8 @@ export default {
       blockedBundleConflict: 'This bundle contains an installed plugin. Upgrade its plugins one at a time.',
       blockedDirectoryConflict: 'The destination directory belongs to another plugin and was not changed.',
       blockedLegacyPlugin: 'An earlier version of this plugin is still installed. Uninstall {plugin} before continuing.',
+      blockedOwnershipUnknown: 'N.E.K.O could not verify who owns the existing plugin directory. Restore its install-source record before trying again.',
+      blockedInstallSourceReadOnly: 'The install-source record is unavailable or read-only. Restore it before trying again.',
       rollbackCompleted: 'The upgrade failed and the previous version was restored.',
       rollbackIncomplete: 'The upgrade failed and rollback was incomplete. Check the plugin state before continuing.',
       error: {
@@ -641,7 +648,13 @@ export default {
     returnedLines: 'Returned Lines',
     connected: 'Connected',
     disconnected: 'Disconnected',
-    connectionFailed: 'Log stream connection failed'
+    connectionFailed: 'Log stream connection failed',
+    exportLog: 'Export Logs Archive',
+    openLogDirectory: 'Open Log Directory',
+    exportSuccess: 'Log exported successfully',
+    exportFailed: 'Failed to export log',
+    openDirectoryFailed: 'Failed to open directory',
+    noLogFileToExport: 'No log file to export'
   },
   runs: {
     title: 'Runs',
@@ -717,7 +730,9 @@ export default {
     resourceNotFound: 'Requested resource not found',
     internalServerError: 'Internal server error',
     serviceUnavailable: 'Service unavailable',
-    networkError: 'Network error. Please check your connection.'
+    networkError: 'Network error. Please check your connection.',
+    requestTimeout: 'The request timed out. Please try again.',
+    pluginLifecycleTimeout: 'Plugin startup or restart timed out. Please check the plugin logs.'
   },
   welcome: {
     about: {

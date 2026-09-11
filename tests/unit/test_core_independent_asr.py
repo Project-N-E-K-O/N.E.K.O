@@ -3966,6 +3966,7 @@ async def test_accepted_final_is_recorded_and_injected_once() -> None:
         is_voice_source=True,
         source="independent_asr",
         metadata={"provider": "glm"},
+        source_game_route_identity=None,
     )
     runtime.session.create_response.assert_awaited_once_with("hello")
 
@@ -5642,6 +5643,7 @@ async def test_websocket_core_submits_one_external_turn_after_local_history() ->
         is_voice_source=True,
         source="independent_asr",
         metadata={"provider": "qwen"},
+        source_game_route_identity=None,
     )
     runtime.session.submit_external_voice_turn.assert_awaited_once()
     call = runtime.session.submit_external_voice_turn.await_args
@@ -9218,6 +9220,7 @@ async def test_failed_lease_release_does_not_skip_accepted_final_delivery() -> N
         is_voice_source=True,
         source="independent_asr",
         metadata={"provider": "glm"},
+        source_game_route_identity=None,
     )
     assert component._asr_warm_expiry_task is not None
     component._asr_warm_expiry_task.cancel()
@@ -9667,6 +9670,7 @@ async def test_provider_final_lock_then_overflow_preserves_accepted_final() -> N
         is_voice_source=True,
         source="independent_asr",
         metadata={"provider": "openai"},
+        source_game_route_identity=None,
     )
     assert runtime._asr_lifecycle.has_pending_turn is False
     assert runtime._asr_sealed_turn_token is None
@@ -9719,6 +9723,7 @@ async def test_provider_overflow_lock_then_final_preserves_accepted_final() -> N
         is_voice_source=True,
         source="independent_asr",
         metadata={"provider": "openai"},
+        source_game_route_identity=None,
     )
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
     assert runtime._asr_accepted_final_keys
@@ -10490,8 +10495,15 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
         "look here",
         ("raw-frame",),
         turn_id=turn_id,
+        # 帧总线的频道标签，与这批帧一起冻结。会话侧读活状态会在裁剪 / arbiter
+        # 排队 / SDK send 那几段 await 里漂到后继发声的通道上。
+        source="screen",
         # Gemini 那条路在真正送出之前还有一段压缩 await，所有权判据必须跟着进去。
         visual_still_owned=ANY,
+    )
+    # 传的是这一轮 record 自己的 source，不是某个字面量碰巧相等。
+    assert runtime.session.submit_multimodal_turn.await_args.kwargs["source"] == (
+        record.source if hasattr(record, "source") else "screen"
     )
     # 穿进去的必须是活的判据，且在真正调用 provider 的那一刻仍持有所有权。
     assert owned_at_call == [True]

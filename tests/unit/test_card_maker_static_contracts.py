@@ -348,6 +348,8 @@ def test_model_manager_pngtuber_upload_supports_project_file_without_removing_fo
     assert "const pngtuberPackageUpload = document.getElementById('pngtuber-package-upload');" in script
     assert "showPNGTuberUploadChoice()" in script
     assert "async function uploadPNGTuberFiles(files, inputElement = null)" in script
+    assert "live2d.pngtuberImportSuccess" in script
+    assert "t('live2d.pngtuberImportSuccess', 'PNGTuber model imported successfully.')" in script
     assert "await uploadPNGTuberFiles(e.target.files, pngtuberModelUpload);" in script
     assert "await uploadPNGTuberFiles(e.target.files, pngtuberPackageUpload);" in script
     assert "inputElement.value = '';" in script

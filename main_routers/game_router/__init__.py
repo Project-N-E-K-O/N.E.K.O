@@ -60,9 +60,13 @@ from .char_info import (  # noqa: F401
     _extract_request_language_full,
     _absorb_request_language,
     _resolve_game_prompt_language,
+    _format_game_character_profile_prompt,
     _get_character_info,
     _get_current_character_info,
     _get_game_route_summary_llm_info,
+    _normalize_game_character_profile_value,
+    _ordered_game_character_profile_keys,
+    _replace_game_character_profile_placeholders,
 )
 from .logs import (  # noqa: F401
     _game_log_payload_flag_is_true,
@@ -315,6 +319,16 @@ from .session_pool import (  # noqa: F401
     _route_session_id,
     _parse_game_session_key,
     _close_and_remove_session,
+)
+from .author_prompt import (  # noqa: F401
+    _AUTHOR_PROMPT_MODE,
+    _AUTHOR_PROMPT_ROLES,
+    _AUTHOR_PROMPT_MAX_MESSAGES,
+    _AUTHOR_PROMPT_MAX_CONTENT_CHARS,
+    _AUTHOR_PROMPT_MAX_TOTAL_CHARS,
+    _normalize_author_managed_prompt,
+    _build_author_managed_messages,
+    _run_author_managed_game_chat,
 )
 from .postgame import (  # noqa: F401
     _POSTGAME_SKIP_REASONS,

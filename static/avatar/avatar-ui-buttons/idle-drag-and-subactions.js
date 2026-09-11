@@ -61,13 +61,17 @@ let _nekoIdleDesktopChatMinimizedState = {
     screenRect: null,
     updatedAt: 0,
     sourceUpdatedAt: 0,
+    lifecycleSequence: 0,
+    lifecycleTerminal: false,
     expandedRecent: false
 };
 let _nekoIdleDesktopCompactSurfaceState = {
     visible: false,
     screenRect: null,
     updatedAt: 0,
-    sourceUpdatedAt: 0
+    sourceUpdatedAt: 0,
+    lifecycleSequence: 0,
+    lifecycleTerminal: false
 };
 let _nekoIdleDesktopChatPairMoveLastDispatchAt = 0;
 let _nekoIdleDesktopChatPairMoveLastDispatchSignature = '';
@@ -81,44 +85,79 @@ function _getNekoIdleDesktopStateSourceUpdatedAt(detail, fallbackUpdatedAt) {
     return Date.now();
 }
 
-function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, state) {
-    const incomingSourceUpdatedAt = Number(sourceUpdatedAt);
-    const currentSourceUpdatedAt = Number(state && state.sourceUpdatedAt);
-    return Number.isFinite(incomingSourceUpdatedAt) &&
-        incomingSourceUpdatedAt > 0 &&
-        Number.isFinite(currentSourceUpdatedAt) &&
-        currentSourceUpdatedAt > 0 &&
-        incomingSourceUpdatedAt < currentSourceUpdatedAt;
+function _getNekoIdleDesktopStateLifecycleSequence(detail) {
+    const sequence = Number(detail && detail.lifecycleSequence);
+    return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : 0;
 }
 
-function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, state) {
+function _compareNekoIdleDesktopStateOrder(sourceUpdatedAt, lifecycleSequence, state) {
     const incomingSourceUpdatedAt = Number(sourceUpdatedAt);
     const currentSourceUpdatedAt = Number(state && state.sourceUpdatedAt);
-    return Number.isFinite(incomingSourceUpdatedAt) &&
-        incomingSourceUpdatedAt > 0 &&
-        (!Number.isFinite(currentSourceUpdatedAt) ||
-            currentSourceUpdatedAt <= 0 ||
-            incomingSourceUpdatedAt >= currentSourceUpdatedAt);
+    if (!Number.isFinite(incomingSourceUpdatedAt) || incomingSourceUpdatedAt <= 0) return 0;
+    if (!Number.isFinite(currentSourceUpdatedAt) || currentSourceUpdatedAt <= 0) return 1;
+    if (incomingSourceUpdatedAt !== currentSourceUpdatedAt) {
+        return incomingSourceUpdatedAt < currentSourceUpdatedAt ? -1 : 1;
+    }
+    const incomingSequence = Number(lifecycleSequence);
+    const currentSequence = Number(state && state.lifecycleSequence);
+    if (Number.isSafeInteger(incomingSequence) && incomingSequence > 0 &&
+        Number.isSafeInteger(currentSequence) && currentSequence > 0 &&
+        incomingSequence !== currentSequence) {
+        return incomingSequence < currentSequence ? -1 : 1;
+    }
+    return 0;
 }
 
-function _makeNekoIdleDesktopChatMinimizedState(minimized, screenRect, updatedAt, sourceUpdatedAt, expandedRecent) {
+function _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, lifecycleSequence, lifecycleTerminal, state) {
+    const order = _compareNekoIdleDesktopStateOrder(sourceUpdatedAt, lifecycleSequence, state);
+    if (order !== 0) return order < 0;
+    // Legacy/native producers may not carry a sequence. At equal timestamps,
+    // an accepted terminal remains authoritative until an explicitly newer
+    // sequence (or a later timestamp) proves that the target reopened.
+    return !!(state && state.lifecycleTerminal && lifecycleTerminal !== true);
+}
+
+function _isNekoIdleDesktopStateNewerThan(sourceUpdatedAt, lifecycleSequence, state) {
+    return _compareNekoIdleDesktopStateOrder(sourceUpdatedAt, lifecycleSequence, state) >= 0;
+}
+
+function _makeNekoIdleDesktopChatMinimizedState(
+    minimized,
+    screenRect,
+    updatedAt,
+    sourceUpdatedAt,
+    expandedRecent,
+    lifecycleSequence = 0,
+    lifecycleTerminal = false
+) {
     const active = !!(minimized && screenRect);
     return {
         minimized: active,
         screenRect: active ? screenRect : null,
         updatedAt: updatedAt,
         sourceUpdatedAt: sourceUpdatedAt,
+        lifecycleSequence: lifecycleSequence,
+        lifecycleTerminal: lifecycleTerminal === true,
         expandedRecent: !active && !!expandedRecent
     };
 }
 
-function _makeNekoIdleDesktopCompactSurfaceState(visible, screenRect, updatedAt, sourceUpdatedAt) {
+function _makeNekoIdleDesktopCompactSurfaceState(
+    visible,
+    screenRect,
+    updatedAt,
+    sourceUpdatedAt,
+    lifecycleSequence = 0,
+    lifecycleTerminal = false
+) {
     const active = !!(visible && screenRect);
     return {
         visible: active,
         screenRect: active ? screenRect : null,
         updatedAt: updatedAt,
-        sourceUpdatedAt: sourceUpdatedAt
+        sourceUpdatedAt: sourceUpdatedAt,
+        lifecycleSequence: lifecycleSequence,
+        lifecycleTerminal: lifecycleTerminal === true
     };
 }
 

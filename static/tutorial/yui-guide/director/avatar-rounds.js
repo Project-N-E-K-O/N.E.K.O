@@ -449,7 +449,6 @@
             return [
                 'agent-keyboard',
                 'agent-browser',
-                'agent-openfang',
                 'agent-user-plugin',
                 'agent-openclaw'
             ].map((toggleId) => this.getAgentToggleElement(toggleId)).filter(Boolean);

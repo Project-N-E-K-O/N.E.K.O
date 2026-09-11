@@ -36,10 +36,15 @@ from .character_fields import (  # noqa: F401
     LEGACY_FLAT_TO_RESERVED,
 )
 
+# `config` 是老单体模块的兼容门面，历史上 `from config import platform` 是能用的，
+# 而外部插件不在本仓能 grep 的范围内（codex）。所以名字留着——但直接在这里 import，
+# 不再从 config.network 转出：那边已经改用 sys.platform，转出会让它多一个纯为兼容
+# 而存在的未使用导入。
+import platform  # noqa: F401 - 兼容门面：外部可能 `from config import platform`
+
 from .network import (  # noqa: F401
     json,
     os,
-    platform,
     uuid,
     _read_port_overrides,
     _PORT_FILE_OVERRIDES,
@@ -57,8 +62,6 @@ from .network import (  # noqa: F401
     AGENT_MQ_PORT,
     MAIN_AGENT_EVENT_PORT,
     USER_PLUGIN_BASE,
-    OPENFANG_PORT,
-    OPENFANG_BASE_URL,
     INSTANCE_ID,
     AUTOSTART_CSRF_TOKEN,
     AUTOSTART_ALLOWED_ORIGINS,
@@ -352,7 +355,9 @@ from .session_settings import (  # noqa: F401
     SESSION_ARCHIVE_TRIGGER_TOKENS,
     SESSION_TURN_THRESHOLD,
     USER_DIRECTIVE_TTL_SECONDS,
+    USER_DIRECTIVE_TTL_MAX_SECONDS,
     USER_DIRECTIVE_MAX_ACTIVE,
+    USER_DIRECTIVE_MAX_STORED,
     ANTI_REPEAT_BG_WINDOW,
     ANTI_REPEAT_FG_WINDOW,
     ANTI_REPEAT_FG_TTL_SECONDS,
@@ -552,9 +557,6 @@ __all__ = [
     'DEFAULT_TTS_MODEL_API_KEY',
     'DEFAULT_AGENT_MODEL_URL',
     'DEFAULT_AGENT_MODEL_API_KEY',
-    # OpenFang
-    'OPENFANG_PORT',
-    'OPENFANG_BASE_URL',
     # Memory evidence mechanism (RFC: docs/design/memory-evidence-rfc.md)
     'EVIDENCE_CONFIRMED_THRESHOLD',
     'EVIDENCE_PROMOTED_THRESHOLD',
@@ -698,7 +700,9 @@ __all__ = [
     'SESSION_ARCHIVE_TRIGGER_TOKENS',
     'SESSION_TURN_THRESHOLD',
     'USER_DIRECTIVE_TTL_SECONDS',
+    'USER_DIRECTIVE_TTL_MAX_SECONDS',
     'USER_DIRECTIVE_MAX_ACTIVE',
+    'USER_DIRECTIVE_MAX_STORED',
     'ANTI_REPEAT_BG_WINDOW',
     'ANTI_REPEAT_FG_WINDOW',
     'ANTI_REPEAT_FG_TTL_SECONDS',

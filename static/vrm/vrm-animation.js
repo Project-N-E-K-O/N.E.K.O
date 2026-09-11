@@ -670,7 +670,13 @@ class VRMAnimation {
         const requestGeneration = ++this._playRequestGeneration;
         const shouldApply = typeof options.shouldApply === 'function'
             ? options.shouldApply : function () { return true; };
-        const requestIsCurrent = () => requestGeneration === this._playRequestGeneration && shouldApply();
+        // 调用方自带的最后一刻闸门（点唱机换歌会作废上一条动画请求）。它必须和
+        // generation 一起进 requestIsCurrent：只在末尾查的话，isIdleAnimation 和
+        // _createAndConfigureAction 已经先动过共享状态/mixer 了。
+        const shouldStart = typeof options.shouldStart === 'function'
+            ? options.shouldStart : function () { return true; };
+        const requestIsCurrent = () => requestGeneration === this._playRequestGeneration
+            && shouldApply() && shouldStart();
         const abortStaleRequest = () => {
             if (requestIsCurrent()) return false;
             if (requestGeneration === this._playRequestGeneration && !this.currentAction) {

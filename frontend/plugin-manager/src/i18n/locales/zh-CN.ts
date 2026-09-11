@@ -487,6 +487,11 @@ export default {
       overrideBuiltinTitle: '将 {plugin} 切换为 Market 来源？',
       overrideBuiltinBody: '当前内置版本 {current} 将由 Market 版本 {target} 替换。插件数据与配置仍保留在持久化存储中。',
       overrideBuiltinConfirm: '切换到 Market',
+      manualTakeoverTitle: '让 N.E.K.O 接管 {plugin}？',
+      manualTakeoverBody: '目标插件目录目前由你手动维护。继续后将以版本 {target} 替换当前版本 {current}；成功后该用户插件由 N.E.K.O 管理，之后可以由 N.E.K.O 更新或卸载。',
+      manualTakeoverConfirm: '替换并接管',
+      manualTakeoverCancelled: '已取消替换手动维护的插件。',
+      manualTakeoverSucceeded: '{plugin} 已由 N.E.K.O 接管。',
       reinstallTitle: '重新安装 {plugin}？',
       reinstallBody: '版本 {current} 将再次替换为版本 {target}。正在运行的插件会短暂重启。',
       reinstallConfirm: '重新安装插件',
@@ -500,6 +505,8 @@ export default {
       blockedBundleConflict: '此整合包包含已安装的插件，请逐个升级其中的插件。',
       blockedDirectoryConflict: '目标目录属于另一个插件，未进行任何更改。',
       blockedLegacyPlugin: '仍安装着此插件的旧版本。请先卸载 {plugin} 再继续。',
+      blockedOwnershipUnknown: '无法确认现有插件目录的所有权。请先恢复对应的安装源记录，再重试。',
+      blockedInstallSourceReadOnly: '安装源记录不可用或处于只读状态。请先恢复安装源记录，再重试。',
       rollbackCompleted: '升级失败，已恢复之前的版本。',
       rollbackIncomplete: '升级失败且回滚未完整完成，请检查插件状态后再继续。',
       error: {
@@ -641,7 +648,13 @@ export default {
     returnedLines: '返回行数',
     connected: '已连接',
     disconnected: '未连接',
-    connectionFailed: '日志流连接失败'
+    connectionFailed: '日志流连接失败',
+    exportLog: '导出日志压缩包',
+    openLogDirectory: '打开日志目录',
+    exportSuccess: '日志导出成功',
+    exportFailed: '日志导出失败',
+    openDirectoryFailed: '打开目录失败',
+    noLogFileToExport: '没有可导出的日志文件'
   },
   runs: {
     title: '运行记录',
@@ -717,7 +730,9 @@ export default {
     resourceNotFound: '请求的资源不存在',
     internalServerError: '服务器内部错误',
     serviceUnavailable: '服务不可用',
-    networkError: '网络错误，请检查网络连接'
+    networkError: '网络错误，请检查网络连接',
+    requestTimeout: '请求超时，请稍后重试',
+    pluginLifecycleTimeout: '插件启动或重载超时，请查看插件日志'
   },
   welcome: {
     about: {

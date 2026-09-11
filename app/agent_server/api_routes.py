@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Agent control, execution, proxy, and intent-restore endpoints."""
+"""Agent control, execution, and intent-restore endpoints."""
 
 from .api_shared import (  # noqa: F401
     AGENT_HISTORY_TURNS,
@@ -38,9 +38,7 @@ from .api_shared import (  # noqa: F401
     Modules,
     OPENCLAW_ENABLE_CHECK_ATTEMPTS,
     OPENCLAW_ENABLE_CHECK_INTERVAL,
-    OPENFANG_BASE_URL,
     OpenClawAdapter,
-    OpenFangAdapter,
     Optional,
     PLUGIN_NAME_CACHE_TTL,
     REDACTED_USER_TURN_MARKER,
@@ -81,7 +79,6 @@ from .api_shared import (  # noqa: F401
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
     _ensure_browser_use_adapter,
-    _extract_tool_intent_as_text,
     _fire_agent_llm_connectivity_check,
     _fire_user_plugin_capability_check,
     _get_internal_correction_context,
@@ -101,9 +98,6 @@ from .api_shared import (  # noqa: F401
     _openclaw_pending,
     _openclaw_reason_code,
     _openclaw_reason_text,
-    _patch_malformed_tool_calls,
-    _patch_openai_response,
-    _patch_usage,
     _plugin_name_cache_lock,
     _plugin_terminal_status,
     _public_task_info,
@@ -173,136 +167,6 @@ from .api_runtime import (  # noqa: F401
     submit_task_correction,
 )
 
-# ── OpenFang LLM Proxy ──────────────────────────────────────
-# OpenFang 的 Rust LLM driver 严格要求 OpenAI 格式的 completion_tokens 等字段。
-# lanlan.app 的 API 可能不返回这些字段，导致 OpenFang parse error。
-# 此代理拦截 LLM 请求，转发到真实 API，并在响应中补全缺失字段。
-
-from fastapi import Request
-from starlette.responses import StreamingResponse as StarletteStreamingResponse
-
-@app.api_route("/openfang-llm-proxy/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def openfang_llm_proxy(request: Request, path: str):
-    """
-    Transparent proxy: OpenFang → this endpoint → lanlan.app (or the user-configured agent API).
-    Fills in OpenAI compatibility fields in the response (completion_tokens, prompt_tokens, etc.).
-    """
-    # 获取真实 API 地址
-    cm = get_config_manager()
-    agent_cfg = await cm.aget_model_api_config('agent')
-    real_base_url = (agent_cfg.get("base_url") or "").strip().rstrip("/")
-    real_api_key = (agent_cfg.get("api_key") or "").strip()
-
-    if not real_base_url:
-        return JSONResponse({"error": "Agent API base_url not configured"}, status_code=502)
-
-    # 智能拼接 URL：避免 /v1/v1 双重路径
-    # OpenFang 调用：proxy_base/v1/chat/completions → path="v1/chat/completions"
-    # 如果 real_base_url 已含 /v1，则去掉 path 中的 /v1 前缀
-    if real_base_url.rstrip("/").endswith("/v1") and path.startswith("v1/"):
-        path = path[3:]  # 去掉 "v1/"
-    target_url = f"{real_base_url}/{path}"
-    # 保留原始请求的 query string
-    qs = request.url.query
-    if qs:
-        target_url = f"{target_url}?{qs}"
-
-    print(f"[LLM Proxy] path={path}, real_base_url={real_base_url}, target_url={target_url}")
-
-    # 读取请求体
-    body = await request.body()
-
-    # 构建转发请求头（保留 Content-Type，替换 Authorization）
-    forward_headers = {}
-    ct = request.headers.get("content-type")
-    if ct:
-        forward_headers["Content-Type"] = ct
-    if real_api_key:
-        forward_headers["Authorization"] = f"Bearer {real_api_key}"
-
-    # 检查是否请求流式
-    is_stream = False
-    if body:
-        try:
-            req_json = json.loads(body)
-            is_stream = req_json.get("stream", False)
-        except Exception:
-            logger.debug("[LLM Proxy] failed to parse request body for stream detection", exc_info=True)
-
-    try:
-        if is_stream:
-            # 流式：手动管理 client 生命周期（generator 延迟消费，不能用 async with）
-            client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
-            try:
-                upstream_resp = await client.send(
-                    client.build_request(request.method, target_url, content=body, headers=forward_headers),
-                    stream=True,
-                )
-            except Exception:
-                await client.aclose()
-                raise
-            upstream_status = upstream_resp.status_code
-
-            async def _stream_with_patch():
-                try:
-                    async for line in upstream_resp.aiter_lines():
-                        if line.startswith("data: ") and line != "data: [DONE]":
-                            try:
-                                chunk = json.loads(line[6:])
-                                _patch_openai_response(chunk)
-                                yield f"data: {json.dumps(chunk)}\n\n"
-                                continue
-                            except Exception:
-                                logger.debug("[LLM Proxy] failed to parse streaming chunk", exc_info=True)
-                        yield line + "\n"
-                finally:
-                    await upstream_resp.aclose()
-                    await client.aclose()
-
-            return StarletteStreamingResponse(
-                _stream_with_patch(),
-                status_code=upstream_status,
-                media_type="text/event-stream",
-            )
-        else:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
-                # 非流式：一次性读取并 patch
-                resp = await client.request(
-                    request.method, target_url,
-                    content=body, headers=forward_headers,
-                )
-                logger.info("[LLM Proxy] upstream response: status=%s, len=%d", resp.status_code, len(resp.content))
-                # body 可能含 LLM 生成原文；不写 logger，仅本地 print
-                print(f"[LLM Proxy] upstream body (first 500): {resp.text[:500]}")
-                # 尝试 JSON patch
-                try:
-                    data = resp.json()
-                    _patch_openai_response(data)
-                    return JSONResponse(data, status_code=resp.status_code)
-                except Exception:
-                    # 非 JSON 响应原样返回 (使用 raw Response 避免二次编码)
-                    from starlette.responses import Response as RawResponse
-                    return RawResponse(
-                        content=resp.content,
-                        status_code=resp.status_code,
-                        media_type=resp.headers.get("content-type", "application/octet-stream"),
-                    )
-    except httpx.TimeoutException:
-        return JSONResponse({"error": "Upstream API timeout"}, status_code=504)
-    except Exception as e:
-        logger.warning("[LLM Proxy] upstream error: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=502)
-
-
-# ── OpenFang endpoints ──────────────────────────────────────
-
-@app.get("/openfang/availability")
-async def openfang_availability():
-    """Check OpenFang availability."""
-    if not Modules.openfang:
-        return {"enabled": False, "ready": False, "reason": "adapter 未加载"}
-    return await asyncio.to_thread(Modules.openfang.is_available)
-
 
 @app.get("/openclaw/availability")
 async def openclaw_availability():
@@ -344,161 +208,6 @@ async def openclaw_availability():
     if was_openclaw_enabled or was_ready or capability_changed:
         await _emit_agent_status_update()
     return status
-
-
-@app.post("/openfang/run")
-async def openfang_run(payload: Dict[str, Any]):
-    """Execute a task directly via OpenFang (bypassing routing decisions)."""
-    instruction = payload.get("instruction")
-    if not instruction:
-        return JSONResponse({"error": "instruction required"}, status_code=400)
-    if not Modules.openfang or not Modules.openfang.init_ok:
-        return JSONResponse({"error": "VM agent not available"}, status_code=503)
-
-    task_id = f"of_{uuid.uuid4().hex[:12]}"
-
-    _lanlan = payload.get("lanlan_name")
-
-    async def _run():
-        try:
-            Modules.task_registry[task_id] = {
-                "id": task_id, "type": "openfang", "status": "running",
-                "params": {"instruction": instruction},
-                "lanlan_name": _lanlan,
-                "session_id": payload.get("conversation_id"),
-                "start_time": datetime.now(timezone.utc).isoformat(),
-            }
-            # Emit initial running event with full task object
-            try:
-                await _emit_main_event(
-                    "task_update", _lanlan,
-                    task_id=task_id, channel="openfang",
-                    task=Modules.task_registry[task_id],
-                )
-            except Exception:
-                logger.debug("[OpenFang] initial task_update emit failed", exc_info=True)
-
-            def _on_progress(info):
-                try:
-                    reg = Modules.task_registry.get(task_id, {})
-                    # cancel_task pre-marks status="cancelled" and we must not
-                    # let a late progress tick overwrite it with "running".
-                    if reg.get("status") and reg.get("status") != "running":
-                        return
-                    reg["status"] = info.get("status", reg.get("status", "running"))
-                    reg["elapsed"] = info.get("elapsed", 0)
-                    asyncio.create_task(_emit_main_event(
-                        "task_update", _lanlan,
-                        task_id=task_id, channel="openfang",
-                        task=reg,
-                    ))
-                except Exception as e:
-                    logger.debug("[OpenFang] _on_progress emit failed: %s", e)
-
-            result = await Modules.openfang.run_instruction(
-                instruction=instruction,
-                session_id=payload.get("conversation_id"),
-                on_progress=_on_progress,
-                local_task_id=task_id,
-            )
-            reg = Modules.task_registry[task_id]
-            if reg.get("status") == "cancelled":
-                return
-            final_status = "completed" if result.get("success") else "failed"
-            reg["status"] = final_status
-            reg["result"] = result
-            reg["end_time"] = datetime.now(timezone.utc).isoformat()
-            _r = result if isinstance(result, dict) else {}
-            _success = _r.get("success", False)
-            _result_text = _r.get("result", "") or ""
-            _error_text = _r.get("error", "") or ""
-            # 跟 _run_openfang_dispatch 同款的 fallback chain：daemon 失败时
-            # 可能把原因塞进 result 而非 error；成功时 result 偶尔为空（如
-            # 仅有 artifacts）。两条出口都做兜底，避免前端拿到空 summary
-            # 或丢失败原因。
-            # 极端兜底：result 和 error 都为空时（e.g. 仅 artifacts 的成功
-            # 返回）summary 走默认占位串，避免前端 / LLM callback 拿到空
-            # summary。
-            _summary_src = _result_text or _error_text or (
-                "(OpenFang task completed with no result text)"
-                if _success
-                else "(OpenFang task failed with no error text)"
-            )
-            _err_src = _error_text or _result_text
-            if not _success:
-                reg["error"] = _tt(_err_src or "(OpenFang task failed with no error text)", TASK_ERROR_MAX_TOKENS)
-
-            # callback summary 进 LLM context — 与 _sanitize_correction_text per-item 同档（400 tokens）
-            await _emit_task_result(
-                _lanlan,
-                channel="openfang",
-                task_id=task_id,
-                success=_success,
-                summary=_tt(_summary_src, 400),
-                detail=_result_text,
-                error_message=(_err_src or "(OpenFang task failed with no error text)") if not _success else "",
-            )
-            # Terminal task_update so HUD transitions out of running
-            try:
-                await _emit_main_event(
-                    "task_update", _lanlan,
-                    task_id=task_id, channel="openfang",
-                    task=reg,
-                )
-            except Exception:
-                logger.debug("[OpenFang] terminal task_update emit failed", exc_info=True)
-        except Exception as e:
-            reg = Modules.task_registry[task_id]
-            if reg.get("status") == "cancelled":
-                return
-            # exception 字符串可能含用户/LLM 原文，logger 只记元数据
-            logger.error("[OpenFang] Task %s failed (exc_type=%s)", task_id, type(e).__name__)
-            print(f"[OpenFang] Task {task_id} raw error: {e}")
-            reg["status"] = "failed"
-            reg["error"] = _tt(str(e), TASK_ERROR_MAX_TOKENS)
-            reg["end_time"] = datetime.now(timezone.utc).isoformat()
-            try:
-                # except 路径也走非空 summary，避免前端 / LLM callback 拿到
-                # 空摘要；error_message 用 exception 原文（已被外层 reg["error"]
-                # truncate，这里独立 cap）。
-                _exc_msg = str(e) or "(OpenFang task raised with no message)"
-                await _emit_task_result(
-                    _lanlan,
-                    channel="openfang",
-                    task_id=task_id,
-                    success=False,
-                    summary=_tt(_exc_msg, 400),
-                    error_message=_tt(_exc_msg, TASK_ERROR_MAX_TOKENS),
-                )
-            except Exception:
-                logger.debug("[OpenFang] terminal task_result emit failed", exc_info=True)
-            try:
-                await _emit_main_event(
-                    "task_update", _lanlan,
-                    task_id=task_id, channel="openfang",
-                    task=reg,
-                )
-            except Exception:
-                logger.debug("[OpenFang] terminal task_update emit failed", exc_info=True)
-
-    bg = asyncio.create_task(_run())
-    Modules.task_async_handles[task_id] = bg
-    Modules._background_tasks.add(bg)
-    def _cleanup_of_bg(_t, _tid=task_id):
-        Modules._background_tasks.discard(_t)
-        Modules.task_async_handles.pop(_tid, None)
-    bg.add_done_callback(_cleanup_of_bg)
-
-    return {"success": True, "task_id": task_id, "status": "running"}
-
-
-@app.post("/openfang/sync_config")
-async def openfang_sync_config():
-    """Manually trigger API key config sync to OpenFang."""
-    if not Modules.openfang:
-        return {"success": False, "error": "adapter 未加载"}
-    ok = await Modules.openfang.sync_config()
-    return {"success": ok}
 
 
 @app.get("/capabilities")
@@ -669,17 +378,16 @@ async def set_agent_flags(payload: Dict[str, Any]):
     if isinstance(uf, bool):
         Modules.user_plugin_lifecycle_seq += 1
         user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
-    of = (payload or {}).get("openfang_enabled")
     # Agent LLM gate fail (endpoint/key not configured) blocks **only** the
-    # four LLM-dependent sub flags. ``user_plugin_enabled`` runs entirely on
+    # three LLM-dependent sub flags. ``user_plugin_enabled`` runs entirely on
     # the plugin lifecycle (no agent LLM involved) so the gate must not
-    # short-circuit its toggle path — historically this branch reset all five
+    # short-circuit its toggle path — historically this branch reset all four
     # and early-returned, which silently swallowed legitimate user_plugin
     # enable/disable requests whenever the user hadn't configured an agent
-    # endpoint. Here we instead cancel just the four LLM-coupled requests by
+    # endpoint. Here we instead cancel just the three LLM-coupled requests by
     # nullifying them, then fall through to the per-flag handling so uf still
     # processes normally.
-    if gate.get("ready") is not True and any(x is True for x in (cf, bf, nf, of)):
+    if gate.get("ready") is not True and any(x is True for x in (cf, bf, nf)):
         if not isinstance(bf, bool) and old_flags.get("browser_use_enabled", False):
             Modules.browser_use_lifecycle_seq += 1
             browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
@@ -687,17 +395,15 @@ async def set_agent_flags(payload: Dict[str, Any]):
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.agent_flags["browser_use_enabled"] = False
         Modules.agent_flags["openclaw_enabled"] = False
-        Modules.agent_flags["openfang_enabled"] = False
         first_reason = (gate.get('reasons') or ['AGENT_ENDPOINT_NOT_CONFIGURED'])[0]
         browser_use_close_reason = first_reason
         _set_capability("computer_use", False, first_reason)
         _set_capability("browser_use", False, first_reason)
         _set_capability("openclaw", False, first_reason)
-        _set_capability("openfang", False, first_reason)
         # Swallow these requests so the per-flag handlers below don't re-toggle
         # them ON; ``uf`` is intentionally left alone so user_plugin processing
         # proceeds.
-        cf = bf = nf = of = None
+        cf = bf = nf = None
 
     prev_up = Modules.agent_flags.get("user_plugin_enabled", False)
     prev_nk = Modules.agent_flags.get("openclaw_enabled", False)
@@ -898,36 +604,6 @@ async def set_agent_flags(payload: Dict[str, Any]):
     except Exception:
         pass
 
-    # 4. Handle OpenFang Flag
-    if isinstance(of, bool):
-        if of:
-            adapter = Modules.openfang
-            if adapter and adapter.init_ok:
-                Modules.agent_flags["openfang_enabled"] = True
-                _set_capability("openfang", True, "")
-            elif adapter:
-                # init_ok 为 False，尝试重新连接
-                ok = await asyncio.to_thread(adapter.check_connectivity)
-                if ok:
-                    _set_capability("openfang", True, "")
-                    Modules.agent_flags["openfang_enabled"] = True
-                    logger.info("[Agent] OpenFang re-connected on toggle")
-                else:
-                    Modules.agent_flags["openfang_enabled"] = False
-                    _set_capability("openfang", False, "OPENFANG_DAEMON_UNREACHABLE")
-                    logger.warning("[Agent] Cannot enable OpenFang: not connected (%s)", adapter.last_error)
-            else:
-                Modules.agent_flags["openfang_enabled"] = False
-                logger.warning("[Agent] Cannot enable OpenFang: adapter not initialized")
-        else:
-            Modules.agent_flags["openfang_enabled"] = False
-            # Cancel any in-flight openfang tasks
-            if Modules.openfang:
-                try:
-                    await Modules.openfang.cancel_running(None)
-                except Exception as e:
-                    logger.warning("[Agent] OpenFang cancel on disable failed: %s", e)
-
     # Persist user intent for each explicitly-requested flag.
     # Rule: a flag is persisted only when the user's request actually took
     # effect in-memory. If the user requested ON but capability auto-rejected
@@ -947,7 +623,6 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 ("browser_use_enabled", bf),
                 ("user_plugin_enabled", uf),
                 ("openclaw_enabled", nf),
-                ("openfang_enabled", of),
             ):
                 if not isinstance(requested, bool):
                     continue
@@ -1054,7 +729,7 @@ async def agent_command(payload: Dict[str, Any]):
     if command == "set_flag":
         key = (payload or {}).get("key")
         value = bool((payload or {}).get("value"))
-        if key not in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled", "openclaw_enabled", "openfang_enabled"}:
+        if key not in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled", "openclaw_enabled"}:
             raise HTTPException(400, "invalid flag key")
         t_set = time.perf_counter()
         await set_agent_flags({"lanlan_name": lanlan_name, key: value})
@@ -1198,17 +873,6 @@ async def _do_restore_agent_intent() -> None:
             })
         except Exception as exc:
             logger.warning("[Agent] Failed to restore openclaw_enabled: %s", exc)
-
-    # OpenFang is similar — single capability check on the adapter, fast,
-    # no separate retry needed.
-    if intent.get("openfang_enabled"):
-        try:
-            await set_agent_flags({
-                "openfang_enabled": True,
-                "_persist_intent": False,
-            })
-        except Exception as exc:
-            logger.warning("[Agent] Failed to restore openfang_enabled: %s", exc)
 
     # We deliberately don't gather() the parallel tasks — they update
     # capability + flags + intent on their own, and the user sees the
@@ -1658,12 +1322,6 @@ async def admin_control(payload: Dict[str, Any]):
         # keep-alive Chromium cannot survive end_all.
         await _close_browser_use_adapter(update_capability=False)
         Modules.active_browser_use_task_id = None
-        # Cancel any in-flight openfang tasks
-        try:
-            if Modules.openfang:
-                await Modules.openfang.cancel_running(None)
-        except Exception as e:
-            logger.warning(f"[Agent] Error cancelling openfang tasks during end_all: {e}")
         # Reset computer-use step history so stale context is cleared
         try:
             if Modules.computer_use:

@@ -53,7 +53,6 @@ from utils.llm_client import (
 from config.prompts.prompts_agent import (
     UNIFIED_CHANNEL_SYSTEM_PROMPT,
     CHANNEL_DESC_QWENPAW,
-    CHANNEL_DESC_OPENFANG,
     CHANNEL_DESC_BROWSER_USE,
     CHANNEL_DESC_COMPUTER_USE,
     USER_PLUGIN_SYSTEM_PROMPT,
@@ -68,7 +67,6 @@ from utils.token_tracker import set_call_type
 from .computer_use import ComputerUseAdapter
 from .browser_use_adapter import BrowserUseAdapter
 from .openclaw_adapter import OpenClawAdapter
-from .openfang_adapter import OpenFangAdapter
 from .plugin_filter import (
     stage1_filter,
     annotate_keyword_hits,
@@ -138,7 +136,7 @@ class TaskResult:
     task_id: str
     has_task: bool = False
     task_description: str = ""
-    execution_method: str = "none"  # "computer_use" | "browser_use" | "user_plugin" | "openclaw" | "openfang" | "none"
+    execution_method: str = "none"  # "computer_use" | "browser_use" | "user_plugin" | "openclaw" | "none"
     success: bool = False
     result: Any = None
     error: Optional[str] = None
@@ -181,16 +179,6 @@ class UserPluginDecision:
 
 
 @dataclass
-class OpenFangDecision:
-    """OpenFang multi-agent execution decision"""
-    has_task: bool = False
-    can_execute: bool = False
-    task_description: str = ""
-    suggested_tools: Optional[List[str]] = None
-    reason: str = ""
-
-
-@dataclass
 class OpenClawDecision:
     """OpenClaw standalone-agent execution decision"""
     has_task: bool = False
@@ -204,16 +192,14 @@ class OpenClawDecision:
 class UnifiedChannelDecision:
     """Unified channel assessment result — each channel is a dict or None"""
     qwenpaw: Optional[Dict[str, Any]] = None     # {"can_execute": bool, "task_description": str, "reason": str}
-    openfang: Optional[Dict[str, Any]] = None
     browser_use: Optional[Dict[str, Any]] = None
     computer_use: Optional[Dict[str, Any]] = None
 
 
-# 优先级：qwenpaw > openfang > browser_use > computer_use
-_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]
+# 优先级：qwenpaw > browser_use > computer_use
+_CHANNEL_PRIORITY = ["qwenpaw", "browser_use", "computer_use"]
 _CHANNEL_TO_METHOD = {
     "qwenpaw": "openclaw",
-    "openfang": "openfang",
     "browser_use": "browser_use",
     "computer_use": "computer_use",
 }
@@ -249,12 +235,10 @@ class DirectTaskExecutor:
     """
     
     def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None,
-                 openclaw: Optional[OpenClawAdapter] = None,
-                 openfang: Optional[OpenFangAdapter] = None):
+                 openclaw: Optional[OpenClawAdapter] = None):
         self.computer_use = computer_use or ComputerUseAdapter()
         self.browser_use = browser_use
         self.openclaw = openclaw
-        self.openfang: Optional[OpenFangAdapter] = openfang
         self._config_manager = get_config_manager()
         self.plugin_list = []
         self.user_plugin_enabled_default = False
@@ -285,7 +269,6 @@ class DirectTaskExecutor:
             "browser_use": "browser_use",
             "openclaw": "openclaw",
             "qwenpaw": "openclaw",
-            "openfang": "openfang",
             "user_plugin": "user_plugin",
         }
 
@@ -1139,7 +1122,6 @@ class DirectTaskExecutor:
         conversation: str,
         *,
         qwenpaw_available: bool = False,
-        openfang_available: bool = False,
         browser_available: bool = False,
         cu_available: bool = False,
         latest_user_request: str = "",
@@ -1147,7 +1129,7 @@ class DirectTaskExecutor:
         recent_context: Optional[List[Dict[str, str]]] = None,
         lang: str = "en",
     ) -> UnifiedChannelDecision:
-        """Assess all non-plugin channels (qwenpaw / openfang / browser / computer) in a single LLM call.
+        """Assess all non-plugin channels (qwenpaw / browser / computer) in a single LLM call.
 
         Assembles the prompt dynamically from the available flags and asks the LLM to pick
         the most suitable channel. If the LLM outputs multiple can_execute=true, the caller
@@ -1160,10 +1142,6 @@ class DirectTaskExecutor:
         if qwenpaw_available:
             available_keys.append("qwenpaw")
             channel_descs.append(_loc(CHANNEL_DESC_QWENPAW, lang))
-
-        if openfang_available:
-            available_keys.append("openfang")
-            channel_descs.append(_loc(CHANNEL_DESC_OPENFANG, lang))
 
         if browser_available:
             available_keys.append("browser_use")
@@ -1305,7 +1283,7 @@ class DirectTaskExecutor:
             return plugin, None
         return None, None
 
-    # NOTE: _rule_assess_openclaw / _assess_computer_use / _assess_browser_use / _assess_openfang
+    # NOTE: _rule_assess_openclaw / _assess_computer_use / _assess_browser_use
     # have been replaced by the unified _assess_unified_channels() method above.
 
     def _build_plugin_desc_lines(self, plugins: Any) -> list:
@@ -1841,7 +1819,7 @@ class DirectTaskExecutor:
     ) -> Optional[TaskResult]:
         """
         Assess each channel's feasibility and return a Decision (no execution).
-        Plugin is judged separately; qwenpaw/openfang/browser/computer are merged into one LLM call.
+        Plugin is judged separately; qwenpaw/browser/computer are merged into one LLM call.
         Actual execution is dispatched uniformly by agent_server.
 
         ``proactive`` marks a self-initiated turn (lanlan spoke with no fresh user
@@ -1946,15 +1924,14 @@ class DirectTaskExecutor:
         computer_use_enabled = agent_flags.get("computer_use_enabled", False)
         browser_use_enabled = agent_flags.get("browser_use_enabled", False)
         user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
-        openfang_enabled = agent_flags.get("openfang_enabled", False)
         openclaw_enabled = agent_flags.get("openclaw_enabled", False)
 
         logger.debug(
-            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s, nk=%s, of=%s}",
-            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled, openclaw_enabled, openfang_enabled,
+            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s, nk=%s}",
+            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled, openclaw_enabled,
         )
 
-        if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled and not openclaw_enabled and not openfang_enabled:
+        if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled and not openclaw_enabled:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
 
@@ -1973,7 +1950,7 @@ class DirectTaskExecutor:
         # 「外部能力相关度」信号（显式对外操作 + 需要外部/实时信息两类合一），已在
         # main 侧做过两件事：(1) 按本轮 user 文本做 freshness 匹配（陈旧/异轮读数 →
         # None，绝不用上一轮信号刹本轮）；(2) 折进 complexity 取 max，所以高
-        # complexity 的硬推理轮（如 openfang 多步推理）即便 external 低也不会被刹。
+        # complexity 的硬推理轮（如多步推理请求）即便 external 低也不会被刹。
         # 这里只要：自信地低 + 零 LLM 确定性 shortcut（magic word 规则 + 插件关键词）
         # 也全静默，就跳过下面 1~2 次大模型评估。
         # 闸非对称：None（无可用信号/陈旧）或任一确定性命中都不刹车 —— 最坏多花一次
@@ -2008,14 +1985,6 @@ class DirectTaskExecutor:
                 logger.info("[TaskExecutor] BrowserUse available: %s", browser_available)
             except Exception as e:
                 logger.warning("[TaskExecutor] Failed to check BrowserUse: %s", e)
-
-        of_available = False
-        if openfang_enabled and self.openfang:
-            try:
-                of_available = self.openfang.init_ok
-                logger.info("[TaskExecutor] OpenFang available: %s", of_available)
-            except Exception as e:
-                logger.warning("[TaskExecutor] Failed to check OpenFang: %s", e)
 
         qwenpaw_available = False
         if openclaw_enabled and self.openclaw:
@@ -2078,13 +2047,12 @@ class DirectTaskExecutor:
         if user_plugin_enabled and plugins:
             parallel_tasks.append(('up', self._assess_user_plugin(conversation, plugins, lang=lang)))
 
-        # 统一渠道评估（qwenpaw / openfang / browser / computer）
-        has_any_unified = qwenpaw_available or of_available or browser_available or cu_available
+        # 统一渠道评估（qwenpaw / browser / computer）
+        has_any_unified = qwenpaw_available or browser_available or cu_available
         if has_any_unified:
             parallel_tasks.append(('unified', self._assess_unified_channels(
                 conversation,
                 qwenpaw_available=qwenpaw_available,
-                openfang_available=of_available,
                 browser_available=browser_available,
                 cu_available=cu_available,
                 latest_user_request=latest_user_request,
@@ -2144,7 +2112,7 @@ class DirectTaskExecutor:
                 latest_user_request=latest_user_request,
             )
 
-        # 2. 统一渠道 — 按优先级 qwenpaw > openfang > browser_use > computer_use
+        # 2. 统一渠道 — 按优先级 qwenpaw > browser_use > computer_use
         if isinstance(unified, UnifiedChannelDecision):
             for ch_key in _CHANNEL_PRIORITY:
                 ch_info = getattr(unified, ch_key, None)

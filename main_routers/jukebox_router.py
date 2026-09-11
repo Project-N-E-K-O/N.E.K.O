@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 
-from fastapi import APIRouter, File, Form, UploadFile, HTTPException
+from fastapi import APIRouter, File, Form, UploadFile, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -1490,6 +1490,17 @@ async def get_file(file_path: str):
     """
     target_path = resolve_jukebox_file_path(file_path)
     return FileResponse(target_path, media_type=get_jukebox_media_type(target_path))
+
+
+@router.head("/file/{file_path:path}")
+async def head_file(file_path: str):
+    """Check whether a song or action file exists without streaming it."""
+    target_path = resolve_jukebox_file_path(file_path)
+    return Response(
+        status_code=200,
+        media_type=get_jukebox_media_type(target_path),
+        headers={"Content-Length": str(target_path.stat().st_size)}
+    )
 
 
 @router.post("/import")

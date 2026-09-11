@@ -163,6 +163,9 @@ class _LifecycleHarness(LifecycleMixin):
     def _reset_proactive_gate(self):
         pass
 
+    def clear_speech_playback_gains(self):
+        pass
+
     async def _close_independent_asr(self, **_kwargs):
         pass
 

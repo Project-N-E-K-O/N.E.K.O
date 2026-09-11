@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
@@ -13,11 +14,90 @@ from plugin.server.application.plugin_cli.service import (
     PluginCliService,
     _replacement_error_details,
 )
-from plugin.server.application.plugins import upgrade_support
-from plugin.server.application.plugins.upgrade_support import ReplacePluginError, replace_plugin
+from plugin.server.application.install_source.models import LockEntry
+from plugin.server.application.plugins.installation_transactions import (
+    ReplacePluginError,
+    replace_plugin,
+)
+from plugin.server.application.plugins.installation_transactions import (
+    replace as replacement_transaction,
+)
 from plugin.server.domain.errors import ServerDomainError
 
 pytestmark = pytest.mark.plugin_unit
+
+
+@pytest.fixture(autouse=True)
+def _default_replacement_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def not_running(_plugin_id: str) -> bool:
+        return False
+
+    async def no_op(_plugin_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(replacement_transaction, "_plugin_is_running", not_running)
+    monkeypatch.setattr(replacement_transaction, "_stop_plugin", no_op)
+    monkeypatch.setattr(replacement_transaction, "_start_plugin", no_op)
+
+
+class _ManualTakeoverManager:
+    def __init__(self, entry: LockEntry) -> None:
+        self.entry = entry
+        self.is_degraded = False
+        self.restore_calls = 0
+
+    def entry_for_directory(
+        self,
+        _directory_path: Path,
+        *,
+        include_removed: bool = False,
+    ) -> LockEntry | None:
+        assert include_removed is False
+        return self.entry
+
+    def package_id_for_directory(self, _directory_path: Path) -> str:
+        return self.entry.package_id
+
+    def record_import(self, *, directory_path: Path, **_kwargs: object) -> None:
+        self.entry = replace(
+            self.entry,
+            directory_name=directory_path.name,
+            channel="imported",
+            updated_at="2026-08-29T00:00:01.000000Z",
+        )
+
+    def restore_entry_for_rollback(self, entry: LockEntry) -> None:
+        self.restore_calls += 1
+        self.entry = entry
+
+
+def _manual_entry() -> LockEntry:
+    return LockEntry(
+        root_id="user",
+        directory_name="demo",
+        plugin_id="demo",
+        channel="manual",
+        reason="user_requested",
+        installed_at="2026-08-29T00:00:00.000000Z",
+        updated_at="2026-08-29T00:00:00.000000Z",
+        last_seen_at="2026-08-29T00:00:00.000000Z",
+    )
+
+
+def _managed_entry(*, package_id: str = "demo") -> LockEntry:
+    return replace(
+        _manual_entry(),
+        channel="imported",
+        package_id=package_id,
+    )
+
+
+def _managed_manager(*, package_id: str = "demo") -> SimpleNamespace:
+    entry = _managed_entry(package_id=package_id)
+    return SimpleNamespace(
+        entry_for_directory=lambda _path: entry,
+        package_id_for_directory=lambda _path: entry.package_id,
+    )
 
 
 @pytest.mark.parametrize(
@@ -71,6 +151,7 @@ def test_hash_mismatch_reason_survives_upgrade_rollback() -> None:
 @pytest.mark.parametrize("failure_stage", ["install", "validate", "restart"])
 async def test_safe_upgrade_restores_old_directory_after_each_failure(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     failure_stage: str,
 ) -> None:
     target = tmp_path / "demo"
@@ -124,18 +205,15 @@ async def test_safe_upgrade_restores_old_directory_after_each_failure(
         if failure_stage == "restart" and start_attempts == 1:
             raise RuntimeError("restart failed")
 
-    async def cleanup_backup(path: Path) -> None:
-        calls.append(f"cleanup:{path.name}")
+    monkeypatch.setattr(replacement_transaction, "_plugin_is_running", is_running)
+    monkeypatch.setattr(replacement_transaction, "_stop_plugin", stop)
+    monkeypatch.setattr(replacement_transaction, "_start_plugin", start)
 
     with pytest.raises(ReplacePluginError, match=failure_stage):
         await replace_plugin(
             layout=resolve_plugin_layout("demo", target, storage_root=storage_root),
             install_new=install_new,
-            validate_new=validate_new,
-            is_running=is_running,
-            stop=stop,
-            start=start,
-            cleanup_backup=cleanup_backup,
+            validate_channel_specific=validate_new,
             additional_targets=(profile,),
         )
 
@@ -150,7 +228,10 @@ async def test_safe_upgrade_restores_old_directory_after_each_failure(
 
 
 @pytest.mark.asyncio
-async def test_safe_upgrade_replaces_plugin_and_cleans_backup_on_success(tmp_path: Path) -> None:
+async def test_safe_upgrade_replaces_plugin_and_cleans_backup_on_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     target = tmp_path / "demo"
     target.mkdir()
     (target / "plugin.toml").write_text(
@@ -171,14 +252,27 @@ async def test_safe_upgrade_replaces_plugin_and_cleans_backup_on_success(tmp_pat
         calls.append(f"cleanup:{path.name}")
         shutil.rmtree(path)
 
+    monkeypatch.setattr(
+        replacement_transaction,
+        "_plugin_is_running",
+        lambda _plugin_id: _async_true(),
+    )
+    monkeypatch.setattr(
+        replacement_transaction,
+        "_stop_plugin",
+        lambda plugin_id: _record(calls, f"stop:{plugin_id}"),
+    )
+    monkeypatch.setattr(
+        replacement_transaction,
+        "_start_plugin",
+        lambda plugin_id: _record(calls, f"start:{plugin_id}"),
+    )
+    monkeypatch.setattr(replacement_transaction, "remove_directory", cleanup_backup)
+
     result = await replace_plugin(
         layout=resolve_plugin_layout("demo", target),
         install_new=install_new,
-        validate_new=lambda: _async_none(),
-        is_running=lambda _plugin_id: _async_true(),
-        stop=lambda plugin_id: _record(calls, f"stop:{plugin_id}"),
-        start=lambda plugin_id: _record(calls, f"start:{plugin_id}"),
-        cleanup_backup=cleanup_backup,
+        validate_channel_specific=lambda: _async_none(),
     )
 
     assert result.restarted is True
@@ -200,7 +294,7 @@ async def test_rollback_keeps_targets_that_were_not_backed_up(tmp_path: Path) ->
     profile.mkdir(parents=True)
     (profile / "default.toml").write_text("user_value = true\n", encoding="utf-8")
 
-    restored = await upgrade_support._rollback_targets(
+    restored = await replacement_transaction._rollback_targets(
         targets=(target, profile),
         backups={target: backup},
         preexisting_targets=frozenset({target, profile}),
@@ -213,7 +307,10 @@ async def test_rollback_keeps_targets_that_were_not_backed_up(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_safe_upgrade_removes_profile_created_by_failed_install(tmp_path: Path) -> None:
+async def test_safe_upgrade_removes_profile_created_by_failed_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     target = tmp_path / "demo"
     target.mkdir()
     (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
@@ -221,7 +318,10 @@ async def test_safe_upgrade_removes_profile_created_by_failed_install(tmp_path: 
 
     async def install_new() -> dict[str, object]:
         target.mkdir()
-        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        (target / "plugin.toml").write_text(
+            '[plugin]\nid = "demo"\nversion = 2\n',
+            encoding="utf-8",
+        )
         profile.mkdir(parents=True)
         (profile / "default.toml").write_text("new_value = true\n", encoding="utf-8")
         return {"ok": True}
@@ -229,15 +329,17 @@ async def test_safe_upgrade_removes_profile_created_by_failed_install(tmp_path: 
     async def validate_new() -> None:
         raise RuntimeError("validation failed")
 
+    monkeypatch.setattr(
+        replacement_transaction,
+        "_plugin_is_running",
+        lambda _plugin_id: _async_true(),
+    )
+
     with pytest.raises(ReplacePluginError, match="validate"):
         await replace_plugin(
             layout=resolve_plugin_layout("demo", target),
             install_new=install_new,
-            validate_new=validate_new,
-            is_running=lambda _plugin_id: _async_true(),
-            stop=lambda _plugin_id: _async_none(),
-            start=lambda _plugin_id: _async_none(),
-            cleanup_backup=lambda _path: _async_none(),
+            validate_channel_specific=validate_new,
             additional_targets=(profile,),
         )
 
@@ -342,12 +444,22 @@ async def test_service_replaces_with_new_same_or_old_version_without_touching_us
         path.write_text(content, encoding="utf-8")
 
     import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
 
     monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
-    monkeypatch.setattr(upgrade_support, "plugin_is_running", lambda _plugin_id: _async_false())
+    monkeypatch.setattr(
+        service_module,
+        "get_install_source_manager",
+        lambda: _managed_manager(),
+    )
+    monkeypatch.setattr(
+        replacement_transaction,
+        "_plugin_is_running",
+        lambda _plugin_id: _async_false(),
+    )
 
     service = PluginCliService()
     plan = await service.plan_install(package=str(package_path))
@@ -385,11 +497,17 @@ async def test_service_rejects_changed_target_before_stopping(
     profiles_root = tmp_path / "profiles"
 
     import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
 
     monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(
+        service_module,
+        "get_install_source_manager",
+        lambda: _managed_manager(),
+    )
 
     service = PluginCliService()
     plan = await service.plan_install(package=str(package_path))
@@ -402,7 +520,7 @@ async def test_service_rejects_changed_target_before_stopping(
     async def unexpected_stop(plugin_id: str) -> None:
         stop_calls.append(plugin_id)
 
-    monkeypatch.setattr(upgrade_support, "stop_plugin_for_replace", unexpected_stop)
+    monkeypatch.setattr(replacement_transaction, "_stop_plugin", unexpected_stop)
     with pytest.raises(ServerDomainError) as exc_info:
         await service.install(
             package=str(package_path),
@@ -435,11 +553,17 @@ async def test_service_rejects_unsafe_upgrade_plan_paths_before_backup(
     profiles_root = tmp_path / "profiles"
 
     import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
 
     monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(
+        service_module,
+        "get_install_source_manager",
+        lambda: _managed_manager(),
+    )
 
     service = PluginCliService()
     plan = await service.plan_install(package=str(package_path))
@@ -456,7 +580,7 @@ async def test_service_rejects_unsafe_upgrade_plan_paths_before_backup(
         return object()
 
     monkeypatch.setattr(service, "plan_install", unsafe_plan_install)
-    monkeypatch.setattr(upgrade_support, "replace_plugin", unexpected_upgrade)
+    monkeypatch.setattr(replacement_transaction, "replace_plugin", unexpected_upgrade)
 
     with pytest.raises(ValueError, match=field):
         await service.install(
@@ -498,13 +622,13 @@ async def test_service_backs_up_profile_by_package_id_during_upgrade(
     monkeypatch.setattr(
         service_module,
         "get_install_source_manager",
-        lambda: SimpleNamespace(package_id_for_directory=lambda _path: "demo-package"),
+        lambda: _managed_manager(package_id="demo-package"),
     )
 
     async def not_running(_plugin_id: str) -> bool:
         return False
 
-    monkeypatch.setattr(upgrade_support, "plugin_is_running", not_running)
+    monkeypatch.setattr(replacement_transaction, "_plugin_is_running", not_running)
 
     service = PluginCliService()
     plan = await service.plan_install(package=str(package_path))
@@ -551,13 +675,13 @@ async def test_service_uses_custom_profile_root_with_recorded_package_identity(
     monkeypatch.setattr(
         service_module,
         "get_install_source_manager",
-        lambda: SimpleNamespace(package_id_for_directory=lambda _path: "demo-package"),
+        lambda: _managed_manager(package_id="demo-package"),
     )
 
     async def not_running(_plugin_id: str) -> bool:
         return False
 
-    monkeypatch.setattr(upgrade_support, "plugin_is_running", not_running)
+    monkeypatch.setattr(replacement_transaction, "_plugin_is_running", not_running)
 
     service = PluginCliService()
     plan = await service.plan_install(
@@ -610,7 +734,7 @@ async def test_service_rejects_legacy_package_rename_despite_stale_incoming_prof
     monkeypatch.setattr(
         service_module,
         "get_install_source_manager",
-        lambda: SimpleNamespace(package_id_for_directory=lambda _path: ""),
+        lambda: _managed_manager(package_id=""),
     )
 
     plan = await PluginCliService().plan_install(package=str(package_path))
@@ -619,6 +743,373 @@ async def test_service_rejects_legacy_package_rename_despite_stale_incoming_prof
     assert plan["reason"] == "package_id_change"
     assert plan["installed_package_id"] == "demo"
     assert (stale_profile / "default.toml").read_text(encoding="utf-8") == "stale = true\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_state", ["manager_missing", "entry_missing"])
+async def test_local_replacement_fails_closed_when_manifest_ownership_is_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_state: str,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    _write_plugin(plugins_root, "demo", "1.0.0")
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", tmp_path / "profiles")
+    manager = (
+        None
+        if source_state == "manager_missing"
+        else SimpleNamespace(entry_for_directory=lambda _path: None)
+    )
+    monkeypatch.setattr(service_module, "get_install_source_manager", lambda: manager)
+
+    plan = await PluginCliService().plan_install(package=str(package_path))
+
+    assert plan["action"] == "blocked"
+    assert plan["reason"] == "install_source_ownership_unknown"
+    assert plan["confirmation_token"] == ""
+    assert plan["current_source"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_local_manual_takeover_fails_closed_when_install_source_is_degraded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    _write_plugin(plugins_root, "demo", "1.0.0")
+    manager = _ManualTakeoverManager(_manual_entry())
+    manager.is_degraded = True
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", tmp_path / "profiles")
+    monkeypatch.setattr(service_module, "get_install_source_manager", lambda: manager)
+
+    plan = await PluginCliService().plan_install(package=str(package_path))
+
+    assert plan["action"] == "blocked"
+    assert plan["reason"] == "install_source_read_only"
+    assert plan["confirmation_token"] == ""
+    assert plan["current_source"] == "manual"
+    assert plan["target_source"] == "imported"
+
+
+@pytest.mark.asyncio
+async def test_local_package_manual_takeover_requires_bound_plan_and_records_imported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    manual_dir = _write_plugin(plugins_root, "demo", "1.0.0")
+    (manual_dir / "manual.py").write_text("ORIGINAL = True\n", encoding="utf-8")
+    profiles_root = tmp_path / "profiles"
+    manager = _ManualTakeoverManager(_manual_entry())
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(service_module, "get_install_source_manager", lambda: manager)
+    monkeypatch.setattr(
+        replacement_transaction,
+        "_plugin_is_running",
+        lambda _plugin_id: _async_false(),
+    )
+
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
+
+    assert plan["reason"] == "manual_takeover"
+    assert plan["current_source"] == "manual"
+    assert plan["target_source"] == "imported"
+    assert len(str(plan["confirmation_token"])) == 64
+
+    result = await service.install(
+        package=str(package_path),
+        confirm_upgrade=True,
+        confirmation_token=str(plan["confirmation_token"]),
+    )
+
+    assert result["operation"] == "upgrade"
+    assert manager.entry.channel == "imported"
+    assert not (manual_dir / "manual.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_local_manual_takeover_reloads_ownership_inside_operation_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    manual_dir = _write_plugin(plugins_root, "demo", "1.0.0")
+    sentinel = manual_dir / "manual.py"
+    sentinel.write_text("ORIGINAL = True\n", encoding="utf-8")
+    manager = _ManualTakeoverManager(_manual_entry())
+    load_calls = 0
+
+    def reload_changed_owner() -> None:
+        nonlocal load_calls
+        load_calls += 1
+        manager.entry = _managed_entry()
+
+    manager.load = reload_changed_owner  # type: ignore[attr-defined]
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", tmp_path / "profiles")
+    monkeypatch.setattr(service_module, "get_install_source_manager", lambda: manager)
+
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
+    with pytest.raises(ServerDomainError) as exc_info:
+        await service.install(
+            package=str(package_path),
+            confirm_upgrade=True,
+            confirmation_token=str(plan["confirmation_token"]),
+        )
+
+    assert exc_info.value.code == "PLUGIN_UPGRADE_PLAN_CHANGED"
+    assert load_calls == 1
+    assert sentinel.read_text(encoding="utf-8") == "ORIGINAL = True\n"
+
+
+@pytest.mark.asyncio
+async def test_local_manual_takeover_rejects_unowned_existing_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    manual_dir = _write_plugin(plugins_root, "demo", "1.0.0")
+    profile_dir = tmp_path / "profiles" / "demo"
+    profile_dir.mkdir(parents=True)
+    sentinel = profile_dir / "custom.toml"
+    sentinel.write_text("belongs_to_user = true\n", encoding="utf-8")
+    manager = _ManualTakeoverManager(_manual_entry())
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(
+        plugin_settings,
+        "USER_PACKAGE_PROFILES_ROOT",
+        profile_dir.parent,
+    )
+    monkeypatch.setattr(service_module, "get_install_source_manager", lambda: manager)
+
+    plan = await PluginCliService().plan_install(package=str(package_path))
+
+    assert plan["action"] == "blocked"
+    assert plan["reason"] == "manual_takeover_profile_target_exists"
+    assert sentinel.read_text(encoding="utf-8") == "belongs_to_user = true\n"
+    assert manual_dir.is_dir()
+
+
+@pytest.mark.asyncio
+async def test_local_manual_takeover_revalidates_backup_after_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    manual_dir = _write_plugin(plugins_root, "demo", "1.0.0")
+    sentinel = manual_dir / "manual.py"
+    sentinel.write_text("confirmed = true\n", encoding="utf-8")
+    manager = _ManualTakeoverManager(_manual_entry())
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(
+        plugin_settings,
+        "USER_PACKAGE_PROFILES_ROOT",
+        tmp_path / "profiles",
+    )
+    monkeypatch.setattr(service_module, "get_install_source_manager", lambda: manager)
+    monkeypatch.setattr(
+        replacement_transaction,
+        "_plugin_is_running",
+        lambda _plugin_id: _async_true(),
+    )
+
+    async def mutate_while_stopping(_plugin_id: str) -> None:
+        sentinel.write_text("edited_during_stop = true\n", encoding="utf-8")
+
+    monkeypatch.setattr(replacement_transaction, "_stop_plugin", mutate_while_stopping)
+    monkeypatch.setattr(
+        replacement_transaction,
+        "_start_plugin",
+        lambda _plugin_id: _async_none(),
+    )
+
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
+    with pytest.raises(ServerDomainError) as exc_info:
+        await service.install(
+            package=str(package_path),
+            confirm_upgrade=True,
+            confirmation_token=str(plan["confirmation_token"]),
+        )
+
+    assert exc_info.value.code == "PLUGIN_UPGRADE_ROLLED_BACK"
+    assert sentinel.read_text(encoding="utf-8") == "edited_during_stop = true\n"
+    assert manager.entry.channel == "manual"
+    assert manager.restore_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_local_package_takes_over_exact_manual_slot_alongside_builtin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo.neko-plugin"
+    build_plugin(source, package_path)
+    builtin_root = tmp_path / "builtin"
+    builtin_dir = _write_plugin(builtin_root, "demo", "0.5.0")
+    plugins_root = tmp_path / "plugins"
+    manual_dir = _write_plugin(plugins_root, "demo", "1.0.0")
+    (manual_dir / "manual.py").write_text("ORIGINAL = True\n", encoding="utf-8")
+    manager = _ManualTakeoverManager(_manual_entry())
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", tmp_path / "profiles")
+    monkeypatch.setattr(service_module, "get_install_source_manager", lambda: manager)
+    monkeypatch.setattr(
+        replacement_transaction,
+        "_plugin_is_running",
+        lambda _plugin_id: _async_false(),
+    )
+
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
+    result = await service.install(
+        package=str(package_path),
+        confirm_upgrade=True,
+        confirmation_token=str(plan["confirmation_token"]),
+    )
+
+    assert plan["action"] == "upgrade"
+    assert plan["reason"] == "manual_takeover"
+    assert result["operation"] == "upgrade"
+    assert manager.entry.channel == "imported"
+    assert 'version = "2.0.0"' in (manual_dir / "plugin.toml").read_text(encoding="utf-8")
+    assert 'version = "0.5.0"' in (builtin_dir / "plugin.toml").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_failed_local_manual_takeover_restores_directory_and_lock_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    manual_dir = _write_plugin(plugins_root, "demo", "1.0.0")
+    sentinel = manual_dir / "manual.py"
+    sentinel.write_text("ORIGINAL = True\n", encoding="utf-8")
+    profiles_root = tmp_path / "profiles"
+    original_entry = _manual_entry()
+    manager = _ManualTakeoverManager(original_entry)
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(service_module, "get_install_source_manager", lambda: manager)
+
+    async def running(_plugin_id: str) -> bool:
+        return True
+
+    async def stop(_plugin_id: str) -> None:
+        return None
+
+    async def fail_start(_plugin_id: str) -> None:
+        raise RuntimeError("restart failed")
+
+    monkeypatch.setattr(replacement_transaction, "_plugin_is_running", running)
+    monkeypatch.setattr(replacement_transaction, "_stop_plugin", stop)
+    monkeypatch.setattr(replacement_transaction, "_start_plugin", fail_start)
+
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
+    with pytest.raises(ServerDomainError) as exc_info:
+        await service.install(
+            package=str(package_path),
+            confirm_upgrade=True,
+            confirmation_token=str(plan["confirmation_token"]),
+        )
+
+    assert exc_info.value.code == "PLUGIN_UPGRADE_ROLLED_BACK"
+    assert sentinel.read_text(encoding="utf-8") == "ORIGINAL = True\n"
+    assert manager.entry == original_entry
+    assert manager.restore_calls == 1
+    assert not (profiles_root / "demo").exists()
 
 
 @pytest.mark.asyncio
@@ -652,7 +1143,7 @@ async def test_service_blocks_package_id_change_before_replacement(
     monkeypatch.setattr(
         service_module,
         "get_install_source_manager",
-        lambda: SimpleNamespace(package_id_for_directory=lambda _path: "old-package"),
+        lambda: _managed_manager(package_id="old-package"),
     )
 
     service = PluginCliService()

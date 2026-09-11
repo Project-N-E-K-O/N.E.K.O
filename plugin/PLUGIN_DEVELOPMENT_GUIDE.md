@@ -43,7 +43,7 @@ N.E.K.O 插件系统是一个基于 Python 的插件框架，允许开发者创�
 ### 1.3 核心特性
 
 - **进程隔离**：Plugin 与 Adapter 独立运行
-- **异步支持**：支持同步和异步入口函数
+- **异步运行时入口**：运行时入口使用 `async def`；同步辅助函数保持为内部实现
 - **Result 类型**：`Ok`/`Err` 类型安全的错误处理（替代异常流）
 - **Hook 系统**：`@before_entry`, `@after_entry`, `@around_entry`, `@replace_entry` 面向切面编程
 - **跨插件调用**：`self.plugins.call_entry("other_plugin:entry_id")` 插件间通信
@@ -92,17 +92,23 @@ plugin/sdk/
 
 > `plugin/sdk/shared/` 是内部实现细节，不应被开发者直接导入。
 
-### 1.6 插件目录结构
+### 1.6 代码目录与状态目录
 
 ```text
 plugin/plugins/
 └── my_plugin/
     ├── __init__.py      # 插件代码（入口点）
-    ├── plugin.toml      # 插件配置
-    ├── config.json      # 可选：自定义配置
-    ├── data/            # 可选：运行时数据目录
+    ├── plugin.toml      # 插件清单与默认值
+    ├── config.example.toml # 可选：运行时配置模板
     └── static/          # 可选：Web UI 文件
+
+<用户数据根目录>/plugins/my_plugin/
+├── config/plugin.toml   # 当前用户的运行时配置
+├── data/                # 持久数据
+└── cache/               # 可重新生成的缓存
 ```
+
+通过安装包安装时，可执行代码与状态目录分开存放。
 
 ---
 
@@ -122,7 +128,7 @@ id = "hello_world"
 name = "Hello World Plugin"
 description = "一个简单的示例插件"
 version = "1.0.0"
-entry = "plugins.hello_world:HelloWorldPlugin"
+entry = "plugin.plugins.hello_world:HelloWorldPlugin"
 
 [plugin.sdk]
 recommended = ">=0.1.0,<0.2.0"
@@ -168,7 +174,7 @@ class HelloWorldPlugin(NekoPluginBase):
         self.counter = 0
 
     @lifecycle(id="startup")
-    def on_startup(self, **_):
+    async def on_startup(self, **_):
         self.logger.info("HelloWorldPlugin 已启动！")
         return Ok({"status": "ready"})
 
@@ -192,7 +198,7 @@ class HelloWorldPlugin(NekoPluginBase):
             }
         }
     )
-    def greet(self, name: str = "World", **_):
+    async def greet(self, name: str = "World", **_):
         self.counter += 1
         message = f"Hello, {name}! (第 {self.counter} 次调用)"
         self.logger.info(f"问候: {message}")
@@ -206,7 +212,7 @@ class HelloWorldPlugin(NekoPluginBase):
 - **`@plugin_entry`** — 定义外部可调用的入口点
 - **`@lifecycle`** — 处理生命周期事件（`startup`, `shutdown`, `reload`）
 - **`Ok(...)` / `Err(...)`** — 返回 Result 类型，类型安全的错误处理
-- **`**_`** — 入口点签名中始终包含，用于捕获额外参数
+- **`**_`** — 仅在入口确实要接收额外宿主字段时使用；显式签名会过滤未声明字段
 
 ### 2.5 测试
 
@@ -326,9 +332,15 @@ if not result["submitted"]:
 
 `submitted=True` 只表示 SDK 已把 payload 交给权威本地提交路径，并接管后续提交
 责任；它不表示宿主已经消费、AI 已生成回复或音频已经播放。
-`submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`
-或 `transport_unavailable`。结果不会暴露内部 transport 名称，也不会回显消息正文
-或异常内容。拒绝结果还会携带兼容旧调用方的 `ok=False`；新代码应以
+`submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`、
+`transport_unavailable` 或 `payload_too_large`。前三个描述的是传输当时的状况
+（拥塞 / 发送失败 / 没有可用通道），换个时机原样重发是有意义的。
+`payload_too_large` 是另一类：它由 SDK 在**发送之前**本地量出来——整条 payload
+打包后超过了 `MESSAGE_PLANE_PAYLOAD_MAX_BYTES`（判据见下面的「大小限制」），
+所以原样重试必然还是同一个结果，唯一的出路是把这条 push 变小。inline 图片改用
+`ctx.images.upload()` 换成 URL part；`audio` / `video` 目前没有对应的上传接口，
+只能自己压小（更短的片段、更低的码率或分辨率），或者自己托管后用 `url=` 代替
+`data=`。结果不会暴露内部 transport 名称，也不会回显消息正文或异常内容。拒绝结果还会携带兼容旧调用方的 `ok=False`；新代码应以
 `submitted` 为正式判据。调用方可以保留本地状态，但重试和去重仍由具体插件决定。
 
 ##### 两条轴的语义
@@ -395,10 +407,49 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。
 >   推荐配合 `ai_behavior="blind"` + `ui_action` 走纯前端展示。
 >
 > **大小限制**：inline part 通过 message_plane 走 ZMQ，整条 payload 上限是
-> `MESSAGE_PLANE_PAYLOAD_MAX_BYTES`（默认 256 KB）。1080p 截图建议先压成
-> JPEG q70 或 256x256 PNG。较大图片使用独立的临时图片上传 interface；它会
-> 在线程池中规范化为最长边不超过 2048 的 JPEG，并通过独立 media transport
-> 上传，不占用 `push_message` 的 256 KB payload：
+> `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 524288（512 **KiB** = 512*1024，不是
+> 十进制的 512 KB）。这个数字量的是**打包后**的信封，不是原图字节数——inline
+> 图片以 base64 放在 `parts[].binary_base64` 里，是原始字节的 4/3（+33%）。
+> 所以一张 inline 图的原始字节上限是 512 KiB × 3/4 = **约 384 KiB**，再减掉
+> 几百字节的信封开销和同一条消息里的 text part。实测：一张 256 KiB 的图加一句
+> 短文字打包出来是 341.8 KiB，离上限还有约 170 KiB 余量；恰好卡满的原始图片大小
+> 是 383.6 KiB。
+>
+> 这个「实际上限」曾经低得多，值得说清楚为什么变了。wire envelope 以前为了照顾
+> 还没迁到 v2 的下游消费者，把同一张 inline 图带**两遍**：一份 base64 在
+> `parts[].binary_base64`，一份原始 bytes 在 legacy 的 `binary_data` 字段，加起来
+> 约是原图的 2.34 倍，于是当时 256 KiB 的上限实际只兜得住**约 110 KiB** 的图。
+> 现在 `_build_wire_payload`（`plugin/core/context.py`）只在「调用方同时传了
+> `parts=` 和 `binary_data=`」这一种形状下才填 legacy 字段——那时那些 bytes 不在
+> 任何 part 里，是唯一的载体；普通的 inline 图片只走 base64 那一遍。双份没了，
+> 上限又从 256 KiB 提到 512 KiB，两件事合起来才让「文档承诺 256 KiB 的图能过」
+> 这句话第一次成立。
+>
+> 超限现在**在本地就被拦下**：`push_message()` 在把 payload 交给 message_plane 的
+> ZMQ 通道之前先打包量一次，超了直接返回 `submitted=False` +
+> `reason="payload_too_large"`，那条消息一个字节都不会上线，日志里还会写明是哪个
+> part（`image` / `audio` / `video`）吃掉了预算。这一侧和 host 侧
+> （`plugin/message_plane/ingest_server.py`）读的是同一个常量，所以两边不会漂移；
+> host 侧的检查也还在，作为最后一道兜底。
+>
+> 但这没有改变 `submitted=True` 的含义：它仍然只表示「已交给传输」，不表示 host
+> 收下了——宿主背压、进程重启之类仍然可能让消息静默消失。变的只是**超限**这一类
+> 丢弃，它从「插件侧完全察觉不到」变成了一个同步的返回值。
+>
+> 这道闸挂在**每一条**提交出口上，不是只挂在 ZMQ 主路：批量快路径、同步路径，以及
+> ZMQ 不可用时退下去的 legacy 控制面队列，三条都会先量一遍整条 payload 再决定。
+> 校验的对象也是整条 payload 而不只是内联图片——一条超大的纯文本或 metadata 同样
+> 会被拒，因为 host 那边量的就是整条 msgpack。唯一例外是
+> `NEKO_MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES` 被显式关掉的部署，那种配置下 host
+> 自己也不量，超限消息会一路走到底。
+>
+> 超限影响的是**整条 push**，不是「图掉了、文字还在」：同一条消息里的 text part 和
+> `ui_action` 一起被拒。1080p 截图别指望 inline 走：先压成 JPEG q70 或
+> 256x256 PNG，再大就用下面的上传接口。
+>
+> 较大图片使用独立的临时图片上传 interface；它会在线程池中规范化为最长边不超过
+> 2048 的 JPEG，并通过独立 media transport 上传，不占用 `push_message` 的
+> 512 KiB payload：
 >
 > ```python
 > image_part = await ctx.images.upload(image_bytes, mime="image/png")
@@ -415,6 +466,43 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。
 > handler（`startup` / `freeze` / `unfreeze` / `shutdown` / `config_change`）
 > 执行时不处理这类 request/response 上传，调用会立即抛出 `RuntimeError`，
 > 而不是等待 timeout。
+>
+> **`upload()` 的硬失败**——下面每一条都是**抛异常**，不是静默降级成一张小图，
+> 所以喂用户提供的图片时必须自己 `try`：
+>
+> | 关卡 | 常量 / 判据 | 越界结果 |
+> |---|---|---|
+> | 源图字节 | `MAX_SOURCE_IMAGE_BYTES` = 33554432（32 MiB） | `ValueError` |
+> | 源图像素 | `MAX_SOURCE_IMAGE_PIXELS` = 16777216（16 MP，宽 x 高） | `ValueError` |
+> | 归一化后字节 | `MAX_UPLOADED_IMAGE_BYTES` = 8388608（8 MiB） | `ValueError` |
+> | 解码槽等待 | 全进程只有 2 个解码槽，排队时间计入你给的 `timeout`（默认 3s，上限 30s） | `TimeoutError` |
+> | 输出最长边 | `MAX_IMAGE_EDGE` = 2048 | 不报错，等比缩小 |
+>
+> 归一化后字节那条容易被漏掉：源图过了 32 MiB / 16 MP 两关，重编码出来的 JPEG
+> 仍可能超过 8 MiB（噪点多的大图压不动），这时抛的异常在**解码之后**，你已经
+> 付过 CPU 了。此外 downlink 尚未就绪、transport 不回包同样是 `TimeoutError`；
+> 空 bytes 是 `ValueError`，非 bytes 是 `TypeError`。
+>
+> **动图会被拍平**：`normalize_image_to_jpeg` 只取第 0 帧，输出恒为单帧 JPEG，
+> 既不报错也不打日志（实测 4 帧 GIF 进、1 帧 JPEG 出）。`mime=` 参数只是给调用
+> 方自己标注用的，真实格式由 Pillow 探测、输出永远是 JPEG。要动效请配合
+> `ui_action` 让前端自己播。
+>
+> **传得更清晰买的是 chat 显示效果，不是模型精度**：进模型的那条路另有一套判据，
+> 而且它是**无条件**的，不是超了预算才触发。
+>
+> 每一张要进模型的图都会先被重编码到模型档位：最长宽 `MODEL_IMAGE_MAX_WIDTH`
+> （1280）、最高 `COMPRESS_TARGET_HEIGHT`（720）、JPEG q80，见
+> `utils/screenshot_utils.py` 的 `normalize_image_for_model`。已经在档位内的图原样
+> 通过、不会被反复重编码（它是幂等的，否则图片在会话历史里多存活几轮就会代际劣化）。
+> 所以按 2048 长边上传的图，到模型眼前必定已经是 720p 档——传得更大只增加这一次
+> 重编码的开销，不会让模型看得更准。
+>
+> 归一化之后，如果一个回合的图片**总字节**仍超过 `TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES`
+> （8 MiB），才会再启动降级阶梯：先抽样（只留头/中/尾三张），再对活下来的重压一次，
+> 两步都不够才从最旧的开始丢，并且只有真丢了整张图才会提示用户。
+>
+> chat 显示的那一份不走上面任何一步，保留你上传的分辨率。
 
 ##### 常见组合
 
@@ -842,7 +930,7 @@ window.addEventListener('music-ui-ready', () => {
 
 ```python
 @plugin_entry(id="play_external")
-def play_external(self, url: str, **_):
+async def play_external(self, url: str, **_):
     # 先加白域名，确保播放不会被 Music UI 拦截
     self.push_message(
         ai_behavior="blind",
@@ -895,15 +983,15 @@ class MyPlugin(NekoPluginBase):
     input_schema={...},            # JSON Schema 验证
     params=MyParamsModel,          # 或 Pydantic 模型（自动生成 schema）
     kind="action",                 # "action" | "service" | "hook" | "custom"
-    auto_start=False,              # 加载时自动启动
-    persist=False,                 # 跨重载持久化
+    auto_start=False,              # 元数据标记；普通入口不会在加载时执行
+    persist=False,                 # 覆盖调用后的状态快照策略
     model_validate=True,           # 启用 Pydantic 验证
     timeout=30.0,                  # 执行超时（秒）
     llm_result_fields=["text"],    # LLM 消费的字段
     llm_result_model=MyResult,     # 结果的 Pydantic 模型
     metadata={"category": "data"}  # 额外元数据
 )
-def process(self, data: str, **_):
+async def process(self, data: str, **_):
     return Ok({"result": data})
 ```
 
@@ -917,15 +1005,15 @@ def process(self, data: str, **_):
 | `input_schema` | `dict` | `None` | 输入的 JSON Schema |
 | `params` | `type` | `None` | Pydantic 模型（自动生成 `input_schema`） |
 | `kind` | `str` | `"action"` | 入口类型 |
-| `auto_start` | `bool` | `False` | 加载时自动启动 |
-| `persist` | `bool` | `None` | 跨重载持久化状态 |
+| `auto_start` | `bool` | `False` | 元数据标记；普通入口不会在加载时自动执行 |
+| `persist` | `bool` | `None` | 覆盖本次入口调用后的状态快照策略 |
 | `model_validate` | `bool` | `True` | 启用 Pydantic 验证 |
 | `timeout` | `float` | `None` | 执行超时（秒） |
 | `llm_result_fields` | `list[str]` | `None` | LLM 结果提取字段 |
 | `llm_result_model` | `type` | `None` | 结果的 Pydantic 模型 |
 | `metadata` | `dict` | `None` | 额外元数据 |
 
-> 提示：始终在入口函数签名中包含 `**_`，以优雅处理未使用的参数。
+> 提示：只有在入口确实要接收额外宿主字段时才使用 `**_`。宿主会为显式签名过滤未声明字段。
 
 ### 4.3 @lifecycle
 
@@ -933,7 +1021,7 @@ def process(self, data: str, **_):
 
 ```python
 @lifecycle(id="startup")
-def on_startup(self, **_):
+async def on_startup(self, **_):
     return Ok({"status": "ready"})
 
 @lifecycle(id="shutdown")
@@ -958,7 +1046,7 @@ def on_reload(self, **_):
     name="清理任务",
     auto_start=True          # 自动启动（默认 True）
 )
-def cleanup(self, **_):
+async def cleanup(self, **_):
     # 在独立线程中运行
     return Ok({"cleaned": True})
 ```
@@ -975,7 +1063,7 @@ def cleanup(self, **_):
     source="chat",           # 按消息来源过滤
     auto_start=True
 )
-def handle_chat(self, text: str, sender: str, **_):
+async def handle_chat(self, text: str, sender: str, **_):
     return Ok({"handled": True})
 ```
 
@@ -989,7 +1077,7 @@ def handle_chat(self, text: str, sender: str, **_):
     id="my_handler",
     kind="hook"
 )
-def custom_handler(self, event_data: str, **_):
+async def custom_handler(self, event_data: str, **_):
     return Ok({"processed": True})
 ```
 
@@ -1004,7 +1092,7 @@ def custom_handler(self, event_data: str, **_):
     trigger_method="message",
     auto_start=False
 )
-def on_refresh(self, source: str, **_):
+async def on_refresh(self, source: str, **_):
     return Ok({"refreshed": True})
 ```
 
@@ -1048,7 +1136,7 @@ async def timing_wrapper(self, *, proceed, args, **_):
 
 ```python
 @replace_entry(target="old_entry", priority=0)
-def new_implementation(self, **kwargs):
+async def new_implementation(self, **kwargs):
     return Ok({"replaced": True})
 ```
 
@@ -1068,11 +1156,11 @@ def new_implementation(self, **kwargs):
 from plugin.sdk.plugin import plugin
 
 @plugin.entry(id="greet", description="打招呼")
-def greet(self, name: str = "World", **_):
+async def greet(self, name: str = "World", **_):
     return Ok({"message": f"Hello, {name}!"})
 
 @plugin.lifecycle(id="startup")
-def on_startup(self, **_):
+async def on_startup(self, **_):
     return Ok({"status": "ready"})
 
 @plugin.hook(target="greet", timing="before")
@@ -1080,7 +1168,7 @@ def validate(self, *, args, **_):
     pass
 
 @plugin.timer(id="heartbeat", seconds=60)
-def heartbeat(self, **_):
+async def heartbeat(self, **_):
     return Ok({"alive": True})
 ```
 
@@ -1124,8 +1212,8 @@ watcher.start()
 只处理已经物化的本地快照，不能被 `watch()` 重放。监听链必须使用上例中
 可重放的结构化 `filter(field=value, ...)` 与 `sort(by=...)`。
 
-最近记忆记录使用 `await self.bus.memory.get(bucket_id="default", limit=20)`；
-语义检索使用 `await self.ctx.query_memory("default", "用户偏好")`。旧的
+最近记忆记录使用 `await self.bus.memory.get(bucket_id="default", limit=20)`。
+`self.ctx.query_memory(...)` 只是已弃用的兼容占位调用，不提供语义召回；旧的
 高层 `self.memory` / SDK `MemoryClient` 已删除。
 
 ### 5.3 PluginConfig
@@ -1136,7 +1224,7 @@ watcher.start()
 from plugin.sdk.plugin import PluginConfig
 
 config = PluginConfig(self.ctx)
-timeout = config.get("timeout", default=30)
+timeout = await config.get("timeout", default=30)
 ```
 
 ---
@@ -1160,7 +1248,7 @@ class GreeterPlugin(NekoPluginBase):
         self.greet_count = 0
 
     @lifecycle(id="startup")
-    def on_startup(self, **_):
+    async def on_startup(self, **_):
         self.logger.info("GreeterPlugin 就绪")
         return Ok({"status": "ready"})
 
@@ -1175,7 +1263,7 @@ class GreeterPlugin(NekoPluginBase):
             }
         }
     )
-    def greet(self, name: str = "World", **_):
+    async def greet(self, name: str = "World", **_):
         if not name.strip():
             return Err(SdkError("名字不能为空"))
 
@@ -1256,7 +1344,7 @@ class MonitoredPlugin(NekoPluginBase):
         self.call_stats: dict[str, int] = {}
 
     @lifecycle(id="startup")
-    def on_startup(self, **_):
+    async def on_startup(self, **_):
         return Ok({"status": "ready"})
 
     @before_entry(target="*")
@@ -1270,15 +1358,15 @@ class MonitoredPlugin(NekoPluginBase):
         self.logger.info(f"[{entry_id}] result={result}")
 
     @plugin_entry(id="process", description="处理数据")
-    def process(self, data: str, **_):
+    async def process(self, data: str, **_):
         return Ok({"processed": data.upper()})
 
     @plugin_entry(id="stats", description="获取调用统计")
-    def stats(self, **_):
+    async def stats(self, **_):
         return Ok({"stats": dict(self.call_stats)})
 
     @timer_interval(id="health_check", seconds=300, auto_start=True)
-    def health_check(self, **_):
+    async def health_check(self, **_):
         self.report_status({
             "status": "healthy",
             "total_calls": sum(self.call_stats.values()),
@@ -1438,15 +1526,9 @@ class MyProtocolAdapter(NekoAdapterPlugin):
 
 ### 9.1 异步编程
 
-入口点可以是同步或异步的：
+运行时入口必须使用 `async def`。同步辅助函数仍可使用，但应通过异步入口暴露：
 
 ```python
-# 同步入口（在线程池中运行）
-@plugin_entry(id="sync_task")
-def sync_task(self, **_):
-    return Ok({"result": "done"})
-
-# 异步入口（在事件循环中运行）
 @plugin_entry(id="async_task")
 async def async_task(self, url: str, **_):
     async with aiohttp.ClientSession() as session:
@@ -1469,13 +1551,13 @@ class ThreadSafePlugin(NekoPluginBase):
         self._counter = 0
 
     @plugin_entry(id="increment")
-    def increment(self, **_):
+    async def increment(self, **_):
         with self._lock:
             self._counter += 1
             return Ok({"count": self._counter})
 
     @timer_interval(id="report", seconds=60, auto_start=True)
-    def report(self, **_):
+    async def report(self, **_):
         with self._lock:
             count = self._counter
         self.report_status({"count": count})
@@ -1483,17 +1565,14 @@ class ThreadSafePlugin(NekoPluginBase):
 
 ### 9.3 自定义配置
 
-```python
-import json
+运行时配置由宿主提供的 `self.config` 管理。配置 API 是异步的，应在
+异步生命周期钩子或入口中加载，不要覆盖 `self.config`：
 
-class ConfigurablePlugin(NekoPluginBase):
-    def __init__(self, ctx):
-        super().__init__(ctx)
-        config_file = self.storage_dir / "config" / "config.json"
-        if config_file.exists():
-            self.config = json.loads(config_file.read_text())
-        else:
-            self.config = {"timeout": 30}
+```python
+@lifecycle(id="startup")
+async def load_config(self, **_):
+    self.timeout = await self.config.get("timeout", default=30)
+    return Ok({"timeout": self.timeout})
 ```
 
 ### 9.4 SQLite 数据持久化
@@ -1530,7 +1609,7 @@ class PersistentPlugin(NekoPluginBase):
 
 ```python
 @plugin_entry(id="process")
-def process(self, data: str, **_):
+async def process(self, data: str, **_):
     if not data:
         return Err(SdkError("data 是必填的"))
     try:
@@ -1585,8 +1664,7 @@ async def on_shutdown(self, **_):
 # 插件安装目录（代码、Manifest 和静态资源）
 template_path = self.plugin_dir / "static" / "template.json"
 
-# 用户存储目录
-config_file = self.storage_dir / "config" / "config.json"
+# 运行时配置通过 await self.config.get()/update() 读取或更新
 
 # 数据目录
 db_path = self.data_path("records.db")     # → <storage-dir>/data/records.db
@@ -1599,10 +1677,10 @@ preview_path = self.cache_path("preview.png")  # → <storage-dir>/cache/preview
 ### 10.6 插件发布检查清单
 
 - [ ] 所有入口点返回 `Ok`/`Err`（不是裸 dict 或异常）
-- [ ] 实现了 `@lifecycle(id="startup")` 和 `@lifecycle(id="shutdown")`
-- [ ] 所有接受参数的入口点定义了 `input_schema`
-- [ ] 所有入口点签名包含 `**_`
-- [ ] 使用 Logger 而非 `print()`
+- [ ] 只在确实需要初始化或清理资源时实现对应生命周期钩子
+- [ ] 入口参数具备可推断 schema、显式 `input_schema` 或 Pydantic `params` 模型
+- [ ] 入口签名明确声明消费的参数，仅在确实接收额外字段时使用 `**_`
+- [ ] 正常诊断使用 Logger，且日志和进程输出均不包含原始对话、密钥或私有 payload
 - [ ] 如果使用定时器，共享状态受锁保护
 - [ ] 跨插件调用处理了 `Err` 结果
 - [ ] `plugin.toml` 的 `entry` 路径和 SDK 版本约束正确
@@ -1621,7 +1699,7 @@ Plugin 与 Adapter 的崩溃通常不会影响主系统或其他插件，因为�
 
 ### Q: 同步还是异步？
 
-都支持。I/O 密集型操作建议用异步。同步入口点在线程池中运行，异步入口点在事件循环中运行。
+运行时入口只支持 `async def`。同步计算可以保留为私有辅助函数；如果它会阻塞事件循环，应在入口中显式卸载到线程。
 
 ### Q: 如何调试插件？
 
@@ -1646,12 +1724,15 @@ Plugin 与 Adapter 的崩溃通常不会影响主系统或其他插件，因为�
 
 | 类别 | 导出 |
 |------|------|
-| **基类** | `NekoPluginBase`, `PluginMeta` |
-| **装饰器** | `neko_plugin`, `plugin_entry`, `lifecycle`, `timer_interval`, `message`, `on_event`, `custom_event`, `hook`, `before_entry`, `after_entry`, `around_entry`, `replace_entry`, `plugin` |
-| **Result** | `Ok`, `Err`, `Result`, `unwrap`, `unwrap_or` |
+| **基类** | `NekoPluginBase` |
+| **元数据与类型** | `PluginMeta`, `EntryKind`, `LlmToolMeta`, `NEKO_PLUGIN_META_ATTR`, `NEKO_PLUGIN_TAG` |
+| **装饰器** | `neko_plugin`, `plugin_entry`, `quick_action`, `lifecycle`, `timer_interval`, `message`, `on_event`, `custom_event`, `hook`, `before_entry`, `after_entry`, `around_entry`, `replace_entry`, `plugin`, `ui`, `llm_tool` |
+| **Result** | `Ok`, `Err`, `Result`, `PushMessageResult`, `unwrap`, `unwrap_or` |
 | **运行时** | `Plugins`, `PluginRouter`, `PluginConfig`, `PluginStore`, `SystemInfo` |
 | **错误** | `SdkError`, `TransportError` |
 | **日志** | `get_plugin_logger` |
+| **设置** | `PluginSettings`, `SettingsField` |
+| **活动与 i18n** | `OsActivitySnapshot`, `get_os_activity_snapshot`, `PluginI18n`, `tr` |
 
 ### Adapter SDK (`plugin.sdk.adapter`)
 

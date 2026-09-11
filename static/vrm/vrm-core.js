@@ -477,6 +477,10 @@ class VRMCore {
         this._ensureThreeReady();
         const THREE = window.THREE;
         const embed = options && options.embed === true;
+        const resizeMode = String(options?.resizeMode || 'host-window');
+        if (!['fixed', 'host-window'].includes(resizeMode)) {
+            throw new Error(`不支持的 VRM resizeMode: ${resizeMode}`);
+        }
 
         this.manager.container = document.getElementById(containerId);
         this.manager.canvas = document.getElementById(canvasId);
@@ -658,6 +662,12 @@ class VRMCore {
         this.manager.scene.add(bottomLight);
         this.manager.bottomLight = bottomLight;
 
+        // Embedded mini-game renderers are resized by the official Avatar host.
+        // Keeping the engine listener-free prevents a second window policy from
+        // racing container/fixed sizing. The main application keeps the existing
+        // host-window behavior because it remains the default.
+        if (resizeMode === 'fixed') return;
+
         // 使用 Core 模块专用的 handlers 数组
         if (!this.manager._coreWindowHandlers) {
             this.manager._coreWindowHandlers = [];
@@ -726,6 +736,7 @@ class VRMCore {
 
     async loadModel(modelUrl, options = {}, managerLoadToken = null) {
         const THREE = window.THREE;
+        const embed = options.embed === true;
         if (!THREE) {
             const errorMsg = window.t ? window.t('vrm.error.threeNotLoadedForModel') : 'Three.js库未加载，无法加载VRM模型';
             throw new Error(errorMsg);
@@ -870,7 +881,8 @@ class VRMCore {
 
             // 获取保存的用户偏好设置
             let preferences = null;
-            try {
+            if (!embed) {
+                try {
                 // 添加超时保护（5秒超时）
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -955,8 +967,9 @@ class VRMCore {
                         return false;
                     });
                 }
-            } catch (error) {
-                console.error('[VRM Core] 获取用户偏好设置失败:', error);
+                } catch (error) {
+                    console.error('[VRM Core] 获取用户偏好设置失败:', error);
+                }
             }
 
             if (preferences) {
@@ -1056,7 +1069,7 @@ class VRMCore {
             
             const hasSavedRotation = VRMCore._isFiniteRotation(savedRotation);
             
-            if (!hasSavedRotation && typeof this.saveUserPreferences === 'function') {
+            if (!embed && !hasSavedRotation && typeof this.saveUserPreferences === 'function') {
                 // 标准化位置为普通对象 {x, y, z}
                 // 始终从 vrm.scene 获取当前位置，确保 z 值有效
                 // （旧版偏好设置可能只有 x 和 y，没有 z 值）

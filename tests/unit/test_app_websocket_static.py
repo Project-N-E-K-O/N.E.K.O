@@ -15,6 +15,239 @@ APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-s
 APP_SETTINGS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-settings.js"
 APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-audio-capture.js"
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-buttons.js"
+TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
+APP_GAME_VOICE_CONTROL_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "app" / "app-game-voice-control.js"
+)
+
+
+def test_game_route_close_events_require_matching_generation_when_one_is_active():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert re.search(
+        r"\(endedRouteInstanceId \|\| currentRouteInstanceId\)\s*"
+        r"&&\s*"
+        r"endedRouteInstanceId !== currentRouteInstanceId",
+        source,
+    )
+    assert re.search(
+        r"\(incomingGameRouteInstanceId \|\| currentGameRouteInstanceId\)\s*"
+        r"&&\s*"
+        r"incomingGameRouteInstanceId !== currentGameRouteInstanceId",
+        source,
+    )
+
+
+def test_game_route_speech_cancel_is_scoped_to_the_sdk_correlation_id():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    block = _block_after(
+        source,
+        "} else if (response.type === 'game_route_speech_cancel') {",
+    )
+
+    assert "response.sdk_speech_correlation_id" in block
+    assert "cancelledCorrelationId === S.currentPlayingSpeechCorrelationId" in block
+    assert "applyUserActivityCancel(" in block
+
+
+def test_reconnect_route_snapshot_cannot_overwrite_a_newer_websocket_route_event():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    state_source = APP_STATE_PATH.read_text(encoding="utf-8")
+    reconnect_block = _block_after(
+        source,
+        "function syncGameWindowStateOnWsConnect() {",
+    )
+
+    assert "gameRouteStateRevision: 0" in state_source
+    assert "var reconciliationGeneration = _gameRouteReconciliationGeneration;" in reconnect_block
+    assert "var routeRevisionAtRequest = gameRouteStateRevision();" in reconnect_block
+    assert (
+        "reconciliationGeneration !== _gameRouteReconciliationGeneration"
+        in reconnect_block
+    )
+    assert (
+        "gameRouteStateRevision() !== routeRevisionAtRequest"
+        in reconnect_block
+    )
+    assert reconnect_block.index(
+        "gameRouteStateRevision() !== routeRevisionAtRequest"
+    ) < reconnect_block.index(
+        "window.dispatchEvent(new CustomEvent('neko-game-window-state-change'"
+    )
+    stt_gate_block = _block_after(
+        source,
+        "if (statusCode === 'GAME_VOICE_STT_GATE_ACTIVE') {",
+    )
+    assert "incomingSttSessionId !== currentSttSessionId" in stt_gate_block
+    assert re.search(
+        r"\(incomingSttRouteInstanceId \|\| currentSttRouteInstanceId\)\s*"
+        r"&&\s*"
+        r"incomingSttRouteInstanceId !== currentSttRouteInstanceId",
+        stt_gate_block,
+    )
+    assert stt_gate_block.index("if (staleSttGate) {") < stt_gate_block.index(
+        "advanceGameRouteStateRevision();"
+    )
+    assert stt_gate_block.index(
+        "advanceGameRouteStateRevision();"
+    ) < stt_gate_block.index(
+        "S.gameRouteActive = true;"
+    )
+    assert source.count("advanceGameRouteStateRevision();") >= 4
+
+def test_rejected_close_events_still_tombstone_their_own_identity():
+    """A close event this window rejects still names a dead route.
+
+    ``GAME_ROUTE_ENDED`` and ``game_window_state_change: closed`` are emitted
+    only from route finalize, so the identity in the payload is provably dead
+    even when it does not match what this window currently holds. Dropping it
+    without a tombstone lets a late STT gate for that identity re-activate
+    ``S.gameRouteActive`` once the current route also ends -- which suppresses
+    proactive chat and auto-goodbye until a full open/close cycle or a reload.
+
+    The tombstone must use the payload's OWN identity: falling back to the
+    current one would tombstone the live route and permanently reject its real
+    gate, which is the fail-closed direction.
+    """
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    rejected_branches = [
+        ("忽略过期的 GAME_ROUTE_ENDED | ended_session=", "return;"),
+        ("忽略过期的 GAME_ROUTE_ENDED | ended_route=", "return;"),
+        ("[GameWindow] 忽略过期窗口事件", "} else if (detail.action === 'opened')"),
+    ]
+    for marker, terminator in rejected_branches:
+        assert source.count(marker) == 1, marker
+        # Start after the guard's own console.log, which legitimately prints the
+        # live identity it is comparing against.
+        start = source.index(");", source.index(marker)) + 2
+        end = source.index(terminator, start)
+        block = source[start:end]
+        assert "rememberEndedGameRouteIdentity(" in block, (
+            f"a rejected close event ({marker}) forgot the identity it just refused"
+        )
+        for live_identity in ("currentSessionId", "currentGameSessionId",
+                              "currentRouteInstanceId", "currentGameRouteInstanceId",
+                              "S.gameRouteGameType", "S.gameRouteSessionId"):
+            assert live_identity not in block, (
+                f"a rejected close event ({marker}) tombstoned the live route via "
+                f"{live_identity}"
+            )
+
+
+
+def test_late_stt_gate_cannot_reactivate_the_most_recently_ended_route():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    state_source = APP_STATE_PATH.read_text(encoding="utf-8")
+    prune_opener = "function pruneRecentlyEndedGameRouteIdentities() {"
+    remember_opener = "function rememberEndedGameRouteIdentity(gameType, sessionId, routeInstanceId) {"
+    check_opener = (
+        "function isRecentlyEndedGameRouteIdentity(gameType, sessionId, routeInstanceId) {"
+    )
+    prune_body = _block_after(source, prune_opener)
+    remember_body = _block_after(source, remember_opener)
+    check_body = _block_after(source, check_opener)
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is not installed; skipping ended-route identity harness")
+
+    result = run_node_script(
+        node_path,
+        textwrap.dedent(
+            f"""
+            const GAME_ROUTE_ENDED_IDENTITY_LIMIT = 8;
+            const GAME_ROUTE_ENDED_IDENTITY_TTL_MS = 2 * 60 * 1000;
+            let now = 1000000;
+            Date.now = () => now;
+            const S = {{ gameRouteRecentlyEndedIdentities: [] }};
+            {prune_opener}
+            {prune_body}
+            }}
+            {remember_opener}
+            {remember_body}
+            }}
+            {check_opener}
+            {check_body}
+            }}
+            function assert(value, message) {{ if (!value) throw new Error(message); }}
+
+            rememberEndedGameRouteIdentity('example-game', 'legacy-session', '');
+            assert(!isRecentlyEndedGameRouteIdentity(
+              'example-game', 'legacy-session', 'identified-successor'
+            ), 'identified successor of a generation-less route was rejected');
+            assert(isRecentlyEndedGameRouteIdentity(
+              'example-game', 'legacy-session', ''
+            ), 'generation-less late gate for a generation-less route was not rejected');
+
+            now += 1;
+            rememberEndedGameRouteIdentity('example-game', 'reused-session', 'generation-A');
+            now += 1;
+            rememberEndedGameRouteIdentity('example-game', 'reused-session', 'generation-B');
+            assert(isRecentlyEndedGameRouteIdentity(
+              'example-game', 'reused-session', 'generation-A'
+            ), 'older ended generation was forgotten after its successor closed');
+            assert(isRecentlyEndedGameRouteIdentity(
+              'example-game', 'reused-session', 'generation-B'
+            ), 'latest ended generation was not rejected');
+            assert(!isRecentlyEndedGameRouteIdentity(
+              'example-game', 'reused-session', 'generation-C'
+            ), 'new generation reusing a session was rejected');
+            assert(isRecentlyEndedGameRouteIdentity(
+              'example-game', 'reused-session', ''
+            ), 'generation-less late gate for an identified ended route was not rejected');
+            assert(!isRecentlyEndedGameRouteIdentity(
+              'example-game', 'new-session', 'generation-A'
+            ), 'different session was rejected');
+
+            S.gameRouteRecentlyEndedIdentities = [];
+            for (let i = 0; i < 10; i += 1) {{
+              now += 1;
+              rememberEndedGameRouteIdentity('example-game', `session-${{i}}`, `generation-${{i}}`);
+            }}
+            assert(S.gameRouteRecentlyEndedIdentities.length === 8, 'ended identity history exceeded capacity');
+            assert(!isRecentlyEndedGameRouteIdentity(
+              'example-game', 'session-0', 'generation-0'
+            ), 'capacity eviction did not release the oldest identity');
+            assert(isRecentlyEndedGameRouteIdentity(
+              'example-game', 'session-9', 'generation-9'
+            ), 'capacity pruning removed the newest identity');
+
+            now += GAME_ROUTE_ENDED_IDENTITY_TTL_MS + 1;
+            pruneRecentlyEndedGameRouteIdentities();
+            assert(S.gameRouteRecentlyEndedIdentities.length === 0, 'expired identities were not released');
+            """
+        ),
+        cwd=str(Path(__file__).resolve().parents[2]),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    ended_block = _block_after(source, "if (statusCode === 'GAME_ROUTE_ENDED') {")
+    stt_gate_block = _block_after(
+        source,
+        "if (statusCode === 'GAME_VOICE_STT_GATE_ACTIVE') {",
+    )
+    window_block = _block_after(
+        source,
+        "} else if (response.type === 'game_window_state_change') {",
+    )
+    assert "gameRouteRecentlyEndedIdentities: []" in state_source
+    assert "GAME_ROUTE_ENDED_IDENTITY_LIMIT = 8" in source
+    assert "GAME_ROUTE_ENDED_IDENTITY_TTL_MS = 2 * 60 * 1000" in source
+    assert ended_block.index("rememberEndedGameRouteIdentity(") < ended_block.index(
+        "S.gameRouteActive = false;"
+    )
+    assert stt_gate_block.index("isRecentlyEndedGameRouteIdentity(") < stt_gate_block.index(
+        "advanceGameRouteStateRevision();"
+    )
+    assert window_block.index("pruneRecentlyEndedGameRouteIdentities();") < window_block.index(
+        "S.gameRouteActive = true;"
+    )
+    assert window_block.index("rememberEndedGameRouteIdentity(") < window_block.index(
+        "S.gameRouteActive = false;"
+    )
 
 
 def _block_after(js: str, opener: str) -> str:
@@ -6621,3 +6854,191 @@ def test_deferred_session_start_resolve_is_pinned_to_the_ack_it_belongs_to():
         "release the slot before settling, so the awaiter never observes a slot "
         "that still points at an already-settled start"
     )
+
+
+def test_reconnect_reconciliation_repairs_appstate_not_only_the_dom_event():
+    """chat.html has no listener that writes S.gameRoute*, so the shared
+    reconnect path must repair appState itself.
+
+    The DOM event dispatched here is only turned into appState by
+    app-game-voice-control.js, and templates/index.html is the only page that
+    loads that file. Without an appState write in this block, a chat window that
+    reconnects or reloads while a game route is active keeps gameRouteActive
+    false for the rest of the round, and the reverse desync survives too.
+    """
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    reconnect_block = _block_after(
+        source,
+        "function syncGameWindowStateOnWsConnect() {",
+    )
+
+    assert "neko-game-window-state-change" in reconnect_block
+    for field in (
+        "S.gameRouteActive",
+        "S.gameRouteGameType",
+        "S.gameRouteSessionId",
+        "S.gameRouteInstanceId",
+    ):
+        assert field in reconnect_block, (
+            f"reconnect reconciliation does not repair {field}; chat.html has no "
+            "other writer for it"
+        )
+    # Ordering matters: the repair must follow the dispatch, or index.html's
+    # voice bridge observes already-cleared identity and broadcasts a closed
+    # route with an empty session id. Every assignment, not just the flag --
+    # a repair that cleared the identity fields early would produce exactly the
+    # empty-session_id broadcast this ordering exists to prevent, and an
+    # assertion on the flag alone would not notice.
+    dispatch_at = reconnect_block.index("neko-game-window-state-change")
+    for assignment in (
+        "S.gameRouteActive = true",
+        "S.gameRouteGameType = data.game_type",
+        "S.gameRouteSessionId = data.session_id",
+        "S.gameRouteInstanceId = data.sdk_route_instance_id",
+        "S.gameRouteActive = false",
+        "S.gameRouteGameType = ''",
+        "S.gameRouteSessionId = ''",
+        "S.gameRouteInstanceId = ''",
+    ):
+        assert assignment in reconnect_block, assignment
+        assert dispatch_at < reconnect_block.index(assignment), (
+            f"appState repair ({assignment}) must follow the dispatch so the "
+            "voice bridge keeps its ordering"
+        )
+
+
+def test_reconnect_reconciliation_tombstones_the_route_the_server_finalized():
+    """The reconnect snapshot is the compensation path for a missed ``closed``.
+
+    Precisely because the websocket event was lost, no tombstone exists for the
+    route this branch clears, so a late ``GAME_VOICE_STT_GATE_ACTIVE`` for it
+    would re-activate a dead route on the page -- which suppresses proactive
+    chat and auto-goodbye until a full open/close cycle or a reload.
+
+    The identity recorded must come from the server's own snapshot. This read
+    can disagree with the socket (character resolution drift), and tombstoning
+    the identity the page currently holds would permanently reject the live
+    route's real gate -- in browser_fallback mode that means the game never
+    receives a transcript.
+    """
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    reconnect_block = _block_after(
+        source,
+        "function syncGameWindowStateOnWsConnect() {",
+    )
+    closed_branch = reconnect_block[reconnect_block.index("var reconciledWasActive"):]
+    assert "advanceGameRouteStateRevision();" in closed_branch, (
+        "the reconnect snapshot cleared route state without advancing the "
+        "revision, so a snapshot already in flight cannot be recognised as stale"
+    )
+    assert "rememberEndedGameRouteIdentity(" in closed_branch, (
+        "the reconnect snapshot cleared a route without tombstoning it, so a "
+        "late STT gate can re-activate it"
+    )
+    tombstone_call = closed_branch[
+        closed_branch.index("rememberEndedGameRouteIdentity("):
+    ]
+    tombstone_call = tombstone_call[: tombstone_call.index(");")]
+    for page_identity in (
+        "S.gameRouteGameType",
+        "S.gameRouteSessionId",
+        "S.gameRouteInstanceId",
+    ):
+        assert page_identity not in tombstone_call, (
+            f"the reconnect tombstone fell back to {page_identity}; only the "
+            "server's own finalized identity is safe to record here"
+        )
+    assert "ended_route" in closed_branch, (
+        "the reconnect tombstone must read the identity the server finalized"
+    )
+
+
+@pytest.mark.parametrize("template_name", ["index.html", "chat.html"])
+def test_bootstrap_route_snapshot_is_rejected_when_it_lands_late(template_name):
+    """The init-time /route/active read must not re-open a route that just closed.
+
+    The request can start while route A is active and resolve after A's `closed`
+    websocket event has already been handled; dispatching the snapshot then
+    re-opens a dead route on this page, which locks the chat window into its
+    collapsed game layout and suppresses proactive chat for the rest of the
+    round. Every close path advances the route state revision, so the bootstrap
+    compares it across the request the way the reconnect reconciliation in
+    app-websocket.js already does.
+
+    Both templates carry their own copy of this IIFE, so both are checked --
+    a guard in one of them is a guard in neither for the other window.
+    """
+    source = (TEMPLATES_DIR / template_name).read_text(encoding="utf-8")
+    marker = "fetch('/api/game/route/active?lanlan_name="
+    assert source.count(marker) == 1, template_name
+    fetch_at = source.index(marker)
+    prologue = source[max(0, fetch_at - 1200):fetch_at]
+    assert "gameRouteStateRevision" in prologue, (
+        f"{template_name} bootstrap does not capture the route state revision "
+        "before its /route/active request"
+    )
+    handler = source[fetch_at:source.index("dispatchEvent", fetch_at)]
+    assert "gameRouteStateRevision" in handler, (
+        f"{template_name} bootstrap dispatches its snapshot without re-checking "
+        "the route state revision, so a snapshot that lands after the route "
+        "closed re-opens a dead route"
+    )
+    assert "return" in handler, (
+        f"{template_name} bootstrap compares the revision but never bails out"
+    )
+
+
+def test_game_voice_command_commits_its_teardown_before_it_can_yield():
+    """The microphone teardown must be issued while the admitting check still holds.
+
+    ``stopMicCapture()`` is process-global. If a command could issue it after
+    awaiting, a stop belonging to a route that has since been superseded would
+    land on whatever owns the microphone by then -- the replacement route, or
+    the ordinary chat capture the host resumes on route exit -- and kill it
+    mid-utterance with no transcript and nothing logged.
+
+    Two properties keep that unreachable, and both are easy to lose in an edit:
+      1. ``routeMatches()`` admits the command and the single ``stopMicCapture()``
+         call sits in the same synchronous segment -- no ``await`` between them,
+         so no route change can interleave.
+      2. Nothing after the awaited command tears anything down. The
+         route-superseded branch reports and returns; it never issues a
+         teardown, and never re-starts. (The runtime harness in
+         tests/frontend/test_game_voice_control_runtime.js asserts the
+         behaviour; this pins the ordering the behaviour depends on.)
+    """
+    source = APP_GAME_VOICE_CONTROL_PATH.read_text(encoding="utf-8")
+
+    stop_body = _block_after(source, "async function stopOfficialVoiceSession() {")
+    assert stop_body.count("stopMicCapture(") == 1, (
+        "the stop helper issues more than one microphone teardown"
+    )
+    assert stop_body.index("stopMicCapture(") < stop_body.index("waitFor("), (
+        "the microphone teardown is issued after this helper has already yielded, "
+        "so it can land on a capture the command never opened"
+    )
+
+    handler = _block_after(source, "async function handleRequest(request) {")
+    admit_at = handler.index("if (!routeMatches(request))")
+    dispatch_at = handler.index("await startOfficialVoiceSession()")
+    admitted_segment = handler[admit_at:dispatch_at]
+    assert "await" not in admitted_segment, (
+        "an await was introduced between the route check that admits a voice "
+        "command and the command dispatch, so the route can change underneath it"
+    )
+
+    superseded_at = handler.index("if (!routeSnapshotIsCurrent(acceptedRoute))")
+    superseded_branch = handler[superseded_at:handler.index("broadcastState({", superseded_at)]
+    # Code only: this branch carries a long comment explaining which mechanisms
+    # it deliberately does NOT reach for, and those names must not trip the check.
+    superseded_code = chr(10).join(
+        line for line in superseded_branch.splitlines()
+        if not line.strip().startswith("//")
+    )
+    for teardown in ("stopMicCapture(", "startMicCapture(", ".click("):
+        assert teardown not in superseded_code, (
+            f"the superseded branch reaches for {teardown}; a command whose route "
+            "is gone must not touch the process-global microphone"
+        )
+
+

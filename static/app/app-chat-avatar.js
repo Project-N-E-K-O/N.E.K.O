@@ -16,11 +16,15 @@
     let cachedCharacterReference = null;
     let pendingCharacterReference = null;
     let pendingCharacterReferenceCacheKey = '';
+    let pendingCharacterReferenceRevision = 0;
     let characterReferenceRetryTimer = null;
     let characterReferenceRetryAttempts = 0;
     let characterReferenceRetryCacheKey = '';
     let autoCaptureTimer = null;
     let lastScheduledCacheKey = '';
+    let cardDropModelRevision = Date.now();
+    let pngtuberModelLoading = false;
+    let pngtuberModelLoadToken = 0;
     // 多窗口模式：由 IPC 从 Pet 窗口注入的头像（/chat 页面无本地模型）
     let externalAvatarDataUrl = '';
     let externalAvatarModelType = '';
@@ -83,7 +87,12 @@
             var raw = localStorage.getItem(key);
             if (!raw) return null;
             var parsed = JSON.parse(raw);
-            if (parsed && parsed.dataUrl) return parsed;
+            if (
+                parsed
+                && parsed.dataUrl
+                && parsed.cacheKey
+                && parsed.cacheKey === getCurrentModelCacheKey()
+            ) return parsed;
         } catch (_) { /* 损坏数据 — 忽略 */ }
         return null;
     }
@@ -116,6 +125,7 @@
 
     function normalizeModelLabel(modelType) {
         const type = String(modelType || '').toLowerCase();
+        if (type === 'pngtuber') return 'PNGTuber';
         if (type === 'vrm') return 'VRM';
         if (type === 'mmd') return 'MMD';
         return 'Live2D';
@@ -326,6 +336,7 @@
             return window.avatarPortrait.normalizeModelType();
         }
         const modelType = String(window.lanlan_config?.model_type || '').toLowerCase();
+        if (modelType === 'pngtuber') return 'pngtuber';
         if (modelType === 'live3d') {
             const subType = String(window.lanlan_config?.live3d_sub_type || '').toLowerCase();
             if (subType === 'mmd') return 'mmd';
@@ -338,9 +349,22 @@
 
     function getCurrentModelCacheKey() {
         const modelType = getCurrentModelType();
+        if (modelType === 'pngtuber') {
+            const config = window.pngtuberManager?.config || window.lanlan_config?.pngtuber || {};
+            const identity = {
+                layeredMetadata: normalizeModelIdentityPart(config.layered_metadata),
+                idleImage: normalizeModelIdentityPart(config.idle_image),
+                talkingImage: normalizeModelIdentityPart(config.talking_image)
+            };
+            if (!identity.layeredMetadata && !identity.idleImage && !identity.talkingImage) {
+                return 'pngtuber:';
+            }
+            return 'pngtuber:' + JSON.stringify(identity);
+        }
         if (modelType === 'vrm') {
             return 'vrm:' + String(
                 window.vrmManager?.currentModel?.url ||
+                window.vrmModel ||
                 window.lanlan_config?.vrm ||
                 ''
             );
@@ -358,6 +382,46 @@
             window.cubism4Model ||
             ''
         );
+    }
+
+    function normalizeModelIdentityPart(value) {
+        if (value === undefined || value === null) return '';
+        if (value && typeof value === 'object') {
+            try {
+                return JSON.stringify(value, function (_key, nestedValue) {
+                    if (!nestedValue || typeof nestedValue !== 'object' || Array.isArray(nestedValue)) {
+                        return nestedValue;
+                    }
+                    return Object.keys(nestedValue).sort().reduce(function (sorted, key) {
+                        sorted[key] = nestedValue[key];
+                        return sorted;
+                    }, {});
+                });
+            } catch (_) {}
+        }
+        return String(value || '');
+    }
+
+    function appendCardDropModelIdentity(body, options = {}) {
+        const modelType = options.modelType || getCurrentModelType();
+        const modelKey = Object.prototype.hasOwnProperty.call(options, 'modelKey')
+            ? String(options.modelKey || '')
+            : getCurrentModelCacheKey();
+        if (modelType) {
+            body.modelType = modelType;
+            body.modelKey = modelKey && !modelKey.endsWith(':') ? modelKey : '';
+            body.modelRevision = cardDropModelRevision;
+        }
+        return body;
+    }
+
+    function isCardDropIdentityFollowerWindow() {
+        const pathname = String(window.location?.pathname || '');
+        return /^\/chat(?:_full)?(?:\/|$)/.test(pathname);
+    }
+
+    function advanceCardDropModelRevision() {
+        cardDropModelRevision = Math.max(cardDropModelRevision + 1, Date.now());
     }
 
     function hasUsableCachedPreview() {
@@ -388,13 +452,15 @@
         return !!(
             cachedCharacterReference &&
             cachedCharacterReference.cacheKey === cacheKey &&
+            cachedCharacterReference.modelRevision === cardDropModelRevision &&
             isRasterImageDataUrl(cachedCharacterReference.dataUrl)
         );
     }
 
     function ensureCharacterReferenceRetryCacheKey(cacheKey) {
-        if (characterReferenceRetryCacheKey === cacheKey) return;
-        characterReferenceRetryCacheKey = cacheKey || '';
+        var revisionCacheKey = (cacheKey || '') + ':' + cardDropModelRevision;
+        if (characterReferenceRetryCacheKey === revisionCacheKey) return;
+        characterReferenceRetryCacheKey = revisionCacheKey;
         characterReferenceRetryAttempts = 0;
         if (characterReferenceRetryTimer) {
             clearTimeout(characterReferenceRetryTimer);
@@ -402,10 +468,14 @@
         }
     }
 
-    function postCharacterReferenceToCardDrop(characterReferenceDataUrl) {
+    function postCharacterReferenceToCardDrop(characterReferenceDataUrl, captureRevision) {
         if (!characterReferenceDataUrl) return Promise.resolve(false);
+        if (captureRevision !== cardDropModelRevision) return Promise.resolve(false);
         var _nekoName = getActiveLanlanName();
-        var referenceBody = { characterReferenceDataUrl: characterReferenceDataUrl };
+        var referenceBody = appendCardDropModelIdentity({
+            characterReferenceDataUrl: characterReferenceDataUrl
+        });
+        referenceBody.modelRevision = captureRevision;
         if (_nekoName) referenceBody.name = _nekoName;
         return fetch('/api/card-drop/active-character', {
             method: 'POST',
@@ -419,7 +489,13 @@
                 );
                 return false;
             }
-            return true;
+            return response.json()
+                .then(function (payload) {
+                    return !(payload && (payload.ok === false || payload.stale === true));
+                })
+                .catch(function () {
+                    return true;
+                });
         }).catch(function (err) {
             console.warn('[chat-avatar] card-drop character reference sync failed:', err);
             return false;
@@ -450,15 +526,16 @@
         var modelCacheKey = getCurrentModelCacheKey();
         if (!modelCacheKey || modelCacheKey.endsWith(':')) return Promise.resolve(false);
         var cacheKey = getCharacterReferenceCacheKey();
+        var captureRevision = cardDropModelRevision;
         ensureCharacterReferenceRetryCacheKey(cacheKey);
         characterReferenceRetryAttempts += 1;
-        return captureCharacterReferenceDataUrl()
+        return captureCharacterReferenceDataUrl(captureRevision)
             .then(function (characterReferenceDataUrl) {
                 if (!characterReferenceDataUrl) {
                     queueCharacterReferenceRetry(reason || 'empty-capture');
                     return false;
                 }
-                return postCharacterReferenceToCardDrop(characterReferenceDataUrl)
+                return postCharacterReferenceToCardDrop(characterReferenceDataUrl, captureRevision)
                     .then(function (posted) {
                         if (posted) {
                             characterReferenceRetryAttempts = 0;
@@ -486,13 +563,14 @@
         }, hasUsableCachedCharacterReference() ? 0 : 240);
     }
 
-    function rememberCharacterReferenceResult(result, cacheKey) {
+    function rememberCharacterReferenceResult(result, cacheKey, captureRevision) {
         var dataUrl = result && result.dataUrl ? result.dataUrl : '';
         if (isRasterImageDataUrl(dataUrl)) {
             cachedCharacterReference = {
                 cacheKey: cacheKey,
                 dataUrl: dataUrl,
                 modelType: result.modelType || getCurrentModelType(),
+                modelRevision: captureRevision,
                 capturedAt: Date.now()
             };
             return dataUrl;
@@ -576,18 +654,26 @@
         });
     }
 
-    function captureCharacterReferenceDataUrl() {
+    function captureCharacterReferenceDataUrl(captureRevision) {
+        if (pngtuberModelLoading && getCurrentModelType() === 'pngtuber') {
+            return Promise.resolve('');
+        }
         var cacheKey = getCharacterReferenceCacheKey();
+        captureRevision = Number.isFinite(captureRevision)
+            ? captureRevision
+            : cardDropModelRevision;
         if (
             cachedCharacterReference &&
             cachedCharacterReference.cacheKey === cacheKey &&
+            cachedCharacterReference.modelRevision === captureRevision &&
             isRasterImageDataUrl(cachedCharacterReference.dataUrl)
         ) {
             return Promise.resolve(cachedCharacterReference.dataUrl);
         }
         if (
             pendingCharacterReference &&
-            pendingCharacterReferenceCacheKey === cacheKey
+            pendingCharacterReferenceCacheKey === cacheKey &&
+            pendingCharacterReferenceRevision === captureRevision
         ) {
             return pendingCharacterReference;
         }
@@ -609,7 +695,8 @@
             })
             .then(function (result) {
                 if (getCharacterReferenceCacheKey() !== cacheKey) return '';
-                return rememberCharacterReferenceResult(result, cacheKey);
+                if (cardDropModelRevision !== captureRevision) return '';
+                return rememberCharacterReferenceResult(result, cacheKey, captureRevision);
             })
             .catch(function (err) {
                 console.warn('[chat-avatar] card-drop character reference capture failed:', err);
@@ -619,10 +706,12 @@
                 if (pendingCharacterReference === capturePromise) {
                     pendingCharacterReference = null;
                     pendingCharacterReferenceCacheKey = '';
+                    pendingCharacterReferenceRevision = 0;
                 }
             });
         pendingCharacterReference = capturePromise;
         pendingCharacterReferenceCacheKey = cacheKey;
+        pendingCharacterReferenceRevision = captureRevision;
         return capturePromise;
     }
 
@@ -635,22 +724,37 @@
      * 上一次同步过来的猫娘名覆盖掉。当 dataUrl 暂不可用但 name 仍有效时，
      * 仍然走一次 name-only 同步。
      */
-    function syncAvatarToCardDrop(dataUrl) {
+    function syncAvatarToCardDrop(dataUrl, options = {}) {
+        // /chat and /chat_full mirror an owner page and never host model runtimes.
+        // Keeping them read-only avoids late follower writes reverting Pet state.
+        if (isCardDropIdentityFollowerWindow()) return;
         var _nekoName = getActiveLanlanName();
         if (!dataUrl && !_nekoName) return;
         var body = {};
         if (dataUrl) body.dataUrl = dataUrl;
         if (_nekoName) body.name = _nekoName;
+        appendCardDropModelIdentity(body, options);
         fetch('/api/card-drop/active-character', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         }).catch(function () { /* 本地角色快照同步失败时静默 */ });
 
-        scheduleCharacterReferenceSync('avatar-sync');
+        if (options.scheduleReference !== false) {
+            scheduleCharacterReferenceSync('avatar-sync');
+        }
     }
 
-    function applyPreviewResult(result, cacheKey) {
+    function applyPreviewResult(result, cacheKey, captureRevision) {
+        if (
+            !cacheKey ||
+            cacheKey !== getCurrentModelCacheKey() ||
+            captureRevision !== cardDropModelRevision ||
+            (pngtuberModelLoading && getCurrentModelType() === 'pngtuber')
+        ) {
+            pendingAutoCapture = true;
+            return false;
+        }
         cachedPreview = {
             cacheKey,
             dataUrl: result.dataUrl,
@@ -675,7 +779,7 @@
         }));
     }
 
-    /** 仅清内存，让 scheduleAutoCapture 不被跳过；localStorage 按角色隔离，无需清除 */
+    /** 仅清内存，让 scheduleAutoCapture 不被跳过；持久化缓存会按角色 + 模型 key 校验 */
     function invalidateCachedPreview() {
         cachedPreview = null;
         lastScheduledCacheKey = '';
@@ -842,6 +946,7 @@
             var currentSourceHeight = sourceHeight;
             var currentModelType = options.modelType || getCurrentModelType();
             var currentCacheKey = options.cacheKey || getCurrentModelCacheKey();
+            var currentModelRevision = options.modelRevision || cardDropModelRevision;
             var recaptureFn = typeof options.recaptureFn === 'function' ? options.recaptureFn : null;
             var displayW, displayH, scaleRatio;
             var crop = { x: 0, y: 0, size: 0 };
@@ -903,6 +1008,7 @@
                 currentSourceHeight = next.sourceHeight || currentSourceHeight || 640;
                 currentModelType = next.modelType || currentModelType || getCurrentModelType();
                 currentCacheKey = next.cacheKey || currentCacheKey || getCurrentModelCacheKey();
+                currentModelRevision = next.modelRevision || currentModelRevision;
                 drag = null;
                 img.src = currentSourceDataUrl;
                 initLayout();
@@ -1014,7 +1120,8 @@
                         },
                         sourceDataUrl: currentSourceDataUrl,
                         modelType: currentModelType,
-                        cacheKey: currentCacheKey
+                        cacheKey: currentCacheKey,
+                        modelRevision: currentModelRevision
                     });
                 } else {
                     resolve(null);
@@ -1170,6 +1277,11 @@
         const trigger = options.trigger || null;
         const manualCrop = options.manualCrop === true;
 
+        if (pngtuberModelLoading && getCurrentModelType() === 'pngtuber') {
+            pendingAutoCapture = true;
+            return;
+        }
+
         if (isCapturing) {
             if (showCard) {
                 setPreviewVisible(true, trigger);
@@ -1197,6 +1309,7 @@
         const token = ++activeCaptureToken;
         activeCaptureCardVisible = showCard;
         const cacheKey = getCurrentModelCacheKey();
+        const captureRevision = cardDropModelRevision;
         const prevCachedPreview = cachedPreview ? Object.assign({}, cachedPreview) : null;
         if (showCard) {
             setPreviewVisible(true, trigger);
@@ -1210,6 +1323,10 @@
         try {
             const result = await captureAvatarPreview({ includeSourceDataUrl: manualCrop });
             if (token !== activeCaptureToken) return;
+            if (captureRevision !== cardDropModelRevision) {
+                pendingAutoCapture = true;
+                return;
+            }
 
             if (manualCrop && result.sourceDataUrl) {
                 setLoadingState(false);
@@ -1220,7 +1337,11 @@
 
                 async function recaptureCropperSource() {
                     var freshCacheKey = getCurrentModelCacheKey();
+                    var freshRevision = cardDropModelRevision;
                     var fresh = await captureAvatarPreview({ includeSourceDataUrl: true });
+                    if (freshRevision !== cardDropModelRevision) {
+                        throw new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
+                    }
                     if (!fresh || !fresh.sourceDataUrl) {
                         throw new Error(translateLabel('chat.avatarPreviewFailed', '生成头像失败'));
                     }
@@ -1231,13 +1352,15 @@
                         sourceWidth: dims.w,
                         sourceHeight: dims.h,
                         modelType: fresh.modelType || getCurrentModelType(),
-                        cacheKey: freshCacheKey || getCurrentModelCacheKey()
+                        cacheKey: freshCacheKey || getCurrentModelCacheKey(),
+                        modelRevision: freshRevision
                     };
                 }
 
                 var userCrop = await openAvatarCropper(result.sourceDataUrl, defRect, srcDims.w, srcDims.h, {
                     modelType: result.modelType || getCurrentModelType(),
                     cacheKey: cacheKey,
+                    modelRevision: captureRevision,
                     recaptureFn: recaptureCropperSource
                 });
                 if (token !== activeCaptureToken) return;
@@ -1246,10 +1369,15 @@
                     var croppedDataUrl = await cropSourceToAvatar(userCrop.sourceDataUrl, userCrop.cropRect);
                     applyPreviewResult(
                         { dataUrl: croppedDataUrl, modelType: userCrop.modelType || result.modelType },
-                        userCrop.cacheKey || cacheKey
+                        userCrop.cacheKey || cacheKey,
+                        userCrop.modelRevision || captureRevision
                     );
                 } else {
-                    if (prevCachedPreview) {
+                    if (captureRevision !== cardDropModelRevision) {
+                        cachedPreview = null;
+                        pendingAutoCapture = true;
+                        setPreviewImage('');
+                    } else if (prevCachedPreview) {
                         cachedPreview = prevCachedPreview;
                         setPreviewImage(prevCachedPreview.dataUrl);
                         setPreviewStatus(
@@ -1262,7 +1390,7 @@
                     setPreviewNote(translateLabel('chat.avatarPreviewCropCancelled', '已取消手动裁剪，保持原头像不变。'));
                 }
             } else {
-                applyPreviewResult(result, cacheKey);
+                applyPreviewResult(result, cacheKey, captureRevision);
             }
         } catch (error) {
             if (token !== activeCaptureToken) return;
@@ -1292,6 +1420,10 @@
     }
 
     function scheduleAutoCapture(reason) {
+        if (pngtuberModelLoading && getCurrentModelType() === 'pngtuber') {
+            pendingAutoCapture = true;
+            return;
+        }
         const cacheKey = getCurrentModelCacheKey();
         if (!cacheKey || cacheKey.endsWith(':')) {
             return;
@@ -1328,6 +1460,7 @@
     }
 
     function handleModelLoaded(reason) {
+        advanceCardDropModelRevision();
         var newCacheKey = getCurrentModelCacheKey();
         if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
             // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称
@@ -1340,6 +1473,22 @@
         syncAvatarToCardDrop('');
         invalidateCachedPreview();
         scheduleAutoCapture(reason);
+    }
+
+    function handleModelLoading() {
+        pngtuberModelLoading = true;
+        if (autoCaptureTimer) {
+            clearTimeout(autoCaptureTimer);
+            autoCaptureTimer = null;
+        }
+        advanceCardDropModelRevision();
+        invalidateCachedPreview();
+        setPreviewImage('');
+        syncAvatarToCardDrop('', {
+            scheduleReference: false,
+            modelType: 'pngtuber',
+            modelKey: ''
+        });
     }
 
     function bindModelLoadListeners() {
@@ -1362,6 +1511,27 @@
 
         window.addEventListener('mmd-model-loaded', function () {
             handleModelLoaded('mmd-model-loaded');
+        });
+
+        window.addEventListener('pngtuber-model-loading', function (event) {
+            const loadToken = Number(event?.detail?.loadToken) || 0;
+            if (loadToken < pngtuberModelLoadToken) return;
+            if (loadToken === pngtuberModelLoadToken && pngtuberModelLoading) return;
+            pngtuberModelLoadToken = loadToken;
+            handleModelLoading();
+        });
+
+        window.addEventListener('pngtuber-model-loaded', function (event) {
+            const loadToken = Number(event?.detail?.loadToken) || 0;
+            if (loadToken !== pngtuberModelLoadToken) return;
+            pngtuberModelLoading = false;
+            handleModelLoaded('pngtuber-model-loaded');
+        });
+
+        window.addEventListener('pngtuber-model-load-finished', function (event) {
+            const loadToken = Number(event?.detail?.loadToken) || 0;
+            if (loadToken !== pngtuberModelLoadToken) return;
+            pngtuberModelLoading = false;
         });
     }
 
@@ -1591,7 +1761,7 @@
     /**
      * 多窗口模式：由 preload / IPC 调用，设置从 Pet 窗口获取的头像
      * @param {string} dataUrl - base64 data URL
-     * @param {string} [modelType] - 'live2d' | 'vrm' | 'mmd'
+     * @param {string} [modelType] - 'live2d' | 'vrm' | 'mmd' | 'pngtuber'
      */
     mod.setExternalAvatar = function setExternalAvatar(dataUrl, modelType) {
         externalAvatarDataUrl = dataUrl || '';

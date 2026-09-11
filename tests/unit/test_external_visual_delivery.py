@@ -1,6 +1,8 @@
 import asyncio
+import base64
 import json
 import time
+from pathlib import Path
 from types import MethodType
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -617,10 +619,19 @@ async def test_gemini_turn_drops_frames_lost_during_the_quarantine_wait():
             owned[0] = False
 
     client._await_gemini_external_quarantine = _lose_ownership_on_the_submit_wait
-    # 让 _submit_external_gemini_turn 头部走进隔离等待那条分支。
-    client._gemini_external_outcome_token = object()
 
     await client.prepare_external_voice_turn(turn_id="turn-quarantine")
+    # 让 _submit_external_gemini_turn 头部走进隔离等待那条分支。
+    #
+    # ⚠️ 必须挂在 prepare **之后**。prepare 里的
+    # _start_gemini_external_submit_quarantine() 会为一个已存在的 token 起后台
+    # 隔离任务，那个任务一被调度就把 token settle 成 None，第二次隔离等待的分支
+    # 就再也进不去了。原来挂在 prepare 之前也能过，只是因为 submit 那条路上恰好
+    # 没有让出点让后台任务跑起来——那是巧合，不是判据：图片预算那一步现在无条件
+    # 走一次 asyncio.to_thread（把每张图归一到模型档位），多出的这个 await 就让
+    # 后台任务抢先跑完，用例随即翻车。挂在 prepare 之后，前提由用例自己保证，与
+    # 被测路径上有几个 await 无关。
+    client._gemini_external_outcome_token = object()
     # 前提自证：进入被测函数时仍然持有所有权。
     assert owned[0] is True
     await client.submit_multimodal_turn(
@@ -1503,6 +1514,373 @@ async def test_one_event_with_both_terminal_flags_spends_the_debt_once():
 
 
 @pytest.mark.asyncio
+async def test_late_content_from_the_cancelled_turn_keeps_the_debt():
+    """The cancelled turn's own late content must not void its debt.
+
+    Voiding on ``_is_new_turn`` alone is satisfied by that content: the user
+    already spoke after the AI's last frame, which is exactly what the
+    cancellation means. The debt then dies before the terminal it was owed,
+    and that terminal settles the freshly minted external token -- the turn
+    reads idle while it is still in flight.
+
+    The line below this one declares the new turn under the stricter
+    ``_is_new_turn and _can_clear_interrupted``; voiding has to use the same
+    definition of "the old turn is over".
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client.on_new_message = None
+    client.on_text_delta = None
+    client._settle_gemini_proactive_inject = MagicMock()
+
+    token = object()
+    client._gemini_external_outcome_token = token
+    client._gemini_cancelled_terminal_pending = True
+    # handle_interruption() 之后的状态：这一轮被叫停，不再 responding。
+    client._is_responding = False
+    client._interrupted = True
+    # 外部回合把用户活动刷到了 AI 最后一帧之后，且仍在 3s 窗口内。
+    client._ai_recent_activity_time = time.time()
+    client._user_recent_activity_time = client._ai_recent_activity_time + 0.1
+
+    late_content = SimpleNamespace(
+        model_turn=SimpleNamespace(parts=[]),
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=False,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=late_content, tool_call=None),
+        connection_generation=1,
+    )
+    # 被取消那一轮的迟到内容不是「新回合开始」的证据。
+    assert client._gemini_cancelled_terminal_pending is True
+
+    real_terminal = SimpleNamespace(
+        model_turn=None,
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=True,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=real_terminal, tool_call=None),
+        connection_generation=1,
+    )
+    # 那条终结属于被取消的旧回合，不能拿去结算新铸的 token。
+    assert client._gemini_external_outcome_token is token
+    assert client._gemini_cancelled_terminal_pending is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_voiding_the_debt_also_drops_its_deadline():
+    """The two fields are one piece of state; retiring one orphans the other.
+
+    The consume and connection-replacement paths already clear them together.
+    A deadline left behind by the turn-start void is inert only because the one
+    arming site always overwrites it -- a second arming site would inherit it.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client.on_new_message = None
+    client.on_text_delta = None
+    client._settle_gemini_proactive_inject = MagicMock()
+    client._gemini_cancelled_terminal_pending = True
+    client._gemini_cancelled_terminal_deadline = time.monotonic() + 60.0
+    client._is_responding = False
+    # 外部 ASR 送的是文本，provider 不回 input_transcription，所以打断标志会一直
+    # 挂着 —— 用生产上的状态，别用 _interrupted=False 把判据绕过去。这里靠的是
+    # AI 静默超窗（_can_clear_interrupted 的第三个析取项）。
+    client._interrupted = True
+    client._gemini_user_transcript_after_interrupt = False
+    client._user_recent_activity_time = 200.0
+    client._ai_recent_activity_time = 100.0
+
+    content_start = SimpleNamespace(
+        model_turn=SimpleNamespace(parts=[]),
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=False,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=content_start, tool_call=None),
+        connection_generation=1,
+    )
+
+    assert client._gemini_cancelled_terminal_pending is False
+    assert client._gemini_cancelled_terminal_deadline is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_handoff_restarts_the_debt_deadline_at_the_gemini_send():
+    """The clock starts when the provider is actually interrupted.
+
+    Gemini has no ``response.cancel``: ``handle_interruption`` only marks local
+    state, and the provider learns of the barge-in when the successor's content
+    lands. Timing the debt from the interruption means a slow ASR handoff or a
+    heavy multimodal send burns the whole window before the provider has even
+    been told, so the cancelled turn's terminal is judged current and settles
+    the successor token -- the regression this change exists to prevent.
+
+    Arming still happens at the interruption so every early return carries a
+    deadline; the send re-stamps it, once.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client.on_new_message = None
+    client.on_text_delta = None
+    client._settle_gemini_proactive_inject = MagicMock()
+    client.note_user_turn_started = MagicMock()
+
+    sent = []
+    client._gemini_session = SimpleNamespace(
+        send_client_content=AsyncMock(side_effect=lambda **kw: sent.append(kw)),
+    )
+
+    # 打断已经发生，但 ASR 交接 + 压图拖过了 TTL：期限已经到点。
+    client._gemini_cancelled_terminal_pending = True
+    client._gemini_cancelled_terminal_awaiting_delivery = True
+    client._gemini_cancelled_terminal_id = object()
+    client._gemini_cancelled_terminal_deadline = time.monotonic() - 1.0
+
+    await client._gemini_send_user_turn("successor")
+
+    assert sent, "the successor content must actually be sent"
+    deadline = client._gemini_cancelled_terminal_deadline
+    assert deadline is not None and deadline > time.monotonic()
+    # 只续一次：后面每次发送都续命的话，一笔没人抵掉的欠账会被无限延寿。
+    assert client._gemini_cancelled_terminal_awaiting_delivery is False
+    client._gemini_cancelled_terminal_deadline = time.monotonic() - 1.0
+    await client._gemini_send_user_turn("another")
+    assert client._gemini_cancelled_terminal_deadline < time.monotonic()
+
+    # 行为层：续期之后，被取消那一轮的终结仍然抵的是欠账，不碰后继的 token。
+    client._gemini_cancelled_terminal_deadline = time.monotonic() + 60.0
+    token = object()
+    client._gemini_external_outcome_token = token
+    client._is_responding = True
+    client._interrupted = True
+    terminal = SimpleNamespace(
+        model_turn=None,
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=True,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=terminal, tool_call=None),
+        connection_generation=1,
+    )
+    assert client._gemini_external_outcome_token is token
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_the_debt_does_not_expire_before_the_interrupt_is_delivered():
+    """The clock cannot run while the provider has not been interrupted.
+
+    ``send_client_content()`` puts the successor on the wire before it returns,
+    and the re-stamp happens after that await. The receive loop can deliver the
+    cancelled turn's terminal inside that gap, where the deadline is still the
+    one stamped at the interruption and may already be spent. Expiring there
+    hands the terminal to a successor whose own turn has not started.
+
+    Until that send lands nothing else has been submitted, so the first
+    terminal can only belong to the cancelled turn.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client.on_new_message = None
+    client.on_text_delta = None
+    client._settle_gemini_proactive_inject = MagicMock()
+
+    token = object()
+    client._gemini_external_outcome_token = token
+    client._gemini_cancelled_terminal_pending = True
+    # 交接拖过了 TTL，而中断还没送达 —— 重打时间戳那一步还没轮到。
+    client._gemini_cancelled_terminal_deadline = time.monotonic() - 1.0
+    client._gemini_cancelled_terminal_awaiting_delivery = True
+    client._is_responding = True
+    client._interrupted = True
+
+    terminal = SimpleNamespace(
+        model_turn=None,
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=True,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=terminal, tool_call=None),
+        connection_generation=1,
+    )
+
+    # 这条终结抵的是欠账，不能去结算后继的 token。
+    assert client._gemini_external_outcome_token is token
+    assert client._gemini_cancelled_terminal_pending is False
+    assert client._gemini_cancelled_terminal_awaiting_delivery is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_only_the_send_that_delivered_the_debt_restarts_its_clock():
+    """A send restamps the debt it delivered, not whatever is armed on return.
+
+    An earlier send can still be inside ``send_client_content`` when a barge-in
+    arms a fresh debt. Reading the flags after that await lets the earlier send
+    claim the new debt, lowering awaiting-delivery and starting the TTL while
+    the successor's content has not been sent at all -- so a slow handoff
+    afterwards spends the window before the provider is interrupted.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client.note_user_turn_started = MagicMock()
+
+    armed = {}
+
+    async def _arm_midflight(**_kw):
+        # 这次发送在飞的时候，用户抢话武装了一笔**新**欠账。
+        client._gemini_cancelled_terminal_pending = True
+        client._gemini_cancelled_terminal_awaiting_delivery = True
+        client._gemini_cancelled_terminal_id = object()
+        client._gemini_cancelled_terminal_deadline = time.monotonic() + 60.0
+        armed["id"] = client._gemini_cancelled_terminal_id
+
+    client._gemini_session = SimpleNamespace(
+        send_client_content=AsyncMock(side_effect=_arm_midflight),
+    )
+    # 这次发送开始时没有任何欠账挂着。
+    client._gemini_cancelled_terminal_pending = False
+    client._gemini_cancelled_terminal_awaiting_delivery = False
+    client._gemini_cancelled_terminal_id = None
+
+    await client._gemini_send_user_turn("earlier turn")
+
+    # 那笔欠账不是这次发送送达的：它必须仍然在等自己的送达。
+    assert client._gemini_cancelled_terminal_id is armed["id"]
+    assert client._gemini_cancelled_terminal_awaiting_delivery is True
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_an_expired_debt_does_not_eat_a_legitimate_terminal():
+    """A debt that outlived its window is spent but not honoured.
+
+    The turn-start void only runs when AI content arrives before the terminal.
+    A bare ``turn_complete`` -- which this provider does emit -- skips it, so
+    without a deadline a stale debt waits indefinitely and absorbs a terminal
+    that belongs to someone else. That leaves an external token nobody settles
+    and a session pinned busy, which is the worse of the two failure
+    directions.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._still_owns_connection = lambda _gen: True
+    client._read_host_turn_id = lambda: None
+    client.on_response_done = None
+    client.on_new_message = None
+    client.on_text_delta = None
+    client._settle_gemini_proactive_inject = MagicMock()
+
+    token = object()
+    client._gemini_external_outcome_token = token
+    client._gemini_cancelled_terminal_pending = True
+    client._gemini_cancelled_terminal_deadline = time.monotonic() - 0.001
+    client._is_responding = True
+    client._interrupted = True
+
+    bare_terminal = SimpleNamespace(
+        model_turn=None,
+        input_transcription=None,
+        output_transcription=None,
+        interrupted=False,
+        turn_complete=True,
+    )
+    await client._process_gemini_response(
+        SimpleNamespace(server_content=bare_terminal, tool_call=None),
+        connection_generation=1,
+    )
+
+    # 过期的欠账被花掉但不认账：这条终结照常结算当前回合。
+    assert client._gemini_cancelled_terminal_pending is False
+    assert client._gemini_cancelled_terminal_deadline is None
+    assert client._gemini_external_outcome_token is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_connection_does_not_inherit_the_debt():
+    """The debt belongs to the connection that armed it.
+
+    The replacement's first terminal is its own. Absorbed by the predecessor's
+    debt, the turn that produced it never settles its token.
+    """
+    client = _make_client("gemini", "gemini-2.0-flash-live-001")
+    client._connection_generation = 1
+    client._gemini_cancelled_terminal_pending = True
+    client._gemini_cancelled_terminal_deadline = time.monotonic() + 60.0
+
+    client._on_connection_attached()
+
+    assert client._gemini_cancelled_terminal_pending is False
+    assert client._gemini_cancelled_terminal_deadline is None
+    await client.close()
+
+
+@pytest.mark.unit
+def test_arming_the_cancellation_debt_always_sets_a_deadline():
+    """The expiry fails open on a missing deadline, so arming must set one.
+
+    ``_consume_cancelled_terminal`` treats ``deadline is None`` as "never
+    expires" so that state built directly by tests keeps the old semantics. A
+    production arming site that forgot the deadline would silently opt out of
+    the bound.
+    """
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "main_logic"
+        / "omni_realtime_client"
+        / "_transport.py"
+    ).read_text(encoding="utf-8").split(chr(10))
+
+    arming = [
+        index
+        for index, line in enumerate(source)
+        if line.strip() == "self._gemini_cancelled_terminal_pending = True"
+    ]
+    assert arming, "the arming site moved; update this guard"
+    for index in arming:
+        # 窗口要盖住两条赋值以及它们各自的解释注释。
+        window = chr(10).join(source[index : index + 16])
+        assert "self._gemini_cancelled_terminal_deadline = (" in window, (
+            f"line {index + 1}: arming the debt must also set its deadline, "
+            f"got: {window!r}"
+        )
+        assert (
+            "self._gemini_cancelled_terminal_awaiting_delivery = True" in window
+        ), (
+            f"line {index + 1}: arming the debt must mark it as awaiting "
+            f"delivery, or the deadline starts before the provider is "
+            f"interrupted; got: {window!r}"
+        )
+
+
+@pytest.mark.asyncio
 async def test_non_terminal_content_does_not_spend_the_cancellation_debt():
     """Only a terminal event pays off the debt.
 
@@ -1558,3 +1936,965 @@ async def test_non_terminal_content_does_not_spend_the_cancellation_debt():
     assert client._gemini_external_outcome_token is token
     assert client._gemini_cancelled_terminal_pending is False
     await client.close()
+
+# ---------------------------------------------------------------------------
+# 独立 ASR 多模态回合 -> plugin frames 总线（P8 第四个投递点）
+# ---------------------------------------------------------------------------
+#
+# 每个用例都把 client.close() 放进 finally。这个文件的惯例是手动 close，于是
+# 断言一失败就漏掉一条活着的 realtime 会话——而漏下的会话会把**下一个**用例
+# 挂死，本来只是红的一轮变成永远跑不完的一轮。变异验证恰恰是用例会失败的场合。
+
+
+def _capture_published_frames(monkeypatch) -> list[dict]:
+    """Record every frame handed to the plugin-bus publisher."""
+
+    from main_logic import agent_event_bus
+
+    published: list[dict] = []
+
+    async def _publish(lanlan_name, **kwargs):
+        published.append({"lanlan_name": lanlan_name, **kwargs})
+        return True
+
+    monkeypatch.setattr(
+        agent_event_bus,
+        "publish_provider_frame_observed_best_effort",
+        _publish,
+    )
+    return published
+
+
+async def _wait_for_published(published: list, count: int = 1) -> None:
+    """The copy is fire-and-forget; give its task a chance to run."""
+
+    for _ in range(50):
+        if len(published) >= count:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(
+        f"expected {count} published frame(s), saw {len(published)}"
+    )
+
+
+async def _assert_nothing_published(published: list) -> None:
+    """Nothing reached the bus -- after the background task had its turns.
+
+    Asserting an empty list the instant a turn returns would pass no matter
+    what, now that the publish is scheduled rather than awaited. Drain first,
+    then assert.
+    """
+
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert published == [], f"frame published from a non-delivery: {published}"
+
+
+def _fake_arbiter(captured: list, *, sent_cancelled: bool = False):
+    """An arbiter stub that dispatches the way the real worker does.
+
+    Faithful on the two points this delivery point rests on: ``pre_commit``
+    runs before the write, and ``_send_queued_event`` awaits the per-ticket
+    sender while ignoring what it returns.
+    """
+
+    async def _enqueue(**kwargs):
+        event = kwargs["events_before_response"][0]
+        kwargs["pre_commit"](event)
+        await kwargs["event_sender"](event)
+        captured.append(event)
+        loop = asyncio.get_running_loop()
+        sent, done = loop.create_future(), loop.create_future()
+        if sent_cancelled:
+            sent.cancel()
+        else:
+            sent.set_result(None)
+        done.set_result(None)
+        return SimpleNamespace(sent=sent, done=done)
+
+    return SimpleNamespace(
+        enqueue=_enqueue,
+        resume_dispatch=lambda: None,
+        pause_dispatch=lambda: None,
+        cancel_ticket=AsyncMock(),
+        cancel_current=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_delivered_multimodal_turn_copies_its_frames_onto_the_plugin_bus(
+    monkeypatch,
+):
+    """The independent-ASR turn is the only frame channel this mode has.
+
+    Its frames never pass through stream_image: transcript and sampled frames
+    reach the provider as ONE item. Without this copy a plugin sees nothing at
+    all while the user is talking to a description-mode provider.
+    """
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        sent = _wire_completed_response_transport(client)
+        client._analyze_image_with_vision_model = AsyncMock()
+        client._latest_image_source = "screen"
+        published = _capture_published_frames(monkeypatch)
+
+        await client.prepare_external_voice_turn(turn_id="turn-frames")
+        ticket = await client.submit_multimodal_turn(
+            "看一下这张图",
+            [DUMMY_IMAGE_B64, DUMMY_IMAGE_B64],
+            turn_id="turn-frames",
+        )
+
+        assert ticket is not None
+        wire_images = [
+            part["image_url"]
+            for part in sent[0]["item"]["content"]
+            if part["type"] == "input_image"
+        ]
+        assert len(wire_images) == 2, "前提没成立：这一轮本来就没送出两张图"
+        await _wait_for_published(published, 2)
+        # 上总线的是**纯 base64**，不是 data URL：记录里另有 mime 字段，带前缀
+        # 等于让每个插件自己再剥一次。
+        assert [frame["image_base64"] for frame in published] == [
+            url.split(",", 1)[1] for url in wire_images
+        ]
+        for frame in published:
+            assert frame["mime"] == "image/jpeg"
+            assert frame["turn_id"] == "turn-frames"
+            # 采集通道照抄 staging 记下的那个（screen / camera）。
+            assert frame["source"] == "screen"
+            # Realtime 客户端不知道自己属于哪个角色；转发那一侧允许缺省。
+            assert frame["lanlan_name"] is None
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_lost_its_frames_publishes_nothing(monkeypatch):
+    """Frames stripped by the downgrade were never sent, so they never appear.
+
+    Ownership flips between enqueue and dispatch here: the pre-enqueue
+    downgrade already ran while the turn still owned its frames, so the images
+    are removed by ``pre_commit`` -- inside the arbiter, after the caller has
+    stopped looking. Reading the item back after ``ticket.sent`` is what makes
+    that visible; publishing anything captured earlier would put pictures on
+    the bus that the provider never received.
+    """
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        sent = _wire_completed_response_transport(client)
+        client._analyze_image_with_vision_model = AsyncMock()
+        published = _capture_published_frames(monkeypatch)
+
+        owned = [True]
+        arbiter = client._ensure_response_arbiter()
+        _real_resume = arbiter.resume_dispatch
+
+        def _resume_and_lose_ownership():
+            # 派发闸抬起的那一刻翻转：enqueue 之前那次降级已经带着"还持有"跑完
+            # 了，所以摘图只可能发生在 arbiter 内部的 pre_commit 里。
+            owned[0] = False
+            _real_resume()
+
+        arbiter.resume_dispatch = _resume_and_lose_ownership
+
+        await client.prepare_external_voice_turn(turn_id="turn-lost-frames")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-lost-frames",
+            visual_still_owned=lambda: owned[0],
+        )
+
+        assert owned[0] is False, "夹具没走到派发那一步"
+        content = sent[0]["item"]["content"]
+        # 帧被 pre_commit 摘掉了……
+        assert all(part["type"] != "input_image" for part in content), (
+            "前提没成立：这一轮的图根本没被摘掉"
+        )
+        # ……用户那句话照送……
+        assert any(part.get("text") == "看一下这张图" for part in content)
+        # ……总线上一张也不该有。
+        await _assert_nothing_published(published)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_turn_whose_item_never_reached_the_socket_publishes_nothing(
+    monkeypatch,
+):
+    """``ticket.sent`` resolving is not proof the bytes went out.
+
+    ``_send_queued_event`` awaits the per-ticket sender and ignores what it
+    returns, so a refused write (retired ws, earlier fatal error -> send_event
+    returns False) still lets the dispatch run to completion and resolve
+    ``ticket.sent``. Those frames reached no provider.
+    """
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        published = _capture_published_frames(monkeypatch)
+
+        async def _refuse_the_write(_event, **_kwargs):
+            return False
+
+        client.send_event = _refuse_the_write
+        captured: list = []
+        client._ensure_response_arbiter = lambda: _fake_arbiter(captured)
+
+        await client.prepare_external_voice_turn(turn_id="turn-refused")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-refused",
+            visual_still_owned=lambda: True,
+        )
+
+        assert captured, "item 没被送进 arbiter"
+        assert any(
+            part["type"] == "input_image"
+            for part in captured[0]["item"]["content"]
+        ), "前提没成立：这一轮的图在提交前就没了"
+        await _assert_nothing_published(published)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_the_bus_gets_the_bytes_the_transport_rewrote(monkeypatch):
+    """Publish what the wire carried, not what the caller staged.
+
+    An oversized item is recompressed in place inside send_event, and frames it
+    still cannot fit are dropped from the item's content. Publishing the staged
+    copies would put a bigger, different picture on the bus than the provider
+    saw -- and one picture more than it saw.
+    """
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        published = _capture_published_frames(monkeypatch)
+        shrunk_b64 = DUMMY_IMAGE_B64[:40]
+
+        async def _shrink_and_drop_on_send(event, **_kwargs):
+            # _shrink_multi_image_item 的形状：就地改写留下的那张，把压不进去
+            # 的最旧那张从 content 里删掉。
+            content = event["item"]["content"]
+            images = [part for part in content if part["type"] == "input_image"]
+            content.remove(images[0])
+            images[-1]["image_url"] = "data:image/jpeg;base64," + shrunk_b64
+            return True
+
+        client.send_event = _shrink_and_drop_on_send
+        captured: list = []
+        client._ensure_response_arbiter = lambda: _fake_arbiter(captured)
+
+        await client.prepare_external_voice_turn(turn_id="turn-shrunk")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            [DUMMY_IMAGE_B64, DUMMY_IMAGE_B64],
+            turn_id="turn-shrunk",
+            visual_still_owned=lambda: True,
+        )
+
+        await _wait_for_published(published, 1)
+        assert [frame["image_base64"] for frame in published] == [shrunk_b64]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_multimodal_turn_publishes_nothing(monkeypatch):
+    """Cancellation ends the turn; the bus copy is not a consolation prize.
+
+    The write itself succeeded here -- the point is that a turn the caller
+    cancelled unwinds through ``arbiter.cancel_ticket`` and must publish
+    nothing on the way out, which only holds while the publish sits after the
+    await rather than around it.
+    """
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        published = _capture_published_frames(monkeypatch)
+
+        async def _accept_the_write(_event, **_kwargs):
+            return True
+
+        client.send_event = _accept_the_write
+        captured: list = []
+        arbiter = _fake_arbiter(captured, sent_cancelled=True)
+        client._ensure_response_arbiter = lambda: arbiter
+
+        await client.prepare_external_voice_turn(turn_id="turn-cancelled")
+        with pytest.raises(asyncio.CancelledError):
+            await client.submit_multimodal_turn(
+                "看一下这张图",
+                DUMMY_IMAGE_B64,
+                turn_id="turn-cancelled",
+                visual_still_owned=lambda: True,
+            )
+
+        arbiter.cancel_ticket.assert_awaited_once()
+        await _assert_nothing_published(published)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_only_well_formed_image_parts_are_copied_and_keep_their_mime(
+    monkeypatch,
+):
+    """The record describes the part it came from, and nothing else.
+
+    ``mime`` is read back off the data URL instead of assumed: recompression
+    rewrites the payload but keeps whatever prefix the part was built with, so
+    a hardcoded ``image/jpeg`` would eventually describe the wrong bytes.
+    Malformed parts are skipped rather than published as empty frames.
+    """
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client._latest_image_source = "camera"
+        published = _capture_published_frames(monkeypatch)
+
+        item_event = {
+            "item": {
+                "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64," + DUMMY_IMAGE_B64,
+                    },
+                    # 不是 data URL：这一层没有把它取回来的通道。
+                    {
+                        "type": "input_image",
+                        "image_url": "https://example.invalid/x",
+                    },
+                    # 空载荷。
+                    {"type": "input_image", "image_url": "data:image/jpeg;base64,"},
+                    {"type": "input_text", "text": "看一下这张图"},
+                ]
+            }
+        }
+        copied = await client._publish_turn_frames(
+            client._delivered_multimodal_frames(item_event),
+            turn_id="turn-mime",
+            source=client._latest_image_source,
+        )
+
+        assert copied == 1
+        assert [frame["mime"] for frame in published] == ["image/png"]
+        assert published[0]["image_base64"] == DUMMY_IMAGE_B64
+        assert published[0]["source"] == "camera"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_publisher_failure_does_not_fail_the_delivered_turn(monkeypatch):
+    """The turn is already delivered by the time the copy runs.
+
+    A bus that is absent or down must not turn a good turn into a failed one,
+    so the publish is caught and the turn still returns its ticket.
+    """
+    from main_logic import agent_event_bus
+
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        _wire_completed_response_transport(client)
+        client._analyze_image_with_vision_model = AsyncMock()
+
+        async def _explode(_lanlan_name, **_kwargs):
+            raise RuntimeError("message plane is down")
+
+        monkeypatch.setattr(
+            agent_event_bus,
+            "publish_provider_frame_observed_best_effort",
+            _explode,
+        )
+
+        await client.prepare_external_voice_turn(turn_id="turn-bus-down")
+        ticket = await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-bus-down",
+        )
+
+        assert ticket is not None
+        # 失败发生在后台 task 里。把它跑完，证明异常被吞在那一层，而不是变成
+        # 一条 unretrieved task exception。
+        for _ in range(20):
+            await asyncio.sleep(0)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_frames_bus_does_not_hold_up_the_delivered_turn(
+    monkeypatch,
+):
+    """A turn the provider already took may not wait on the bus copy.
+
+    ``publish_session_event_threadsafe`` forwards a cross-thread publish to the
+    bridge's owner loop through an un-timed ``run_coroutine_threadsafe``, so a
+    blocked or slow owner loop blocks whoever awaits it. Awaiting the copy on
+    the turn's return path would make that the user's latency, for a frame the
+    provider already has.
+    """
+    from main_logic import agent_event_bus
+
+    entered = asyncio.Event()
+    released = asyncio.Event()
+
+    async def _stall(_lanlan_name, **_kwargs):
+        entered.set()
+        await released.wait()
+        return True
+
+    monkeypatch.setattr(
+        agent_event_bus,
+        "publish_provider_frame_observed_best_effort",
+        _stall,
+    )
+
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        _wire_completed_response_transport(client)
+        client._analyze_image_with_vision_model = AsyncMock()
+
+        await client.prepare_external_voice_turn(turn_id="turn-stalled-bus")
+        # 若 publish 还挂在返回路径上，这里会一路等到 wait_for 超时——
+        # 回归会红，而不是只是悄悄变慢。
+        ticket = await asyncio.wait_for(
+            client.submit_multimodal_turn(
+                "看一下这张图",
+                DUMMY_IMAGE_B64,
+                turn_id="turn-stalled-bus",
+            ),
+            timeout=5,
+        )
+
+        assert ticket is not None
+        # 前提：那条 publish 确实被排上了，而且确实卡在总线里。
+        await asyncio.wait_for(entered.wait(), timeout=5)
+    finally:
+        released.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_the_bus_record_is_read_at_delivery_not_after_the_turn(
+    monkeypatch,
+):
+    """The whole record is snapshotted on the turn; the task only publishes it.
+
+    Now that the copy runs on a later loop iteration, nothing it describes is
+    still this turn's to read: the item gets rewritten in place by the next
+    turn's downgrade and recompression, and ``_latest_image_source`` is
+    overwritten by the next staged frame. Reading either inside the task would
+    publish whatever the session had moved on to, and "only what the provider
+    got" would stop being true with every other test in this file still green.
+    """
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        sent = _wire_completed_response_transport(client)
+        client._analyze_image_with_vision_model = AsyncMock()
+        client._latest_image_source = "screen"
+        published = _capture_published_frames(monkeypatch)
+
+        await client.prepare_external_voice_turn(turn_id="turn-snapshot")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-snapshot",
+        )
+
+        content = sent[0]["item"]["content"]
+        delivered = [
+            part["image_url"].split(",", 1)[1]
+            for part in content
+            if part["type"] == "input_image"
+        ]
+        assert len(delivered) == 1, "前提没成立：这一轮本来就没送出图"
+        # 回合已经返回，publish 那个 task 还一次都没跑过——正是后继回合改写
+        # 这些结构的那个窗口。判据要立在这里，否则下面的改写根本没意义。
+        assert published == [], "publish 没被挪出回合，本用例的判据落空"
+
+        for part in content:
+            if part["type"] == "input_image":
+                part["image_url"] = "data:image/jpeg;base64,bmV4dC10dXJu"
+        # 采集通道也是活的会话状态：下一张 staged 帧就会改写它。
+        client._latest_image_source = "camera"
+
+        await _wait_for_published(published, 1)
+        assert [frame["image_base64"] for frame in published] == delivered
+        assert [frame["source"] for frame in published] == ["screen"]
+    finally:
+        await client.close()
+
+
+# ---------------------------------------------------------------------------
+# 独立 ASR 多模态回合 -> plugin frames 总线：Gemini 那一半
+# ---------------------------------------------------------------------------
+#
+# WebSocket 那半边读的是发出去的 item；Gemini 这条路根本不构造 wire event，
+# 帧是原始 bytes 直接交给 SDK 的，所以判据只能落在"交给 SDK 的那个 tuple"上。
+# 这半边不是对称性洁癖：独立 ASR 会武装 raw-visual fence，stream_image 于是拒掉
+# 每一张环境帧，这一轮就是整个会话唯一的画面通道。
+
+
+def _gemini_sdk_frames(session) -> list[str]:
+    """The base64 of every image part the SDK was actually handed."""
+
+    content = session.send_client_content.await_args.kwargs["turns"][0]
+    return [
+        base64.b64encode(bytes(part.inline_data.data)).decode("ascii")
+        for part in content.parts
+        if part.inline_data is not None
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_delivered_gemini_external_turn_copies_its_frames_onto_the_bus(
+    monkeypatch,
+):
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    try:
+        session = AsyncMock()
+        client._gemini_session = session
+        client.ws = session
+        client.handle_interruption = AsyncMock()
+        client._analyze_image_with_vision_model = AsyncMock()
+        client._latest_image_source = "screen"
+        published = _capture_published_frames(monkeypatch)
+
+        await client.prepare_external_voice_turn(turn_id="turn-gemini-frames")
+        result = await client.submit_multimodal_turn(
+            "看一下这张图",
+            [DUMMY_IMAGE_B64, DUMMY_IMAGE_B64],
+            turn_id="turn-gemini-frames",
+        )
+
+        assert result is None
+        wire = _gemini_sdk_frames(session)
+        assert len(wire) == 2, "前提没成立：这一轮本来就没送出两张图"
+        await _wait_for_published(published, 2)
+        assert [frame["image_base64"] for frame in published] == wire
+        content = session.send_client_content.await_args.kwargs["turns"][0]
+        sdk_mime = next(
+            part.inline_data.mime_type
+            for part in content.parts
+            if part.inline_data is not None
+        )
+        for frame in published:
+            # 标签必须与 SDK 真正收到的那个 mime 一致，不是各写各的字面量。
+            assert frame["mime"] == sdk_mime
+            assert frame["turn_id"] == "turn-gemini-frames"
+            assert frame["source"] == "screen"
+            assert frame["lanlan_name"] is None
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_the_gemini_bus_gets_the_bytes_the_budget_ladder_produced(
+    monkeypatch,
+):
+    """The ladder re-encodes; the bus must carry what the SDK got, not the input.
+
+    Gemini is the one route with no aggregate gate of its own, so
+    ``fit_images_to_turn_budget`` runs right here and rewrites the turn's
+    frames. Publishing the caller's staged images would put a bigger, different
+    picture on the bus than the provider ever received.
+    """
+    fitted_b64 = base64.b64encode(b"fitted-frame-bytes").decode("ascii")
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    try:
+        session = AsyncMock()
+        client._gemini_session = session
+        client.ws = session
+        client.handle_interruption = AsyncMock()
+        client._analyze_image_with_vision_model = AsyncMock()
+        published = _capture_published_frames(monkeypatch)
+
+        async def _fit(images, _budget):
+            return [fitted_b64], {
+                "original_count": len(images),
+                "final_count": 1,
+                "normalized": True,
+                "sampled": False,
+                "compressed": True,
+                "dropped": 0,
+                "user_visible": False,
+            }
+
+        monkeypatch.setattr(
+            responses_module, "fit_images_to_turn_budget", _fit
+        )
+
+        await client.prepare_external_voice_turn(turn_id="turn-gemini-fitted")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-gemini-fitted",
+        )
+
+        assert _gemini_sdk_frames(session) == [fitted_b64]
+        await _wait_for_published(published, 1)
+        assert [frame["image_base64"] for frame in published] == [fitted_b64]
+        assert DUMMY_IMAGE_B64 not in [
+            frame["image_base64"] for frame in published
+        ]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_gemini_turn_that_lost_its_frames_publishes_nothing(monkeypatch):
+    """The ownership recheck empties the tuple before the SDK send.
+
+    Those frames were never handed to the provider, so nothing may appear on
+    the bus -- while the sentence still goes out, as everywhere else here.
+    """
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    try:
+        session = AsyncMock()
+        client._gemini_session = session
+        client.ws = session
+        client.handle_interruption = AsyncMock()
+        client._analyze_image_with_vision_model = AsyncMock()
+        published = _capture_published_frames(monkeypatch)
+
+        owned = [True]
+
+        async def _fit_and_lose_ownership(images, _budget):
+            owned[0] = False
+            return list(images), {
+                "original_count": len(images),
+                "final_count": len(images),
+                "normalized": False,
+                "sampled": False,
+                "compressed": True,
+                "dropped": 0,
+                "user_visible": False,
+            }
+
+        monkeypatch.setattr(
+            responses_module,
+            "fit_images_to_turn_budget",
+            _fit_and_lose_ownership,
+        )
+
+        await client.prepare_external_voice_turn(turn_id="turn-gemini-lost")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-gemini-lost",
+            visual_still_owned=lambda: owned[0],
+        )
+
+        assert owned[0] is False, "夹具没走到丢所有权那一步"
+        assert _gemini_sdk_frames(session) == [], (
+            "前提没成立：这一轮的图根本没被摘掉"
+        )
+        await _assert_nothing_published(published)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_gemini_send_publishes_nothing(monkeypatch):
+    """A provider that rejects the turn outright never received the frames."""
+
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    try:
+        session = AsyncMock()
+        session.send_client_content.side_effect = RuntimeError("refused")
+        client._gemini_session = session
+        client.ws = session
+        client.handle_interruption = AsyncMock()
+        client._analyze_image_with_vision_model = AsyncMock()
+        published = _capture_published_frames(monkeypatch)
+
+        await client.prepare_external_voice_turn(turn_id="turn-gemini-refused")
+        with pytest.raises(RuntimeError):
+            await client.submit_multimodal_turn(
+                "看一下这张图",
+                DUMMY_IMAGE_B64,
+                turn_id="turn-gemini-refused",
+            )
+
+        await _assert_nothing_published(published)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_gemini_turn_publishes_nothing(monkeypatch):
+    """Cancellation leaves the turn unconfirmed, so it stays off the bus.
+
+    The provider may well have taken it -- that is exactly why the quarantine
+    exists -- but "may have" is not the frames contract, and re-raising before
+    the publish is what keeps that decision in one place.
+    """
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    try:
+        session = AsyncMock()
+        session.send_client_content.side_effect = asyncio.CancelledError()
+        client._gemini_session = session
+        client.ws = session
+        client.handle_interruption = AsyncMock()
+        client._analyze_image_with_vision_model = AsyncMock()
+        published = _capture_published_frames(monkeypatch)
+
+        await client.prepare_external_voice_turn(turn_id="turn-gemini-cancel")
+        # 在自己的 task 里跑，与这个文件已有的取消用例同一写法：
+        # 隔离本体会 cancel() 那个 submit task，直接 await 的话被取消的
+        # 就是用例自己。
+        submit = asyncio.create_task(
+            client.submit_multimodal_turn(
+                "看一下这张图",
+                DUMMY_IMAGE_B64,
+                turn_id="turn-gemini-cancel",
+            )
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await submit
+
+        await _assert_nothing_published(published)
+        quarantine = getattr(client, "_gemini_external_quarantine_task", None)
+        if quarantine is not None:
+            await asyncio.gather(quarantine, return_exceptions=True)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_publisher_failure_does_not_fail_the_delivered_gemini_turn(
+    monkeypatch,
+):
+    from main_logic import agent_event_bus
+
+    async def _boom(_lanlan_name, **_kwargs):
+        raise RuntimeError("frames bus is down")
+
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    try:
+        session = AsyncMock()
+        client._gemini_session = session
+        client.ws = session
+        client.handle_interruption = AsyncMock()
+        client._analyze_image_with_vision_model = AsyncMock()
+        monkeypatch.setattr(
+            agent_event_bus,
+            "publish_provider_frame_observed_best_effort",
+            _boom,
+        )
+
+        await client.prepare_external_voice_turn(turn_id="turn-gemini-boom")
+        result = await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-gemini-boom",
+        )
+
+        assert result is None
+        session.send_client_content.assert_awaited_once()
+        # 失败发生在后台 task 里，跟 WebSocket 那半边同一判据。
+        for _ in range(20):
+            await asyncio.sleep(0)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_frames_bus_does_not_hold_up_the_gemini_turn(
+    monkeypatch,
+):
+    """Gemini's half owes the same guarantee: the copy is off the turn.
+
+    Same un-timed cross-loop hop, same conclusion. Kept as its own case because
+    this route publishes from the SDK byte tuple rather than from an outgoing
+    item, so nothing about the WebSocket test constrains it.
+    """
+    from main_logic import agent_event_bus
+
+    entered = asyncio.Event()
+    released = asyncio.Event()
+
+    async def _stall(_lanlan_name, **_kwargs):
+        entered.set()
+        await released.wait()
+        return True
+
+    monkeypatch.setattr(
+        agent_event_bus,
+        "publish_provider_frame_observed_best_effort",
+        _stall,
+    )
+
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    try:
+        session = AsyncMock()
+        client._gemini_session = session
+        client.ws = session
+        client.handle_interruption = AsyncMock()
+        client._analyze_image_with_vision_model = AsyncMock()
+
+        await client.prepare_external_voice_turn(turn_id="turn-gemini-stalled")
+        await asyncio.wait_for(
+            client.submit_multimodal_turn(
+                "看一下这张图",
+                DUMMY_IMAGE_B64,
+                turn_id="turn-gemini-stalled",
+            ),
+            timeout=5,
+        )
+
+        session.send_client_content.assert_awaited_once()
+        await asyncio.wait_for(entered.wait(), timeout=5)
+    finally:
+        released.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        await client.close()
+
+
+# ---------------------------------------------------------------------------
+# 回合内 await 期间的频道漂移
+# ---------------------------------------------------------------------------
+#
+# 上面那条用例在 submit **返回之后**才改写 _latest_image_source，调度点读一次
+# 就够了。真正没被盖住的是 submit **内部**：裁剪、arbiter 排队、SDK send 都是
+# await，另一条通道在这期间暂存一帧就会覆写它。帧还是这一轮送出的那几张，
+# source 却成了会话后来切到的频道——而 source 正是插件用来区分「用户共享的
+# 画面」和「插件自己提供的媒体」的那个字段，标错比不标更糟。
+
+
+@pytest.mark.asyncio
+async def test_ws_turn_keeps_its_channel_when_another_stages_during_the_send(
+    monkeypatch,
+):
+    """A frame staged mid-send must not relabel the turn already in flight."""
+
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        sent = _wire_completed_response_transport(client)
+        client._analyze_image_with_vision_model = AsyncMock()
+        client._latest_image_source = "screen"
+        published = _capture_published_frames(monkeypatch)
+
+        # 摄像头在这一轮送出的**过程中**暂存了一帧。_transport 每暂存一帧就写
+        # 这个字段，所以这就是它在真实会话里被改写的样子。
+        _inner = client.send_event
+
+        async def _send_and_stage_another_channel(event, **kwargs):
+            result = await _inner(event, **kwargs)
+            client._latest_image_source = "camera"
+            return result
+
+        client.send_event = _send_and_stage_another_channel
+        client._response_arbiter._send_event = client.send_event
+
+        await client.prepare_external_voice_turn(turn_id="turn-drift-ws")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-drift-ws",
+            source="screen",
+        )
+
+        delivered = [
+            part["image_url"].split(",", 1)[1]
+            for part in sent[0]["item"]["content"]
+            if part["type"] == "input_image"
+        ]
+        assert len(delivered) == 1, "前提没成立：这一轮本来就没送出图"
+        assert client._latest_image_source == "camera", (
+            "前提没成立：漂移没发生，本用例什么都没在测"
+        )
+
+        await _wait_for_published(published, 1)
+        assert [frame["image_base64"] for frame in published] == delivered
+        assert [frame["source"] for frame in published] == ["screen"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_gemini_turn_keeps_its_channel_when_another_stages_during_the_send(
+    monkeypatch,
+):
+    """The Gemini half of the same window — its send is an SDK await."""
+
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    try:
+        session = AsyncMock()
+
+        async def _send_and_stage_another_channel(*_args, **_kwargs):
+            client._latest_image_source = "camera"
+
+        session.send_client_content.side_effect = _send_and_stage_another_channel
+        client._gemini_session = session
+        client.ws = session
+        client.handle_interruption = AsyncMock()
+        client._analyze_image_with_vision_model = AsyncMock()
+        client._latest_image_source = "screen"
+        published = _capture_published_frames(monkeypatch)
+
+        await client.prepare_external_voice_turn(turn_id="turn-drift-gemini")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-drift-gemini",
+            source="screen",
+        )
+
+        assert len(_gemini_sdk_frames(session)) == 1, (
+            "前提没成立：这一轮本来就没送出图"
+        )
+        assert client._latest_image_source == "camera", (
+            "前提没成立：漂移没发生，本用例什么都没在测"
+        )
+
+        await _wait_for_published(published, 1)
+        assert [frame["source"] for frame in published] == ["screen"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_the_turns_own_channel_beats_live_session_state(monkeypatch):
+    """``MultimodalTurn.source`` wins even when the live field disagrees.
+
+    The caller freezes the channel with the frames; the session field is only
+    a fallback for entry points that have no turn. A test that let both say
+    the same thing would pass with the argument ignored entirely.
+    """
+
+    client = _make_client("openai", "gpt-4o-realtime")
+    try:
+        client.ws = AsyncMock()
+        _wire_completed_response_transport(client)
+        client._analyze_image_with_vision_model = AsyncMock()
+        client._latest_image_source = "screen"
+        published = _capture_published_frames(monkeypatch)
+
+        await client.prepare_external_voice_turn(turn_id="turn-frozen")
+        await client.submit_multimodal_turn(
+            "看一下这张图",
+            DUMMY_IMAGE_B64,
+            turn_id="turn-frozen",
+            source="camera",
+        )
+
+        await _wait_for_published(published, 1)
+        assert [frame["source"] for frame in published] == ["camera"]
+    finally:
+        await client.close()

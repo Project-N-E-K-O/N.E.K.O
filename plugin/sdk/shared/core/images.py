@@ -14,7 +14,8 @@ MAX_UPLOADED_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_SOURCE_IMAGE_PIXELS = 16 * 1024 * 1024
 
-# Concurrent decodes, PROCESS-wide.
+# MAX_CONCURRENT_NORMALIZATIONS (declared below, after the timeout constant):
+# concurrent decodes, PROCESS-wide.
 #
 # Every other limit here is per IMAGE: 32 MiB in, 16 MP, 8 MiB out. None bounds
 # how many decode at once, and the transport queue does not either, because the
@@ -35,6 +36,7 @@ MAX_SOURCE_IMAGE_PIXELS = 16 * 1024 * 1024
 # Known cost: waiters occupy default-executor threads while blocked. A burst of
 # eight parks six of them, which is survivable against a pool of ~16-36 and
 # strictly better than letting all eight decode at once.
+
 # Upper bound on the caller-selected upload timeout.
 #
 # The child transport holds its image lock for the whole upload, and plugin
@@ -44,6 +46,9 @@ MAX_SOURCE_IMAGE_PIXELS = 16 * 1024 * 1024
 # the other half, so a plugin cannot park its own handler that long either.
 MAX_UPLOAD_TIMEOUT_SECONDS = 30.0
 
+# Rationale in the block at the top of this module -- it is up there with the
+# other per-image limits it contrasts itself against, not adjacent to its own
+# constant, so read it there before changing this number.
 MAX_CONCURRENT_NORMALIZATIONS = 2
 _normalize_gate = threading.Semaphore(MAX_CONCURRENT_NORMALIZATIONS)
 
@@ -56,6 +61,16 @@ def normalize_image_to_jpeg(
     ``slot_timeout`` bounds only the wait for a decode slot, never the decode
     itself. ``None`` waits indefinitely, which is what the host-side caller in
     ``character_runtime`` wants.
+
+    ANIMATION IS SILENTLY REDUCED TO FRAME 0. ``source.seek(0)`` below selects
+    the first frame and the single ``save`` writes only that one, so a
+    multi-frame GIF / WEBP / APNG comes back as a one-frame JPEG -- no
+    exception, no log line, and nothing in the returned bytes distinguishes it
+    from a still that was always a still. That follows from the output format
+    (JPEG has nowhere to put a second frame) rather than being a policy choice
+    here, but it means a plugin author who uploads a GIF gets no signal that
+    the motion was dropped; a caller that wants to tell them has to inspect
+    ``n_frames`` before handing the bytes over.
     """
     if not isinstance(data, (bytes, bytearray)):
         raise TypeError("image data must be bytes or bytearray")

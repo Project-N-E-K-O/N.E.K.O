@@ -38,9 +38,7 @@ from .api_shared import (  # noqa: F401
     Modules,
     OPENCLAW_ENABLE_CHECK_ATTEMPTS,
     OPENCLAW_ENABLE_CHECK_INTERVAL,
-    OPENFANG_BASE_URL,
     OpenClawAdapter,
-    OpenFangAdapter,
     Optional,
     PLUGIN_NAME_CACHE_TTL,
     REDACTED_USER_TURN_MARKER,
@@ -80,7 +78,6 @@ from .api_shared import (  # noqa: F401
     _ensure_browser_use_adapter,
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
-    _extract_tool_intent_as_text,
     _fire_agent_llm_connectivity_check,
     _fire_user_plugin_capability_check,
     _get_internal_correction_context,
@@ -100,9 +97,6 @@ from .api_shared import (  # noqa: F401
     _openclaw_pending,
     _openclaw_reason_code,
     _openclaw_reason_text,
-    _patch_malformed_tool_calls,
-    _patch_openai_response,
-    _patch_usage,
     _plugin_name_cache_lock,
     _plugin_terminal_status,
     _public_task_info,
@@ -232,6 +226,126 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
         )
 
 
+def _forward_provider_frame(event: Dict[str, Any]) -> bool:
+    """Copy one already-delivered provider frame into the plugin ``frames`` store.
+
+    main_server owns the session and cannot write to the message plane (the
+    ingest credential is process-local to the plugin server, which is embedded
+    here), so the frame arrives over the existing session PUB channel and this
+    is its only hop into the bus.
+
+    Gated on user plugins being enabled because ``frames`` exists for plugins
+    and nothing else: with them off there is no reader, and copying the user's
+    screen into a resident deque would be retention that buys nothing. Not
+    gated on the analyzer master switch -- that governs the analyzer, and the
+    frames bus is not part of it.
+
+    Synchronous on purpose. ``publish_frame`` only packs the record and does a
+    ``put_nowait``; a task per frame would cost more than the work it defers.
+    """
+    if not _user_plugins_enabled():
+        return False
+    image_b64 = (event or {}).get("image_base64")
+    if not isinstance(image_b64, str) or not image_b64:
+        return False
+    try:
+        from plugin.server.messaging.plane_bridge import build_frame_record, publish_frame
+
+        generation = (event or {}).get("generation")
+        record = build_frame_record(
+            image_base64=image_b64,
+            source=str((event or {}).get("source") or "unknown"),
+            captured_at=(event or {}).get("captured_at"),
+            turn_id=(event or {}).get("turn_id"),
+            generation=int(generation) if isinstance(generation, (int, float)) else None,
+            mime=str((event or {}).get("mime") or "image/jpeg"),
+            lanlan_name=(event or {}).get("lanlan_name"),
+            # The publisher's event_id is the frame's identity end to end, so a
+            # puller can correlate a bus record with the session-side log line.
+            frame_id=(event or {}).get("event_id"),
+            metadata=(event or {}).get("metadata"),
+        )
+        return bool(publish_frame(record))
+    except Exception as exc:
+        logger.debug("[FrameBus] forward failed: %s", exc)
+        return False
+
+
+def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
+    """Copy one already-handled conversation message into the ``conversations`` store.
+
+    The text dual of :func:`_forward_provider_frame`, and it exists for the same
+    reason: main_server owns the session but cannot write to the message plane,
+    so the record arrives over the session PUB channel and this is its only hop
+    onto the bus.
+
+    Gated on user plugins being enabled, exactly like the frame hop: the store
+    exists for plugins, and with them off a resident deque of what she said is
+    retention that buys nothing.
+
+    The record shape is dictated by ``ConversationRecord.from_raw`` /
+    ``from_index`` on the reading side -- ``content`` at the top level,
+    ``conversation_id`` / ``turn_type`` / ``lanlan_name`` / ``message_count``
+    inside ``metadata``. ``conversation_id`` in particular has to be in
+    ``metadata``: that is the only place ``TopicStore._extract_index`` looks
+    for it, so putting it at the top level would drop it from the index a
+    ``light=True`` read hands back.
+
+    Synchronous on purpose, like the frame hop: ``publish_record`` only packs
+    the record and does a ``put_nowait``.
+    """
+    if not _user_plugins_enabled():
+        return False
+    content = (event or {}).get("content")
+    if not isinstance(content, str) or not content.strip():
+        return False
+    try:
+        from plugin.message_plane.stores import (
+            CONVERSATIONS_STORE_NAME,
+            CONVERSATIONS_TOPIC,
+        )
+        from plugin.server.messaging.plane_bridge import publish_record
+
+        metadata_in = (event or {}).get("metadata")
+        metadata: Dict[str, Any] = dict(metadata_in) if isinstance(metadata_in, dict) else {}
+        # Absent stays absent rather than becoming ``""``: the reader turns an
+        # empty string into an empty ``conversation_id``, which reads as "this
+        # record belongs to a conversation whose id is blank" instead of "no id".
+        conversation_id = str((event or {}).get("conversation_id") or "")
+        if conversation_id:
+            metadata["conversation_id"] = conversation_id
+        metadata["turn_type"] = str((event or {}).get("turn_type") or "unknown")
+        lanlan_name = (event or {}).get("lanlan_name")
+        if lanlan_name:
+            metadata["lanlan_name"] = str(lanlan_name)
+        message_count = (event or {}).get("message_count")
+        metadata["message_count"] = (
+            int(message_count) if isinstance(message_count, (int, float)) else 0
+        )
+        record: Dict[str, Any] = {
+            "kind": "conversation",
+            "type": "conversation_turn",
+            "source": str((event or {}).get("source") or "unknown"),
+            "timestamp": time.time(),
+            "content": content,
+            "metadata": metadata,
+        }
+        # The publisher's event_id is this message's identity end to end, so a
+        # puller can dedupe without unpacking, same as a frame.
+        event_id = str((event or {}).get("event_id") or "")
+        if event_id:
+            record["id"] = event_id
+        publish_record(
+            store=CONVERSATIONS_STORE_NAME,
+            record=record,
+            topic=CONVERSATIONS_TOPIC,
+        )
+        return True
+    except Exception as exc:
+        logger.debug("[ConversationBus] forward failed: %s", exc)
+        return False
+
+
 def _resolve_analyze_lang(session_language: Optional[str]) -> str:
     """Language for the analyzer's prompts: session locale first, process global as fallback.
 
@@ -337,6 +451,12 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         return
     if event_type in {"voice_transcript_observed", "voice_transcript_request"}:
         _create_tracked_task(_handle_voice_transcript_request(event))
+        return
+    if event_type == "provider_frame_observed":
+        _forward_provider_frame(event)
+        return
+    if event_type == "conversation_turn_observed":
+        _forward_conversation_turn(event)
         return
     if event_type == "analyze_request":
         messages = event.get("messages", [])
@@ -541,14 +661,6 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 conversation_id=conversation_id,
                 trigger_user_msg_sig=trigger_user_msg_sig,
             )
-        elif result.execution_method == 'openfang':
-            await channels.openfang.dispatch(
-                result,
-                messages=messages,
-                lanlan_name=lanlan_name,
-                conversation_id=conversation_id,
-                trigger_user_msg_sig=trigger_user_msg_sig,
-            )
         else:
             logger.info(f"[TaskExecutor] No suitable execution method: {result.reason}")
 
@@ -611,83 +723,8 @@ async def startup():
         await _start_embedded_user_plugin_server()
     except Exception as e:
         logger.warning(f"[Agent] Failed to start embedded user plugin server: {e}")
-    # ── OpenFang 后台初始化 (仅通信层，进程由 Electron 管理) ──
-    async def _init_openfang_background():
-        """Wait for OpenFang daemon connectivity + sync config + register the executor agent."""
-        try:
-            adapter = OpenFangAdapter(base_url=OPENFANG_BASE_URL)
-            Modules.openfang = adapter
-            Modules.task_executor.openfang = adapter
-
-            # 等待 OpenFang 就绪 (由 Electron 并行启动，通常 <1s)
-            # check_connectivity 是同步 httpx 调用，用 to_thread 避免阻塞 event loop
-            for _attempt in range(30):
-                ok = await asyncio.to_thread(adapter.check_connectivity)
-                if ok:
-                    break
-                await asyncio.sleep(1)
-
-            if not adapter.init_ok:
-                logger.warning("[OpenFang] not reachable after 30s")
-                _set_capability("openfang", False, "OPENFANG_DAEMON_UNREACHABLE")
-                await _emit_agent_status_update()
-                return
-
-            # 同步 API Key + 写 config.toml（允许失败 — 用户可能尚未配置 Key）
-            try:
-                await adapter.sync_config()
-            except Exception as e:
-                logger.warning("[OpenFang] sync_config failed (non-fatal): %s", e)
-
-            # 等待 OpenFang 检测并 reload config.toml
-            # OpenFang 用文件监听检测 config 变化，但 reload 可能有延迟
-            try:
-                import os as _os
-                _home = _os.environ.get("HOME") or _os.environ.get("USERPROFILE") or ""
-                _cfg = _os.path.join(_home, ".openfang", "config.toml")
-                if _os.path.exists(_cfg):
-                    _os.utime(_cfg, None)  # touch to trigger fswatch
-            except Exception:
-                logger.debug("[OpenFang] failed to touch config file for fswatch", exc_info=True)
-            await asyncio.sleep(5)
-
-            # 拉取可用工具列表
-            try:
-                await adapter.fetch_tools_list()
-            except Exception as e:
-                logger.warning("[OpenFang] fetch_tools_list failed (non-fatal): %s", e)
-
-            # 注册无人格执行 Agent（允许失败 — 连通即可用）
-            # manifest 中直接带 api_key + provider=openai，不依赖环境变量
-            try:
-                agent_id = await adapter.push_agent_manifest()
-                # agent_id 是 daemon 返回的标识符（非用户/LLM 原文），可进 logger
-                logger.debug(
-                    "[OpenFang] push_agent_manifest returned: %s (executor_agent_id=%s)",
-                    agent_id, adapter._executor_agent_id,
-                )
-            except Exception as e:
-                import traceback
-                logger.warning("[OpenFang] push_agent_manifest failed (non-fatal): %s", e)
-                logger.debug("[OpenFang] push_agent_manifest traceback:\n%s", traceback.format_exc())
-                agent_id = None
-
-            # 只要 daemon 连通就标记 ready，不强制要求 agent 注册成功
-            _set_capability("openfang", True, "")
-            logger.info("[OpenFang] Ready (init_ok=%s, agent=%s, tools=%d)",
-                        adapter.init_ok, agent_id, adapter._cached_tools_count or 0)
-            await _emit_agent_status_update()
-        except Exception as exc:
-            logger.error("[OpenFang] background init failed: %s", exc)
-            _set_capability("openfang", False, str(exc))
-            await _emit_agent_status_update()
-
     # BrowserUse stays unloaded until its toggle, availability endpoint, or
-    # direct run is requested.  OpenFang remains an independent background
-    # connectivity task because Electron owns that external daemon lifecycle.
-    _openfang_task = asyncio.create_task(_init_openfang_background())
-    Modules._persistent_tasks.add(_openfang_task)
-    _openfang_task.add_done_callback(Modules._persistent_tasks.discard)
+    # direct run is requested.
 
     # Both CUA and BrowserUse share the agent LLM — default to "not connected"
     # and probe in background.  The single check updates both capability caches.
@@ -697,7 +734,6 @@ async def startup():
     # is NOT started here — it syncs with user_plugin_enabled (default OFF).
     # The lifecycle starts on-demand when the user toggles the plugin flag ON.
     _set_capability("user_plugin", True, "")
-    # OpenFang capability 由 _init_openfang_background() 管理，不在此处覆盖
     _llm_probe_task = asyncio.create_task(_fire_agent_llm_connectivity_check())
     Modules._persistent_tasks.add(_llm_probe_task)
     _llm_probe_task.add_done_callback(Modules._persistent_tasks.discard)
@@ -1281,24 +1317,6 @@ async def cancel_task(task_id: str):
                     Modules.browser_use.cancel(), label=f"browser_use:{task_id}"
                 )
             Modules.active_browser_use_task_id = None
-    elif task_type == "openfang":
-        if Modules.openfang:
-            # unregister_local_task must run AFTER cancel_running, not before:
-            # OpenFangAdapter.cancel_running looks up the remote task_id in
-            # _active_tasks and no-ops if missing. Unregistering first would
-            # turn the remote /cancel call into a silent no-op and leave the
-            # VM task running even though we report success locally.
-            async def _openfang_cancel_then_unregister(
-                adapter=Modules.openfang, tid=task_id
-            ):
-                try:
-                    await adapter.cancel_running(tid)
-                finally:
-                    adapter.unregister_local_task(tid)
-            _spawn_background_cancel(
-                _openfang_cancel_then_unregister(),
-                label=f"openfang:{task_id}",
-            )
     elif task_type == "openclaw":
         if Modules.openclaw:
             _spawn_background_cancel(

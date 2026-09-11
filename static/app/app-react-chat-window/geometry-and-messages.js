@@ -958,6 +958,16 @@
         I.syncCompactInteractionGeometry();
     }
 
+    I.republishCompactSurfaceLayoutChange = function republishCompactSurfaceLayoutChange(reason) {
+        if (!I.isCompactHomeMinimizeBallEnabled()) return false;
+        var currentRect = I.getCurrentCompactSurfaceRect();
+        if (!currentRect) return false;
+        I.dispatchCompactSurfaceLayoutChange(Object.assign({}, currentRect, {
+            reason: reason || 'lifecycle-visible'
+        }));
+        return true;
+    }
+
     I.stopCompactMinimizeBallTracking = function stopCompactMinimizeBallTracking() {
         if (I.compactMinimizeBallFrame) {
             window.cancelAnimationFrame(I.compactMinimizeBallFrame);

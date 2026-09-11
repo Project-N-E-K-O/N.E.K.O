@@ -487,6 +487,11 @@ export default {
       overrideBuiltinTitle: 'Mudar {plugin} para a origem do Market?',
       overrideBuiltinBody: 'A versão integrada ativa {current} será substituída pela versão {target} do Market. Os dados e a configuração do plugin permanecerão no armazenamento persistente.',
       overrideBuiltinConfirm: 'Mudar para o Market',
+      manualTakeoverTitle: 'Permitir que o N.E.K.O gerencie {plugin}?',
+      manualTakeoverBody: 'O diretório deste plugin é mantido manualmente. Ao continuar, a versão {current} será substituída por {target}; após o sucesso, o N.E.K.O poderá atualizar ou desinstalar este plugin de usuário.',
+      manualTakeoverConfirm: 'Substituir e gerenciar',
+      manualTakeoverCancelled: 'Substituição do plugin manual cancelada.',
+      manualTakeoverSucceeded: '{plugin} agora é gerenciado pelo N.E.K.O.',
       reinstallTitle: 'Reinstalar {plugin}?',
       reinstallBody: 'A versão {current} será substituída novamente pela versão {target}. Um plugin em execução será reiniciado brevemente.',
       reinstallConfirm: 'Reinstalar plugin',
@@ -500,6 +505,8 @@ export default {
       blockedBundleConflict: 'Este pacote contém um plugin instalado. Atualize os plugins um de cada vez.',
       blockedDirectoryConflict: 'A pasta de destino pertence a outro plugin e não foi alterada.',
       blockedLegacyPlugin: 'Uma versão anterior deste plugin ainda está instalada. Desinstale {plugin} antes de continuar.',
+      blockedOwnershipUnknown: 'Não foi possível confirmar quem possui a pasta do plugin. Restaure o registro da origem de instalação antes de tentar novamente.',
+      blockedInstallSourceReadOnly: 'O registro da origem de instalação está indisponível ou é somente leitura. Restaure-o antes de tentar novamente.',
       rollbackCompleted: 'A atualização falhou e a versão anterior foi restaurada.',
       rollbackIncomplete: 'A atualização falhou e a reversão ficou incompleta. Verifique o estado do plugin antes de continuar.',
       error: {
@@ -641,7 +648,13 @@ export default {
     returnedLines: 'Linhas retornadas',
     connected: 'Conectado',
     disconnected: 'Desconectado',
-    connectionFailed: 'Falha de conexão do fluxo de registros'
+    connectionFailed: 'Falha de conexão do fluxo de registros',
+    exportLog: 'Exportar arquivo de registros',
+    openLogDirectory: 'Abrir diretório de registros',
+    exportSuccess: 'Registro exportado com sucesso',
+    exportFailed: 'Falha ao exportar registro',
+    openDirectoryFailed: 'Falha ao abrir diretório',
+    noLogFileToExport: 'Nenhum arquivo de registro para exportar'
   },
   runs: {
     title: 'Execuções',
@@ -717,7 +730,9 @@ export default {
     resourceNotFound: 'Recurso solicitado não encontrado',
     internalServerError: 'Erro interno do servidor',
     serviceUnavailable: 'Serviço indisponível',
-    networkError: 'Erro de rede. Verifique sua conexão.'
+    networkError: 'Erro de rede. Verifique sua conexão.',
+    requestTimeout: 'A solicitação expirou. Tente novamente.',
+    pluginLifecycleTimeout: 'O início ou reinício do plugin expirou. Verifique os logs do plugin.'
   },
   welcome: {
     about: {

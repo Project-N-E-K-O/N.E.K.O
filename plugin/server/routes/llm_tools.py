@@ -182,9 +182,37 @@ async def llm_tool_callback(
     #  - A dict already shaped {"output": ..., "is_error": ...} →
     #    pass through verbatim. This is the path used when a handler
     #    wraps its own error semantics, e.g. via the SDK's Result type.
-    if isinstance(result, dict) and "is_error" in result and "output" in result:
-        out = {"output": result["output"], "is_error": bool(result["is_error"])}
+    #
+    # ``is_error`` explicitly marks an error envelope. A successful image
+    # envelope must contain both ``output`` and ``images``: an ``images`` key
+    # alone is common business data (for example search-result URLs) and must
+    # remain inside the model-visible output. A bare dict carrying only
+    # ``output`` also stays data for backward compatibility.
+    #
+    # 刻意和 main_routers/tool_router.py 的 looks_like_tool_envelope 不同，别
+    # 顺手合并：那条路的 wire shape 文档写死了 {"output": ..., "is_error": ...}，
+    # 单独一个 ``output`` 就是信封；这里收的是插件 handler 的返回值，
+    # ``output`` 单独出现是普通数据。
+    if isinstance(result, dict) and (
+        "is_error" in result or ("output" in result and "images" in result)
+    ):
+        out = {"is_error": bool(result.get("is_error", False))}
+        if "output" in result:
+            out["output"] = result["output"]
+        else:
+            out.update({
+                key: value
+                for key, value in result.items()
+                if key not in {"output", "is_error", "error", "images"}
+            })
         if result.get("error"):
             out["error"] = str(result["error"])
+        # Keep omitting an empty list for wire compatibility. Malformed values
+        # must still reach main_server's shared validator so it can attach an
+        # ``_image_warnings`` entry instead of silently losing the field.
+        if "images" in result:
+            images = result["images"]
+            if not isinstance(images, list) or images:
+                out["images"] = images
         return out
     return {"output": result, "is_error": False}

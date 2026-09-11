@@ -965,6 +965,26 @@ async def test_connect_qwen_server_vad_preserves_payload():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# The silence timeout is gated on the INFERRED api_type: an empty
+# api_type on a lanlan free route still resolves to 'free', and the auto
+# mic-off has to follow that inference like the rest of the class does.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_silence_timeout_uses_inferred_free_api_type():
+    client = OmniRealtimeClient(
+        base_url="wss://www.lanlan.tech/tts",
+        api_key="sk-test",
+        model="free-realtime",
+    )
+
+    assert client._api_type == ""
+    assert client._is_free_provider is True
+    assert client._enable_silence_timeout is True
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Regression: connect() must reset _has_server_vad to False in MANUAL
 # mode for every provider that defaults to server-VAD. Otherwise
 # stream_audio() and _check_silence_timeout() take the wrong branch

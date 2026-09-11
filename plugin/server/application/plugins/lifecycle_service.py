@@ -2,36 +2,32 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 import math
-import os
 import re
-import shutil
 import time as time_module
-import uuid
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
 from collections.abc import Mapping
+from functools import partial
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from fastapi import HTTPException
 
 from plugin._types.exceptions import PluginError, PluginLifecycleError
-from plugin.core.host import PluginProcessHost, _import_plugin_module
+from plugin.core.host import PluginProcessHost
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
     _collect_plugin_python_requirement_paths,
     _check_plugin_dependency,
-    _ensure_python_requirement_paths,
-    _extract_entries_preview,
     _find_missing_python_requirements,
+    _effective_entries,
+    _overlay_entry_declaration,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
-    scan_static_metadata,
 )
 from plugin.core.entry_points import (
     describe_plugin_entry_directory_mismatch,
@@ -41,8 +37,38 @@ from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
-from plugin.server.application.plugins.registry_service import PluginRegistryService
+from plugin.server.application.plugins.operation_lock import (
+    bounded_operation_wait,
+    PluginOperationBusy,
+    serialized_plugin_operation,
+)
+from plugin.server.application.plugins.registry_service import (
+    PluginRegistryService,
+    config_overrides_packaged_entries,
+)
+from plugin.server.application.plugins.installation_transactions import (
+    UninstallOwnershipError,
+    UninstallPluginError,
+    require_uninstall_ownership,
+    retry_deferred_plugin_code_cleanup_sync,
+    retry_deferred_profile_cleanup_sync,
+    uninstall_plugin,
+)
+from plugin.server.application.plugins.metadata_scanner import (
+    _DEFAULT_SCAN_TIMEOUT_SECONDS as _DEFAULT_METADATA_SCAN_TIMEOUT,
+    _handler_key_belongs_to_plugin,
+    IsolatedPluginMetadata,
+    install_isolated_plugin_metadata,
+    scan_plugin_metadata_isolated,
+)
+from plugin.server.infrastructure.packaged_metadata import (
+    SourceTreeSnapshot,
+    entries_config_digest,
+    read_packaged_metadata,
+    refresh_stale_packaged_metadata,
+    snapshot_source_tree,
+    stale_packaged_schema_version,
+)
 from plugin.server.application.install_source import (
     InstallSourceError,
     get_install_source_manager,
@@ -50,7 +76,6 @@ from plugin.server.application.install_source import (
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import (
     RuntimeOverridePersistenceError,
-    clear_runtime_override,
     get_runtime_auto_start_override,
     get_runtime_override,
     migrate_runtime_override,
@@ -66,27 +91,230 @@ from plugin.settings import (
     PLUGIN_SHUTDOWN_TIMEOUT,
     PLUGIN_STARTUP_TIMEOUT,
     PLUGIN_SYNC_AUTO_START_ON_TOGGLE,
-    get_plugin_state_root,
-    ensure_plugin_exec_state_roots_separated,
-    get_user_plugin_config_root,
-    get_user_plugin_exec_root,
-    get_user_package_profiles_root,
 )
+from plugin.server.infrastructure.autostart_approvals import clear_autostart_pending
 from plugin.utils import parse_bool_config
 
 logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
-_DEFERRED_PROFILE_CLEANUP_FILENAME = "package_profile_cleanup.json"
-# ``package_id`` allows dots, so the staged name must too; the leading dot,
-# the ``.deleting-<uuid4hex>`` suffix and full-name anchoring keep it exact.
-_DEFERRED_PROFILE_STAGING_NAME_PATTERN = re.compile(
-    r"^\.[A-Za-z0-9._-]+\.deleting-[0-9a-f]{32}$"
-)
+# 被整轮预算压缩后，一步至少还能拿到这么久。
+#
+# 没有下界的话，预算见底时算出来的是 0 或负数，那等于"直接判这个插件启动失败"
+# 而不是"抓紧试一次"——而走到启动阶段的插件都是我们刚亲手停掉的，判它失败就是
+# 把它留在停止状态；关停侧则会退化成直接杀进程而不是先请它自己收尾。
+#
+# 启动和关停各有各的下界。它们曾经共用一个数，而把启动的下界抬上去会连带把关停
+# 的最坏墙钟一起抬高——那是两件无关的事，一次改动不该同时动到。
+#
+# 启动 3.0 而不是 1.0：下界的意思是"至少给它一次真正的尝试"，而 1 秒买不到一次
+# 尝试。光是起子进程加导入框架，本机实测就要 0.74s（其中 0.38s 是 fastapi），插件
+# 自己的导入还没开始算。给一个必然超时的窗口，等于把健康插件在超支的那一轮记成
+# 启动失败。代价只落在已经超支的病态路径上：一轮 8 个插件最坏多花 16 秒，而正常
+# 一轮根本走不到这里。
+_MIN_CLAMPED_START_TIMEOUT = 3.0
+# 关停保持 1.0：这一步不起进程，它只是给插件一个说"我收好了"的机会。
+# 清理远端工具表这一步在没有预算约束时愿意花的时间（它自己内部还有更细的超时）。
+_CLEAR_TOOLS_BUDGET_SECONDS = 2.0
+# 预算见底时仍然留给它的一小段时间。不是"启动尝试"那种下界（那是
+# _MIN_CLAMPED_START_TIMEOUT），
+# 只是让这次幂等的远端清除**发得出去**——跳过的代价是永久的幽灵工具，而这
+# 一小段的代价只在 main_server 真的卡住时才付。
+_MIN_TOOL_CLEANUP_TIMEOUT = 0.25
+
+
+def _resolve_python_requirements(
+    conf: Any,
+    config_path: Path,
+    plugin_id: str,
+) -> tuple[list[str], list[Path], list[str]]:
+    """Read a plugin's declared Python deps and check them against its vendor dir.
+
+    三步全是磁盘 I/O：读 pyproject.toml、列出 vendor/ 下每个 dist-info、逐个读它们
+    的 METADATA。合成一个函数只是为了让调用方能一次 to_thread 掉，见 start_plugin。
+    """
+    requirements = _collect_plugin_python_requirements(conf, config_path, logger, plugin_id)
+    paths = _collect_plugin_python_requirement_paths(config_path)
+    missing = _find_missing_python_requirements(requirements, search_paths=paths)
+    return requirements, paths, missing
+
+
+_MIN_CLAMPED_STOP_TIMEOUT = 1.0
+
+
+def _read_packaged_isolated_metadata(
+    config_path: Path,
+    plugin_id: str,
+    *,
+    conf: object = None,
+    pdata: object = None,
+) -> IsolatedPluginMetadata | None:
+    """Reuse the packaging-time metadata instead of importing the plugin again.
+
+    Starting a plugin already imports it once — inside the plugin process. The
+    metadata worker was a *second* import of the same code, for a result the
+    package already carries (codex). When the package has valid metadata, read
+    it; otherwise fall back to the worker so a hand-dropped or dev-mode plugin
+    still gets its entries.
+
+    ⚠️ Handler keys embed the plugin id (``"<pid>.<entry>"``), and the id a
+    plugin runs under is not always the one its manifest declares — an id
+    conflict renames it. ``install_isolated_plugin_metadata`` drops every key
+    that does not belong to the runtime id, so handing it packaged keys minted
+    under a different id registers *nothing*: the plugin starts, reports
+    success, and exposes no entries at all (coderabbit). Fall back to the
+    worker in that case, since it mints keys under the id we pass it.
+
+    An empty ``handlers`` mapping is an answer, not a gap: a background-only
+    plugin registers no entries, and the current schema always writes the key.
+    Treating empty as "no metadata" sent exactly those plugins back through the worker —
+    one import for the scan, one for the host, so any module-level side effect
+    (writing state, sending a notification, launching a helper) happened twice
+    (codex). An artifact written under an older schema is refused by the reader
+    and takes the worker path; ``start_plugin`` then rewrites it from that scan
+    (``_upgrade_stale_packaged_metadata``), so the cost is one import, not one
+    per start. Schema 3 never shipped in a release, so no in-memory migration.
+
+    Returns ``None`` when there is no usable metadata at all.
+    """
+    packaged = read_packaged_metadata(Path(config_path).parent)
+    if packaged is None:
+        return None
+    if config_overrides_packaged_entries(conf, pdata, packaged):
+        # 打包期读的是暂存目录那份 plugin.toml，看不到用户的运行时配置/激活
+        # profile。生效配置一旦改过 entries 表，包里那份 handler 就不是这台机器上
+        # 该注册的那一套了（codex）。这种插件回落到真扫一次。
+        return None
+    if not packaged.built_in_this_environment:
+        # 这一份是别的机器上 import 出来的结果。插件完全可以按 sys.platform 或
+        # Python 版本条件注册入口，那样的话包里那套 handler 描述的是打包机的能力
+        # 集，不是这台机器的（codex）。展示用的 entries 可以将就，但注册进
+        # state.event_handlers 的这份是权威能力集——它错了，模型会去调一个这台机器
+        # 上根本不存在的入口。回落到真扫一次，代价就是本 PR 之前的原样。
+        logger.info(
+            "packaged metadata was produced in a different environment; "
+            "rescanning so the registered entries match this machine: "
+            "plugin_id={}",
+            plugin_id,
+        )
+        return None
+    if not all(
+        _handler_key_belongs_to_plugin(key, plugin_id) for key in packaged.handlers
+    ):
+        logger.info(
+            "packaged handler keys were minted under a different plugin id; "
+            "rescanning so they match the runtime id: plugin_id={}",
+            plugin_id,
+        )
+        return None
+    return IsolatedPluginMetadata(
+        entries_preview=_overlay_entry_declaration(
+            packaged.entries,
+            dict(conf) if isinstance(conf, Mapping) else {},
+            dict(pdata) if isinstance(pdata, Mapping) else {},
+        ),
+        handlers=dict(packaged.handlers),
+        entry_methods=dict(packaged.entry_methods),
+    )
+
+
+def _snapshot_stale_package_tree(config_path: Path) -> SourceTreeSnapshot | None:
+    """Fingerprint the tree before the scan imports it, if an upgrade is in prospect.
+
+    Only a stale-schema package can be upgraded, so only that case pays for
+    the snapshot; every other start skips this entirely.
+    """
+    plugin_dir = Path(config_path).parent
+    if stale_packaged_schema_version(plugin_dir) is None:
+        return None
+    return snapshot_source_tree(plugin_dir)
+
+
+def _upgrade_stale_packaged_metadata(
+    config_path: Path,
+    plugin_id: str,
+    scanned: IsolatedPluginMetadata,
+    *,
+    before_scan: SourceTreeSnapshot | None,
+    conf: object,
+    pdata: object,
+) -> None:
+    """Turn the scan a stale package forced into the package's next fast path.
+
+    Only when the effective ``entries`` table is the manifest's own: the file
+    describes the package, and an active profile or runtime override that
+    rewrote the table would otherwise be frozen into it (the digest gate in
+    ``_read_packaged_isolated_metadata`` would then treat that machine's
+    overrides as the packaged baseline).
+    """
+    if before_scan is None:
+        return
+    plugin_dir = Path(config_path).parent
+    try:
+        manifest = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    manifest_pdata = manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
+    if str(manifest_pdata.get("id") or "") != plugin_id:
+        # handler 键里嵌着运行时 id。id 冲突把这个插件改名成 foo_1 之后，扫描出的
+        # 键全是 foo_1.*；写进 foo 的包里，冲突一消失就再也对不上归属检查（coderabbit）。
+        logger.info(
+            "stale packaged metadata left as is; the runtime id differs from the "
+            "manifest id: plugin_id={}, manifest_id={}",
+            plugin_id,
+            manifest_pdata.get("id"),
+        )
+        return
+    if entries_config_digest(conf, pdata) != entries_config_digest(manifest, manifest_pdata):
+        logger.info(
+            "stale packaged metadata left as is; the effective configuration "
+            "overrides the entries table: plugin_id={}",
+            plugin_id,
+        )
+        return
+    refresh_stale_packaged_metadata(
+        plugin_dir,
+        before_scan=before_scan,
+        entries=scanned.entries_preview,
+        handlers=scanned.handlers,
+        entry_methods=scanned.entry_methods,
+        conf=manifest,
+        pdata=manifest_pdata,
+    )
+
+
+def _clamp_step_timeout(
+    configured: float,
+    budget: float | None,
+    *,
+    floor: float,
+) -> float:
+    """Fit one step of a stop or a start inside what is left of a round budget.
+
+    Never *widens*: a plugin that declared a 0.5 s timeout of its own keeps it
+    however generous the budget is, and however low the floor is. The floor
+    raises a squeezed budget, it does not raise the configured value.
+
+    One helper for both phases on purpose. The stop side had no floor at all,
+    so a spent budget handed ``shutdown_timeout≈0`` down and every remaining
+    plugin was killed outright instead of being asked to shut down.
+    """
+    if budget is None:
+        return configured
+    return min(configured, max(floor, budget))
+
+
+def _remaining_step_budget(deadline: float | None) -> float | None:
+    """Seconds left before ``deadline``, or ``None`` when the step is unbounded.
+
+    A start is several sequential expensive steps, not one. Handing the whole
+    call a single duration bounds only the step it is applied to and lets every
+    other step run past the round's wall clock; recomputing against an absolute
+    deadline is what makes the budget cover the call rather than one line of it
+    (CodeRabbit).
+    """
+    return None if deadline is None else deadline - time_module.monotonic()
 plugin_registry_service = PluginRegistryService()
-# The profile sharing decision and install-source soft-removal must form one
-# operation.  Serializing deletions prevents two members of the same package
-# from both observing the other as active and orphaning the shared profile.
 def _persist_user_runtime_intent(
     plugin_id: str,
     enabled: bool,
@@ -125,6 +353,39 @@ def _persist_user_runtime_intent(
             },
             log_level="error",
         ) from exc
+
+    if enabled:
+        # 清在偏好写盘**之后**。写盘失败会抛上去、只被报成 partial_success，而这台
+        # 机器上就没有用户 override 了——重启后注册表回落到 manifest 默认值
+        # （enabled/auto_start 都是 true）。先清的话，等于凭一个没落地的意图永久发出
+        # 了自启动批准（greptile）。
+        #
+        # 这是 autostart_approvals 那条"一切失败都朝着照常自启"原则的例外，而且不
+        # 冲突：那条原则说的是**读**不出记录时别把用户现有的自启动关掉；这里是**写**，
+        # 而待批准记录只存在于新装插件上——它们本来就没自启过，写失败时不批准，
+        # 回到的正是安装前的状态。
+        persisted = clear_autostart_pending(plugin_id)
+        # 改名前的那些 id 一起清。安装时按 manifest 声明的 id 记待批准，而插件可能
+        # 因为 id 冲突以另一个运行时 id 注册；只清运行时 id 的话，等冲突消失、它又
+        # 用回声明 id 时，那条残留记录会继续挡着它自启（coderabbit）。
+        for previous_plugin_id in previous_plugin_ids:
+            persisted = clear_autostart_pending(previous_plugin_id) and persisted
+        if not persisted:
+            # 批准没落地就不能报成"偏好已保存"。运行时偏好那一半确实写成了，但插件
+            # 仍然留在待批准集合里，重启后自启动筛选会再一次静默把它拦下来，而用户
+            # 手上没有任何线索（greptile）。走和偏好写失败同一条上报通道：调用方把它
+            # 降级成 partial_success，而不是让这次启动失败。
+            raise ServerDomainError(
+                code="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
+                message="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
+                status_code=500,
+                details={
+                    "plugin_id": plugin_id,
+                    "error_type": "AutostartApprovalPersistenceError",
+                    "runtime_state_changed": runtime_state_changed,
+                },
+                log_level="error",
+            )
 
 
 def _mark_preference_persistence_failure(
@@ -340,475 +601,19 @@ def _get_plugin_config_path(plugin_id: str) -> Path | None:
     return None
 
 
-def _resolve_plugin_dir_sync(plugin_id: str, plugin_meta: dict[str, object] | None) -> Path | None:
+def _resolve_plugin_config_path_sync(
+    plugin_id: str,
+    plugin_meta: dict[str, object] | None,
+) -> Path | None:
     config_path = _resolve_registered_config_path_sync(plugin_meta)
     if config_path is None:
         config_path = _get_plugin_config_path(plugin_id)
     if config_path is None:
         return None
     try:
-        return config_path.parent.resolve()
+        return config_path.resolve()
     except Exception:
-        return config_path.parent
-
-
-def _path_within_plugin_roots_sync(path: Path) -> bool:
-    try:
-        resolved_path = path.resolve()
-    except Exception:
-        resolved_path = path
-
-    resolved_exec_root = get_user_plugin_exec_root().resolve(strict=False)
-    resolved_builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT.resolve(strict=False)
-    resolved_state_root = get_plugin_state_root().resolve(strict=False)
-    if resolved_exec_root == resolved_state_root:
-        return False
-    allowed_roots: set[Path] = set()
-    if resolved_exec_root not in {resolved_builtin_root, resolved_state_root}:
-        allowed_roots.add(resolved_exec_root)
-    # Preserve injected/test roots while explicitly excluding both immutable
-    # builtin code and the SDK-owned persistent state root.
-    for root in PLUGIN_CONFIG_ROOTS:
-        resolved_root = root.resolve(strict=False)
-        if resolved_root not in {resolved_builtin_root, resolved_state_root}:
-            allowed_roots.add(resolved_root)
-    # Deletion owns one direct child installation only. In particular, the
-    # builtin root and SDK state root are never acceptable lifecycle targets.
-    return resolved_path.parent in allowed_roots
-
-
-def _remove_plugin_metadata_sync(plugin_id: str) -> bool:
-    removed = False
-    with state.acquire_plugins_write_lock():
-        if plugin_id in state.plugins:
-            state.plugins.pop(plugin_id, None)
-            removed = True
-    if removed:
-        state.invalidate_snapshot_cache("plugins")
-    return removed
-
-
-def _delete_plugin_directory_sync(plugin_dir: Path) -> bool:
-    if not plugin_dir.exists():
-        return False
-    shutil.rmtree(plugin_dir)
-    return True
-
-
-def _profile_path_from_entry_sync(entry: object, profiles_root: Path) -> Path | None:
-    if getattr(entry, "channel", "") not in {"imported", "market"}:
-        return None
-    if getattr(entry, "profile_installed", None) is False:
-        return None
-    package_id = str(getattr(entry, "package_id", "") or getattr(entry, "plugin_id", ""))
-    if not package_id:
-        return None
-    raw_profile_dir = str(getattr(entry, "profile_dir", "") or "")
-    candidate = (
-        Path(raw_profile_dir).expanduser()
-        if raw_profile_dir
-        else profiles_root / package_id
-    )
-    if _path_has_symlink_ancestor(candidate):
-        return None
-    try:
-        profile_dir = candidate.resolve()
-    except Exception:
-        return None
-    if profile_dir.name != package_id:
-        return None
-    # A recorded profile location remains valid after the configured profile
-    # root changes. Legacy fallback paths are still constrained to that root.
-    if not raw_profile_dir and (
-        profile_dir != profiles_root and profiles_root not in profile_dir.parents
-    ):
-        return None
-    return profile_dir
-
-
-def _path_has_symlink_ancestor(path: Path) -> bool:
-    """Reject a path when resolving it would traverse a symlink."""
-    return any(candidate.is_symlink() for candidate in (path, *path.parents))
-
-
-def _has_other_entry_without_package_id(
-    active_entries: object,
-    current_primary_key: tuple[str, str],
-) -> bool:
-    """Report whether another installed row also predates package id tracking."""
-    for entry in active_entries or ():
-        if getattr(entry, "channel", "") not in {"imported", "market"}:
-            continue
-        key = (getattr(entry, "root_id", ""), getattr(entry, "directory_name", ""))
-        if key == current_primary_key:
-            continue
-        if not str(getattr(entry, "package_id", "") or ""):
-            return True
-    return False
-
-
-@dataclass(frozen=True)
-class _StagedPackageProfile:
-    original_dir: Path
-    staged_dir: Path
-
-
-def _deferred_profile_cleanup_record_path_sync() -> Path:
-    return (
-        get_plugin_state_root().expanduser().resolve().parent
-        / _DEFERRED_PROFILE_CLEANUP_FILENAME
-    )
-
-
-def _legacy_deferred_profile_cleanup_record_path_sync() -> Path:
-    return (
-        get_user_plugin_config_root().expanduser().resolve().parent
-        / _DEFERRED_PROFILE_CLEANUP_FILENAME
-    )
-
-
-def _load_deferred_profile_cleanup_paths_sync(record_path: Path) -> list[str] | None:
-    """Return the pending paths, or ``None`` when an existing record is unusable.
-
-    Callers must not overwrite a record they could not read: the paths already
-    queued in it would be dropped and their staging directories would then be
-    retained forever.
-    """
-    try:
-        raw = json.loads(record_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return []
-    except (OSError, ValueError, TypeError) as exc:
-        logger.error(
-            "delete_plugin: failed to read deferred profile cleanup record {}: {}",
-            record_path,
-            exc,
-        )
-        return None
-    if not isinstance(raw, dict) or not isinstance(raw.get("staged_paths"), list):
-        logger.error(
-            "delete_plugin: invalid deferred profile cleanup record: {}",
-            record_path,
-        )
-        return None
-    return [path for path in raw["staged_paths"] if isinstance(path, str) and path]
-
-
-def _save_deferred_profile_cleanup_paths_sync(record_path: Path, paths: list[str]) -> None:
-    if not paths:
-        try:
-            record_path.unlink()
-        except FileNotFoundError:
-            pass
-        return
-    record_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = record_path.with_name(
-        f".{record_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    )
-    try:
-        temporary_path.write_text(
-            json.dumps({"schema_version": 1, "staged_paths": paths}),
-            encoding="utf-8",
-        )
-        temporary_path.replace(record_path)
-    finally:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _record_deferred_profile_cleanup_sync(staged_profile: _StagedPackageProfile) -> bool:
-    try:
-        record_path = _deferred_profile_cleanup_record_path_sync()
-        paths = _load_deferred_profile_cleanup_paths_sync(record_path)
-        if paths is None:
-            return False
-        staged_path = str(staged_profile.staged_dir)
-        if staged_path not in paths:
-            paths.append(staged_path)
-        _save_deferred_profile_cleanup_paths_sync(record_path, paths)
-        return True
-    except Exception as exc:
-        logger.error(
-            "delete_plugin: failed to persist deferred profile cleanup for {}: {}",
-            staged_profile.staged_dir,
-            exc,
-        )
-        return False
-
-
-def _is_safe_deferred_profile_cleanup_path(path: Path) -> bool:
-    return (
-        path.is_absolute()
-        and _DEFERRED_PROFILE_STAGING_NAME_PATTERN.fullmatch(path.name) is not None
-        and not _path_has_symlink_ancestor(path)
-    )
-
-
-def _retry_deferred_profile_cleanup_sync() -> int:
-    """Retry profile cleanup jobs persisted after transient deletion failures."""
-    record_path = _deferred_profile_cleanup_record_path_sync()
-    record_paths = [record_path]
-    legacy_record_path = _legacy_deferred_profile_cleanup_record_path_sync()
-    if legacy_record_path != record_path and legacy_record_path.exists():
-        record_paths.append(legacy_record_path)
-
-    paths: list[str] = []
-    for candidate in record_paths:
-        loaded = _load_deferred_profile_cleanup_paths_sync(candidate)
-        if loaded is None:
-            return 0
-        for raw_path in loaded:
-            if raw_path not in paths:
-                paths.append(raw_path)
-    if not paths:
-        return 0
-
-    remaining_paths: list[str] = []
-    cleaned = 0
-    for raw_path in paths:
-        staged_path = Path(raw_path).expanduser()
-        if not _is_safe_deferred_profile_cleanup_path(staged_path):
-            logger.error(
-                "delete_plugin: refusing unsafe deferred profile cleanup path: {}",
-                staged_path,
-            )
-            remaining_paths.append(raw_path)
-            continue
-        try:
-            shutil.rmtree(staged_path)
-        except FileNotFoundError:
-            cleaned += 1
-        except OSError as exc:
-            logger.warning(
-                "delete_plugin: deferred profile cleanup still pending for {}: {}",
-                staged_path,
-                exc,
-            )
-            remaining_paths.append(raw_path)
-        else:
-            cleaned += 1
-    try:
-        _save_deferred_profile_cleanup_paths_sync(record_path, remaining_paths)
-    except OSError as exc:
-        logger.error(
-            "delete_plugin: failed to update deferred profile cleanup record {}: {}",
-            record_path,
-            exc,
-        )
-    else:
-        for legacy_path in record_paths[1:]:
-            try:
-                legacy_path.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                logger.warning(
-                    "delete_plugin: failed to remove migrated cleanup record {}: {}",
-                    legacy_path,
-                    exc,
-                )
-    return cleaned
-
-
-def _stage_orphaned_package_profile_sync(plugin_dir: Path) -> _StagedPackageProfile | None:
-    """Stage an unshared package profile while deletion is in progress.
-
-    Moving the profile out of its package location prevents a concurrent
-    reinstall from seeing it, but preserves it until executable deletion has
-    succeeded. This lets a failed executable deletion roll back without
-    losing the plugin's persisted configuration.
-    """
-    manager = get_install_source_manager()
-    if manager is None:
-        return None
-
-    try:
-        current_entry = manager.entry_for_directory(
-            plugin_dir,
-            include_removed=False,
-        )
-        active_entries = manager.list_entries()
-    except InstallSourceError as exc:
-        logger.warning(
-            "delete_plugin: failed to inspect install source for plugin_dir={}: {}",
-            plugin_dir,
-            exc,
-        )
-        return None
-    except Exception as exc:
-        logger.warning(
-            "delete_plugin: unexpected install-source cleanup failure for plugin_dir={}: {}",
-            plugin_dir,
-            exc,
-        )
-        return None
-
-    # Only package installers own package profiles. A scanner-created manual
-    # entry with no profile record must never infer ownership from a matching
-    # directory name.
-    if current_entry is None or getattr(current_entry, "channel", "") not in {"imported", "market"}:
-        return None
-
-    current_primary_key = (
-        getattr(current_entry, "root_id", ""),
-        getattr(current_entry, "directory_name", ""),
-    )
-    recorded_package_id = str(getattr(current_entry, "package_id", "") or "")
-    if _has_other_entry_without_package_id(active_entries, current_primary_key):
-        # Rows written before the package id was tracked do not say which
-        # package owns their profile, and a bundle's profile is named after the
-        # package rather than after any member plugin. Such a row may be a
-        # sibling from the same bundle that still uses this profile, and the
-        # sharing check below cannot see it: it can only infer that row's
-        # profile from its plugin id, which is not where a bundle profile
-        # lives. This holds whichever side is missing the package id, so the
-        # guard looks at every other installed row rather than only at ours.
-        #
-        # Cost: one such row suppresses profile cleanup for every deletion
-        # until it is itself removed or reinstalled, which degrades to the
-        # pre-change behaviour (a stale profile blocks a reinstall). That is
-        # strictly better than permanently deleting a sibling's configuration.
-        logger.warning(
-            "delete_plugin: skipping profile cleanup while an installation "
-            "without a recorded package id may share this profile: {}",
-            plugin_dir,
-        )
-        return None
-
-    package_id = recorded_package_id or str(getattr(current_entry, "plugin_id", "") or "")
-    if not package_id:
-        return None
-    recorded_profile_dir = str(getattr(current_entry, "profile_dir", "") or "")
-    if getattr(current_entry, "profile_installed", None) is False:
-        return None
-
-    try:
-        profiles_root = get_user_package_profiles_root().resolve()
-        profile_candidate = (
-            Path(recorded_profile_dir).expanduser()
-            if recorded_profile_dir
-            else profiles_root / package_id
-        )
-        if _path_has_symlink_ancestor(profile_candidate):
-            logger.warning(
-                "delete_plugin: refusing to remove symlinked package profile path: {}",
-                profile_candidate,
-            )
-            return None
-        current_profile_dir = profile_candidate.resolve()
-    except Exception as exc:
-        logger.warning(
-            "delete_plugin: failed to resolve package profile for plugin_dir={}: {}",
-            plugin_dir,
-            exc,
-        )
-        return None
-
-    state_root = get_plugin_state_root().expanduser().resolve(strict=False)
-    if (
-        current_profile_dir == state_root
-        or state_root in current_profile_dir.parents
-        or current_profile_dir in state_root.parents
-    ):
-        logger.warning(
-            "delete_plugin: refusing to remove package profile overlapping "
-            "the persistent state root: {}",
-            current_profile_dir,
-        )
-        return None
-
-    builtin_root = Path(BUILTIN_PLUGIN_CONFIG_ROOT).expanduser().resolve(strict=False)
-    if (
-        current_profile_dir == builtin_root
-        or builtin_root in current_profile_dir.parents
-        or current_profile_dir in builtin_root.parents
-    ):
-        logger.warning(
-            "delete_plugin: refusing to remove package profile overlapping "
-            "the builtin plugin root: {}",
-            current_profile_dir,
-        )
-        return None
-
-    if current_profile_dir.name != package_id or (
-        not recorded_profile_dir
-        and (
-            current_profile_dir != profiles_root
-            and profiles_root not in current_profile_dir.parents
-        )
-    ):
-        logger.warning(
-            "delete_plugin: refusing to remove unsafe package profile path: {}",
-            current_profile_dir,
-        )
-        return None
-
-    for entry in active_entries:
-        if (
-            getattr(entry, "root_id", ""),
-            getattr(entry, "directory_name", ""),
-        ) == current_primary_key:
-            continue
-        if _profile_path_from_entry_sync(entry, profiles_root) == current_profile_dir:
-            return None
-
-    staged_profile_dir = current_profile_dir.with_name(
-        f".{current_profile_dir.name}.deleting-{uuid.uuid4().hex}"
-    )
-    try:
-        current_profile_dir.replace(staged_profile_dir)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        logger.error(
-            "delete_plugin: failed to stage package profile {}: {}",
-            current_profile_dir,
-            exc,
-        )
-        raise
-    return _StagedPackageProfile(
-        original_dir=current_profile_dir,
-        staged_dir=staged_profile_dir,
-    )
-
-
-def _restore_staged_package_profile_sync(staged_profile: _StagedPackageProfile) -> None:
-    """Restore a profile after executable deletion failed."""
-    if not staged_profile.staged_dir.exists():
-        return
-    staged_profile.staged_dir.replace(staged_profile.original_dir)
-
-
-def _finalize_staged_package_profile_sync(staged_profile: _StagedPackageProfile) -> Path | None:
-    """Permanently remove a profile only after executable deletion succeeds."""
-    try:
-        shutil.rmtree(staged_profile.staged_dir)
-    except FileNotFoundError:
-        return None
-    return staged_profile.original_dir
-
-
-def _mark_install_source_removed_sync(plugin_dir: Path) -> None:
-    """Soft-delete the source record without blocking lifecycle cleanup."""
-    manager = get_install_source_manager()
-    if manager is None:
-        return
-    try:
-        manager.mark_removed(directory_path=plugin_dir)
-    except InstallSourceError as exc:
-        logger.warning(
-            "delete_plugin: failed to update install source for plugin_dir={}: {}",
-            plugin_dir,
-            exc,
-        )
-    except Exception as exc:
-        logger.warning(
-            "delete_plugin: unexpected install-source update failure for plugin_dir={}: {}",
-            plugin_dir,
-            exc,
-        )
+        return config_path
 
 
 def _register_or_replace_host_sync(plugin_id: str, host: PluginHostContract) -> int:
@@ -1046,7 +851,20 @@ async def _start_host_with_timeout(
         raise
 
 
+# reload-all 停止阶段的墙钟预算。
+#
+# 每个插件的 stop 都要独立抢一次跨进程锁（见下面 reload_all_plugins 里的说明：
+# 这一段无法真并行），所以耗时随插件数线性增长，而前端只等 30s。超预算就停下，
+# 已经停掉的照常汇报，剩下的留在原地——比让整个请求超时、而操作又在后台继续
+# 落地要好。
+# Env: NEKO_PLUGIN_RELOAD_ALL_BUDGET
+from plugin.server.application.plugins._env_budgets import env_seconds
+
+_RELOAD_ALL_BUDGET_SECONDS = env_seconds("NEKO_PLUGIN_RELOAD_ALL_BUDGET", 20.0)
+
+
 class PluginLifecycleService:
+    @serialized_plugin_operation
     async def start_plugin(
         self,
         plugin_id: str,
@@ -1054,6 +872,7 @@ class PluginLifecycleService:
         *,
         refresh_registry: bool = True,
         persist_user_intent: bool = False,
+        start_deadline: float | None = None,
     ) -> dict[str, object]:
         start_time = time_module.perf_counter()
         original_plugin_id = plugin_id
@@ -1288,16 +1107,26 @@ class PluginLifecycleService:
                     error_type="DuplicatePlugin",
                 )
             current_plugin_id = resolved_id
-            python_requirements = _collect_plugin_python_requirements(
+            # 这一步是真正的磁盘 I/O，而且原本直接跑在事件循环线程上：一个 200
+            # 个分发包的 vendor 目录冷读实测 0.31s、600 个 0.97s（Windows 本机；
+            # 热读分别是 45ms / 184ms），整个服务器在这期间不响应任何请求
+            # （Greptile）。挪进线程——它周围每一步本来就是这么做的（建 host、
+            # 元数据扫描、运行时元数据落盘）。
+            #
+            # 不给它套超时。这是一道**前置闸门**，不是可以缩短的步骤：超时之后
+            # 只剩两条路，蒙着头启动（缺依赖的进程起来就死，代价是一次完整的子
+            # 进程 spawn，更贵），或者判它依赖缺失（把好插件误报成硬失败，最坏）。
+            # 它花掉的时间本来就落在预算里——_remaining_step_budget 在它**之后**
+            # 才取，所以后面每一步的上限已经被它扣减过了。
+            (
+                python_requirements,
+                python_requirement_paths,
+                unsatisfied_python_requirements,
+            ) = await asyncio.to_thread(
+                _resolve_python_requirements,
                 conf,
                 config_path,
-                logger,
                 current_plugin_id,
-            )
-            python_requirement_paths = _collect_plugin_python_requirement_paths(config_path)
-            unsatisfied_python_requirements = _find_missing_python_requirements(
-                python_requirements,
-                search_paths=python_requirement_paths,
             )
             if unsatisfied_python_requirements:
                 raise _to_domain_error(
@@ -1340,6 +1169,90 @@ class PluginLifecycleService:
                         error_type="DependencyCheckFailed",
                     )
 
+            # 元数据在 host 起来**之前**取。取法有两种：包里带了就直接读，没有才
+            # 起一次隔离 worker 去 import。
+            #
+            # ⚠️ 顺序是承重的。放在 host 起来之后的话，那次 import 和插件进程自己
+            # 那次是并发的：模块级代码里拿文件锁、绑端口、起单例的插件会在第二次
+            # import 上失败，于是生命周期清理把一个健康的 host 杀掉、把这次启动报成
+            # 失败；没有直接冲突的插件也会把 import 期副作用执行两遍（codex）。
+            # 本 PR 之前这条路是安全的，因为扫描发生在 refresh_plugin 里、早于
+            # host 启动——刷新不再扫描之后，得在这里把那个顺序还回来。
+            #
+            # 上限按剩余预算收窄：扫描自己的上限是 10s，只钳住 host 启动的话，一次
+            # 冷扫描就能把整轮 reload 的墙钟顶穿（CodeRabbit）。
+            module_path, class_name = entry.split(":", 1)
+            isolated_metadata = await asyncio.to_thread(
+                partial(
+                    _read_packaged_isolated_metadata,
+                    config_path,
+                    current_plugin_id,
+                    conf=conf,
+                    pdata=pdata,
+                )
+            )
+            if isolated_metadata is None:
+                # 预算在读完包内元数据之后才算。读那一步自己可能要哈希一整棵改过的
+                # 树，然后才回落——在它前面算出来的上限是过期快照，worker 还会拿到
+                # 接近 10s 的额度，整轮 reload 就会超出对外承诺的墙钟（codex）。
+                # 和下面 startup_timeout_value 的重算是同一条判据。
+                scan_timeout = _clamp_step_timeout(
+                    _DEFAULT_METADATA_SCAN_TIMEOUT,
+                    _remaining_step_budget(start_deadline),
+                    floor=_MIN_CLAMPED_START_TIMEOUT,
+                )
+                # 包里那份元数据如果只是 schema 过期，这次扫描学到的就是打包器本
+                # 该写的那份：写回去，下次启动走快路径。指纹在 import 之前先取一份，
+                # 之后比对，和打包器一样拒绝"import 改动了树"的情况。reload_all 有
+                # 总预算，可选的优化不放进去；应用启动的自动拉起没有截止期，在那里做。
+                before_scan = (
+                    await asyncio.to_thread(_snapshot_stale_package_tree, config_path)
+                    if start_deadline is None
+                    else None
+                )
+                isolated_metadata = await asyncio.to_thread(
+                    scan_plugin_metadata_isolated,
+                    plugin_id=current_plugin_id,
+                    module_path=module_path,
+                    class_name=class_name,
+                    config_path=config_path,
+                    conf=conf,
+                    pdata=pdata,
+                    python_requirement_paths=python_requirement_paths,
+                    timeout=scan_timeout,
+                )
+                await asyncio.to_thread(
+                    _upgrade_stale_packaged_metadata,
+                    config_path,
+                    current_plugin_id,
+                    isolated_metadata,
+                    before_scan=before_scan,
+                    conf=conf,
+                    pdata=pdata,
+                )
+
+            if start_deadline is not None and startup_timeout_value is not None:
+                # reload-all 把本轮的截止期压进来。只在启动**开始前**检查一次是不
+                # 够的：一个在截止期前一瞬开始的启动，之后仍会一路等到它自己的
+                # startup timeout，于是整轮 reload 照样冲破对外承诺的墙钟，前端早已
+                # 放弃而插件状态还在被改（codex / CodeRabbit / Greptile）。
+                #
+                # 压进去而不是套 asyncio.wait_for：start_plugin 带
+                # @serialized_plugin_operation，那个包装器拿到锁之后会屏蔽取消，
+                # 外面套超时只会把一次真实结果报成超时（见 stop 那边的说明）。
+                #
+                # ⚠️ 必须算在取元数据**之后**。取元数据现在排在 host 启动前面，它自己
+                # 最多要花一个 scan_timeout；在它前面算出来的上限，等真正调
+                # _start_host_with_timeout 时已经是过期快照，于是启动阶段的墙钟会比
+                # 设计值多出"每个插件一次扫描"——正是这段钳位本来要防的那件事
+                # （coderabbit）。_remaining_step_budget 按绝对截止期算，挪到这里重算
+                # 就是对的。
+                startup_timeout_value = _clamp_step_timeout(
+                    startup_timeout_value,
+                    _remaining_step_budget(start_deadline),
+                    floor=_MIN_CLAMPED_START_TIMEOUT,
+                )
+
             startup_result = await _start_host_with_timeout(
                 plugin_id=current_plugin_id,
                 host_obj=host_obj,
@@ -1366,36 +1279,12 @@ class PluginLifecycleService:
                         error_type="ProcessDiedImmediately",
                     )
 
-            # Mirror the startup loader: ensure the plugin's vendor/ entries
-            # are on sys.path before we import its entry module here, so a
-            # plugin whose top-level imports use vendored packages doesn't
-            # fail this parent-process metadata scan even though the child
-            # process would import it just fine.
-            _ensure_python_requirement_paths(
-                python_requirement_paths,
-                logger,
+            await asyncio.to_thread(
+                install_isolated_plugin_metadata,
                 current_plugin_id,
+                isolated_metadata,
             )
-            module_path, class_name = entry.split(":", 1)
-            module_obj = await asyncio.to_thread(_import_plugin_module, module_path, config_path, logger)
-            cls_obj = getattr(module_obj, class_name)
-            if not isinstance(cls_obj, type):
-                raise _to_domain_error(
-                    code="INVALID_PLUGIN_CLASS",
-                    message=f"Plugin '{current_plugin_id}' entry class '{class_name}' is invalid",
-                    status_code=500,
-                    plugin_id=current_plugin_id,
-                    error_type="InvalidPluginClass",
-                )
-
-            await asyncio.to_thread(scan_static_metadata, current_plugin_id, cls_obj, conf, pdata)
-            entries_preview = await asyncio.to_thread(
-                _extract_entries_preview,
-                current_plugin_id,
-                cls_obj,
-                conf,
-                pdata,
-            )
+            entries_preview = isolated_metadata.entries_preview
             await asyncio.to_thread(
                 _set_plugin_runtime_metadata_sync,
                 current_plugin_id,
@@ -1494,11 +1383,13 @@ class PluginLifecycleService:
                 error_type=type(exc).__name__,
             ) from exc
 
+    @serialized_plugin_operation
     async def stop_plugin(
         self,
         plugin_id: str,
         *,
         persist_user_intent: bool = False,
+        stop_deadline: float | None = None,
     ) -> dict[str, object]:
         host_obj = await asyncio.to_thread(_get_plugin_host_sync, plugin_id)
         if host_obj is None:
@@ -1521,7 +1412,22 @@ class PluginLifecycleService:
 
         try:
             _emit_lifecycle_event(event_type="plugin_stop_requested", plugin_id=plugin_id)
-            await host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+            # 剩余预算在这里算，不在调用方那边算。这个函数体是在
+            # @serialized_plugin_operation 拿到锁**之后**才跑的，所以此刻的"还剩
+            # 多少"才是真的；在外面算的话，一次等了 19s 锁的关停照样会拿到按 20s
+            # 算出来的上限，停止阶段就此冲破对外承诺的墙钟（codex）。和启动侧收
+            # start_deadline 是同一个形状。
+            await host_obj.shutdown(
+                timeout=(
+                    PLUGIN_SHUTDOWN_TIMEOUT
+                    if stop_deadline is None
+                    else _clamp_step_timeout(
+                        PLUGIN_SHUTDOWN_TIMEOUT,
+                        _remaining_step_budget(stop_deadline),
+                        floor=_MIN_CLAMPED_STOP_TIMEOUT,
+                    )
+                )
+            )
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             # Clear any LLM tools the plugin had registered with
@@ -1533,10 +1439,56 @@ class PluginLifecycleService:
             # model could still pick them only to hit a 404 on
             # dispatch.
             try:
-                await clear_plugin_llm_tools(plugin_id)
+                # 这一步也在锁里，也在停止阶段的预算里。它自己那个 2s 超时是
+                # 独立的，所以一次卡住的 main_server 能让关停在预算之外再多花
+                # 两秒，而锁一直握着（codex）。按剩余预算收窄。
+                #
+                # 但**不能**用 _clamp_step_timeout：那个下界是给"启动"用的，因为
+                # 一个被我们停掉的插件必须拿到一次真正的尝试。这里是尽力而为的
+                # 远端清理，预算见底还硬给它 1s，就是每个插件都在锁上多压一秒
+                # （CodeRabbit）。
+                #
+                # 也**不能**在预算见底时干脆跳过——我上一版就是那么写的，是错的。
+                # 全仓只有这一处清理远端工具注册，没有任何对账或重试兜底：跳过之后
+                # host 已经摘掉，而 main_server 那边的工具还在向模型公布，模型选中
+                # 它只会拿到"插件没在跑"，并且永远不会自愈（Greptile）。
+                #
+                # 所以给一个很小的下界，让它至少发得出去。这比跳过**严格更好**：
+                # 失败了也不过回到跳过的状态（这个 POST 是按 source 整体清除、幂等，
+                # 重发无害），成功了就少一批幽灵工具。而正常情况下这是一次本机
+                # POST、毫秒级返回，下界根本不会生效。
+                cleanup_budget = _remaining_step_budget(stop_deadline)
+                cleanup_result = await clear_plugin_llm_tools(
+                    plugin_id,
+                    timeout=(
+                        None
+                        if cleanup_budget is None
+                        else min(
+                            _CLEAR_TOOLS_BUDGET_SECONDS,
+                            max(_MIN_TOOL_CLEANUP_TIMEOUT, cleanup_budget),
+                        )
+                    ),
+                )
+                if isinstance(cleanup_result, dict) and not cleanup_result.get("ok"):
+                    # 提到 warning。清理本身是尽力而为，但"没清掉"的后果是模型看得见
+                    # 一个调不通的工具、而没有任何东西会重试；debug 级别等于没留痕。
+                    logger.warning(
+                        "plugin stopped but its LLM tools may still be advertised: "
+                        "plugin_id={}, reason={}",
+                        plugin_id,
+                        cleanup_result.get("error") or cleanup_result.get("status_code"),
+                    )
             except Exception as exc:
-                logger.debug(
-                    "clear_plugin_llm_tools failed (best-effort): plugin_id={}, err_type={}, err={}",
+                # 和上面 ok=False 那条同一句话、同一个级别：两条路的后果一模一样
+                # ——工具可能还挂在 main_server 上，而没有任何东西会重试。
+                #
+                # 抛出这条尤其隐蔽：clear_plugin_tools 内部只挡 httpx.HTTPError 和
+                # asyncio.TimeoutError，一个 content-type 声明是 JSON、正文却坏掉的
+                # 响应会让 resp.json() 抛 ValueError 一路冒到这里（CodeRabbit）。留在
+                # debug 的话，这条路上的幽灵工具照样无从追查。
+                logger.warning(
+                    "plugin stopped but its LLM tools may still be advertised: "
+                    "plugin_id={}, err_type={}, err={}",
                     plugin_id,
                     type(exc).__name__,
                     str(exc),
@@ -1583,6 +1535,7 @@ class PluginLifecycleService:
                 error_type=type(exc).__name__,
             ) from exc
 
+    @serialized_plugin_operation
     async def reload_plugin(self, plugin_id: str) -> dict[str, object]:
         _emit_lifecycle_event(event_type="plugin_reload_requested", plugin_id=plugin_id)
 
@@ -1594,7 +1547,10 @@ class PluginLifecycleService:
                 if error.status_code != 404:
                     raise
 
-        result = await self.start_plugin(plugin_id)
+        # reload 是用户按的按钮，而前端在插件停着的时候也给这个按钮。用它把一个
+        # 待批准的插件启动起来，和用 start 启动是同一件事，批准位一样要清掉——否则
+        # 那个插件永远启动得起来、却永远不自启（codex）。
+        result = await self.start_plugin(plugin_id, persist_user_intent=True)
         _emit_lifecycle_event(event_type="plugin_reloaded", plugin_id=plugin_id)
         return result
 
@@ -1623,8 +1579,57 @@ class PluginLifecycleService:
                 "message": "No running plugins to reload",
             }
 
-        stop_tasks = [self._safe_stop_for_reload(plugin_id) for plugin_id in running_plugin_ids]
-        stop_outcomes = await asyncio.gather(*stop_tasks)
+        # 顺序，不是 gather。
+        #
+        # 这里原本是 asyncio.gather，但它一点并发都买不到：每个
+        # _safe_stop_for_reload 内层的 stop_plugin 自己带
+        # @serialized_plugin_operation，而那把锁的重入是按 asyncio.Task 认的
+        # （_OPERATION_OWNER 存的是任务对象）。gather 给每个协程新建一个 Task，
+        # 子任务的 current_task 必然不等于持锁那个，于是重入判定失败，N 个 stop
+        # 严格排队。这个"按任务认"是刻意的——它防的正是无关任务蹭别人的锁——
+        # 所以不能靠改重入来让它真并行。
+        #
+        # 写成顺序循环是为了让代码说实话：它本来就是顺序的。同时顺带能在中途
+        # 检查预算，gather 做不到这件事。
+        stop_outcomes = []
+        skipped_over_budget: list[str] = []
+        stop_deadline = time_module.monotonic() + _RELOAD_ALL_BUDGET_SECONDS
+        for index, plugin_id in enumerate(running_plugin_ids):
+            if time_module.monotonic() > stop_deadline:
+                # 剩下的记进 skipped 再返回，不能让它们既不在成功里也不在失败里
+                # ——那样调用方看到的是一份"少了几个插件"的结果，而没有任何东西
+                # 说它们为什么不见了。
+                skipped_over_budget = list(running_plugin_ids[index:])
+                logger.warning(
+                    "reload_all stop phase over budget after {}s, {} plugin(s) skipped",
+                    _RELOAD_ALL_BUDGET_SECONDS,
+                    len(skipped_over_budget),
+                )
+                break
+            # 这一次 stop 也要受剩余预算约束：只在开始前检查的话，一个慢关停
+            # （或者调大了的 NEKO_PLUGIN_SHUTDOWN_TIMEOUT）就能让整个阶段冲破
+            # 对外承诺的墙钟上限（codex）。
+            #
+            # 但不能用 asyncio.wait_for 包在外面。stop_plugin 带
+            # @serialized_plugin_operation，而那个包装器一旦拿到锁就屏蔽取消、
+            # 等内层跑完再抛 CancelledError（operation_lock 里的 shield 循环）。
+            # 于是请求照样阻塞整个关停时长，然后把一次**已经成功**的停止报成超时，
+            # 插件被排除在重启名单外，最后停着没起来（codex）。
+            #
+            # 把预算送进去，而不是套在外面：等锁那段由 bounded_operation_wait
+            # 管，真正关停那段由 shutdown_timeout 管，两段都在预算内结束，返回的
+            # 也是真实结果。
+            # 等锁和关停各自按"此刻还剩多少"算，不能共用一个快照。共用的话，一次
+            # 等满 remaining 的抢锁之后，关停又拿到一份完整的 remaining，一轮就能
+            # 花掉两倍预算——这跟两层锁各起一份截止期是同一个错误，只是换了个地方
+            # （本轮对抗复审）。
+            remaining = max(0.0, stop_deadline - time_module.monotonic())
+            with bounded_operation_wait(remaining):
+                stop_outcomes.append(
+                    await self._safe_stop_for_reload(
+                        plugin_id, stop_deadline=stop_deadline
+                    )
+                )
 
         plugins_to_start: list[str] = []
         failed: list[dict[str, object]] = []
@@ -1634,10 +1639,59 @@ class PluginLifecycleService:
                 continue
             failed.append({"plugin_id": outcome.plugin_id, "error": outcome.error or "Stop failed"})
 
+        # 也进 skipped：既有契约里 skipped 是"没被尝试"的意思，而这些插件正是
+        # 没被尝试。只放进 failed 会让调用方分不清"停失败了"和"根本没轮到"。
+        for plugin_id in skipped_over_budget:
+            failed.append(
+                {
+                    "plugin_id": plugin_id,
+                    "error": (
+                        "skipped: reload exceeded its "
+                        f"{_RELOAD_ALL_BUDGET_SECONDS:g}s budget"
+                    ),
+                }
+            )
+
         reloaded: list[str] = []
         ordered_plugin_ids = await plugin_registry_service.order_plugin_ids(plugins_to_start)
+        # 启动阶段有**自己**的预算，不吃停止阶段剩下的。
+        #
+        # 启动阶段确实也需要上限：start_plugin 通常比 stop 慢得多（读配置、拉子
+        # 进程、扫元数据），只管住停止阶段的话整轮 reload 照样能冲破前端的 30s
+        # （CodeRabbit）。但两个阶段不能共用一份预算：走到这里的插件都是**已经被
+        # 我们停掉**的，停一个插件就欠它一次启动。共用预算时，一个慢关停就能把
+        # 剩下的额度吃光，于是 reload 悄悄变成 stop——插件全下线了，而调用方看到
+        # 的只是一行 "over budget"。宁可整轮多花一份预算，也不能把用户的插件留在
+        # 停止状态。
+        #
+        # 而且这个循环**不会**因为预算耗尽而中途退出——这一点和停止阶段刻意不对称。
+        # 停止阶段跳过一个插件是安全的：没轮到的插件还好好跑着。启动阶段跳过一个
+        # 插件，等于把一个我们刚亲手停掉的插件永久留在停止状态：自启动只在服务器
+        # 启动时跑一次，没有任何周期性对账会把它捡回来，用户只能手动启动或者重启
+        # 整个服务器（Greptile）。所以每个被停掉的插件都必须拿到一次启动尝试；
+        # 预算见底之后它们各自拿下界那么长，够不够是另一回事，但"根本没试"不行。
+        #
+        # 代价说清楚：启动阶段的墙钟上限因此是 预算 + 剩余插件数 x 下界，而不是
+        # 一个硬预算。健康路径根本碰不到——实测启动很快，预算压根用不完。
+        start_deadline = time_module.monotonic() + _RELOAD_ALL_BUDGET_SECONDS
         for plugin_id in ordered_plugin_ids:
-            outcome = await self._safe_start_for_reload(plugin_id)
+            # 启动这半边同样把等锁和启动本身都封在剩余预算里——和上面的 stop
+            # 对称，否则预算只管住了两个阶段中的一个。
+            #
+            # 但等锁那段和步骤超时用同一个下界，不能压到 0：预算见底时
+            # bounded_operation_wait(0.0) 等于"一次都不等"，此刻只要有别的插件操作
+            # 握着进程锁，start_plugin 立刻抛 PluginOperationBusy，而这个插件是刚被
+            # 我们停掉的——它会就这么一直停着（CodeRabbit）。刚去掉超预算 break 就是
+            # 为了不让这种事发生，零等待等于把它从后门放回来。
+            #
+            # 停止侧不需要这个下界，而且那是刻意的：停止侧等不到锁，插件还好好跑着。
+            remaining = max(
+                _MIN_CLAMPED_START_TIMEOUT, start_deadline - time_module.monotonic()
+            )
+            with bounded_operation_wait(remaining):
+                outcome = await self._safe_start_for_reload(
+                    plugin_id, start_deadline=start_deadline
+                )
             if outcome.success:
                 reloaded.append(outcome.plugin_id)
                 continue
@@ -1664,198 +1718,95 @@ class PluginLifecycleService:
             "success": success,
             "reloaded": reloaded,
             "failed": failed,
-            "skipped": [],
+            "skipped": list(skipped_over_budget),
             "message": message,
         }
 
     @serialized_plugin_operation
     async def delete_plugin(self, plugin_id: str) -> dict[str, object]:
-        """Delete one plugin without racing package installation transactions."""
-        return await self._delete_plugin_unlocked(plugin_id)
-
-    async def _delete_plugin_unlocked(self, plugin_id: str) -> dict[str, object]:
+        """Invoke the uninstall transaction and preserve the public response."""
         try:
-            await asyncio.to_thread(ensure_plugin_exec_state_roots_separated)
-        except ValueError as exc:
-            if getattr(exc, "code", "") == "PLUGIN_EXEC_STATE_ROOT_COLLISION":
-                raise _to_domain_error(
-                    code="PLUGIN_EXEC_STATE_ROOT_COLLISION",
-                    message=str(exc),
-                    status_code=409,
-                    plugin_id=plugin_id,
-                    error_type=type(exc).__name__,
-                ) from exc
-            raise
-        plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
-        if plugin_meta is None:
-            raise _to_domain_error(
-                code="PLUGIN_NOT_FOUND",
-                message=f"Plugin '{plugin_id}' not found",
-                status_code=404,
-                plugin_id=plugin_id,
-                error_type="PluginNotFound",
-            )
-
-        plugin_dir = await asyncio.to_thread(_resolve_plugin_dir_sync, plugin_id, plugin_meta)
-        if plugin_dir is None:
-            raise _to_domain_error(
-                code="PLUGIN_CONFIG_NOT_FOUND",
-                message=f"Plugin '{plugin_id}' configuration not found",
-                status_code=404,
-                plugin_id=plugin_id,
-                error_type="ConfigNotFound",
-            )
-
-        path_allowed = await asyncio.to_thread(_path_within_plugin_roots_sync, plugin_dir)
-        if not path_allowed:
-            raise _to_domain_error(
-                code="PLUGIN_DELETE_FORBIDDEN_PATH",
-                message=f"Plugin '{plugin_id}' path is outside managed plugin roots",
-                status_code=403,
-                plugin_id=plugin_id,
-                error_type="ForbiddenDeletePath",
-            )
-
-        is_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
-        if is_running:
-            await self.stop_plugin(plugin_id)
-
-        staged_profile: _StagedPackageProfile | None = None
-        try:
-            staged_profile = await asyncio.to_thread(
-                _stage_orphaned_package_profile_sync,
-                plugin_dir,
-            )
-            deleted_from_disk = await asyncio.to_thread(_delete_plugin_directory_sync, plugin_dir)
-            deleted_profile_dir = None
-            if staged_profile is not None:
-                try:
-                    deleted_profile_dir = await asyncio.to_thread(
-                        _finalize_staged_package_profile_sync,
-                        staged_profile,
-                    )
-                except OSError as exc:
-                    # The executable is already gone, but the profile is in a
-                    # non-conflicting staging location. Do not turn a completed
-                    # plugin deletion into a reinstall-blocking partial state.
-                    deferred_cleanup_recorded = await asyncio.to_thread(
-                        _record_deferred_profile_cleanup_sync,
-                        staged_profile,
-                    )
-                    logger.warning(
-                        "delete_plugin: deferred cleanup of staged package profile {}: {}; persisted={}",
-                        staged_profile.staged_dir,
-                        exc,
-                        deferred_cleanup_recorded,
-                    )
-            await asyncio.to_thread(_mark_install_source_removed_sync, plugin_dir)
-            await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
-            await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
-            await asyncio.to_thread(_remove_plugin_metadata_sync, plugin_id)
-            await plugin_registry_service.refresh_registry()
-            restored_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
-            restored_builtin = bool(
-                restored_meta
-                and restored_meta.get("effective_source") == "builtin"
-            )
-            restored_builtin_started = False
-            restored_builtin_restart_error: dict[str, str] | None = None
-            if not restored_builtin:
-                await asyncio.to_thread(clear_runtime_override, plugin_id)
-            if is_running and restored_builtin:
-                try:
-                    await self.start_plugin(plugin_id, refresh_registry=False)
-                    restored_builtin_started = True
-                except Exception as restart_exc:
-                    restored_builtin_restart_error = {
-                        "code": "PLUGIN_BUILTIN_RESTORE_START_FAILED",
-                        "message": str(restart_exc),
-                        "error_type": type(restart_exc).__name__,
-                    }
-                    logger.error(
-                        "delete_plugin: builtin source restored but restart failed: "
-                        "plugin_id={}, err_type={}, err={}",
-                        plugin_id,
-                        type(restart_exc).__name__,
-                        restart_exc,
-                    )
-        except ServerDomainError:
-            raise
-        except IO_RUNTIME_ERRORS as exc:
-            if staged_profile is not None:
-                try:
-                    await asyncio.to_thread(_restore_staged_package_profile_sync, staged_profile)
-                except OSError as restore_exc:
-                    logger.error(
-                        "delete_plugin: failed to restore package profile after deletion failure {}: {}",
-                        staged_profile.original_dir,
-                        restore_exc,
-                    )
-            if is_running:
-                try:
-                    await self.start_plugin(plugin_id, refresh_registry=False)
-                except Exception as restart_exc:
-                    logger.error(
-                        "delete_plugin: failed to restart plugin after deletion failure: plugin_id={}, err_type={}, err={}",
-                        plugin_id,
-                        type(restart_exc).__name__,
-                        restart_exc,
-                    )
-            logger.error(
-                "delete_plugin failed: plugin_id={}, plugin_dir={}, err_type={}, err={}",
-                plugin_id,
-                str(plugin_dir),
-                type(exc).__name__,
-                str(exc),
-            )
-            raise _to_domain_error(
-                code="PLUGIN_DELETE_FAILED",
-                message=f"Failed to delete plugin '{plugin_id}'",
-                status_code=500,
-                plugin_id=plugin_id,
-                error_type=type(exc).__name__,
+            result = await uninstall_plugin(plugin_id)
+        except UninstallPluginError as exc:
+            raise ServerDomainError(
+                code=exc.code,
+                message=exc.message,
+                status_code=exc.status_code,
+                details=dict(exc.details),
             ) from exc
+
+        restored_builtin_started = (
+            result.restored_builtin and result.runtime_restart == "succeeded"
+        )
 
         _emit_lifecycle_event(
             event_type="plugin_deleted",
             plugin_id=plugin_id,
             data={
-                "plugin_dir": str(plugin_dir),
-                "deleted_from_disk": deleted_from_disk,
-                "deleted_profile_dir": str(deleted_profile_dir) if deleted_profile_dir else None,
-                "restored_builtin": restored_builtin,
+                "plugin_dir": str(result.plugin_dir),
+                "deleted_from_disk": result.deleted_from_disk,
+                "deleted_profile_dir": (
+                    str(result.deleted_profile_dir)
+                    if result.deleted_profile_dir
+                    else None
+                ),
+                "restored_builtin": result.restored_builtin,
                 "restored_builtin_started": restored_builtin_started,
-                "restored_builtin_restart_error": restored_builtin_restart_error,
+                "restored_builtin_restart_error": result.runtime_restart_error,
+                "preference_action": result.preference_action,
+                "filesystem_rollback": result.filesystem_rollback,
+                "runtime_restart": result.runtime_restart,
+                "cleanup_pending": result.cleanup_pending,
             },
         )
         response: dict[str, object] = {
             "success": True,
             "plugin_id": plugin_id,
-            "plugin_dir": str(plugin_dir),
-            "deleted_from_disk": deleted_from_disk,
-            "restored_builtin": restored_builtin,
+            "plugin_dir": str(result.plugin_dir),
+            "deleted_from_disk": result.deleted_from_disk,
+            "restored_builtin": result.restored_builtin,
             "restored_builtin_started": restored_builtin_started,
-            "restored_builtin_restart_error": restored_builtin_restart_error,
+            "restored_builtin_restart_error": result.runtime_restart_error,
+            "preference_action": result.preference_action,
+            "filesystem_rollback": result.filesystem_rollback,
+            "runtime_restart": result.runtime_restart,
+            "cleanup_pending": result.cleanup_pending,
             "message": "Plugin deleted successfully",
         }
         return response
 
     async def retry_deferred_profile_cleanup(self) -> int:
-        """Retry persisted profile cleanup jobs during server startup."""
-        return await asyncio.to_thread(_retry_deferred_profile_cleanup_sync)
+        """Retry persisted uninstall cleanup jobs during server startup."""
+        cleaned_profiles = await asyncio.to_thread(
+            retry_deferred_profile_cleanup_sync
+        )
+        await asyncio.to_thread(retry_deferred_plugin_code_cleanup_sync)
+        return cleaned_profiles
 
-    async def _safe_stop_for_reload(self, plugin_id: str) -> _ReloadOutcome:
+    async def _safe_stop_for_reload(
+        self, plugin_id: str, *, stop_deadline: float | None = None
+    ) -> _ReloadOutcome:
         try:
-            await self.stop_plugin(plugin_id)
+            await self.stop_plugin(plugin_id, stop_deadline=stop_deadline)
             return _ReloadOutcome(plugin_id=plugin_id, success=True)
+        except PluginOperationBusy as error:
+            return _ReloadOutcome(plugin_id=plugin_id, success=False, error=str(error))
         except ServerDomainError as error:
             if error.status_code == 404:
                 return _ReloadOutcome(plugin_id=plugin_id, success=True)
             return _ReloadOutcome(plugin_id=plugin_id, success=False, error=error.message)
 
-    async def _safe_start_for_reload(self, plugin_id: str) -> _ReloadOutcome:
+    async def _safe_start_for_reload(
+        self, plugin_id: str, *, start_deadline: float | None = None
+    ) -> _ReloadOutcome:
         try:
-            await self.start_plugin(plugin_id, refresh_registry=False)
+            await self.start_plugin(
+                plugin_id,
+                refresh_registry=False,
+                start_deadline=start_deadline,
+            )
             return _ReloadOutcome(plugin_id=plugin_id, success=True)
+        except PluginOperationBusy as error:
+            return _ReloadOutcome(plugin_id=plugin_id, success=False, error=str(error))
         except ServerDomainError as error:
             return _ReloadOutcome(plugin_id=plugin_id, success=False, error=error.message)

@@ -7,6 +7,10 @@ This product is developed and maintained by the Project N.E.K.O. Team.
 Licensed under the Apache License, Version 2.0.
 See the LICENSE file for the full license text.
 
+Third-party components retain their respective copyrights and licenses.
+For the bundled three-mmd components and their embedded babylon-mmd portions,
+see static/libs/THIRD_PARTY_NOTICES.md and static/libs/licenses/.
+
 ------------------------------------------------------------
 
 我们种下了人与猫娘幸福共生的种子，我们的征途是星辰大海。

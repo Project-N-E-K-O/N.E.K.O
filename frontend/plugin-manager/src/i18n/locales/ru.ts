@@ -487,6 +487,11 @@ export default {
       overrideBuiltinTitle: 'Переключить {plugin} на источник Market?',
       overrideBuiltinBody: 'Активная встроенная версия {current} будет заменена версией {target} из Market. Данные и настройки плагина останутся в постоянном хранилище.',
       overrideBuiltinConfirm: 'Переключить на Market',
+      manualTakeoverTitle: 'Передать {plugin} под управление N.E.K.O?',
+      manualTakeoverBody: 'Каталог этого плагина сейчас обслуживается вручную. При продолжении версия {current} будет заменена на {target}; после успешной замены N.E.K.O сможет обновлять и удалять этот пользовательский плагин.',
+      manualTakeoverConfirm: 'Заменить и передать',
+      manualTakeoverCancelled: 'Замена вручную обслуживаемого плагина отменена.',
+      manualTakeoverSucceeded: 'Плагин {plugin} теперь управляется N.E.K.O.',
       reinstallTitle: 'Переустановить {plugin}?',
       reinstallBody: 'Версия {current} будет снова заменена версией {target}. Запущенный плагин ненадолго перезапустится.',
       reinstallConfirm: 'Переустановить плагин',
@@ -500,6 +505,8 @@ export default {
       blockedBundleConflict: 'Этот пакет содержит установленный плагин. Обновляйте плагины по одному.',
       blockedDirectoryConflict: 'Целевая папка принадлежит другому плагину и не была изменена.',
       blockedLegacyPlugin: 'Предыдущая версия этого плагина всё ещё установлена. Удалите {plugin}, прежде чем продолжить.',
+      blockedOwnershipUnknown: 'Не удалось подтвердить владельца существующей папки плагина. Восстановите запись об источнике установки и повторите попытку.',
+      blockedInstallSourceReadOnly: 'Запись об источнике установки недоступна или доступна только для чтения. Восстановите её и повторите попытку.',
       rollbackCompleted: 'Обновление не удалось, предыдущая версия восстановлена.',
       rollbackIncomplete: 'Обновление не удалось, и откат завершён не полностью. Проверьте состояние плагина перед продолжением.',
       error: {
@@ -641,7 +648,13 @@ export default {
     returnedLines: 'Возвращено строк',
     connected: 'Подключено',
     disconnected: 'Отключено',
-    connectionFailed: 'Ошибка подключения к потоку логов'
+    connectionFailed: 'Ошибка подключения к потоку логов',
+    exportLog: 'Экспортировать архив логов',
+    openLogDirectory: 'Открыть директорию логов',
+    exportSuccess: 'Лог успешно экспортирован',
+    exportFailed: 'Не удалось экспортировать лог',
+    openDirectoryFailed: 'Не удалось открыть директорию',
+    noLogFileToExport: 'Нет файла лога для экспорта'
   },
   runs: {
     title: 'Запуски',
@@ -717,7 +730,9 @@ export default {
     resourceNotFound: 'Запрошенный ресурс не найден',
     internalServerError: 'Внутренняя ошибка сервера',
     serviceUnavailable: 'Сервис недоступен',
-    networkError: 'Ошибка сети. Проверьте подключение.'
+    networkError: 'Ошибка сети. Проверьте подключение.',
+    requestTimeout: 'Время ожидания запроса истекло. Повторите попытку.',
+    pluginLifecycleTimeout: 'Время запуска или перезапуска плагина истекло. Проверьте журналы плагина.'
   },
   welcome: {
     about: {

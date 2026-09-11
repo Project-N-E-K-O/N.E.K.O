@@ -51,6 +51,53 @@ class _FakeProcess:
         self.started = True
 
 
+@pytest.mark.plugin_unit
+def test_plugin_host_preinitializes_response_proxies_on_the_default_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    accessed_response_proxies: list[str] = []
+    default_event = object()
+    default_process = _FakeProcess()
+
+    class _FakeTransport:
+        downlink_endpoint = "ipc://down"
+        uplink_endpoint = "ipc://up"
+
+    def _reject_explicit_context(method: str) -> object:
+        raise AssertionError(
+            f"PluginHost must use the default start method, not {method!r}"
+        )
+
+    monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
+    monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: _FakeCommManager())
+    monkeypatch.setattr(
+        type(host_module.state),
+        "plugin_response_map",
+        property(lambda _self: accessed_response_proxies.append("map")),
+    )
+    monkeypatch.setattr(
+        type(host_module.state),
+        "plugin_response_notify_event",
+        property(lambda _self: accessed_response_proxies.append("event")),
+    )
+    monkeypatch.setattr(host_module.multiprocessing, "get_context", _reject_explicit_context)
+    monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: default_event)
+    monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: default_process)
+
+    plugin_host = host_module.PluginHost(
+        plugin_id="demo",
+        entry_point="plugins.demo:DemoPlugin",
+        config_path=tmp_path / "demo" / "plugin.toml",
+    )
+
+    # Both proxies must be materialised in the parent: on a fork start method
+    # a child that touches them first builds its own Manager proxies instead.
+    assert accessed_response_proxies == ["map", "event"]
+    assert plugin_host._process_stop_event is default_event
+    assert plugin_host.process is default_process
+
+
 class _FakeLogger:
     def info(self, *_args, **_kwargs) -> None:
         pass
@@ -78,12 +125,37 @@ class _FakeResponseSender:
 
 
 @pytest.mark.plugin_unit
+def test_plugin_process_runner_rejects_missing_uplink_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo'\ntype='plugin'\n", encoding="utf-8")
+    monkeypatch.setattr(
+        host_module,
+        "_setup_plugin_logger",
+        lambda *args, **kwargs: _FakeLogger(),
+    )
+
+    with pytest.raises(ValueError, match="uplink token"):
+        host_module._plugin_process_runner(
+            plugin_id="demo",
+            entry_point="tests.fake:DemoPlugin",
+            config_path=config_path,
+            downlink_endpoint="ipc://down",
+            uplink_endpoint="ipc://up",
+        )
+
+
+@pytest.mark.plugin_unit
 def test_plugin_router_entry_closes_context_and_transport_before_returning(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     closed: list[str] = []
     payloads: list[dict[str, object]] = []
+    contexts: list[dict[str, object]] = []
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("[plugin]\nid='demo'\ntype='plugin'\n", encoding="utf-8")
@@ -96,8 +168,13 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
             payloads.append(payload)
 
     class _ChildTransport:
-        def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
-            del downlink_endpoint, uplink_endpoint
+        def __init__(
+            self,
+            downlink_endpoint: str,
+            uplink_endpoint: str,
+            uplink_token: str,
+        ) -> None:
+            del downlink_endpoint, uplink_endpoint, uplink_token
 
         def channel_sender(self, channel: str) -> _Sender:
             del channel
@@ -109,6 +186,7 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
     class _Context:
         def __init__(self, **kwargs: object) -> None:
             self.__dict__.update(kwargs)
+            contexts.append(kwargs)
 
         def close(self) -> None:
             closed.append("context")
@@ -129,6 +207,7 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
         config_path=config_path,
         downlink_endpoint="ipc://down",
         uplink_endpoint="ipc://up",
+        uplink_token="test-uplink-token",
     )
 
     assert closed == ["context", "transport"]
@@ -193,7 +272,13 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
             self.put(payload)
 
     class _ChildTransport:
-        def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
+        def __init__(
+            self,
+            downlink_endpoint: str,
+            uplink_endpoint: str,
+            uplink_token: str,
+        ) -> None:
+            del downlink_endpoint, uplink_endpoint, uplink_token
             self.stopped = False
 
         def channel_sender(self, channel: str) -> _Sender:
@@ -232,6 +317,7 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
         config_path=config_path,
         downlink_endpoint="ipc://down",
         uplink_endpoint="ipc://up",
+        uplink_token="test-uplink-token",
     )
 
     assert order == [
@@ -267,8 +353,13 @@ def test_plugin_process_runner_uses_timeout_when_reporting_crash(
             self.put(payload)
 
     class _ChildTransport:
-        def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
-            return
+        def __init__(
+            self,
+            downlink_endpoint: str,
+            uplink_endpoint: str,
+            uplink_token: str,
+        ) -> None:
+            del downlink_endpoint, uplink_endpoint, uplink_token
 
         def channel_sender(self, channel: str) -> _Sender:
             return _Sender(channel)
@@ -295,6 +386,7 @@ def test_plugin_process_runner_uses_timeout_when_reporting_crash(
             config_path=config_path,
             downlink_endpoint="ipc://down",
             uplink_endpoint="ipc://up",
+            uplink_token="test-uplink-token",
         )
 
     result_payloads = [
@@ -367,8 +459,13 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
             self.put(payload)
 
     class _ChildTransport:
-        def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
-            return
+        def __init__(
+            self,
+            downlink_endpoint: str,
+            uplink_endpoint: str,
+            uplink_token: str,
+        ) -> None:
+            del downlink_endpoint, uplink_endpoint, uplink_token
 
         def channel_sender(self, channel: str) -> _Sender:
             return _Sender(channel)
@@ -401,6 +498,7 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
         config_path=config_path,
         downlink_endpoint="ipc://down",
         uplink_endpoint="ipc://up",
+        uplink_token="test-uplink-token",
         startup_options={"startup_failure": "fail"},
     )
 
@@ -642,9 +740,15 @@ async def test_plugin_process_start_passes_startup_failure_policy_to_child(
             self.args = kwargs["args"]
 
         def start(self) -> None:
-            startup_options = self.args[-1]
-            if isinstance(startup_options, dict):
-                captured_startup_options.append(dict(startup_options))
+            # Positional index on purpose. args[-1] is message_uplink_endpoint,
+            # a str, so reading from the end would slip past the isinstance
+            # check below and leave the assertion vacuously green.
+            startup_options = self.args[7]
+            captured_startup_options.append(
+                dict(startup_options)
+                if isinstance(startup_options, dict)
+                else startup_options
+            )
             super().start()
 
     comm_manager = _StartupErrorCommManager()

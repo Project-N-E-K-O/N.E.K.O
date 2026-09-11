@@ -118,7 +118,7 @@ class ChatOpenAI:
         if model_kwargs and "extra_body" in model_kwargs:
             self.extra_body = {**self.extra_body, **model_kwargs["extra_body"]}
 
-        _api_key = api_key or "sk-placeholder"
+        _api_key = "sk-placeholder" if api_key is None else api_key
         _timeout = timeout or request_timeout
         client_kw: dict[str, Any] = dict(base_url=base_url, api_key=_api_key, max_retries=max_retries)
         if _timeout is not None:

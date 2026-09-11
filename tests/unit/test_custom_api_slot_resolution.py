@@ -249,9 +249,8 @@ class TestNamedProviderSlotKey:
     def test_non_string_slot_key_is_normalised(self, config_manager):
         """A hand-edited non-string slot key must not reach `.strip()` callers.
 
-        brain/openfang_adapter.py strips the agent key straight from
-        get_model_api_config(), so a raw non-string here is an AttributeError
-        during OpenFang sync.
+        Adapters strip the agent key straight from get_model_api_config(),
+        so a raw non-string here is an AttributeError at call time.
         """
         _write_core_config(config_manager, _base_config(
             agentModelProvider='custom',

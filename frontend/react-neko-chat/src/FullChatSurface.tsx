@@ -2270,7 +2270,7 @@ export default function FullChatSurface({
     }
   }
 
-  function submitDraft() {
+  function submitDraft(submitMethod: ComposerSubmitPayload['submitMethod'] = 'button') {
     if (composerInteractionsDisabled) return;
     if (submittingRef.current) return;
     const text = visibleDraft.trim();
@@ -2278,7 +2278,7 @@ export default function FullChatSurface({
     closeCompactInputToolFan();
     submittingRef.current = true;
     try {
-      onComposerSubmit?.({ text });
+      onComposerSubmit?.({ text, submitMethod });
       if (catLocalTextOnly) {
         setCatDraft('');
       } else {
@@ -3238,7 +3238,7 @@ export default function FullChatSurface({
           ) : null}
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
-            submitDraft();
+            submitDraft('button');
           }}>
             {isCompactSurface ? (
               <div
@@ -3316,7 +3316,7 @@ export default function FullChatSurface({
                           if (event.nativeEvent.isComposing) return;
                           if (event.key === 'Enter' && !event.shiftKey) {
                             event.preventDefault();
-                            submitDraft();
+                            submitDraft('enter');
                           }
                         }}
                       />
@@ -3405,7 +3405,7 @@ export default function FullChatSurface({
                   if (event.nativeEvent.isComposing) return;
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
-                    submitDraft();
+                    submitDraft('enter');
                   }
                 }}
               />

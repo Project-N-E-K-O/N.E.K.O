@@ -41,7 +41,11 @@
                     !I.isIcebreakerBridgeAction(message.action)
                     &&
                     !I.shouldBypassYuiGuideMessageDedup(message.action, message)
-                    && I.isDuplicateMessage(message.action, message.timestamp)
+                    && I.isDuplicateMessage(
+                        message.action,
+                        message.timestamp,
+                        message.lifecycleSequence
+                    )
                 ) {
                     console.log('[BroadcastChannel] 跳过重复消息:', message.action);
                     return;
@@ -892,6 +896,7 @@
                 action: 'idle_chat_minimized_state',
                 source: '',
                 reason: '',
+                available: true,
                 minimized: false,
                 screenRect: null,
                 timestamp: Date.now(),
@@ -908,6 +913,7 @@
                 action: 'idle_chat_compact_surface_state',
                 source: '',
                 reason: '',
+                available: true,
                 visible: false,
                 screenRect: null,
                 timestamp: Date.now(),

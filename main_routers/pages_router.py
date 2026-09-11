@@ -178,6 +178,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/character_personality_onboarding.css",
     _PROJECT_ROOT / "static/js/character_personality_onboarding.js",
     _PROJECT_ROOT / "static/css/card_maker.css",
+    _PROJECT_ROOT / "static/js/card_maker_embed_layout.js",
     _PROJECT_ROOT / "static/js/card_maker.js",
     _PROJECT_ROOT / "static/js/card_maker_embed_bootstrap.js",
     _PROJECT_ROOT / "static/libs/live2dcubismcore.min.js",
@@ -319,6 +320,16 @@ async def badminton_demo(request: Request):
     """Badminton challenge mini-game."""
     templates = get_templates()
     return templates.TemplateResponse("templates/badminton_demo.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
+@router.get("/drawing_guess_demo", response_class=HTMLResponse)
+async def drawing_guess_demo(request: Request):
+    """Drawing Guess companion mini-game."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/drawing_guess.html", {
         "request": request,
         **_static_assets_ctx(),
     })

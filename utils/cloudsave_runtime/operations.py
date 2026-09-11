@@ -29,7 +29,12 @@ from pathlib import Path
 from typing import Any
 
 from utils.file_utils import atomic_write_json
-from utils.character_memory import list_character_recent_paths
+from utils.character_memory import (
+    evict_character_runtime_caches,
+    retire_character_runtime_caches,
+    revive_character_runtime_caches,
+    list_character_recent_paths,
+)
 from utils.recent_file import (
     acquire_recent_file_locks,
     activate_recent_paths,
@@ -107,6 +112,100 @@ from .staging import (
     _stage_json_file,
     _stage_memory_file,
 )
+
+
+SNAPSHOT_KIND_CHARACTER_COLLECTION = "character_collection"
+SNAPSHOT_KIND_FULL_RUNTIME = "full_runtime"
+CHARACTER_COLLECTION_PROFILE_PATH = "profiles/character_collection.json"
+LEGACY_RUNTIME_PROFILE_PATH = "profiles/characters.json"
+CLOUDSAVE_READER_SCHEMA_VERSION = 2
+_SUPPORTED_SNAPSHOT_KINDS = {
+    SNAPSHOT_KIND_CHARACTER_COLLECTION,
+    SNAPSHOT_KIND_FULL_RUNTIME,
+}
+
+
+def _manifest_schema_version(manifest: dict[str, Any]) -> int:
+    try:
+        return int(manifest.get("schema_version") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _resolve_snapshot_kind(manifest: dict[str, Any], staged_entries: dict[str, Path]) -> str:
+    """Resolve explicit snapshot semantics and fail safe for legacy manifests.
+
+    Before ``snapshot_kind`` existed, per-character exports did not stage the
+    global payloads but could retain copies from an earlier full export.
+    Treating every ambiguous legacy payload as a character collection is
+    intentionally conservative: a merge can leave extra local data behind,
+    while a mistaken full replacement can erase the owner profile and
+    unrelated character memories.
+    """
+    full_runtime_markers = {
+        "profiles/conversation_settings.json",
+        "catalog/current_character.json",
+    }
+    schema_version = _manifest_schema_version(manifest)
+    snapshot_kind = str(manifest.get("snapshot_kind") or "").strip()
+    # Legacy writers preserve unknown top-level keys while rebuilding the
+    # manifest, so a stale ``full_runtime`` kind can survive a character-only
+    # upload. Those writers reset schema_version to 1; only schema 2+ binds the
+    # kind to writer semantics we understand.
+    if snapshot_kind and schema_version >= 2:
+        if snapshot_kind not in _SUPPORTED_SNAPSHOT_KINDS:
+            raise ValueError(f"unsupported cloudsave snapshot kind: {snapshot_kind}")
+        if (
+            snapshot_kind == SNAPSHOT_KIND_FULL_RUNTIME
+            and not full_runtime_markers <= set(staged_entries)
+        ):
+            raise ValueError("full_runtime cloudsave snapshot is missing required global payloads")
+        return snapshot_kind
+
+    # Legacy full exports and single-character uploads can have identical file
+    # shapes. A character upload rebuilt its manifest from files already on
+    # disk, retaining both global markers from an earlier full export; across
+    # devices, its new sequence can also collide with the retained marker's
+    # sequence. There is therefore no reliable proof that a kind-less manifest
+    # is a full snapshot. Always choose the non-destructive merge semantics.
+    return SNAPSHOT_KIND_CHARACTER_COLLECTION
+
+
+def _validate_manifest_reader_compatibility(manifest: dict[str, Any]) -> None:
+    try:
+        min_reader_schema_version = int(manifest.get("min_reader_schema_version") or 1)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid cloudsave minimum reader schema version") from exc
+    if min_reader_schema_version > CLOUDSAVE_READER_SCHEMA_VERSION:
+        raise ValueError(
+            "cloudsave snapshot requires a newer reader schema: "
+            f"{min_reader_schema_version}"
+        )
+
+
+def _has_usable_master_profile(payload: Any) -> bool:
+    return bool(
+        isinstance(payload, dict)
+        and str(payload.get("档案名") or "").strip()
+    )
+
+
+def _runtime_characters_with_safe_master(config_manager) -> dict[str, Any]:
+    runtime_payload = config_manager.load_characters()
+    if not isinstance(runtime_payload, dict):
+        runtime_payload = {}
+    runtime_payload = deepcopy(runtime_payload)
+
+    if not _has_usable_master_profile(runtime_payload.get("主人")):
+        defaults = config_manager.get_default_characters()
+        default_master = defaults.get("主人") if isinstance(defaults, dict) else None
+        if not _has_usable_master_profile(default_master):
+            raise ValueError("default characters payload does not contain a usable master profile")
+        runtime_payload["主人"] = deepcopy(default_master)
+
+    if not isinstance(runtime_payload.get("猫娘"), dict):
+        runtime_payload["猫娘"] = {}
+    return runtime_payload
 
 
 def _assert_single_character_name_safe(character_name: str, *, context: str) -> None:
@@ -212,19 +311,17 @@ def export_cloudsave_character_unit(config_manager, character_name: str, *, over
 
         staged_entries: dict[str, Path] = {}
         existing_cloud_character_map, _tombstone_names = _load_cloudsave_character_payloads(config_manager)
-        cloud_profiles_payload = _load_json_if_exists(config_manager.cloudsave_profiles_dir / "characters.json")
-        if not isinstance(cloud_profiles_payload, dict):
-            cloud_profiles_payload = {}
-        cloud_profiles_payload = deepcopy(cloud_profiles_payload)
         merged_cloud_character_map = deepcopy(existing_cloud_character_map)
         merged_cloud_character_map[character_name] = deepcopy(character_payload)
-        cloud_profiles_payload["猫娘"] = {
-            name: deepcopy(payload)
-            for name, payload in sorted(merged_cloud_character_map.items())
+        cloud_profiles_payload = {
+            "猫娘": {
+                name: deepcopy(payload)
+                for name, payload in sorted(merged_cloud_character_map.items())
+            },
         }
-        staged_entries["profiles/characters.json"] = _stage_json_file(
+        staged_entries[CHARACTER_COLLECTION_PROFILE_PATH] = _stage_json_file(
             stage_root,
-            "profiles/characters.json",
+            CHARACTER_COLLECTION_PROFILE_PATH,
             cloud_profiles_payload,
         )
 
@@ -300,7 +397,15 @@ def export_cloudsave_character_unit(config_manager, character_name: str, *, over
 
         existing_cloud_memory_root = config_manager.cloudsave_memory_dir / character_name
         existing_cloud_character_root = config_manager.cloudsave_dir / "characters" / character_name
-        delete_targets: set[Path] = set()
+        delete_targets: set[Path] = {
+            path
+            for path in (
+                config_manager.cloudsave_profiles_dir / "characters.json",
+                config_manager.cloudsave_profiles_dir / "conversation_settings.json",
+                config_manager.cloudsave_catalog_dir / "current_character.json",
+            )
+            if path.exists()
+        }
         for base_dir in (existing_cloud_memory_root, existing_cloud_character_root / "memory"):
             if not base_dir.is_dir():
                 continue
@@ -316,9 +421,12 @@ def export_cloudsave_character_unit(config_manager, character_name: str, *, over
 
         mutation_targets = {
             config_manager.cloudsave_profiles_dir / "characters.json",
+            config_manager.cloudsave_profiles_dir / "character_collection.json",
             config_manager.cloudsave_bindings_dir / f"{character_name}.json",
             config_manager.cloudsave_catalog_dir / "catgirls_index.json",
             config_manager.cloudsave_catalog_dir / "character_tombstones.json",
+            config_manager.cloudsave_profiles_dir / "conversation_settings.json",
+            config_manager.cloudsave_catalog_dir / "current_character.json",
             config_manager.cloudsave_dir / "characters" / character_name,
             config_manager.cloudsave_memory_dir / character_name,
             config_manager.cloudsave_manifest_path,
@@ -350,7 +458,9 @@ def export_cloudsave_character_unit(config_manager, character_name: str, *, over
             cloud_state["last_successful_export_at"] = exported_at
             config_manager.save_cloudsave_local_state(cloud_state)
         except Exception:
-            _restore_backup_records(backup_records)
+            _restore_backup_records(
+                config_manager, backup_records, evict_sidecar_caches=False
+            )
             raise
 
         detail = build_cloudsave_character_detail(config_manager, character_name)
@@ -515,7 +625,9 @@ def import_cloudsave_character_unit(
                 detail = build_cloudsave_character_detail(config_manager, character_name)
             except BaseException:
                 try:
-                    _restore_backup_records(backup_records)
+                    _restore_backup_records(
+                        config_manager, backup_records, evict_sidecar_caches=False
+                    )
                 finally:
                     for recent_path, messages in pending_snapshot.items():
                         set_recent_pending_unlocked(recent_path, messages)
@@ -536,6 +648,18 @@ def import_cloudsave_character_unit(
             if not retain_recent_locks:
                 release_recent_file_locks(held_locks)
                 recent_transaction["held_locks"] = []
+
+            # The APPLY above rewrote only MANAGED_MEMORY_FILENAMES, and none of
+            # the three sidecars (anti-repeat effects, anti-repeat corpus,
+            # startup-greeting history) are in it -- verified by planting
+            # sentinels and reading them back byte-identical. So their caches
+            # still match disk and must NOT be evicted: eviction raises each
+            # store's sequence fence, which silently discards a snapshot that
+            # was staged and not yet flushed -- the reply just delivered.
+            #
+            # What a download does need is the retirement lifted, so a name
+            # reused after an earlier delete can create its directory again.
+            revive_character_runtime_caches(character_name)
 
             result = {
                 "character_name": character_name,
@@ -690,21 +814,129 @@ def _snapshot_existing_targets(config_manager, backup_root: Path, targets: set[P
     return backup_records
 
 
-def _restore_backup_records(backup_records: list[dict[str, Any]]) -> None:
-    for record in sorted(backup_records, key=lambda item: len(item["target"].parts), reverse=True):
-        target_path = record["target"]
-        if target_path.exists():
-            if target_path.is_dir():
-                shutil.rmtree(target_path, ignore_errors=True)
-            else:
-                target_path.unlink()
-        backup_path = record.get("backup")
-        if backup_path is None or not backup_path.exists():
+def _memory_character_names_from_backup_records(config_manager, backup_records):
+    """Character names whose memory directory a restore is about to replace.
+
+    Only a DELIBERATE restore asks for this -- see the flag on
+    ``_restore_backup_records``. It rmtree+copytree's whole ``memory/<name>/``
+    directories, so it puts the three sidecars back to whatever the backup
+    holds, and a cache left loaded would write the rolled-back content
+    straight back out.
+    """
+    # Resolved on BOTH sides. restore_cloudsave_operation_backup builds its
+    # targets through _resolve_managed_target_path, which resolves, so a
+    # memory_dir carrying a symlink, a "~", or a ".." never matched the raw
+    # parent -- the name list came back empty, nothing was evicted, and the
+    # stale caches wrote over the files the rollback had just restored.
+    memory_root = Path(config_manager.memory_dir).expanduser().resolve(strict=False)
+    restored: list[str] = []
+    removed: list[str] = []
+    for record in backup_records:
+        raw_target = str(record.get("target") or "")
+        # Guarded before resolving: Path("") is ".", which resolves to the
+        # working directory and would contribute its name.
+        if not raw_target or not record.get("is_dir"):
             continue
-        if record.get("is_dir"):
-            shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
+        target = Path(raw_target).expanduser().resolve(strict=False)
+        if target.parent != memory_root or not target.name:
+            continue
+        # Nothing to put back means the restore DELETES this directory --
+        # the operation being rolled back is what created it. Evicting
+        # there would leave the name live, and a write still in flight
+        # would recreate the directory for a character the restored
+        # characters.json no longer contains. Retirement is what refuses
+        # that: a retired name never creates a directory.
+        if record.get("backup") is None:
+            removed.append(target.name)
         else:
-            _facade._apply_runtime_file(backup_path, target_path)
+            restored.append(target.name)
+    return tuple(dict.fromkeys(restored)), tuple(dict.fromkeys(removed))
+
+
+def _restore_backup_records(
+    config_manager,
+    backup_records: list[dict[str, Any]],
+    *,
+    evict_sidecar_caches: bool,
+) -> None:
+    """Put backed-up targets back, evicting sidecar caches only on request.
+
+    This rmtree+copytree's whole ``memory/<name>/`` directories, so unlike
+    the apply -- which writes only MANAGED_MEMORY_FILENAMES -- it does put
+    the three sidecars back to whatever the backup holds. Whether that
+    should drop their caches depends on WHY the restore is running, which
+    is why the flag is required rather than defaulted.
+
+    Rolling back a FAILED export or import: no. The apply never touched
+    the sidecars, so the only difference the restore can make to them is to
+    revert a flush that landed while the operation was in flight. The cache
+    is then strictly fresher than the file written over it, and evicting
+    adopts the older state -- the sequence fence advances, the pending
+    flush early-returns on ``seq <= _written_seq``, and the reply just
+    delivered is lost. Leaving the cache alone lets the next flush put it
+    back.
+
+    Restoring an operation backup on purpose: yes. There the older state
+    is exactly what was asked for, and a cache left loaded would write the
+    rolled-back content straight back out.
+    """
+    # In a finally, because the damage is already done by the time anything
+    # in the loop can fail. Records are processed deepest-first, so a
+    # character directory is removed EARLY and the runtime/state files come
+    # after it; one of those raising left the removal in place and skipped
+    # the retirement entirely. The name then stayed live with no directory,
+    # and the next in-flight write recreated it as an orphan --
+    # ``character_memory_exists`` reporting a character the restored
+    # characters.json no longer contains. That is precisely what the
+    # retirement below exists to prevent, so it must not be the thing a
+    # failure skips.
+    #
+    # Reaching it on the error path is also the safer arm on its own terms:
+    # the disk has changed either way, so a cache left loaded is stale
+    # whether the loop finished or not.
+    # Only the records this call actually REACHED. The loop stops at the
+    # first raise, and a character whose directory was never touched has a
+    # cache that is still correct for what is on disk -- evicting it adopts
+    # an older state, advances the sequence fence past the pending flush,
+    # and loses a reply that was already delivered. Measured: 2 decisions
+    # expected, 1 on disk, with _written_seq bumped by the eviction alone.
+    #
+    # The raising record itself counts as reached: its removal may already
+    # have happened, which is the whole reason this block moved into a
+    # finally.
+    processed: list[dict] = []
+    try:
+        for record in sorted(
+            backup_records,
+            key=lambda item: len(item["target"].parts),
+            reverse=True,
+        ):
+            processed.append(record)
+            target_path = record["target"]
+            if target_path.exists():
+                # Refreshed from disk: the recorded flag is from BACKUP
+                # time, so a directory this operation created carries False
+                # and its character would never reach the lifecycle
+                # handling below.
+                record["is_dir"] = target_path.is_dir()
+                if target_path.is_dir():
+                    shutil.rmtree(target_path, ignore_errors=True)
+                else:
+                    target_path.unlink()
+            backup_path = record.get("backup")
+            if backup_path is None or not backup_path.exists():
+                continue
+            if record.get("is_dir"):
+                shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
+            else:
+                _facade._apply_runtime_file(backup_path, target_path)
+    finally:
+        if evict_sidecar_caches:
+            restored, removed = _memory_character_names_from_backup_records(
+                config_manager, processed
+            )
+            evict_character_runtime_caches(*restored)
+            retire_character_runtime_caches(*removed)
 
 
 def _write_operation_backup_metadata(
@@ -823,7 +1055,9 @@ def restore_cloudsave_operation_backup(
             }
             current_deleted = snapshot_recent_deletions(list(backup_recent_paths))
             try:
-                _restore_backup_records(backup_records)
+                _restore_backup_records(
+                    config_manager, backup_records, evict_sidecar_caches=True
+                )
                 for path in backup_recent_paths:
                     set_recent_pending_unlocked(path, [])
                 if recent_locks_held:
@@ -890,7 +1124,9 @@ def restore_cloudsave_operation_backup(
         }
         current_deleted = snapshot_recent_deletions(list(recent_paths))
         try:
-            _restore_backup_records(backup_records)
+            _restore_backup_records(
+                config_manager, backup_records, evict_sidecar_caches=True
+            )
             for path in recent_paths:
                 set_recent_pending_unlocked(path, pending_snapshot.get(path, []))
             if recent_locks_held:
@@ -928,13 +1164,14 @@ def _rebuild_cloudsave_manifest_from_disk(
     }
     manifest.update(
         {
-            "schema_version": 1,
-            "min_reader_schema_version": 1,
+            "schema_version": 2,
+            "min_reader_schema_version": 2,
             "min_app_version": "",
             "client_id": str(client_id or manifest.get("client_id", "")),
             "device_id": str(manifest.get("device_id", "")),
             "sequence_number": int(sequence_number),
             "exported_at_utc": exported_at,
+            "snapshot_kind": SNAPSHOT_KIND_CHARACTER_COLLECTION,
             "files": files,
         }
     )
@@ -942,6 +1179,7 @@ def _rebuild_cloudsave_manifest_from_disk(
         client_id=str(manifest.get("client_id", "")),
         sequence_number=int(manifest.get("sequence_number") or 0),
         files=files,
+        snapshot_kind=SNAPSHOT_KIND_CHARACTER_COLLECTION,
     )
     save_cloudsave_manifest(config_manager, manifest)
     return manifest
@@ -1179,13 +1417,14 @@ def export_local_cloudsave_snapshot(
 
         manifest.update(
             {
-                "schema_version": 1,
-                "min_reader_schema_version": 1,
+                "schema_version": 2,
+                "min_reader_schema_version": 2,
                 "min_app_version": "",
                 "client_id": str(cloud_state.get("client_id", "")),
                 "device_id": str(manifest.get("device_id", "")),
                 "sequence_number": sequence_number,
                 "exported_at_utc": exported_at,
+                "snapshot_kind": SNAPSHOT_KIND_FULL_RUNTIME,
                 "files": files,
             }
         )
@@ -1193,6 +1432,7 @@ def export_local_cloudsave_snapshot(
             client_id=manifest["client_id"],
             sequence_number=sequence_number,
             files=files,
+            snapshot_kind=SNAPSHOT_KIND_FULL_RUNTIME,
         )
 
         _assert_deadline_not_exceeded(
@@ -1250,6 +1490,7 @@ def import_local_cloudsave_snapshot(
             stage="prepare_import",
         )
         manifest = load_cloudsave_manifest(config_manager)
+        _validate_manifest_reader_compatibility(manifest)
         manifest_files = manifest.get("files") or {}
         if not isinstance(manifest_files, dict) or not manifest_files:
             raise ValueError("cloudsave manifest does not contain any staged files")
@@ -1274,17 +1515,36 @@ def import_local_cloudsave_snapshot(
             }
             for relative_path, staged_path in sorted(staged_entries.items())
         }
+        schema_version = _manifest_schema_version(manifest)
+        fingerprint_snapshot_kind = (
+            str(manifest.get("snapshot_kind") or "").strip()
+            if schema_version >= 2
+            else ""
+        )
+        manifest_fingerprint = str(manifest.get("fingerprint") or "")
+        if schema_version >= 2 and fingerprint_snapshot_kind and not manifest_fingerprint:
+            raise ValueError("schema 2 cloudsave manifest fingerprint is required")
         computed_fingerprint = _build_manifest_fingerprint(
             client_id=str(manifest.get("client_id", "")),
             sequence_number=int(manifest.get("sequence_number") or 0),
             files=computed_files,
+            snapshot_kind=fingerprint_snapshot_kind,
         )
-        if manifest.get("fingerprint") and manifest["fingerprint"] != computed_fingerprint:
+        if manifest_fingerprint and manifest_fingerprint != computed_fingerprint:
             raise ValueError("cloudsave manifest fingerprint mismatch")
 
-        characters_payload = _load_staged_json_file(staged_entries, "profiles/characters.json", required=True)
-        if not isinstance(characters_payload, dict):
-            raise ValueError("profiles/characters.json must contain a JSON object")
+        snapshot_kind = _resolve_snapshot_kind(manifest, staged_entries)
+        profile_path = (
+            CHARACTER_COLLECTION_PROFILE_PATH
+            if snapshot_kind == SNAPSHOT_KIND_CHARACTER_COLLECTION
+            and CHARACTER_COLLECTION_PROFILE_PATH in staged_entries
+            else LEGACY_RUNTIME_PROFILE_PATH
+        )
+        cloud_characters_payload = _load_staged_json_file(
+            staged_entries, profile_path, required=True,
+        )
+        if not isinstance(cloud_characters_payload, dict):
+            raise ValueError(f"{profile_path} must contain a JSON object")
 
         conversation_settings = _load_staged_json_file(staged_entries, "profiles/conversation_settings.json") or {}
         if not isinstance(conversation_settings, dict):
@@ -1298,38 +1558,75 @@ def import_local_cloudsave_snapshot(
         tombstones = tombstones_state.get("tombstones") or []
         tombstone_names = [tombstone["character_name"] for tombstone in tombstones]
 
-        sensitive_findings = scan_for_sensitive_values(characters_payload, path="profiles.characters")
+        sensitive_findings = scan_for_sensitive_values(cloud_characters_payload, path="profiles.characters")
         if sensitive_findings:
             raise ValueError(f"sensitive values detected in import payload: {', '.join(sensitive_findings)}")
 
-        character_map = deepcopy(characters_payload.get("猫娘") or {})
-        live_character_names = sorted(character_map.keys())
+        snapshot_character_map = deepcopy(cloud_characters_payload.get("猫娘") or {})
+        if not isinstance(snapshot_character_map, dict):
+            raise ValueError(f"{profile_path} 猫娘 must contain a JSON object")
+        live_character_names = sorted(snapshot_character_map.keys())
         name_audit = audit_cloudsave_character_names(live_character_names, tombstone_names)
         _raise_for_name_audit(name_audit, context="import")
 
         catalog_character_names = _parse_catalog_character_names(catalog_index_payload)
         if catalog_character_names and catalog_character_names != set(live_character_names):
-            raise ValueError("catalog/catgirls_index.json is inconsistent with profiles/characters.json")
+            raise ValueError(f"catalog/catgirls_index.json is inconsistent with {profile_path}")
         if binding_payloads and set(binding_payloads) != set(live_character_names):
-            raise ValueError("bindings/ payloads are inconsistent with profiles/characters.json")
+            raise ValueError(f"bindings/ payloads are inconsistent with {profile_path}")
 
         for tombstone_name in tombstone_names:
-            character_map.pop(tombstone_name, None)
-        characters_payload["猫娘"] = character_map
+            snapshot_character_map.pop(tombstone_name, None)
 
-        requested_current_name = str(characters_payload.get("当前猫娘") or "").strip()
+        requested_current_name = str(cloud_characters_payload.get("当前猫娘") or "").strip()
         if isinstance(current_character_catalog_payload, dict):
             catalog_current_name = str(current_character_catalog_payload.get("current_character_name") or "").strip()
             if catalog_current_name:
                 requested_current_name = catalog_current_name
 
-        imported_character_names = sorted(character_map.keys())
-        if requested_current_name and requested_current_name in character_map:
-            characters_payload["当前猫娘"] = requested_current_name
-        elif imported_character_names:
-            characters_payload["当前猫娘"] = imported_character_names[0]
+        applied_character_names = sorted(snapshot_character_map.keys())
+        if snapshot_kind == SNAPSHOT_KIND_CHARACTER_COLLECTION:
+            runtime_characters_path = Path(
+                config_manager.get_runtime_config_path("characters.json")
+            )
+            runtime_characters_existed = runtime_characters_path.is_file()
+            characters_payload = _runtime_characters_with_safe_master(config_manager)
+            merged_character_map = deepcopy(characters_payload.get("猫娘") or {})
+            for tombstone_name in tombstone_names:
+                merged_character_map.pop(tombstone_name, None)
+            merged_character_map.update(snapshot_character_map)
+            characters_payload["猫娘"] = merged_character_map
+
+            local_current_name = str(characters_payload.get("当前猫娘") or "").strip()
+            if (
+                runtime_characters_existed
+                and local_current_name
+                and local_current_name in merged_character_map
+            ):
+                characters_payload["当前猫娘"] = local_current_name
+            elif requested_current_name and requested_current_name in merged_character_map:
+                characters_payload["当前猫娘"] = requested_current_name
+            elif applied_character_names:
+                characters_payload["当前猫娘"] = applied_character_names[0]
+            elif local_current_name and local_current_name in merged_character_map:
+                characters_payload["当前猫娘"] = local_current_name
+            elif merged_character_map:
+                characters_payload["当前猫娘"] = sorted(merged_character_map)[0]
+            else:
+                characters_payload["当前猫娘"] = ""
         else:
-            characters_payload["当前猫娘"] = ""
+            characters_payload = deepcopy(cloud_characters_payload)
+            characters_payload["猫娘"] = snapshot_character_map
+            if not _has_usable_master_profile(characters_payload.get("主人")):
+                safe_runtime_payload = _runtime_characters_with_safe_master(config_manager)
+                characters_payload["主人"] = deepcopy(safe_runtime_payload["主人"])
+
+            if requested_current_name and requested_current_name in snapshot_character_map:
+                characters_payload["当前猫娘"] = requested_current_name
+            elif applied_character_names:
+                characters_payload["当前猫娘"] = applied_character_names[0]
+            else:
+                characters_payload["当前猫娘"] = ""
         apply_time = _utc_now_iso()
         backup_root = config_manager.cloudsave_backups_dir / f"import-{apply_time.replace(':', '').replace('.', '')}"
 
@@ -1342,12 +1639,13 @@ def import_local_cloudsave_snapshot(
             Path(config_manager.get_runtime_config_path("characters.json")): characters_stage_path,
         }
 
-        preferences_stage_path = _stage_json_file(
-            stage_root,
-            "__runtime__/user_preferences.json",
-            _build_runtime_preferences_payload(config_manager, conversation_settings),
-        )
-        runtime_targets[Path(config_manager.get_runtime_config_path("user_preferences.json"))] = preferences_stage_path
+        if snapshot_kind == SNAPSHOT_KIND_FULL_RUNTIME:
+            preferences_stage_path = _stage_json_file(
+                stage_root,
+                "__runtime__/user_preferences.json",
+                _build_runtime_preferences_payload(config_manager, conversation_settings),
+            )
+            runtime_targets[Path(config_manager.get_runtime_config_path("user_preferences.json"))] = preferences_stage_path
 
         memory_entries: list[tuple[str, str, Path]] = []
         for relative_path, staged_path in staged_entries.items():
@@ -1393,7 +1691,7 @@ def import_local_cloudsave_snapshot(
 
         delete_file_targets: set[Path] = set()
         delete_dir_targets: set[Path] = set()
-        for character_name in imported_character_names:
+        for character_name in applied_character_names:
             character_dir = Path(config_manager.memory_dir) / character_name
             for filename in MANAGED_MEMORY_FILENAMES:
                 relative_path = f"memory/{character_name}/{filename}"
@@ -1401,10 +1699,66 @@ def import_local_cloudsave_snapshot(
                 if relative_path not in staged_entries and target_path.exists():
                     delete_file_targets.add(target_path)
 
+        from utils.config_manager.migrations import (
+            _MIGRATION_WORKSPACE_PREFIX,
+        )
+
+        def _is_migration_workspace(path):
+            """The NAME, which is the one thing that cannot be forged.
+
+            A character name never begins with a dot -- a product rule, to be
+            enforced in ``validate_character_name`` as a follow-up -- and the
+            workspace prefix does. So the two namespaces do not overlap and
+            the name settles it.
+
+            Six rounds of findings landed on this exemption while it tried to
+            tell the namespaces apart with evidence instead: the prefix plus
+            a marker file, a held lock, a held lock on a regular file, the
+            ledger, the ledger or a held lock. Every one was the same shape,
+            because every piece of evidence is written AFTER the directory
+            exists and there is always a window in which the directory has
+            none. mkdtemp returns a name, and the name is enough.
+
+            The cost is that an abandoned workspace is not swept by the
+            import either. That is not the import's job: the migration
+            reclaims its own, by age and by ledger, which is where the
+            evidence belongs.
+            """
+            return path.name.startswith(_MIGRATION_WORKSPACE_PREFIX)
+
+
         memory_root = Path(config_manager.memory_dir)
         if memory_root.exists():
             for child in memory_root.iterdir():
-                if child.is_dir() and child.name not in imported_character_names:
+                if not child.is_dir():
+                    continue
+                if _is_migration_workspace(child):
+                    # A startup migration WORKSPACE, not stale runtime
+                    # data. When memory/ is a junction onto another
+                    # volume the migration has to stage inside it, and
+                    # this import can run while that copy is in flight --
+                    # so removing it here deletes a half-copied character
+                    # tree out from under the process writing it.
+                    #
+                    # Exempt because it is IN THE LEDGER. Four narrower
+                    # readings of the on-disk evidence were reported in
+                    # turn -- the prefix, the prefix plus a marker file, a
+                    # held lock, a held lock on a regular file -- and each
+                    # was a tighter guess at a question those shapes
+                    # cannot answer: a character may legally be named
+                    # ".mig-anything" and may hold a ".lock", so the very
+                    # data being swept can reproduce every one of them.
+                    #
+                    # The ledger is written immediately after mkdtemp and
+                    # before the workspace is used, so a workspace whose
+                    # lock is not claimed yet is already recorded; and a
+                    # character's stray marker never will be, however
+                    # firmly something holds it.
+                    continue
+                if snapshot_kind == SNAPSHOT_KIND_FULL_RUNTIME:
+                    if child.name not in applied_character_names:
+                        delete_dir_targets.add(child)
+                elif child.name in tombstone_names:
                     delete_dir_targets.add(child)
 
         recent_targets = {
@@ -1412,7 +1766,7 @@ def import_local_cloudsave_snapshot(
             for target_path in set(runtime_targets) | delete_file_targets
             if target_path.name == "recent.json"
         }
-        for character_name in imported_character_names:
+        for character_name in applied_character_names:
             recent_targets.update(
                 list_character_recent_paths(config_manager, character_name)
             )
@@ -1430,7 +1784,7 @@ def import_local_cloudsave_snapshot(
             }
             imported_recent_paths = {
                 recent_path
-                for character_name in imported_character_names
+                for character_name in applied_character_names
                 for recent_path in list_character_recent_paths(
                     config_manager, character_name,
                 )
@@ -1494,14 +1848,47 @@ def import_local_cloudsave_snapshot(
                         _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
 
                 for target_path in sorted(delete_dir_targets, key=lambda path: len(path.parts), reverse=True):
+                    # Asked AGAIN, because the answer can change after
+                    # enumeration. A cross-device migration that had returned
+                    # from mkdtemp() but not yet created and locked its marker
+                    # read as inactive when this set was built, and could
+                    # claim the workspace and begin copying during the
+                    # file-apply phase above -- which is long.
+                    #
+                    # This narrows the window rather than closing it: nothing
+                    # can be held across an rmtree. It is the same move the
+                    # migration's own publish steps make, re-checking one
+                    # statement before the irreversible one.
+                    if _is_migration_workspace(target_path):
+                        continue
                     if target_path.exists():
                         shutil.rmtree(target_path)
 
                 for recent_path in recent_state_paths:
                     set_recent_pending_unlocked(recent_path, [])
+                # The apply above wrote managed files and removed the directories
+                # of characters absent from the snapshot. Per-character sidecar
+                # caches only re-read on a MISS, so for a REMOVED name a stale
+                # entry describes a file that is gone and would be flushed back,
+                # recreating the directory. Handle both here, while the fence is
+                # still closed, so nothing can repopulate from the old state.
+                memory_root = Path(config_manager.memory_dir)
+                removed_character_names = [
+                    target_path.name
+                    for target_path in delete_dir_targets
+                    if target_path.parent == memory_root
+                ]
+                # Imported names are LIVE identities, and the apply never touched
+                # their sidecars, so they only need the retirement lifted --
+                # evicting would fence away a staged-but-unflushed snapshot.
+                # Removed names are the opposite case: their directories really
+                # are gone, so they retire.
+                revive_character_runtime_caches(*applied_character_names)
+                retire_character_runtime_caches(*removed_character_names)
                 return {
                     "manifest_fingerprint": computed_fingerprint,
-                    "applied_character_count": len(imported_character_names),
+                    "snapshot_kind": snapshot_kind,
+                    "applied_character_count": len(applied_character_names),
                     "name_audit": name_audit,
                 }
             except Exception:
@@ -1512,6 +1899,15 @@ def import_local_cloudsave_snapshot(
                         reverse=True,
                     ):
                         target_path = record["target"]
+                        # Rollback has to ask the same question the deletion
+                        # loop does. A workspace recorded after enumeration is
+                        # skipped there but is still in backup_records, so an
+                        # unrelated failure elsewhere would have this restore a
+                        # stale backup over a tree another process is writing
+                        # -- and leave that migration's seed unavailable for
+                        # the session.
+                        if _is_migration_workspace(target_path):
+                            continue
                         if target_path.exists():
                             if target_path.is_dir():
                                 shutil.rmtree(target_path, ignore_errors=True)

@@ -5,6 +5,19 @@
     return;
   }
 
+
+  // 归属要在窗口一存在时就宣告：晚一步的话，「窗口已开、还没宣告」这段时间里
+  // 角色窗口看不到拥有者，会自己起一个隐藏运行时，而之后的指令又都转发给这边
+  // 的可见播放器 —— 那条隐藏音轨就永远没人管了。
+  // 未就绪期间到达的指令由拥有者服务自己排队，不会撞上没初始化的状态。
+  try {
+    if (window.Jukebox && typeof window.Jukebox.startControlOwnerService === 'function') {
+      window.Jukebox.startControlOwnerService();
+    }
+  } catch (error) {
+    console.warn('[Jukebox] 控制归属服务启动失败:', error);
+  }
+
   var IGNORE_DRAG_SELECTOR =
     'button, input, a, select, textarea, .jukebox-header-buttons, ' +
     '.jukebox-table tbody tr, .sam-panel, .jukebox-controls-row, .jukebox-resize-handle';

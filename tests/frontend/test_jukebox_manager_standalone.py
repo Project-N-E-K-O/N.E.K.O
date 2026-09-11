@@ -1196,10 +1196,19 @@ def test_jukebox_manager_bindings_filter_hidden_songs(mock_page: Page):
 
 @pytest.mark.frontend
 def test_jukebox_manager_long_song_name_scrolls_without_pushing_actions(mock_page: Page):
+    """A long song name scrolls inside its own column without moving the other columns.
+
+    ``.sam-item`` is a two-column grid: ``.sam-item-info`` (which wraps
+    ``.sam-item-header``) takes column 1 and ``.sam-item-actions`` takes column 2, so
+    the action buttons always sit to the right of the name column. A short-name row is
+    rendered alongside as a baseline, and the two rows' column edges are compared to
+    show that name length does not stretch column 1.
+    """
     setup_song_manager_page(
         mock_page,
         """
         {
+          shortSong: { name: 'Short', artist: 'A', visible: true },
           longSong: {
             name: 'This is a very very very very very very very very very very long song name that should stay inside the name column',
             artist: 'A',
@@ -1213,26 +1222,43 @@ def test_jukebox_manager_long_song_name_scrolls_without_pushing_actions(mock_pag
         """
         () => {
           const panel = document.querySelector('.jukebox-sam-panel');
+          // 面板有 420px 的 min-width，这里量到的实际宽度是被 min-width 兜住的 420。
           panel.style.width = '360px';
           panel.style.height = '420px';
         }
         """
     )
 
-    metrics = mock_page.locator('.sam-item[data-id="longSong"]').evaluate(
+    metrics = mock_page.evaluate(
         """
-        (item) => {
-          const header = item.querySelector('.sam-item-header');
-          const name = item.querySelector('.sam-item-name');
-          const actions = item.querySelector('.sam-item-actions');
+        () => {
+          const geometry = (id) => {
+            const item = document.querySelector(`.sam-item[data-id="${id}"]`);
+            const style = getComputedStyle(item);
+            const inset = parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth);
+            const header = item.querySelector('.sam-item-header');
+            const actions = item.querySelector('.sam-item-actions');
+            const name = item.querySelector('.sam-item-name');
+            return {
+              itemContentRight: item.getBoundingClientRect().right - inset,
+              itemClientWidth: item.clientWidth,
+              itemScrollWidth: item.scrollWidth,
+              headerRight: header.getBoundingClientRect().right,
+              actionsLeft: actions.getBoundingClientRect().left,
+              actionsRight: actions.getBoundingClientRect().right,
+              nameClientWidth: name.clientWidth,
+              nameScrollWidth: name.scrollWidth,
+            };
+          };
+          const short = geometry('shortSong');
+          const long = geometry('longSong');
+          const name = document.querySelector('.sam-item[data-id="longSong"] .sam-item-name');
           const before = name.getBoundingClientRect();
           name.focus();
           const after = name.getBoundingClientRect();
           return {
-            headerRight: header.getBoundingClientRect().right,
-            actionsRight: actions.getBoundingClientRect().right,
-            nameClientWidth: name.clientWidth,
-            nameScrollWidth: name.scrollWidth,
+            short,
+            long,
             beforeWidth: before.width,
             afterWidth: after.width,
           };
@@ -1240,8 +1266,19 @@ def test_jukebox_manager_long_song_name_scrolls_without_pushing_actions(mock_pag
         """
     )
 
-    assert metrics["actionsRight"] <= metrics["headerRight"] + 1
-    assert metrics["nameScrollWidth"] > metrics["nameClientWidth"]
+    long_item = metrics["long"]
+    short_item = metrics["short"]
+
+    # 操作按钮排在名字列右边，并且整列留在条目的内容盒里
+    assert long_item["actionsLeft"] >= long_item["headerRight"] - 1
+    assert long_item["actionsRight"] <= long_item["itemContentRight"] + 1
+    # 条目不产生横向溢出：名字不会溢出去盖在按钮上
+    assert long_item["itemScrollWidth"] <= long_item["itemClientWidth"] + 1
+    # 名字长度不改变列边界：长歌名没有把按钮挤走
+    assert abs(long_item["actionsRight"] - short_item["actionsRight"]) < 1
+    assert abs(long_item["headerRight"] - short_item["headerRight"]) < 1
+    # 长歌名在自己那一列里滚动，且聚焦不改变它的宽度
+    assert long_item["nameScrollWidth"] > long_item["nameClientWidth"]
     assert abs(metrics["beforeWidth"] - metrics["afterWidth"]) < 1
 
 

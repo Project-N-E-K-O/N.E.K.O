@@ -35,6 +35,10 @@
          timer，业务代码之后加载就抓不到早期注册的那些。默认关，靠
          localStorage.NEKO_DEBUG_HEALTH=1 + 刷新启用。详见 static/debug-health.js。 -->
     <script src="/static/debug-health.js?v={{ static_asset_version }}"></script>
+    <!-- 帧率总闸（仅 Electron Pet 窗口生效）：量显示器刷新率，决定 Live2D/VRM/MMD 在
+         配置帧率低于刷新率时改用定时器驱动而非 rAF 跳帧。只在本页加载；其它页面不加载
+         即保持原行为。详见 static/frame-pacing.js。 -->
+    <script src="/static/frame-pacing.js?v={{ static_asset_version }}"></script>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>
@@ -50,7 +54,7 @@
     <link rel="stylesheet" href="/static/css/avatar-reaction-bubble.css?v={{ static_asset_version }}">
     <!-- 暗色模式样式 -->
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
-    <!-- 主题管理器（尽早加载以避免闪烁） -->
+    <!-- 主题与界面透明度管理器（在 body 前同步恢复，避免首帧闪烁） -->
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
 
     <!-- 教程样式定制 -->
@@ -453,6 +457,7 @@
     <script src="/static/social-embed.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-telemetry.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-buttons.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-game-voice-control.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-drop-parser.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-drop-intake.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
@@ -611,17 +616,38 @@
                 }
             } catch (_) {}
             if (!lan) { setTimeout(syncGameWindowStateOnInit, 100); return; }
+            // Bootstrap snapshot vs. live socket: this fetch can start while route
+            // A is active and resolve after A's `closed` event has already been
+            // handled, and the dispatch below would then re-open a dead route on
+            // this page. Every close path advances the route state revision, so
+            // compare it across the request the same way the reconnect
+            // reconciliation in app-websocket.js does.
+            var routeRevisionAtBootstrap = -1;
+            try {
+                if (window.appState) {
+                    routeRevisionAtBootstrap = Number(window.appState.gameRouteStateRevision) || 0;
+                }
+            } catch (_) {}
             fetch('/api/game/route/active?lanlan_name=' + encodeURIComponent(lan))
                 .then(function(resp) { return resp && resp.ok ? resp.json() : null; })
                 .then(function(data) {
                     if (!data || !data.active) return;
+                    try {
+                        if (routeRevisionAtBootstrap >= 0 && window.appState
+                            && (Number(window.appState.gameRouteStateRevision) || 0)
+                                !== routeRevisionAtBootstrap) {
+                            console.log('[GameWindow] 忽略晚到的启动路由快照');
+                            return;
+                        }
+                    } catch (_) {}
                     try {
                         window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
                             detail: {
                                 action: 'opened',
                                 lanlanName: data.lanlan_name || lan,
                                 gameType: data.game_type || '',
-                                sessionId: data.session_id || ''
+                                sessionId: data.session_id || '',
+                                routeInstanceId: data.sdk_route_instance_id || ''
                             }
                         }));
                     } catch (_) {}

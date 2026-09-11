@@ -89,6 +89,10 @@ export function usePluginPackageInstaller() {
           ? 'package.install.blockedBundleConflict'
           : plan.reason === 'legacy_plugin_present'
             ? 'package.install.blockedLegacyPlugin'
+            : plan.reason === 'install_source_ownership_unknown'
+              ? 'package.install.blockedOwnershipUnknown'
+              : plan.reason === 'install_source_read_only'
+                ? 'package.install.blockedInstallSourceReadOnly'
             : 'package.install.blockedDirectoryConflict'
         ElMessage.error(
           plan.reason === 'legacy_plugin_present'
@@ -114,7 +118,9 @@ export function usePluginPackageInstaller() {
         install_source: options.installSource,
       }
       if (plan.action === 'upgrade' || plan.action === 'reinstall' || plan.action === 'downgrade') {
-        const messagePrefix = plan.action
+        const messagePrefix = plan.reason === 'manual_takeover'
+          ? 'manualTakeover'
+          : plan.action
         try {
           await ElMessageBox.confirm(
             t(`package.install.${messagePrefix}Body`, {

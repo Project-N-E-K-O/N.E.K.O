@@ -484,7 +484,7 @@ def test_gate_signal_for_registry(monkeypatch):
     assert gate_signal_for("regtest", "  帮我打开浏览器  ") == 0.7
 
     # Complexity fold: a hard reasoning turn (low action, high complexity) keeps
-    # the gate OPEN — max(0.1, 0.8) = 0.8 — so openfang-style reasoning requests
+    # the gate OPEN — max(0.1, 0.8) = 0.8 — so hard reasoning requests
     # are not braked.
     fake2, _ = _fake_tier('{"valence": 0, "arousal": 0, "external_intent": 0.1, "complexity": 0.8}')
     _patch_tier(monkeypatch, fake2)

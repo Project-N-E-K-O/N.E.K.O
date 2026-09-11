@@ -21,6 +21,12 @@
     let speakerTransitionPromise = Promise.resolve();
     let localSpeakerPreferenceRevision = 0;
 
+    function normalizeAssistantPlaybackGain(value) {
+        var gain = Number(value);
+        if (!Number.isFinite(gain)) return 1;
+        return Math.max(0, Math.min(2, gain));
+    }
+
     function normalizeSpeakerDeviceId(deviceId) {
         return typeof deviceId === 'string' && deviceId.length > 0
             ? deviceId
@@ -453,6 +459,7 @@
             type: 'speech_playback_state',
             active: remaining > 0.05 || S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0 || pendingAudioWork,
             speechId: S.currentPlayingSpeechId || null,
+            correlationId: S.currentPlayingSpeechCorrelationId || '',
             turnId: S.assistantSpeechActiveTurnId || S.assistantTurnId || null,
             playbackTurnId: S.assistantSpeechPlaybackTurnId || null,
             playbackStartAudioTime: Number.isFinite(S.assistantSpeechPlaybackStartAudioTime) ? S.assistantSpeechPlaybackStartAudioTime : 0,
@@ -629,6 +636,7 @@
             S.incomingAudioBlobQueue.length === 0 &&
             !S.assistantSpeechActiveTurnId) {
             S.currentPlayingSpeechId = null;
+            S.currentPlayingSpeechCorrelationId = '';
         }
 
         logAudioLifecycle('pruneStalledPendingAudioMetaQueue:removed', {
@@ -1323,6 +1331,15 @@
 
     // ======================== Audio queue management ========================
 
+    function releaseAssistantPlaybackGraph(source) {
+        if (!source) return;
+        try { source.disconnect(); } catch (_) { /* noop */ }
+        try { source._nekoPlaybackGainNode?.disconnect(); } catch (_) { /* noop */ }
+        try { source._nekoPlaybackLimiterNode?.disconnect(); } catch (_) { /* noop */ }
+        source._nekoPlaybackGainNode = null;
+        source._nekoPlaybackLimiterNode = null;
+    }
+
     /**
      * clearAudioQueue — stop all scheduled sources, empty the buffer queue
      * and reset the OGG Opus decoder.
@@ -1334,6 +1351,7 @@
         clearScheduleAudioChunksTimer();
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
+            releaseAssistantPlaybackGraph(source);
         });
         stopActiveLipSync();
         S.scheduledSources = [];
@@ -1367,6 +1385,7 @@
         clearScheduleAudioChunksTimer();
         S.scheduledSources.forEach(function (source) {
             try { source.stop(); } catch (_) { /* noop */ }
+            releaseAssistantPlaybackGraph(source);
         });
         stopActiveLipSync();
         S.scheduledSources = [];
@@ -1462,11 +1481,39 @@
 
     // ======================== Lip-sync ========================
 
-    function startLipSync(model, analyser) {
-        console.log('[LipSync] 开始口型同步', { hasModel: !!model, hasAnalyser: !!analyser });
+    // 定时器驱动时的取消句柄（rAF 驱动时用 S.animationFrameId）
+    let _lipSyncPacedCancel = null;
+
+    // 取消已排的口型同步帧：rAF / 定时器两种驱动都覆盖
+    function cancelLipSyncFrame() {
         if (S.animationFrameId) {
             cancelAnimationFrame(S.animationFrameId);
+            S.animationFrameId = null;
         }
+        if (_lipSyncPacedCancel) {
+            try { _lipSyncPacedCancel(); } catch (_) {}
+            _lipSyncPacedCancel = null;
+        }
+    }
+
+    // 排下一帧：Electron Pet 里渲染后端切到定时器驱动时，本循环也走定时器（周期同渲染
+    // tick），否则这条 rAF 链会单独把 Blink 主帧顶回显示器刷新率。返回是否为定时器驱动。
+    function scheduleLipSyncFrame(animate) {
+        const pacing = window.nekoFramePacing;
+        if (pacing && typeof pacing.requestPacedFrame === 'function' &&
+            typeof pacing.currentTimerTickFps === 'function' && pacing.currentTimerTickFps() != null) {
+            S.animationFrameId = null;
+            _lipSyncPacedCancel = pacing.requestPacedFrame(animate);
+            return true;
+        }
+        _lipSyncPacedCancel = null;
+        S.animationFrameId = requestAnimationFrame(animate);
+        return false;
+    }
+
+    function startLipSync(model, analyser) {
+        console.log('[LipSync] 开始口型同步', { hasModel: !!model, hasAnalyser: !!analyser });
+        cancelLipSyncFrame();
 
         _lastMouthOpen = 0;
         _lipSyncSkipCounter = 0;
@@ -1475,9 +1522,11 @@
 
         function animate() {
             if (!analyser) return;
-            S.animationFrameId = requestAnimationFrame(animate);
+            const pacedByTimer = scheduleLipSyncFrame(animate);
 
-            if (++_lipSyncSkipCounter < LIP_SYNC_EVERY_N_FRAMES) return;
+            // 定时器驱动时周期已经是渲染 tick（≤ 配置帧率），不再隔帧；rAF 驱动才按
+            // LIP_SYNC_EVERY_N_FRAMES 隔帧采样
+            if (!pacedByTimer && ++_lipSyncSkipCounter < LIP_SYNC_EVERY_N_FRAMES) return;
             _lipSyncSkipCounter = 0;
 
             analyser.getByteTimeDomainData(dataArray);
@@ -1503,10 +1552,7 @@
 
     function stopLipSync(model) {
         console.log('[LipSync] 停止口型同步');
-        if (S.animationFrameId) {
-            cancelAnimationFrame(S.animationFrameId);
-            S.animationFrameId = null;
-        }
+        cancelLipSyncFrame();
         if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
             window.LanLan1.setMouth(0);
         } else if (model && model.internalModel && model.internalModel.coreModel) {
@@ -1562,10 +1608,29 @@
                     var source = S.audioPlayerContext.createBufferSource();
                     source.buffer = nextBuffer;
                     source._nekoAssistantTurnId = resolveAssistantAudioTurnId(item.turnId, item.speechId);
+                    var playbackGain = normalizeAssistantPlaybackGain(item.playbackGain);
+                    var playbackGainNode = S.audioPlayerContext.createGain();
+                    playbackGainNode.gain.value = playbackGain;
+                    source._nekoPlaybackGainNode = playbackGainNode;
+                    source.connect(playbackGainNode);
+                    var playbackTailNode = playbackGainNode;
+                    if (playbackGain > 1 && typeof S.audioPlayerContext.createDynamicsCompressor === 'function') {
+                        // Boosted game speech gets a per-source peak limiter so 2x gain
+                        // remains usable without altering the user's global speaker mix.
+                        var limiter = S.audioPlayerContext.createDynamicsCompressor();
+                        limiter.threshold.value = -3;
+                        limiter.knee.value = 0;
+                        limiter.ratio.value = 20;
+                        limiter.attack.value = 0.003;
+                        limiter.release.value = 0.1;
+                        source._nekoPlaybackLimiterNode = limiter;
+                        playbackGainNode.connect(limiter);
+                        playbackTailNode = limiter;
+                    }
                     if (hasAnalyser) {
-                        source.connect(S.globalAnalyser);
+                        playbackTailNode.connect(S.globalAnalyser);
                     } else {
-                        source.connect(S.audioPlayerContext.destination);
+                        playbackTailNode.connect(S.audioPlayerContext.destination);
                     }
 
                     if (source._nekoAssistantTurnId) {
@@ -1641,6 +1706,7 @@
                             if (index !== -1) {
                                 S.scheduledSources.splice(index, 1);
                             }
+                            releaseAssistantPlaybackGraph(src);
                             publishSpeechPlaybackState('source_ended', {
                                 active: S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0 || S.incomingAudioBlobQueue.length > 0,
                                 speechId: S.currentPlayingSpeechId || src._nekoSpeechId || null,
@@ -1687,7 +1753,7 @@
 
     // ======================== Audio blob handling ========================
 
-    async function handleAudioBlob(blob, expectedEpoch, speechId, turnId) {
+    async function handleAudioBlob(blob, expectedEpoch, speechId, turnId, playbackGain) {
         if (expectedEpoch === undefined) expectedEpoch = S.incomingAudioEpoch;
 
         var arrayBuffer = await blob.arrayBuffer();
@@ -1758,7 +1824,8 @@
             seq: S.seqCounter++,
             buffer: audioBuffer,
             turnId: resolveAssistantAudioTurnId(turnId, speechId),
-            speechId: normalizeAssistantTurnId(speechId)
+            speechId: normalizeAssistantTurnId(speechId),
+            playbackGain: normalizeAssistantPlaybackGain(playbackGain)
         };
         S.audioBufferQueue.push(bufferObj);
 
@@ -1832,6 +1899,7 @@
             shouldSkip: !!meta.shouldSkip,
             speechId: meta.speechId,
             turnId: resolveAssistantAudioTurnId(meta.turnId, meta.speechId),
+            playbackGain: normalizeAssistantPlaybackGain(meta.playbackGain),
             epoch: meta.epoch
         });
         if (!S.isProcessingIncomingAudioBlob) {
@@ -1884,7 +1952,13 @@
                     continue;
                 }
 
-                await handleAudioBlob(item.blob, item.epoch, item.speechId, item.turnId);
+                await handleAudioBlob(
+                    item.blob,
+                    item.epoch,
+                    item.speechId,
+                    item.turnId,
+                    item.playbackGain
+                );
                 logAudioLifecycle('processIncomingAudioBlobQueue:handled', {
                     turnId: item.turnId || null,
                     speechId: item.speechId
@@ -1979,6 +2053,7 @@
     mod.startLipSync = startLipSync;
     mod.stopLipSync = stopLipSync;
     mod.scheduleAudioChunks = scheduleAudioChunks;
+    mod.normalizeAssistantPlaybackGain = normalizeAssistantPlaybackGain;
     mod.handleAudioBlob = handleAudioBlob;
     mod.enqueueIncomingAudioBlob = enqueueIncomingAudioBlob;
     mod.processIncomingAudioBlobQueue = processIncomingAudioBlobQueue;

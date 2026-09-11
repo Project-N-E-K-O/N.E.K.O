@@ -49,6 +49,7 @@ from .memory_policy import (
     _DEFAULT_BADMINTON_GAME_MEMORY_ENABLED,
     _DEFAULT_GAME_MEMORY_TAIL_COUNT,
     _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
+    _GAME_MEMORY_ARCHIVE_OWNER_GENERIC,
     _game_memory_policy_fields,
     _game_memory_policy_from_payload,
     _normalize_game_memory_type,
@@ -63,6 +64,7 @@ from utils.game_route_state import _game_route_states, _route_state_key
 
 
 _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
+_GAME_WINDOW_STATE_CHANGE_PUSH_TIMEOUT_SECONDS = 2.0
 
 
 async def _push_game_window_state_change(
@@ -72,6 +74,7 @@ async def _push_game_window_state_change(
     lanlan_name: str,
     game_type: str,
     session_id: str = "",
+    route_instance_id: str = "",
 ) -> None:
     """Broadcast the 'game window opened/closed' WS event so the chat.html / pet
     multi-windows can collapse / restore in sync (user-level UX linkage; not
@@ -98,6 +101,8 @@ async def _push_game_window_state_change(
     }
     if session_id:
         payload["session_id"] = session_id
+    if route_instance_id:
+        payload["sdk_route_instance_id"] = route_instance_id
     try:
         ws = getattr(mgr, "websocket", None)
         if ws is None or not hasattr(ws, "send_json"):
@@ -105,11 +110,60 @@ async def _push_game_window_state_change(
         client_state = getattr(ws, "client_state", None)
         if client_state is not None and client_state != client_state.CONNECTED:
             return
-        await ws.send_json(payload)
+        await asyncio.wait_for(
+            ws.send_json(payload),
+            timeout=_GAME_WINDOW_STATE_CHANGE_PUSH_TIMEOUT_SECONDS,
+        )
     except Exception as exc:
         logger.warning(
             "game_window_state_change WS push failed (action=%s, game=%s, lanlan=%s): %s",
             action, game_type, lanlan_name, exc,
+        )
+
+
+_GAME_ROUTE_SPEECH_CANCEL_PUSH_TIMEOUT_SECONDS = 2.0
+
+
+async def _push_game_speech_cancel(
+    mgr,
+    *,
+    lanlan_name: str,
+    game_type: str,
+    session_id: str,
+    route_instance_id: str,
+    speech_correlation_id: str,
+) -> None:
+    """Cancel browser-buffered audio owned by one exact SDK speech request."""
+    correlation_id = str(speech_correlation_id or "").strip()[:128]
+    if not mgr or not lanlan_name or not correlation_id:
+        return
+    payload: dict[str, Any] = {
+        "type": "game_route_speech_cancel",
+        "lanlan_name": lanlan_name,
+        "game_type": game_type,
+        "session_id": session_id,
+        "sdk_speech_correlation_id": correlation_id,
+    }
+    if route_instance_id:
+        payload["sdk_route_instance_id"] = route_instance_id
+    try:
+        ws = getattr(mgr, "websocket", None)
+        if ws is None or not hasattr(ws, "send_json"):
+            return
+        client_state = getattr(ws, "client_state", None)
+        if client_state is not None and client_state != client_state.CONNECTED:
+            return
+        await asyncio.wait_for(
+            ws.send_json(payload),
+            timeout=_GAME_ROUTE_SPEECH_CANCEL_PUSH_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning(
+            "game_route_speech_cancel WS push failed (game=%s, session=%s, lanlan=%s): %s",
+            game_type,
+            session_id,
+            lanlan_name,
+            exc,
         )
 
 
@@ -223,6 +277,7 @@ def _build_route_state(
         "game_memory_player_interaction_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "game_memory_event_reply_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "game_memory_archive_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
+        "game_memory_archive_owner": _GAME_MEMORY_ARCHIVE_OWNER_GENERIC,
         "game_memory_postgame_context_enabled": _DEFAULT_SOCCER_GAME_MEMORY_ENABLED,
         "last_state": {},
         "finalScore": {},

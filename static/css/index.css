@@ -56,8 +56,7 @@ body {
     /* 移除备用背景色，避免白色边框 */
     color: #fff;
     /* 纯白色文字 */
-    text-shadow: none;
-    /* 移除文字阴影 */
+    text-shadow: 0 1px 3px rgba(0,0,0,0.35);
     border-radius: 12px;
     font-size: 18px;
     /* 字体大小 */
@@ -92,18 +91,14 @@ body {
     content: '🐾';
     position: absolute;
     top: 50%;
-    /* 垂直居中 */
     left: 12px;
     transform: translateY(-50%);
-    /* 配合top: 50%实现垂直居中 */
     font-size: 50px;
-    /* 增大猫爪图标 */
     line-height: 1;
     opacity: 1;
     filter: brightness(0) invert(1);
-    /* 将emoji变成纯白色，移除阴影 */
-    z-index: 1;
-    /* 确保猫爪在遮罩层之上 */
+    z-index: 0;
+    pointer-events: none;
 }
 
 /* 弹跳动画只在 toast 可见时运行：默认态 toast 以 opacity:0 隐藏（非 display:none），
@@ -137,7 +132,6 @@ body {
     opacity: 1;
     transform: translateY(0) scale(1);
     pointer-events: auto;
-    animation: slide-in-toast 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 }
 
 /* 状态提示气泡框滑动入动画 */
@@ -153,11 +147,27 @@ body {
     }
 }
 
+#status-toast-text{position:relative;z-index:1;flex:1;min-width:0;overflow-wrap:anywhere}
+#status-toast-close{position:absolute;top:6px;right:8px;z-index:2;width:22px;height:22px;border:none;border-radius:50%;background:rgba(255,255,255,0.22);cursor:pointer;padding:0;opacity:0.85;transition:background 0.15s,opacity 0.15s;text-shadow:none;font-size:0;line-height:0}
+#status-toast.show #status-toast-close{pointer-events:auto}
+#status-toast-close::before,#status-toast-close::after{content:"";position:absolute;left:50%;top:50%;width:10px;height:2px;border-radius:999px;background:#fff;pointer-events:none}
+#status-toast-close::before{transform:translate(-50%,-50%) rotate(45deg)}
+#status-toast-close::after{transform:translate(-50%,-50%) rotate(-45deg)}
+#status-toast-close:hover{background:rgba(255,255,255,0.38);opacity:1}
+#status-toast-close:active{transform:scale(0.92)}
+#status-toast-close:focus-visible{outline:2px solid rgba(255,255,255,0.9);outline-offset:2px}
+#status-toast{padding-right:36px}
+
+@media (max-width:600px){
+    #status-toast{padding-right:36px}
+}
+
 /* 状态提示气泡框滑动出动画 */
 #status-toast.hide {
     opacity: 0;
     transform: translateY(-20px) scale(0.95);
     animation: none;
+    pointer-events: none;
 }
 
 .home-avatar-floating-guide-player {
@@ -263,6 +273,7 @@ body {
         /* 移动端字体大小 */
         padding: 16px 20px;
         padding-left: 45px;
+        padding-right: 36px;
         /* 为左上角的猫爪留出空间 */
     }
 

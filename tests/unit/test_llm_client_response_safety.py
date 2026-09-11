@@ -77,6 +77,20 @@ def _resp_with_finish_reason(reason: str):
     return resp
 
 
+@pytest.mark.asyncio
+async def test_chat_openai_preserves_an_explicit_empty_api_key() -> None:
+    client = llm_client_module.ChatOpenAI(
+        model="local-model",
+        base_url="http://127.0.0.1:11434/v1",
+        api_key="",
+    )
+    try:
+        assert client._aclient.auth_headers == {}
+        assert client._client.auth_headers == {}
+    finally:
+        await client.aclose()
+
+
 class TestAinvokeDefensiveRead:
     @pytest.mark.asyncio
     async def test_none_message_returns_empty_string(self):

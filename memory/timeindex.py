@@ -21,9 +21,13 @@ from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from collections.abc import AsyncIterator, Callable, Generator, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime
 import asyncio
+import json
 import os
+import re
+import threading
 import unicodedata
 
 logger = get_module_logger(__name__, "Memory")
@@ -44,6 +48,250 @@ FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS = 5.0
 
 class CharacterEngineAdmissionError(RuntimeError):
     """The character identity is fenced for delete/rename publication."""
+
+
+@dataclass(frozen=True)
+class LatestAssistantTexts:
+    """Bounded text-only assistant history returned by a read-only query."""
+
+    messages: list[str]
+    source_available: bool
+    skipped_row_count: int = 0
+    # POSITIONALLY ALIGNED with ``messages``: one entry per message, ``None``
+    # where that row carries no anti-repeat join key. A compacted list would
+    # lose the alignment callers need to tell which analyzed replies are
+    # linkable, and a partial set silently misrepresents the scope.
+    response_ids: list[str | None] = field(default_factory=list)
+
+
+_ANTI_REPEAT_RESPONSE_ID_KEY = "anti_repeat_response_id"
+_ANTI_REPEAT_VISIBLE_TEXT_LENGTH_KEY = "anti_repeat_visible_text_length"
+# A visible-text length is one reply's character count; 12 digits is already
+# absurdly generous and stays far under CPython's int-conversion digit limit
+# (4300 by default), which int() raises ValueError past.
+_MAX_VISIBLE_LENGTH_DIGITS = 12
+# A scan budget bounds the latest-assistant read by ROWS EXAMINED, not only by
+# assistant messages found. Without it, a character whose history is mostly
+# human/system/malformed rows and holds fewer than `limit` usable assistant
+# rows pages through the entire table while holding the per-character engine
+# lock. The router's HTTP timeout does not stop the `asyncio.to_thread`
+# worker, so a timed-out analysis would keep scanning and keep blocking that
+# character's memory reads and writes. Running out of budget degrades into
+# "fewer replies analyzed", which the panel already reports.
+_LATEST_ASSISTANT_SCAN_BUDGET_FACTOR = 20
+_LATEST_ASSISTANT_MIN_SCAN_BUDGET = 2_000
+# Reading a page of history is two queries, not one.
+#
+# The first selects only the ORDERING KEYS, so a window of user turns costs
+# almost nothing; the second fetches bodies for that window with the role
+# filter pushed into SQL, so a user turn's text is never transferred into this
+# process at all. Measured on the reported reproducer: 4.3 MB of user prose was
+# being SELECTed, materialized by fetchall() and JSON-parsed to yield one
+# 17-character assistant reply.
+#
+# The split is what keeps the scan budget honest. Putting the filter on the
+# single paged query would have made LIMIT count MATCHING rows, so one
+# statement could walk an unbounded stretch of history looking for them; the
+# key query still pages a fixed number of rows and still advances the cursor
+# from the window's last row, whether or not anything in it survives.
+# CASE, not "json_valid(...) AND json_extract(...)".
+#
+# The AND form was reported as raising "malformed JSON" on a damaged legacy
+# row, failing the whole insights request with a 503 instead of counting it in
+# ``skipped_row_count`` and carrying on. It does NOT reproduce: measured on
+# SQLite 3.49.1 across eight query shapes -- plain WHERE, WHERE with ORDER BY
+# and LIMIT, a rowid IN list, an indexed range, the extract in the SELECT list,
+# through a view, inside an OR, and an aggregate -- every one short-circuits.
+#
+# Taken anyway, because short-circuit evaluation of AND is not something SQLite
+# promises: it is free to reorder the terms of a WHERE clause, and a plan we
+# did not think to construct is not a plan that cannot happen. A CASE is
+# correct by construction at no cost, which is a better trade than being right
+# about the eight plans we tried.
+_ASSISTANT_ROW_FILTER = (
+    "CASE WHEN json_valid(message)"
+    " THEN json_extract(message, '$.type') END = 'ai'"
+)
+# At most this many rowids per body query. SQLite's bound-parameter ceiling is
+# 999 on builds before 3.32, and ``batch_size`` is a caller argument.
+_ASSISTANT_BODY_CHUNK = 200
+_json1_supported: bool | None = None
+
+
+def _supports_json1(engine) -> bool:
+    """Whether this SQLite build has the JSON1 functions, probed once.
+
+    JSON1 is compiled in by default from SQLite 3.38, but an older build would
+    raise on ``json_valid`` and take the whole feature down with it. Falling
+    back to an unfiltered body read costs memory on such a build; failing the
+    request costs the feature.
+    """
+    global _json1_supported
+    if _json1_supported is None:
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT json_valid('{}')")).scalar()
+            _json1_supported = True
+        except Exception:
+            _json1_supported = False
+    return _json1_supported
+
+_LEGACY_PROACTIVE_ACTION_NOTE_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r'\[给[^\r\n]+放了《[^\r\n]+》— [^\r\n]+\]',
+        r'\[給[^\r\n]+放了《[^\r\n]+》— [^\r\n]+\]',
+        r'\[Played for [^\r\n]+: "[^\r\n]+" by [^\r\n]+\]',
+        r"\[[^\r\n]+に再生した曲：『[^\r\n]+』— [^\r\n]+\]",
+        r"\[[^\r\n]+에게 재생한 곡: 《[^\r\n]+》 — [^\r\n]+\]",
+        r"\[Для [^\r\n]+: «[^\r\n]+» — [^\r\n]+\]",
+        r'\[Reprodujo para [^\r\n]+: "[^\r\n]+" de [^\r\n]+\]',
+        r'\[Tocou para [^\r\n]+: "[^\r\n]+" de [^\r\n]+\]',
+        r"\[给[^\r\n]+分享了表情包：《[^\r\n]+》（来自 [^\r\n]+）\]",
+        r"\[給[^\r\n]+分享了梗圖：《[^\r\n]+》（來自 [^\r\n]+）\]",
+        r'\[Sent [^\r\n]+ a meme: "[^\r\n]+" \(from [^\r\n]+\)\]',
+        r"\[[^\r\n]+に送ったスタンプ：『[^\r\n]+』（[^\r\n]+ より）\]",
+        r"\[[^\r\n]+에게 보낸 짤: 《[^\r\n]+》 \([^\r\n]+ 출처\)\]",
+        r"\[Отправлено для [^\r\n]+: «[^\r\n]+» \(из [^\r\n]+\)\]",
+        r'\[Envió a [^\r\n]+ un meme: "[^\r\n]+" \(de [^\r\n]+\)\]',
+        r'\[Enviou a [^\r\n]+ um meme: "[^\r\n]+" \(de [^\r\n]+\)\]',
+        r"\[给[^\r\n]+分享了《[^\r\n]+》（来自 [^\r\n]+）\]",
+        r"\[給[^\r\n]+分享了《[^\r\n]+》（來自 [^\r\n]+）\]",
+        r'\[Shared with [^\r\n]+: "[^\r\n]+" \(from [^\r\n]+\)\]',
+        r"\[[^\r\n]+にシェアした内容：『[^\r\n]+』（[^\r\n]+ より）\]",
+        r"\[[^\r\n]+에게 공유한 내용: 《[^\r\n]+》 \([^\r\n]+ 출처\)\]",
+        r"\[Поделено для [^\r\n]+: «[^\r\n]+» \(из [^\r\n]+\)\]",
+        r'\[Compartió con [^\r\n]+: "[^\r\n]+" \(de [^\r\n]+\)\]',
+        r'\[Compartilhou com [^\r\n]+: "[^\r\n]+" \(de [^\r\n]+\)\]',
+    )
+)
+
+
+def _strip_legacy_proactive_action_note(content: str) -> str:
+    """Remove one recognized history-only note from a legacy assistant record."""
+    trimmed = content.rstrip()
+    visible, separator, final_line = trimmed.rpartition("\n")
+    note = final_line.strip() if separator else trimmed
+    if any(pattern.fullmatch(note) for pattern in _LEGACY_PROACTIVE_ACTION_NOTE_PATTERNS):
+        return visible.rstrip() if separator else ""
+    return content
+
+
+def _visible_assistant_text(content: str, visible_text_length: int | None) -> str | None:
+    """Apply the history-only visible-text boundary to one assistant body.
+
+    Shared by both content shapes so the rule cannot hold for one and not the
+    other. A recorded visible length that does not fit rejects the row rather
+    than guessing, because over-reading is what would leak the hidden tail.
+    """
+    if visible_text_length is not None:
+        if visible_text_length > len(content):
+            return None
+        content = content[:visible_text_length]
+    else:
+        content = _strip_legacy_proactive_action_note(content)
+    return content.strip() or None
+
+
+def _assistant_record_from_stored_message(
+    message_raw: object,
+) -> tuple[str, str | None] | None:
+    """Return assistant text plus its optional local anti-repeat response ID."""
+    if isinstance(message_raw, (bytes, bytearray)):
+        try:
+            message_raw = message_raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if isinstance(message_raw, str):
+        try:
+            message_raw = json.loads(message_raw)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(message_raw, dict) or message_raw.get("type") != "ai":
+        return None
+    data = message_raw.get("data")
+    if not isinstance(data, dict):
+        return None
+
+    response_id = None
+    visible_text_length = None
+    additional_kwargs = data.get("additional_kwargs")
+    if isinstance(additional_kwargs, dict):
+        raw_response_id = additional_kwargs.get(_ANTI_REPEAT_RESPONSE_ID_KEY)
+        if isinstance(raw_response_id, str):
+            normalized_response_id = raw_response_id.strip()
+            if 0 < len(normalized_response_id) <= 128:
+                response_id = normalized_response_id
+        # Presence, not truthiness: ``.get()`` cannot tell a MISSING key from one
+        # explicitly set to null, and the latter is unusable metadata that must
+        # drop the row rather than fall through to the legacy stripper.
+        if _ANTI_REPEAT_VISIBLE_TEXT_LENGTH_KEY in additional_kwargs:
+            raw_visible_length = additional_kwargs[
+                _ANTI_REPEAT_VISIBLE_TEXT_LENGTH_KEY
+            ]
+            # A digit string longer than CPython's int-conversion limit (4300 by
+            # default) passes isdigit() and then raises ValueError, which escaped
+            # this per-row parser and failed the WHOLE request — one damaged
+            # field blocking analysis of every otherwise valid reply. Bound the
+            # field, and treat a present-but-unusable value as a reason to drop
+            # the row: falling back to the legacy stripper would risk reading
+            # past the visible text and exposing the hidden tail.
+            if (
+                not isinstance(raw_visible_length, str)
+                # isdigit() is NOT an int() predicate: "²" and other
+                # superscripts satisfy it and then raise. isdecimal() is the
+                # one that matches what int() accepts.
+                or not raw_visible_length.isdecimal()
+                or len(raw_visible_length) > _MAX_VISIBLE_LENGTH_DIGITS
+            ):
+                return None
+            try:
+                visible_text_length = int(raw_visible_length)
+            except ValueError:
+                # Belt and braces. The predicate above should already cover it,
+                # and it has been wrong twice; nothing about a damaged metadata
+                # field is worth failing the whole request over.
+                return None
+
+    content = data.get("content")
+    if isinstance(content, str):
+        text_content = _visible_assistant_text(content, visible_text_length)
+        return (text_content, response_id) if text_content else None
+    if not isinstance(content, list):
+        return None
+
+    text_parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text_value = block.get("text")
+        if isinstance(text_value, str) and text_value.strip():
+            # RAW, not stripped. The recorded length counts characters of
+            # the text as it was written -- ``len(full_text)`` before the
+            # note was appended (main_logic/core/proactive.py) -- so
+            # shortening the body first slides the boundary along by
+            # however much came off the front. Measured on a reply opening
+            # with two newlines: the slice reached two characters into the
+            # history-only note, which is exactly the text this rule exists
+            # to keep out. Whitespace-only blocks are still dropped; only
+            # the kept text is left intact.
+            text_parts.append(text_value)
+    joined = "\n".join(text_parts)
+    if not joined.strip():
+        return None
+    # The same visible-text boundary has to apply here. Block-list content is
+    # not an edge case: cross_server persists every assistant turn as
+    # ``[{"type": "text", ...}]``, so this is the shape almost all stored rows
+    # actually have, and leaving it unguarded meant the hidden-text rule the
+    # string branch enforces was effectively never enforced at all.
+    text_content = _visible_assistant_text(joined, visible_text_length)
+    return (text_content, response_id) if text_content else None
+
+
+def _assistant_text_from_stored_message(message_raw: object) -> str | None:
+    """Return assistant text from one LangChain history cell, if present."""
+    record = _assistant_record_from_stored_message(message_raw)
+    return record[0] if record is not None else None
 
 
 def _next_readonly_batch(
@@ -198,6 +446,11 @@ def token_overlap(left: list[str], right: list[str]) -> float:
     return 2 * len(left_set & right_set) / (len(left_set) + len(right_set))
 
 
+# Bootstraps the per-instance engine-lock guard for instances built through
+# __new__ (test fixtures), where __init__ never ran.
+_ENGINE_LOCK_BOOTSTRAP = threading.Lock()
+
+
 class TimeIndexedMemory:
     def __init__(
         self,
@@ -209,6 +462,9 @@ class TimeIndexedMemory:
         self.db_paths = {} # 存储 {lanlan_name: db_path}
         self._engine_readonly_flags = {}  # 存储 {lanlan_name: bool}
         self._writable_bootstrapped = set()  # 存储已完成可写初始化的角色
+        # 每角色一把可重入锁，串行化引擎的初始化与释放。见 _get_engine_lock。
+        self._engine_locks: dict[str, threading.RLock] = {}
+        self._engine_locks_guard = threading.Lock()
         # {lanlan_name: {connection_string}}：dispose 失败、仍扣着文件句柄的 pool。
         # 按连接串记账而不是靠 db_path 现推——路径漂移重建会覆盖 db_path，
         # 那之后就再也推不出失败 pool 的键了。
@@ -267,7 +523,52 @@ class TimeIndexedMemory:
         except Exception:
             return left == right
 
+    def _get_engine_lock(self, lanlan_name: str) -> threading.RLock:
+        """Per-character re-entrant lock guarding engine init and disposal.
+
+        Re-entrant because the in-place repair branches of
+        ``_ensure_engine_exists_unlocked`` (db_path drift, readonly → writable
+        switch) call ``dispose_engine`` while already holding it.
+
+        Self-sufficient rather than relying on ``__init__``: this class is
+        constructed through ``__new__`` in several test fixtures that assign
+        attributes by hand, so an accessor that assumed the constructor ran
+        would break every one of them on any new field.
+        """
+        guard = getattr(self, "_engine_locks_guard", None)
+        if guard is None:
+            with _ENGINE_LOCK_BOOTSTRAP:
+                guard = getattr(self, "_engine_locks_guard", None)
+                if guard is None:
+                    self._engine_locks = getattr(self, "_engine_locks", None) or {}
+                    guard = self._engine_locks_guard = threading.Lock()
+        with guard:
+            return self._engine_locks.setdefault(lanlan_name, threading.RLock())
+
     def _ensure_engine_exists(
+        self,
+        lanlan_name: str,
+        db_path: str | None = None,
+        readonly: bool = False,
+    ) -> bool:
+        """Serialize engine initialization per character.
+
+        ``_ensure_engine_exists_unlocked`` is "read the cached engine → dispose
+        it → rebuild", which is not atomic. This PR added a concurrent READER
+        (``retrieve_latest_assistant_texts`` runs under ``asyncio.to_thread``
+        with ``readonly=True``) alongside the existing writer that ``/cache``
+        drives through another thread. Interleaved, the writable branch sees a
+        read-only cached engine, disposes it and rebuilds — while the reader is
+        still querying the engine that just got disposed.
+        """
+        with self._get_engine_lock(lanlan_name):
+            return self._ensure_engine_exists_unlocked(
+                lanlan_name,
+                db_path=db_path,
+                readonly=readonly,
+            )
+
+    def _ensure_engine_exists_unlocked(
         self,
         lanlan_name: str,
         db_path: str | None = None,
@@ -416,6 +717,21 @@ class TimeIndexedMemory:
         return await asyncio.to_thread(self._ensure_engine_exists, lanlan_name, db_path)
 
     def dispose_engine(
+        self, lanlan_name: str, *, retain_on_failure: bool = False,
+    ) -> bool:
+        """Serialize disposal against initialization for the same character.
+
+        Same lock as ``_ensure_engine_exists``: tearing an engine down while
+        another thread is halfway through rebuilding it is the other half of the
+        race. Re-entrant, so the in-place repair branches can keep calling this
+        while already holding it.
+        """
+        with self._get_engine_lock(lanlan_name):
+            return self._dispose_engine_unlocked(
+                lanlan_name, retain_on_failure=retain_on_failure
+            )
+
+    def _dispose_engine_unlocked(
         self, lanlan_name: str, *, retain_on_failure: bool = False,
     ) -> bool:
         """Dispose one character's cached engines and report whether any were known.
@@ -677,6 +993,221 @@ class TimeIndexedMemory:
     async def aretrieve_original_by_timeframe(self, lanlan_name, start_time, end_time, limit_rows: int | None = None):
         return await asyncio.to_thread(
             self.retrieve_original_by_timeframe, lanlan_name, start_time, end_time, limit_rows
+        )
+
+    def retrieve_latest_assistant_texts(
+        self,
+        lanlan_name: str,
+        limit: int,
+        *,
+        batch_size: int = 256,
+    ) -> LatestAssistantTexts:
+        """Read the latest text-bearing assistant messages without writing.
+
+        SQLite rows are scanned newest-first so a bounded UI request does not
+        materialize the whole history. The returned messages are reversed back
+        into chronological order before analysis.
+
+        The per-character engine lock is held for the WHOLE read, not just for
+        acquisition: the schema probe and every paging query go through
+        ``self.engines[lanlan_name]``, and ``dispose_engine`` takes the same
+        lock, so releasing it after acquisition would let a concurrent disposal
+        pull the engine out from under a read already in flight — surfacing as
+        ``RuntimeError("latest assistant history read failed")``. The work is
+        bounded on BOTH axes: at most ``limit`` messages AND a scan budget of
+        rows examined, so holding it cannot stall a writer indefinitely even
+        for a history whose tail carries almost no assistant rows.
+        """
+        if limit < 1:
+            raise ValueError("limit must be greater than zero")
+        if batch_size < 1:
+            raise ValueError("batch_size must be greater than zero")
+        with self._get_engine_lock(lanlan_name):
+            return self._retrieve_latest_assistant_texts_locked(
+                lanlan_name, limit, batch_size=batch_size
+            )
+
+    def _assistant_bodies_by_rowid(
+        self,
+        conn,
+        table_name: str,
+        rowids: list[int],
+    ) -> dict[int, object]:
+        """Return the stored message for each ASSISTANT row in ``rowids``.
+
+        The role filter runs in SQL when the build supports it, so a user turn's
+        body is never transferred into this process. A row missing from the
+        result is a row this analysis skips, which is what the caller counts.
+        """
+        filtered = _supports_json1(conn.engine)
+        bodies: dict[int, object] = {}
+        for start in range(0, len(rowids), _ASSISTANT_BODY_CHUNK):
+            chunk = rowids[start : start + _ASSISTANT_BODY_CHUNK]
+            placeholders = ", ".join(f":r{index}" for index in range(len(chunk)))
+            sql = (
+                f"SELECT rowid, message FROM {table_name} "
+                f"WHERE rowid IN ({placeholders})"
+            )
+            if filtered:
+                sql += f" AND {_ASSISTANT_ROW_FILTER}"
+            params = {f"r{index}": value for index, value in enumerate(chunk)}
+            for row in conn.execute(text(sql), params).fetchall():
+                bodies[int(row[0])] = row[1]
+        return bodies
+
+    def _retrieve_latest_assistant_texts_locked(
+        self,
+        lanlan_name: str,
+        limit: int,
+        *,
+        batch_size: int,
+    ) -> LatestAssistantTexts:
+        """Body of ``retrieve_latest_assistant_texts``; the engine lock is held."""
+        try:
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return LatestAssistantTexts([], False)
+        except MaintenanceModeError:
+            return LatestAssistantTexts([], False)
+
+        table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        try:
+            with self.engines[lanlan_name].connect() as conn:
+                columns = conn.execute(
+                    text(f"PRAGMA table_info({table_name})")
+                ).fetchall()
+        except Exception as exc:
+            logger.warning(
+                "[TimeIndexedMemory] latest assistant schema read failed for %s: %s",
+                lanlan_name,
+                type(exc).__name__,
+            )
+            raise RuntimeError("latest assistant history read failed") from exc
+        if not columns:
+            # PRAGMA table_info returns an EMPTY list for a table that does
+            # not exist -- it does not raise -- so an empty or partially
+            # restored database read as "a schema with no timestamp column"
+            # and the SELECT below then failed against a missing table. That
+            # surfaced as a 503, which the panel renders as a retryable
+            # error, and no amount of retrying can create the table.
+            #
+            # No table is exactly what source_available=False already means,
+            # and it is the same answer the two branches above give when the
+            # engine cannot be opened at all.
+            logger.debug(
+                "[TimeIndexedMemory] %s has no %s table; reporting no source",
+                lanlan_name,
+                table_name,
+            )
+            return LatestAssistantTexts([], False)
+        has_timestamp = any(str(row[1]).lower() == "timestamp" for row in columns)
+
+        cursor: tuple[object, int] | None = None
+        records: list[tuple[str, str | None]] = []
+        skipped_row_count = 0
+        scanned_row_count = 0
+        scan_budget = max(
+            _LATEST_ASSISTANT_MIN_SCAN_BUDGET,
+            limit * _LATEST_ASSISTANT_SCAN_BUDGET_FACTOR,
+        )
+
+        while len(records) < limit and scanned_row_count < scan_budget:
+            timestamp_expression = "timestamp" if has_timestamp else "NULL"
+            sql = (
+                f"SELECT {timestamp_expression}, rowid FROM {table_name} "
+                "WHERE 1=1"
+            )
+            params: dict[str, object] = {"page_size": batch_size}
+            if cursor is not None:
+                cursor_timestamp, cursor_rowid = cursor
+                if not has_timestamp:
+                    sql += " AND rowid < :cursor_rowid"
+                elif cursor_timestamp is None:
+                    sql += " AND timestamp IS NULL AND rowid < :cursor_rowid"
+                else:
+                    sql += (
+                        " AND (timestamp IS NULL OR timestamp < :cursor_timestamp "
+                        "OR (timestamp = :cursor_timestamp AND rowid < :cursor_rowid))"
+                    )
+                    params["cursor_timestamp"] = cursor_timestamp
+                params["cursor_rowid"] = cursor_rowid
+            if has_timestamp:
+                # No NULLS LAST: SQLite sorts NULL smallest, so a DESC order
+                # already places NULL timestamps last, and the keyword only
+                # exists from 3.30.0 (2019). Spelling it cost compatibility with
+                # older builds for a clause that changes nothing -- verified
+                # identical output for a mixed NULL/non-NULL window.
+                sql += " ORDER BY timestamp DESC, rowid DESC LIMIT :page_size"
+            else:
+                sql += " ORDER BY rowid DESC LIMIT :page_size"
+
+            try:
+                with self.engines[lanlan_name].connect() as conn:
+                    keys = conn.execute(text(sql), params).fetchall()
+                    bodies = (
+                        self._assistant_bodies_by_rowid(
+                            conn, table_name, [int(key[1]) for key in keys]
+                        )
+                        if keys
+                        else {}
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[TimeIndexedMemory] latest assistant history read failed for %s: %s",
+                    lanlan_name,
+                    type(exc).__name__,
+                )
+                raise RuntimeError("latest assistant history read failed") from exc
+
+            if not keys:
+                break
+            scanned_row_count += len(keys)
+            for key in keys:
+                message = bodies.get(int(key[1]))
+                # Absent because the role filter dropped it, or present and
+                # rejected by the parser -- both are rows this analysis skips,
+                # and the count has always meant exactly that.
+                assistant_record = (
+                    None if message is None
+                    else _assistant_record_from_stored_message(message)
+                )
+                if assistant_record is None:
+                    skipped_row_count += 1
+                    continue
+                records.append(assistant_record)
+                if len(records) >= limit:
+                    break
+            cursor = (keys[-1][0], int(keys[-1][1]))
+            if len(keys) < batch_size:
+                break
+            if scanned_row_count >= scan_budget and len(records) < limit:
+                logger.warning(
+                    "[TimeIndexedMemory] latest assistant scan budget reached "
+                    "for %s after %d rows with %d messages",
+                    lanlan_name,
+                    scanned_row_count,
+                    len(records),
+                )
+
+        records.reverse()
+        return LatestAssistantTexts(
+            [message for message, _response_id in records],
+            True,
+            skipped_row_count,
+            [response_id for _message, response_id in records],
+        )
+
+    async def aretrieve_latest_assistant_texts(
+        self,
+        lanlan_name: str,
+        limit: int,
+        *,
+        batch_size: int = 256,
+    ) -> LatestAssistantTexts:
+        return await asyncio.to_thread(
+            self.retrieve_latest_assistant_texts,
+            lanlan_name,
+            limit,
+            batch_size=batch_size,
         )
 
     def _fetch_original_timeframe_page(

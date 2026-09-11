@@ -480,6 +480,17 @@ def test_game_voice_route_end_avoids_double_mic_restore():
 
 
 @pytest.mark.unit
+def test_game_voice_unknown_backend_mode_falls_back_instead_of_disabling_transcription():
+    websocket_js = (ROOT / "static" / "app" / "app-websocket.js").read_text(encoding="utf-8")
+    capture_js = (ROOT / "static" / "app" / "app-audio-capture.js").read_text(encoding="utf-8")
+
+    assert "GAME_VOICE_TRANSCRIPTION_MODES.indexOf(transcriptionMode) === -1" in websocket_js
+    assert "transcriptionMode = 'unavailable';" in websocket_js
+    assert "['backend_pending', 'native_core', 'independent_asr'].indexOf(transcriptionMode)" in websocket_js
+    assert "publishGameVoiceBrowserTranscriptionState(false, errorCode);" in capture_js
+
+
+@pytest.mark.unit
 def test_realtime_client_has_no_game_route_surface():
     """The omni_realtime_client package must not carry game-route-specific
     APIs after Phase 1 of the dialog-passthrough refactor — that logic

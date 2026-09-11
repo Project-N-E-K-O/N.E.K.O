@@ -165,6 +165,127 @@ async def test_main_active_character_name_change_clears_only_stale_avatar_fields
 
 
 @pytest.mark.asyncio
+async def test_main_active_character_model_change_clears_stale_images_for_same_name(
+    monkeypatch,
+):
+    from app.main_server import web_app
+
+    snapshot = {
+        "name": "N.E.K.O",
+        "modelType": "live2d",
+        "modelKey": "live2d:/models/old/model.json",
+        "dataUrl": "old-avatar",
+        "characterReferenceDataUrl": "old-reference",
+    }
+    monkeypatch.setattr(web_app, "_card_drop_active_character", snapshot)
+
+    response = await web_app.set_card_drop_active_character(
+        _main_server_request(),
+        {
+            "name": "N.E.K.O",
+            "modelType": "pngtuber",
+            "modelKey": "pngtuber:/user_pngtuber/new/idle.png",
+            "dataUrl": "new-avatar",
+        },
+    )
+
+    assert response == {"ok": True}
+    assert snapshot == {
+        "name": "N.E.K.O",
+        "modelType": "pngtuber",
+        "modelKey": "pngtuber:/user_pngtuber/new/idle.png",
+        "dataUrl": "new-avatar",
+    }
+
+
+@pytest.mark.asyncio
+async def test_main_active_character_type_only_change_clears_prior_model_key(
+    monkeypatch,
+):
+    from app.main_server import web_app
+
+    snapshot = {
+        "name": "N.E.K.O",
+        "modelType": "live2d",
+        "modelKey": "live2d:/models/old/model.json",
+        "dataUrl": "old-avatar",
+        "characterReferenceDataUrl": "old-reference",
+    }
+    monkeypatch.setattr(web_app, "_card_drop_active_character", snapshot)
+
+    response = await web_app.set_card_drop_active_character(
+        _main_server_request(),
+        {"name": "N.E.K.O", "modelType": "vrm"},
+    )
+
+    assert response == {"ok": True}
+    assert snapshot == {"name": "N.E.K.O", "modelType": "vrm"}
+
+
+@pytest.mark.asyncio
+async def test_main_active_character_rejects_stale_model_revision_before_mutation(
+    monkeypatch,
+):
+    from app.main_server import web_app
+
+    snapshot = {
+        "name": "N.E.K.O",
+        "modelType": "pngtuber",
+        "modelKey": "pngtuber:new-model",
+        "modelRevision": 200,
+        "dataUrl": "new-avatar",
+        "characterReferenceDataUrl": "new-reference",
+    }
+    monkeypatch.setattr(web_app, "_card_drop_active_character", snapshot)
+
+    response = await web_app.set_card_drop_active_character(
+        _main_server_request(),
+        {
+            "name": "N.E.K.O",
+            "modelType": "live2d",
+            "modelKey": "live2d:old-model",
+            "modelRevision": 100,
+            "dataUrl": "old-avatar",
+            "characterReferenceDataUrl": "old-reference",
+        },
+    )
+
+    assert response == {"ok": False, "stale": True}
+    assert snapshot == {
+        "name": "N.E.K.O",
+        "modelType": "pngtuber",
+        "modelKey": "pngtuber:new-model",
+        "modelRevision": 200,
+        "dataUrl": "new-avatar",
+        "characterReferenceDataUrl": "new-reference",
+    }
+
+
+@pytest.mark.asyncio
+async def test_main_active_character_get_exposes_model_identity(monkeypatch):
+    from app.main_server import web_app
+
+    monkeypatch.setattr(
+        web_app,
+        "_card_drop_active_character",
+        {
+            "name": "N.E.K.O",
+            "modelType": "pngtuber",
+            "modelKey": "pngtuber:/user_pngtuber/neko/idle.png",
+        },
+    )
+
+    response = await web_app.get_card_drop_active_character(
+        _main_server_request(),
+        include_avatar=False,
+    )
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert payload["modelType"] == "pngtuber"
+    assert payload["modelKey"] == "pngtuber:/user_pngtuber/neko/idle.png"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "origin",
     ["https://evil.example", "https://community.example"],
@@ -431,7 +552,7 @@ async def test_shared_facts_file_parsing_and_selection_run_off_event_loop(
     worker_threads: list[int] = []
     original_load = F._load_facts_json
     original_select = F._select_forge_facts_with_stats
-    original_archive_select = F._select_archive_distant_fact
+    original_archive_select = F._select_archive_facts
 
     def tracked_load(path):
         worker_threads.append(threading.get_ident())
@@ -448,7 +569,7 @@ async def test_shared_facts_file_parsing_and_selection_run_off_event_loop(
     monkeypatch.setattr(F, "resolve_active_neko_context", fake_context)
     monkeypatch.setattr(F, "_load_facts_json", tracked_load)
     monkeypatch.setattr(F, "_select_forge_facts_with_stats", tracked_select)
-    monkeypatch.setattr(F, "_select_archive_distant_fact", tracked_archive_select)
+    monkeypatch.setattr(F, "_select_archive_facts", tracked_archive_select)
 
     payload = await F.build_forge_facts_payload(
         runtime_character_hint="Lanlan",
@@ -2411,6 +2532,7 @@ async def test_archive_pick_excludes_rows_still_present_in_active_facts(
 
     assert payload["returnedCount"] == 5
     assert payload["archiveRawCount"] == 6
+    assert payload["totalMemoryCount"] == 6
     assert payload["archiveFilteredCount"] == 0, payload["archiveFilteredCount"]
     sources = [fact["sourceCollection"] for fact in payload["facts"]]
     assert "facts_archive" not in sources, sources

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   deriveMarketPluginAction,
   fetchInstalledProjection,
-  inferManualInstallConflict,
+  inferUnresolvedLocalConflict,
 } from './marketPluginInstallState'
 
 describe('deriveMarketPluginAction', () => {
@@ -75,7 +75,7 @@ describe('deriveMarketPluginAction', () => {
     }, '0.1.7', true)).toMatchObject({ kind: 'upgrade', targetVersion: '0.1.7' })
   })
 
-  it('blocks a manual user installation instead of replacing it', () => {
+  it('offers a confirmed replacement for a manual user installation', () => {
     expect(
       deriveMarketPluginAction(
         {
@@ -87,13 +87,38 @@ describe('deriveMarketPluginAction', () => {
         },
         '0.1.6',
         true
-      ).kind
-    ).toBe('blocked')
+      )
+    ).toMatchObject({ kind: 'upgrade', effectiveSource: 'manual' })
   })
 
-  it('treats a local-only identity match as a manual conflict', () => {
-    expect(deriveMarketPluginAction(null, '0.1.6', true, true).kind).toBe('blocked')
+  it('blocks a local-only identity match with unknown ownership', () => {
+    expect(deriveMarketPluginAction(null, '0.1.6', true, true)).toMatchObject({
+      kind: 'blocked',
+      effectiveSource: 'unknown',
+      installed: true,
+    })
   })
+
+  it.each(['imported', 'unknown'])(
+    'blocks %s user ownership instead of offering manual takeover',
+    (effectiveSource) => {
+      expect(
+        deriveMarketPluginAction(
+          {
+            plugin_id: 'study_companion',
+            effective_source: effectiveSource,
+            effective_version: '0.1.5',
+          },
+          '0.1.6',
+          true
+        )
+      ).toMatchObject({
+        kind: 'blocked',
+        effectiveSource,
+        installed: true,
+      })
+    }
+  )
 
   it('preserves compatibility with the legacy latest_install_source projection', () => {
     expect(
@@ -138,9 +163,9 @@ describe('installed projection loading', () => {
     ).resolves.toEqual([])
   })
 
-  it('infers a manual conflict only after the installed projection loaded', () => {
-    expect(inferManualInstallConflict(false, undefined, true)).toBe(false)
-    expect(inferManualInstallConflict(true, undefined, true)).toBe(true)
-    expect(inferManualInstallConflict(true, { plugin_id: 'demo' }, true)).toBe(false)
+  it('infers an unresolved local conflict only after the installed projection loaded', () => {
+    expect(inferUnresolvedLocalConflict(false, undefined, true)).toBe(false)
+    expect(inferUnresolvedLocalConflict(true, undefined, true)).toBe(true)
+    expect(inferUnresolvedLocalConflict(true, { plugin_id: 'demo' }, true)).toBe(false)
   })
 })

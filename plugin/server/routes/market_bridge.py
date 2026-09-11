@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Awaitable, Callable
 import dataclasses
 import hashlib
 import hmac
@@ -31,27 +32,28 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from plugin.logging_config import get_logger
-from plugin.core.plugin_layout import resolve_plugin_layout
+from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
 from plugin.neko_plugin_cli.public import inspect_package
 from plugin.server.application.install_source import (
     InstallSourceError,
+    InstallSourceManager,
     LockEntry,
     SourceDetailMarket,
     classify_plugin_path,
     get_install_source_manager,
 )
+from plugin.server.application.install_source.scanner import PluginDirectoryScanner
 from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
-from plugin.server.application.plugins.source_switch import SourceSwitchError
-from plugin.server.application.plugins.upgrade_support import (
+from plugin.server.application.plugins.installation_transactions import (
     ReplacePluginError,
-    plugin_is_running,
-    remove_directory,
+    ReplacePluginResult,
+    is_manual_takeover_entry,
+    manual_takeover_snapshot_sha256,
     replace_plugin,
-    start_plugin_after_upgrade,
-    stop_plugin_for_upgrade,
 )
+from plugin.server.application.plugins.source_switch import SourceSwitchError
 from plugin.server.domain.errors import ServerDomainError
 from plugin.settings import (
     MARKET_API_URL,
@@ -376,6 +378,12 @@ class MarketInstallRequest(BaseModel):
         repr=False,
         description="服务端内部传递的已确认 builtin manifest 指纹",
     )
+    verified_manual_snapshot_sha256: str | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description="服务端内部传递的已确认 manual ownership/content 指纹",
+    )
 
     @field_validator("package_sha256", mode="before")
     @classmethod
@@ -403,6 +411,14 @@ class MarketOverrideConfirmationResponse(BaseModel):
     builtin_manifest_sha256: str = Field(default="", exclude=True, repr=False)
 
 
+class MarketManualTakeoverConfirmationResponse(BaseModel):
+    plugin_id: str
+    current_version: str
+    target_version: str
+    confirmation_token: str
+    manual_snapshot_sha256: str = Field(default="", exclude=True, repr=False)
+
+
 class MarketTaskStatus(BaseModel):
     task_id: str
     status: str
@@ -426,7 +442,7 @@ class MarketTaskStatus(BaseModel):
 class MarketInstalledPlugin(BaseModel):
     plugin_id: str
     path: str
-    effective_source: Literal["builtin", "market", "manual"] = "manual"
+    effective_source: Literal["builtin", "market", "manual", "imported", "unknown"] = "unknown"
     effective_version: str = ""
     market_installed: bool = False
     builtin_version: str = ""
@@ -707,6 +723,15 @@ async def market_status():
     )
 
 
+# 一整轮镜像测速的墙钟上限。单源的 per-I/O 超时乘以重定向跳数之后并不封顶，
+# 这个才封。12s 的取法：健康时实测一轮 4.6s，留出两倍余量，同时远小于用户会
+# 愿意干等的时间。
+# Env: NEKO_MARKET_PROXY_PROBE_TOTAL_BUDGET
+from plugin.server.application.plugins._env_budgets import env_seconds
+
+_GITHUB_PROXY_PROBE_TOTAL_BUDGET = env_seconds("NEKO_MARKET_PROXY_PROBE_TOTAL_BUDGET", 12.0)
+
+
 async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
     """Measure the fixed proxy list with a bounded number of outbound probes."""
 
@@ -737,9 +762,29 @@ async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
             "status_code": status_code,
         }
 
-    measured = await asyncio.gather(
-        *(probe(source_id, base_url) for source_id, base_url in _GITHUB_PROXY_SOURCES)
+    # 整轮加一个总预算。
+    #
+    # 现有的 httpx.Timeout 是 per-I/O-op 的，而这里开了 follow_redirects 且允许
+    # 5 跳，所以单个源的上界是"跳数 × 每跳超时"，六个源在慢重定向链下能叠到几十
+    # 秒——实测六源各挂在 3s/跳、深 5 的 301 链后是 37.5s，8s 的那个超时一次都
+    # 没触发。而调用它的前端用的是裸 fetch，没有超时。
+    #
+    # 超预算时保留已经量到的结果，而不是整批丢弃：慢但可用的镜像也是有用信息。
+    tasks = [
+        asyncio.ensure_future(probe(source_id, base_url))
+        for source_id, base_url in _GITHUB_PROXY_SOURCES
+    ]
+    done, pending = await asyncio.wait(
+        tasks, timeout=_GITHUB_PROXY_PROBE_TOTAL_BUDGET
     )
+    for task in pending:
+        task.cancel()
+    if pending:
+        # cancel() 只是排一个 CancelledError，任务要到下一轮事件循环才真的停。
+        # 不等就返回的话，这些 HTTP 连接会在响应发出之后才收尾，留下一批看不见
+        # 的悬挂任务（CodeRabbit）。
+        await asyncio.gather(*pending, return_exceptions=True)
+    measured = [task.result() for task in tasks if task in done and not task.cancelled()]
     return tuple(measured)
 
 
@@ -974,6 +1019,125 @@ async def market_override_confirmation(
     return await _build_market_override_confirmation(payload)
 
 
+async def _build_market_manual_takeover_confirmation(
+    payload: MarketInstallRequest,
+) -> MarketManualTakeoverConfirmationResponse:
+    """Bind Market confirmation to release, target content and manual owner."""
+
+    if payload.mode not in {"upgrade", "reinstall"}:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "manual_takeover_confirmation_not_applicable",
+                "message": "manual takeover confirmation requires a replacement mode",
+            },
+        )
+    plugin_id = (payload.expected_plugin_toml_id or "").strip()
+    manager = get_install_source_manager()
+    if manager is None or bool(getattr(manager, "is_degraded", False)):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "install_source_read_only",
+                "message": "manual takeover requires a writable install-source lock",
+            },
+        )
+    entry = _find_active_user_entry(manager, plugin_id)
+    if not is_manual_takeover_entry(entry):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "manual_takeover_source_changed",
+                "message": "the target is no longer the confirmed manual plugin",
+            },
+        )
+    assert entry is not None
+    policy = PluginCliPathPolicy.from_settings()
+    target_dir = (policy.user_plugins_root / entry.directory_name).resolve()
+    if PluginDirectoryScanner._load_plugin_id(target_dir) != entry.plugin_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "manual_takeover_source_changed",
+                "message": "manual plugin identity no longer matches its ownership entry",
+            },
+        )
+    try:
+        snapshot_sha256 = await asyncio.to_thread(
+            manual_takeover_snapshot_sha256,
+            entry=entry,
+            target_dir=target_dir,
+        )
+        manifest = tomllib.loads((target_dir / "plugin.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "manual_takeover_source_changed",
+                "message": "manual plugin content cannot be confirmed",
+            },
+        ) from exc
+    plugin_table = manifest.get("plugin")
+    current_version_obj = (
+        plugin_table.get("version")
+        if isinstance(plugin_table, dict)
+        else manifest.get("version")
+    )
+    current_version = (
+        current_version_obj.strip()
+        if isinstance(current_version_obj, str)
+        else ""
+    )
+    authoritative_release = await _fetch_authoritative_market_override_release(payload)
+    request_evidence = payload.model_dump(
+        mode="json",
+        exclude={
+            "confirmation_token",
+            "verified_builtin_manifest_sha256",
+            "verified_manual_snapshot_sha256",
+        },
+    )
+    evidence = {
+        "request": request_evidence,
+        "plugin_id": entry.plugin_id,
+        "target_dir": str(target_dir),
+        "manual_snapshot_sha256": snapshot_sha256,
+        "market_release": authoritative_release,
+    }
+    encoded = json.dumps(
+        evidence,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    token = hmac.new(
+        _BRIDGE_TOKEN.encode("utf-8"),
+        encoded,
+        hashlib.sha256,
+    ).hexdigest()
+    return MarketManualTakeoverConfirmationResponse(
+        plugin_id=entry.plugin_id,
+        current_version=current_version,
+        target_version=(payload.version or "").strip(),
+        confirmation_token=token,
+        manual_snapshot_sha256=snapshot_sha256,
+    )
+
+
+@router.post(
+    "/takeover-confirmation",
+    response_model=MarketManualTakeoverConfirmationResponse,
+)
+async def market_manual_takeover_confirmation(
+    payload: MarketInstallRequest,
+    token: str = Query(..., description="Bridge token"),
+) -> MarketManualTakeoverConfirmationResponse:
+    """Issue confirmation evidence before Market replaces a manual plugin."""
+
+    _verify_token(token)
+    return await _build_market_manual_takeover_confirmation(payload)
+
+
 @router.post("/install", response_model=MarketInstallResponse)
 async def market_install(
     payload: MarketInstallRequest,
@@ -989,7 +1153,15 @@ async def market_install(
     旧目录 → unpack → record → start，失败时按 rollback steps 逆序回滚。
     """
     _verify_token(token)
-    task_payload = payload
+    # ``exclude=True`` affects serialization only; Pydantic still accepts these
+    # fields from request bodies. Strip all caller-provided server evidence and
+    # add back only values verified during this request.
+    task_payload = payload.model_copy(
+        update={
+            "verified_builtin_manifest_sha256": None,
+            "verified_manual_snapshot_sha256": None,
+        }
+    )
 
     if payload.mode == "override_builtin":
         supplied_token = (payload.confirmation_token or "").strip()
@@ -1013,18 +1185,20 @@ async def market_install(
                     "message": "builtin or Market package changed after confirmation",
                 },
             )
-        task_payload = payload.model_copy(
+        task_payload = task_payload.model_copy(
             update={
                 "verified_builtin_manifest_sha256": rebuilt.builtin_manifest_sha256,
             }
         )
 
-    # mode=upgrade 立即校验 lock entry 存在性（R5.5）；reinstall 同样需要
-    # 已装才能"重装"，install 不要求。
+    # Replacement requires one exact active user candidate. A manual
+    # candidate is accepted only with confirmation bound to its current
+    # ownership and replaceable content snapshot.
     if payload.mode in ("upgrade", "reinstall"):
         mgr = get_install_source_manager()
         expected_plugin_id = payload.expected_plugin_toml_id or payload.plugin_id or ""
-        if mgr is None or mgr.find_active_market_entry(expected_plugin_id) is None:
+        entry = _find_active_user_entry(mgr, expected_plugin_id) if mgr is not None else None
+        if entry is None:
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -1033,6 +1207,41 @@ async def market_install(
                         f"plugin {expected_plugin_id!r} has no active market lock "
                         "entry; cannot upgrade / reinstall"
                     ),
+                },
+            )
+        if is_manual_takeover_entry(entry):
+            supplied_token = (payload.confirmation_token or "").strip()
+            if not supplied_token:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "manual_takeover_confirmation_required",
+                        "message": "confirm ownership transfer before replacing the manual plugin",
+                    },
+                )
+            rebuilt = await _build_market_manual_takeover_confirmation(payload)
+            if not secrets.compare_digest(
+                supplied_token,
+                rebuilt.confirmation_token,
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "manual_takeover_plan_changed",
+                        "message": "manual plugin or Market package changed after confirmation",
+                    },
+                )
+            task_payload = task_payload.model_copy(
+                update={
+                    "verified_manual_snapshot_sha256": rebuilt.manual_snapshot_sha256,
+                }
+            )
+        elif getattr(entry, "channel", "market") != "market":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "plugin_replacement_source_unsupported",
+                    "message": "only Market or confirmed manual plugins can be replaced",
                 },
             )
 
@@ -1211,9 +1420,26 @@ async def market_installed(
             plugin_dir, effective_version, entry = effective
             projected_source = _project_market_source_detail(entry if user is not None else None)
             is_market_installed = projected_source is not None
-            effective_source: Literal["builtin", "market", "manual"] = (
-                "market" if is_market_installed else ("manual" if user is not None else "builtin")
-            )
+            if is_market_installed:
+                effective_source: Literal[
+                    "builtin", "market", "manual", "imported", "unknown"
+                ] = "market"
+            elif user is None:
+                effective_source = "builtin"
+            elif is_manual_takeover_entry(entry):
+                effective_source = "manual"
+            elif (
+                entry is not None
+                and not entry.removed
+                and entry.root_id == "user"
+                and entry.channel == "imported"
+            ):
+                effective_source = "imported"
+            else:
+                # A discovered user directory without an exact active source
+                # row must stay visibly blocked; it is not safe to advertise
+                # the ownership-transfer action reserved for manual entries.
+                effective_source = "unknown"
             installed_by_pid[plugin_id] = MarketInstalledPlugin(
                 plugin_id=plugin_id,
                 path=str(plugin_dir),
@@ -3291,21 +3517,35 @@ async def _do_install(
 @serialized_plugin_operation
 async def _replace_market_plugin_transaction(
     *,
-    manager: Any,
+    manager: InstallSourceManager,
     expected_plugin_id: str,
     original_entry: LockEntry,
     original_entry_fingerprint: tuple[object, ...],
     installed_package_id: str,
-    replace_kwargs: dict[str, Any],
-    rollback_install_source: Any | None = None,
-) -> Any:
+    plugin_dir: Path,
+    layout: PluginLayout,
+    install_new: Callable[[], Awaitable[dict[str, object]]],
+    additional_targets: tuple[Path, ...] = (),
+    preserve_targets: tuple[Path, ...] = (),
+    validate_channel_specific: Callable[[], Awaitable[None]] | None = None,
+    on_rollback_start: Callable[[], None] | None = None,
+    manual_snapshot_sha256: str = "",
+    rollback_install_source: Callable[[], Awaitable[None]] | None = None,
+) -> ReplacePluginResult:
     """Revalidate and replace under the shared plugin filesystem lock."""
-    active_entry = manager.find_active_market_entry(expected_plugin_id)
+    reload_install_source = getattr(manager, "load", None)
+    if callable(reload_install_source):
+        await asyncio.to_thread(reload_install_source)
+    active_entry = _find_active_user_entry(manager, expected_plugin_id)
+    original_is_manual = is_manual_takeover_entry(original_entry)
     if active_entry is None or (
         active_entry.plugin_id != original_entry.plugin_id
         or active_entry.directory_name != original_entry.directory_name
-        or (getattr(active_entry, "package_id", "") or active_entry.plugin_id)
-        != installed_package_id
+        or (
+            not original_is_manual
+            and (getattr(active_entry, "package_id", "") or active_entry.plugin_id)
+            != installed_package_id
+        )
         or _market_entry_fingerprint(active_entry) != original_entry_fingerprint
     ):
         raise _TaskError(
@@ -3313,12 +3553,64 @@ async def _replace_market_plugin_transaction(
             message="plugin installation changed while the package was downloading",
             http_status=409,
         )
+    if original_is_manual:
+        live_snapshot = await asyncio.to_thread(
+            manual_takeover_snapshot_sha256,
+            entry=active_entry,
+            target_dir=plugin_dir,
+        )
+        if not manual_snapshot_sha256 or not secrets.compare_digest(
+            manual_snapshot_sha256,
+            live_snapshot,
+        ):
+            raise _TaskError(
+                code="manual_takeover_plan_changed",
+                message="manual plugin changed after takeover confirmation",
+                http_status=409,
+            )
+
+        async def validate_manual_backup(backup_dir: Path) -> None:
+            staged_snapshot = await asyncio.to_thread(
+                manual_takeover_snapshot_sha256,
+                entry=active_entry,
+                target_dir=backup_dir,
+            )
+            if not secrets.compare_digest(
+                manual_snapshot_sha256,
+                staged_snapshot,
+            ):
+                raise ServerDomainError(
+                    code="MANUAL_TAKEOVER_PLAN_CHANGED",
+                    message="manual plugin changed while it was being stopped",
+                    status_code=409,
+                )
+
+    else:
+        validate_manual_backup = None
     try:
-        return await replace_plugin(**replace_kwargs)
+        return await replace_plugin(
+            layout=layout,
+            install_new=install_new,
+            additional_targets=additional_targets,
+            preserve_targets=preserve_targets,
+            validate_backup=validate_manual_backup,
+            validate_channel_specific=validate_channel_specific,
+            on_rollback_start=on_rollback_start,
+        )
     except ReplacePluginError:
         if rollback_install_source is not None:
             await rollback_install_source()
         raise
+
+
+def _find_active_user_entry(manager: Any, plugin_ref: str) -> LockEntry | None:
+    """Use the broad user-candidate lookup while preserving test adapters."""
+
+    finder = getattr(manager, "find_active_user_entry", None)
+    if callable(finder):
+        return finder(plugin_ref)
+    market_finder = getattr(manager, "find_active_market_entry", None)
+    return market_finder(plugin_ref) if callable(market_finder) else None
 
 
 def _market_entry_fingerprint(entry: object) -> tuple[object, ...]:
@@ -3326,11 +3618,13 @@ def _market_entry_fingerprint(entry: object) -> tuple[object, ...]:
     source_detail = getattr(entry, "source_detail", None)
     return (
         getattr(entry, "root_id", ""),
+        getattr(entry, "channel", ""),
         getattr(entry, "directory_name", ""),
         getattr(entry, "plugin_id", ""),
         getattr(entry, "package_id", ""),
         getattr(entry, "installed_at", ""),
         getattr(entry, "updated_at", ""),
+        getattr(entry, "removed", False),
         getattr(source_detail, "version", ""),
         getattr(source_detail, "package_sha256", ""),
     )
@@ -3368,12 +3662,28 @@ async def _do_upgrade(
             http_status=503,
         )
 
-    entry = mgr.find_active_market_entry(expected_plugin_id)
+    entry = _find_active_user_entry(mgr, expected_plugin_id)
     if entry is None:
         raise _TaskError(
             code="plugin_not_installed_for_upgrade",
             message=f"plugin {expected_plugin_id!r} has no active market lock entry",
             http_status=400,
+        )
+    manual_takeover = is_manual_takeover_entry(entry)
+    if not manual_takeover and getattr(entry, "channel", "market") != "market":
+        raise _TaskError(
+            code="plugin_replacement_source_unsupported",
+            message="only Market or confirmed manual plugins can be replaced",
+            http_status=409,
+        )
+    manual_snapshot_sha256 = str(
+        getattr(payload, "verified_manual_snapshot_sha256", None) or ""
+    ).strip()
+    if manual_takeover and not manual_snapshot_sha256:
+        raise _TaskError(
+            code="manual_takeover_confirmation_required",
+            message="manual takeover requires bound confirmation",
+            http_status=409,
         )
     installed_plugin_id = entry.plugin_id
     entry_fingerprint = _market_entry_fingerprint(entry)
@@ -3452,8 +3762,12 @@ async def _do_upgrade(
         ):
             raise _TaskError(code="install_failed", message=f"invalid package id: {package_id!r}")
 
-        installed_package_id = getattr(entry, "package_id", "") or installed_plugin_id
-        if package_id != installed_package_id:
+        installed_package_id = (
+            package_id
+            if manual_takeover
+            else getattr(entry, "package_id", "") or installed_plugin_id
+        )
+        if not manual_takeover and package_id != installed_package_id:
             raise _TaskError(
                 code="package_id_change",
                 message=(
@@ -3483,6 +3797,17 @@ async def _do_upgrade(
             raise _TaskError(
                 code="unsafe_profile_path",
                 message=f"recorded package profile path does not match package id: {profile_dir}",
+            )
+        manual_package_has_profiles = bool(
+            manual_takeover and getattr(inspected, "profile_names", ())
+        )
+        if manual_package_has_profiles and (
+            profile_dir.exists() or profile_dir.is_symlink()
+        ):
+            raise _TaskError(
+                code="manual_takeover_profile_target_exists",
+                message="manual takeover cannot claim an existing package profile",
+                http_status=409,
             )
         market_override = _build_market_override(
             payload,
@@ -3524,20 +3849,8 @@ async def _do_upgrade(
                     restore_exc,
                 )
 
-        async def validate_new() -> None:
-            actual_plugin_id = await asyncio.to_thread(
-                _read_plugin_toml_id,
-                plugin_dir / "plugin.toml",
-            )
-            if actual_plugin_id and actual_plugin_id != installed_plugin_id:
-                raise ValueError(
-                    "installed plugin identity does not match the Market replacement target"
-                )
+        async def validate_channel_specific() -> None:
             if continues_builtin_override:
-                if actual_plugin_id != installed_plugin_id:
-                    raise ValueError(
-                        "installed plugin identity does not match the builtin override target"
-                    )
                 from plugin.server.application.plugins.lifecycle_service import (
                     plugin_registry_service,
                 )
@@ -3546,9 +3859,6 @@ async def _do_upgrade(
                     plugin_id=installed_plugin_id,
                     config_path=plugin_dir / "plugin.toml",
                 )
-
-        async def start(plugin_id: str) -> None:
-            await start_plugin_after_upgrade(plugin_id, strict=True)
 
         def mark_rollback_running() -> None:
             _set_task_stage(
@@ -3584,19 +3894,19 @@ async def _do_upgrade(
                 original_entry=entry,
                 original_entry_fingerprint=entry_fingerprint,
                 installed_package_id=installed_package_id,
+                plugin_dir=plugin_dir,
+                layout=resolve_plugin_layout(installed_plugin_id, plugin_dir),
+                install_new=install_new,
+                additional_targets=(
+                    (profile_dir,)
+                    if not manual_takeover or manual_package_has_profiles
+                    else ()
+                ),
+                preserve_targets=(() if manual_takeover else (profile_dir,)),
+                validate_channel_specific=validate_channel_specific,
+                on_rollback_start=mark_rollback_running,
+                manual_snapshot_sha256=manual_snapshot_sha256,
                 rollback_install_source=rollback_install_source,
-                replace_kwargs={
-                    "layout": resolve_plugin_layout(installed_plugin_id, plugin_dir),
-                    "install_new": install_new,
-                    "validate_new": validate_new,
-                    "is_running": plugin_is_running,
-                    "stop": stop_plugin_for_upgrade,
-                    "start": start,
-                    "cleanup_backup": _async_remove_dir,
-                    "additional_targets": (profile_dir,),
-                    "preserve_targets": (profile_dir,),
-                    "on_rollback_start": mark_rollback_running,
-                },
             )
         except ReplacePluginError as exc:
             rollback_ok = exc.rollback_status == "completed" and source_restored
@@ -3688,6 +3998,13 @@ def _build_market_override(
         override["override_confirmation"] = {
             "builtin_manifest_sha256": payload.verified_builtin_manifest_sha256,
         }
+    verified_manual_snapshot_sha256 = str(
+        getattr(payload, "verified_manual_snapshot_sha256", None) or ""
+    ).strip()
+    if mode in {"upgrade", "reinstall"} and verified_manual_snapshot_sha256:
+        # Internal evidence only: market_install strips caller-provided values
+        # and sets this after rebuilding the exact manual takeover plan.
+        override["manual_takeover_snapshot_sha256"] = verified_manual_snapshot_sha256
     if directory_name:
         override["directory_name"] = directory_name
     return override
@@ -3767,13 +4084,6 @@ def _post_install_payload_check(
         )
 
 
-async def _async_remove_dir(target_dir: Path) -> None:
-    """Async best-effort rmtree for backup cleanup."""
-
-    try:
-        await remove_directory(target_dir)
-    except Exception as exc:  # pragma: no cover - platform-specific cleanup failure
-        logger.warning("backup cleanup failed for {}: {}", target_dir, exc)
 def _utc_iso_now() -> str:
     """Current UTC time in ISO 8601 with microsecond precision and ``Z`` suffix."""
 

@@ -17,6 +17,7 @@ from plugin.logging_config import logger
 
 from plugin.utils.time_utils import now_iso
 from plugin.settings import (
+    PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE,
     PLUGIN_TRIGGER_TIMEOUT,
     PLUGIN_SHUTDOWN_TIMEOUT,
     QUEUE_GET_TIMEOUT,
@@ -25,13 +26,22 @@ from plugin.settings import (
     PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS,
 )
 from plugin._types.exceptions import PluginExecutionError
+from plugin._types.entry_metadata import entry_contract_fields
 from plugin.logging_config import format_log_text as _format_log_text
 from plugin.core.zmq_transport import (
-    HostTransport, CH_RES, CH_STS, CH_MSG, CH_COMM,
+    HostTransport, CH_RES, CH_STS, CH_MSG, CH_MSG_BATCH, CH_COMM,
 )
 
 _T = TypeVar("_T")
 STARTUP_RESULT_REQ_ID = "__plugin_startup__"
+
+
+async def _cancel_and_wait(task: asyncio.Task[Any]) -> None:
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 def _resolve_plugin_server_base_url() -> str:
@@ -45,12 +55,19 @@ def _resolve_plugin_server_base_url() -> str:
     return resolve_user_plugin_base()
 
 
+# One "message NOT delivered" warning per minute per reason, per plugin. Same
+# value and same reasoning as ``plane_bridge._FRAME_WARN_THROTTLE_SECONDS``: a
+# broken plane would otherwise turn a per-message diagnostic into a log flood
+# that buries the first occurrence.
+_PLANE_DROP_WARN_THROTTLE_SECONDS = 60.0
+
+
 @dataclass
 class PluginCommunicationResourceManager:
     """Host-side communication manager backed by ZMQ transport.
 
-    Reads all uplink messages in a single consumer task and dispatches by
-    channel tag (``res`` / ``sts`` / ``msg`` / ``comm``).
+    Uses separate consumer tasks for control traffic (``res`` / ``sts`` /
+    ``comm``) and plugin messages (``msg`` / ``msg_batch``).
     """
 
     plugin_id: str
@@ -60,6 +77,7 @@ class PluginCommunicationResourceManager:
     # async internals
     _pending_futures: Dict[str, asyncio.Future] = field(default_factory=dict)
     _uplink_consumer_task: Optional[asyncio.Task] = None
+    _message_consumer_task: Optional[asyncio.Task] = None
     _image_consumer_task: Optional[asyncio.Task] = None
     _shutdown_event: Optional[asyncio.Event] = None
     _message_target_queue: Optional[asyncio.Queue] = None
@@ -69,6 +87,13 @@ class PluginCommunicationResourceManager:
     _last_forward_log_key: Optional[tuple] = field(default=None, init=False, repr=False)
     _last_forward_log_time: float = field(default=0.0, init=False, repr=False)
     _last_forward_log_repeat_count: int = field(default=0, init=False, repr=False)
+    # Throttle state for the "message NOT delivered" warnings, keyed by reason.
+    # A plugin that pushes a frame every few seconds would otherwise emit one
+    # warning (plus a traceback) per message for as long as the plane is down,
+    # burying the first one -- the same reason plane_bridge throttles its own
+    # terminal frame-drop warnings.
+    _plane_drop_warn_last: dict = field(default_factory=dict, init=False, repr=False)
+    _plane_drop_warn_suppressed: dict = field(default_factory=dict, init=False, repr=False)
 
     # ── lifecycle ────────────────────────────────────────────────
 
@@ -102,6 +127,21 @@ class PluginCommunicationResourceManager:
         if self._uplink_consumer_task is None or self._uplink_consumer_task.done():
             self._uplink_consumer_task = asyncio.create_task(self._consume_uplink())
             self.logger.debug("Started uplink consumer for plugin {}", self.plugin_id)
+        recv_message = getattr(self.transport, "recv_message", None)
+        if (
+            callable(recv_message)
+            and (
+                self._message_consumer_task is None
+                or self._message_consumer_task.done()
+            )
+        ):
+            self._message_consumer_task = asyncio.create_task(
+                self._consume_message_uplink()
+            )
+            self.logger.debug(
+                "Started message uplink consumer for plugin {}",
+                self.plugin_id,
+            )
         if (
             callable(getattr(self.transport, "recv_image", None))
             and (self._image_consumer_task is None or self._image_consumer_task.done())
@@ -169,35 +209,49 @@ class PluginCommunicationResourceManager:
 
         # Let both independent consumers drain briefly, then cancel together.
         graceful = min(0.5, float(timeout)) if timeout is not None else 0.5
-        current_loop = asyncio.get_running_loop()
-        consumers = [
-            task
-            for task in (self._uplink_consumer_task, self._image_consumer_task)
-            if task is not None and not task.done()
+        # Each consumer is drained then cancelled individually, and a
+        # cross-loop one is awaited to completion: the cleanup below must not
+        # start while a consumer can still resolve a pending future or enqueue
+        # another message.
+        consumer_tasks = [
+            self._uplink_consumer_task,
+            self._message_consumer_task,
+            self._image_consumer_task,
         ]
-        same_loop_consumers = [task for task in consumers if task.get_loop() is current_loop]
-        cross_loop_consumers = [task for task in consumers if task.get_loop() is not current_loop]
-        if same_loop_consumers:
-            _done, still_running = await asyncio.wait(
-                same_loop_consumers,
-                timeout=graceful,
-            )
-            for task in still_running:
-                task.cancel()
-            if still_running:
-                await asyncio.gather(*still_running, return_exceptions=True)
-        for task in cross_loop_consumers:
-            try:
-                task.get_loop().call_soon_threadsafe(task.cancel)
-            except Exception:
+        for consumer_task in consumer_tasks:
+            if consumer_task is None or consumer_task.done():
+                continue
+            current_loop = asyncio.get_running_loop()
+            task_loop = consumer_task.get_loop()
+            if task_loop is current_loop:
                 try:
-                    self.logger.debug(
-                        "Failed to cancel cross-loop consumer for plugin {}",
-                        self.plugin_id,
-                        exc_info=True,
-                    )
-                except Exception:
+                    await asyncio.wait_for(consumer_task, timeout=graceful)
+                except asyncio.TimeoutError:
+                    consumer_task.cancel()
+                    try:
+                        await consumer_task
+                    except asyncio.CancelledError:
+                        pass
+            else:
+                task = consumer_task
+                if task_loop.is_closed():
                     pass
+                elif task_loop.is_running():
+                    cancel_coro = _cancel_and_wait(task)
+                    try:
+                        cancel_future = asyncio.run_coroutine_threadsafe(
+                            cancel_coro,
+                            task_loop,
+                        )
+                    except Exception:
+                        cancel_coro.close()
+                        raise
+                    await asyncio.wait_for(
+                        asyncio.wrap_future(cancel_future),
+                        timeout=graceful,
+                    )
+                else:
+                    task.cancel()
 
         self._cleanup_pending_futures()
 
@@ -216,6 +270,7 @@ class PluginCommunicationResourceManager:
             self._background_tasks.clear()
 
         self._uplink_consumer_task = None
+        self._message_consumer_task = None
         self._image_consumer_task = None
         self._shutdown_event = None
         self.logger.debug("Communication for plugin {} shutdown complete", self.plugin_id)
@@ -451,7 +506,7 @@ class PluginCommunicationResourceManager:
     }
 
     async def _consume_uplink(self) -> None:
-        """Single consumer that reads **all** uplink messages and routes them."""
+        """Consume lifecycle, tool, status, and plugin-communication traffic."""
         self._ensure_shutdown_event()
         se = self._shutdown_event
         if se is None:
@@ -482,6 +537,13 @@ class PluginCommunicationResourceManager:
                         except asyncio.QueueFull:
                             pass
                 elif ch == CH_MSG:
+                    # Compatibility for host transports that expose no
+                    # recv_message at all, so the isolated consumer below never
+                    # starts and both planes arrive here. A real HostTransport
+                    # is not one of them: it always binds a message socket, and
+                    # its recv() refuses message channels on the control uplink
+                    # so that a plugin cannot use that socket to route message
+                    # traffic around the message plane's frame ceiling.
                     await self._route_message(payload)
                 elif ch == CH_COMM:
                     await self._route_comm(payload)
@@ -493,6 +555,57 @@ class PluginCommunicationResourceManager:
             except Exception:
                 if not se.is_set():
                     self.logger.exception("Error in uplink consumer for plugin {}", self.plugin_id)
+                await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
+
+    async def _consume_message_uplink(self) -> None:
+        """Consume authenticated plugin messages independently of control RPCs."""
+        self._ensure_shutdown_event()
+        se = self._shutdown_event
+        recv_message = getattr(self.transport, "recv_message", None)
+        if se is None or not callable(recv_message):
+            return
+
+        poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
+        while not se.is_set():
+            try:
+                result = await recv_message(timeout_ms=poll_ms)
+                if result is None:
+                    continue
+                channel, payload = result
+                if channel == CH_MSG:
+                    await self._route_message(payload)
+                elif channel == CH_MSG_BATCH:
+                    items = payload.get("items")
+                    if not isinstance(items, list):
+                        raise ValueError("invalid authenticated message batch")
+                    # 条数上限用的就是 socket 那道 MAXMSGSIZE 推导时假设的批量
+                    # 大小（见 zmq_transport 的 _message_uplink_max_bytes：
+                    # payload_max * batch_max）。字节界拦不住「很多条很小的」，
+                    # 而每一条现在都会写一次 message plane，所以绕过 SDK 批量器
+                    # 的插件可以用一条合法大小的帧换来任意多次宿主侧工作。
+                    if len(items) > PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE:
+                        raise ValueError(
+                            "authenticated message batch over the item limit: "
+                            f"{len(items)} > {PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE}"
+                        )
+                    for item in items:
+                        if not isinstance(item, dict):
+                            raise ValueError("invalid authenticated message item")
+                        await self._route_message(item)
+                else:
+                    self.logger.debug(
+                        "Unknown message uplink channel '{}' from plugin {}",
+                        channel,
+                        self.plugin_id,
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                if not se.is_set():
+                    self.logger.exception(
+                        "Error in message uplink consumer for plugin {}",
+                        self.plugin_id,
+                    )
                 await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
 
     async def _consume_images(self) -> None:
@@ -582,6 +695,11 @@ class PluginCommunicationResourceManager:
     # ── message routing ──────────────────────────────────────────
 
     async def _route_message(self, msg: dict) -> None:
+        # The uplink is authenticated per plugin, so stamp the sender here on
+        # a copy: a plugin must not be able to speak for another one by
+        # putting someone else's id in the payload.
+        msg = dict(msg)
+        msg["plugin_id"] = self.plugin_id
         handler_name = self._MESSAGE_ROUTING.get(msg.get("type", ""))
         if handler_name:
             await getattr(self, handler_name)(msg)
@@ -591,10 +709,93 @@ class PluginCommunicationResourceManager:
             return
         await self._forward_message(msg)
 
-    async def _forward_message(self, msg: Dict[str, Any]) -> None:
-        if not self._message_target_queue:
-            return
+    def _publish_message_to_plane(self, msg: Dict[str, Any]) -> bool:
+        """Write one plugin message into the message plane. Best effort.
 
+        This is the path that actually reaches the user: ``ProactiveBridge``
+        subscribes to the plane's ``messages.`` topic and pushes what it sees to
+        main_server. The control-plane store this method sits next to is a cache
+        -- ``append_message_record``'s own comment forbids mirroring it into the
+        plane -- and ``_message_target_queue`` has no consumer, so without this
+        write ``push_message()`` answers ``submitted=True`` for a message nobody
+        will ever hear.
+
+        The host is the writer on purpose. A plugin writing the ingest socket
+        directly (what this branch replaced) can put any ``plugin_id`` it likes
+        in the envelope; by the time a record gets here ``_route_message`` has
+        stamped the id bound to the authenticated transport it arrived on.
+
+        Never raises into the uplink consumer: a plane that is down must not
+        take the message loop with it.
+        """
+        try:
+            from plugin.message_plane.stores import (
+                MESSAGES_STORE_NAME,
+                MESSAGES_TOPIC,
+            )
+            from plugin.server.messaging.plane_bridge import publish_record
+
+            # ``_bus_stored`` is a control-plane marker: it says this process
+            # already cached the record. It means nothing on the plane, and
+            # shipping it makes the host's payload BIGGER than the one the SDK
+            # size-checked -- so a push sized just under the ceiling is answered
+            # ``submitted=True`` and then dropped at ingest as payload_too_big,
+            # the exact silent non-delivery that check exists to prevent.
+            wire = {k: v for k, v in msg.items() if k != "_bus_stored"}
+            queued = publish_record(
+                store=MESSAGES_STORE_NAME,
+                record=wire,
+                topic=MESSAGES_TOPIC,
+            )
+        except Exception:
+            # WARNING, not DEBUG. This is the last hop between ``push_message()``
+            # and the character actually speaking, the caller has already been
+            # answered ``submitted=True``, and the ``[MESSAGE FORWARD]`` line
+            # below prints either way -- so a drop here reads exactly like a
+            # delivered message unless it says otherwise. (2026-09-10: a whole
+            # session's alerts, the character's own death included, died here and
+            # the only trace was the absence of the downstream lines.)
+            self._warn_plane_drop("raised", "message plane write raised", exc_info=True)
+            return False
+        if not queued:
+            # Refused, not crashed: the bridge is disabled or its queue is full.
+            # Same reasoning as above -- the plugin was already told ``submitted``,
+            # so the refusal has to be visible at the default level.
+            self._warn_plane_drop(
+                "refused",
+                "refused by the message plane bridge (disabled, or queue full)",
+            )
+        return queued
+
+    def _warn_plane_drop(self, reason: str, detail: str, *, exc_info: bool = False) -> None:
+        """Warn that a message did not reach the plane, at most once a minute
+        per reason.
+
+        Unthrottled this floods: a plugin streaming screenshots and status pushes
+        emits one warning -- with a traceback, on the exception branch -- per
+        message for as long as the plane stays down, which buries the first and
+        most informative one. Suppressed occurrences are counted and reported on
+        the next emission, so a silent gap never means "it stopped happening".
+        Mirrors ``plane_bridge._warn_frame_drop``.
+        """
+        now = time.time()
+        last = float(self._plane_drop_warn_last.get(reason, 0.0))
+        if last and (now - last) < _PLANE_DROP_WARN_THROTTLE_SECONDS:
+            self._plane_drop_warn_suppressed[reason] = (
+                int(self._plane_drop_warn_suppressed.get(reason, 0)) + 1
+            )
+            return
+        suppressed = int(self._plane_drop_warn_suppressed.pop(reason, 0))
+        self._plane_drop_warn_last[reason] = now
+        self.logger.warning(
+            "Plugin {} message NOT delivered: {}{}",
+            self.plugin_id,
+            detail,
+            f" (+{suppressed} more since the last warning)" if suppressed else "",
+            exc_info=exc_info,
+        )
+
+    async def _forward_message(self, msg: Dict[str, Any]) -> None:
         if isinstance(msg, dict) and not msg.get("_bus_stored"):
             try:
                 from plugin.core.state import state
@@ -607,10 +808,30 @@ class PluginCommunicationResourceManager:
                 state.append_message_record(msg)
             except Exception:
                 self.logger.debug("Failed to store message for plugin {}", self.plugin_id, exc_info=True)
+            # After the cache and BEFORE the legacy queue guard below: the plane
+            # is the delivery path and the queue is a leftover, so a host with no
+            # queue wired must still deliver. Gated on the same "not yet stored"
+            # condition so a record replayed through here is not published twice.
+            self._publish_message_to_plane(msg)
+
+        if not self._message_target_queue:
+            return
 
         try:
-            await asyncio.wait_for(self._message_target_queue.put(msg), timeout=0.05)
-        except asyncio.TimeoutError:
+            # put_nowait, never a bounded await. This queue (state.message_queue)
+            # has no consumer anywhere in the tree -- lifecycle_service passes it
+            # in and everything else only writes -- so it fills once and stays
+            # full. The old `wait_for(put(...), 0.05)` then charged every single
+            # push 50 ms for a mirror nobody reads; harmless while push_message
+            # wrote the plane itself, but this branch made _forward_message the
+            # only path, so it would have capped delivery at ~20 msg/s.
+            #
+            # Kept rather than deleted because it is still a compatibility
+            # mirror: a consumer attaching later gets messages while there is
+            # room, and gets nothing instead of a stall when there is not. The
+            # actual delivery already happened above, in the plane write.
+            self._message_target_queue.put_nowait(msg)
+        except asyncio.QueueFull:
             return
 
         if PLUGIN_LOG_MESSAGE_FORWARD:
@@ -657,7 +878,9 @@ class PluginCommunicationResourceManager:
             from plugin.core.state import state
             comm_queue = state.plugin_comm_queue
             if comm_queue is not None:
-                await comm_queue.put(msg)
+                trusted_msg = dict(msg)
+                trusted_msg["from_plugin"] = self.plugin_id
+                await comm_queue.put(trusted_msg)
         except Exception as e:
             self.logger.warning("Failed to route comm message from plugin {}: {}", self.plugin_id, e)
 
@@ -710,6 +933,13 @@ class PluginCommunicationResourceManager:
                     dynamic=True,
                     metadata=ipc_metadata,
                 )
+                # 动态入口和静态入口走同一份契约。只抄显示字段的话，/plugins 对
+                # 运行时注册的入口报 timeout=null、没有结果 schema，Agent 按默认预算
+                # 掐掉长任务。metadata 已在上面合成，dynamic 固定为真，这两个不覆盖。
+                for field_name, value in entry_contract_fields(meta_dict).items():
+                    if field_name in ("metadata", "dynamic"):
+                        continue
+                    setattr(event_meta, field_name, value)
                 handler = EventHandler(meta=event_meta, handler=lambda *args, **kwargs: None)
                 state.register_event_handler(plugin_id, handler)
                 self.logger.info("Dynamic entry registered: {} for plugin {}", entry_id, plugin_id)

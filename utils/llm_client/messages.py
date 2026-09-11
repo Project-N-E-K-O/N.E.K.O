@@ -28,6 +28,7 @@ _ROLE_TO_TYPE = {"user": "human", "assistant": "ai", "system": "system"}
 class BaseMessage:
     content: Any
     type: str = ""
+    additional_kwargs: dict[str, Any] = field(default_factory=dict)
 
     @property
     def role(self) -> str:
@@ -72,7 +73,10 @@ def messages_to_dict(messages: list) -> list[dict]:
     result: list[dict] = []
     for msg in messages:
         if isinstance(msg, BaseMessage):
-            result.append({"type": msg.type, "data": {"content": msg.content}})
+            data = {"content": msg.content}
+            if msg.additional_kwargs:
+                data["additional_kwargs"] = dict(msg.additional_kwargs)
+            result.append({"type": msg.type, "data": data})
         elif isinstance(msg, dict):
             if "type" in msg and "data" in msg:
                 result.append(msg)
@@ -96,8 +100,13 @@ def messages_from_dict(dicts: list[dict]) -> list[BaseMessage]:
     for d in dicts:
         if "data" in d and "type" in d:
             cls = _TYPE_CLS.get(d["type"], HumanMessage)
-            content = d["data"].get("content", "") if isinstance(d["data"], dict) else d["data"]
-            result.append(cls(content=content))
+            data = d["data"]
+            content = data.get("content", "") if isinstance(data, dict) else data
+            additional_kwargs = data.get("additional_kwargs", {}) if isinstance(data, dict) else {}
+            result.append(cls(
+                content=content,
+                additional_kwargs=(dict(additional_kwargs) if isinstance(additional_kwargs, dict) else {}),
+            ))
         elif "role" in d and "content" in d:
             cls = _ROLE_CLS.get(d["role"], HumanMessage)
             result.append(cls(content=d["content"]))

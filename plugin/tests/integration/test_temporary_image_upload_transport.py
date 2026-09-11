@@ -42,7 +42,8 @@ def test_public_image_upload_crosses_the_dedicated_media_transport(
         child = ChildTransport(
             host.downlink_endpoint,
             host.uplink_endpoint,
-            host.image_uplink_endpoint,
+            host.uplink_token,
+            image_uplink_endpoint=host.image_uplink_endpoint,
         )
         manager = PluginCommunicationResourceManager(plugin_id="demo", transport=host)
         responses: asyncio.Queue[dict[str, object]] = asyncio.Queue()
@@ -96,7 +97,8 @@ def test_media_backpressure_does_not_block_control_uplink() -> None:
         child = ChildTransport(
             host.downlink_endpoint,
             host.uplink_endpoint,
-            host.image_uplink_endpoint,
+            host.uplink_token,
+            image_uplink_endpoint=host.image_uplink_endpoint,
         )
         payload = b"x" * (512 * 1024)
         flood = [
@@ -151,7 +153,8 @@ def test_image_upload_from_a_timer_thread_resolves_on_its_own_event_loop(
         child = ChildTransport(
             host.downlink_endpoint,
             host.uplink_endpoint,
-            host.image_uplink_endpoint,
+            host.uplink_token,
+            image_uplink_endpoint=host.image_uplink_endpoint,
         )
         manager = PluginCommunicationResourceManager(plugin_id="demo", transport=host)
         ctx = PluginContext(
@@ -193,7 +196,8 @@ def test_image_transport_rejects_oversized_payload_before_sending() -> None:
         child = ChildTransport(
             host.downlink_endpoint,
             host.uplink_endpoint,
-            host.image_uplink_endpoint,
+            host.uplink_token,
+            image_uplink_endpoint=host.image_uplink_endpoint,
         )
         try:
             with pytest.raises(ValueError, match="transport limit"):
@@ -233,7 +237,8 @@ def test_shutdown_completes_promptly_with_a_real_send_in_flight() -> None:
     child = ChildTransport(
         host.downlink_endpoint,
         host.uplink_endpoint,
-        host.image_uplink_endpoint,
+        host.uplink_token,
+        image_uplink_endpoint=host.image_uplink_endpoint,
     )
     # No consumer, tiny outbound queue: the send below genuinely blocks.
     child._img_sock.setsockopt(zmq.SNDHWM, 1)

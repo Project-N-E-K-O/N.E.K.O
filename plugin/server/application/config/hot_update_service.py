@@ -11,6 +11,7 @@ from plugin.server.infrastructure.config_queries import load_plugin_config
 from plugin.server.infrastructure.config_updates import update_plugin_config
 
 logger = get_logger("server.application.config.hot_update")
+_QUARANTINED_HOST_ATTR = "_neko_startup_quarantined"
 
 class _SupportsConfigUpdate(Protocol):
     async def send_config_update(
@@ -48,7 +49,10 @@ def _get_host_sync(plugin_id: str) -> object | None:
     from plugin.core.state import state
 
     with state.acquire_plugin_hosts_read_lock():
-        return state.plugin_hosts.get(plugin_id)
+        host = state.plugin_hosts.get(plugin_id)
+        if getattr(host, _QUARANTINED_HOST_ATTR, False) is True:
+            return None
+        return host
 
 
 async def hot_update_plugin_config(

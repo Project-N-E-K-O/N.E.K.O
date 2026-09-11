@@ -52,7 +52,7 @@ services:
     #    从旧版升级必须先迁移数据（见 README「从旧版本升级」一节），
     #    否则容器会对着一个空目录启动，表现为"数据全没了"。
     volumes:
-      # 1. neko 用户主目录（用户数据、SSL 证书与私钥、OpenFang 运行状态）
+      # 1. neko 用户主目录（用户数据、SSL 证书与私钥）
       - ./neko-home:/home/neko
 
       # 2. 源码模式的调试日志回退目录
@@ -67,22 +67,9 @@ services:
       - NEKO_STORAGE_SELECTED_ROOT=/home/neko/.local/share/N.E.K.O
       - NEKO_STORAGE_ANCHOR_ROOT=/home/neko/.local/share/N.E.K.O
 
-      # OpenFang A2A 监听端口（容器内部使用 127.0.0.1，无需对外暴露）
-      - OPENFANG_PORT=50051
-
     # 网络配置
     networks:
       - neko-network
-
-  # ============================================================================
-  # OpenFang（专属桌面）— Rust A2A agent daemon
-  # 已编译至 neko-main 容器镜像中（openfang-builder 构建阶段）
-  # 自动在容器内以 127.0.0.1:50051 启动，无需额外服务配置
-  # 若需从宿主机访问 OpenFang Web 控制台，取消下面注释暴露端口：
-  # ports:
-  #   - "4200:4200"
-  # 并设置环境变量 OPENFANG_LISTEN=0.0.0.0:4200
-  # ============================================================================
 
 # 网络定义
 networks:

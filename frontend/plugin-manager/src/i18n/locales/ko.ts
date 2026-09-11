@@ -487,6 +487,11 @@ export default {
       overrideBuiltinTitle: '{plugin}을(를) Market 소스로 전환할까요?',
       overrideBuiltinBody: '현재 내장 버전 {current}이(가) Market 버전 {target}(으)로 교체됩니다. 플러그인 데이터와 설정은 영구 저장소에 유지됩니다.',
       overrideBuiltinConfirm: 'Market으로 전환',
+      manualTakeoverTitle: 'N.E.K.O가 {plugin}을(를) 관리하도록 할까요?',
+      manualTakeoverBody: '이 플러그인 디렉터리는 현재 수동으로 관리됩니다. 계속하면 버전 {current}을(를) {target}(으)로 교체하며, 성공 후 N.E.K.O가 이 사용자 플러그인의 업데이트와 제거를 관리합니다.',
+      manualTakeoverConfirm: '교체하고 관리',
+      manualTakeoverCancelled: '수동 관리 플러그인 교체를 취소했습니다.',
+      manualTakeoverSucceeded: '{plugin}이(가) 이제 N.E.K.O에서 관리됩니다.',
       reinstallTitle: '{plugin}을(를) 다시 설치할까요?',
       reinstallBody: '버전 {current}을(를) 버전 {target}(으)로 다시 교체합니다. 실행 중인 플러그인은 잠시 재시작됩니다.',
       reinstallConfirm: '플러그인 다시 설치',
@@ -500,6 +505,8 @@ export default {
       blockedBundleConflict: '이 번들에는 이미 설치된 플러그인이 있습니다. 플러그인을 하나씩 업그레이드하세요.',
       blockedDirectoryConflict: '대상 디렉터리가 다른 플러그인에 속하므로 변경하지 않았습니다.',
       blockedLegacyPlugin: '이 플러그인의 이전 버전이 아직 설치되어 있습니다. 계속하기 전에 {plugin}을(를) 제거하세요.',
+      blockedOwnershipUnknown: '기존 플러그인 디렉터리의 소유권을 확인할 수 없습니다. 설치 원본 기록을 복구한 후 다시 시도하세요.',
+      blockedInstallSourceReadOnly: '설치 원본 기록을 사용할 수 없거나 읽기 전용입니다. 기록을 복구한 후 다시 시도하세요.',
       rollbackCompleted: '업그레이드에 실패하여 이전 버전을 복원했습니다.',
       rollbackIncomplete: '업그레이드에 실패했고 롤백도 완료되지 않았습니다. 계속하기 전에 플러그인 상태를 확인하세요.',
       error: {
@@ -641,7 +648,13 @@ export default {
     returnedLines: '반환된 줄 수',
     connected: '연결됨',
     disconnected: '연결 안 됨',
-    connectionFailed: '로그 스트림 연결에 실패했습니다'
+    connectionFailed: '로그 스트림 연결에 실패했습니다',
+    exportLog: '로그 아카이브 내보내기',
+    openLogDirectory: '로그 디렉터리 열기',
+    exportSuccess: '로그를 성공적으로 내보냈습니다',
+    exportFailed: '로그 내보내기에 실패했습니다',
+    openDirectoryFailed: '디렉터리를 열지 못했습니다',
+    noLogFileToExport: '내보낼 로그 파일이 없습니다'
   },
   runs: {
     title: '실행 기록',
@@ -717,7 +730,9 @@ export default {
     resourceNotFound: '요청한 리소스를 찾을 수 없습니다',
     internalServerError: '서버 내부 오류',
     serviceUnavailable: '서비스를 사용할 수 없습니다',
-    networkError: '네트워크 오류. 연결을 확인하세요.'
+    networkError: '네트워크 오류. 연결을 확인하세요.',
+    requestTimeout: '요청 시간이 초과되었습니다. 다시 시도하세요.',
+    pluginLifecycleTimeout: '플러그인 시작 또는 재시작 시간이 초과되었습니다. 플러그인 로그를 확인하세요.'
   },
   welcome: {
     about: {

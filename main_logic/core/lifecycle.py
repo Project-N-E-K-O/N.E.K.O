@@ -45,6 +45,7 @@ from utils.gptsovits_config import is_gsv_disabled_voice_id
 from config.prompts.prompts_sys import get_context_summary_ready
 from utils.config_manager import _as_bool, ensure_default_yui_voice_for_free_api
 from utils.language_utils import normalize_language_code, get_global_language_full
+from utils.game_route_state import get_active_game_route_generation_identity
 from queue import Empty
 from uuid import uuid4
 import httpx
@@ -1385,16 +1386,20 @@ class LifecycleMixin:
             await asyncio.sleep(0.5)
             logger.info("旧session清理完成")
 
-        # 如果当前不需要TTS但TTS线程仍在运行，发送停止信号
-        if not self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            logger.info("当前模式不需要TTS，关闭TTS线程")
-            try:
-                self.tts_request_queue.put(("__shutdown__", None))  # 通知线程退出
-                await asyncio.to_thread(self.tts_thread.join, 1.0)  # 等待线程结束
-            except Exception as e:
-                logger.error(f"关闭TTS线程时出错: {e}")
-            finally:
-                self.tts_thread = None
+        # 如果当前不需要TTS，worker 与其绑定的响应 handler 必须成对释放。
+        # handler 在启动时会捕获当时的 response queue；只关 worker 会让它
+        # 永久阻塞在旧队列，之后小游戏懒启动 TTS 时也无法消费新队列。
+        if not self.use_tts:
+            if self.tts_thread and self.tts_thread.is_alive():
+                logger.info("当前模式不需要TTS，关闭TTS线程")
+                try:
+                    self.tts_request_queue.put(("__shutdown__", None))  # 通知线程退出
+                    await asyncio.to_thread(self.tts_thread.join, 1.0)  # 等待线程结束
+                except Exception as e:
+                    logger.error(f"关闭TTS线程时出错: {e}")
+                finally:
+                    self.tts_thread = None
+            await self._stop_tts_response_handler()
 
     async def _start_session_start_tts_if_needed(self):
         """Asynchronously start the TTS process and wait for readiness"""
@@ -1480,19 +1485,14 @@ class LifecycleMixin:
             tts_ready = self.tts_ready
             logger.info(f"🎤 TTS线程已在运行，复用现有线程 (ready={tts_ready})")
 
-        # 确保旧的 TTS handler task 已经停止
+        # 确保旧的 TTS handler task 已经停止，同时按其绑定 queue 校验缓存所有权。
         if self.tts_handler_task and not self.tts_handler_task.done():
             logger.info("🎧 Cancelling old tts_handler_task...")
-            self.tts_handler_task.cancel()
-            try:
-                await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                # Cancel echo or slow exit of the superseded handler — safe to proceed either way.
-                pass
+        await self._stop_tts_response_handler()
 
         # 启动新的 TTS handler task
         logger.info(f"🎧 Creating tts_handler_task (response_queue id={id(self.tts_response_queue):#x})")
-        self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
+        self._start_tts_response_handler()
 
         # 仅在确认为就绪时才标记可发送，避免“假就绪”导致静默
         async with self.tts_cache_lock:
@@ -1568,12 +1568,17 @@ class LifecycleMixin:
             lanlan_name=self.lanlan_name,
             master_name=self.master_name,
             user_language_provider=lambda: self.user_language,
-            on_tool_call=self._on_tool_call,
+            on_tool_call=None,
             tool_definitions=tool_definitions,
             enable_long_response_summary=external_tts_enabled,
         )
         session.on_proactive_done = self.handle_proactive_complete
         session.on_thinking_active = self._make_thinking_active_callback(session)
+        # 和两个 realtime 构造点同一处理：句柄绑到这个 client 自己，而不是
+        # 构造时刻的 self.session。handoff candidate 在被提升前既不是
+        # self.session 也不是 pending_session，_sync_tools_to_active_session
+        # 扫不到它，它得从出生就认得自己。
+        session.on_tool_call = self._make_tool_call_handler(session)
         return session
 
     async def _create_offline_vlm_handoff_candidate(
@@ -1764,6 +1769,9 @@ class LifecycleMixin:
                         turn.transcript,
                         turn.images,
                         turn_id=turn.turn_id,
+                        # 与这批帧一起冻结的采集通道。不传的话离线侧会把屏幕
+                        # 和摄像头帧一律标成 "user"。
+                        source=turn.source,
                     )
                     return delivered is not False
                 if current is None or not operation_is_current():
@@ -2087,6 +2095,8 @@ class LifecycleMixin:
                     turn.transcript,
                     turn.images,
                     turn_id=turn.turn_id,
+                    # 同上：帧总线的通道标签跟着帧走。
+                    source=turn.source,
                 )
                 return delivered is not False
             finally:
@@ -2227,6 +2237,8 @@ class LifecycleMixin:
                 api_key=realtime_config['api_key'],
                 model=realtime_config['model'],
                 voice=self._resolve_realtime_voice(realtime_config),
+                # 同上：帧抄送的角色归属。
+                lanlan_name=self.lanlan_name,
                 on_text_delta=self.handle_text_data,
                 on_audio_delta=self.handle_audio_data,
                 on_audio_done=self.handle_audio_done,
@@ -2234,6 +2246,10 @@ class LifecycleMixin:
                 on_sid_rotate=self.rotate_speech_id_for_response_done,
                 get_host_turn_id=self.read_current_speech_id,
                 on_input_transcript=self.handle_input_transcript,
+                on_input_transcript_with_route=self.handle_input_transcript,
+                get_input_route_identity=lambda: get_active_game_route_generation_identity(
+                    self.lanlan_name
+                ),
                 on_output_transcript=self.handle_output_transcript,
                 on_connection_error=self.handle_connection_error,
                 on_response_done=self.handle_response_complete,
@@ -2241,7 +2257,7 @@ class LifecycleMixin:
                 on_status_message=self.send_status,
                 on_repetition_detected=self.handle_repetition_detected,
                 api_type=self.core_api_type,
-                on_tool_call=self._on_tool_call,
+                on_tool_call=None,
                 tool_definitions=_initial_tool_defs,
                 livestream_mode=self._is_livestream_active(),
                 noise_reduction_enabled=nr_enabled,
@@ -2250,6 +2266,8 @@ class LifecycleMixin:
             # Apply user's noise reduction preference to the AudioProcessor
             if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
                 await new_session.set_audio_noise_reduction_enabled(nr_enabled)
+
+        new_session.on_tool_call = self._make_tool_call_handler(new_session)
 
         # Bind guarded callbacks BEFORE connect — connect() can invoke
         # on_connection_error during the handshake, and without the guard
@@ -2522,6 +2540,10 @@ class LifecycleMixin:
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
                     voice=self._resolve_realtime_voice(realtime_config),
+                    # 帧抄送要能归到角色：多角色同时开实时会话时，frames/all
+                    # 是共享的，没有这个名字插件分不出哪一帧属于谁（离线侧一直
+                    # 是带名字的，realtime 这侧此前恒为 None）。
+                    lanlan_name=self.lanlan_name,
                     on_text_delta=self.handle_text_data,
                     on_audio_delta=self.handle_audio_data,
                     on_audio_done=self.handle_audio_done,
@@ -2529,6 +2551,10 @@ class LifecycleMixin:
                     on_sid_rotate=self.rotate_speech_id_for_response_done,
                     get_host_turn_id=self.read_current_speech_id,
                     on_input_transcript=self.handle_input_transcript,
+                    on_input_transcript_with_route=self.handle_input_transcript,
+                    get_input_route_identity=lambda: get_active_game_route_generation_identity(
+                        self.lanlan_name
+                    ),
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
                     on_response_done=self.handle_response_complete,
@@ -2536,7 +2562,7 @@ class LifecycleMixin:
                     on_status_message=self.send_status,
                     on_repetition_detected=self.handle_repetition_detected,
                     api_type=self.core_api_type,
-                    on_tool_call=self._on_tool_call,
+                    on_tool_call=None,
                     tool_definitions=_pending_tool_defs,
                     livestream_mode=self._is_livestream_active(),
                     noise_reduction_enabled=nr_enabled,
@@ -2547,6 +2573,10 @@ class LifecycleMixin:
                     await self.pending_session.set_audio_noise_reduction_enabled(nr_enabled)
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
+            self.pending_session.on_tool_call = self._make_tool_call_handler(
+                self.pending_session
+            )
+
             initial_prompt = await self._build_initial_prompt()
             next_session_context_messages = list(getattr(self, "next_session_context_messages", []) or [])
             self.initial_next_session_context_snapshot_len = len(next_session_context_messages)
@@ -3798,6 +3828,7 @@ class LifecycleMixin:
         # duplicate end_session callback can't reset the CURRENT live session's
         # gate or drop its queued cues (Codex P1).
         self._reset_proactive_gate()
+        self.clear_speech_playback_gains()
 
         # Stale expected_session callbacks have already returned above. Invalidate
         # ASR callbacks before any remaining teardown awaits can yield.

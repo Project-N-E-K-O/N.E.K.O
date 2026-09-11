@@ -16,6 +16,11 @@
     const I = window.__appReactChatWindowParts || (window.__appReactChatWindowParts = {});
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
+    function getCurrentIdleChatLifecycleSequence() {
+        var sequence = Number(window.__nekoIdleChatLifecycleSequence);
+        return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : 0;
+    }
+
     function dispatchMinimizedYarnDragPhase(phase, dragState, shell) {
         if (!dragState || !dragState.minimizedYarn || !shell || typeof window.dispatchEvent !== 'function') return;
         var rect = shell.getBoundingClientRect();
@@ -27,6 +32,7 @@
                 source: 'react-chat-window',
                 coordinateSpace: 'viewport',
                 moved: dragState.moved === true,
+                lifecycleSequence: dragState.yarnLifecycleSequence,
                 screenRect: {
                     left: rect.left,
                     top: rect.top,
@@ -60,6 +66,7 @@
             compactSurface: compactSurface,
             moved: false,
             minimizedYarn: !!(I.minimized && !I.isElectronChatWindow()),
+            yarnLifecycleSequence: getCurrentIdleChatLifecycleSequence(),
             yarnSessionId: `react-yarn:${Date.now()}:${(I.yarnDragSequence = (I.yarnDragSequence || 0) + 1)}`
         };
 
@@ -511,8 +518,22 @@
             I.clearChoicePromptBySource('new_user_icebreaker', 'new-user-icebreaker-reset');
         });
 
-        // Refresh option list whenever an assistant turn finishes streaming.
-        window.addEventListener('neko-assistant-turn-end', function () {
+        function isNewUserIcebreakerTurnEndEvent(event) {
+            var detail = event && event.detail && typeof event.detail === 'object'
+                ? event.detail
+                : {};
+            if (detail.source === 'new_user_icebreaker') return true;
+            var meta = detail.meta && typeof detail.meta === 'object' ? detail.meta : {};
+            if (meta.source === 'new_user_icebreaker' || meta.kind === 'new_user_icebreaker') {
+                return true;
+            }
+            var metaEvent = meta.event && typeof meta.event === 'object' ? meta.event : {};
+            return metaEvent.source === 'new_user_icebreaker';
+        }
+
+        // Refresh option list whenever an ordinary assistant turn finishes streaming.
+        window.addEventListener('neko-assistant-turn-end', function (event) {
+            if (isNewUserIcebreakerTurnEndEvent(event)) return;
             if (!I.state.galgameModeEnabled) return;
             // Skip when the chat overlay is hidden — otherwise galgame mode's
             // default-on flag would spam /api/galgame/options (and summary-tier
@@ -952,6 +973,8 @@
         },
         isGalgameModeEnabled: function () { return !!I.state.galgameModeEnabled; },
         getChatSurfaceMode: function () { return I.getCurrentChatSurfaceMode(); },
+        republishCompactSurfaceLayoutChange: I.republishCompactSurfaceLayoutChange,
+        scheduleCompactMinimizeBallTracking: I.scheduleCompactMinimizeBallTracking,
         refreshGalgameOptions: I.fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: I.setMiniGameInvitePrompt,

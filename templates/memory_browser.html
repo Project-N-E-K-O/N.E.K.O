@@ -63,6 +63,9 @@
                     <button type="button" id="memory-guide-trigger" class="memory-header-action" data-memory-panel-trigger="guide" aria-controls="memory-guide-panel" aria-expanded="false" title="新手引导" data-i18n-title="memory.tutorialDialogTitle">
                         <span data-i18n="memory.openTutorialManager">新手引导</span>
                     </button>
+                    <button type="button" id="memory-insights-trigger" class="memory-header-action" data-memory-panel-trigger="insights" aria-controls="memory-insights-panel" aria-expanded="false" title="重复表达洞察" data-i18n-title="memory.repetitionInsightsTitle">
+                        <span data-i18n="memory.repetitionInsights">重复表达洞察</span>
+                    </button>
                     <button type="button" id="memory-export-logs-trigger" class="memory-header-action" title="日志会自动脱敏，分享前仍建议确认" data-i18n-title="memory.exportLogsReview" aria-label="导出日志" data-i18n-aria="memory.exportLogsAria">
                         <span data-memory-export-label data-i18n="memory.exportLogs">导出日志</span>
                     </button>
@@ -168,6 +171,80 @@
                             </button>
                         </div>
                     </div>
+                    </div>
+                </section>
+                <section id="memory-insights-panel" class="memory-aux-panel" role="dialog" aria-modal="true" aria-labelledby="memory-insights-panel-title" tabindex="-1" hidden>
+                    <div class="memory-aux-panel-header">
+                        <h3 id="memory-insights-panel-title" data-i18n="memory.repetitionInsightsTitle">重复表达洞察</h3>
+                        <button type="button" class="memory-aux-panel-close" data-memory-panel-close data-i18n-aria="memory.closePanel" aria-label="关闭面板">
+                            <img src="/static/icons/close_button.png" alt="" aria-hidden="true" draggable="false">
+                        </button>
+                    </div>
+                    <div class="memory-aux-panel-body memory-insights-body">
+                        <p class="memory-insights-description" data-i18n="memory.repetitionInsightsDescription">检查已发送回复中的重复说法及防复读效果。</p>
+                        <label class="memory-insights-target" for="memory-insights-character-select">
+                            <span data-i18n="memory.repetitionInsightsCharacter">分析角色</span>
+                            <select id="memory-insights-character-select"></select>
+                            <strong id="memory-insights-character" data-i18n="memory.repetitionInsightsNoCharacter" hidden>尚未选择角色</strong>
+                        </label>
+                        <div class="memory-insights-fields">
+                            <label for="memory-insights-language">
+                                <span data-i18n="memory.repetitionInsightsLanguage">回复内容语言</span>
+                                <select id="memory-insights-language">
+                                    <option value="en">English</option>
+                                    <option value="es">Español</option>
+                                    <option value="pt">Português</option>
+                                    <option value="ru">Русский</option>
+                                    <option value="ja">日本語</option>
+                                    <option value="ko">한국어</option>
+                                    <option value="zh-CN">简体中文</option>
+                                    <option value="zh-TW">繁體中文</option>
+                                </select>
+                                <small class="memory-insights-field-help" data-i18n="memory.repetitionInsightsLanguageHelp">请选择回复实际使用的语言（不会自动识别）。</small>
+                            </label>
+                            <label for="memory-insights-limit">
+                                <span data-i18n="memory.repetitionInsightsRange">检查最近多少条回复</span>
+                                <select id="memory-insights-limit">
+                                    <option value="25">25</option>
+                                    <option value="50">50</option>
+                                    <option value="100" selected>100</option>
+                                </select>
+                            </label>
+                        </div>
+                        <p class="memory-insights-note" data-i18n="memory.repetitionInsightsPrivacy">仅分析本机已保存的助手回复；用户消息不会进入分析结果，不调用模型、不修改规则。</p>
+                        <div class="memory-insights-actions">
+                            <button type="button" id="memory-insights-analyze" class="memory-insights-primary" data-i18n="memory.repetitionInsightsAnalyze">开始分析</button>
+                            <button type="button" id="memory-insights-clear" data-i18n="memory.repetitionInsightsClear">清空结果</button>
+                            <button type="button" id="memory-insights-export" data-i18n="memory.repetitionInsightsExport">导出待检查项</button>
+                            <button type="button" id="memory-insights-reset-effects" class="memory-insights-danger" data-i18n="memory.repetitionInsightsResetEffects">清空防复读统计</button>
+                        </div>
+                        <p class="memory-insights-feedback-note" data-i18n="memory.repetitionInsightsFeedbackNote">导出只保存待检查说法，不会改变后续回复。</p>
+                        <div id="memory-insights-status" class="memory-insights-status" role="status" aria-live="polite" aria-atomic="true"></div>
+                        <div id="memory-insights-effectiveness" class="memory-insights-effectiveness"></div>
+                        <div id="memory-insights-filters" class="memory-insights-filters">
+                            <label for="memory-insights-query">
+                                <span data-i18n="memory.repetitionInsightsSearch">搜索重复说法</span>
+                                <input type="search" id="memory-insights-query" autocomplete="off" data-i18n-placeholder="memory.repetitionInsightsSearchPlaceholder" placeholder="搜索说法或规则编号">
+                            </label>
+                            <label for="memory-insights-coverage-filter">
+                                <span data-i18n="memory.repetitionInsightsCoverageFilter">规则覆盖</span>
+                                <select id="memory-insights-coverage-filter">
+                                    <option value="all" data-i18n="memory.repetitionInsightsFilterAll">全部</option>
+                                    <option value="covered" data-i18n="memory.repetitionInsightsFilterCovered">已覆盖</option>
+                                    <option value="uncovered" data-i18n="memory.repetitionInsightsFilterUncovered">未覆盖</option>
+                                </select>
+                            </label>
+                            <label for="memory-insights-effect-filter">
+                                <span data-i18n="memory.repetitionInsightsEffectFilter">是否有处理记录</span>
+                                <select id="memory-insights-effect-filter">
+                                    <option value="all" data-i18n="memory.repetitionInsightsFilterAll">全部</option>
+                                    <option value="processed" data-i18n="memory.repetitionInsightsFilterProcessed">有处理记录</option>
+                                    <option value="residual" data-i18n="memory.repetitionInsightsFilterResidual">没有处理记录</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div id="memory-insights-visible-count" class="memory-insights-visible-count" aria-live="polite"></div>
+                        <div id="memory-insights-results" class="memory-insights-results"></div>
                     </div>
                 </section>
                 <section id="memory-import-panel" class="memory-aux-panel" role="dialog" aria-modal="true" aria-labelledby="memory-import-panel-title" tabindex="-1" hidden>
