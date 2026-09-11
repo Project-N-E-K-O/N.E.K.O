@@ -485,6 +485,95 @@ async function main() {
     windowMock.NekoMiniGameAvatarHost.releasePerspectiveReference(skin, manager.camera);
     geometry.dispose(); skin.material.dispose(); skin.skeleton.dispose();
   }
+  // A hidden, paused legacy renderer cannot remain ready after an extended
+  // replacement fails. Exercise the actual soccer and generic host controllers.
+  for (const previousType of ['live2d', 'vrm']) for (const nextType of ['mmd', 'pngtuber']) {
+    for (const paused of [false, true]) for (const failureStage of ['create', 'mount']) {
+      const label = `${previousType}->${nextType}/${paused}/${failureStage}`;
+      const canvas = { style: {} };
+      documentMock.getElementById = id => id === 'ai-l2d-canvas' ? canvas
+        : id === 'ai-l2d-container' ? container : null;
+      let manager, hostReleases = 0, managerReleases = 0, published = 0;
+      const meshes = [];
+      if (previousType === 'live2d') {
+        manager = windowMock.live2dManager = {
+          currentModel: liveModel, async initPIXI() {},
+          async loadModel() { return liveModel; },
+          pauseRendering() { this.paused = true; },
+          resumeRendering() { this.paused = false; },
+          destroy() { managerReleases += 1; this.currentModel = null; },
+        };
+      } else {
+        windowMock.VRMManager = class {
+          constructor() {
+            manager = this;
+            this.core = { init: async () => {
+              this.scene = new THREE.Scene();
+              this.camera = new THREE.PerspectiveCamera(30, 1, .01, 100);
+              this.camera.position.z = 5;
+              this.renderer = { setSize() {}, domElement: canvas };
+            } };
+          }
+          startAnimateLoop() { this.paused = false; }
+          pauseRendering() { this.paused = true; }
+          resumeRendering() { this.paused = false; }
+          async playVRMAAnimation() {}
+          dispose() { managerReleases += 1; this.currentModel = null; }
+        };
+        windowMock.loadTestVrmModule = async name => name === 'loader' ? { GLTFLoader: class {
+          register() {}
+          load(_path, resolve) {
+            const scene = new THREE.Mesh(new THREE.BoxGeometry(1, 2, .5), new THREE.MeshBasicMaterial());
+            meshes.push(scene);
+            resolve({ userData: { vrm: { scene, meta: { metaVersion: '1' } } } });
+          }
+        } } : { VRMLoaderPlugin: class {}, VRMUtils: { deepDispose() {} } };
+      }
+      let rejectMount;
+      const loadError = new Error('extended renderer failed');
+      windowMock.NekoMiniGameDrawingAvatarHost = { create() {
+        if (failureStage === 'create') throw loadError;
+        return {
+          mount: () => new Promise((_resolve, reject) => { rejectMount = reject; }),
+          dispose() { hostReleases += 1; },
+        };
+      } };
+      const switchingHost = windowMock.createSoccerAvatarHost({ onAvatarChanged() { published += 1; } });
+      const original = { type: previousType, path: previousType === 'live2d' ? '/model.json' : '/old.vrm' };
+      const avatar = await switchingHost.mount({ slot: 'ai', model: original,
+        viewport: { mode: 'fixed', width: 200, height: 300 }, resize: { mode: 'fixed' } });
+      assert(avatar.getState().ready && avatar.getState().layout, `${label}: original not ready`);
+      if (paused) { avatar.pause(); await flush(); }
+      const replacing = avatar.setModel({ type: nextType, path: '/replacement' }).then(
+        () => null, error => error);
+      await flush();
+      if (failureStage === 'mount') {
+        assert(rejectMount, `${label}: did not reach extended mount`);
+        assert(!avatar.getState().ready && !windowMock.__SoccerAiAvatar.ready,
+          `${label}: hidden legacy model remained ready while loading`);
+        rejectMount(loadError);
+      }
+      const failed = await replacing;
+      assert(failed, `${label}: failed switch resolved successfully`);
+      const state = avatar.getState();
+      assert(!state.ready && state.model === null && state.layout === null,
+        `${label}: hidden legacy model remained ready`);
+      assert(!windowMock.__SoccerAiAvatar.ready && windowMock.__SoccerAiAvatar.type === 'none',
+        `${label}: global avatar remained ready`);
+      assert(canvas.style.display === 'none' && manager.paused, `${label}: fixture did not retire legacy rendering`);
+      assert(published === 1 && !state.speaking && state.paused === paused, `${label}: failure published or changed pause`);
+      assert(hostReleases === (failureStage === 'mount' ? 1 : 0), `${label}: failed extension leaked`);
+      await avatar.setModel(original);
+      assert(avatar.getState().ready && avatar.getState().model.type === previousType
+        && windowMock.__SoccerAiAvatar.ready && canvas.style.display === 'block', `${label}: recovery failed`);
+      assert(manager.paused === paused && published === 2, `${label}: recovery changed pause/publication`);
+      switchingHost.dispose();
+      assert(managerReleases === 1 && switchingHost.activeCount === 0
+        && switchingHost.pendingCount === 0, `${label}: legacy manager retained after exit`);
+      assert(activeTimers.size === 0 && mouthFrames.size === 0, `${label}: timers/animation frames leaked`);
+      for (const mesh of meshes) { mesh.geometry.dispose(); mesh.material.dispose(); }
+    }
+  }
   process.stdout.write('soccer Avatar host cancellation and automatic speech tests passed\n');
 }
 

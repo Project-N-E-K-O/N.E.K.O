@@ -327,6 +327,11 @@
       const speechAnalyser = window.NekoMiniGameAvatarHost.createSpeechAnalyser();
       let extendedHost = null;
       let extendedController = null;
+      function clearAiModel() {
+        state.model = null;
+        state.layout = null;
+        markAiAvatar('none', '', false);
+      }
       function releaseExtended() {
         const retiring = extendedHost;
         extendedHost = null;
@@ -334,9 +339,7 @@
         // Once the extended renderer is released its old model is unavailable,
         // including while a replacement is loading or after that load fails.
         if (retiring && ['mmd', 'pngtuber'].includes(state.model?.type)) {
-          state.model = null;
-          state.layout = null;
-          markAiAvatar('none', '', false);
+          clearAiModel();
         }
         return retiring?.dispose();
       }
@@ -559,8 +562,13 @@
           }
           await releaseExtended();
           assertLive();
+          const isExtended = ['mmd', 'pngtuber'].includes(model.type);
+          // Legacy renderers become hidden and paused during this transition.
+          // They are no longer usable even if creating/loading the new host
+          // fails. Publish readiness only after the replacement succeeds.
+          if (isExtended) clearAiModel();
           const legacyCanvas = document.getElementById('ai-l2d-canvas');
-          if (legacyCanvas?.style) legacyCanvas.style.display = ['mmd', 'pngtuber'].includes(model.type) ? 'none' : 'block';
+          if (legacyCanvas?.style) legacyCanvas.style.display = isExtended ? 'none' : 'block';
           for (const id of ['soccer-mmd-container', 'soccer-pngtuber-container']) {
             const layer = document.getElementById(id);
             if (layer) { layer.hidden = true; if (layer.style) layer.style.display = 'none'; }
@@ -611,7 +619,7 @@
             }
             assertLive();
             resumeAiRenderer('live2d');
-          } else if (['mmd', 'pngtuber'].includes(model.type)) {
+          } else if (isExtended) {
             pauseAiRenderer('live2d');
             pauseAiRenderer('vrm');
             extendedHost = createExtendedHost();
