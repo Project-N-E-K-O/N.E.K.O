@@ -173,6 +173,36 @@ async function factories() {
 }
 
 async function queries() {
+  for (const length of [65, 128, 129]) {
+    const name = '🐈'.repeat(length);
+    const value = { ...descriptor, name };
+    // Exercise both the built-in HTTP source and the SDK's transport boundary.
+    for (const customTransport of [false, true]) {
+      const env = await environment(() => ({ mount() {}, dispose() {} }), async url => (
+        response(String(url).endsWith('/characters') ? { names: [name] } : {
+          lanlan_name: name, model_type: 'live3d', live3d_sub_type: 'vrm', vrm_path: descriptor.model.path,
+        })
+      ));
+      const host = env.host();
+      if (customTransport) {
+        host.getAvatarCharacter = async () => value;
+        host.listAvatarCharacters = async () => [name];
+      }
+      const game = await env.game(host);
+      try {
+        if (length <= 128) {
+          assert.deepEqual(await game.avatar.listCharacters(), [name]);
+          assert.deepEqual(await game.avatar.getCurrentCharacter(), value);
+          assert.deepEqual(await game.avatar.getCharacter(name), value);
+        } else {
+          await assert.rejects(game.avatar.listCharacters());
+          await assert.rejects(game.avatar.getCurrentCharacter());
+          await assert.rejects(game.avatar.getCharacter(name), { code: 'invalid_request' });
+        }
+      } finally { game.dispose(); }
+      assert.equal(env.timers.size, 0);
+    }
+  }
   const env = await environment(() => ({ mount() {}, dispose() {} }));
   const game = await env.game(env.host());
   assert.deepEqual(await game.avatar.getCurrentCharacter(), descriptor);

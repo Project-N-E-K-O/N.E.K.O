@@ -23,12 +23,25 @@ async def test_names_use_existing_registry_without_private_fields(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("nekos, status", [({str(i): {} for i in range(257)}, 413), ({"x" * 129: {}}, 422)])
+@pytest.mark.parametrize("nekos, status", [
+    ({str(i): {} for i in range(257)}, 413), ({"x" * 129: {}}, 422), ({"🐈" * 129: {}}, 422),
+])
 async def test_names_reject_unbounded_results(monkeypatch, nekos, status):
     monkeypatch.setattr(runtime, "get_config_manager", lambda: SimpleNamespace(load_characters=lambda: {"猫娘": nekos}))
     with pytest.raises(HTTPException) as error:
         await runtime.game_character_names("example-game")
     assert error.value.status_code == status
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("length", [65, 128])
+async def test_names_count_unicode_code_points(monkeypatch, length):
+    name = "🐈" * length
+    monkeypatch.setattr(runtime, "get_config_manager", lambda: SimpleNamespace(
+        load_characters=lambda: {"猫娘": {name: {"prompt": "private"}}},
+    ))
+    assert await runtime.game_character_names("example-game") == {"names": [name]}
 
 
 @pytest.mark.unit

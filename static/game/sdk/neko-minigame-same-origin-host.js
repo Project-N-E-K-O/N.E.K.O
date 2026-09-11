@@ -1235,7 +1235,7 @@
     }
 
     getAvatarCharacter(name = '', options = {}) {
-      if (typeof name !== 'string' || name.length > 128) {
+      if (typeof name !== 'string' || name.length > 256 || Array.from(name).length > 128) {
         return Promise.reject(this._hostError('invalid_request', 'Invalid character name'));
       }
       const requested = name.trim();
@@ -1251,7 +1251,8 @@
         if (value == null) return null;
         const characterName = value.name;
         const model = value.model;
-        if (typeof characterName !== 'string' || !characterName.trim() || characterName.length > 128
+        if (typeof characterName !== 'string' || !characterName.trim()
+          || characterName.length > 256 || Array.from(characterName).length > 128
           || (model != null && (!['live2d', 'vrm', 'mmd', 'pngtuber'].includes(model.type)
             || typeof model.path !== 'string' || !model.path.trim() || model.path.length > 2048))) {
           throw this._hostError('invalid_response', 'Invalid character descriptor');
@@ -1271,7 +1272,7 @@
         const names = await (typeof provider?.listCharacters === 'function'
           ? provider.listCharacters(managed) : this._readAvatarNames(managed));
         if (!Array.isArray(names) || names.length > 256 || names.some(name => (
-          typeof name !== 'string' || !name.trim() || name.length > 128
+          typeof name !== 'string' || !name.trim() || name.length > 256 || Array.from(name).length > 128
         ))) throw this._hostError('invalid_response', 'Invalid character list');
         return Object.freeze([...new Set(names.map(name => name.trim()))]);
       });

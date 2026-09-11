@@ -5055,7 +5055,8 @@
     }
 
     function avatarCharacterName(value) {
-      if (typeof value !== 'string' || !value.trim() || value.length > 128) {
+      if (typeof value !== 'string' || !value.trim()
+        || value.length > 256 || Array.from(value).length > 128) {
         fail('invalid_request', 'Avatar character name must contain 1 to 128 characters');
       }
       return value.trim();

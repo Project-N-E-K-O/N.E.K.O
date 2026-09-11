@@ -619,7 +619,7 @@ const names = await game.avatar.listCharacters({ signal });
 ```
 
 Descriptors contain only `{ name, model: { type, path } | null, rendererAvailable }`.
-Names are limited to 128 characters, paths to 2048, and lists to 256 names. Unknown
+Names are limited to 128 Unicode code points, paths to 2048, and lists to 256 names. Unknown
 explicit names return `null`, not the current character. The standard host reads
 the existing role registry and canonical model-path endpoints; it keeps no role
 data copy and exposes no persona, memory, credentials or raw response fields.
