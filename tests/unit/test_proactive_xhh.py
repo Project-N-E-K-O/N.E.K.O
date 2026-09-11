@@ -216,6 +216,23 @@ def test_normalize_neko_community_feed_uses_live_card_story_and_author_name():
     ]
 
 
+def test_normalize_neko_community_feed_falls_back_after_blank_story_markdown():
+    posts = normalize_neko_community_feed(
+        {
+            "items": [
+                {
+                    "id": "blank-story",
+                    "title": "空白正文卡牌",
+                    "story_md": "  \n\t",
+                    "summary": "可用的后备摘要。",
+                }
+            ]
+        }
+    )
+
+    assert posts[0]["content"] == "可用的后备摘要。"
+
+
 def test_normalize_neko_community_feed_keeps_numeric_card_id_for_deduplication():
     posts = normalize_neko_community_feed(
         {"items": [{"id": 42, "title": "数值 ID 卡牌"}]}

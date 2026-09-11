@@ -1874,15 +1874,19 @@ def normalize_neko_community_feed(
         title = _community_text(
             raw.get("title") or raw.get("headline") or raw.get("subject")
         )
-        content = _community_text(
-            raw.get("story_md")
-            or raw.get("summary")
-            or raw.get("content")
-            or raw.get("body")
-            or raw.get("text")
-            or raw.get("description")
-            or raw.get("excerpt")
-        )
+        content = ""
+        for field in (
+            "story_md",
+            "summary",
+            "content",
+            "body",
+            "text",
+            "description",
+            "excerpt",
+        ):
+            content = _community_text(raw.get(field))
+            if content:
+                break
         if not title:
             title = content[:80]
         if not title:

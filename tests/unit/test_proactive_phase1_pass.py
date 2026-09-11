@@ -73,6 +73,30 @@ def test_phase1_selection_uses_source_local_number_for_duplicate_titles():
     assert selected is second
 
 
+def test_phase1_ambiguous_duplicate_title_does_not_fallback_without_number():
+    links = [
+        {
+            "title": "同名社区卡",
+            "source": "喵宇宙社区",
+            "dedupe_key": "neko-community:first",
+        },
+        {
+            "title": "同名社区卡",
+            "source": "喵宇宙社区",
+            "dedupe_key": "neko-community:second",
+        },
+    ]
+
+    for number in (None, "invalid"):
+        assert (
+            sr_parsing._lookup_link_by_phase1_selection(
+                {"title": "同名社区卡", "source": "喵宇宙社区", "number": number},
+                links,
+            )
+            is None
+        )
+
+
 def test_phase1_candidate_numbers_are_source_local_when_sources_interleave():
     links = [
         {"title": "微博一", "source": "微博"},
@@ -362,6 +386,23 @@ Source: Tieba
 
     assert parsed["web"]["title"] == "Steam Deck community setup thread"
     assert parsed["web"]["source"] == "Tieba"
+
+
+def test_parse_unified_phase1_accepts_russian_web_labels():
+    parsed = sr_parsing._parse_unified_phase1_result(
+        """
+[WEB]
+\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a: 喵宇宙社区
+\u041d\u043e\u043c\u0435\u0440: 2
+\u0422\u0435\u043c\u0430: Russian community topic
+"""
+    )
+
+    assert parsed["web"] == {
+        "source": "喵宇宙社区",
+        "number": "2",
+        "title": "Russian community topic",
+    }
 
 
 def test_strip_proactive_screen_tag_leak_removes_screen_source_label():

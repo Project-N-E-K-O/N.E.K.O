@@ -1663,7 +1663,7 @@ async def _guard_phase2_output(
 def _parse_web_screening_result(text: str) -> dict | None:
     """
     Parse the structured result of the Phase 1 web-screening LLM.
-    Expected format (Chinese or English labels):
+    Expected format (localized labels):
       序号：N / No: N
       话题：xxx / Topic: xxx
       来源：xxx / Source: xxx
@@ -1674,9 +1674,9 @@ def _parse_web_screening_result(text: str) -> dict | None:
     # ^ + re.MULTILINE 锚定行首，防止匹配到 "有值得分享的话题：" 等前缀行
     # [ \t]* 替代 \s*，只吃水平空白，避免跨行捕获到下一行内容
     patterns = {
-        "title": r"^[ \t]*(?:话题|标题|Topic|Title|話題|주제)[ \t]*[：:][ \t]*(.+)",
-        "source": r"^[ \t]*(?:来源|Source|出典|출처)[ \t]*[：:][ \t]*(.+)",
-        "number": r"^[ \t]*(?:序号|No|番号|번호)\.?[ \t]*[：:][ \t]*(\d+)",
+        "title": r"^[ \t]*(?:话题|标题|Topic|Title|話題|주제|\u0422\u0435\u043c\u0430)[ \t]*[：:][ \t]*(.+)",
+        "source": r"^[ \t]*(?:来源|Source|出典|출처|\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a)[ \t]*[：:][ \t]*(.+)",
+        "number": r"^[ \t]*(?:序号|No|番号|번호|\u041d\u043e\u043c\u0435\u0440)\.?[ \t]*[：:][ \t]*(\d+)",
     }
     for key, pattern in patterns.items():
         match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
@@ -2112,18 +2112,14 @@ def _link_has_exact_phase1_title(title: str, link: dict) -> bool:
 
 
 def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
-    """
-    Look up the link matching a Phase 1 output title in all_web_links.
-    Matching logic:
-    - exact match (ignoring case and surrounding whitespace)
-    - partial match (title contains or is contained, ignoring case and surrounding whitespace)
-    """
-    for link in all_links:
-        if _link_has_exact_phase1_title(title, link):
-            return link
-    for link in all_links:
-        if _link_matches_phase1_title(title, link):
-            return link
+    """Return a uniquely identified Phase 1 candidate by exact, then partial title."""
+
+    for matcher in (_link_has_exact_phase1_title, _link_matches_phase1_title):
+        matches = [link for link in all_links if matcher(title, link)]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            return None
     return None
 
 
@@ -2137,17 +2133,17 @@ def _lookup_link_by_phase1_selection(
         number = int(selection.get("number"))
     except (TypeError, ValueError):
         number = 0
-    if source and number > 0:
-        source_links = [
-            link
-            for link in all_links
-            if str(link.get("title") or "").strip()
-            and str(link.get("source") or "").strip().casefold() == source.casefold()
-        ]
-        if number <= len(source_links):
-            candidate = source_links[number - 1]
-            if _link_has_exact_phase1_title(
-                str(selection.get("title") or ""), candidate
-            ):
-                return candidate
-    return _lookup_link_by_title(str(selection.get("title") or ""), all_links)
+    source_links = [
+        link
+        for link in all_links
+        if str(link.get("title") or "").strip()
+        and source
+        and str(link.get("source") or "").strip().casefold() == source.casefold()
+    ]
+    if number > 0 and number <= len(source_links):
+        candidate = source_links[number - 1]
+        if _link_has_exact_phase1_title(str(selection.get("title") or ""), candidate):
+            return candidate
+    return _lookup_link_by_title(
+        str(selection.get("title") or ""), source_links if source_links else all_links
+    )
