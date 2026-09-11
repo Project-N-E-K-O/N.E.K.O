@@ -5360,6 +5360,13 @@
         }
     },
   "watchTogether": {
+    "prefetchEnabled": "시청 중 다음 영상 준비",
+    "nextVideo": "다음 영상 재생",
+    "nextIdle": "다음 영상이 아직 준비되지 않았습니다.",
+    "nextSearching": "다음 영상 찾는 중…",
+    "nextPreparing": "다음 영상 준비 중…",
+    "nextReady": "다음 영상이 준비되었습니다.",
+    "nextFailed": "다음 영상 준비에 실패했습니다.",
     "readingVideo": "영상 정보 읽는 중…",
     "downloading": "영상 다운로드 중…",
     "extractingFrames": "프레임 추출 중…",

@@ -10,6 +10,7 @@ body{margin:0;background:#101725;color:#edf2ff;font:16px system-ui}main{max-widt
 <form id="prepare"><input id="url" aria-label="Bilibili video URL" required placeholder="https://www.bilibili.com/video/BV…"><button id="prepare-button" data-i18n="watchTogether.prepare">Prepare video</button></form>
 <form id="discover"><label><span data-i18n="watchTogether.topic">Topic (optional)</span> <input id="topic" maxlength="200"></label><button id="discover-button" data-i18n="watchTogether.discover">Let the companion choose</button></form>
 <p data-i18n="watchTogether.discoveryRule">Under 3 minutes and over 100 danmaku/minute. Uses the current video topic when blank, or the popular feed if no video is selected.</p><p id="discovery-result" role="status"></p>
+<section><label><input id="prefetch-enabled" type="checkbox" checked><span data-i18n="watchTogether.prefetchEnabled">Prepare the next video while watching</span></label><p id="next-status" role="status"></p><button id="next-video" disabled data-i18n="watchTogether.nextVideo">Watch next</button></section>
 <details><summary data-i18n="watchTogether.analyses">Analysis history</summary><div id="history"></div></details>
 <h2 id="title"></h2><p id="voice-label"></p><div class="stage"><section><video id="video" controls playsinline></video>
 <div id="bubble" aria-live="polite"></div>

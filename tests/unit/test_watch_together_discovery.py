@@ -45,8 +45,11 @@ async def test_discovery_rechecks_metadata_and_never_relaxes(monkeypatch):
     monkeypatch.setattr(discovery, "inspect_video", inspect)
     result = await discovery.discover("cats")
     assert result["video"]["duration"] == 179
-    assert search.search_by_type.call_args.args == ("cats",)
+    inspect.reset_mock()
     inspect.side_effect = None
+    assert (await discovery.discover("cats", exclude=["first", "second"]))["video"] is None
+    inspect.assert_not_awaited()
+    assert search.search_by_type.call_args.args == ("cats",)
     inspect.return_value = {"duration": 60, "danmaku": 100, "parts": 1}
     assert (await discovery.discover("cats"))["video"] is None
 

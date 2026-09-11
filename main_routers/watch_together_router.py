@@ -132,11 +132,14 @@ async def discover_video(request: Request):
     if not isinstance(data, dict) or not isinstance(data.get("topic", ""), str):
         raise HTTPException(400, "Invalid topic")
     topic = data.get("topic", "").strip()
+    exclude = data.get("exclude", [])
+    if not isinstance(exclude, list) or len(exclude) > 128 or any(not isinstance(item, str) or len(item) > 32 for item in exclude):
+        raise HTTPException(400, "Invalid video exclusions")
     if len(topic) > 200:
         raise HTTPException(400, "Topic too long")
     from main_logic.watch_together.discovery import discover
     try:
         async with asyncio.timeout(180):
-            return await discover(topic)
+            return await discover(topic, exclude)
     except (ValueError, TimeoutError):
         raise HTTPException(502, "Video search unavailable")

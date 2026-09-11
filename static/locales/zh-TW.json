@@ -5360,6 +5360,13 @@
         }
     },
   "watchTogether": {
+    "prefetchEnabled": "播放時提前解析下一則",
+    "nextVideo": "播放下一則",
+    "nextIdle": "下一則尚未準備。",
+    "nextSearching": "正在尋找下一則影片…",
+    "nextPreparing": "正在背景解析下一則…",
+    "nextReady": "下一則已準備好。",
+    "nextFailed": "下一則準備失敗。",
     "readingVideo": "讀取影片資料…",
     "downloading": "下載影片…",
     "extractingFrames": "擷取影片影格…",

@@ -76,6 +76,14 @@ remain available for recovery. SQLite connections close after each transaction.
 
 ## Validation and remaining boundaries
 
+Playback starts one SDK-only next-video preparation in the background by default.
+The opt-out checkbox clears its queue; already running server work can finish and
+remains in history. The current video/audio is never replaced by a preparation
+completion. A separate status and Watch next button expose the prepared result;
+the user chooses when to switch. Discovery excludes videos already selected in
+this page and enforces the same strict duration/danmaku policy. Only one next
+preparation is allowed, and manual prepare/search is disabled while it runs.
+
 Automatic discovery is exposed through SDK `media.request('discover', {topic})`.
 The scene can choose a relevant popular video itself: a supplied topic takes
 priority, otherwise it uses the selected video's title, or the popular feed.

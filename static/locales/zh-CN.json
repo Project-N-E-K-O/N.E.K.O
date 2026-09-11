@@ -5360,6 +5360,13 @@
         }
     },
   "watchTogether": {
+    "prefetchEnabled": "播放时提前解析下一条",
+    "nextVideo": "播放下一条",
+    "nextIdle": "下一条尚未准备。",
+    "nextSearching": "正在寻找下一条视频…",
+    "nextPreparing": "正在后台解析下一条…",
+    "nextReady": "下一条已准备好。",
+    "nextFailed": "下一条准备失败。",
     "readingVideo": "读取视频资料…",
     "downloading": "下载视频…",
     "extractingFrames": "抽取视频帧…",

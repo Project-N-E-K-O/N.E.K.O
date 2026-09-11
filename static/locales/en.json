@@ -5360,6 +5360,13 @@
         }
     },
   "watchTogether": {
+    "prefetchEnabled": "Prepare the next video while watching",
+    "nextVideo": "Watch next",
+    "nextIdle": "Next video not prepared yet.",
+    "nextSearching": "Finding the next video…",
+    "nextPreparing": "Preparing next video…",
+    "nextReady": "Next video is ready.",
+    "nextFailed": "Next video preparation failed.",
     "readingVideo": "Reading video metadata…",
     "downloading": "Downloading video…",
     "extractingFrames": "Extracting frames…",

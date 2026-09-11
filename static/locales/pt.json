@@ -5360,6 +5360,13 @@
         }
     },
   "watchTogether": {
+    "prefetchEnabled": "Preparar o próximo vídeo durante a reprodução",
+    "nextVideo": "Ver próximo",
+    "nextIdle": "O próximo vídeo ainda não está preparado.",
+    "nextSearching": "Buscando o próximo vídeo…",
+    "nextPreparing": "Preparando o próximo vídeo…",
+    "nextReady": "O próximo vídeo está pronto.",
+    "nextFailed": "Falha ao preparar o próximo vídeo.",
     "readingVideo": "Lendo metadados…",
     "downloading": "Baixando vídeo…",
     "extractingFrames": "Extraindo quadros…",

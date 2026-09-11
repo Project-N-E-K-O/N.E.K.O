@@ -51,9 +51,9 @@ def enforce_policy(info, *, automatic=False, confirmed_duration=None):
     return True
 
 
-async def discover(topic):
+async def discover(topic, exclude=()):
     from bilibili_api import hot, search
-    seen = set()
+    seen = set(exclude)
     # Bounded search; never weaken the constraints when the result set is empty.
     for page in range(1, 4):
         if topic:

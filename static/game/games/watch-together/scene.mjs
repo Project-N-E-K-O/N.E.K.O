@@ -1,9 +1,33 @@
+import {createNextVideoQueue} from './next-video.mjs';
+
 export async function run(game, character) {
   const $ = id => document.getElementById(id);
   const t = key => window.i18n?.t?.(`watchTogether.${key}`) || key;
   let media = null, watch = null, selected = null, writing = Promise.resolve();
   let avatar = null;
   let progressTimer = null;
+  let nextRow=null, queuedFor=null, preparing=false;
+  const seenVideos=new Set();
+  const updatePrepareButtons=()=>{
+    $('prepare-button').disabled=preparing || nextQueue.busy;
+    $('discover-button').disabled=preparing || nextQueue.busy;
+  };
+  const nextQueue=createNextVideoQueue(game,state=>{
+    if(state.status) {
+      const key={idle:'nextIdle',searching:'nextSearching',preparing:'nextPreparing',ready:'nextReady',empty:'noCandidates',error:'nextFailed'}[state.status];
+      $('next-status').textContent=[t(key),state.title,state.stage?t(state.stage):'',state.progress!=null?`${state.progress}%`:''].filter(Boolean).join(' · ');
+      if(state.status==='idle')nextRow=null;
+      if(state.row)nextRow=state.row;
+      if(state.history)renderHistory(state.history.analyses);
+      $('next-video').disabled=!nextRow;
+    }
+    updatePrepareButtons();
+  });
+  function prefetchNext() {
+    if(!$('prefetch-enabled').checked || !selected || nextQueue.busy || preparing || queuedFor===selected.id)return;
+    queuedFor=selected.id;
+    void nextQueue.start({topic:$('topic').value.trim() || selected.title || '',exclude:[...seenVideos].slice(-128),character});
+  }
   const status = message => { $('status').textContent = message; };
   function renderUsage(stats) {
     if (!stats) { $('usage').textContent=t('unrecorded');return; }
@@ -27,12 +51,14 @@ export async function run(game, character) {
     if (!['idle','ended','inactive'].includes(game.runtime.state)) await game.runtime.end({reason:'user_exit'});
   }
   async function load(row) {
+    nextQueue.clear();queuedFor=null;
     $('play').disabled = true;
     const previous = selected;
     try {
     await end();
     if (game.runtime.state !== 'idle') game.runtime.reset({newSession:true});
     selected = await game.media.request('load', row);
+    if(selected.bvid)seenVideos.add(selected.bvid);
     const address = new URL(location.href);
     address.searchParams.set('job',selected.id);address.searchParams.set('version',selected.version);
     history.replaceState(null,'',address);
@@ -66,6 +92,7 @@ export async function run(game, character) {
         progressTimer = setInterval(()=>{if(!$('video').paused)record({type:'progress'});},5000);
       }
       await media.play(); status(t('playing'));
+      prefetchNext();
     } catch(error) {
       try { await end(); } catch (_) { /* Preserve the original playback failure. */ }
       status(error.message);
@@ -75,10 +102,11 @@ export async function run(game, character) {
   game.speech.onState(state => { if(state.active || state.pendingAudioWork) media?.interrupt(); });
   game.voice.onTranscript(() => media?.interrupt());
   game.voice.onState(state => {if(state.active || state.starting)media?.interrupt();});
-  game.events.on('runtime-inactive',()=>{media?.dispose();media=null;clearInterval(progressTimer);});
+  game.events.on('runtime-inactive',()=>{media?.dispose();media=null;clearInterval(progressTimer);nextQueue.clear();queuedFor=null;});
   $('rate').onchange = () => { $('video').playbackRate = Number($('rate').value); };
   async function prepareVideo(url, source = 'manual') {
-    $('prepare-button').disabled = true; $('discover-button').disabled = true;
+    if(nextQueue.busy)return;
+    preparing=true;updatePrepareButtons();
     try {
       status(t('checking'));
       let result = await game.media.request('prepare',{url,source,lanlan_name:character});
@@ -104,13 +132,14 @@ export async function run(game, character) {
         await new Promise(resolve=>setTimeout(resolve,1000));
       }
     } catch(error) {status(error.message);}
-    finally {$('prepare-button').disabled=false;$('discover-button').disabled=false;}
+    finally {preparing=false;updatePrepareButtons();}
   }
   $('prepare').onsubmit = event => {
     event.preventDefault(); return prepareVideo($('url').value);
   };
   $('discover').onsubmit = async event => {
-    event.preventDefault(); $('discover-button').disabled=true;$('prepare-button').disabled=true;
+    event.preventDefault();if(nextQueue.busy || preparing)return;
+    preparing=true;updatePrepareButtons();
     try {
       status(t('searching'));
       const topic = $('topic').value.trim() || selected?.title || '';
@@ -121,9 +150,19 @@ export async function run(game, character) {
       $('discovery-result').textContent=`${info.title} · ${info.duration}s · ${info.danmaku_per_minute.toFixed(1)} ${t('density')}`;
       await prepareVideo(info.url,'discovery');
     } catch(error) {status(error.message);}
-    finally {$('discover-button').disabled=false;$('prepare-button').disabled=false;}
+    finally {preparing=false;updatePrepareButtons();}
+  };
+  $('prefetch-enabled').onchange=()=>{
+    if(!$('prefetch-enabled').checked){nextQueue.clear();queuedFor=null;}
+    else if(media && !$('video').paused)prefetchNext();
+  };
+  $('next-video').onclick=async()=>{
+    if(!nextRow)return;
+    const row=nextRow;
+    try {await load(row);await $('play').onclick();}catch(error){status(error.message);}
   };
   $('exit').onclick = async () => {
+    nextQueue.dispose();
     await end(); game.dispose(); window.close();
     setTimeout(()=>{if(!window.closed)location.href='/';},100);
   };

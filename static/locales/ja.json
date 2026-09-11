@@ -5360,6 +5360,13 @@
         }
     },
   "watchTogether": {
+    "prefetchEnabled": "視聴中に次の動画を準備",
+    "nextVideo": "次を再生",
+    "nextIdle": "次の動画は未準備です。",
+    "nextSearching": "次の動画を検索中…",
+    "nextPreparing": "次の動画を準備中…",
+    "nextReady": "次の動画の準備ができました。",
+    "nextFailed": "次の動画の準備に失敗しました。",
     "readingVideo": "動画情報を読み込み中…",
     "downloading": "動画をダウンロード中…",
     "extractingFrames": "フレームを抽出中…",
