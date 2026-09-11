@@ -108,6 +108,11 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
     "aliyun_bailian": {
         "label": "阿里云百炼",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "regional_base_urls": [
+            "https://dashscope.aliyuncs.com",
+            "https://dashscope-intl.aliyuncs.com",
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        ],
         "default_model": "wanx2.1-t2i-turbo",
         "allow_local_base_url": False,
         "allow_custom_base_url": False,
@@ -627,6 +632,7 @@ def _validate_settings(
     if (
         not preset["allow_custom_base_url"]
         and base_url != str(preset["base_url"])
+        and base_url not in preset.get("regional_base_urls", [])
     ):
         raise SdkError("该供应商的 Base URL 不允许自定义；请选择自定义或本地兼容服务")
 
@@ -816,22 +822,37 @@ def _read_jpeg_geometry(data: bytes) -> tuple[int, int]:
         )
     offset = 2
     limit = len(data)
-    while offset + 4 <= limit:
+    geometry = None
+    in_scan = False
+    has_image_data = False
+    while offset + 2 <= limit:
         if data[offset] != 0xFF:
-            # Entropy-coded data or padding before the next marker; scan
-            # forward for the next 0xFF marker preamble.
+            if not in_scan:
+                break
+            has_image_data = True
             next_marker = data.find(b"\xff", offset + 1)
             if next_marker == -1:
                 break
             offset = next_marker
             continue
         marker = data[offset + 1]
-        if marker in (0x00, 0xFF):
+        if marker == 0xFF:
             offset += 1
             continue
-        if marker in (0x01,) or 0xD0 <= marker <= 0xD9:
+        if marker == 0x00 and in_scan:
+            has_image_data = True
             offset += 2
             continue
+        if marker == 0xD9:
+            if geometry is not None and has_image_data:
+                return geometry
+            break
+        if marker in (0x01,) or 0xD0 <= marker <= 0xD7:
+            offset += 2
+            continue
+        if marker in (0x00, 0xD8) or offset + 4 > limit:
+            break
+        in_scan = False
         segment_length = int.from_bytes(data[offset + 2 : offset + 4], "big")
         if segment_length < 2 or offset + 2 + segment_length > limit:
             raise _GenerationFailure(
@@ -846,7 +867,11 @@ def _read_jpeg_geometry(data: bytes) -> tuple[int, int]:
                 )
             height = int.from_bytes(data[offset + 5 : offset + 7], "big")
             width = int.from_bytes(data[offset + 7 : offset + 9], "big")
-            return width, height
+            geometry = width, height
+        if marker == 0xDA:
+            if geometry is None or segment_length < 6:
+                break
+            in_scan = True
         offset += 2 + segment_length
     raise _GenerationFailure(
         "图片服务返回了损坏、截断或尺寸不安全的图片",
@@ -2191,9 +2216,16 @@ class ImageGeneratorPlugin(NekoPluginBase):
             # _register_writable_static_ui is synchronous (called from the
             # async lifecycle without to_thread), so probe with a blocking
             # client here — it runs once at startup and times out fast.
-            with httpx.Client(timeout=5.0) as client:
-                status = client.get(url).status_code
-            return status == 404
+            with httpx.Client(timeout=1.0) as client:
+                # Registration is queued. Give the host time to consume it
+                # before treating a missing probe as an ignored override.
+                for attempt in range(10):
+                    status = client.get(url).status_code
+                    if status != 404:
+                        return False
+                    if attempt < 9:
+                        time.sleep(0.2)
+            return True
         except Exception:
             return False
         finally:
@@ -2506,6 +2538,35 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     "无法在当前文件系统上执行图片缓存容量限制",
                     "AssetCacheLimit",
                 )
+
+            async def thumbnail_and_prune():
+                preview = await self._generate_thumbnail(target, filename, extension)
+                stats = self._cache_stats_sync()
+                # The preview is optional: keep the paid original when the
+                # additional thumbnail would exceed the byte budget.
+                if stats["total_bytes"] > int(settings["cache_max_bytes"]):
+                    self._unlink_cached_file(f"thumb_{filename}")
+                    preview = None
+                stats = self._prune_cache_sync(settings)
+                if (not target.is_file() or stats["count"] > int(settings["cache_max_count"])
+                        or stats["total_bytes"] > int(settings["cache_max_bytes"])):
+                    raise _GenerationFailure("无法执行图片缓存容量限制", "AssetCacheLimit")
+                return preview
+
+            thumbnail_worker = asyncio.create_task(thumbnail_and_prune())
+            try:
+                thumb_url = await asyncio.shield(thumbnail_worker)
+            except asyncio.CancelledError:
+                while not thumbnail_worker.done():
+                    try:
+                        await asyncio.shield(thumbnail_worker)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not thumbnail_worker.cancelled():
+                    thumbnail_worker.exception()
+                raise
         except _GenerationFailure:
             raise
         except Exception:
@@ -2524,9 +2585,6 @@ class ImageGeneratorPlugin(NekoPluginBase):
         finally:
             self._cache_lock.release()
 
-        # Generate a thumbnail so the chat preview does not blow up the dialog.
-        # The full-size original is still linked for users who want to inspect it.
-        thumb_url = await self._generate_thumbnail(target, filename, extension)
         return image_url, filename, thumb_url
 
     # ------------------------------------------------------------------
@@ -3205,6 +3263,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             "$bmp.Save('{dst}', [System.Drawing.Imaging.ImageFormat]::Png); "
             "$g.Dispose(); $bmp.Dispose(); $img.Dispose()"
         ).format(src=str(target).replace("'", "''"), dst=str(thumb_path).replace("'", "''"))
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "powershell", "-NoProfile", "-Command", ps_script,
@@ -3216,6 +3275,10 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 return self._asset_url(thumb_name)
         except Exception:
             pass
+        finally:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
         return None
 
     def _display_markdown(self, image_url: str, thumb_url: str | None = None) -> str:
@@ -4119,6 +4182,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 return Err(SdkError("恢复默认设置失败（StoreError）"))
             with self._state_lock:
                 self._settings = target_settings
+                self._settings_available = True
                 self._configuration_warning = (
                     None
                     if self._asset_dir is not None

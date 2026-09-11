@@ -9,3 +9,6 @@ requires-python = "==3.11.*"
 dependencies = [
     "N.E.K.O>=0.8.3",
 ]
+
+[tool.neko.build]
+exclude = ["static/generated", "static/generated/**"]

@@ -202,7 +202,8 @@ async def test_task_json_preserves_timeout_classification(method):
     assert error.value.failure_class == "ProviderTimeout"
 
 
-def test_static_probe_satisfies_registration_index_contract(monkeypatch, tmp_path):
+@pytest.mark.parametrize("statuses, ignored", [([404] * 10, True), ([404, 404, 200], False)])
+def test_static_probe_satisfies_registration_index_contract(monkeypatch, tmp_path, statuses, ignored):
     plugin, _, _ = make_plugin()
     monkeypatch.setattr(plugin, "data_path", lambda *parts: tmp_path.joinpath(*parts))
     registered = []
@@ -225,12 +226,72 @@ def test_static_probe_satisfies_registration_index_contract(monkeypatch, tmp_pat
 
         def get(self, url):
             assert registered
-            return httpx.Response(404)
+            return httpx.Response(statuses.pop(0))
 
     monkeypatch.setattr(plugin, "register_static_ui", register)
     monkeypatch.setattr(image_generator_module.httpx, "Client", Client)
-    assert plugin._frozen_static_ui_overrides_ignored()
+    assert plugin._frozen_static_ui_overrides_ignored() is ignored
     assert not (tmp_path / ".static_ui_probe").exists()
+
+
+def test_jpeg_requires_scan_data_and_end_marker():
+    output = io.BytesIO()
+    Image.new("RGB", (8, 6)).save(output, format="JPEG")
+    data = output.getvalue()
+    assert image_generator_module._read_jpeg_geometry(data) == (8, 6)
+    sof = data.index(b"\xff\xc0")
+    sof_end = sof + 2 + int.from_bytes(data[sof + 2:sof + 4], "big")
+    for truncated in (data[:sof_end], data[:-2]):
+        with pytest.raises(image_generator_module._GenerationFailure):
+            image_generator_module._read_jpeg_geometry(truncated)
+
+
+@pytest.mark.asyncio
+async def test_successful_reset_restores_configuration_availability():
+    plugin, _, _ = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    plugin._settings_available = False
+    assert (await plugin.reset_settings()).is_ok()
+    settings, key = await plugin._generation_config_snapshot()
+    assert settings == DEFAULT_SETTINGS
+    assert key == SECRET
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_thumbnail_write_holds_cache_lock_and_respects_budget(monkeypatch, tmp_path, cancel):
+    plugin, _, _ = make_plugin()
+    asset_dir = prepare_asset_cache(plugin, tmp_path)
+    plugin._settings["cache_max_bytes"] = len(PNG_BYTES)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def thumbnail(target, filename, extension):
+        assert plugin._cache_lock.locked()
+        started.set()
+        await release.wait()
+        target.with_name("thumb_" + filename).write_bytes(PNG_BYTES)
+        return plugin._asset_url("thumb_" + filename)
+
+    monkeypatch.setattr(plugin, "_generate_thumbnail", thumbnail)
+    saving = asyncio.create_task(plugin._save_asset(PNG_BYTES, extension="png"))
+    try:
+        await started.wait()
+        assert plugin._cache_lock.locked()
+        if cancel:
+            saving.cancel()
+            await asyncio.sleep(0)
+            assert not saving.done()
+        release.set()
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await saving
+        else:
+            _, _, preview = await saving
+            assert preview is None
+        assert sum(path.stat().st_size for path in asset_dir.iterdir()) == len(PNG_BYTES)
+        assert not list(asset_dir.glob("thumb_*"))
+    finally:
+        release.set()
+        await asyncio.gather(saving, return_exceptions=True)
 
 
 class FakeLogger:
@@ -2767,7 +2828,12 @@ def test_built_archive_contains_backend_panel_readme_and_all_locales(
     tmp_path: Path,
 ) -> None:
     package_path = tmp_path / "image_generator.neko-plugin"
-    result = build_plugin(PLUGIN_DIR, package_path)
+    source = tmp_path / "source"
+    shutil.copytree(PLUGIN_DIR, source)
+    generated = source / "static" / "generated"
+    generated.mkdir(exist_ok=True)
+    (generated / "private.png").write_bytes(PNG_BYTES)
+    result = build_plugin(source, package_path)
     assert result.plugin_id == "image_generator"
     assert package_path.is_file()
 
@@ -2862,7 +2928,10 @@ async def test_dashscope_native_flow_creates_polls_and_downloads(
         download_chunks=[PNG_BYTES],
     )
     plugin = make_dashscope_plugin(monkeypatch, tmp_path, client)
-    plugin._settings["api_base_url"] = origin
+    saved = await plugin.save_settings(**await encrypted_save_payload(
+        plugin, provider="aliyun_bailian", api_base_url=origin, model="wanx2.1-t2i-turbo"
+    ))
+    assert saved.is_ok(), saved
 
     result = await plugin.generate_image(prompt="一只猫")
 
