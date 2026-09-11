@@ -1,6 +1,6 @@
 # Avatar 自定义道具设计与维护规范
 
-本文是本地自定义 Avatar 道具 v0.1 的长期设计与维护入口。v0.1 已跑通用户在 Compact 中创建、装备、使用、修改和删除道具的本地最小闭环，并接入 Web、NEKO-PC、Host、Python 提示词和应用存储生命周期。
+本文是本地自定义 Avatar 道具的长期设计与维护入口。当前同时存在两种受支持记录：旧 `recordVersion: 2` 继续完整运行；新 `recordVersion: 3` 保存通用图片交互图并支持管理和再次编辑，但尚未接入 Web／NEKO-PC 运行时。
 
 本文只描述当前已经实现并需要长期保持的产品语义、代码边界和维护规则，不记录实施阶段、临时调试过程或未来设想。若本文与当前代码、测试或可复现运行结果冲突，以可复现证据和当前代码为准，并同步修正文档。
 
@@ -9,30 +9,27 @@
 - `docs/design/avatar-tool-interaction-design-and-maintenance.md`
 - `docs/design/avatar-tool-prompt-guidelines.md`
 
-产品版本 v0.1 与持久化结构的 `recordVersion: 2` 是两个不同概念：前者表示当前功能范围，后者只表示本地记录结构版本。
-
-## v0.1 产品边界
+## 当前产品边界
 
 ### 已支持
 
-- 用户在 Compact 的现有“管理道具”内创建本地自定义道具。
-- 道具包含名称、默认图片、切图方式，以及一张或多张与互动描述一一对应的变化图片。
-- 支持两种切图方式：
-  - `press-swap`：按下临时切换，松开或取消后恢复默认图片；
-  - `click-advance`：有效点击后依次前进，到最后一张保持，不循环。
+- 用户从 Compact 或 Full 的现有“管理道具”进入同一套创建、修改和删除流程；桌面端使用独立编辑窗口，Web 使用当前页面内足够大的编辑工作区。
+- v3 道具由最多 `17` 张同级图片、唯一初始图片和最多 `16` 项完整图片交互组成；图片可自定义名称和可选互动描述。
+- 图片交互支持“鼠标点击”和“延时切换”。鼠标点击分别配置按下和松开时的图片动作；延时切换配置等待时间和到时的图片动作；每个动作都可选择某张图片或“图片不变”。
+- 初始图片与完整交互、完整交互之间使用有方向的连接；连接保存用户实际选择的起始边和结束边，允许合法循环、自连接、回连和可区分分支。
 - 可选普通互动 MP3。
 - 可选概率彩蛋：概率、彩蛋图片、彩蛋互动描述和可选彩蛋 MP3。
-- 创建成功后进入现有道具库，由用户按现有三槽逻辑装备，不自动装备。
-- Compact 使用同一表单修改已有道具；保存修改保持同一个本地 ID。
+- v3 创建成功后进入现有道具库，不自动装备；可以再次打开、完整恢复并修改。
+- 修改继续使用原本地 ID；v2 只有在用户打开并明确保存时才转换为 v3。
 - 删除入口只位于修改页，删除后清理该道具的记录、资源、当前使用态和当前 surface 槽位。
-- Full 与 Compact 加载同一权威本地道具目录；Full 只允许查看、装备和使用，不提供创建、修改或删除入口。
-- Web 与 Electron Pet 使用同一 v2 definition 语义；Host/Python 根据权威记录选择本次图片对应的互动描述。
+- Full 与 Compact 加载同一权威本地目录，并分别保存自己的三槽选择。
+- v2 道具继续由 Web 与 Electron Pet 使用同一 definition v2 运行；Host/Python 继续根据权威 v2 记录选择描述。
 - 本地目录随应用存储根迁移，但不进入云存档。
 
 ### 明确不支持
 
-- Full 创建、修改或删除。
-- 预览区、试听按钮、音量设置、独立编辑器、自动保存或可恢复草稿。
+- v3 道具装备或运行。当前管理目录会显示 v3 卡片并允许修改，但装备入口明确禁用；已装备 v2 保存成 v3 时保留槽位 ID，不继续使用旧 v2 投影运行。
+- 自动保存、可恢复草稿、音效试听或音量设置。
 - 复制、版本历史、导入包、导出包、分享、市场、云同步或跨设备同步。
 - Full／Compact 活动槽位同步。
 - 用户配置命中范围、连续阈值、动作、效果类型、anchor、hotspot、窗口行为、协议字段或任意脚本。
@@ -46,36 +43,32 @@
 
 ### 创建
 
-1. 用户在 Compact 打开“管理道具”。
+1. 用户在 Compact 或 Full 打开“管理道具”。
 2. 道具库最后显示一个创建加号。
-3. 点击加号后，Manager 内部切换为创建表单，不打开新窗口。
-4. 用户填写名称、默认图片，并选择“按住时切换”或“点击后切换”。
-5. 每一张变化图片与自己的互动描述在同一区块内紧邻显示。
+3. 点击加号后进入独立编辑工作区；桌面复用单个命名窗口，已有窗口会切换到新目标并聚焦。
+4. 用户填写名称，添加同级图片、选择唯一初始图片并按需填写图片名称和互动描述。
+5. 用户添加完整图片交互、配置图片动作和延时，并在画布上连接流程。
 6. 用户可以选择普通互动 MP3，也可以开启并填写完整彩蛋配置。
-7. 保存失败时保留已填内容，并把错误显示、滚动和聚焦到对应字段。
-8. 保存成功后返回道具库，新道具位于创建加号之前，但不自动装备。
-9. 用户继续使用现有三槽行为装备、移除、排序并保存。
+7. 保存时检查内容、引用、可达性和同一等待位置的触发歧义。保存失败保留全部编辑内容，并把可定位错误带回对应字段或交互。
+8. 保存成功后刷新同一管理目录并返回；新 v3 道具不自动装备，当前也不能新装备。
 
 创建页字段顺序保持为：
 
 ```text
-道具名称
-默认图片
-切图方式
-变化图片与互动描述
-普通互动音效（可选）
-彩蛋（可选）
-返回 / 保存道具
+左侧：互动流程画布、完整交互和连接
+右侧 / 道具设置：名称、同级图片、初始图片、图片描述、普通音效和彩蛋
+右侧 / 互动设置：当前完整交互或连接
+底部：删除（仅修改页）/ 取消 / 保存
 ```
 
 底部操作固定在页面下方。只有中间表单内容确实超过可用高度时才内部滚动；默认单项布局不应出现无意义滚动条。
 
 ### 修改与删除
 
-- Compact 自定义道具卡片只有一个修改入口；卡片主体继续负责装备。
+- 自定义道具卡片只有一个修改入口；可运行 v2 卡片主体继续负责装备，v3 卡片主体显示当前不可装备状态。
 - 修改入口必须阻止卡片装备和拖拽事件。
 - 修改页复用创建表单，不复制第二套字段、校验或布局。
-- 修改页完整带入当前名称、模式、图片、逐图描述、普通音效和彩蛋。
+- 修改页完整带入当前名称、图片、初始图片、图片名称与描述、交互名称、节点位置、连接及选边、普通音效和彩蛋。
 - 未重新选择图片或音效表示保留；可选音效只能通过显式移除操作删除。
 - 返回、关闭或保存失败只丢弃本次内存改动，不修改权威记录。
 - 保存修改继续使用原 `local-<uuid-v4>`，槽位和顺序保持不变。
@@ -83,30 +76,29 @@
 
 ### Full／Compact
 
-- 两个 surface 都读取同一个后端本地目录并构建自己的动态 registry snapshot。
+- 两个 surface 都读取同一个后端本地目录。管理目录保留 v2/v3 全部有效条目；运行 registry 只从当前可运行的 v2 条目构建。
 - 两个 surface 分别保存最多三个活动槽位。桌面 Full 使用 `persist:neko-full-chat` partition，Compact 使用默认 partition；相同 storage key 不代表共享选择。
 - 创建、修改或删除不会主动覆盖另一 surface 的槽位。
 - 隐藏 surface 在重新获得 lease 或刷新权威目录时，按当前 ID 和资源版本保留、刷新或清理自己的状态。
 
 ## 表单语义与校验
 
-### 切图方式
+### 图片与完整交互
 
-`press-swap` 与 `click-advance` 是两份独立编辑内容：
-
-- `press-swap` 必须且只能有一组变化图片和互动描述，不显示添加、删除或排序控件。
-- `click-advance` 必须至少有一组，可添加到后端公布的 `maxChangeImages` 上限，并支持替换、删除、上移和下移。
-- 两种方式切换时不转换、覆盖或删除另一方式已经填写的内容；保存时只提交当前选中的方式。
-- 不提供“所有图片共用一段描述”的第二种数据关系。需要相同描述时，用户可分别填写相同内容。
-
-默认图片只表示未触发切图时显示的帧。进入或离开有效互动范围只改变当前帧的显示大小，不改变图片。
+- 所有道具图片地位相同，只通过 `initialImageId` 选择唯一初始图片；图片资源按记录顺序规范化为 `image-000.png`、`image-001.png` 等文件名。
+- 图片和完整交互都有稳定 ID。图片 ID 使用 `img-*`，完整交互 ID 使用 `ix-*`；编辑会话生成的连接 ID 不落盘。
+- “鼠标点击”是一个完整交互，不把按下和松开拆成节点；“延时切换”也是一个完整交互。
+- 初始图片只表达进入一次运行周期时显示的图片和流程入口，不额外制造“初始操作”。
+- 连接两端保存 `sourceSide` 和 `targetSide`。画布路径、概览状态、选中项和临时连接 ID 不属于业务记录。
+- 保存要求至少一项完整交互、初始图片至少连接一项互动、所有互动均可从初始图片到达，且同一等待位置不能出现两个无法区分的鼠标点击或相同延时。
 
 ### 文本
 
 - 名称必填。NFC 归一化、去除首尾空白并合并连续半角空格后长度为 `1–20` 个字符。
 - 名称只允许 Unicode 文字、数字、半角空格、`-` 和 `_`；不允许换行、emoji、控制字符或其它符号。
-- 名称只用于显示，不参与本地 ID，允许重名。
-- 每段变化图片互动描述必填，去除首尾空白后长度为 `1–100` 个字符。
+- 道具名称只用于显示，不参与本地 ID，允许不同道具重名。
+- 图片名和完整交互名允许留空；留空时按当前类型和顺序显示默认序号名。图片名称在同一道具内不得重复，交互名称也不得重复，两组名称分开判断。
+- 每张图片的互动描述可选，去除首尾空白后最长 `100` 个字符；空描述表示将来运行时只执行本地图片交互，不调用模型。
 - 彩蛋开启时，彩蛋互动描述必填并使用相同长度与控制字符规则。
 - 互动描述允许正常标点和换行；它是模型理解本次互动的数据，不是脚本或指令。
 - 前端只负责即时提示，后端始终执行最终权威校验。
@@ -117,7 +109,7 @@
 - 后端使用 Pillow 校验格式、帧数、像素上限和完整解码，并重新编码为静态 RGBA PNG；原始上传和规范化输出都必须满足单图字节上限。
 - 音频只接受真实可解码、包含音频流且不超过时长和大小上限的 MP3；使用 PyAV 校验。
 - 自定义道具的 multipart mutation 必须在 FastAPI 解析表单前完成 loopback、CSRF/origin 与请求聚合体积守门；缺失或低报 Content-Length 的流式超限也必须由外层守门返回统一 413 并关闭未读连接，不能被 FastAPI 内层异常响应替换；endpoint 仍按文件读取并复验单文件上限、格式和内容，不能只依赖全局非 multipart body cap。
-- 单图大小、像素、音频大小和时长、单道具变化图片数量、有效可见道具数量和本地总占用由后端 `AVATAR_TOOL_LIMITS` 唯一定义；被证伪的记录既不占有效道具数量也不占总占用，但只是暂时读不出来的必须照常占名额（判据见「权威存储与 API」）。前端读取 limits 展示，不能成为权威来源。
+- 单图大小、像素、音频大小和时长、图片数、互动数、连接数、最大延时、有效可见道具数量和本地总占用由后端 `AVATAR_TOOL_LIMITS` 唯一定义；v3 当前上限为 `maxImages: 17`、`maxInteractions: 16`、`maxLinks: 32`、`maxDelayMs: 600000`。被证伪的记录既不占有效道具数量也不占总占用，但只是暂时读不出来的必须照常占名额（判据见「权威存储与 API」）。前端读取 limits 展示和校验，后端仍是权威来源。
 - 用户原文件名不进入记录或资源路径。
 
 ### 彩蛋
@@ -139,9 +131,8 @@ app_docs_dir/
   avatar_tools/
     local-<uuid-v4>/
       record.json
-      default.png
-      change-000.png
-      change-001.png
+      image-000.png     # v3；v2 继续使用 default.png / change-*.png
+      image-001.png
       normal.mp3       # 可选
       special.png      # 彩蛋存在时
       special.mp3      # 可选
@@ -149,7 +140,7 @@ app_docs_dir/
 
 必须保持以下不变量：
 
-- ID 由 Compact 创建表单在一次创建会话开始时生成，严格为 `local-<lowercase-uuid-v4>`；不向用户显示或开放输入。同一会话的保存重试复用该 ID，删除后的新建会话重新生成；不为已删除 ID 增加永久 tombstone。
+- ID 由共用创建页在一次创建会话开始时生成，严格为 `local-<lowercase-uuid-v4>`；不向用户显示或开放输入。同一会话的保存重试复用该 ID，删除后的新建会话重新生成；不为已删除 ID 增加永久 tombstone。
 - 每个道具独占一个目录，所有资源只属于该道具。
 - 记录只引用应用生成的同目录相对文件名，不接受绝对路径、`..`、软链接或其它道具的资源。
 - 资源顺序来自 record 的有序列表，不依赖目录枚举或用户文件名。
@@ -188,13 +179,54 @@ resourceDigests:
   special.mp3: <sha256>                   # 仅资源存在时
 ```
 
-未知 `recordVersion`、未知 mode、字段缺失、多余字段或不完整可选块直接隔离，不做猜测性 fallback。开发期旧记录不能通过猜测图片含义升级为 v2；需要兼容时必须先设计明确、可验证的迁移。
+### record v3
+
+```text
+recordVersion: 3
+id: local-<uuid-v4>
+name: 用户显示名称
+images:
+  - id: img-<stable-id>
+    name: 可选自定义名称
+    resource: image-000.png
+    meaning: 可选互动描述
+initialImageId: img-<stable-id>
+imageInteractions:
+  initialImagePosition: { x, y }
+  initialLinks:
+    - to: ix-<stable-id>
+      sourceSide: top | right | bottom | left
+      targetSide: top | right | bottom | left
+  items:
+    - id: ix-<stable-id>
+      name: 可选自定义名称
+      trigger: { kind: mouse-click } | { kind: after, delayMs }
+      actions:
+        # mouse-click: press + release；after: complete
+        <timing>: { kind: keep } | { kind: show, imageId }
+      editorPosition: { x, y }
+  links:
+    - from: ix-<stable-id>
+      to: ix-<stable-id>
+      sourceSide: top | right | bottom | left
+      targetSide: top | right | bottom | left
+interaction:
+  normalSound: normal.mp3                 # 可选
+  special:                                # 整块可选，结构与 v2 相同
+resourceDigests:
+  image-000.png: <sha256>
+  normal.mp3: <sha256>                    # 仅资源存在时
+  special.png: <sha256>                   # 仅资源存在时
+  special.mp3: <sha256>                   # 仅资源存在时
+```
+
+v2 和 v3 都使用精确键集合、资源白名单与目录闭包。未知 `recordVersion`、未知触发或动作、字段缺失、多余字段、非法 ID／引用／选边／坐标、不完整可选块、不可达互动或有歧义的同级触发直接拒绝；已经落盘且被证伪的记录进入现有隔离流程，不做猜测性 fallback。v2 不在读取时自动迁移；只有用户明确编辑并保存，才由当前编辑模型写成完整 v3。
 
 ### API 与 DTO 边界
 
-- `GET /api/avatar-tools`：返回全部有效记录的公开运行投影和 limits；单条坏记录只记录日志并跳过。
-- `GET /api/avatar-tools/{tool_id}`：只为 Compact 修改页返回该 ID 的完整可编辑详情和受管理资源标识。
-- `POST /api/avatar-tools`：multipart 携带本次创建会话的 `tool_id` 创建一个新道具；后端必须复验 ID 格式。
+- `GET /api/avatar-tools`：返回全部有效 v2/v3 记录的最小管理投影和 limits；单条坏记录只记录日志并跳过。v2 投影同时满足现有运行消费者，v3 投影当前只供管理目录使用。
+- `GET /api/avatar-tools/{tool_id}`：为共用修改页返回该 ID 的完整可编辑详情、受管理资源标识和 limits。
+- `POST /api/avatar-tools`：创建一个新道具。v3 multipart 只允许 `record_version=3`、`manifest` 和重复 `uploads`；manifest 中的每个上传索引必须恰好引用一次。
 - `PUT /api/avatar-tools/{tool_id}`：以详情 revision 为基线完整更新，保持同一 ID。
 - `DELETE /api/avatar-tools/{tool_id}`：删除合法本地 ID 的独占目录。
 - `/user_avatar_tools/...`：由 `AvatarToolStaticFiles` 只读暴露 allowlist 内的 PNG／MP3；摘要匹配后必须从同一次打开并核验的文件实例返回字节，不能重新按可替换路径打开，同时保留 HEAD、条件请求和音频 byte range 语义；Range 数量必须在解析和 multipart 物化前受固定上限约束。
@@ -203,7 +235,9 @@ resourceDigests:
   - 公开路径判定涉及 symlink／resolve／stat 等同步文件系统调用，必须放在事件循环之外执行。
   - 存储根**自身**是软链接不构成拒绝理由：用软链接把存储挪到别的盘是正当操作，而写入侧从不拒绝这种根，服务侧单方面拒绝只会让道具建得出来、图却全是 404。穿越由 `resolve()` 归一后与根比较挡住；根**里面**的道具目录和资源文件仍然必须是实体，那才是能指到根外面去的一类。
 
-公开列表 DTO 只包含 `id`、内容 `revision`、`name`、`changeMode`、`defaultUrl`、有序 `changeUrls`，以及存在时的普通音效和彩蛋运行投影。所有资源 URL 必须是单 `/` 开头、无反斜杠和 fragment 的同源绝对路径，并且必须且只能携带一个非空 `v` 参数；`v` 的内容身份规则见下方原子性约束。互动描述不得进入公开列表、registry、desktopContract 或 PC；只有修改详情和 Python 权威 record resolver 可以读取。
+公开列表 DTO 必须带实际 `recordVersion`、`id`、内容 `revision` 和 `name`。v2 继续返回 `changeMode`、`defaultUrl`、有序 `changeUrls` 及可选音效/彩蛋运行投影；v3 当前只增加管理卡片需要的 `initialImageUrl`，不公开交互图、描述、音效或彩蛋资源。所有资源 URL 必须是单 `/` 开头、无反斜杠和 fragment 的同源绝对路径，并且必须且只能携带一个非空 `v` 参数；`v` 的内容身份规则见下方原子性约束。互动描述不得进入公开列表、registry、desktopContract 或 PC；只有修改详情和 Python 权威 record resolver 可以读取。
+
+v3 `POST`／`PUT` 共用一份 JSON manifest 与 `uploads` 字段；`PUT` 另外必须带 `base_revision`。保留媒体只允许引用该道具当前 record 的受管理资源，v2/v3 字段不得混用。Router 仍在读取文件前完成权限和聚合上限检查，并在成功或失败路径关闭所有上传对象。
 
 POST、PUT 和 DELETE 必须经过 loopback access、同源 mutation 校验和存储写围栏。PC 只消费同源资源 URL，不读取磁盘路径或 record。
 
@@ -255,14 +289,14 @@ POST、PUT 和 DELETE 必须经过 loopback access、同源 mutation 校验和�
 - `LocalAvatarToolId` 严格匹配本地 UUID 格式。
 - `AvatarToolId` 是两者的联合；本地 ID 不加入内置静态 tuple。
 - 内置道具使用 i18n label，本地道具使用 literal label；用户名称不能伪装成 i18n key。
-- 每个 surface 用“内置 registration + 当前有效本地 definition”生成不可变 registry snapshot。
+- 管理目录保留全部有效 v2/v3 条目；每个 surface 的运行 registry 只用“内置 registration + 当前可运行的 v2 definition”生成不可变 snapshot。不能因为 v3 暂不可运行就把它从管理目录、修改入口或创建/更新确认中丢掉。
 - 资源查询必须以 `(toolId, resourceId)` 为作用域，多个本地道具可以复用内部 sound/effect ID 而不串用资源。
 
 本地列表首次权威加载完成前，不能把保存槽位中的 `local-*` 当作未知 ID 清除。首次加载失败保留已保存槽位；已有 snapshot 刷新失败继续使用上一份 snapshot。创建、修改和删除后的请求代次必须使旧 GET 失效，迟到响应不能覆盖较新的权威结果。当前选择的本地 ID 若在新的权威 registry 中消失，当前 surface 必须安全停用该道具，不能在过渡渲染中继续读取已经不存在的 registration。
 
 ### definition v2
 
-四个内置道具继续使用 definition v1。自定义道具固定构建 definition v2：
+四个内置道具继续使用 definition v1。当前只有 record v2 自定义道具构建 definition v2；record v3 在运行解释器接入前不得降级投影成 definition v2：
 
 - 帧 `0` 是默认图片；帧 `1..N` 对应 record 变化项 `0..N-1`。
 - `press-swap` 恰好一个变化帧；`click-advance` 至少一个变化帧。
@@ -332,9 +366,9 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 
 | 场景 | 必须保持的结果 |
 | --- | --- |
-| 创建成功 | 当前 Compact snapshot 立即加入新 ID，随后 GET 校准；不自动装备，不改另一 surface 槽位。 |
+| 创建成功 | 当前管理目录立即加入新 ID，随后 GET 校准；不自动装备，不改任一 surface 槽位。v3 只进入管理目录，不进入运行 registry。 |
 | 创建响应不确定 | 用本次创建会话的稳定 ID 刷新权威列表；该 ID 已存在时，必须由同 ID、同完整内容的幂等 POST 明确确认才按原提交创建成功收口，不能只凭 ID 存在关闭表单。无法确认则保留表单，用户再次保存仍复用同一 ID；再次保存的内容若已变化，后端必须与已存在记录判定冲突，不能静默丢弃新内容。 |
-| 修改成功 | 同 ID definition 被替换；旧 session 副作用清理，保持选择并从新默认帧开始；槽位顺序不变。 |
+| 修改成功 | 同 ID 管理条目被替换并刷新。v2 保存成 v3 时保留槽位 ID，但立即从运行 registry 移除，不继续执行旧 v2 内容；槽位顺序不变。 |
 | 修改响应不确定 | 读取同 ID 详情和列表，以 revision 与提交内容判断原提交是否成功；最终 registry 必须保留最后一次成功列表刷新得到的更新版本，不能再用较早读取的详情覆盖；不能盲目重试产生分叉。 |
 | 修改 revision 冲突 | 保持修改页打开，载入并显示最新权威详情与 revision，明确提示内容已变化；不把过期草稿或文件猜测合并到新版本。 |
 | 创建或修改暂存清理失败 | 保留原操作失败结果并将存储标记为待恢复；后续变更必须先清理 `.uploading` / `.updating`，清理仍失败时不得继续写入或绕过总量限制。 |
@@ -357,16 +391,16 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 
 1. N.E.K.O record 是本地自定义道具的唯一业务事实源。
 2. 后端保存业务数据和受管理资源，不保存 AvatarToolDefinition 或 desktopContract。
-3. Web builder 负责固定 definition；registry/runtime 负责执行；页面组件只负责表单和接线。
+3. Web catalog 负责把管理条目与可运行 definition 分开派生；registry/runtime 只执行当前支持的 v2 definition；页面组件只负责表单和接线。
 4. PC 只消费 descriptor 和同源资源 URL，不读 record、不保存互动描述、不按本地 ID 写分支。
 5. Host 只校验 wire，Python 才读取 record 并选择互动描述。
 6. Full／Compact 共享目录内容但不共享槽位，不能增加隐式同步。
-7. 创建、修改和删除使用同一个 store、record 版本、limits、写围栏和原子发布方式。
+7. v2/v3 创建、修改和删除使用同一个 store、limits、写围栏和原子发布方式；record 版本只负责结构分派，不能复制第二套目录或发布算法。
 8. 所有用户可见文案使用八 locale；用户名称和描述保留原文，不创建动态 key。
 
-### 增加新切图方式
+### 维护旧 v2 固定切图方式
 
-只有产品流程明确需要第三种方式时才扩展。必须同时完成：
+这部分只适用于仍在运行的 record v2。v3 通用图片交互通过完整互动和连接表达流程，不再增加固定 `mode`。如果旧 v2 确有兼容性需求要扩展第三种方式，必须同时完成：
 
 - record mode 的严格判别结构与版本兼容判断；
 - 创建/修改表单独立编辑状态和清晰文案；
@@ -387,9 +421,9 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 
 ### 修改 UI
 
-- 继续复用现有 Manager、三槽和创建/修改表单。
-- 简单目标不能通过新增预览页、二级编辑器、同步状态或重复确认流程复杂化。
-- 布局变化必须验证默认无外层滚动、内容区内部滚动、底部操作固定、页面切换不跳位，以及亮暗主题。
+- 继续复用现有 Manager、三槽、独立编辑工作区和创建/修改表单。
+- 简单目标不能通过新增第二套编辑器、同步状态或重复确认流程复杂化。
+- 布局变化必须验证默认尺寸可完整操作、内容区按需滚动、底部操作可见、页面切换不跳位，以及亮暗主题。
 - 文件选择继续使用浏览器/Electron 原生独立文件选择器，不能限制在聊天模块内模拟文件窗口。
 
 ### 修改提示词
@@ -400,8 +434,8 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 
 ### 自动化
 
-- Web：DTO/详情严格解码、固定 builder、动态 registry、表单增删排序和模式独立、资源保留/替换/移除、两种切图、末张封顶、session 复位、声音、chance、Full catalog 和 desktopContract。
-- 后端：名称/描述、模式、数量、图片/音频、multipart 上限、资源闭包、路径穿越、CSRF、详情隔离、同 ID POST 重试、同 ID PUT、revision 冲突、原子失败恢复、删除、维护态写围栏、总容量和坏记录隔离。
+- Web：v2/v3 DTO 与详情严格解码、v3 manifest、保存后重开同构、管理目录/运行 registry 分离、字段错误定位、资源保留/替换/移除、冲突处理，以及 v2 runtime、Full catalog 和 desktopContract 回归。
+- 后端：v2/v3 严格结构、稳定 ID、引用、选边、坐标、可达性、触发歧义、数量/延时限制、图片/音频、multipart 字段与上传引用、资源闭包、路径穿越、CSRF、详情隔离、同 ID POST 重试、同 ID PUT、revision 冲突、原子失败恢复、删除、维护态写围栏、总容量和坏记录隔离。
 - Host/Python：local ID、`changeIndex`、`specialTriggered`、权威描述选择、缺失/损坏记录、八语言 prompt、prompt injection 边界、cooldown、ack 和 memory 去重。
 - PC：v1 回归、v2 strict decode、两种切图、Web/PC 索引一致、声音、chance、坏资源、deactivate/dispose、surface lease、删除，以及 URL 相同但切图方式或彩蛋概率已经变化的过期 descriptor。
 - 跨仓：同一 v2 fixture 必须同时通过 Web projector 与 PC consumer，并产生一致的帧和 payload 结果。
@@ -411,9 +445,9 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 
 每次改变用户流程、资源、runtime、desktopContract 或生命周期时，按影响范围实际验证：
 
-1. Compact 创建、保存失败保留、装备和使用。
-2. `press-swap` 按下、松开、cancel 和范围缩放。
-3. `click-advance` 多图排序、有效/无效点击、末张不循环和重新选择复位。
+1. Compact／Full 创建 v3、保存失败保留、返回管理目录和再次打开同构；确认 v3 不自动装备且装备入口不可用。
+2. v2 `press-swap` 按下、松开、cancel 和范围缩放。
+3. v2 `click-advance` 多图排序、有效/无效点击、末张不循环和重新选择复位。
 4. 普通声音，以及彩蛋命中/未命中、独立音效/普通音效回退/静默。
 5. 同 ID 修改、资源保留/替换/移除和当前 session 清理。
 6. 删除当前或隐藏 surface 使用的道具，多道具之间不互相污染。
@@ -430,13 +464,13 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 
 ### N.E.K.O
 
-- `utils/avatar_tool_store.py`：record v2、limits、资源校验、创建/修改/删除和恢复。
+- `utils/avatar_tool_store.py`：record v2/v3、limits、图结构和资源校验、创建/修改/删除和恢复。
 - `main_routers/avatar_tool_router.py`：列表、详情、multipart mutation API 和错误映射。
 - `app/main_server/web_app.py`：私有目录初始化和安全静态资源挂载。
 - `utils/config_manager/storage_roots.py`、`utils/storage/migration.py`、`utils/cloudsave_runtime/`、`main_routers/storage_location_router.py`：存储根、迁移、写围栏和诊断。
-- `frontend/react-neko-chat/src/AvatarToolItemManager.tsx`：道具库、三槽和 Compact 创建/修改入口。
+- `frontend/react-neko-chat/src/AvatarToolItemManager.tsx`：道具库、三槽、Compact/Full 创建修改入口，以及管理条目与可装备条目的边界。
 - `frontend/react-neko-chat/src/AvatarToolCreatePage.tsx`：创建/修改共用表单。
-- `frontend/react-neko-chat/src/avatar-tools/localTools.ts`：公开/详情 DTO、API client 和固定 v2 builder。
+- `frontend/react-neko-chat/src/avatar-tools/localTools.ts`：v2/v3 公开/详情 DTO、v3 manifest API client 和固定 v2 runtime builder。
 - `frontend/react-neko-chat/src/avatar-tools/useLocalAvatarToolCatalog.ts`：动态目录请求、请求代次和 snapshot 校准。
 - `frontend/react-neko-chat/src/avatar-tools/catalog.ts`、`registry.ts`、`profileInterpreter.ts`、`runtime.ts`、`presentation.tsx`、`desktopContract.ts`、`protocol.ts`：通用定义、执行、表现和桌面投影。
 - `frontend/react-neko-chat/src/App.tsx`、`FullChatSurface.tsx`、`avatarTools.ts`：Compact/Full 页面接线、槽位和菜单投影。

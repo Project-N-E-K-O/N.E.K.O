@@ -10,11 +10,16 @@ import {
 } from './avatar-tools/avatarToolInteractionEditorModel';
 import { useAvatarToolInteractionEditor } from './avatar-tools/AvatarToolInteractionEditorContext';
 import type { AvatarToolImageDraft, AvatarToolImageId } from './avatar-tools/avatarToolEditorModel';
-import { findDuplicateAvatarToolNameIds } from './avatar-tools/avatarToolNames';
+import {
+  findDuplicateAvatarToolNameIds,
+  getAvatarToolNameValidationError,
+} from './avatar-tools/avatarToolNames';
 
 type AvatarToolInteractionInspectorProps = {
   images: AvatarToolImageDraft[];
   busy?: boolean;
+  maxDelayMs: number;
+  maxNameChars: number;
 };
 
 function defaultInteractionLabel(
@@ -71,6 +76,17 @@ export function formatAvatarToolInteractionIssue(
         'chat.avatarToolInteractionNameDuplicate',
         '“{{name}}” is already used by another interaction. Choose a different name.',
         { name: label },
+      );
+    case 'name-too-long':
+      return i18n(
+        'chat.avatarToolEditableNameLengthError',
+        'The name must be no more than {{count}} characters.',
+        { count: String(issue.maxNameChars ?? '') },
+      );
+    case 'name-invalid':
+      return i18n(
+        'chat.avatarToolEditableNameInvalidError',
+        'Use letters, numbers, spaces, “-”, or “_” in the name.',
       );
     case 'action-image-missing':
       return i18n('chat.avatarToolInteractionActionImageMissing', '{{interaction}} uses an image that is no longer available.', {
@@ -248,6 +264,8 @@ function FieldIssue({
 export default function AvatarToolInteractionInspector({
   images,
   busy = false,
+  maxDelayMs,
+  maxNameChars,
 }: AvatarToolInteractionInspectorProps) {
   const { state, dispatch, issues } = useAvatarToolInteractionEditor();
   const selectedItem = state.items.find(item => item.id === state.selectedInteractionId) ?? null;
@@ -354,6 +372,28 @@ export default function AvatarToolInteractionInspector({
     item => item.name?.trim() || defaultInteractionLabel(state, item),
   );
   const duplicateName = duplicateNameIds.has(selectedItem.id);
+  const nameValidationError = getAvatarToolNameValidationError(
+    selectedItem.name ?? '',
+    maxNameChars,
+  );
+  const nameError = nameValidationError === 'too-long'
+    ? i18n(
+      'chat.avatarToolEditableNameLengthError',
+      'The name must be no more than {{count}} characters.',
+      { count: String(maxNameChars) },
+    )
+    : nameValidationError === 'invalid'
+      ? i18n(
+        'chat.avatarToolEditableNameInvalidError',
+        'Use letters, numbers, spaces, “-”, or “_” in the name.',
+      )
+      : duplicateName
+        ? i18n(
+          'chat.avatarToolInteractionNameDuplicate',
+          '“{{name}}” is already used by another interaction. Choose a different name.',
+          { name: selectedItem.name?.trim() || defaultTitle },
+        )
+        : '';
   const delayCompleteAction = selectedItem.kind === 'after' ? selectedItem.complete : null;
   const delayTargetImage = delayCompleteAction?.kind === 'show'
     ? images.find(image => image.id === delayCompleteAction.imageId) ?? null
@@ -379,7 +419,7 @@ export default function AvatarToolInteractionInspector({
                 className="avatar-tool-interaction-name-input"
                 value={selectedItem.name ?? ''}
                 aria-label={i18n('chat.avatarToolInteractionName', 'Interaction name')}
-                aria-invalid={duplicateName ? 'true' : undefined}
+                aria-invalid={nameError ? 'true' : undefined}
                 disabled={busy}
                 onChange={event => dispatch({
                   type: 'update-name',
@@ -395,13 +435,9 @@ export default function AvatarToolInteractionInspector({
                 aria-hidden="true"
               />
             </label>
-            {duplicateName ? (
+            {nameError ? (
               <small className="avatar-tool-interaction-field-error">
-                {i18n(
-                  'chat.avatarToolInteractionNameDuplicate',
-                  '“{{name}}” is already used by another interaction. Choose a different name.',
-                  { name: selectedItem.name?.trim() || defaultTitle },
-                )}
+                {nameError}
               </small>
             ) : null}
           </div>
@@ -471,6 +507,7 @@ export default function AvatarToolInteractionInspector({
                 <input
                   type="number"
                   min="1"
+                  max={maxDelayMs}
                   step="1"
                   inputMode="numeric"
                   aria-label={i18n('chat.avatarToolInteractionDelayDuration', 'Wait time')}

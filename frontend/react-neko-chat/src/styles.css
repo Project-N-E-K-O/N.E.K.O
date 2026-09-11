@@ -8272,6 +8272,18 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
   transform: translateY(-1px);
 }
 
+.avatar-tool-manager-slot.is-unavailable .avatar-tool-manager-slot-card {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.avatar-tool-manager-slot.is-unavailable .avatar-tool-manager-slot-card:hover {
+  border-color: rgba(117, 146, 175, 0.22);
+  background: linear-gradient(180deg, rgba(231, 241, 250, 0.96), rgba(203, 219, 235, 0.9));
+  box-shadow: 0 7px 14px rgba(39, 83, 116, 0.13), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  transform: none;
+}
+
 .avatar-tool-manager-empty-slot {
   min-height: 75px;
   padding: 8px 6px;

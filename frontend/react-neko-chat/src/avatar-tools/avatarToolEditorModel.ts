@@ -46,6 +46,21 @@ export function createAvatarToolImageDraft(file: File): AvatarToolImageDraft {
 export function createAvatarToolImageEditorState(
   detail?: LocalAvatarToolDetail,
 ): AvatarToolImageEditorState {
+  if (detail?.recordVersion === 3) {
+    const images = detail.images.map(image => ({
+      id: image.id,
+      name: image.name,
+      image: null,
+      imageResource: image.resource,
+      imageUrl: image.url,
+      meaning: image.meaning,
+    }));
+    return {
+      images,
+      initialImageId: detail.initialImageId,
+      selectedImageId: detail.initialImageId,
+    };
+  }
   const images: AvatarToolImageDraft[] = detail ? [
     {
       id: 'img-v2-default',

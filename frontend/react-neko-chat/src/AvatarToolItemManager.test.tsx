@@ -11,6 +11,10 @@ const LIMITS = {
   maxNameChars: 20,
   maxMeaningChars: 100,
   maxChangeImages: 16,
+  maxImages: 17,
+  maxInteractions: 16,
+  maxLinks: 32,
+  maxDelayMs: 600000,
   maxImageBytes: 8_388_608,
   maxImagePixels: 16_000_000,
   maxAudioBytes: 5_242_880,
@@ -86,6 +90,81 @@ describe('AvatarToolItemManager local creation', () => {
 
     expect(document.querySelector(`[data-avatar-tool-library-id="${LOCAL_ID}"]`)).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled();
+  });
+
+  it('keeps a saved v3 tool visible in its slot until the user removes it', () => {
+    const onSave = vi.fn();
+    const v3Tool: AvatarToolItem = {
+      id: LOCAL_ID,
+      label: { kind: 'literal', value: 'Saved flow' },
+      iconImagePath: '/user_avatar_tools/local/image-000.png?v=1',
+      pointerImagePath: '/user_avatar_tools/local/image-000.png?v=1',
+    };
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[LOCAL_ID]}
+        availableTools={[...AVAILABLE_COMPACT_AVATAR_TOOLS, v3Tool]}
+        runnableToolIds={new Set(AVAILABLE_COMPACT_AVATAR_TOOLS.map(tool => tool.id))}
+        onSave={onSave}
+        onCancel={() => undefined}
+      />,
+    );
+
+    const retainedSlot = document.querySelector(`[data-avatar-tool-drop-slot="0"][data-avatar-tool-id="${LOCAL_ID}"]`);
+    expect(retainedSlot).toHaveTextContent('Saved flow');
+    expect(retainedSlot).toHaveTextContent('Not yet equippable');
+    expect(document.querySelector(`[data-avatar-tool-library-id="${LOCAL_ID}"]`)).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(document.querySelector('[data-avatar-tool-library-id="lollipop"]')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(onSave).toHaveBeenCalledWith([LOCAL_ID, 'lollipop']);
+  });
+
+  it('receives a standalone editor result while the manager is hidden and restores the manager', async () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <AvatarToolItemManager
+          open={open}
+          activeToolIds={[]}
+          availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+          onSave={() => undefined}
+          onCancel={() => setOpen(false)}
+          onExternalEditorResult={() => setOpen(true)}
+        />
+      );
+    }
+
+    render(<Harness />);
+    expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+
+    fireEvent(window, new MessageEvent('message', {
+      origin: window.location.origin,
+      data: {
+        type: 'neko:avatar-tool-editor-result',
+        action: 'created',
+        toolId: LOCAL_ID,
+      },
+    }));
+
+    expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+  });
+
+  it('does not open creation until authoritative server limits are available', () => {
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[]}
+        availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+        onSave={() => undefined}
+        onCancel={() => undefined}
+        onCreate={async () => undefined}
+        catalogAuthoritativeLoaded={false}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Create tool' })).toBeDisabled();
   });
 
   it('reorders slots by drag without crashing', () => {
@@ -766,5 +845,52 @@ describe('AvatarToolItemManager local creation', () => {
     });
     expect(await screen.findByText('This image cannot be used. Please choose another PNG.')).toHaveAttribute('role', 'alert');
     expect(onCreate).not.toHaveBeenCalled();
+  });
+
+  it('shows a v3 tool for editing without allowing phase-4 equip gestures', async () => {
+    const managementTool: AvatarToolItem = {
+      id: LOCAL_ID,
+      label: { kind: 'literal', value: 'Flow' },
+      iconImagePath: '/user_avatar_tools/local/image-000.png?v=1',
+      pointerImagePath: '/user_avatar_tools/local/image-000.png?v=1',
+    };
+    const detail: LocalAvatarToolDetail = {
+      recordVersion: 3,
+      id: LOCAL_ID,
+      revision: '3-100',
+      name: 'Flow',
+      images: [{ id: 'img-idle', name: '', resource: 'image-000.png', url: managementTool.iconImagePath, meaning: '' }],
+      initialImageId: 'img-idle',
+      imageInteractions: {
+        initialImagePosition: { x: 0, y: 0 },
+        initialLinks: [{ to: 'ix-click', sourceSide: 'right', targetSide: 'left' }],
+        items: [{
+          id: 'ix-click', name: '', trigger: { kind: 'mouse-click' },
+          actions: { press: { kind: 'keep' }, release: { kind: 'keep' } },
+          editorPosition: { x: 200, y: 0 },
+        }],
+        links: [{ from: 'ix-click', to: 'ix-click', sourceSide: 'right', targetSide: 'right' }],
+      },
+    };
+    const onLoadDetail = vi.fn().mockResolvedValue(detail);
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[]}
+        availableTools={[...AVAILABLE_COMPACT_AVATAR_TOOLS, managementTool]}
+        runnableToolIds={new Set(AVAILABLE_COMPACT_AVATAR_TOOLS.map(tool => tool.id))}
+        onSave={() => undefined}
+        onCancel={() => undefined}
+        createLimits={LIMITS}
+        onLoadDetail={onLoadDetail}
+        onUpdate={async () => undefined}
+      />,
+    );
+
+    expect(screen.getByText('Not yet equippable')).toBeVisible();
+    expect(document.querySelector(`[data-avatar-tool-library-id="${LOCAL_ID}"]`)).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Flow' }));
+    await waitFor(() => expect(onLoadDetail).toHaveBeenCalledWith(LOCAL_ID));
+    expect(await screen.findByRole('dialog', { name: 'Edit custom tool' })).toBeVisible();
   });
 });

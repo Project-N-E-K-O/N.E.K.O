@@ -52,6 +52,7 @@ type AvatarToolItemManagerProps = {
   open: boolean;
   activeToolIds: AvatarToolId[];
   availableTools: ReadonlyArray<AvatarToolItem>;
+  runnableToolIds?: ReadonlySet<AvatarToolId>;
   anchorRect?: AvatarToolManagerAnchorRect | null;
   onSave: (toolIds: AvatarToolId[]) => void;
   onCancel: () => void;
@@ -64,6 +65,7 @@ type AvatarToolItemManagerProps = {
   onDelete?: (toolId: `local-${string}`) => Promise<void>;
   catalogAuthoritativeLoaded?: boolean;
   catalogRefreshFailed?: boolean;
+  onExternalEditorResult?: (result: AvatarToolEditorResultMessage) => void;
 };
 
 const AVATAR_TOOL_DRAG_THRESHOLD = 7;
@@ -143,7 +145,7 @@ declare global {
   }
 }
 
-type AvatarToolEditorResultMessage = {
+export type AvatarToolEditorResultMessage = {
   type: 'neko:avatar-tool-editor-result';
   action: 'created' | 'updated' | 'deleted';
   toolId?: string;
@@ -501,6 +503,7 @@ export default function AvatarToolItemManager({
   open,
   activeToolIds,
   availableTools,
+  runnableToolIds,
   anchorRect = null,
   onSave,
   onCancel,
@@ -513,10 +516,11 @@ export default function AvatarToolItemManager({
   onDelete,
   catalogAuthoritativeLoaded = true,
   catalogRefreshFailed = false,
+  onExternalEditorResult,
 }: AvatarToolItemManagerProps) {
   const validToolIds = useMemo(
-    () => new Set<AvatarToolId>(availableTools.map(tool => tool.id)),
-    [availableTools],
+    () => runnableToolIds ?? new Set<AvatarToolId>(availableTools.map(tool => tool.id)),
+    [availableTools, runnableToolIds],
   );
   const [draftSlots, setDraftSlots] = useState<AvatarToolSlotValue[]>(() => createSlots(activeToolIds));
   const [view, setView] = useState<'library' | 'create' | 'edit'>('library');
@@ -568,19 +572,22 @@ export default function AvatarToolItemManager({
   }, [activeToolIds, open]);
 
   useEffect(() => {
-    if (!open || typeof window === 'undefined') return undefined;
+    if (typeof window === 'undefined') return undefined;
     const handleEditorResult = (event: MessageEvent<AvatarToolEditorResultMessage>) => {
       if (event.origin !== window.location.origin) return;
       const payload = event.data;
       if (!payload || payload.type !== 'neko:avatar-tool-editor-result') return;
+      if (!['created', 'updated', 'deleted'].includes(payload.action)) return;
+      if (payload.toolId !== undefined && !isLocalAvatarToolId(payload.toolId)) return;
       if (payload.action === 'deleted' && typeof payload.toolId === 'string') {
         setDraftSlots(slots => slots.map(toolId => toolId === payload.toolId ? null : toolId));
       }
       window.dispatchEvent(new Event('neko:refresh-local-avatar-tools'));
+      onExternalEditorResult?.(payload);
     };
     window.addEventListener('message', handleEditorResult);
     return () => window.removeEventListener('message', handleEditorResult);
-  }, [open]);
+  }, [onExternalEditorResult]);
 
   useLayoutEffect(() => {
     if (!open) {
@@ -734,17 +741,18 @@ export default function AvatarToolItemManager({
   const availableById = useMemo(() => (
     new Map(availableTools.map(tool => [tool.id, tool]))
   ), [availableTools]);
-  // 保存用的清单含暂时不可用的 id；UI 的「已装备 / 已满」只看此刻真能画出来
-  // 的那些，否则一个 latent 槽位会把库里的道具全锁死，用户也没法复用它。
   const equippedIds = compactSlots(draftSlots);
-  const availableEquippedIds = equippedIds.filter(toolId => validToolIds.has(toolId));
-  const equippedIdSet = new Set(availableEquippedIds);
-  const draftFull = availableEquippedIds.length >= MAX_ACTIVE_AVATAR_TOOLS;
+  const equippedIdSet = new Set(equippedIds.filter(toolId => availableById.has(toolId)));
+  // 已保存但尚未接入运行时的 v3 道具仍是一个真实槽位；只有用户明确移除后
+  // 才能复用。目录已经权威确认不存在的陈旧 ID 才按空槽处理。
+  const draftFull = draftSlots.filter(toolId => toolId && availableById.has(toolId)).length
+    >= MAX_ACTIVE_AVATAR_TOOLS;
   const catalogSaveBlocked = !catalogAuthoritativeLoaded && activeToolIds.some(isLocalAvatarToolId);
   const dialogTitleId = 'avatar-tool-manager-title';
   const noticeId = notice && view !== 'create' ? 'avatar-tool-manager-notice' : undefined;
 
   const startDrag = (source: AvatarToolDragSource, event: ReactPointerEvent<HTMLElement>) => {
+    if (!validToolIds.has(source.toolId)) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     const captureTarget = event.currentTarget;
     setDragSession({
@@ -819,9 +827,10 @@ export default function AvatarToolItemManager({
 
   const handleLibraryClick = (toolId: AvatarToolId) => {
     if (suppressClickRef.current) return;
+    if (!validToolIds.has(toolId)) return;
     if (equippedIdSet.has(toolId)) return;
     const firstEmptyIndex = draftSlots.findIndex(
-      slotToolId => slotToolId === null || !validToolIds.has(slotToolId),
+      slotToolId => slotToolId === null || !availableById.has(slotToolId),
     );
     if (firstEmptyIndex < 0 || draftFull) {
       setNotice(i18n('chat.avatarToolSlotFull', 'Unequip a tool first.'));
@@ -1007,9 +1016,10 @@ export default function AvatarToolItemManager({
   const editorTitle = view === 'edit'
     ? i18n('chat.avatarToolUpdateTitle', 'Edit custom tool')
     : i18n('chat.avatarToolCreateTitle', 'Create custom tool');
-  const editorElement = view !== 'library' && (view === 'create' ? !!onCreate : !!onUpdate && !!editDetail) ? (
+  const editorElement = createLimits && view !== 'library' && (view === 'create' ? !!onCreate : !!onUpdate && !!editDetail) ? (
     <AvatarToolEditorWorkspace
       title={editorTitle}
+      limits={createLimits}
       dialogRef={dialogRef}
       backButtonRef={workspaceBackButtonRef}
       onBack={returnToLibrary}
@@ -1105,11 +1115,12 @@ export default function AvatarToolItemManager({
           <div className="avatar-tool-manager-slots">
             {draftSlots.map((toolId, index) => {
               const tool = toolId ? availableById.get(toolId) : null;
+              const runnable = !!tool && validToolIds.has(tool.id);
               const label = tool ? getToolLabel(tool) : i18n('chat.avatarToolEmptySlot', 'Empty slot');
               return (
                 <div
                   key={index}
-                  className={`avatar-tool-manager-slot${tool ? ' is-filled' : ' is-empty'}`}
+                  className={`avatar-tool-manager-slot${tool ? ' is-filled' : ' is-empty'}${tool && !runnable ? ' is-unavailable' : ''}`}
                   data-avatar-tool-drop-slot={index}
                   data-avatar-tool-id={tool?.id ?? ''}
                 >
@@ -1117,8 +1128,11 @@ export default function AvatarToolItemManager({
                     <button
                       className="avatar-tool-manager-slot-card"
                       type="button"
+                      disabled={!runnable}
                       data-avatar-tool-slot-index={index}
-                      onPointerDown={(event) => startDrag({ kind: 'slot', toolId: tool.id, slotIndex: index }, event)}
+                      onPointerDown={runnable
+                        ? (event) => startDrag({ kind: 'slot', toolId: tool.id, slotIndex: index }, event)
+                        : undefined}
                       onPointerMove={updateDrag}
                       onPointerUp={finishDrag}
                       onPointerCancel={cancelDrag}
@@ -1131,6 +1145,11 @@ export default function AvatarToolItemManager({
                         aria-hidden="true"
                       />
                       <span>{label}</span>
+                      {!runnable ? (
+                        <span className="avatar-tool-manager-library-status">
+                          {i18n('chat.avatarToolNotYetEquippable', 'Not yet equippable')}
+                        </span>
+                      ) : null}
                     </button>
                   ) : (
                     <span className="avatar-tool-manager-empty-slot">{label}</span>
@@ -1159,6 +1178,7 @@ export default function AvatarToolItemManager({
               {availableTools.map((tool) => {
                 const label = getToolLabel(tool);
                 const equipped = equippedIdSet.has(tool.id);
+                const runnable = validToolIds.has(tool.id);
                 const localToolId = isLocalAvatarToolId(tool.id) ? tool.id : null;
                 const loadingEdit = loadingEditToolId === tool.id;
                 return (
@@ -1167,10 +1187,10 @@ export default function AvatarToolItemManager({
                       className={`avatar-tool-manager-library-card${equipped ? ' is-equipped' : ''}`}
                       type="button"
                       aria-pressed={equipped}
-                      disabled={loadingEdit}
+                      disabled={loadingEdit || !runnable}
                       data-avatar-tool-library-id={tool.id}
                       onClick={() => handleLibraryClick(tool.id)}
-                      onPointerDown={equipped ? undefined : (event) => startDrag({ kind: 'library', toolId: tool.id }, event)}
+                      onPointerDown={equipped || !runnable ? undefined : (event) => startDrag({ kind: 'library', toolId: tool.id }, event)}
                       onPointerMove={updateDrag}
                       onPointerUp={finishDrag}
                       onPointerCancel={cancelDrag}
@@ -1184,7 +1204,9 @@ export default function AvatarToolItemManager({
                       />
                       <span className="avatar-tool-manager-library-label">{label}</span>
                       <span className="avatar-tool-manager-library-status">
-                        {equipped
+                        {!runnable
+                          ? i18n('chat.avatarToolNotYetEquippable', 'Not yet equippable')
+                          : equipped
                           ? i18n('chat.avatarToolEquipped', 'Equipped')
                           : i18n('chat.avatarToolEquip', 'Equip')}
                       </span>
@@ -1216,6 +1238,7 @@ export default function AvatarToolItemManager({
                   className="avatar-tool-manager-library-card avatar-tool-manager-create-card"
                   type="button"
                   data-avatar-tool-create
+                  disabled={!createLimits || !catalogAuthoritativeLoaded}
                   onClick={() => {
                     workspaceReturnFocusSelectorRef.current = '[data-avatar-tool-create]';
                     setCreateSpecialEnabled(false);

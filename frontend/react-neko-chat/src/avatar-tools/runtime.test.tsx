@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId } from '../avatarTools';
 import type { AvatarInteractionPayload, AvatarToolStatePayload } from '../message-schema';
-import { buildLocalAvatarToolDefinition, type LocalAvatarToolDto } from './localTools';
+import { buildLocalAvatarToolDefinition, type LocalAvatarToolV2Dto } from './localTools';
 import AvatarToolVisuals from './presentation';
 import {
   BUILT_IN_AVATAR_TOOL_REGISTRY,
@@ -27,7 +27,7 @@ const INITIAL_BOUNDS = {
 };
 const LOCAL_TOOL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
 
-function localToolDto(version: number): LocalAvatarToolDto {
+function localToolDto(version: number): LocalAvatarToolV2Dto {
   return {
     id: LOCAL_TOOL_ID,
     revision: `2-${version}`,

@@ -37,6 +37,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import { i18n } from './i18n';
+import type { LocalAvatarToolLimits } from './avatar-tools/localTools';
 import type { AvatarToolImageDraft } from './avatar-tools/avatarToolEditorModel';
 import {
   avatarToolConnectionSideFromHandleId,
@@ -536,7 +537,9 @@ function OverviewPositionIcon({ position }: { position: AvatarToolOverviewPositi
   );
 }
 
-export function AvatarToolInteractionCanvas() {
+export function AvatarToolInteractionCanvas({
+  limits,
+}: { limits?: LocalAvatarToolLimits | null } = {}) {
   const {
     state,
     dispatch,
@@ -652,22 +655,29 @@ export function AvatarToolInteractionCanvas() {
   ]);
 
   const routeSeeds = useMemo<AvatarToolRouteSeed[]>(() => [
-    ...state.initialImageTargetIds.map(interactionId => ({
-      id: initialConnectionEdgeId(interactionId),
-      source: AVATAR_TOOL_INITIAL_IMAGE_NODE_ID,
-      target: interactionId,
-      sourcePosition: state.initialImageLinkSides[interactionId]?.sourceSide as Position | undefined,
-      targetPosition: state.initialImageLinkSides[interactionId]?.targetSide as Position | undefined,
-      initial: true,
-    })),
-    ...state.links.map(link => ({
-      id: link.id,
-      source: link.from,
-      target: link.to,
-      sourcePosition: link.sourceSide as Position | undefined,
-      targetPosition: link.targetSide as Position | undefined,
-      initial: false,
-    })),
+    ...state.initialImageTargetIds.flatMap((interactionId) => {
+      const sides = state.initialImageLinkSides[interactionId];
+      return sides ? [{
+        id: initialConnectionEdgeId(interactionId),
+        source: AVATAR_TOOL_INITIAL_IMAGE_NODE_ID,
+        target: interactionId,
+        sourcePosition: sides.sourceSide as Position,
+        targetPosition: sides.targetSide as Position,
+        initial: true,
+      }] : [];
+    }),
+    ...state.links.flatMap(link => (
+      link.sourceSide && link.targetSide
+        ? [{
+          id: link.id,
+          source: link.from,
+          target: link.to,
+          sourcePosition: link.sourceSide as Position,
+          targetPosition: link.targetSide as Position,
+          initial: false,
+        }]
+        : []
+    )),
   ], [state.initialImageLinkSides, state.initialImageTargetIds, state.links]);
   const routingTopologyKey = useMemo(() => routeSeeds.map(seed => [
     seed.id,
@@ -806,6 +816,7 @@ export function AvatarToolInteractionCanvas() {
   }, [closeOverviewPositionMenu, overviewPositionMenuOpen]);
 
   const addInteraction = useCallback((kind: AvatarToolInteractionDraft['kind']) => {
+    if (!limits || state.items.length >= limits.maxInteractions) return;
     const bounds = canvasRef.current?.getBoundingClientRect();
     const screenPosition = bounds
       ? { x: bounds.left + bounds.width * 0.5, y: bounds.top + bounds.height * 0.46 }
@@ -818,7 +829,7 @@ export function AvatarToolInteractionCanvas() {
       { position: state.initialImagePosition },
     ]);
     dispatch({ type: 'add', interaction: createAvatarToolInteractionDraft(kind, position) });
-  }, [dispatch, flow, state.initialImagePosition, state.items]);
+  }, [dispatch, flow, limits?.maxInteractions, state.initialImagePosition, state.items]);
 
   const onNodesChange = useCallback((changes: NodeChange<AvatarToolCanvasNode>[]) => {
     const draggingChanges = changes.filter((change): change is Extract<
@@ -859,6 +870,7 @@ export function AvatarToolInteractionCanvas() {
 
   const isValidConnection = useCallback((connection: Edge | Connection) => {
     if (!connection.source || !connection.target) return false;
+    if (!limits || state.initialImageTargetIds.length + state.links.length >= limits.maxLinks) return false;
     if (connection.target === AVATAR_TOOL_INITIAL_IMAGE_NODE_ID) return false;
     if (connection.source === AVATAR_TOOL_INITIAL_IMAGE_NODE_ID) {
       return connection.target !== AVATAR_TOOL_INITIAL_IMAGE_NODE_ID
@@ -870,7 +882,7 @@ export function AvatarToolInteractionCanvas() {
       || !state.items.some(item => item.id === connection.target)
     ) return false;
     return !state.links.some(link => link.from === connection.source && link.to === connection.target);
-  }, [state.initialImageTargetIds, state.items, state.links]);
+  }, [limits?.maxLinks, state.initialImageTargetIds, state.items, state.links]);
 
   const ariaLabelConfig = {
     'node.a11yDescription.default': i18n(
@@ -917,6 +929,7 @@ export function AvatarToolInteractionCanvas() {
           if (!connection.source || !connection.target || !isValidConnection(connection)) return;
           const sourceSide = avatarToolConnectionSideFromHandleId(connection.sourceHandle);
           const targetSide = avatarToolConnectionSideFromHandleId(connection.targetHandle);
+          if (!sourceSide || !targetSide) return;
           if (connection.source === AVATAR_TOOL_INITIAL_IMAGE_NODE_ID) {
             dispatch({
               type: 'connect-initial-image',
@@ -1074,11 +1087,19 @@ export function AvatarToolInteractionCanvas() {
           'Add interaction',
         )}>
           <span>{i18n('chat.avatarToolInteractionAdd', 'Add')}</span>
-          <button type="button" onClick={() => addInteraction('mouse-click')}>
+          <button
+            type="button"
+            disabled={!limits || state.items.length >= limits.maxInteractions}
+            onClick={() => addInteraction('mouse-click')}
+          >
             <span aria-hidden="true"><InteractionIcon kind="mouse-click" /></span>
             {i18n('chat.avatarToolInteractionMouseClick', 'Mouse click')}
           </button>
-          <button type="button" onClick={() => addInteraction('after')}>
+          <button
+            type="button"
+            disabled={!limits || state.items.length >= limits.maxInteractions}
+            onClick={() => addInteraction('after')}
+          >
             <span aria-hidden="true"><InteractionIcon kind="after" /></span>
             {i18n('chat.avatarToolInteractionAfterTime', 'Delayed switch')}
           </button>
@@ -1121,6 +1142,7 @@ export function AvatarToolInteractionCanvas() {
 
 type AvatarToolEditorWorkspaceProps = {
   title: string;
+  limits?: LocalAvatarToolLimits | null;
   dialogRef: RefObject<HTMLElement>;
   backButtonRef?: RefObject<HTMLButtonElement>;
   onBack?(): void;
@@ -1132,6 +1154,7 @@ type AvatarToolEditorWorkspaceProps = {
 
 export default function AvatarToolEditorWorkspace({
   title,
+  limits,
   dialogRef,
   backButtonRef,
   onBack,
@@ -1188,7 +1211,7 @@ export default function AvatarToolEditorWorkspace({
                 'Drag nodes to move · Connect from any edge point · Scroll to pan',
               )}</p>
             </div>
-            <AvatarToolInteractionCanvas />
+            <AvatarToolInteractionCanvas limits={limits} />
           </section>
 
           <aside

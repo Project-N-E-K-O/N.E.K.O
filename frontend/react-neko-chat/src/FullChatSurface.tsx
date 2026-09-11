@@ -24,7 +24,10 @@ import CompactExportHistoryPanel, {
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
 import { useFocusGlow } from './useFocusGlow';
-import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
+import AvatarToolItemManager, {
+  type AvatarToolEditorResultMessage,
+  type AvatarToolManagerAnchorRect,
+} from './AvatarToolItemManager';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
@@ -605,6 +608,16 @@ export default function FullChatSurface({
       clearAvatarTool();
     }
   }, [activeAvatarToolId, clearAvatarTool, localAvatarToolCatalog.registry]);
+
+  const handleAvatarToolEditorResult = useCallback((result: AvatarToolEditorResultMessage) => {
+    if (result.action === 'deleted' && result.toolId) {
+      const deletedId = result.toolId as AvatarToolId;
+      setActiveAvatarToolIds(current => current.filter(toolId => toolId !== deletedId));
+      forgetPersistedAvatarToolId(deletedId);
+      if (activeAvatarToolId === deletedId) clearAvatarTool();
+    }
+    setAvatarToolManagerOpen(true);
+  }, [activeAvatarToolId, clearAvatarTool]);
 
   const handleLocalAvatarToolDelete = useCallback(async (toolId: `local-${string}`) => {
     await localAvatarToolCatalog.remove(toolId);
@@ -3184,7 +3197,8 @@ export default function FullChatSurface({
       <AvatarToolItemManager
         open={!composerHidden && avatarToolManagerOpen}
         activeToolIds={activeAvatarToolIds}
-        availableTools={toolIconItems}
+        availableTools={localAvatarToolCatalog.items}
+        runnableToolIds={localAvatarToolCatalog.registry.validIds}
         anchorRect={avatarToolManagerAnchorRect}
         onSave={handleAvatarToolManagerSave}
         onCancel={() => {
@@ -3200,6 +3214,7 @@ export default function FullChatSurface({
         onDelete={handleLocalAvatarToolDelete}
         catalogAuthoritativeLoaded={localAvatarToolCatalog.authoritativeLoaded}
         catalogRefreshFailed={localAvatarToolCatalog.refreshFailed}
+        onExternalEditorResult={handleAvatarToolEditorResult}
       />
       <section
         className={`chat-window ${surfaceModeClassName}`}

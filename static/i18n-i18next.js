@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 修改原因：为自定义道具图片和完整互动补充名称重复提示；
+    // 修改原因：补齐图片和互动自定义名称的统一格式提示；
     // 递增版本让 Electron、Docker 等长期缓存重新拉取完整语言包。
-    const LOCALE_VERSION = '2026-09-10-avatar-tool-unique-names';
+    const LOCALE_VERSION = '2026-09-10-avatar-tool-stage4-contract-fixes';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

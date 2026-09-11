@@ -534,7 +534,11 @@ describe('App', () => {
         maxTools: 20,
         maxNameChars: 20,
         maxMeaningChars: 100,
-        maxChangeImages: 16,
+              maxChangeImages: 16,
+              maxImages: 17,
+              maxInteractions: 16,
+              maxLinks: 32,
+              maxDelayMs: 600000,
         maxImageBytes: 10_000_000,
         maxImagePixels: 16_000_000,
         maxAudioBytes: 10_000_000,
@@ -609,6 +613,10 @@ describe('App', () => {
           maxNameChars: 20,
           maxMeaningChars: 100,
           maxChangeImages: 16,
+          maxImages: 17,
+          maxInteractions: 16,
+          maxLinks: 32,
+          maxDelayMs: 600000,
           maxImageBytes: 10_000_000,
           maxImagePixels: 16_000_000,
           maxAudioBytes: 10_000_000,
@@ -5738,21 +5746,69 @@ describe('App', () => {
   });
 
   it('uses the same expanded avatar tool editor from the full chat surface', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      items: [],
+      limits: {
+        maxTools: 64,
+        maxNameChars: 20,
+        maxMeaningChars: 100,
+        maxChangeImages: 16,
+        maxImages: 17,
+        maxInteractions: 16,
+        maxLinks: 32,
+        maxDelayMs: 600000,
+        maxImageBytes: 8_388_608,
+        maxImagePixels: 16_000_000,
+        maxAudioBytes: 5_242_880,
+        maxAudioDurationMs: 10_000,
+        maxTotalBytes: 268_435_456,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(<App chatSurfaceMode="full" />);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
+      const createButton = screen.getByRole('button', { name: 'Create tool' });
+      await waitFor(() => expect(createButton).not.toBeDisabled());
+      fireEvent.click(createButton);
+
+      const workspace = screen.getByRole('dialog', { name: 'Create custom tool' });
+      expect(workspace).toHaveClass('avatar-tool-editor-workspace');
+      expect(workspace.querySelector('.react-flow')).not.toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+
+      expect(screen.getByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Create tool' }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('restores the management dialog after a standalone editor result and clears a deleted slot', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, JSON.stringify([localToolId, 'fist']));
     render(<App chatSurfaceMode="full" />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
-
-    const workspace = screen.getByRole('dialog', { name: 'Create custom tool' });
-    expect(workspace).toHaveClass('avatar-tool-editor-workspace');
-    expect(workspace.querySelector('.react-flow')).not.toBeNull();
     expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+    fireEvent(window, new MessageEvent('message', {
+      origin: window.location.origin,
+      data: {
+        type: 'neko:avatar-tool-editor-result',
+        action: 'deleted',
+        toolId: localToolId,
+      },
+    }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
-
-    expect(screen.getByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Create tool' }));
+    expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'))
+      .toEqual(['fist']);
   });
 
   it('lets Compact equip and select rps while preserving the three-slot limit', async () => {
@@ -5806,6 +5862,10 @@ describe('App', () => {
         maxNameChars: 20,
         maxMeaningChars: 100,
         maxChangeImages: 16,
+        maxImages: 17,
+        maxInteractions: 16,
+        maxLinks: 32,
+        maxDelayMs: 600000,
         maxImageBytes: 8_388_608,
         maxImagePixels: 16_000_000,
         maxAudioBytes: 5_242_880,
@@ -5848,6 +5908,10 @@ describe('App', () => {
           maxNameChars: 20,
           maxMeaningChars: 100,
           maxChangeImages: 16,
+          maxImages: 17,
+          maxInteractions: 16,
+          maxLinks: 32,
+          maxDelayMs: 600000,
           maxImageBytes: 8_388_608,
           maxImagePixels: 16_000_000,
           maxAudioBytes: 5_242_880,
@@ -5898,6 +5962,10 @@ describe('App', () => {
       maxNameChars: 20,
       maxMeaningChars: 100,
       maxChangeImages: 16,
+      maxImages: 17,
+      maxInteractions: 16,
+      maxLinks: 32,
+      maxDelayMs: 600000,
       maxImageBytes: 8_388_608,
       maxImagePixels: 16_000_000,
       maxAudioBytes: 5_242_880,

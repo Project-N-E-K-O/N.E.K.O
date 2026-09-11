@@ -3,6 +3,24 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from '../avatarTools';
 import { useLocalAvatarToolCatalog } from './useLocalAvatarToolCatalog';
 
+const V3_INTERACTIONS = {
+  initialImagePosition: { x: 20, y: 40 },
+  initialLinks: [{ to: 'ix-click' as const, sourceSide: 'right' as const, targetSide: 'left' as const }],
+  items: [{
+    id: 'ix-click' as const,
+    name: '',
+    trigger: { kind: 'mouse-click' as const },
+    actions: { press: { kind: 'keep' as const }, release: { kind: 'keep' as const } },
+    editorPosition: { x: 320, y: 40 },
+  }],
+  links: [{
+    from: 'ix-click' as const,
+    to: 'ix-click' as const,
+    sourceSide: 'right' as const,
+    targetSide: 'right' as const,
+  }],
+};
+
 describe('useLocalAvatarToolCatalog failure handling', () => {
   afterEach(() => {
     window.localStorage.removeItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY);
@@ -42,6 +60,40 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('updates editor limits from the detail response instead of keeping a guessed value', async () => {
+    const nextLimits = { ...LIMITS, maxImages: 9, maxInteractions: 7 };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        limits: nextLimits,
+        detail: {
+          id: 'local-12345678-1234-4123-8123-123456789abc',
+          revision: '2-100',
+          name: 'Feather',
+          changeMode: 'press-swap',
+          defaultImage: { resource: 'default.png', url: '/default.png?v=1' },
+          changeItems: [{
+            resource: 'change-000.png',
+            url: '/change-000.png?v=1',
+            meaning: 'Touch',
+          }],
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.authoritativeLoaded).toBe(true));
+    await act(async () => {
+      await result.current.detail('local-12345678-1234-4123-8123-123456789abc');
+    });
+
+    expect(result.current.limits).toEqual(nextLimits);
+  });
+
   it('skips one definition that fails validation without dropping valid local tools', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,
@@ -59,8 +111,8 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
           revision: '2-101',
           name: 'Feather',
           changeMode: 'press-swap',
-          defaultUrl: '/default.png',
-          changeUrls: ['/change-000.png'],
+          defaultUrl: '/default.png?v=1',
+          changeUrls: ['/change-000.png?v=1'],
         },
       ],
       limits: LIMITS,
@@ -315,6 +367,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       .mockRejectedValueOnce(new TypeError('connection reset'))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         ok: true,
+        limits: LIMITS,
         detail: {
           id: toolId,
           revision: '120-300',
@@ -381,6 +434,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       .mockRejectedValueOnce(new TypeError('connection reset'))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         ok: true,
+        limits: LIMITS,
         detail: {
           id: toolId,
           revision: submittedItem.revision,
@@ -437,6 +491,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       .mockRejectedValueOnce(new TypeError('connection reset'))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         ok: true,
+        limits: LIMITS,
         detail: {
           id: toolId,
           revision: '120-300',
@@ -512,7 +567,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
         status: 409,
         headers: { 'Content-Type': 'application/json' },
       }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail: conflictDetail }), {
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail: conflictDetail, limits: LIMITS }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }))
@@ -526,7 +581,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail: latestDetail }), {
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail: latestDetail, limits: LIMITS }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }));
@@ -543,6 +598,174 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
         changeItems: [{ resource: 'change-000.png', meaning: 'My pending change' }],
       })).rejects.toMatchObject({ currentDetail: latestDetail });
     });
+  });
+
+  it('never turns an explicit v3 revision conflict into a successful save guess', async () => {
+    const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
+    const oldItem = {
+      recordVersion: 3,
+      id: toolId,
+      revision: '3-100',
+      name: 'Flow',
+      initialImageUrl: '/image-000.png?v=same',
+    };
+    const conflictDetail = {
+      recordVersion: 3,
+      id: toolId,
+      revision: '3-200',
+      name: 'Flow',
+      images: [{
+        id: 'img-one',
+        name: '',
+        resource: 'image-000.png',
+        url: '/image-000.png?v=same',
+        meaning: '',
+      }],
+      initialImageId: 'img-one',
+      imageInteractions: V3_INTERACTIONS,
+    };
+    const listResponse = () => new Response(JSON.stringify({
+      ok: true,
+      items: [{ ...oldItem, revision: conflictDetail.revision }],
+      limits: LIMITS,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const detailResponse = () => new Response(JSON.stringify({
+      ok: true,
+      detail: conflictDetail,
+      limits: LIMITS,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [oldItem], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error_code: 'tool_revision_conflict' }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(detailResponse())
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(detailResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.authoritativeLoaded).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.update(toolId, {
+        recordVersion: 3,
+        baseRevision: oldItem.revision,
+        name: 'Flow',
+        images: [{
+          id: 'img-one',
+          name: '',
+          image: { resource: 'image-000.png', url: '/image-000.png?v=same' },
+          meaning: '',
+        }],
+        initialImageId: 'img-one',
+        imageInteractions: V3_INTERACTIONS,
+      })).rejects.toMatchObject({ message: 'tool_revision_conflict' });
+    });
+  });
+
+  it('does not confirm a lost v3 update when retained resource content changed', async () => {
+    const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
+    const oldItem = {
+      recordVersion: 3,
+      id: toolId,
+      revision: '3-100',
+      name: 'Flow',
+      initialImageUrl: '/image-000.png?v=old',
+    };
+    const changedDetail = {
+      recordVersion: 3,
+      id: toolId,
+      revision: '3-200',
+      name: 'Flow',
+      images: [{
+        id: 'img-one',
+        name: '',
+        resource: 'image-000.png',
+        url: '/image-000.png?v=changed-elsewhere',
+        meaning: '',
+      }],
+      initialImageId: 'img-one',
+      imageInteractions: V3_INTERACTIONS,
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [oldItem], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockRejectedValueOnce(new TypeError('connection reset'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail: changedDetail, limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        items: [{ ...oldItem, revision: changedDetail.revision, initialImageUrl: changedDetail.images[0].url }],
+        limits: LIMITS,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.authoritativeLoaded).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.update(toolId, {
+        recordVersion: 3,
+        baseRevision: oldItem.revision,
+        name: 'Flow',
+        images: [{
+          id: 'img-one',
+          name: '',
+          image: { resource: 'image-000.png', url: '/image-000.png?v=old' },
+          meaning: '',
+        }],
+        initialImageId: 'img-one',
+        imageInteractions: V3_INTERACTIONS,
+      })).rejects.toThrow('connection reset');
+    });
+  });
+
+  it('does not reconcile a definite v3 validation failure as an uncertain result', async () => {
+    const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
+    const oldItem = {
+      recordVersion: 3,
+      id: toolId,
+      revision: '3-100',
+      name: 'Flow',
+      initialImageUrl: '/image-000.png?v=old',
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [oldItem], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error_code: 'manifest_invalid' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.authoritativeLoaded).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.update(toolId, {
+        recordVersion: 3,
+        baseRevision: oldItem.revision,
+        name: 'Flow',
+        images: [{
+          id: 'img-one',
+          name: '',
+          image: { resource: 'image-000.png', url: '/image-000.png?v=old' },
+          meaning: '',
+        }],
+        initialImageId: 'img-one',
+        imageInteractions: V3_INTERACTIONS,
+      })).rejects.toMatchObject({ message: 'manifest_invalid' });
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('does not infer a lost replacement-file PUT succeeded from matching text fields', async () => {
@@ -564,6 +787,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       .mockRejectedValueOnce(new TypeError('connection reset'))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         ok: true,
+        limits: LIMITS,
         detail: {
           id: toolId,
           revision: '120-300',
@@ -931,6 +1155,43 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       result.current.registry.getRegistration(newItem.id as `local-${string}`).definition.label,
     ).toEqual({ kind: 'literal', value: 'New feather' }));
   });
+
+  it('keeps v3 tools editable in management while excluding them from the phase-4 runtime registry', async () => {
+    const v2Id = 'local-12345678-1234-4123-8123-123456789abc' as const;
+    const v3Id = 'local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' as const;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      limits: LIMITS,
+      items: [
+        {
+          recordVersion: 2,
+          id: v2Id,
+          revision: '2-100',
+          name: 'Runnable',
+          changeMode: 'press-swap',
+          defaultUrl: '/v2.png?v=1',
+          changeUrls: ['/v2-change.png?v=1'],
+        },
+        {
+          recordVersion: 3,
+          id: v3Id,
+          revision: '3-100',
+          name: 'Editable flow',
+          initialImageUrl: '/v3.png?v=1',
+        },
+      ],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.authoritativeLoaded).toBe(true));
+
+    expect(result.current.registry.has(v2Id)).toBe(true);
+    expect(result.current.registry.has(v3Id)).toBe(false);
+    expect(result.current.items.map(item => item.id)).toEqual([
+      'lollipop', 'fist', 'hammer', 'rps', v2Id, v3Id,
+    ]);
+    expect(result.current.items.find(item => item.id === v3Id)?.iconImagePath).toBe('/v3.png?v=1');
+  });
 });
 
 const LIMITS = {
@@ -938,6 +1199,10 @@ const LIMITS = {
   maxNameChars: 20,
   maxMeaningChars: 100,
   maxChangeImages: 16,
+  maxImages: 17,
+  maxInteractions: 16,
+  maxLinks: 32,
+  maxDelayMs: 600000,
   maxImageBytes: 8_388_608,
   maxImagePixels: 16_000_000,
   maxAudioBytes: 5_242_880,

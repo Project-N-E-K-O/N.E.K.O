@@ -12,6 +12,8 @@ import { i18n } from './i18n';
 import AvatarToolImagePanel from './AvatarToolImagePanel';
 import AvatarToolInteractionInspector from './AvatarToolInteractionInspector';
 import {
+  createLocalAvatarToolId,
+  LocalAvatarToolCreateError,
   type CreateLocalAvatarToolInput,
   type LocalAvatarToolDetail,
   type LocalAvatarToolLimits,
@@ -26,6 +28,7 @@ import {
   type AvatarToolImageId,
 } from './avatar-tools/avatarToolEditorModel';
 import {
+  buildLocalAvatarToolImageInteractions,
   createAvatarToolInteractionEditorState,
   getAvatarToolInteractionImageReferences,
   getAvatarToolInteractionOrdinal,
@@ -33,7 +36,11 @@ import {
   type AvatarToolInteractionDraft,
   type AvatarToolInteractionEditorState,
 } from './avatar-tools/avatarToolInteractionEditorModel';
-import { findDuplicateAvatarToolNameIds } from './avatar-tools/avatarToolNames';
+import {
+  findDuplicateAvatarToolNameIds,
+  getAvatarToolNameValidationError,
+  normalizeAvatarToolName,
+} from './avatar-tools/avatarToolNames';
 import { useAvatarToolInteractionEditor } from './avatar-tools/AvatarToolInteractionEditorContext';
 import {
   validateAvatarToolPng,
@@ -41,7 +48,7 @@ import {
 } from './avatar-tools/avatarToolImageFile';
 
 type AvatarToolCreatePageProps = {
-  limits: LocalAvatarToolLimits | null;
+  limits: LocalAvatarToolLimits;
   userName?: string;
   assistantName?: string;
   initialDetail?: LocalAvatarToolDetail;
@@ -63,7 +70,6 @@ type HostFilePickerResult = {
 
 type FieldErrors = Record<string, string>;
 
-const NAME_ALLOWED_PATTERN = /^[\p{L}\p{M}\p{N} _-]+$/u;
 const MEANING_CONTROL_PATTERN = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 type AvatarToolEditorPane = 'content' | 'interaction';
 const AVATAR_TOOL_EDITOR_PANES: readonly AvatarToolEditorPane[] = ['content', 'interaction'];
@@ -74,10 +80,6 @@ function avatarToolEditorPaneTabId(pane: AvatarToolEditorPane): string {
 
 function avatarToolEditorPanePanelId(pane: AvatarToolEditorPane): string {
   return `avatar-tool-editor-panel-${pane}`;
-}
-
-function normalizeToolName(value: string): string {
-  return value.normalize('NFC').trim().replace(/ +/g, ' ');
 }
 
 function normalizeMeaning(value: string): string {
@@ -96,9 +98,32 @@ function avatarToolImageDisplayName(image: AvatarToolImageDraft, index: number):
   );
 }
 
-function avatarToolImageNameErrors(images: readonly AvatarToolImageDraft[]): FieldErrors {
+function editableNameErrorMessage(error: 'too-long' | 'invalid', maximum: number): string {
+  return error === 'too-long'
+    ? i18n(
+      'chat.avatarToolEditableNameLengthError',
+      'The name must be no more than {{count}} characters.',
+      { count: String(maximum) },
+    )
+    : i18n(
+      'chat.avatarToolEditableNameInvalidError',
+      'Use letters, numbers, spaces, “-”, or “_” in the name.',
+    );
+}
+
+function avatarToolImageNameErrors(
+  images: readonly AvatarToolImageDraft[],
+  maximum: number,
+): FieldErrors {
   const errors: FieldErrors = {};
+  images.forEach((image) => {
+    const nameError = getAvatarToolNameValidationError(image.name ?? '', maximum);
+    if (nameError === 'too-long' || nameError === 'invalid') {
+      errors[`image_name:${image.id}`] = editableNameErrorMessage(nameError, maximum);
+    }
+  });
   findDuplicateAvatarToolNameIds(images, avatarToolImageDisplayName).forEach((imageId) => {
+    if (errors[`image_name:${imageId}`]) return;
     const index = images.findIndex(image => image.id === imageId);
     if (index < 0) return;
     errors[`image_name:${imageId}`] = i18n(
@@ -147,11 +172,13 @@ export default function AvatarToolCreatePage({
   notice = '',
   imageReferences = {},
   onSpecialEnabledChange,
+  onSave,
   onDelete,
   onCancel,
   showCancelAction = true,
 }: AvatarToolCreatePageProps) {
   const editing = !!initialDetail;
+  const creationToolIdRef = useRef(createLocalAvatarToolId());
   const createFieldsRef = useRef<HTMLDivElement | null>(null);
   const imageSelectionGenerationRef = useRef<Record<string, number>>({});
   const [name, setName] = useState(initialDetail?.name ?? '');
@@ -169,7 +196,6 @@ export default function AvatarToolCreatePage({
     graphRevision,
   } = useAvatarToolInteractionEditor();
   const [activePane, setActivePane] = useState<AvatarToolEditorPane>('content');
-  const [validationNotice, setValidationNotice] = useState('');
   const [interactionSubmitFailed, setInteractionSubmitFailed] = useState(false);
   const [normalSound, setNormalSound] = useState<File | null>(null);
   const [normalSoundResource, setNormalSoundResource] = useState(initialDetail?.normalSound?.resource);
@@ -183,11 +209,12 @@ export default function AvatarToolCreatePage({
   const [specialSound, setSpecialSound] = useState<File | null>(null);
   const [specialSoundResource, setSpecialSoundResource] = useState(initialDetail?.special?.sound?.resource);
   const [deleting, setDeleting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const busy = deleting;
-  const maximumImages = Math.max(1, (limits?.maxChangeImages ?? 16) + 1);
-  const imageNameErrors = avatarToolImageNameErrors(images);
+  const busy = deleting || saving;
+  const maximumImages = limits.maxImages;
+  const imageNameErrors = avatarToolImageNameErrors(images, limits.maxNameChars);
   const meaningExample = i18n(
     'chat.avatarToolCreateImageMeaningPlaceholder',
     'For example: “{{user}}” brings a lollipop to “{{character}}”, and “{{character}}” takes a bite.',
@@ -231,7 +258,6 @@ export default function AvatarToolCreatePage({
   ]);
 
   useEffect(() => {
-    setValidationNotice('');
     setFieldErrors(current => Object.fromEntries(
       Object.entries(current).filter(([key]) => !key.startsWith('image_remove:')),
     ));
@@ -240,6 +266,8 @@ export default function AvatarToolCreatePage({
         interactionState,
         images.map(image => image.id),
         item => avatarToolInteractionDisplayName(interactionState, item),
+        limits.maxDelayMs,
+        limits.maxNameChars,
       );
       setInteractionIssues(nextIssues);
       if (nextIssues.length === 0) {
@@ -247,12 +275,7 @@ export default function AvatarToolCreatePage({
         setInteractionSubmitFailed(false);
       }
     }
-  }, [graphRevision]); // Revalidate semantic and naming edits after a failed submit; layout does not change validity.
-
-  useEffect(() => {
-    setValidationNotice('');
-  }, [imageState, name, normalSound, normalSoundResource, specialEnabled, specialImage,
-    specialMeaning, specialProbabilityPercent, specialSound, specialSoundResource]);
+  }, [graphRevision, limits.maxDelayMs, limits.maxNameChars]); // Revalidate semantic and naming edits after a failed submit; layout does not change validity.
 
   const actualImageReferences = useMemo(() => {
     const references: Partial<Record<AvatarToolImageId, string[]>> = {};
@@ -322,14 +345,14 @@ export default function AvatarToolCreatePage({
   const imageValidationMessage = (issue: AvatarToolImageValidationIssue) => {
     if (issue === 'too-large') {
       return i18n('chat.avatarToolCreateImageSizeError', 'The image must be no larger than {{size}}.', {
-        size: formatLimit(limits?.maxImageBytes),
+        size: formatLimit(limits.maxImageBytes),
       });
     }
     if (issue === 'too-many-pixels') {
       return i18n(
         'chat.avatarToolCreateImagePixelsError',
         'The image dimensions are too large. Choose a PNG with no more than {{count}} total pixels.',
-        { count: String(limits?.maxImagePixels ?? 16_000_000) },
+        { count: String(limits.maxImagePixels) },
       );
     }
     return i18n(
@@ -347,8 +370,8 @@ export default function AvatarToolCreatePage({
     const generation = (imageSelectionGenerationRef.current[selectionKey] ?? 0) + 1;
     imageSelectionGenerationRef.current[selectionKey] = generation;
     const issue = await validateAvatarToolPng(file, {
-      maxImageBytes: limits?.maxImageBytes ?? 8 * 1024 * 1024,
-      maxImagePixels: limits?.maxImagePixels ?? 16_000_000,
+      maxImageBytes: limits.maxImageBytes,
+      maxImagePixels: limits.maxImagePixels,
     });
     if (imageSelectionGenerationRef.current[selectionKey] !== generation) return;
     if (issue) {
@@ -488,11 +511,11 @@ export default function AvatarToolCreatePage({
   const validateOptionalMeaning = (value: string): string => {
     const normalized = normalizeMeaning(value);
     if (!normalized) return '';
-    if (characterCount(normalized) > (limits?.maxMeaningChars ?? 100)) {
+    if (characterCount(normalized) > limits.maxMeaningChars) {
       return i18n(
         'chat.avatarToolCreateOptionalMeaningLengthError',
         'The interaction description must be no more than {{count}} characters.',
-        { count: String(limits?.maxMeaningChars ?? 100) },
+        { count: String(limits.maxMeaningChars) },
       );
     }
     if (MEANING_CONTROL_PATTERN.test(normalized)) {
@@ -504,21 +527,22 @@ export default function AvatarToolCreatePage({
     return '';
   };
 
-  const submit = (event: FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (busy) return;
     const nextErrors: FieldErrors = {};
-    const normalizedName = normalizeToolName(name);
-    const maximumNameLength = limits?.maxNameChars ?? 20;
-    if (!normalizedName) {
+    const normalizedName = normalizeAvatarToolName(name);
+    const maximumNameLength = limits.maxNameChars;
+    const nameValidationError = getAvatarToolNameValidationError(name, maximumNameLength, true);
+    if (nameValidationError === 'required') {
       nextErrors.name = i18n('chat.avatarToolCreateNameRequired', 'Please enter a tool name.');
-    } else if (characterCount(normalizedName) > maximumNameLength) {
+    } else if (nameValidationError === 'too-long') {
       nextErrors.name = i18n(
         'chat.avatarToolCreateNameLengthError',
         'The tool name must be 1–{{count}} characters.',
         { count: String(maximumNameLength) },
       );
-    } else if (!NAME_ALLOWED_PATTERN.test(normalizedName)) {
+    } else if (nameValidationError === 'invalid') {
       nextErrors.name = i18n(
         'chat.avatarToolCreateNameInvalidError',
         'Use letters, numbers, spaces, “-”, or “_” in the tool name.',
@@ -557,7 +581,20 @@ export default function AvatarToolCreatePage({
       interactionState,
       images.map(image => image.id),
       item => avatarToolInteractionDisplayName(interactionState, item),
+      limits.maxDelayMs,
+      limits.maxNameChars,
     );
+    if (
+      interactionState.items.length > limits.maxInteractions
+      || interactionState.initialImageTargetIds.length + interactionState.links.length > limits.maxLinks
+    ) {
+      setInteractionIssues(nextInteractionIssues);
+      setFieldErrors({});
+      setInteractionSubmitFailed(true);
+      setActivePane('interaction');
+      setError(i18n('chat.avatarToolInteractionFixBeforeSave', 'Fix the interaction flow before saving.'));
+      return;
+    }
     setInteractionIssues(nextInteractionIssues);
     if (Object.keys(nextErrors).length > 0) {
       const firstErrorKey = Object.keys(nextErrors)[0];
@@ -568,14 +605,12 @@ export default function AvatarToolCreatePage({
         });
       }
       setActivePane('content');
-      setValidationNotice('');
       setInteractionSubmitFailed(false);
       showFieldErrors(nextErrors);
       return;
     }
     if (nextInteractionIssues.length > 0) {
       setFieldErrors({});
-      setValidationNotice('');
       setInteractionSubmitFailed(true);
       setActivePane('interaction');
       const first = nextInteractionIssues[0];
@@ -593,10 +628,156 @@ export default function AvatarToolCreatePage({
     setFieldErrors({});
     setError('');
     setInteractionSubmitFailed(false);
-    setValidationNotice(i18n(
-      'chat.avatarToolInteractionStageReady',
-      'The interaction flow is valid. Saving it will be connected in the next implementation stage.',
-    ));
+    const imageInteractions = buildLocalAvatarToolImageInteractions(interactionState);
+    if (!imageInteractions) {
+      setInteractionSubmitFailed(true);
+      setActivePane('interaction');
+      setError(i18n('chat.avatarToolInteractionFixBeforeSave', 'Fix the interaction flow before saving.'));
+      return;
+    }
+    setSaving(true);
+    try {
+      const commonInput = {
+        recordVersion: 3 as const,
+        name: normalizedName,
+        images: images.map(image => ({
+          id: image.id,
+          name: normalizeAvatarToolName(image.name ?? ''),
+          image: image.image
+            ? { file: image.image }
+            : { resource: image.imageResource, url: image.imageUrl },
+          meaning: normalizeMeaning(image.meaning),
+        })),
+        initialImageId: initialImageId!,
+        imageInteractions,
+        ...((normalSound || normalSoundResource) ? {
+          normalSound: normalSound ? { file: normalSound } : {
+            resource: normalSoundResource,
+            ...(initialDetail?.normalSound?.resource === normalSoundResource
+              ? { url: initialDetail?.normalSound?.url }
+              : {}),
+          },
+        } : {}),
+        ...(specialEnabled ? {
+          special: {
+            probability: specialProbabilityPercent / 100,
+            image: specialImage ? { file: specialImage } : {
+              resource: specialImageResource,
+              ...(initialDetail?.special?.image.resource === specialImageResource
+                ? { url: initialDetail?.special?.image.url }
+                : {}),
+            },
+            meaning: normalizeMeaning(specialMeaning),
+            ...((specialSound || specialSoundResource) ? {
+              sound: specialSound ? { file: specialSound } : {
+                resource: specialSoundResource,
+                ...(initialDetail?.special?.sound?.resource === specialSoundResource
+                  ? { url: initialDetail?.special?.sound?.url }
+                  : {}),
+              },
+            } : {}),
+          },
+        } : {}),
+      };
+      if (editing) {
+        await onSave({
+          ...commonInput,
+          baseRevision: initialDetail!.revision,
+        } satisfies UpdateLocalAvatarToolInput);
+      } else {
+        await onSave({
+          ...commonInput,
+          toolId: creationToolIdRef.current,
+        } satisfies CreateLocalAvatarToolInput);
+      }
+    } catch (cause) {
+      const saveError = i18n('chat.avatarToolCreateSaveError', 'Could not save this tool. Please try again.');
+      if (cause instanceof LocalAvatarToolCreateError && cause.message === 'tool_limit_reached') {
+        setError(i18n('chat.avatarToolCreateToolLimitError', 'The custom tool library is full.'));
+      } else if (cause instanceof LocalAvatarToolCreateError && cause.message === 'storage_limit_reached') {
+        setError(i18n('chat.avatarToolCreateStorageLimitError', 'There is not enough space for another custom tool.'));
+      } else if (
+        cause instanceof LocalAvatarToolCreateError
+        && cause.field === 'interaction_name'
+        && cause.index !== undefined
+        && interactionState.items[cause.index]
+      ) {
+        const interaction = interactionState.items[cause.index];
+        const code = cause.message === 'interaction_name_too_long'
+          ? 'name-too-long'
+          : cause.message === 'interaction_name_duplicate'
+            ? 'duplicate-name'
+            : 'name-invalid';
+        setFieldErrors({});
+        setInteractionIssues([{
+          key: `interaction:${interaction.id}:name`,
+          code,
+          interactionId: interaction.id,
+          field: 'name',
+          maxNameChars: limits.maxNameChars,
+        }]);
+        setInteractionSubmitFailed(true);
+        setActivePane('interaction');
+        dispatchInteraction({ type: 'select-interaction', interactionId: interaction.id });
+        setError(i18n('chat.avatarToolInteractionFixBeforeSave', 'Fix the interaction flow before saving.'));
+      } else if (cause instanceof LocalAvatarToolCreateError && cause.field) {
+        let fieldKey = cause.field;
+        let fieldMessage = saveError;
+        if (cause.field === 'image' && cause.index !== undefined && images[cause.index]) {
+          const imageId = images[cause.index].id;
+          fieldKey = `image_file:${imageId}`;
+          dispatchImage({ type: 'select', imageId });
+        } else if (
+          (cause.field === 'image_name' || cause.field === 'image_meaning')
+          && cause.index !== undefined
+          && images[cause.index]
+        ) {
+          const imageId = images[cause.index].id;
+          fieldKey = `${cause.field}:${imageId}`;
+          dispatchImage({ type: 'select', imageId });
+          if (cause.field === 'image_name') {
+            fieldMessage = cause.message === 'image_name_too_long'
+              ? editableNameErrorMessage('too-long', limits.maxNameChars)
+              : cause.message === 'image_name_invalid'
+                ? editableNameErrorMessage('invalid', limits.maxNameChars)
+                : cause.message === 'image_name_duplicate'
+                  ? i18n(
+                    'chat.avatarToolImageNameDuplicate',
+                    'This name is already used by another image. Choose a different name.',
+                  )
+                  : saveError;
+          }
+        } else if (cause.field === 'name') {
+          fieldMessage = cause.message === 'name_too_long'
+            ? i18n(
+              'chat.avatarToolCreateNameLengthError',
+              'The tool name must be 1–{{count}} characters.',
+              { count: String(limits.maxNameChars) },
+            )
+            : cause.message === 'name_invalid'
+              ? i18n(
+                'chat.avatarToolCreateNameInvalidError',
+                'Use letters, numbers, spaces, “-”, or “_” in the tool name.',
+              )
+              : saveError;
+        }
+        const contentFields = new Set([
+          'name', 'images', 'normal_sound', 'special_probability',
+          'special_image', 'special_meaning', 'special_sound',
+        ]);
+        if (contentFields.has(fieldKey) || fieldKey.startsWith('image_')) {
+          setActivePane('content');
+          setError(saveError);
+          showFieldErrors({ [fieldKey]: fieldMessage });
+        } else {
+          setError(saveError);
+        }
+      } else {
+        setError(saveError);
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const removeNormalSound = () => {
@@ -684,9 +865,6 @@ export default function AvatarToolCreatePage({
       </div>
       <div className="avatar-tool-create-fields" ref={createFieldsRef}>
         {error ? <p className="avatar-tool-create-error" role="alert">{error}</p> : null}
-        {validationNotice ? (
-          <p className="avatar-tool-create-validation-notice" role="status">{validationNotice}</p>
-        ) : null}
         {notice ? (
           <p id="avatar-tool-manager-notice" className="avatar-tool-manager-notice" role="status">
             {notice}
@@ -715,7 +893,7 @@ export default function AvatarToolCreatePage({
             placeholder={i18n(
               'chat.avatarToolCreateNamePlaceholder',
               '1–{{count}} characters; use letters, numbers, spaces, “-”, or “_”',
-              { count: String(limits?.maxNameChars ?? 20) },
+              { count: String(limits.maxNameChars) },
             )}
           />
           <FieldError message={fieldErrors.name} />
@@ -972,7 +1150,12 @@ export default function AvatarToolCreatePage({
             role="tabpanel"
             aria-labelledby={avatarToolEditorPaneTabId('interaction')}
           >
-            <AvatarToolInteractionInspector images={images} busy={busy} />
+            <AvatarToolInteractionInspector
+              images={images}
+              busy={busy}
+              maxDelayMs={limits.maxDelayMs}
+              maxNameChars={limits.maxNameChars}
+            />
           </div>
         )}
       </div>
@@ -992,7 +1175,9 @@ export default function AvatarToolCreatePage({
             </button>
           ) : null}
           <button className="avatar-tool-manager-action primary" type="submit" disabled={busy}>
-            {editing
+            {saving
+              ? i18n('chat.avatarToolCreateSaving', 'Saving…')
+              : editing
               ? i18n('chat.avatarToolUpdateSave', 'Save changes')
               : i18n('chat.avatarToolCreateSave', 'Save tool')}
           </button>

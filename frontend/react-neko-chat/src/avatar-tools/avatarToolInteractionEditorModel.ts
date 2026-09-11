@@ -1,6 +1,10 @@
-import type { LocalAvatarToolDetail } from './localTools';
+import type { LocalAvatarToolDetail, LocalAvatarToolImageInteractions } from './localTools';
 import type { AvatarToolImageId } from './avatarToolEditorModel';
-import { findDuplicateAvatarToolNameIds } from './avatarToolNames';
+import {
+  findDuplicateAvatarToolNameIds,
+  getAvatarToolNameValidationError,
+  normalizeAvatarToolName,
+} from './avatarToolNames';
 
 export type AvatarToolInteractionId = `ix-${string}`;
 export type AvatarToolInteractionLinkId = `link-${string}`;
@@ -41,8 +45,8 @@ export type AvatarToolInteractionLinkDraft = {
   id: AvatarToolInteractionLinkId;
   from: AvatarToolInteractionId;
   to: AvatarToolInteractionId;
-  sourceSide?: AvatarToolConnectionSide;
-  targetSide?: AvatarToolConnectionSide;
+  sourceSide: AvatarToolConnectionSide;
+  targetSide: AvatarToolConnectionSide;
 };
 
 export type AvatarToolInteractionEditorState = {
@@ -59,6 +63,8 @@ export type AvatarToolInteractionEditorState = {
 export type AvatarToolInteractionValidationCode =
   | 'initial-connection-required'
   | 'duplicate-name'
+  | 'name-too-long'
+  | 'name-invalid'
   | 'action-image-missing'
   | 'delay-invalid'
   | 'delay-image-missing'
@@ -76,6 +82,7 @@ export type AvatarToolInteractionValidationIssue = {
   field?: 'name' | 'press' | 'release' | 'delayMs' | 'complete' | 'initialConnection' | 'connection';
   waitingAfterId?: AvatarToolInteractionId;
   delayMs?: number;
+  maxNameChars?: number;
 };
 
 export type AvatarToolInteractionEditorAction =
@@ -93,8 +100,8 @@ export type AvatarToolInteractionEditorAction =
   | {
     type: 'connect-initial-image';
     interactionId: AvatarToolInteractionId;
-    sourceSide?: AvatarToolConnectionSide;
-    targetSide?: AvatarToolConnectionSide;
+    sourceSide: AvatarToolConnectionSide;
+    targetSide: AvatarToolConnectionSide;
   }
   | { type: 'remove-initial-link'; interactionId: AvatarToolInteractionId }
   | { type: 'connect'; link: AvatarToolInteractionLinkDraft }
@@ -111,12 +118,16 @@ const AVATAR_TOOL_CONNECTION_SIDES: readonly AvatarToolConnectionSide[] = [
   'left',
 ];
 
+function isAvatarToolConnectionSide(value: unknown): value is AvatarToolConnectionSide {
+  return AVATAR_TOOL_CONNECTION_SIDES.includes(value as AvatarToolConnectionSide);
+}
+
 export function avatarToolConnectionSideFromHandleId(
   handleId: string | null | undefined,
 ): AvatarToolConnectionSide | undefined {
   if (!handleId?.startsWith('edge-')) return undefined;
   const side = handleId.slice('edge-'.length) as AvatarToolConnectionSide;
-  return AVATAR_TOOL_CONNECTION_SIDES.includes(side) ? side : undefined;
+  return isAvatarToolConnectionSide(side) ? side : undefined;
 }
 
 export function findAvailableAvatarToolInteractionPosition(
@@ -206,6 +217,48 @@ export function createAvatarToolInteractionEditorState(
     };
   }
 
+  if (detail.recordVersion === 3) {
+    const initialImageLinkSides: AvatarToolInteractionEditorState['initialImageLinkSides'] = {};
+    detail.imageInteractions.initialLinks.forEach((link) => {
+      initialImageLinkSides[link.to] = {
+        sourceSide: link.sourceSide,
+        targetSide: link.targetSide,
+      };
+    });
+    return {
+      items: detail.imageInteractions.items.map(item => item.trigger.kind === 'mouse-click'
+        ? {
+          id: item.id,
+          name: item.name,
+          kind: 'mouse-click' as const,
+          position: item.editorPosition,
+          press: (item.actions as { press: AvatarToolImageAction; release: AvatarToolImageAction }).press,
+          release: (item.actions as { press: AvatarToolImageAction; release: AvatarToolImageAction }).release,
+        }
+        : {
+          id: item.id,
+          name: item.name,
+          kind: 'after' as const,
+          position: item.editorPosition,
+          delayMs: String(item.trigger.delayMs),
+          complete: (item.actions as { complete: AvatarToolImageAction }).complete,
+        }),
+      links: detail.imageInteractions.links.map((link, index) => ({
+        id: `link-v3-${String(index).padStart(3, '0')}` as AvatarToolInteractionLinkId,
+        from: link.from,
+        to: link.to,
+        sourceSide: link.sourceSide,
+        targetSide: link.targetSide,
+      })),
+      initialImageTargetIds: detail.imageInteractions.initialLinks.map(link => link.to),
+      initialImageLinkSides,
+      initialImagePosition: detail.imageInteractions.initialImagePosition,
+      selectedInteractionId: null,
+      selectedLinkId: null,
+      selectedInitialLinkTargetId: null,
+    };
+  }
+
   const defaultImageId: AvatarToolImageId = 'img-v2-default';
   const changeImageIds = detail.changeItems.map((_, index) => (
     `img-v2-change-${String(index).padStart(3, '0')}` as AvatarToolImageId
@@ -223,9 +276,15 @@ export function createAvatarToolInteractionEditorState(
     };
     return {
       items: [item],
-      links: [{ id: 'link-v2-press-swap-loop', from: id, to: id }],
+      links: [{
+        id: 'link-v2-press-swap-loop',
+        from: id,
+        to: id,
+        sourceSide: 'right',
+        targetSide: 'right',
+      }],
       initialImageTargetIds: [id],
-      initialImageLinkSides: {},
+      initialImageLinkSides: { [id]: { sourceSide: 'right', targetSide: 'left' } },
       initialImagePosition: { x: -100, y: 180 },
       selectedInteractionId: null,
       selectedLinkId: null,
@@ -245,12 +304,16 @@ export function createAvatarToolInteractionEditorState(
     id: `link-v2-click-advance-${String(index).padStart(3, '0')}` as AvatarToolInteractionLinkId,
     from: item.id,
     to: items[index + 1]?.id ?? item.id,
+    sourceSide: 'right',
+    targetSide: items[index + 1] ? 'left' : 'right',
   }));
   return {
     items,
     links,
     initialImageTargetIds: items[0] ? [items[0].id] : [],
-    initialImageLinkSides: {},
+    initialImageLinkSides: items[0]
+      ? { [items[0].id]: { sourceSide: 'right', targetSide: 'left' } }
+      : {},
     initialImagePosition: { x: -160, y: 180 },
     selectedInteractionId: null,
     selectedLinkId: null,
@@ -348,21 +411,21 @@ export function avatarToolInteractionEditorReducer(
       if (
         !hasInteraction(state, action.interactionId)
         || state.initialImageTargetIds.includes(action.interactionId)
+        || !isAvatarToolConnectionSide(action.sourceSide)
+        || !isAvatarToolConnectionSide(action.targetSide)
       ) {
         return state;
       }
       return {
         ...state,
         initialImageTargetIds: [...state.initialImageTargetIds, action.interactionId],
-        initialImageLinkSides: action.sourceSide && action.targetSide
-          ? {
-            ...state.initialImageLinkSides,
-            [action.interactionId]: {
-              sourceSide: action.sourceSide,
-              targetSide: action.targetSide,
-            },
+        initialImageLinkSides: {
+          ...state.initialImageLinkSides,
+          [action.interactionId]: {
+            sourceSide: action.sourceSide,
+            targetSide: action.targetSide,
           }
-          : state.initialImageLinkSides,
+        },
         selectedInteractionId: null,
         selectedLinkId: null,
         selectedInitialLinkTargetId: action.interactionId,
@@ -385,6 +448,8 @@ export function avatarToolInteractionEditorReducer(
       if (
         !hasInteraction(state, action.link.from)
         || !hasInteraction(state, action.link.to)
+        || !isAvatarToolConnectionSide(action.link.sourceSide)
+        || !isAvatarToolConnectionSide(action.link.targetSide)
         || state.links.some(link => link.id === action.link.id)
         || state.links.some(link => link.from === action.link.from && link.to === action.link.to)
       ) return state;
@@ -484,12 +549,77 @@ function parseDelayMs(value: string): number | null {
   return Number.isSafeInteger(delayMs) && delayMs > 0 ? delayMs : null;
 }
 
+export function buildLocalAvatarToolImageInteractions(
+  state: AvatarToolInteractionEditorState,
+): LocalAvatarToolImageInteractions | null {
+  const positions = new Map(state.items.map(item => [item.id, item.position]));
+  const initialLinks: LocalAvatarToolImageInteractions['initialLinks'] = [];
+  for (const to of state.initialImageTargetIds) {
+    const targetPosition = positions.get(to);
+    const sides = state.initialImageLinkSides[to];
+    if (
+      !targetPosition
+      || !sides
+      || !isAvatarToolConnectionSide(sides.sourceSide)
+      || !isAvatarToolConnectionSide(sides.targetSide)
+    ) return null;
+    initialLinks.push({ to, ...sides });
+  }
+  const links: LocalAvatarToolImageInteractions['links'] = [];
+  for (const link of state.links) {
+    const sourcePosition = positions.get(link.from);
+    const targetPosition = positions.get(link.to);
+    if (
+      !sourcePosition
+      || !targetPosition
+      || !isAvatarToolConnectionSide(link.sourceSide)
+      || !isAvatarToolConnectionSide(link.targetSide)
+    ) return null;
+    links.push({
+      from: link.from,
+      to: link.to,
+      sourceSide: link.sourceSide,
+      targetSide: link.targetSide,
+    });
+  }
+  const items: LocalAvatarToolImageInteractions['items'] = [];
+  for (const item of state.items) {
+    if (item.kind === 'mouse-click') {
+      items.push({
+        id: item.id,
+        name: normalizeAvatarToolName(item.name ?? ''),
+        trigger: { kind: 'mouse-click' },
+        actions: { press: item.press, release: item.release },
+        editorPosition: item.position,
+      });
+      continue;
+    }
+    const delayMs = parseDelayMs(item.delayMs);
+    if (delayMs === null || !item.complete) return null;
+    items.push({
+      id: item.id,
+      name: normalizeAvatarToolName(item.name ?? ''),
+      trigger: { kind: 'after', delayMs },
+      actions: { complete: item.complete },
+      editorPosition: item.position,
+    });
+  }
+  return {
+    initialImagePosition: state.initialImagePosition,
+    initialLinks,
+    items,
+    links,
+  };
+}
+
 export function validateAvatarToolInteractionGraph(
   state: AvatarToolInteractionEditorState,
   imageIds: readonly AvatarToolImageId[],
   getInteractionDisplayName: (item: AvatarToolInteractionDraft) => string = item => (
     item.name?.trim() || item.id
   ),
+  maxDelayMs = Number.MAX_SAFE_INTEGER,
+  maxNameChars = Number.MAX_SAFE_INTEGER,
 ): AvatarToolInteractionValidationIssue[] {
   const issues: AvatarToolInteractionValidationIssue[] = [];
   const interactionIds = new Set(state.items.map(item => item.id));
@@ -509,13 +639,23 @@ export function validateAvatarToolInteractionGraph(
     getInteractionDisplayName,
   );
   state.items.forEach((item) => {
-    if (!duplicateNameIds.has(item.id)) return;
-    issues.push({
-      key: `interaction:${item.id}:name`,
-      code: 'duplicate-name',
-      interactionId: item.id,
-      field: 'name',
-    });
+    const nameError = getAvatarToolNameValidationError(item.name ?? '', maxNameChars);
+    if (nameError === 'too-long' || nameError === 'invalid') {
+      issues.push({
+        key: `interaction:${item.id}:name`,
+        code: nameError === 'too-long' ? 'name-too-long' : 'name-invalid',
+        interactionId: item.id,
+        field: 'name',
+        maxNameChars,
+      });
+    } else if (duplicateNameIds.has(item.id)) {
+      issues.push({
+        key: `interaction:${item.id}:name`,
+        code: 'duplicate-name',
+        interactionId: item.id,
+        field: 'name',
+      });
+    }
   });
 
   state.items.forEach((item) => {
@@ -532,7 +672,8 @@ export function validateAvatarToolInteractionGraph(
         }
       });
     } else {
-      if (parseDelayMs(item.delayMs) === null) {
+      const delayMs = parseDelayMs(item.delayMs);
+      if (delayMs === null || delayMs > maxDelayMs) {
         issues.push({
           key: `interaction:${item.id}:delayMs`,
           code: 'delay-invalid',

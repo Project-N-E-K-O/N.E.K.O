@@ -6,7 +6,7 @@
 
 ## 当前已注册能力
 
-`AVATAR_TOOL_DEFINITION_IDS` 和静态 `AVATAR_TOOL_REGISTRY` 包含以下四种内置道具。Full／Compact 都会把后端严格校验通过的本地自定义 record 构建成 definition v2，并加入各自当前的不可变 registry snapshot；只有 Compact 提供创建入口，本地 ID 不写入内置静态 tuple。
+`AVATAR_TOOL_DEFINITION_IDS` 和静态 `AVATAR_TOOL_REGISTRY` 包含以下四种内置道具。Full／Compact 只把后端严格校验通过的本地自定义 record v2 构建成 definition v2，并加入各自当前的不可变运行 registry snapshot；本地 ID 不写入内置静态 tuple。record v3 当前只进入管理目录和编辑页，不进入运行 registry。
 
 | 道具 | tool id | interaction profile | effect recipe | 合法 action/intensity |
 |---|---|---|---|---|
@@ -14,7 +14,7 @@
 | 猫爪 | `fist` | `press-release` | `random-scatter` | `poke/normal`、`poke/rapid` |
 | 锤子 | `hammer` | `locked-impact` | `hammer-swing` | `bonk/normal`、`bonk/rapid`、`bonk/burst`、`bonk/easter_egg` |
 | 猜拳 | `rps` | `round-choice` | `round-reveal` | `userGesture/avatarGesture/roundResult`，不使用 action/intensity |
-| 自定义道具（动态） | `local-<lowercase-uuid-v4>` | v2 `press-release` + `press-swap` 或 `click-advance` | 可选 `random-scatter` 彩蛋 | `interact/normal`、`interact/rapid`，另含 `toolRevision`、`changeIndex`、`touchZone` 和可选 `specialTriggered` |
+| 自定义道具 v2（动态） | `local-<lowercase-uuid-v4>` | v2 `press-release` + `press-swap` 或 `click-advance` | 可选 `random-scatter` 彩蛋 | `interact/normal`、`interact/rapid`，另含 `toolRevision`、`changeIndex`、`touchZone` 和可选 `specialTriggered` |
 
 当前特殊事实：
 
@@ -25,6 +25,7 @@
 - 猜拳准备手势只由真实有效范围驱动；按下期间当前猫娘仍继续出拳。合法松开后由一条 `round-reveal` 时间线完成靠近、碰撞、结果和恢复。鼠标离开模型范围、页面可视区域或桌面道具窗口都不截断已开始的一局，也不能借重新进入提前开始下一局；页面隐藏、surface/道具切换和销毁等明确中断才会立即清理。
 - 自定义道具的默认图片为帧 `0`，变化图片为帧 `1..N`。`press-swap` 恰好一张变化图片；`click-advance` 有一到多张并在有效点击后前进，到末张保持且不循环。范围变化只改变尺寸，不改变当前帧。
 - 自定义道具可声明普通互动音效和完整可选彩蛋块。彩蛋命中时使用 `random-scatter`，声音按“彩蛋音效、普通音效、静默”选择；没有 chance 声明时不调用 RNG。
+- 自定义道具 record v3 已能保存和重新打开同级图片、初始图片、完整互动与连接，但通用图解释器尚未注册。v3 管理卡片不可新装备；已装备 v2 明确保存为 v3 后，槽位 ID 保留但旧 v2 运行定义立即失效。
 - Full／Compact 分别加载同一后端本地道具目录并构建自己的 registry snapshot。两边各自持有最多三个活动槽位；桌面 Full 使用独立 Electron partition，因此不是同一份持久化选择，也不新增槽位同步。
 - `touchZone` 只允许 `ear`、`head`、`face`、`body`。
 
@@ -67,9 +68,9 @@ Chat descriptor 只传当前选择和桌面契约，不传 Avatar pointer。桌�
 | 模块 | 唯一职责 |
 |---|---|
 | `frontend/react-neko-chat/src/avatar-tools/catalog.ts` | 内置 ID、definition v1/v2 schema、视觉资源、声音、effect recipe、interaction profile、capability 和 definition 校验。 |
-| `frontend/react-neko-chat/src/avatar-tools/localTools.ts` | 带内容 revision 的本地公开 DTO、GET/POST client，以及从权威 DTO 构建固定 v2 definition；不接收用户自定义运行规则。 |
+| `frontend/react-neko-chat/src/avatar-tools/localTools.ts` | 带内容 revision 的 v2/v3 本地管理 DTO、GET/POST/PUT client、v3 manifest，以及仅从权威 v2 DTO 构建固定运行 definition。 |
 | `frontend/react-neko-chat/src/avatar-tools/registry.ts` | 组合内置 registration 与当前有效本地 definition，生成不可变 snapshot 和按 `(toolId, resourceId)` 的资源查询。 |
-| `frontend/react-neko-chat/src/avatar-tools/useLocalAvatarToolCatalog.ts` | Full／Compact 的本地列表加载、Compact 创建后发布、刷新失败保留和权威加载状态；不管理槽位或 pointer。 |
+| `frontend/react-neko-chat/src/avatar-tools/useLocalAvatarToolCatalog.ts` | Full／Compact 的本地列表加载、创建/修改后发布、管理目录与 v2 运行 registry 分离、刷新失败保留和权威加载状态；不管理槽位或 pointer。 |
 | `frontend/react-neko-chat/src/avatar-tools/profileInterpreter.ts` | 解释当前支持的 profile kind，生成通用 handlers；不按 tool id 分支。 |
 | `frontend/react-neko-chat/src/avatar-tools/interaction.ts` | bounds、范围、UI exclusion、touch zone、press/release guard 和共享 runtime policy。 |
 | `frontend/react-neko-chat/src/avatar-tools/protocol.ts` | interaction/state payload schema、类型和构建器。 |
@@ -93,8 +94,8 @@ Chat descriptor 只传当前选择和桌面契约，不传 Avatar pointer。桌�
 | `config/prompts/avatar_interaction_contract.py` | Python 唯一公开 payload normalizer 和 tool/action/intensity/special-field 契约。 |
 | `config/prompts/prompts_avatar_interaction.py` | 事件事实、位置事实、memory 和 text-context sanitizer。 |
 | `main_logic/cross_server.py` | interaction memory 的隔离、去重和持久化。 |
-| `utils/avatar_tool_store.py` | 本地 record v2、媒体校验与资源摘要、原子创建、公开 DTO 和按 ID 读取的唯一权威事实源。 |
-| `main_routers/avatar_tool_router.py` | loopback 受限的 GET/POST、multipart 上限、mutation guard 和线程化存储调用。 |
+| `utils/avatar_tool_store.py` | 本地 record v2/v3、图和媒体校验、资源摘要、原子创建/更新、公开 DTO 和按 ID 读取的唯一权威事实源。 |
+| `main_routers/avatar_tool_router.py` | loopback 受限的 GET/POST/PUT/DELETE、v2/v3 multipart 分派、上传上限、mutation guard 和线程化存储调用。 |
 
 Host 与 Python 因跨语言边界各自保留契约实现，但必须由 parity 测试约束完整行为，不能只比较允许值列表。Python 调用方统一使用 `normalize_avatar_interaction_payload`；不得恢复私有 normalizer、facade alias 或第二套宽松归一入口。
 
@@ -245,13 +246,15 @@ UI exclusion 至少覆盖 composer、工具菜单/快捷栏/manager、消息操�
 
 ### 自定义道具
 
+以下是当前已注册运行的 record v2 语义。record v3 只完成管理与持久化，不得由 Web 或 PC 猜测性降级运行；通用图片交互图的运行语义必须在解释器正式接入后再写入本节。
+
 1. Full／Compact 从后端公开 DTO 构建固定 definition v2；名称使用 literal label，内容 revision 随 definition 和 descriptor 传递，互动描述不返回浏览器或 PC。
 2. `press-swap` 按下临时显示唯一变化帧，合法松开提交 `changeIndex=0` 后恢复默认帧；取消链只恢复，不提交。
 3. `click-advance` 只在合法松开时前进并提交新显示帧对应的 `changeIndex`；末张保持且继续提交末项索引，不循环。
 4. 当前帧只属于选择 session。离开范围不复位；取消选择、道具切换、强制停用、surface handoff、页面重建或销毁后回到默认帧。
 5. Web 与 PC 解释同一 v2 profile，不按具体本地 ID、图片数或文件名建立分支。本地 payload 必须携带生成当前画面的 `toolRevision`；Host/Python 只消费版本仍与权威 record 一致的本次索引、强度和触点，过期版本直接拒绝。
 6. 普通互动音效可选；完整彩蛋块固定包含概率、图片和互动描述，彩蛋音效可选。命中时散落彩蛋图片，声音按彩蛋音效优先、普通音效回退、都没有则静默执行一次。
-7. Full／Compact 分别消费同一权威本地列表和动态 registry，继续保存各自的三槽选择；Full 不提供创建入口，不增加跨窗口槽位同步。
+7. Full／Compact 分别消费同一权威本地列表和动态 registry，继续保存各自的三槽选择；两边复用同一创建/修改入口，不增加跨窗口槽位同步。
 
 所有道具在 Avatar 范围内显示大形态、范围外显示小形态；这是共享 presentation 语义，不应在单个 tool handler 中重复实现。
 
@@ -333,14 +336,14 @@ interaction sent
 ### NEKO Web
 
 1. definition、desktop producer 和 message callback schema 拒绝未知 ID、重复资源、非法引用、保留字段、超限值和矛盾 capability；要求唯一资源闭包的新 profile 还要在 definition 阶段拒绝未引用资源。legacy source extra-resource 只允许在 projection 前存在，不能进入 desktop descriptor。
-2. Full 和 Compact 中四种内置道具的配置、选择、切换、取消和槽位移除正常；两种页面各自持有最多三个活动槽位。Compact 的有效本地道具可创建、装备、选择和移除；Full 可加载、装备、选择和移除同一后端目录中的本地道具，但不显示创建入口。
+2. Full 和 Compact 中四种内置道具的配置、选择、切换、取消和槽位移除正常；两种页面各自持有最多三个活动槽位。两边都可管理同一后端目录中的本地道具；v2 可装备、选择和移除，v3 可创建和修改但不可装备。
 3. 范围内大形态、范围外小形态稳定；系统光标可见。
 4. down 不提交；有效 up 单次提交；drag-out、超阈值、UI release、cancel、blur 和教程接管不提交。
 5. release 重读当前 bounds/touch zone；视觉 hold 不授权命中。
 6. RAF、timer、Audio、effect、Promise 和旧 generation 完整清理。
 7. 猜拳准备手势只在真实范围内循环，按下不停止当前猫娘出拳；合法松开只确定一次双方手势和胜负，普通离开范围不截断结果时间线。
 8. 碰撞期间只有两只最终手势；胜方图层与大小只在碰撞时突出，碰撞后双方恢复正常大小，败方灰度持续到结果结束。结果声与已有 i18n 结果文字同步，当前猫娘名字正确，减少动态效果时仍可清楚读取结果。
-9. 自定义道具的两种切图方式、末张不循环、范围只缩放、无效松开不前进以及选择 session 结束复位一致；创建成功不自动装备，首次列表失败不清洗已保存本地槽位。
+9. v2 自定义道具的两种切图方式、末张不循环、范围只缩放、无效松开不前进以及选择 session 结束复位一致；v3 创建成功不自动装备、不进入运行 registry，但仍可在管理目录打开修改；首次列表失败不清洗已保存本地槽位。
 
 ### Host/Python
 

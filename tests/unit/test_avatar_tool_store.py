@@ -78,6 +78,319 @@ def _create_tool(store: AvatarToolStore, **kwargs):
     return store.create_tool(**kwargs)
 
 
+def _v3_manifest(tool_id: str, *, sources=None, name="Flow tool") -> dict:
+    image_sources = sources or [{"kind": "upload", "index": 0}]
+    return {
+        "recordVersion": 3,
+        "id": tool_id,
+        "name": name,
+        "images": [
+            {
+                "id": f"img-{index + 1}",
+                "name": "" if index == 0 else f"State {index + 1}",
+                "source": source,
+                "meaning": "" if index == 0 else "changed state",
+            }
+            for index, source in enumerate(image_sources)
+        ],
+        "initialImageId": "img-1",
+        "imageInteractions": {
+            "initialImagePosition": {"x": 20, "y": 40},
+            "initialLinks": [{
+                "to": "ix-click",
+                "sourceSide": "right",
+                "targetSide": "left",
+            }],
+            "items": [{
+                "id": "ix-click",
+                "name": "",
+                "trigger": {"kind": "mouse-click"},
+                "actions": {
+                    "press": {"kind": "keep"},
+                    "release": ({"kind": "show", "imageId": "img-2"}
+                                if len(image_sources) > 1 else {"kind": "keep"}),
+                },
+                "editorPosition": {"x": 320, "y": 40},
+            }],
+            "links": [{
+                "from": "ix-click",
+                "to": "ix-click",
+                "sourceSide": "right",
+                "targetSide": "right",
+            }],
+        },
+        "interaction": {},
+    }
+
+
+def test_v3_create_and_reopen_preserves_the_complete_editor_graph(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    manifest = _v3_manifest(tool_id, sources=[
+        {"kind": "upload", "index": 0},
+        {"kind": "upload", "index": 1},
+    ])
+
+    item = store.create_tool_v3(manifest=manifest, uploads=[_png(), _png(size=(12, 10))])
+    detail = store.get_detail(tool_id)
+    record = store.read_record(tool_id)
+
+    assert item["recordVersion"] == 3
+    assert item["revision"].startswith("3-")
+    assert "imageInteractions" not in item
+    assert item["initialImageUrl"].startswith(f"/user_avatar_tools/{tool_id}/image-000.png?v=")
+    assert detail["recordVersion"] == 3
+    assert detail["initialImageId"] == "img-1"
+    assert detail["imageInteractions"] == manifest["imageInteractions"]
+    assert [image["resource"] for image in detail["images"]] == ["image-000.png", "image-001.png"]
+    assert set(record) == {
+        "recordVersion", "id", "name", "images", "initialImageId",
+        "imageInteractions", "interaction", "resourceDigests",
+    }
+    assert store.list_items() == [item]
+
+
+def test_v3_create_reopen_and_retained_update_preserve_optional_media(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    manifest = _v3_manifest(tool_id)
+    manifest["interaction"] = {
+        "normalSound": {"kind": "upload", "index": 1},
+        "special": {
+            "probability": 0.2,
+            "image": {"kind": "upload", "index": 2},
+            "meaning": "sparkles appear",
+            "sound": {"kind": "upload", "index": 3},
+        },
+    }
+
+    created = store.create_tool_v3(
+        manifest=manifest,
+        uploads=[_png(), _mp3(), _png(size=(12, 10)), _mp3()],
+    )
+    detail = store.get_detail(tool_id)
+
+    assert detail["normalSound"]["resource"] == "normal.mp3"
+    assert detail["special"]["image"]["resource"] == "special.png"
+    assert detail["special"]["sound"]["resource"] == "special.mp3"
+    assert detail["special"]["meaning"] == "sparkles appear"
+
+    retained = _v3_manifest(tool_id, sources=[{"kind": "resource", "name": "image-000.png"}])
+    retained["interaction"] = {
+        "normalSound": {"kind": "resource", "name": "normal.mp3"},
+        "special": {
+            "probability": 0.3,
+            "image": {"kind": "resource", "name": "special.png"},
+            "meaning": "sparkles return",
+            "sound": {"kind": "resource", "name": "special.mp3"},
+        },
+    }
+    store.update_tool_v3(
+        tool_id,
+        base_revision=created["revision"],
+        manifest=retained,
+        uploads=[],
+    )
+
+    reopened = store.get_detail(tool_id)
+    assert reopened["special"]["probability"] == 0.3
+    assert reopened["special"]["meaning"] == "sparkles return"
+    assert set(path.name for path in (store.root / tool_id).iterdir()) == {
+        "record.json", "image-000.png", "normal.mp3", "special.png", "special.mp3",
+    }
+
+
+def test_v3_rejects_coordinates_too_large_for_the_json_client_without_publishing(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    manifest = _v3_manifest(tool_id)
+    manifest["imageInteractions"]["initialImagePosition"]["x"] = 10 ** 400
+
+    with pytest.raises(AvatarToolStoreError) as failure:
+        store.create_tool_v3(manifest=manifest, uploads=[_png()])
+
+    assert failure.value.code == "manifest_invalid"
+    assert not store.root.exists() or not list(store.root.iterdir())
+
+
+def test_v3_update_reuses_owned_resources_and_replaces_atomically(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    created = store.create_tool_v3(
+        manifest=_v3_manifest(tool_id, sources=[
+            {"kind": "upload", "index": 0},
+            {"kind": "upload", "index": 1},
+        ]),
+        uploads=[_png(size=(8, 8)), _png(size=(9, 9))],
+    )
+    replacement = _png(size=(15, 11))
+    updated_manifest = _v3_manifest(tool_id, name="Updated flow", sources=[
+        {"kind": "resource", "name": "image-000.png"},
+        {"kind": "upload", "index": 0},
+    ])
+
+    updated = store.update_tool_v3(
+        tool_id,
+        base_revision=created["revision"],
+        manifest=updated_manifest,
+        uploads=[replacement],
+    )
+
+    assert updated["revision"] != created["revision"]
+    assert store.get_detail(tool_id)["name"] == "Updated flow"
+    directory = store.root / tool_id
+    with Image.open(directory / "image-001.png") as saved_replacement:
+        assert saved_replacement.size == (15, 11)
+    assert set(path.name for path in directory.iterdir()) == {
+        "record.json", "image-000.png", "image-001.png",
+    }
+    assert not list(store.root.glob(f".{tool_id}.*"))
+
+
+def test_v2_can_be_upgraded_to_v3_under_the_same_id_without_runtime_projection(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    v2 = _create_tool(
+        store,
+        tool_id=tool_id,
+        name="Legacy",
+        change_mode="press-swap",
+        change_meanings=["pressed"],
+        default_image=_png(),
+        change_images=[_png(size=(9, 9))],
+    )
+
+    v3 = store.update_tool_v3(
+        tool_id,
+        base_revision=v2["revision"],
+        manifest=_v3_manifest(tool_id, sources=[
+            {"kind": "resource", "name": "default.png"},
+            {"kind": "resource", "name": "change-000.png"},
+        ]),
+        uploads=[],
+    )
+
+    assert v3["id"] == tool_id
+    assert v3["recordVersion"] == 3
+    assert "changeMode" not in v3
+    assert store.get_detail(tool_id)["recordVersion"] == 3
+    assert set(path.name for path in (store.root / tool_id).iterdir()) == {
+        "record.json", "image-000.png", "image-001.png",
+    }
+
+
+def test_v3_invalid_graph_and_stale_revision_leave_the_published_tool_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    created = store.create_tool_v3(
+        manifest=_v3_manifest(tool_id),
+        uploads=[_png()],
+    )
+    before = store.read_record(tool_id)
+    invalid = _v3_manifest(tool_id, sources=[{"kind": "resource", "name": "image-000.png"}])
+    invalid["imageInteractions"]["initialLinks"] = []
+
+    with pytest.raises(AvatarToolStoreError) as invalid_error:
+        store.update_tool_v3(
+            tool_id,
+            base_revision=created["revision"],
+            manifest=invalid,
+            uploads=[],
+        )
+    assert invalid_error.value.code == "manifest_invalid"
+
+    with pytest.raises(AvatarToolStoreError) as conflict_error:
+        store.update_tool_v3(
+            tool_id,
+            base_revision="3-0",
+            manifest=_v3_manifest(tool_id, sources=[{"kind": "resource", "name": "image-000.png"}]),
+            uploads=[],
+        )
+    assert conflict_error.value.code == "tool_revision_conflict"
+    assert store.read_record(tool_id) == before
+
+
+def test_v3_update_rejects_one_retained_resource_used_by_two_images(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    created = store.create_tool_v3(
+        manifest=_v3_manifest(tool_id, sources=[
+            {"kind": "upload", "index": 0},
+            {"kind": "upload", "index": 1},
+        ]),
+        uploads=[_png(size=(8, 8)), _png(size=(9, 9))],
+    )
+    duplicate = _v3_manifest(tool_id, sources=[
+        {"kind": "resource", "name": "image-000.png"},
+        {"kind": "resource", "name": "image-000.png"},
+    ])
+
+    with pytest.raises(AvatarToolStoreError) as failure:
+        store.update_tool_v3(
+            tool_id,
+            base_revision=created["revision"],
+            manifest=duplicate,
+            uploads=[],
+        )
+
+    assert failure.value.code == "resource_reference_invalid"
+    assert failure.value.field == "image"
+    assert failure.value.index == 1
+
+
+def test_v3_image_names_use_the_same_normalized_comparison_as_the_editor(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    manifest = _v3_manifest(tool_id, sources=[
+        {"kind": "upload", "index": 0},
+        {"kind": "upload", "index": 1},
+    ])
+    manifest["images"][0]["name"] = "  Caf\u00e9  au lait  "
+    manifest["images"][1]["name"] = "cafe\u0301 au   LAIT"
+
+    with pytest.raises(AvatarToolStoreError) as failure:
+        store.create_tool_v3(manifest=manifest, uploads=[_png(), _png(size=(9, 9))])
+
+    assert failure.value.code == "image_name_duplicate"
+    assert failure.value.field == "image_name"
+    assert failure.value.index == 1
+
+
+def test_v3_interaction_names_use_the_same_normalized_comparison_as_the_editor(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    manifest = _v3_manifest(tool_id)
+    manifest["imageInteractions"]["items"][0]["name"] = "  Caf\u00e9  au lait  "
+    manifest["imageInteractions"]["items"].append({
+        "id": "ix-delay",
+        "name": "cafe\u0301 au   LAIT",
+        "trigger": {"kind": "after", "delayMs": 100},
+        "actions": {"complete": {"kind": "keep"}},
+        "editorPosition": {"x": 520, "y": 40},
+    })
+    manifest["imageInteractions"]["initialLinks"].append({
+        "to": "ix-delay",
+        "sourceSide": "bottom",
+        "targetSide": "left",
+    })
+
+    with pytest.raises(AvatarToolStoreError) as failure:
+        store.create_tool_v3(manifest=manifest, uploads=[_png()])
+
+    assert failure.value.code == "interaction_name_duplicate"
+    assert failure.value.field == "interaction_name"
+    assert failure.value.index == 1
+
+
 def test_create_publishes_ordered_public_dto_but_keeps_meanings_private(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
@@ -2140,7 +2453,7 @@ def test_digest_stops_reading_when_a_file_grows_past_the_fstat_snapshot(tmp_path
 
 @pytest.mark.unit
 def test_a_temporarily_unreadable_tool_still_holds_its_slot(tmp_path, monkeypatch):
-    """List absence is not proof of absence: a locked record must keep its slot."""
+    """A locked record fails refresh and still keeps its storage slot."""
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
     store.limits["maxTools"] = 1
@@ -2161,9 +2474,12 @@ def test_a_temporarily_unreadable_tool_still_holds_its_slot(tmp_path, monkeypatc
         return real_open(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", locked_record)
-    # 这一轮它读不出来，所以不会出现在列表里……
-    assert store.list_items() == []
-    # ……但它还在盘上，名额必须照占，否则上限会被悄悄突破。
+    # 这一轮读不出来不能返回一份缺项的“成功列表”，否则前端会把暂时不可读误当
+    # 成已经删除。整次刷新失败，前端继续保留上一份权威快照。
+    with pytest.raises(AvatarToolStoreError) as list_error:
+        store.list_items()
+    assert list_error.value.transient is True
+    # 它还在盘上，名额也必须照占，否则上限会被悄悄突破。
     with pytest.raises(AvatarToolStoreError) as raised:
         _create_tool(
             store,
@@ -3277,6 +3593,249 @@ def test_recovery_rechecks_the_final_before_replacing_it_with_a_backup(tmp_path,
         avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
 
 
+def test_recovery_recheck_detects_one_directory_replaced_by_another(tmp_path, monkeypatch):
+    """A same-kind replacement is still a different final and must survive recovery."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Backup",
+        change_mode="press-swap",
+        change_meanings=["the backup version"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    final = store.root / tool["id"]
+    backup = store.root / f".{tool['id']}.backup"
+    updating = store.root / f".{tool['id']}.updating"
+    shutil.copytree(final, backup)
+    shutil.copytree(final, updating)
+    (final / "record.json").write_bytes(b"not-json")
+
+    external_store = AvatarToolStore(_ConfigManager(tmp_path / "external_avatar_tools"))
+    _create_tool(
+        external_store,
+        tool_id=tool["id"],
+        name="Newest",
+        change_mode="press-swap",
+        change_meanings=["the sync client version"],
+        default_image=_png(size=(14, 14)),
+        change_images=[_png(size=(15, 15))],
+    )
+    newest = external_store.root / tool["id"]
+
+    real_digest = AvatarToolStore.__dict__["_file_digest"].__func__
+    raced = []
+
+    def digest_and_replace_final(path, maximum):
+        if not raced and str(backup) in str(path):
+            raced.append(True)
+            shutil.rmtree(final)
+            shutil.copytree(newest, final)
+        return real_digest(path, maximum)
+
+    monkeypatch.setattr(AvatarToolStore, "_file_digest", staticmethod(digest_and_replace_final))
+    root_key = store._root_key()
+    try:
+        store.initialize()
+        assert raced, "the same-kind replacement race never happened"
+        assert json.loads((final / "record.json").read_text(encoding="utf-8"))["name"] == "Newest"
+        assert backup.is_dir(), "recovery consumed a backup after its authorization became stale"
+        assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+        monkeypatch.undo()
+        monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+        assert store.get_detail(tool["id"])["name"] == "Newest"
+        assert not backup.exists()
+        assert not updating.exists()
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+def test_recovery_recheck_detects_a_valid_version_written_in_place(tmp_path, monkeypatch):
+    """Directory identity alone cannot detect a record rewritten inside the same directory."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Backup",
+        change_mode="press-swap",
+        change_meanings=["shared resources"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    final = store.root / tool["id"]
+    backup = store.root / f".{tool['id']}.backup"
+    updating = store.root / f".{tool['id']}.updating"
+    shutil.copytree(final, backup)
+    shutil.copytree(final, updating)
+
+    newest_record = json.loads((final / "record.json").read_text(encoding="utf-8"))
+    newest_record["name"] = "Newest in place"
+    newest_record_text = json.dumps(newest_record, ensure_ascii=False)
+    (final / "record.json").write_bytes(b"not-json")
+
+    real_digest = AvatarToolStore.__dict__["_file_digest"].__func__
+    raced = []
+
+    def digest_and_rewrite_record(path, maximum):
+        if not raced and str(backup) in str(path):
+            raced.append(True)
+            # A sync client can update an existing file without replacing the parent
+            # directory, so lstat identity for `final` remains unchanged.
+            (final / "record.json").write_text(newest_record_text, encoding="utf-8")
+        return real_digest(path, maximum)
+
+    monkeypatch.setattr(AvatarToolStore, "_file_digest", staticmethod(digest_and_rewrite_record))
+    root_key = store._root_key()
+    try:
+        store.initialize()
+        assert raced, "the in-place update race never happened"
+        assert json.loads((final / "record.json").read_text(encoding="utf-8"))["name"] == (
+            "Newest in place"
+        )
+        assert backup.is_dir(), "recovery consumed a backup after the final became valid"
+        assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+        monkeypatch.undo()
+        monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+        assert store.get_detail(tool["id"])["name"] == "Newest in place"
+        assert not backup.exists()
+        assert not updating.exists()
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+def test_update_does_not_overwrite_a_version_published_while_staging(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    original = _create_tool(
+        store,
+        name="Original",
+        change_mode="press-swap",
+        change_meanings=["original"],
+        default_image=_png(size=(12, 12)),
+        change_images=[_png(size=(13, 13))],
+    )
+    final = store.root / original["id"]
+
+    external_store = AvatarToolStore(_ConfigManager(tmp_path / "external_avatar_tools"))
+    _create_tool(
+        external_store,
+        tool_id=original["id"],
+        name="External",
+        change_mode="press-swap",
+        change_meanings=["newest"],
+        default_image=_png(size=(14, 14)),
+        change_images=[_png(size=(15, 15))],
+    )
+    external = external_store.root / original["id"]
+    real_write = store._write_staged_tool
+    raced = []
+
+    def stage_then_publish_external(directory, record, resources):
+        real_write(directory, record, resources)
+        if not raced:
+            raced.append(True)
+            shutil.rmtree(final)
+            shutil.copytree(external, final)
+
+    monkeypatch.setattr(store, "_write_staged_tool", stage_then_publish_external)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.update_tool(
+            original["id"],
+            base_revision=original["revision"],
+            name="Local edit",
+            change_mode="press-swap",
+            change_meanings=["local edit"],
+            default_resource="default.png",
+            default_image=None,
+            change_resources=["change-000.png"],
+            change_images=[],
+        )
+
+    assert raised.value.code == "tool_revision_conflict"
+    assert store.get_detail(original["id"])["name"] == "External"
+    assert not (store.root / f".{original['id']}.updating").exists()
+    assert not (store.root / f".{original['id']}.backup").exists()
+
+
+def test_incomplete_recovery_blocks_a_new_mutation(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.ensure()
+    root_key = store._root_key()
+    avatar_tool_store._RECOVERY_PENDING_ROOTS.add(root_key)
+    monkeypatch.setattr(store, "_recover_interrupted_mutations", lambda: False)
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    try:
+        with pytest.raises(AvatarToolStoreError) as raised:
+            _create_tool(
+                store,
+                tool_id=tool_id,
+                name="Blocked",
+                change_mode="press-swap",
+                change_meanings=["wait"],
+                default_image=_png(),
+                change_images=[_png()],
+            )
+        assert raised.value.code == "avatar_tools_directory_unavailable"
+        assert raised.value.transient is True
+        assert not (store.root / tool_id).exists()
+        assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
+
+
+@pytest.mark.parametrize("operation", ("list", "create"))
+def test_entry_probe_failures_are_reported_as_temporary_storage_errors(
+    tmp_path, monkeypatch, operation
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    existing = _create_tool(
+        store,
+        name="Existing",
+        change_mode="press-swap",
+        change_meanings=["state"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    target = (
+        store.root / existing["id"]
+        if operation == "list"
+        else store.root / "local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    )
+    real_lstat, real_stat = os.lstat, os.stat
+
+    def fail_target(real):
+        def probe(path, *args, **kwargs):
+            if str(path) == str(target):
+                raise OSError(errno.EBUSY, "metadata temporarily unavailable")
+            return real(path, *args, **kwargs)
+
+        return probe
+
+    monkeypatch.setattr(os, "lstat", fail_target(real_lstat))
+    monkeypatch.setattr(os, "stat", fail_target(real_stat))
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        if operation == "list":
+            store.list_items()
+        else:
+            _create_tool(
+                store,
+                tool_id=target.name,
+                name="New",
+                change_mode="press-swap",
+                change_meanings=["state"],
+                default_image=_png(),
+                change_images=[_png()],
+            )
+    assert raised.value.code == "avatar_tools_directory_unavailable"
+    assert raised.value.transient is True
+
+
 def test_a_failed_rollback_probe_keeps_the_root_recovery_pending(tmp_path, monkeypatch):
     """After final was renamed to .backup, that backup is the tool's only copy."""
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
@@ -3334,4 +3893,3 @@ def test_a_failed_rollback_probe_keeps_the_root_recovery_pending(tmp_path, monke
         assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
     finally:
         avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
-

@@ -4,13 +4,23 @@ import { beforeEach, vi } from 'vitest';
 import AvatarToolCreatePage from './AvatarToolCreatePage';
 import AvatarToolEditorWorkspace from './AvatarToolEditorWorkspace';
 import { useAvatarToolInteractionEditor } from './avatar-tools/AvatarToolInteractionEditorContext';
-import type { LocalAvatarToolLimits } from './avatar-tools/localTools';
+import { LocalAvatarToolCreateError } from './avatar-tools/localTools';
+import type {
+  CreateLocalAvatarToolInput,
+  LocalAvatarToolDetail,
+  LocalAvatarToolLimits,
+  UpdateLocalAvatarToolInput,
+} from './avatar-tools/localTools';
 
 const LIMITS: LocalAvatarToolLimits = {
   maxTools: 64,
   maxNameChars: 20,
   maxMeaningChars: 100,
   maxChangeImages: 16,
+  maxImages: 17,
+  maxInteractions: 16,
+  maxLinks: 32,
+  maxDelayMs: 600000,
   maxImageBytes: 8_388_608,
   maxImagePixels: 16_000_000,
   maxAudioBytes: 5_242_880,
@@ -29,6 +39,7 @@ function validPng(name: string): File {
 }
 
 let connectInitialImageToSelected: () => void = () => undefined;
+let saveTool = vi.fn(async (_input: CreateLocalAvatarToolInput | UpdateLocalAvatarToolInput) => undefined);
 
 function InteractionTestBridge() {
   const { state, dispatch } = useAvatarToolInteractionEditor();
@@ -37,20 +48,27 @@ function InteractionTestBridge() {
       dispatch({
         type: 'connect-initial-image',
         interactionId: state.selectedInteractionId,
+        sourceSide: 'right',
+        targetSide: 'left',
       });
     }
   };
   return null;
 }
 
-function renderEditor() {
+function renderEditor(initialDetail?: LocalAvatarToolDetail) {
   render(
-    <AvatarToolEditorWorkspace title="Create custom tool" dialogRef={createRef<HTMLElement>()}>
+    <AvatarToolEditorWorkspace
+      title="Create custom tool"
+      dialogRef={createRef<HTMLElement>()}
+      limits={LIMITS}
+    >
       <InteractionTestBridge />
       <AvatarToolCreatePage
         limits={LIMITS}
+        initialDetail={initialDetail}
         onSpecialEnabledChange={() => undefined}
-        onSave={async () => undefined}
+        onSave={saveTool}
         onCancel={() => undefined}
       />
     </AvatarToolEditorWorkspace>,
@@ -65,6 +83,7 @@ async function addImage(file: File) {
 
 describe('avatar tool stage 3 editor', () => {
   beforeEach(() => {
+    saveTool = vi.fn(async (_input: CreateLocalAvatarToolInput | UpdateLocalAvatarToolInput) => undefined);
     Object.defineProperty(URL, 'createObjectURL', {
       configurable: true,
       value: vi.fn(() => 'blob:avatar-tool-preview'),
@@ -227,9 +246,124 @@ describe('avatar tool stage 3 editor', () => {
     expect(document.body).not.toHaveTextContent('Starting interaction');
 
     fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
-    expect(await screen.findByText(
-      'The interaction flow is valid. Saving it will be connected in the next implementation stage.',
-    )).toBeVisible();
+    await waitFor(() => expect(saveTool).toHaveBeenCalledTimes(1));
+    const saved = saveTool.mock.calls[0]![0] as CreateLocalAvatarToolInput & {
+      imageInteractions: { initialLinks: unknown[] };
+    };
+    expect(saved).toMatchObject({
+      recordVersion: 3,
+      name: 'Loop',
+      images: [{ meaning: '' }],
+      imageInteractions: {
+        items: [{
+          trigger: { kind: 'mouse-click' },
+          actions: { press: { kind: 'keep' }, release: { kind: 'keep' } },
+        }],
+      },
+    });
+    expect(saved.imageInteractions.initialLinks[0]).toEqual(expect.objectContaining({
+      sourceSide: expect.any(String),
+      targetSide: expect.any(String),
+    }));
+  });
+
+  it('keeps digest-bearing URLs for every retained v3 media resource', async () => {
+    const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
+    renderEditor({
+      recordVersion: 3,
+      id: toolId,
+      revision: '3-100',
+      name: 'Saved flow',
+      images: [{
+        id: 'img-one',
+        name: '',
+        resource: 'image-000.png',
+        url: `/user_avatar_tools/${toolId}/image-000.png?v=image-digest`,
+        meaning: '',
+      }],
+      initialImageId: 'img-one',
+      imageInteractions: {
+        initialImagePosition: { x: 20, y: 40 },
+        initialLinks: [{ to: 'ix-click', sourceSide: 'right', targetSide: 'left' }],
+        items: [{
+          id: 'ix-click',
+          name: '',
+          trigger: { kind: 'mouse-click' },
+          actions: { press: { kind: 'keep' }, release: { kind: 'keep' } },
+          editorPosition: { x: 320, y: 40 },
+        }],
+        links: [{
+          from: 'ix-click',
+          to: 'ix-click',
+          sourceSide: 'right',
+          targetSide: 'right',
+        }],
+      },
+      normalSound: {
+        resource: 'normal.mp3',
+        url: `/user_avatar_tools/${toolId}/normal.mp3?v=normal-digest`,
+      },
+      special: {
+        probability: 0.1,
+        image: {
+          resource: 'special.png',
+          url: `/user_avatar_tools/${toolId}/special.png?v=special-image-digest`,
+        },
+        meaning: 'A surprise appears',
+        sound: {
+          resource: 'special.mp3',
+          url: `/user_avatar_tools/${toolId}/special.mp3?v=special-sound-digest`,
+        },
+      },
+    });
+
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+    await waitFor(() => expect(saveTool).toHaveBeenCalledTimes(1));
+    expect(saveTool.mock.calls[0]![0]).toMatchObject({
+      recordVersion: 3,
+      baseRevision: '3-100',
+      images: [{
+        image: {
+          resource: 'image-000.png',
+          url: expect.stringContaining('v=image-digest'),
+        },
+      }],
+      normalSound: {
+        resource: 'normal.mp3',
+        url: expect.stringContaining('v=normal-digest'),
+      },
+      special: {
+        image: {
+          resource: 'special.png',
+          url: expect.stringContaining('v=special-image-digest'),
+        },
+        sound: {
+          resource: 'special.mp3',
+          url: expect.stringContaining('v=special-sound-digest'),
+        },
+      },
+    });
+  });
+
+  it('returns a rejected image upload to the matching image field', async () => {
+    saveTool = vi.fn(async () => {
+      throw new LocalAvatarToolCreateError('image_invalid', { field: 'image', index: 0 });
+    });
+    renderEditor();
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Broken image' } });
+    await addImage(validPng('A.png'));
+    fireEvent.click(screen.getByRole('button', { name: 'Mouse click' }));
+    act(() => connectInitialImageToSelected());
+
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+    await waitFor(() => expect(saveTool).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('tab', { name: 'Tool settings' })).toHaveAttribute('aria-selected', 'true');
+    const rejectedImageField = document.querySelector('[data-error-key^="image_file:"]')!;
+    expect(rejectedImageField).toHaveAttribute('aria-invalid', 'true');
+    expect(rejectedImageField.nextElementSibling).toHaveTextContent(
+      'Could not save this tool. Please try again.',
+    );
   });
 
   it('lets a delayed switch finish without changing the current image', async () => {
@@ -249,9 +383,7 @@ describe('avatar tool stage 3 editor', () => {
 
     act(() => connectInitialImageToSelected());
     fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
-    expect(await screen.findByText(
-      'The interaction flow is valid. Saving it will be connected in the next implementation stage.',
-    )).toBeVisible();
+    await waitFor(() => expect(saveTool).toHaveBeenCalledTimes(1));
   });
 
   it('marks indistinguishable clicks connected directly from the initial image', async () => {

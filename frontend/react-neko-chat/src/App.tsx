@@ -12,7 +12,10 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
+import AvatarToolItemManager, {
+  type AvatarToolEditorResultMessage,
+  type AvatarToolManagerAnchorRect,
+} from './AvatarToolItemManager';
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
 import NekoTooltipLayer from './NekoTooltipLayer';
@@ -1138,6 +1141,16 @@ function CompactChatApp({
       clearActiveAvatarToolSelection();
     }
   }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.registry]);
+
+  const handleAvatarToolEditorResult = useCallback((result: AvatarToolEditorResultMessage) => {
+    if (result.action === 'deleted' && result.toolId) {
+      const deletedId = result.toolId as AvatarToolId;
+      setActiveAvatarToolIds(current => current.filter(toolId => toolId !== deletedId));
+      forgetPersistedAvatarToolId(deletedId);
+      if (activeAvatarToolId === deletedId) clearActiveAvatarToolSelection();
+    }
+    setAvatarToolManagerOpen(true);
+  }, [activeAvatarToolId, clearActiveAvatarToolSelection]);
 
   const handleLocalAvatarToolDelete = useCallback(async (toolId: `local-${string}`) => {
     await localAvatarToolCatalog.remove(toolId);
@@ -5844,7 +5857,8 @@ function CompactChatApp({
       <AvatarToolItemManager
         open={isCompactSurface && avatarToolManagerOpen}
         activeToolIds={activeAvatarToolIds}
-        availableTools={toolIconItems}
+        availableTools={localAvatarToolCatalog.items}
+        runnableToolIds={localAvatarToolCatalog.registry.validIds}
         anchorRect={avatarToolManagerAnchorRect}
         onSave={handleAvatarToolManagerSave}
         onCancel={() => setAvatarToolManagerOpen(false)}
@@ -5857,6 +5871,7 @@ function CompactChatApp({
         onDelete={handleLocalAvatarToolDelete}
         catalogAuthoritativeLoaded={localAvatarToolCatalog.authoritativeLoaded}
         catalogRefreshFailed={localAvatarToolCatalog.refreshFailed}
+        onExternalEditorResult={handleAvatarToolEditorResult}
       />
       <AvatarToolVisuals model={avatarToolRuntime.visualModel} />
       <section

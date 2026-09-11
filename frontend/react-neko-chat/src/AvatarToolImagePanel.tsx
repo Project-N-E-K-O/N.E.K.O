@@ -15,7 +15,7 @@ import type {
 } from './avatar-tools/avatarToolEditorModel';
 
 type AvatarToolImagePanelProps = {
-  limits: LocalAvatarToolLimits | null;
+  limits: LocalAvatarToolLimits;
   images: readonly AvatarToolImageDraft[];
   initialImageId: AvatarToolImageId | null;
   selectedImageId: AvatarToolImageId | null;
@@ -258,11 +258,11 @@ export default function AvatarToolImagePanel({
             />
             <span aria-hidden="true">＋</span>
             <strong>{i18n('chat.avatarToolCreateAddToolImage', 'Add tool image')}</strong>
-            <small>{limits ? i18n(
+            <small>{i18n(
               'chat.avatarToolCreateImageLimit',
               'PNG, up to {{size}} per image',
               { size: formatLimit(limits.maxImageBytes) },
-            ) : 'PNG'}</small>
+            )}</small>
           </label>
         ) : null}
       </div>
@@ -355,7 +355,7 @@ export default function AvatarToolImagePanel({
           <label className="avatar-tool-create-field avatar-tool-image-meaning-field">
             <span className="avatar-tool-image-meaning-heading">
               <span>{i18n('chat.avatarToolCreateImageMeaningOptional', 'Interaction description (optional)')}</span>
-              <small>{characterCount(selectedImage.meaning)}/{limits?.maxMeaningChars ?? 100}</small>
+                <small>{characterCount(selectedImage.meaning)}/{limits.maxMeaningChars}</small>
             </span>
             <textarea
               ref={imageMeaningTextareaRef}

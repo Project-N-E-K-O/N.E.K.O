@@ -26,19 +26,18 @@ function readEditorRequest(): { mode: EditorMode; toolId: `local-${string}` | nu
 
 function notifyOpener(action: EditorResultAction, toolId?: string) {
   try {
-    window.opener?.postMessage({
+    const opener = window.opener;
+    opener?.postMessage({
       type: 'neko:avatar-tool-editor-result',
       action,
       ...(toolId ? { toolId } : {}),
     }, window.location.origin);
+    if (opener && !opener.closed) opener.focus();
   } catch (_) {}
 }
 
 function closeEditorWindow() {
   window.close();
-  window.setTimeout(() => {
-    if (!window.closed && window.history.length > 1) window.history.back();
-  }, 80);
 }
 
 export default function AvatarToolStandaloneEditor() {
@@ -96,7 +95,11 @@ export default function AvatarToolStandaloneEditor() {
   }, [catalog.detail, request.mode, request.toolId]);
 
   const retryLoad = () => {
-    if (!request.toolId) return;
+    if (!request.toolId) {
+      setLoading(true);
+      void catalog.refresh().catch(() => undefined).finally(() => setLoading(false));
+      return;
+    }
     setLoading(true);
     setLoadError(false);
     void catalog.detail(request.toolId).then((nextDetail) => {
@@ -110,21 +113,21 @@ export default function AvatarToolStandaloneEditor() {
   };
 
   let content;
-  if (loading) {
+  if (loading || (!catalog.limits && !catalog.refreshFailed)) {
     content = (
       <div className="avatar-tool-standalone-status" role="status">
         {i18n('chat.avatarToolUpdateLoading', 'Opening…')}
       </div>
     );
-  } else if (loadError || (request.mode === 'edit' && !detail)) {
+  } else if (loadError || !catalog.limits || (request.mode === 'edit' && !detail)) {
     content = (
       <div className="avatar-tool-standalone-status is-error" role="alert">
-        <p>{i18n('chat.avatarToolUpdateLoadError', 'Could not open this tool. Please try again.')}</p>
-        {request.toolId ? (
-          <button type="button" onClick={retryLoad}>
-            {i18n('common.retry', 'Retry')}
-          </button>
-        ) : null}
+        <p>{request.mode === 'edit'
+          ? i18n('chat.avatarToolUpdateLoadError', 'Could not open this tool. Please try again.')
+          : i18n('chat.avatarToolEditorOpenError', 'Could not open the tool editor.')}</p>
+        <button type="button" onClick={retryLoad}>
+          {i18n('common.retry', 'Retry')}
+        </button>
       </div>
     );
   } else {
@@ -173,6 +176,7 @@ export default function AvatarToolStandaloneEditor() {
   return (
     <AvatarToolEditorWorkspace
       title={title}
+      limits={catalog.limits}
       dialogRef={workspaceRef}
       showHeader={false}
     >

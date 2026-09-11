@@ -1,6 +1,7 @@
 import {
   avatarToolInteractionEditorReducer,
   avatarToolConnectionSideFromHandleId,
+  buildLocalAvatarToolImageInteractions,
   createAvatarToolInteractionEditorState,
   duplicateAvatarToolInteractionDraft,
   getAvatarToolInteractionImageReferences,
@@ -48,12 +49,20 @@ function standardGraph(): AvatarToolInteractionEditorState {
       },
     ],
     links: [
-      { id: 'link-1-2', from: 'ix-click-1', to: 'ix-delay-1' },
-      { id: 'link-1-3', from: 'ix-click-1', to: 'ix-click-2' },
-      { id: 'link-2-1', from: 'ix-delay-1', to: 'ix-click-1' },
+      {
+        id: 'link-1-2', from: 'ix-click-1', to: 'ix-delay-1', sourceSide: 'right', targetSide: 'left',
+      },
+      {
+        id: 'link-1-3', from: 'ix-click-1', to: 'ix-click-2', sourceSide: 'bottom', targetSide: 'top',
+      },
+      {
+        id: 'link-2-1', from: 'ix-delay-1', to: 'ix-click-1', sourceSide: 'left', targetSide: 'right',
+      },
     ],
     initialImageTargetIds: ['ix-click-1'],
-    initialImageLinkSides: {},
+    initialImageLinkSides: {
+      'ix-click-1': { sourceSide: 'right', targetSide: 'left' },
+    },
     initialImagePosition: { x: -160, y: 160 },
     selectedInteractionId: null,
     selectedLinkId: null,
@@ -62,6 +71,70 @@ function standardGraph(): AvatarToolInteractionEditorState {
 }
 
 describe('avatar tool interaction editor model', () => {
+  it('validates optional interaction names with the shared Unicode-aware rule', () => {
+    const state = standardGraph();
+    state.items[0] = { ...state.items[0], name: '𠮷'.repeat(20) };
+    expect(validateAvatarToolInteractionGraph(
+      state,
+      [IMAGE_A, IMAGE_B, IMAGE_C],
+      item => item.name || item.id,
+      600_000,
+      20,
+    ).some(issue => issue.field === 'name')).toBe(false);
+
+    state.items[0] = { ...state.items[0], name: '𠮷'.repeat(21) };
+    expect(validateAvatarToolInteractionGraph(
+      state,
+      [IMAGE_A, IMAGE_B, IMAGE_C],
+      item => item.name || item.id,
+      600_000,
+      20,
+    )).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'name-too-long', interactionId: state.items[0].id }),
+    ]));
+
+    state.items[0] = { ...state.items[0], name: 'click!' };
+    expect(validateAvatarToolInteractionGraph(
+      state,
+      [IMAGE_A, IMAGE_B, IMAGE_C],
+      item => item.name || item.id,
+      600_000,
+      20,
+    )).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'name-invalid', interactionId: state.items[0].id }),
+    ]));
+  });
+
+  it('reopens v3 graph semantics and preserves the user-selected connection sides', () => {
+    const state = createAvatarToolInteractionEditorState({
+      recordVersion: 3,
+      id: DETAIL.id,
+      revision: '3-100',
+      name: 'Flow',
+      images: [{ id: 'img-idle', name: '', resource: 'image-000.png', url: '/idle.png', meaning: '' }],
+      initialImageId: 'img-idle',
+      imageInteractions: {
+        initialImagePosition: { x: 12, y: 34 },
+        initialLinks: [{ to: 'ix-delay', sourceSide: 'bottom', targetSide: 'top' }],
+        items: [{
+          id: 'ix-delay',
+          name: 'Pause',
+          trigger: { kind: 'after', delayMs: 1200 },
+          actions: { complete: { kind: 'keep' } },
+          editorPosition: { x: 120, y: 260 },
+        }],
+        links: [{ from: 'ix-delay', to: 'ix-delay', sourceSide: 'left', targetSide: 'bottom' }],
+      },
+    });
+
+    expect(state.initialImagePosition).toEqual({ x: 12, y: 34 });
+    expect(state.initialImageLinkSides['ix-delay']).toEqual({ sourceSide: 'bottom', targetSide: 'top' });
+    expect(state.items[0]).toMatchObject({ name: 'Pause', kind: 'after', delayMs: '1200', complete: { kind: 'keep' } });
+    expect(state.links[0]).toMatchObject({
+      id: 'link-v3-000', sourceSide: 'left', targetSide: 'bottom',
+    });
+  });
+
   it('projects the v2 press-swap behavior into one complete self-connected click', () => {
     expect(createAvatarToolInteractionEditorState(DETAIL)).toEqual({
       items: [{
@@ -76,9 +149,13 @@ describe('avatar tool interaction editor model', () => {
         id: 'link-v2-press-swap-loop',
         from: 'ix-v2-press-swap',
         to: 'ix-v2-press-swap',
+        sourceSide: 'right',
+        targetSide: 'right',
       }],
       initialImageTargetIds: ['ix-v2-press-swap'],
-      initialImageLinkSides: {},
+      initialImageLinkSides: {
+        'ix-v2-press-swap': { sourceSide: 'right', targetSide: 'left' },
+      },
       initialImagePosition: { x: -100, y: 180 },
       selectedInteractionId: null,
       selectedLinkId: null,
@@ -127,16 +204,22 @@ describe('avatar tool interaction editor model', () => {
         id: 'link-v2-click-advance-000',
         from: 'ix-v2-click-advance-000',
         to: 'ix-v2-click-advance-001',
+        sourceSide: 'right',
+        targetSide: 'left',
       },
       {
         id: 'link-v2-click-advance-001',
         from: 'ix-v2-click-advance-001',
         to: 'ix-v2-click-advance-002',
+        sourceSide: 'right',
+        targetSide: 'left',
       },
       {
         id: 'link-v2-click-advance-002',
         from: 'ix-v2-click-advance-002',
         to: 'ix-v2-click-advance-002',
+        sourceSide: 'right',
+        targetSide: 'right',
       },
     ]);
     expect(state.initialImageTargetIds).toEqual(['ix-v2-click-advance-000']);
@@ -190,6 +273,42 @@ describe('avatar tool interaction editor model', () => {
     expect(avatarToolConnectionSideFromHandleId('edge-left')).toBe('left');
     expect(avatarToolConnectionSideFromHandleId('edge-diagonal')).toBeUndefined();
     expect(avatarToolConnectionSideFromHandleId(null)).toBeUndefined();
+  });
+
+  it('does not accept or infer a connection whose chosen sides are missing', () => {
+    const complete = buildLocalAvatarToolImageInteractions(standardGraph());
+    expect(complete?.initialLinks[0]).toMatchObject({ sourceSide: 'right', targetSide: 'left' });
+    expect(complete?.links[1]).toMatchObject({ sourceSide: 'bottom', targetSide: 'top' });
+
+    const empty = {
+      ...standardGraph(),
+      links: [],
+      initialImageTargetIds: [],
+      initialImageLinkSides: {},
+    };
+    const initialWithoutSides = avatarToolInteractionEditorReducer(empty, {
+      type: 'connect-initial-image',
+      interactionId: 'ix-click-1',
+    } as unknown as Parameters<typeof avatarToolInteractionEditorReducer>[1]);
+    expect(initialWithoutSides.initialImageTargetIds).toEqual([]);
+
+    const linkWithoutSides = avatarToolInteractionEditorReducer(empty, {
+      type: 'connect',
+      link: { id: 'link-missing-sides', from: 'ix-click-1', to: 'ix-delay-1' },
+    } as unknown as Parameters<typeof avatarToolInteractionEditorReducer>[1]);
+    expect(linkWithoutSides.links).toEqual([]);
+
+    const malformedInitial = standardGraph();
+    malformedInitial.initialImageLinkSides = {};
+    expect(buildLocalAvatarToolImageInteractions(malformedInitial)).toBeNull();
+
+    const malformedLink = standardGraph();
+    malformedLink.links[0] = {
+      ...malformedLink.links[0],
+      sourceSide: undefined,
+      targetSide: undefined,
+    } as unknown as typeof malformedLink.links[number];
+    expect(buildLocalAvatarToolImageInteractions(malformedLink)).toBeNull();
   });
 
   it('treats a complete node as one unit when copying and deleting', () => {
@@ -309,7 +428,13 @@ describe('avatar tool interaction editor model', () => {
         release: { kind: 'keep' },
       },
     );
-    graph.links.push({ id: 'link-1-4', from: 'ix-click-1', to: 'ix-delay-2' });
+    graph.links.push({
+      id: 'link-1-4',
+      from: 'ix-click-1',
+      to: 'ix-delay-2',
+      sourceSide: 'right',
+      targetSide: 'left',
+    });
 
     const codes = validateAvatarToolInteractionGraph(graph, [IMAGE_A, IMAGE_B, IMAGE_C])
       .map(issue => issue.code);

@@ -9,6 +9,10 @@ const LIMITS: LocalAvatarToolLimits = {
   maxNameChars: 20,
   maxMeaningChars: 100,
   maxChangeImages: 16,
+  maxImages: 17,
+  maxInteractions: 16,
+  maxLinks: 32,
+  maxDelayMs: 600000,
   maxImageBytes: 8_388_608,
   maxImagePixels: 16_000_000,
   maxAudioBytes: 5_242_880,
@@ -115,6 +119,32 @@ describe('AvatarToolCreatePage stage 2 image references', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('鼠标点击 1 · 松开时');
     expect(screen.getByRole('alert')).toHaveTextContent('经过 800ms · 目标图片');
     expect(document.querySelector('[data-avatar-tool-image-id="img-v2-change-000"]')).toBeInTheDocument();
+  });
+
+  it('shows the shared optional-name rule while the image name is edited', () => {
+    render(
+      <AvatarToolInteractionEditorProvider>
+        <AvatarToolCreatePage
+          limits={LIMITS}
+          initialDetail={DETAIL}
+          onSpecialEnabledChange={() => undefined}
+          onSave={async () => undefined}
+          onDelete={async () => undefined}
+          onCancel={() => undefined}
+        />
+      </AvatarToolInteractionEditorProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Tool image 2' }));
+    const imageName = screen.getByLabelText('Image name');
+    fireEvent.change(imageName, { target: { value: 'bad!' } });
+    expect(screen.getByRole('alert')).toHaveTextContent('Use letters, numbers, spaces');
+
+    fireEvent.change(imageName, { target: { value: '𠮷'.repeat(20) } });
+    expect(screen.queryByText(/The name must be no more than/)).toBeNull();
+
+    fireEvent.change(imageName, { target: { value: '𠮷'.repeat(21) } });
+    expect(screen.getByRole('alert')).toHaveTextContent('The name must be no more than 20 characters.');
   });
 
   it('clears both Web audio inputs so the same MP3 can be selected again', () => {

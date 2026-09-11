@@ -28,6 +28,37 @@ function draft(id: AvatarToolImageId, name: string): AvatarToolImageDraft {
 }
 
 describe('avatar tool image editor model', () => {
+  it('reopens v3 images with their stable ids, names, resources, meanings, and initial choice', () => {
+    const state = createAvatarToolImageEditorState({
+      recordVersion: 3,
+      id: DETAIL.id,
+      revision: '3-100',
+      name: 'Flow',
+      images: [
+        { id: 'img-idle', name: 'Idle', resource: 'image-000.png', url: '/idle.png', meaning: '' },
+        { id: 'img-wave', name: 'Wave', resource: 'image-001.png', url: '/wave.png', meaning: 'waves' },
+      ],
+      initialImageId: 'img-wave',
+      imageInteractions: {
+        initialImagePosition: { x: 0, y: 0 },
+        initialLinks: [{ to: 'ix-click', sourceSide: 'right', targetSide: 'left' }],
+        items: [{
+          id: 'ix-click', name: '', trigger: { kind: 'mouse-click' },
+          actions: { press: { kind: 'keep' }, release: { kind: 'keep' } },
+          editorPosition: { x: 200, y: 0 },
+        }],
+        links: [{ from: 'ix-click', to: 'ix-click', sourceSide: 'right', targetSide: 'right' }],
+      },
+    });
+
+    expect(state.initialImageId).toBe('img-wave');
+    expect(state.selectedImageId).toBe('img-wave');
+    expect(state.images).toEqual([
+      { id: 'img-idle', name: 'Idle', image: null, imageResource: 'image-000.png', imageUrl: '/idle.png', meaning: '' },
+      { id: 'img-wave', name: 'Wave', image: null, imageResource: 'image-001.png', imageUrl: '/wave.png', meaning: 'waves' },
+    ]);
+  });
+
   it('projects v2 resources into deterministic peer image IDs', () => {
     const first = createAvatarToolImageEditorState(DETAIL);
     const second = createAvatarToolImageEditorState(DETAIL);
