@@ -357,6 +357,11 @@ def _redact_text(
 
 
 def _validate_api_key(value: Any) -> str:
+    if isinstance(value, str) and (
+        len(value) > _API_KEY_MAX_CHARS
+        or len(value.encode("utf-8")) > _API_KEY_MAX_BYTES
+    ):
+        raise SdkError("API 密钥过长")
     key = _clean_text(
         value,
         label="API 密钥",
@@ -778,6 +783,11 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
         )
     width = int.from_bytes(data[16:20], "big")
     height = int.from_bytes(data[20:24], "big")
+    depths = {0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8},
+              4: {8, 16}, 6: {8, 16}}
+    if (data[24] not in depths.get(data[25], set())
+            or data[26] != 0 or data[27] != 0 or data[28] not in (0, 1)):
+        raise _GenerationFailure("图片头字段无效", "InvalidImageData")
     offset = 8
     animated = False
     has_image_data = False
@@ -2209,11 +2219,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         return fallback_registered
 
     def _frozen_static_ui_overrides_ignored(self) -> bool:
-        """Detect hosts that ignore ``STATIC_UI_REGISTER`` directory
-        overrides (the frozen Steam runtime serves only the install-tree
-        ``static/``). Failure of this probe means *unknown*, not *frozen* —
-        we only disable the data-directory fallback when the host
-        demonstrably ignored a registration."""
+        """Disable directory fallback unless the host serves the probe."""
         probe = None
         index = None
         try:
@@ -2224,10 +2230,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
             probe = probe_dir / f"{uuid4().hex}.txt"
             probe.write_text("ok", encoding="utf-8")
             if not self.register_static_ui(str(probe_dir), cache_control="no-cache"):
-                # Registration itself failed: host may not support overrides
-                # at all; the existing register-result checks downstream
-                # will handle it. Not proof of a frozen host.
-                return False
+                # An unverified override must not enable generated assets.
+                return True
             url = (
                 f"{self._resolve_public_origin().rstrip('/')}"
                 f"/plugin/{quote(self.plugin_id, safe='')}/ui/{probe.name}"
@@ -2235,18 +2239,18 @@ class ImageGeneratorPlugin(NekoPluginBase):
             # _register_writable_static_ui is synchronous (called from the
             # async lifecycle without to_thread), so probe with a blocking
             # client here — it runs once at startup and times out fast.
-            with httpx.Client(timeout=1.0) as client:
+            with httpx.Client(timeout=1.0, trust_env=False, follow_redirects=False) as client:
                 # Registration is queued. Give the host time to consume it
                 # before treating a missing probe as an ignored override.
                 for attempt in range(10):
-                    status = client.get(url).status_code
-                    if status != 404:
+                    response = client.get(url)
+                    if response.status_code == 200 and response.text == "ok":
                         return False
                     if attempt < 9:
                         time.sleep(0.2)
             return True
         except Exception:
-            return False
+            return True
         finally:
             if probe is not None:
                 try:
@@ -4039,7 +4043,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     # limit, so without this the save reports failure while
                     # older generation records are permanently lost.
                     if not history_restored:
-                        return False, False
+                        self.logger.warning("ImageGenerator history rollback failed: failure_class=StoreError")
                     # The rollback credential may become durable in a worker
                     # thread just as this task is cancelled. Publish the old
                     # runtime settings before awaiting that write so the old
@@ -4054,7 +4058,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         )
                     else:
                         key_restored = True
-                    return settings_restored, key_restored
+                    return settings_restored and history_restored, key_restored
 
                 async def commit_configuration():
                     nonlocal key_changed

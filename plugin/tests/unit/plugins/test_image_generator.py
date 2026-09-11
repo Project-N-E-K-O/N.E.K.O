@@ -202,7 +202,9 @@ async def test_task_json_preserves_timeout_classification(method):
     assert error.value.failure_class == "ProviderTimeout"
 
 
-@pytest.mark.parametrize("statuses, ignored", [([404] * 10, True), ([404, 404, 200], False)])
+@pytest.mark.parametrize("statuses, ignored", [([404] * 10, True), ([404, 404, 200], False),
+                                            ([500] * 10, True), ([403] * 10, True),
+                                            ([407] * 10, True), ([302] * 10, True)])
 def test_static_probe_satisfies_registration_index_contract(monkeypatch, tmp_path, statuses, ignored):
     plugin, _, _ = make_plugin()
     monkeypatch.setattr(plugin, "data_path", lambda *parts: tmp_path.joinpath(*parts))
@@ -216,7 +218,8 @@ def test_static_probe_satisfies_registration_index_contract(monkeypatch, tmp_pat
 
     class Client:
         def __init__(self, **kwargs):
-            pass
+            assert kwargs["trust_env"] is False
+            assert kwargs["follow_redirects"] is False
 
         def __enter__(self):
             return self
@@ -226,7 +229,7 @@ def test_static_probe_satisfies_registration_index_contract(monkeypatch, tmp_pat
 
         def get(self, url):
             assert registered
-            return httpx.Response(statuses.pop(0))
+            return httpx.Response(statuses.pop(0), text="ok")
 
     monkeypatch.setattr(plugin, "register_static_ui", register)
     monkeypatch.setattr(image_generator_module.httpx, "Client", Client)
@@ -2322,6 +2325,8 @@ def test_static_registration_rechecks_writable_root_after_host_call(
         return result
 
     monkeypatch.setattr(Path, "stat", stat_reports_outside)
+    # This test exercises the identity recheck with a verified fallback host.
+    monkeypatch.setattr(plugin, "_frozen_static_ui_overrides_ignored", lambda: False)
 
     registered = plugin._register_writable_static_ui()
 
@@ -3522,3 +3527,41 @@ async def test_thumbnail_png_suffix_and_cache_group(monkeypatch, tmp_path, exten
     assert plugin._cache_stats_sync()["count"] == 1
     plugin._prune_cache_sync({**plugin._settings_snapshot(), "cache_max_count": 0})
     assert not original.exists() and not thumbnail.exists()
+
+
+@pytest.mark.parametrize("offset,value", [(24, 1), (25, 1), (26, 1), (27, 1), (28, 2)])
+def test_png_rejects_invalid_ihdr_with_valid_crc(offset, value):
+    data = bytearray(PNG_BYTES)
+    data[offset] = value
+    data[29:33] = zlib.crc32(data[12:29]).to_bytes(4, "big")
+    with pytest.raises(image_generator_module._GenerationFailure):
+        image_generator_module._read_png_geometry(bytes(data))
+
+
+@pytest.mark.parametrize("key", ["x" * 4097, "猫" * 4097])
+def test_oversized_key_is_rejected_without_truncation(key):
+    with pytest.raises(SdkError):
+        image_generator_module._validate_api_key(key)
+
+
+@pytest.mark.asyncio
+async def test_history_rollback_failure_still_restores_old_key(monkeypatch):
+    plugin, _, store = make_plugin(store=FakeStore(data={"api_key": SECRET, "settings": dict(DEFAULT_SETTINGS), "recent_generations": []}))
+    original_set = store.set
+    history_writes = 0
+
+    async def fail_selected(key, value):
+        nonlocal history_writes
+        if key == "recent_generations":
+            history_writes += 1
+            if history_writes > 1:
+                return Err(SdkError("history failure"))
+        if key == "settings" and value["model"] == "replacement-model":
+            return Err(SdkError("settings failure"))
+        return await original_set(key, value)
+
+    monkeypatch.setattr(store, "set", fail_selected)
+    payload = await encrypted_save_payload(plugin, model="replacement-model", api_key="replacement-key")
+    assert (await plugin.save_settings(**payload)).is_err()
+    assert store.data["api_key"] == SECRET
+    assert store.data["settings"] == DEFAULT_SETTINGS
