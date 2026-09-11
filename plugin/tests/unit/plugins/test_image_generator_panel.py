@@ -430,6 +430,8 @@ async function main() {
         data = saveSucceeded
           ? panelState(old.envelope, true, 'persisted-model-after-refresh')
           : panelState(old.envelope, false, 'initial-model');
+      } else if (body.entry_id === 'test_generation') {
+        data = { result_url: '/plugin/image_generator/ui/generated/' + 'a'.repeat(32) + '.png' };
       } else if (body.entry_id === 'get_secret_envelope') {
         const issued = fresh[envelopeCallCount];
         check(issued, 'the panel requested more than two fresh envelopes');
@@ -553,6 +555,15 @@ async function main() {
       `the form was not refreshed from persisted settings: ${elements.get('model').value}`,
     );
     check(elements.get('apiKey').value === '', 'the API key input was not cleared');
+    elements.get('model').value = 'unsaved-after-save';
+    elements.get('testPrompt').value = 'cat';
+    elements.get('testButton').dispatchEvent(new FakeEvent('click'));
+    await waitFor(
+      () => entryCalls.filter((entry) => entry === 'get_panel_state').length >= 3
+        && !elements.get('testButton').disabled,
+      'test generation state refresh',
+    );
+    check(elements.get('model').value === 'unsaved-after-save', 'test discarded unsaved form edits');
     check(
       elements.get('credentialValue').textContent.includes('已配置'),
       `credential status is not configured: ${elements.get('credentialValue').textContent}`,
@@ -660,7 +671,7 @@ def test_save_uses_fresh_envelopes_retries_once_and_refreshes_panel(
 
     assert result["envelopeCallCount"] == 2
     assert result["saveCallCount"] == 2
-    assert result["model"] == "persisted-model-after-refresh"
+    assert result["model"] == "unsaved-after-save"
     assert result["apiKey"] == ""
     assert "已配置" in str(result["credential"])
 

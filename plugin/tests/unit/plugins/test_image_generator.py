@@ -3755,3 +3755,55 @@ async def test_chat_reserves_budget_before_queued_settings_save(monkeypatch):
         finish_generation.set()
         await generation
     assert plugin._active_generations == 0
+
+
+@pytest.mark.parametrize("payload", [b"junk", zlib.compress(b"\x05\x00\x00\x00"), zlib.compress(b"\x00"), zlib.compress(b"\x00" * 10)])
+def test_png_rejects_invalid_scanline_stream(payload):
+    def chunk(kind, body):
+        return len(body).to_bytes(4, "big") + kind + body + zlib.crc32(kind + body).to_bytes(4, "big")
+    header = (1).to_bytes(4, "big") * 2 + bytes([8, 2, 0, 0, 0])
+    data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", payload) + chunk(b"IEND", b"")
+    with pytest.raises(image_generator_module._GenerationFailure):
+        image_generator_module._verified_image_format(data)
+
+
+def test_jpeg_rejects_missing_quantization_tables():
+    output = io.BytesIO()
+    Image.new("RGB", (8, 6)).save(output, format="JPEG")
+    data = output.getvalue()
+    while b"\xff\xdb" in data:
+        offset = data.index(b"\xff\xdb")
+        end = offset + 2 + int.from_bytes(data[offset + 2:offset + 4], "big")
+        data = data[:offset] + data[end:]
+    with pytest.raises(image_generator_module._GenerationFailure):
+        image_generator_module._verified_image_format(data)
+
+
+def test_probe_restore_exception_still_cleans_up(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    monkeypatch.setattr(plugin, "data_path", lambda *parts: tmp_path.joinpath(*parts))
+    def register(directory, **kwargs):
+        if Path(directory) == plugin._source_static_dir:
+            raise RuntimeError("transport unavailable")
+        return True
+    def client(**kwargs):
+        raise RuntimeError("probe unavailable")
+    monkeypatch.setattr(plugin, "register_static_ui", register)
+    monkeypatch.setattr(image_generator_module.httpx, "Client", client)
+    assert plugin._frozen_static_ui_overrides_ignored()
+    assert not list(tmp_path.glob(".static_ui_probe_*"))
+
+
+def test_history_projects_existing_thumbnail(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    asset_dir = prepare_asset_cache(plugin, tmp_path)
+    filename = "a" * 32 + ".png"
+    (asset_dir / filename).write_bytes(PNG_BYTES)
+    thumb = asset_dir / ("thumb_" + filename)
+    thumb.write_bytes(PNG_BYTES)
+    original = plugin._asset_url(filename)
+    projected = plugin._project_history_record({"result_url": original})
+    assert projected["result_url"] == original
+    assert projected["preview_url"] == plugin._asset_url(thumb.name)
+    thumb.unlink()
+    assert "preview_url" not in plugin._project_history_record({"result_url": original})

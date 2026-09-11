@@ -21,6 +21,7 @@ import os
 import re
 import threading
 import time
+import zlib
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
@@ -775,6 +776,36 @@ def _normalize_manifest_settings(raw: Any) -> dict[str, Any]:
     )
 
 
+def _validate_png_scanlines(data: bytes, width: int, height: int,
+                            depth: int, color: int, interlace: int) -> None:
+    if (width < 1 or height < 1 or width > _MAX_IMAGE_DIMENSION
+            or height > _MAX_IMAGE_DIMENSION or width * height > _MAX_IMAGE_PIXELS):
+        raise _GenerationFailure("生成图片的尺寸或像素数量超过安全上限", "ImagePixelLimit")
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color]
+    passes = ([(0, 0, 1, 1)] if not interlace else
+              [(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8),
+               (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)])
+    decoder = zlib.decompressobj()
+    pending = data
+    try:
+        for x, y, dx, dy in passes:
+            columns = max(0, (width - x + dx - 1) // dx)
+            rows = max(0, (height - y + dy - 1) // dy)
+            if not columns:
+                continue
+            row_size = 1 + (columns * channels * depth + 7) // 8
+            for _ in range(rows):
+                row = decoder.decompress(pending, row_size)
+                pending = decoder.unconsumed_tail
+                if len(row) != row_size or row[0] > 4:
+                    raise ValueError("invalid PNG scanline")
+        extra = decoder.decompress(pending, 1)
+        if extra or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+            raise ValueError("invalid PNG stream length")
+    except (ValueError, zlib.error) as exc:
+        raise _GenerationFailure("图片扫描行数据无效", "InvalidImageData") from exc
+
+
 def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
     """Return (width, height, animated) for a PNG byte string."""
     if len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n":
@@ -802,6 +833,7 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
     seen_palette = False
     seen_idat = False
     ended_idat = False
+    image_chunks = []
     while offset + 12 <= len(data):
         length = int.from_bytes(data[offset:offset + 4], "big")
         end = offset + 12 + length
@@ -833,9 +865,12 @@ def _read_png_geometry(data: bytes) -> tuple[int, int, bool]:
             animated = True
         if kind == b"IDAT" and length > 0:
             has_image_data = True
+            image_chunks.append(data[offset + 8:end - 4])
         if kind == b"IEND" and length == 0:
             if not has_image_data or end != len(data):
                 break
+            _validate_png_scanlines(b"".join(image_chunks), width, height,
+                                    data[24], data[25], data[28])
             return width, height, animated
         offset = end
     raise _GenerationFailure("图片数据不完整", "InvalidImageData")
@@ -871,6 +906,8 @@ def _read_jpeg_geometry(data: bytes) -> tuple[int, int]:
     limit = len(data)
     geometry = None
     frame_components: set[int] = set()
+    quantization_tables: set[int] = set()
+    required_tables: set[int] = set()
     in_scan = False
     has_image_data = False
     while offset + 2 <= limit:
@@ -924,8 +961,21 @@ def _read_jpeg_geometry(data: bytes) -> tuple[int, int]:
             frame_components = set(data[offset + 10:offset + 2 + segment_length:3])
             if len(frame_components) != count:
                 break
+            required_tables = (set() if marker in {0xC3, 0xC7, 0xCB, 0xCF}
+                               else set(data[offset + 12:offset + 2 + segment_length:3]))
+        if marker == 0xDB:
+            cursor, end = offset + 4, offset + 2 + segment_length
+            while cursor < end:
+                info = data[cursor]
+                precision, table_id = info >> 4, info & 15
+                table_end = cursor + 1 + 64 * (precision + 1)
+                if precision > 1 or table_id > 3 or table_end > end:
+                    raise _GenerationFailure("JPEG 量化表无效", "InvalidImageData")
+                quantization_tables.add(table_id)
+                cursor = table_end
         if marker == 0xDA:
-            if geometry is None or segment_length < 6:
+            if (geometry is None or segment_length < 6
+                    or not required_tables.issubset(quantization_tables)):
                 break
             count = data[offset + 4]
             components = data[offset + 5:offset + 5 + 2 * count:2]
@@ -2321,7 +2371,10 @@ class ImageGeneratorPlugin(NekoPluginBase):
         finally:
             if probe is not None:
                 # Registration changes host state even when HTTP probing fails.
-                self.register_static_ui(str(self._source_static_dir), cache_control="no-cache")
+                try:
+                    self.register_static_ui(str(self._source_static_dir), cache_control="no-cache")
+                except Exception as exc:
+                    self.logger.warning("Static UI restore failed: failure_class={}", type(exc).__name__)
                 try:
                     probe.unlink(missing_ok=True)
                     if index is not None:
@@ -3241,6 +3294,11 @@ class ImageGeneratorPlugin(NekoPluginBase):
             or (asset_dir / filename).is_symlink()
         ):
             projected["result_url"] = ""
+        else:
+            thumb_name = f"thumb_{filename.rsplit('.', 1)[0]}.png"
+            thumb = asset_dir / thumb_name
+            if thumb.is_file() and not thumb.is_symlink():
+                projected["preview_url"] = self._asset_url(thumb_name)
         return projected
 
     async def _load_history(

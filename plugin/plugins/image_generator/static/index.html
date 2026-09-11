@@ -2019,7 +2019,7 @@
         }
       }
 
-      function safeGeneratedAssetUrl(value) {
+      function safeGeneratedAssetUrl(value, { thumbnail = false } = {}) {
         const raw = String(value || '').trim();
         if (!raw || raw.length > 4096) return '';
         try {
@@ -2033,7 +2033,8 @@
             return '';
           }
           const filename = parsed.pathname.slice(GENERATED_ASSET_PREFIX.length);
-          if (!/^[0-9a-f]{32}\.(?:png|jpg|webp)$/.test(filename)) {
+          if (!/^[0-9a-f]{32}\.(?:png|jpg|webp)$/.test(filename)
+            && !(thumbnail && /^thumb_[0-9a-f]{32}\.png$/.test(filename))) {
             return '';
           }
           return parsed.href;
@@ -2167,7 +2168,8 @@
               event.preventDefault();
               openLightbox(url);
             });
-            const image = createImage(url, t('history.image_alt', '生成图片缩略图'));
+            const preview = safeGeneratedAssetUrl(item.preview_url, { thumbnail: true }) || url;
+            const image = createImage(preview, t('history.image_alt', '生成图片缩略图'));
             image.addEventListener('error', () => {
               thumb.replaceChildren(document.createTextNode('✦'));
             }, { once: true });
@@ -2449,13 +2451,13 @@
         };
       }
 
-      async function refreshState({ announce = false } = {}) {
+      async function refreshState({ announce = false, populateForm = true } = {}) {
         setBusy(true);
         elements.connectionBadge.dataset.state = 'loading';
         elements.connectionText.textContent = t('status.loading', '正在连接');
         try {
           const state = await callPlugin('get_panel_state');
-          renderState(state);
+          renderState(state, { populateForm });
           if (announce) showToast(t('status.refreshed', '状态已刷新'), 'success');
           return state;
         } catch (error) {
@@ -2621,7 +2623,7 @@
           );
           showTestResult(result);
           showToast(t('status.test_success', '测试图片已生成'), 'success');
-          await refreshState();
+          await refreshState({ populateForm: false });
         } catch (error) {
           showToast(errorMessage(error), 'error');
         } finally {
