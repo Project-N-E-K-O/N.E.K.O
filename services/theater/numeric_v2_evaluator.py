@@ -98,6 +98,10 @@ class NumericV2TransitionOfferReview:
     public_destination_quote: str = ""
     # 正式主动转场独立核对去向与玩家意愿；出处存在不等于授权成立，旧输出缺省不推断。
     initiation_authorized: bool | None = None
+    # 接受邀请也须核对实际出口；仅明确否定触发同一取消保护，旧输出缺省仍为未知。
+    acceptance_authorized: bool | None = None
+    # 区分邀请本身去向错误与玩家尚未接受合法邀请；只有前者可撤下旧邀请。
+    pending_invitation_invalid: bool | None = None
 
     @property
     def player_action_preserved(self) -> bool:
@@ -192,12 +196,6 @@ def _context_content(performance: Mapping[str, Any]) -> list[dict[str, str]]:
         }
         for block in blocks
     ]
-
-
-def _recent_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
-    """保留当前节点最近八条完整证据，不与较早场景上下文重复。"""  # noqa: DOCSTRING_CJK
-
-    return _current_scene_context(session)[-8:]
 
 
 def _current_scene_context(session: ScriptSessionV2) -> list[dict[str, Any]]:
@@ -556,7 +554,7 @@ def _build_messages(
         "须确认请求与候选去向一致；仅提问能否去、考虑、准备、含糊的‘继续／好’或目的地尚未公开均判 unclear。"
         "initiate 不要求 scene_complete=true，但不能替玩家补选未知去向、跳过已知必要条件或完成未授权的后续操作。"
         # 老历史可能已经写上路但节点仍未切换；本轮明确继续到达仍应按公开去向请求判定。
-        "若此前演出已开始前往候选地点而当前仍在来源节点，本轮明确要求继续前往或到达该地点仍可判 initiate；"
+        "没有 pending_transition 时，若此前已上路而节点未切换，本轮明确要求继续前往或到达该地点仍可判 initiate；"
         "不能因已经上路就把该请求降为无去向的普通动作，也不凭旧上路记录自动转场。"
         # 开场中的邀请可能尚未登记为 pending；误报 accept 会被 Runtime 按无邀请保护归零。
         # 这类输入仍须满足主动请求的公开原文与明确行动条件，不自动恢复或创建邀请。
@@ -567,7 +565,11 @@ def _build_messages(
         "pending_transition.status=withdrawn 表示该邀请曾被拒绝或暂缓，当前没有活跃邀请；"
         "只有本轮明确改主意接受该原邀请或直接实施同一后续行动时才判 accept；"
         "普通聊天、追问、犹豫、准备或对别的事情说好均判 unclear，不自行恢复旧邀请。"
-        "有待确认提议时按语义判定，不得只匹配关键词：玩家明确接受或亲自开始实施同方向的下一步是 accept；"
+        # 已上路的补救只处理无邀请场景；接受已有邀请不应误走主动请求的原文引用校验。
+        "有 pending_transition 时按语义判定，不得只匹配关键词：玩家明确接受或亲自开始实施同方向的下一步是 accept，不判 initiate；"
+        # 提议可能由旧稿错误公开；接受它不能授权 Runtime 进入另一个目的地。
+        "accept 同样须核对原邀请与实际出口的地点、时段和行动，不相符时判 unclear，保留玩家原意供角色澄清；"
+        "不能把去另一处的明确同意换成当前出口的授权。数值重选路线仍可改变后续剧情，但须兑现已公开的共同行动。"
         "玩家以实质协助使提议中的下一阶段能够开始，也属于 accept，不要求玩家本人改变地点。"
         "玩家明确拒绝、取消或决定暂缓该提议时是 reject；玩家完全转向与该提议和当前处境都无关的"
         "独立新话题，且不再评价、追问、准备或回应原提议时，也必须判为 reject。"
@@ -663,6 +665,8 @@ def _build_transition_judge_messages(
     public_destination_quote: str = "",
     check_missed_initiation: bool = False,
     history_lookup: Mapping[str, Any] | None = None,
+    cancelled_transition: bool = False,
+    invalidated_invitation: bool = False,
 ) -> list[Any]:
     """为 Actor 新转场提议构造一次保守语义复核上下文。
 
@@ -853,6 +857,11 @@ def _build_transition_judge_messages(
         '{\"offer_present\":false,\"valid\":false,\"body_violations\":[],'
         '\"unsafe_suggestion_indexes\":[],\"failure_reason\":\"\"}。'
         "两个布尔量必填；两个数组必填、去重，安全时为空；不要输出其它字段。\n"
+        # 先隔离正文和按钮判断，避免错误推荐把合法澄清也拖入争议和改稿。
+        "先不看 suggested_inputs 判正文与邀请，再单独检查按钮；正文邀请合法时 valid=true，"
+        "不能因按钮错误改为 false，只有按钮有问题时仅填 unsafe_suggestion_indexes。"
+        "猫娘承认旧邀请说错并公开提出符合实际出口的新安排，是保留玩家重新选择；"
+        "不能因为玩家本轮只接受了旧安排、尚未接受新安排，就否定新的合法邀请；正文仍不得擅自执行新安排。\n"
         "证据与时态：player_input 是玩家本轮输入，scene_context 与 scene_fact_index 是已提交历史。"
         "索引标记 excerpt_only 时只是截短原文，不能凭摘录缺项认定未发生或获得授权；新记录覆盖同一对象的旧状态。"
         "actor_performance 是猫娘本轮对白和动作，scene_update 是旁白，二者合称待审正文；"
@@ -918,6 +927,26 @@ def _build_transition_judge_messages(
         "用一句简短中文指出哪个字段的哪处表述违反什么现有证据；无问题则为空字符串。"
         "必须与所填判定一致，不能只在理由里报告正文违规；不解释全部步骤，不给替代剧情或新增事实。"
     )
+    if cancelled_transition and transition_outcome is None:
+        # 撤销是编排事实；新邀请供下一轮选择，不能因本轮接受的是旧错误邀请就判它无效。
+        system = (
+            "本次待审稿是取消错误换幕后的留幕澄清，旧候选三段没有播放。"
+            "保留 player_input 的原意，不把它当成对不同安排的授权；若旧邀请有误，猫娘承认并提出符合实际出口的新邀请，是保留玩家重新选择。"
+            "新邀请不要求玩家本轮已经同意，不能仅因它与旧错误邀请不同而判无效。"
+            "仍须核对正文留在当前幕、新邀请符合 next_scene_direction，不能执行旧去向或直接执行新安排。"
+        ) + system
+        if invalidated_invitation:
+            invitation = pending_transition_record(session, include_withdrawn=True)
+            data["invalidated_invitation"] = (
+                {"revision": invitation.get("revision"), "content": performance_content_blocks(invitation)}
+                if invitation is not None else None
+            )
+            system = (
+                "invalidated_invitation 已在同轮复核中确认与实际出口不符并撤下，不再判断它是否有效。"
+                "待审稿若继续该旧安排、催促执行或仅换词重提，offer_present=true、valid=false；"
+                "明确执行错误跨幕移动还须报 player_action。只有明确更正并提出符合实际入口的新安排，才可 valid=true。"
+                "玩家已接受旧邀请不证明旧安排可兑现，也不等于接受新安排。"
+            ) + system
     if transition_outcome is not None:
         # 正式换场检查实际选中的目标，不预览可能因本轮加分而改变的旧路线。
         target = engine.nodes[str(transition_outcome.ledger_event["to_node_id"])]
@@ -957,6 +986,14 @@ def _build_transition_judge_messages(
         # 复核仍独立检查它是否说明目标去向以及玩家是否明确要求前往。
         if transition_outcome.ledger_event.get("transition_intent") == "initiate" and _has_public_transition_quote(public_destination_quote, session):
             data["transition_authorization"]["public_destination_quote"] = public_destination_quote.strip()
+        if transition_outcome.ledger_event.get("transition_intent") == "accept":
+            # 原邀请可能早于最近窗口；固定保留其实际原文，拒绝后重新接受也使用同一出处。
+            # 这是历史索引，不锁死旧邀约；后续澄清仍由最近演出及本轮输入决定。
+            invitation = pending_transition_record(session, include_withdrawn=True)
+            data["transition_authorization"]["pending_invitation"] = (
+                {"revision": invitation.get("revision"), "content": performance_content_blocks(invitation)}
+                if invitation is not None else None
+            )
         # 候选三段必须完整复核，不能截掉结尾仍要求签字等关键冲突。
         data["candidate_segments"] = [
             # 将混合正文的固定演员显式写到待审数据中，不让复核器从省略主语猜玩家在行动。
@@ -989,10 +1026,16 @@ def _build_transition_judge_messages(
             # 与 Actor 混合正文约定一致：括号动作、我/人家均属猫娘，不因省略主语就移交给玩家。
             "source_response.performance 和 target_opening.performance 的动作主体与说话人始终是猫娘；"
             "其中‘我/人家’指猫娘，‘你’指玩家。猫娘说‘行’是在回应玩家，不代表玩家改变决定。"
+            # 来源外部回应和猫娘表演同段播放，演员标签不能覆盖旁白中明确的 NPC 主体。
+            "performer 只标记 performance，不标记同段旁白的主体。source_response.scene_narration 若存在，"
+            "是本轮来源场景已演出的外部动作或 NPC 答复，先于该段猫娘表演；按来源边界审查，不是桥后事实。"
+            "NPC 的具体答复、明确拒绝或说明未知都算回应，不要求猫娘或目标段复述，也不能借旁白新增玩家未授权动作。"
             # 入幕状态不是永久不变的事实；否则“尚未决定”会覆盖本轮明确作出的决定。
             "current_scene.authoritative_state 与 target_scene.character_state 是作者入幕基线，"
             "动态状态必须承接已提交历史及 player_input 的实际选择；‘尚未决定’不能覆盖本轮已经作出的决定。"
-            "硬边界按原文的主体、对象、条件和阶段生效；禁止强迫不等于禁止玩家自愿执行，禁止仅准备时完成不等于禁止直接执行。"
+            "硬边界按主体、对象、条件和阶段生效；禁强迫不禁自愿，禁准备时完成不禁直接执行。"
+            # 两幕约束同时存在不表示都约束三段；保留共同事实，按声明时点核对局部禁令。
+            "有阶段限定的来源禁令不延伸到目标段；目标按自身边界，全程约束保留。"
             "按 source_response、transition_bridge、target_opening 依次审查。来源回应承接本轮动作，"
             "桥段建立作者规定的时空和必要结果，目标段根据实际状态建立目标场景及猫娘回应。"
             "作者桥段和开场允许按实际历史改写；已经完成的动作应承接结果，不能复演、倒退或改写成未完成。"
@@ -1035,7 +1078,7 @@ def _build_transition_judge_messages(
             # 复核只阻断事实错误；状态回顾的文风冗余不等于事件重演，不能制造发送失败。
             "重复提及仍成立的状态、用不同观察承接同一结果属于文风问题，不报正文违规；"
             "只有再次实施已完成动作或倒退实体状态造成实际矛盾，才按对应事实边界报告。"
-            "按钮只承接目标段，禁止未授权事实或新的跨阶段行动；按钮问题仅报索引。"
+            "按钮只承接目标段，禁止未授权事实或新的跨阶段行动。"
             "只依据明确证据报错；failure_reason 用一句话指明字段、原文与冲突，无问题为空。"
         )
     # 主动请求是 Runtime 暂选路线，不能沿用“已获授权”预设而跳过授权本身的复核。
@@ -1071,6 +1114,31 @@ def _build_transition_judge_messages(
             "例如公开走廊通往展厅：‘带路吧’允许桥段抵达展厅并看见陈列；"
             "‘能去展厅吗’只询问，候选抵达须报player_action；‘带路吧’也不允许候选写玩家已买下展品。"
         ) + system
+    if transition_outcome is not None and transition_outcome.ledger_event.get("transition_intent") == "accept":
+        # 与主动请求一样，Runtime 只暂选路线；错误旧邀请不能授权另一个实际出口。
+        system = system.replace("已获 Runtime 授权的正式转场复核器", "Runtime 暂选路线的正式转场复核器", 1)
+        system = system.replace('{"offer_present":false', '{"acceptance_authorized":false,"pending_invitation_invalid":false,"offer_present":false', 1)
+        system = system.replace("两个布尔量固定 false", "offer_present、valid 固定 false", 1)
+        system = (
+            "先分别检查邀请与接受，输出 pending_invitation_invalid、acceptance_authorized 两个布尔量。"
+            "accept 标签不证明授权。"
+            "第一步只比较公开邀请与 Runtime 实际选中出口，不以候选正文声称会兑现什么作为依据。"
+            "pending_invitation 是锁存的原始邀请；结合 scene_context、scene_fact_index、history_evidence 中的后续明确澄清，"
+            "再读本轮 player_input，确定玩家实际接受的地点、时间和阶段。旧邀请已被更正时按更正后的实际意愿核对。"
+            "实际入口由 transition_contract.bridge_scene_narration 与 target_scene.opening_situation 共同说明；"
+            "reason 的含糊方向不允许替换这个入口，作者入口可以适配历史但不能任意变成另一地点或活动。"
+            "原邀请（含后续更正）与这个入口不符时 pending_invitation_invalid=true、acceptance_authorized=false，报 player_action。"
+            "例如邀请去茶店，实际入口却是返回公寓，即使候选说稍后还去茶店，也不能当作相符。"
+            "只有真实历史已公开同一行程必经的路径，才允许承接沿途经过，不自行假设绕路或顺路。"
+            "第二步检查玩家是否已接受以及候选是否兑现：仅追问、考虑或准备，或者只是候选去了别处而实际入口与邀请相符，"
+            "则 acceptance_authorized=false，但 pending_invitation_invalid=false，保留合法原邀请。"
+            "玩家答应旧错误邀请，不等于答应作者安排的不同出口；也不能让候选改去旧地点而保留另一个节点。"
+            "仅接受当前准备不授权未来见面；仅接受等候不授权等候后另提的新行程。提问、考虑或准备不当成接受。"
+            "邀请、实际入口、玩家意愿及候选转移一致时 acceptance_authorized=true、pending_invitation_invalid=false；"
+            "正常接受、明确重新接受或接受更正后的邀请不需要重复确认；"
+            "目标段提出的新问题不等于已实施该问题里的后续安排。"
+            "额外操作或持物问题不否定已获准的转场，单独列入 body_violations；不要因文风、动作主体误解或缺少复述取消路线。"
+        ) + system
     if check_missed_initiation and transition_outcome is None:
         # 复用普通复核调用补查意图，开场与既有正式转场合同不扩展；候选永远不能自证已公开。
         system = system.replace("固定五字段", "保留原五字段并增加 missed_initiation 与 public_destination_index", 1)
@@ -1092,6 +1160,12 @@ def _build_transition_judge_messages(
         )
     if evidence:
         system += HISTORY_EVIDENCE_RULE
+    # 按钮点击不能成为补造玩家资料的捷径；沿用既有索引过滤，不把按钮问题升为正文改稿。
+    system += (
+        "按钮不得补造姓名、联系方式、技能、经历或既定行程等个人事实；拒绝或解释中的个人情况也须核对依据。"
+        "以作者、实际历史及不冲突的本轮玩家自述为依据；玩家已经明确披露的称呼不能再报虚构。"
+        "仅按钮有误只报索引，不给正文添加违规；当下选择与未来意愿可保留。"
+    )
     # Actor、快检和争议复查共享查找状态，不把原文缺失当成可以补造往事的许可。
     system += history_lookup_note(history_lookup)
     # 完整性来自打包结果，不是模型猜测；只允许核对作者明确安排在当前访问发生的前因。
@@ -1153,6 +1227,7 @@ def _build_transition_judge_messages(
 
 
 def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSessionV2 | None = None,
+                                   acceptance_review: bool = False,
                                    recovery_session: ScriptSessionV2 | None = None,
                                    recovery_evidence: tuple[str, ...] = ()) -> NumericV2TransitionOfferReview:
     """接受严格判定字段，并限制可传给 Actor 的失败原因长度。"""  # noqa: DOCSTRING_CJK
@@ -1178,6 +1253,11 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
         allowed_fields.update({"public_destination_quote", "initiation_authorized"})
         if isinstance(payload, dict) and "initiation_authorized" in payload and not isinstance(payload["initiation_authorized"], bool):
             raise NumericV2EvaluatorOutputError("numeric_v2_transition_judge_fields_invalid")
+    if acceptance_review:
+        allowed_fields.update({"acceptance_authorized", "pending_invitation_invalid"})
+        for field in ("acceptance_authorized", "pending_invitation_invalid"):
+            if isinstance(payload, dict) and field in payload and not isinstance(payload[field], bool):
+                raise NumericV2EvaluatorOutputError("numeric_v2_transition_judge_fields_invalid")
     if recovery_session is not None:
         # 旧五字段回复可继续使用，缺省不恢复；新字段类型错误不能被真值转换成授权。
         allowed_fields.update({"missed_initiation", "public_destination_index"})
@@ -1222,6 +1302,11 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
             payload["failure_reason"] = "主动转场缺少此前明确公开去向的演出原文证据。"
     if initiation_session is not None and payload.get("initiation_authorized") is False and "player_action" not in raw_body_violations:
         raw_body_violations.append("player_action")
+    if acceptance_review and payload.get("pending_invitation_invalid") is True:
+        # 错误邀请不能授权当前出口；消除矛盾布尔输出，不从自然语言失败理由猜状态。
+        payload["acceptance_authorized"] = False
+    if acceptance_review and payload.get("acceptance_authorized") is False and "player_action" not in raw_body_violations:
+        raw_body_violations.append("player_action")
     raw_failure_reason = payload.get("failure_reason", "")
     # 失败原因只是返给 Actor 的诊断，不能因它过长或类型错误而丢掉已经得到的边界布尔结论。
     failure_reason = (
@@ -1250,6 +1335,8 @@ def _parse_transition_judge_output(content: Any, *, initiation_session: ScriptSe
         initiation_authorized=(payload.get("initiation_authorized")
             if initiation_session is not None and _has_public_transition_quote(payload.get("public_destination_quote"), initiation_session)
             else False if initiation_session is not None and "initiation_authorized" in payload else None),
+        acceptance_authorized=payload.get("acceptance_authorized") if acceptance_review else None,
+        pending_invitation_invalid=payload.get("pending_invitation_invalid") if acceptance_review else None,
     )
 
 
@@ -1479,6 +1566,8 @@ class NumericV2MetricEvaluator:
         public_destination_quote: str = "",
         check_missed_initiation: bool = False,
         history_lookup: Mapping[str, Any] | None = None,
+        cancelled_transition: bool = False,
+        invalidated_invitation: bool = False,
     ) -> NumericV2TransitionOfferReview:
         """复核 Actor 可见输出是否真的形成离幕提议，失败时保守返回不通过。
 
@@ -1519,6 +1608,8 @@ class NumericV2MetricEvaluator:
                     public_destination_quote=public_destination_quote,
                     check_missed_initiation=check_missed_initiation,
                     history_lookup=history_lookup,
+                    cancelled_transition=cancelled_transition,
+                    invalidated_invitation=invalidated_invitation,
                 )
                 # 适配后的正文和作者边界不可截断；超预算中止调用，工作流沿用该阶段原有故障策略。
                 if (
@@ -1542,6 +1633,7 @@ class NumericV2MetricEvaluator:
         return _parse_transition_judge_output(
             getattr(response, "content", None),
             initiation_session=session if transition_outcome is not None and transition_outcome.ledger_event.get("transition_intent") == "initiate" else None,
+            acceptance_review=transition_outcome is not None and transition_outcome.ledger_event.get("transition_intent") == "accept",
             recovery_session=session if check_missed_initiation and transition_outcome is None else None,
             # 用实际发送的编号表还原，不能重新检索后让编号指向另一条原文。
             recovery_evidence=tuple(json.loads(messages[1].content.split("：", 1)[1]).get("public_destination_evidence", [])) if check_missed_initiation and transition_outcome is None else (),

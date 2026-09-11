@@ -1607,8 +1607,8 @@ def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
         assert actor_calls <= 2
         if actor_calls == 2:
             hint = str(kwargs.get("retry_hint") or "")
-            assert unsafe_performance in hint
-            assert unsafe_update in hint
+            assert unsafe_performance not in hint
+            assert unsafe_update not in hint
             if remaining_violation is None:
                 assert original_reason in hint
                 candidate["performance"] = safe_performance
@@ -1702,11 +1702,11 @@ def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
         assert "scene_narration" not in submitted.json()["performance"]
 
 
-def test_numeric_v2_boundary_repair_receives_rejected_candidate(
+def test_numeric_v2_boundary_repair_keeps_diagnostic_without_rejected_candidate(
     tmp_path,
     monkeypatch,
 ):
-    """唯一一次边界修复会收到未提交候选和具体失败原因。"""
+    """唯一一次普通修复保留具体诊断，从原上下文重写，不沿用被拒候选。"""
 
     actor_calls = 0
     client = _client(tmp_path, monkeypatch)
@@ -1724,7 +1724,7 @@ def test_numeric_v2_boundary_repair_receives_rejected_candidate(
         retry_hint = str(kwargs.get("retry_hint") or "")
         if actor_calls == 1:
             return {"performance": "第一版包含受保护事实。", "transition_offered": False}
-        assert "第一版包含受保护事实" in retry_hint
+        assert "第一版包含受保护事实" not in retry_hint
         assert "正文包含尚未获准公开的事实" in retry_hint
         assert "唯一一次正文与提议修复" in retry_hint
         return {"performance": "（保持边界）只能确认眼前已知情况。", "transition_offered": False}
@@ -1806,11 +1806,11 @@ def test_numeric_v2_boundary_repair_commits_last_reply_after_correction_budget(
             assert actor_calls == 2
             assert kwargs["player_input"] == player_input
             hint = str(kwargs.get("retry_hint") or "")
-            assert performance in hint
-            assert rejected_update in hint
-            assert '"scene_narration"' in hint
+            assert performance not in hint
+            assert rejected_update not in hint
+            assert '"scene_narration"' not in hint
             assert failure_reason in hint
-            assert "尚未提交、必须修正的上一版输出" in hint
+            assert "从本轮原始上下文重新回应" in hint
             if not remove_conflict:
                 candidate["scene_narration"] = "手机屏幕上已出现刚拍好的照片。"
         return candidate

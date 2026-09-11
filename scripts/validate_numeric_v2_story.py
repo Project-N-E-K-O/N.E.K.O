@@ -30,6 +30,18 @@ def _package_root() -> Path:
 
 
 def main() -> int:
+    # 工坊尚在独立仓库时沿用这条窄桥读取名称；SDK 内置后直接调用同一个函数。
+    if sys.argv[1:] == ["--authoring-names"]:
+        from services.theater.numeric_v2_identity import numeric_v2_authoring_names
+        from utils.config_manager import ConfigManager
+
+        try:
+            data = numeric_v2_authoring_names(ConfigManager())
+        except (ValueError, OSError):
+            print(json.dumps({"success": False, "error": {"code": "numeric_v2_authoring_names_unavailable"}}))
+            return 5
+        print(json.dumps({"success": True, "data": data}, ensure_ascii=False))
+        return 0
     if len(sys.argv) not in {2, 3} or (len(sys.argv) == 3 and sys.argv[2] != "--install"):
         print(json.dumps({"success": False, "error": {"code": "invalid_arguments"}}))
         return 2

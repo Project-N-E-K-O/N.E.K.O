@@ -24,9 +24,9 @@ def _fixture(repetitions=700):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('disputed', [False, True])
-@pytest.mark.parametrize('repetitions,allowed', [(700, True), (2000, False)])
+@pytest.mark.parametrize('repetitions,allowed', [(700, True), (950, True), (2000, False)])
 async def test_formal_capacity_applies_before_fast_and_dispute_calls(monkeypatch, repetitions, allowed, disputed):
-    """4200以上的完整稿能送审，6000以上仍拒绝，快检和争议复查边界一致。"""
+    """正式复核按现行8000上限送审，覆盖超过普通6000的正文及正式超限拒绝。"""
     calls = []
 
     class Client:
@@ -47,7 +47,7 @@ async def test_formal_capacity_applies_before_fast_and_dispute_calls(monkeypatch
     async def factory(*args, **kwargs):
         assert kwargs['max_retries'] == 0
         assert kwargs['timeout'] == (30 if disputed else 8)
-        # 正式快检独立增加输出余量，输入6000和争议时限保持原约束。
+        # 正式快检输出余量和争议时限保持原约束。
         assert kwargs['max_completion_tokens'] == (4096 if disputed else 512)
         return Client()
 
@@ -60,7 +60,10 @@ async def test_formal_capacity_applies_before_fast_and_dispute_calls(monkeypatch
     if allowed:
         await worker.validate_transition_offer(**kwargs, dispute_review=disputed)
         assert len(calls) == 1
-        assert 4200 < sum(evaluator.count_tokens(m.content) for m in calls[0]) <= 6000
+        tokens = sum(evaluator.count_tokens(m.content) for m in calls[0])
+        assert 4200 < tokens <= NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy']['formal_judge_input_max_tokens'] == 8000
+        if repetitions == 950:
+            assert tokens > 6000
         data = json.loads(calls[0][1].content.split('：', 1)[1])
         # 正式快检与争议复查也须区分摘录与完整证据，不能由缺项否定已做动作。
         assert 'excerpt_only' in calls[0][0].content

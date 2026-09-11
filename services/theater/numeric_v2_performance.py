@@ -172,28 +172,6 @@ def valid_ordered_content(
     )
 
 
-def valid_mixed_performance(
-    container: Mapping[str, Any],
-    *,
-    require_narration: bool = False,
-    require_dialogue: bool = False,
-) -> bool:
-    """校验新合同的混合正文，并复用解析结果判断动作与对白是否齐全。"""  # noqa: DOCSTRING_CJK
-
-    raw = container.get("performance")
-    if not isinstance(raw, str) or not raw.strip():
-        return False
-    blocks = mixed_performance_blocks(raw)
-    if not blocks:
-        return False
-    block_types = {block["type"] for block in blocks}
-    return (
-        # 参数名为旧合同兼容保留；混合 performance 中括号块现在明确归类为 action。
-        (not require_narration or "action" in block_types)
-        and (not require_dialogue or "dialogue" in block_types)
-    )
-
-
 def valid_mixed_performance_policy(
     container: Mapping[str, Any],
     dialogue_policy: str,
@@ -236,7 +214,6 @@ __all__ = [
     "performance_content_blocks",
     "performance_dialogue",
     "transition_source_dialogue_policy",
-    "valid_mixed_performance",
     "valid_mixed_performance_policy",
     "valid_ordered_content",
     "valid_scene_narration",

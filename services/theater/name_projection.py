@@ -29,7 +29,8 @@ def replace_names(value: Any, replacements: Iterable[tuple[Any, Any]]) -> str:
     for source, target in replacements:
         source_text = str(source or "")
         target_text = str(target or "")
-        if source_text and source_text != target_text:
+        # 未改名的较长姓名也必须参与最长匹配，否则“小明→阿晨”会误改“小明月”。
+        if source_text:
             if source_text in mapping and mapping[source_text] != target_text:
                 raise ValueError("conflicting_name_replacement")
             mapping[source_text] = target_text

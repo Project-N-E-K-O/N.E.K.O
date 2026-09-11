@@ -11,6 +11,12 @@ from .name_projection import replace_names
 
 
 _NAME_SEPARATOR_RE = re.compile(r"[，,；;：:\n（(]")
+_PROTOCOL_FIELDS = frozenset({
+    "id", "type", "owner", "timing", "mode", "evidence_mode", "source", "sources",
+    "delivery_type", "output_field", "dialogue_policy_after", "state_effects",
+    "cognition_state", "memory_state", "self_reference_mode", "persona_scope",
+    "dialogue_policy", "relationship_ceiling", "conditions", "metric", "op",
+})
 
 
 def _identity_name(identity: Any) -> str:
@@ -45,8 +51,9 @@ class NumericV2CastProjection:
     ) -> "NumericV2CastProjection":
         intro = story.get("intro") if isinstance(story.get("intro"), Mapping) else {}
         return cls(
-            source_player_name=_identity_name(intro.get("player_identity")),
-            source_catgirl_name=_identity_name(intro.get("catgirl_identity")),
+            # 新工坊显式记录完整姓名；旧包继续使用已校验的身份首段，不重写磁盘包。
+            source_player_name=str(intro["player_name"]) if "player_name" in intro else _identity_name(intro.get("player_identity")),
+            source_catgirl_name=str(intro["catgirl_name"]) if "catgirl_name" in intro else _identity_name(intro.get("catgirl_identity")),
             player_name=str(player_name or "你").strip() or "你",
             catgirl_name=str(catgirl_name or "当前猫娘").strip() or "当前猫娘",
         )
@@ -66,7 +73,13 @@ class NumericV2CastProjection:
         if isinstance(value, str):
             return self.text(value)
         if isinstance(value, Mapping):
-            return {str(key): self.value(item) for key, item in value.items()}
+            # 昵称可能恰好叫 player/turn；名称投影只影响叙事，不改角色枚举或引用 ID。
+            return {
+                str(key): deepcopy(item) if (
+                    str(key) in _PROTOCOL_FIELDS or str(key).endswith(("_id", "_ids"))
+                ) else self.value(item)
+                for key, item in value.items()
+            }
         if isinstance(value, list):
             return [self.value(item) for item in value]
         if isinstance(value, tuple):

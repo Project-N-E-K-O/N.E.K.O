@@ -58,5 +58,10 @@ def test_actor_identity_instruction_does_not_use_framework_name(phase):
     """演员身份由剧本提供，实现标识不出现在首句身份指令中。"""
     from services.theater.numeric_v2_actor import _system_prompt
     prompt = _system_prompt(catgirl_name='测试猫娘', player_address='你', phase=phase)
-    assert prompt.startswith('你负责扮演当前猫娘')
+    if phase == 'transition_compact':
+        # 正式转场还需生成 NPC 旁白；猫娘身份仍由动态角色决定，不能把实现名称当作身份。
+        assert '猫娘写入 performance，在场 NPC 的必要答复写入来源旁白' in prompt
+        assert '当前猫娘由“测试猫娘”扮演。' in prompt
+    else:
+        assert prompt.startswith('你负责扮演当前猫娘')
     assert 'N.E.K.O Numeric v2 演绎 Actor' not in prompt

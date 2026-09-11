@@ -276,6 +276,12 @@ def pending_transition_record(
     records, _ = current_scene_records(session)
     origin = None
     for record in records:
+        # 已确认错误邀请是撤下边界，不等于玩家暂缓后仍可重新接受的合法邀请。
+        # 同轮若公开了更正后的邀请，其原文从这一条开始；不能再回溯到错误旧话。
+        if record.get("transition_offer_invalidated") is True:
+            if record.get("transition_offered") is True:
+                origin = record
+            break
         if record.get("transition_offered") is not True:
             # 重新考虑时只跳过当前访问中撤下邀请后的记录；找到最近一段 true 后仍定位其原文。
             # 不跨越 current_scene_records 已截断的入幕边界，也不把闲聊当成新邀请。

@@ -29,16 +29,17 @@ These documents preserve design intent and implementation context. They are grou
 - [Live2D idle motion selection and recovery](/live2d_motion_plan)
 - [PNGTubeRemix layered physics compatibility](/pngtuber-remix-physics-plan)
 
-## N.E.K.O 小剧场当前记录
+## N.E.K.O 小剧场与剧本工坊
 
-N.E.K.O 仓库只维护以下两份小剧场开发文档。代码和测试高于文档；架构合同与真实表现不一致时，先把证据和解决方向记录到实测问题文档。
+以下入口分别维护运行合同、问题证据和作者SDK。代码及可复现结果优先；历史实验不是当前实施计划。
 
-- [小剧场架构开发文档](./neko-theater-architecture)
-- [小剧场实测问题描述以及解决方案](./neko-theater-issues-and-solutions)
+- [小剧场架构开发文档](./neko-theater-architecture)：当前运行、模型、存档、前端与体验边界。
+- [小剧场实测问题与解决方案](./neko-theater-issues-and-solutions)：按原编号保存反例、修复和未采用实验。
+- [剧本工坊SDK迁移与接入说明](./neko-theater-workshop-sdk-migration)：已迁入能力、宿主保护、发布和待验发行范围。
 
-当前另有一份迁移实施记录：[小剧场胶囊演绎迁移方案](./neko-theater-capsule-migration)。它用于追踪自由模式退役和胶囊迁移过程，不是第三份长期合同；现行产品与 Runtime 边界仍以架构开发文档为准。
+SDK调用示例在仓库 `theater_workshop/README.md`；原独立工作台的作者协议在InkAI的 `docs/superpowers/specs/2026-08-06-neko-theater-numeric-v2-generator-design.md`。SDK不带网页，InkAI仍保留独立界面，共享创作与评改规则继续同步。
 
-作者侧 Numeric v2 生成器的专项 DTO 与页面设计由 `NEKO_Numeric_drama` 仓库维护，不能覆盖 N.E.K.O Runtime 的权限和持久化合同。
+[小剧场胶囊演绎迁移方案](./neko-theater-capsule-migration)只作自由模式退役与胶囊迁移的历史记录，不能覆盖当前架构，也不是未完成任务清单。
 
 ## Product-flow and interaction records
 

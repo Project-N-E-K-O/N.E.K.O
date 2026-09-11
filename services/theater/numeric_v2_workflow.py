@@ -403,6 +403,7 @@ async def execute_numeric_v2_turn(
     actor = NumericV2Actor(config_manager)
     # 仅属于本次工作流的原文结果；所有正文重试与复核共享，不写入 Session 或 Ledger。
     history_lookup_result: dict[str, Any] | None = None
+    invalidate_previous_offer = False
     # 在正文重采样前冻结真实人格输入；推荐失败由内部降级，最终正文仍须属于同一角色世代。
     generation_binding = ensure_current_binding(current.session)
     generation_profile = actor._character_profile()
@@ -526,6 +527,9 @@ async def execute_numeric_v2_turn(
             )
             if history_lookup_result is not None:
                 review_kwargs["history_lookup"] = history_lookup_result
+            if not changed and diagnostics["transition_cancellations"]:
+                review_kwargs["cancelled_transition"] = True
+                review_kwargs["invalidated_invitation"] = invalidate_previous_offer
             # 快检、争议复查及正文重写后都沿用同一份已核对原文；不重新从作者方向猜公开事实。
             if changed and outcome.ledger_event.get("transition_intent") == "initiate":
                 review_kwargs["public_destination_quote"] = evaluation.public_destination_quote
@@ -551,6 +555,8 @@ async def execute_numeric_v2_turn(
                     "failure_reason": result.failure_reason,
                     "missed_initiation": result.missed_initiation,
                     "initiation_authorized": result.initiation_authorized,
+                    "acceptance_authorized": result.acceptance_authorized,
+                    "pending_invitation_invalid": result.pending_invitation_invalid,
                 })
 
             record_review(review, "fast")
@@ -625,13 +631,13 @@ async def execute_numeric_v2_turn(
     reviewed_transition_offered = False
     if (
         not route_changed
-        and not outcome.session.transition_offered
         and (
             performance.get("transition_offered") is True
             or str(performance.get("performance") or "").strip()
             or str(performance.get("scene_narration") or "").strip()
         )
     ):
+        # 旧邀请锁存不证明本轮正文安全；留幕追问、澄清同样复核，邀请状态仍由 Runtime 保留。
         # 正文违规和无效邀请共用一次改写；首次争议复查后仍违规才重写，不按错误类别叠加。
         for rewrite_attempt in range(2):
             transition_review = await review_transition_offer(performance)
@@ -699,19 +705,18 @@ async def execute_numeric_v2_turn(
                 if "scene_boundary" in transition_review.body_violations or invalid_offer
                 else ""
             )
-            # 被拒稿仅是编辑材料，不进入历史；保留具体原因，禁止用修复任务追加结果或收束压力。
+            # 普通回合从同一输入和真实历史重新回应，避免沿用被拒稿的错误事实；原因仍供核对。
             performance = await generate_actor_turn(
                 outcome,
                 retry_hint=(
-                    "这是唯一一次正文与提议修复，仅编辑未提交候选，不是继续扩写剧情。"
+                    "这是唯一一次正文与提议修复，上一稿未提交；从本轮原始上下文重新回应，不是继续扩写剧情。"
                     "以玩家实际输入、已提交历史和作者硬边界为准，保留获准回应，"
-                    "删除未表达的后续操作及正文、场景更新、推荐中依赖它的结果。"
-                    "候选 scene_narration 对应输出 scene_update，也必须一起修正；没有新变化就省略。"
+                    "不补出未表达的后续操作及正文、场景更新、推荐中依赖它的结果。"
+                    "scene_update 只记录本轮新的可见变化；没有新变化就省略。"
                     "猫娘可用自身反应、回答或明确未知承接玩家，不要求本轮推进剧情或产生外部结果。"
                     "不得为了交付结果、收束或兑现旧推荐补造操作、事实或下一阶段，也不能撤销玩家已做的合法动作。"
                     "只有正文已公开具体、合乎当前事实且与实际下一阶段一致的未来邀请时才设 transition_offered=true；"
                     "邀请停在执行前，按钮不能代替正文首次提出转场。没有合适出口就不提议，不追加前提清单。"
-                    f"{_actor_rewrite_candidate_context(performance)}"
                     f"{_transition_review_failure_context(transition_review)}"
                     f"{boundary_context}"
                 ),
@@ -725,23 +730,33 @@ async def execute_numeric_v2_turn(
             diagnostics["unsafe_suggestions_removed"] += removed
             if not review.body_violations:
                 break
-            if review.initiation_authorized is False and not diagnostics["semantic_rewrite_attempts"]:
-                # 用户允许撤销未提交的错误主动转场，用原有一次改稿留幕回应。
+            if (review.initiation_authorized is False or review.acceptance_authorized is False) and not diagnostics["semantic_rewrite_attempts"]:
+                # 主动请求和接受错误邀请共用一次留幕改稿；不根据自然语言理由猜是否取消。
                 # 从原始快照及同一次计分重新prepare，不能从已换幕候选倒扣或再次累计分数。
                 diagnostics["transition_cancellations"] += 1
                 diagnostics["semantic_rewrite_attempts"] += 1
+                # 只撤下已被明确判错的邀请；仅询问/犹豫导致的未获准移动仍保留合法原邀请。
+                invalidate_previous_offer = review.pending_invitation_invalid is True
                 evaluation = replace(evaluation, transition_intent="unclear",
                                      natural_ending_ready=False, public_destination_quote="")
                 outcome = prepare_turn(evaluation)
+                if invalidate_previous_offer:
+                    # 撤下结论在改稿前共享，不能继续把已否定的原话标为“当前待确认”。
+                    # 这里只改未提交候选，技术失败仍回滚到 current。
+                    outcome, _ = runtime.engine.finalize_transition_offer_state(
+                        outcome, {}, new_offer=False, invalidate_previous_offer=True)
                 route_changed = False
                 effective_interaction_intent = "scene_action"
                 diagnostics["effective_interaction_intent"] = effective_interaction_intent
-                # 不把错误目标三段作为改写底稿，避免将未播放的未来事实带回当前幕。
+                # 三段及其去向比较理由均不作留幕底稿，避免把另一跨幕去向误作执行指令。
+                # 复核原理由仍留在诊断中；演员从原始玩家输入、正式历史及当前出口重新回应。
                 performance = await generate_actor_turn(outcome, retry_hint=(
                     "此前候选换幕因公开去向与玩家授权不符已取消，三段均未播放。"
-                    "本轮留在当前幕，承接玩家原话所指的实际已公开行动或去向。"
+                    # 复核可能指出旧邀请本身有误；不能因此从留幕稿改演另一个跨幕去向。
+                    "本轮留在当前幕，已获准的幕内行动照常回应；留幕不代表改去另一个跨幕地点。"
+                    "若旧邀请与 next_scene 不符，承认自己先前邀约有误，说明当前可行安排并保留玩家重新选择，"
+                    "不要执行旧错误邀请，也不要把 next_scene 的不同安排说成玩家已经同意。"
                     "不要要求玩家重复输入，不执行已取消的下一幕安排，不新增额外任务。"
-                    + _transition_review_failure_context(review)
                 ))
                 # 已用完共享改稿额度，只核对这一份留幕稿；禁用同轮主动请求补查，避免反复换幕。
                 review = await review_transition_offer(performance)
@@ -750,7 +765,7 @@ async def execute_numeric_v2_turn(
                 if review.body_violations or (review.offer_present and not review.valid):
                     diagnostics["semantic_review_fallback"] = True
                     diagnostics["semantic_review_fallback_phase"] = "ordinary"
-                reviewed_transition_offered = review.offer_present
+                reviewed_transition_offered = review.offer_present and (review.valid or not invalidate_previous_offer)
                 performance = {**performance, "transition_offered": reviewed_transition_offered}
                 break
             if rewrite_attempt or diagnostics["semantic_rewrite_attempts"]:
@@ -776,6 +791,7 @@ async def execute_numeric_v2_turn(
             performance.get("transition_offered") is True
             or reviewed_transition_offered
         ),
+        invalidate_previous_offer=invalidate_previous_offer,
     )
     # 模型调用不占生命周期锁；仅将身份复验、展示刷新和原子提交与角色改名串行。
     commit_started_at = time.monotonic()

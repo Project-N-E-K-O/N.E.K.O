@@ -580,26 +580,32 @@ class NumericV2Engine:
         performance: Mapping[str, Any],
         *,
         new_offer: bool,
+        invalidate_previous_offer: bool = False,
     ) -> tuple[TurnOutcomeV2, dict[str, Any]]:
         """由 Runtime 唯一锁存本轮公开提议，并同步 Session、Ledger 与正文。"""  # noqa: DOCSTRING_CJK
 
-        if not isinstance(new_offer, bool):
+        if not isinstance(new_offer, bool) or not isinstance(invalidate_previous_offer, bool):
             raise NumericV2RuntimeError("transition_offered_invalid")
-        transition_offered = outcome.session.transition_offered or new_offer
+        # 改稿前与提交前可能各调用一次；同一候选里已经确认的撤下边界不能被后一次丢掉。
+        invalidate_previous_offer = invalidate_previous_offer or outcome.ledger_event.get("transition_offer_invalidated") is True
+        transition_offered = new_offer or (outcome.session.transition_offered and not invalidate_previous_offer)
         finalized_performance = {
             **performance,
             "transition_offered": transition_offered,
         }
+        # 只有 Workflow 的明确复核结论能撤下旧邀请，Actor 不能注入历史边界。
+        finalized_performance.pop("transition_offer_invalidated", None)
+        ledger_event = {**outcome.ledger_event, "transition_offered": transition_offered}
+        if invalidate_previous_offer:
+            finalized_performance["transition_offer_invalidated"] = True
+            ledger_event["transition_offer_invalidated"] = True
         finalized_outcome = replace(
             outcome,
             session=replace(
                 outcome.session,
                 transition_offered=transition_offered,
             ),
-            ledger_event={
-                **outcome.ledger_event,
-                "transition_offered": transition_offered,
-            },
+            ledger_event=ledger_event,
         )
         return finalized_outcome, finalized_performance
 
@@ -627,8 +633,14 @@ class NumericV2Engine:
             "target_performance",
         }.issubset(result):
             # 两段旁白必须来自同一次生成；作者原文是事实约束，不再覆盖已适配历史的文本。
-            if not all(valid_scene_narration({"scene_narration": result.get(key)})
-                       for key in ("bridge_scene_narration", "target_scene_narration")):
+            # 紧凑主路径与下方三段验证共用桥段许可；目标旁白始终必须非空。
+            if (
+                not valid_scene_narration(
+                    {"scene_narration": result.get("bridge_scene_narration")},
+                    allow_empty=not bridge_required,
+                )
+                or not valid_scene_narration({"scene_narration": result.get("target_scene_narration")})
+            ):
                 raise NumericV2RuntimeError("numeric_transition_performance_invalid")
             authored_bridge = result.pop("bridge_scene_narration")
             target_opening = result.pop("target_scene_narration")
@@ -646,6 +658,9 @@ class NumericV2Engine:
                     "performance": str(result.pop("target_performance") or "").strip(),
                 },
             ]
+            # 可选来源旁白仍属于第一段，同次提交；不挪到换幕后的桥段或猫娘对白。
+            if "source_scene_narration" in result:
+                segments[0]["scene_narration"] = result.pop("source_scene_narration")
             result["segments"] = segments
         if (
             authored_bridge
@@ -665,7 +680,8 @@ class NumericV2Engine:
             or not all(isinstance(item, Mapping) for item in segments)
             or [item.get("phase") for item in segments]
             != ["source_response", "transition_bridge", "target_opening"]
-            or set(segments[0]) != {"phase", "performance"}
+            or set(segments[0]) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"})
+            or ("scene_narration" in segments[0] and not valid_scene_narration(segments[0]))
             or set(segments[1]) != {"phase", "scene_narration"}
             or set(segments[2]) != {"phase", "performance"}
             or not valid_mixed_performance_policy(
@@ -859,6 +875,8 @@ class NumericV2Runtime:
                 dict(source.session.performance_history[index])
             )
             replayed_event = deepcopy(outcome.ledger_event)
+            if source_event.get("transition_offer_invalidated") is True:
+                replayed_event["transition_offer_invalidated"] = True
             replayed_session_after_turn = outcome.session
             if "transition_offered" in source_event:
                 # 分叉重放沿用原回合已经提交的提议状态；不能把 Actor 结果重新猜一遍。
@@ -949,7 +967,8 @@ class NumericV2Runtime:
                 or (
                     new_contract
                     and (
-                        set(segments[0]) != {"phase", "performance"}
+                        set(segments[0]) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"})
+                        or ("scene_narration" in segments[0] and not valid_scene_narration(segments[0]))
                         or set(segments[1]) != {"phase", "scene_narration"}
                         or set(segments[2]) != {"phase", "scene_narration", "performance"}
                         or not valid_mixed_performance_policy(

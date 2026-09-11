@@ -189,3 +189,120 @@ def test_transition_review_keeps_source_history_and_actual_destination():
     assert data['target_scene']['opening_situation'] == scene_opening_text(engine.nodes[outcome.session.current_node_id]['story_beat'])
     assert data['scene_context']
     assert 'next_scene_direction' not in data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('requirement', ['optional', 'authored_bridge', 'independent_delivery'])
+async def test_compact_bridge_contract_through_actor_commit_and_restore(monkeypatch, tmp_path, requirement):
+    """真实Actor解析入口接收合同许可；缺必要桥段不建半轮，空桥段不占播放/TTS索引。"""
+    from services.theater import numeric_v2_actor as actor_module
+    from services.theater.numeric_v2_performance import performance_content_blocks
+    from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime
+    from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+    story = numeric_v2_story()
+    target_opening = '雨后的长街安静下来。'
+    for node in story['nodes']:
+        if node['type'] == 'ending':
+            node['story_beat']['opening_scene'] = target_opening
+        for route in node.get('route_gates', []):
+            route['transition_contract']['must_deliver'] = [
+                '两人沿楼梯抵达楼下大厅。' if requirement == 'independent_delivery' else target_opening
+            ]
+            if requirement == 'authored_bridge':
+                route['transition_contract']['bridge_scene_narration'] = '一夜过去，天已亮。'
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    current = await runtime.start_session(session_id='bridge', catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = runtime.prepare_turn(current, TurnRequestV2('one', 0, '谢谢。'), (),
+                                   scene_complete=True, natural_ending_ready=True)
+    candidate = _candidate()
+    candidate['bridge_scene_narration'] = ''
+    messages_seen = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def ainvoke(self, messages):
+            messages_seen.append(messages)
+            return type('Response', (), {'content': json.dumps(candidate, ensure_ascii=False)})()
+
+    async def model_config(_config_manager):
+        return {'model': 'test', 'base_url': 'http://test.invalid'}
+
+    async def client(*_args, **_kwargs):
+        return Client()
+
+    monkeypatch.setattr(actor_module, '_model_config', model_config)
+    monkeypatch.setattr(actor_module, 'create_chat_llm_async', client)
+    actor = actor_module.NumericV2Actor(object())
+    kwargs = dict(engine=runtime.engine, session=current.session, outcome=outcome,
+                  player_input='谢谢。', character_profile='温和克制。')
+    if requirement != 'optional':
+        before = runtime.store._path('bridge').read_bytes()
+        with pytest.raises(NumericV2ActorOutputError, match='scene_narration_invalid'):
+            await actor.generate_turn(**kwargs)
+        assert runtime.store._path('bridge').read_bytes() == before
+        candidate['bridge_scene_narration'] = '天亮后，两人沿楼梯抵达大厅。'
+    performance = await actor.generate_turn(**kwargs)
+    data = json.loads(messages_seen[-1][1].content.split('\n', 1)[1])
+    assert data['transition']['bridge_required'] is (requirement != 'optional')
+    assert 'bridge_required' in messages_seen[-1][0].content
+    assert performance['segments'][1]['scene_narration'] == candidate['bridge_scene_narration']
+    committed = await runtime.commit_turn(outcome, performance)
+    restored = await NumericV2Runtime(runtime.engine, tmp_path).restore_session('bridge')
+    assert restored == committed
+    assert restored.session.revision == len(restored.ledger_events) == 1
+    blocks = performance_content_blocks(restored.session.performance_history[-1])
+    assert all(b['text'].strip() for b in blocks)
+    assert len(blocks) == (5 if requirement == 'optional' else 6)
+    fork = await runtime.fork_session_for_test('bridge', session_id='bridge_fork', through_revision=1)
+    assert fork.session.performance_history == restored.session.performance_history
+    with pytest.raises(ValueError, match='session_already_ended'):
+        runtime.prepare_turn(restored, TurnRequestV2('two', 1, '继续'), ())
+
+
+@pytest.mark.parametrize('invalid', [None, 0, [], {}])
+def test_optional_compact_bridge_does_not_accept_invalid_type(invalid):
+    candidate = _candidate()
+    candidate['bridge_scene_narration'] = invalid
+    with pytest.raises(NumericV2ActorOutputError, match='scene_narration_invalid'):
+        _parse_output(json.dumps(candidate), transition_required=True, deterministic_transition=True,
+                      bridge_required=False)
+
+
+@pytest.mark.parametrize('field', ['source_performance', 'target_performance', 'target_scene_narration'])
+def test_optional_bridge_does_not_relax_other_transition_text(field):
+    candidate = _candidate()
+    candidate[field] = ''
+    with pytest.raises(NumericV2ActorOutputError):
+        _parse_output(json.dumps(candidate), transition_required=True, deterministic_transition=True,
+                      bridge_required=False)
+
+
+def test_compact_bridge_stays_required_without_explicit_contract_permission():
+    candidate = _candidate()
+    candidate['bridge_scene_narration'] = ''
+    with pytest.raises(NumericV2ActorOutputError, match='scene_narration_invalid'):
+        _parse_output(json.dumps(candidate), transition_required=True, deterministic_transition=True)
+
+
+def test_runtime_optional_bridge_matches_legacy_array_permission():
+    engine = _engine()
+    session = engine.create_session(session_id='bridge_paths', catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '谢谢。'), (),
+                                  scene_complete=True, natural_ending_ready=True)
+    candidate = _candidate()
+    candidate['bridge_scene_narration'] = ''
+    compact = engine.finalize_transition_performance(outcome, candidate, target_opening='旧开场。', bridge_required=False)
+    legacy = engine.finalize_transition_performance(outcome, {'segments': [
+        {'phase': 'source_response', 'performance': candidate['source_performance']},
+        {'phase': 'transition_bridge', 'scene_narration': ''},
+        {'phase': 'target_opening', 'performance': candidate['target_performance']},
+    ], 'suggested_inputs': []}, target_opening=candidate['target_scene_narration'], bridge_required=False)
+    assert compact == legacy
+    with pytest.raises(ValueError, match='numeric_transition_performance_invalid'):
+        engine.finalize_transition_performance(outcome, candidate, target_opening='旧开场。', bridge_required=True)

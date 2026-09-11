@@ -1236,6 +1236,30 @@ def test_same_target_different_contracts_preview_uses_eligible_route(changed_fie
     assert source == before
 
 
+def test_actor_receives_actual_entry_movement_without_target_plot():
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    session = _session(engine)
+    cast = numeric_v2_evaluator._cast_for_session(engine, session)
+    source = engine.nodes["start"]
+    route = engine.preview_route("start", session.metrics)
+    target = engine.nodes[route["target_node_id"]]
+    target["type"] = "scene"
+    target["terminal"] = False
+    target["story_beat"]["opening_scene"] = "尚未公开的秘密结果。"
+    route = next(row for row in source["route_gates"] if row["id"] == route["id"])
+    route["transition_contract"]["reason"] = "去观景坡，或者继续闲逛。"
+    route["transition_contract"]["bridge_scene_narration"] = "你们离开河湾，进入镇内的小巷。"
+    preview = numeric_v2_actor._next_scene_preview_for_actor(engine, cast, source, session.metrics)
+    text = numeric_v2_actor._next_scene_summary_text(preview)
+    assert "你们离开河湾，进入镇内的小巷。" in text
+    assert "尚未公开的秘密结果" not in text
+    assert "尚未发生" in text
+    # 结局仍只给收束方向，不把结局专属状态提前投给普通演员。
+    target["type"] = "ending"
+    text = numeric_v2_actor._next_scene_summary_text(numeric_v2_actor._next_scene_preview_for_actor(engine, cast, source, session.metrics))
+    assert "进入镇内的小巷" not in text
+
+
 @pytest.mark.parametrize("trust,route_index", [(20, 1), (80, 0)])
 def test_preview_does_not_lock_runtime_selection_after_acceptance(trust, route_index):
     """邀请预览与接受时可走不同路线：预览无写入，接受仍按新数值选路。"""
@@ -1435,7 +1459,8 @@ def test_numeric_v2_pending_transition_is_highlighted_for_recommendations():
 
     assert "当前待确认提议原文" in payload["pacing"]
     assert "沿着长街去找旧信" in payload["pacing"]
-    assert "推荐第一条接受并亲自执行旧提议" in payload["pacing"]
+    assert "只有旧提议仍符合实际出口时" in payload["pacing"]
+    assert "第一条推荐才可接受并亲自执行该提议" in payload["pacing"]
     assert "第二条拒绝、暂缓或留在本幕" in payload["pacing"]
 
 
@@ -1621,10 +1646,11 @@ def test_numeric_v2_next_scene_projection_excludes_future_story_fields():
     assert numeric_v2_actor._next_scene_preview_for_actor(engine, cast, source, {"trust": 20})["status"] == "after_acceptance_only"
     preview = numeric_v2_actor._next_scene_preview_for_actor(engine, cast, source, {"trust": 20})
     assert set(preview) == {
-        "status", "chapter_title", "target_is_ending", "transition_direction",
+        "status", "chapter_title", "target_is_ending", "transition_direction", "entry_movement",
     }
     assert preview["status"] == "after_acceptance_only"
     assert preview["target_is_ending"] is True
+    assert preview["entry_movement"] == ""
 
 
 def test_numeric_v2_simple_prompt_packing_drops_previous_scene_tail_first():
@@ -2061,6 +2087,19 @@ def test_numeric_v2_compact_transition_suggestion_source_excludes_source_and_bri
     assert visible == "（翻开手账）你愿意谈谈真正想要的未来吗？"
 
 
+def test_numeric_v2_compact_transition_declares_sendable_suggestion_format():
+    """正式换幕与严格解析器使用同一按钮合同，不能只要求字符串数组再固定补全。"""
+
+    system = numeric_v2_actor._system_prompt(
+        catgirl_name="测试猫娘", player_address="你", phase="transition_compact",
+    )
+
+    assert "非终局的 suggested_inputs 必须是 2—3 条" in system
+    assert "每条都写成“（玩家动作）玩家对白”" in system
+    assert "不能预写环境、他人或成功结果" in system
+    assert "suggested_inputs 只承接最终可见的目标" in system
+
+
 def test_numeric_v2_actor_preserves_valid_suggestions_after_route_change(monkeypatch):
     """正式换幕后保留主调用的合法按钮，不因场景变化固定刷新。"""  # noqa: DOCSTRING_CJK
 
@@ -2119,7 +2158,8 @@ def test_numeric_v2_actor_prompt_preserves_its_own_committed_proposals():
     )
 
     assert "story_so_far 是已提交历史" in turn_prompt
-    assert "不能否认旧回应" in turn_prompt
+    assert "必须承认此前说过的话" in turn_prompt
+    assert "更正安排不等于否认说过" in turn_prompt
     assert "recent_context 是已发生事实" in transition_prompt
     assert "必须承认其中猫娘已说、已做和已提出的内容" in transition_prompt
     assert "suggested_inputs 只承接最终可见的目标" in transition_prompt
@@ -2391,7 +2431,8 @@ def test_numeric_v2_actor_marks_unresolved_transition_in_pacing():
 
     assert "本回合尚未完成换幕" in payload["pacing"]
     assert "留在本幕回应，不重复催促" in payload["pacing"]
-    assert "推荐第一条接受并亲自执行旧提议" in payload["pacing"]
+    assert "只有旧提议仍符合实际出口时" in payload["pacing"]
+    assert "第一条推荐才可接受并亲自执行该提议" in payload["pacing"]
 
 
 def test_numeric_v2_evaluator_ignores_unknown_optional_metric_candidate():

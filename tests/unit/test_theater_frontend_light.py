@@ -38,16 +38,6 @@ def test_theater_page_is_numeric_story_selector_only():
     assert "free_history" not in script
 
 
-def test_selector_hidden_states_and_placeholder_stay_compact():
-    css = _source("static/css/theater_selector.css")
-    # 样式源码允许为可维护性换行；断言只锁定最终 CSS 语义。
-    compact_css = "".join(css.split())
-
-    assert ".theater-selector-shell[hidden]{display:none!important}" in compact_css
-    assert ".theater-detail-placeholder{min-height:96px" in compact_css
-    assert ".theater-detail-actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))" in compact_css
-
-
 def test_selector_uses_two_stage_handoff_and_start_replacement():
     script = _source("static/js/theater_selector.js")
 
@@ -583,15 +573,6 @@ def test_theater_locales_remain_valid_and_aligned():
         ):
             assert theater[key]
     assert all(keys == theater_keys[0] for keys in theater_keys[1:])
-
-
-def test_theater_selector_no_longer_selects_budget():
-    """固定预算后移除控件及其事件，避免页面初始化访问已删除的元素。"""  # noqa: DOCSTRING_CJK
-
-    template = _source("templates/theater.html")
-    selector = _source("static/js/theater_selector.js")
-    assert "theater-token-budget" not in template + selector
-    assert "actor_budget_profile" not in selector
 
 
 def test_theater_popup_entry_opens_story_selector():

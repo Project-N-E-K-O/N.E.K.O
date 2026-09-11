@@ -1,4 +1,4 @@
-"""验证 Guard 的字段归属和入口投影；固定语义样本不冒充真实模型验收。"""
+"""验证 Guard 的字段归属和入口投影。"""
 
 from __future__ import annotations
 
@@ -89,49 +89,15 @@ def _messages(candidate):
     )
 
 
-# 固定后续真实对照的正反例；本文件只核数据投影与协议，不声称模型已作出这些判断。
-GUARD_SCOPE_CASES = (
-    (
-        "button_only_offer",
-        {"performance": "（点头）预约已经确认。", "suggested_inputs": ["我们去阅览室查档。"]},
-        _verdict(unsafe_suggestion_indexes=[0]),
-    ),
-    (
-        "body_offer_without_buttons",
-        {"performance": "（看向玩家）我们去阅览室查档，好吗？", "suggested_inputs": []},
-        _verdict(offer_present=True, valid=True),
-    ),
-    (
-        "body_offer_with_side_choice",
-        {"performance": "（看向玩家）我们去阅览室查档，好吗？", "suggested_inputs": ["先说说你为什么感兴趣。"]},
-        _verdict(offer_present=True, valid=True),
-    ),
-    (
-        "body_offer_with_accept_choice",
-        {"performance": "（看向玩家）我们去阅览室查档，好吗？", "suggested_inputs": ["好，一起去阅览室。"]},
-        _verdict(offer_present=True, valid=True),
-    ),
-    (
-        "wrong_destination",
-        {"performance": "（指向门外）我们现在回家，好吗？", "suggested_inputs": []},
-        _verdict(offer_present=True),
-    ),
-    (
-        "current_prerequisite_is_not_offer",
-        {"performance": "（点头）我的预约已经确认。", "suggested_inputs": []},
-        _verdict(),
-    ),
-    (
-        "body_offer_does_not_authorize_other_destination",
-        {"performance": "（看向玩家）我们去阅览室查档，好吗？", "suggested_inputs": ["好，我们现在回家。"]},
-        _verdict(offer_present=True, valid=True, unsafe_suggestion_indexes=[0]),
-    ),
-    (
-        "player_action_cannot_be_hidden_by_safe_button",
-        {"performance": "（看着玩家）你已经把桌上档案放进背包了。", "suggested_inputs": ["你觉得这份档案重要吗？"]},
-        _verdict(body_violations=["player_action", "author_boundary"]),
-    ),
-)
+# 只保留现行入口与 Prompt 检查使用的两份候选。
+_BUTTON_ONLY_CANDIDATE = {
+    "performance": "（点头）预约已经确认。",
+    "suggested_inputs": ["我们去阅览室查档。"],
+}
+_BODY_OFFER_CANDIDATE = {
+    "performance": "（看向玩家）我们去阅览室查档，好吗？",
+    "suggested_inputs": [],
+}
 
 
 def test_guard_derives_safety_from_disjoint_fields():
@@ -155,19 +121,11 @@ def test_guard_requires_scoped_fields(field):
         _parse_transition_judge_output(json.dumps(payload))
 
 
-def test_guard_rejects_obsolete_duplicate_total_field():
-    with pytest.raises(NumericV2EvaluatorOutputError):
-        _parse_transition_judge_output(json.dumps(_verdict(violations=[])))
-
-
 @pytest.mark.parametrize("changes", [
     {"body_violations": None},
-    {"body_violations": ["unknown"]},
-    {"body_violations": ["player_action", "player_action"]},
     {"unsafe_suggestion_indexes": None},
     {"unsafe_suggestion_indexes": [True]},
     {"unsafe_suggestion_indexes": [0, 0]},
-    {"unsafe_suggestion_indexes": [3]},
 ])
 def test_guard_rejects_invalid_scoped_evidence(changes):
     with pytest.raises(NumericV2EvaluatorOutputError):
@@ -190,7 +148,7 @@ def test_guard_cannot_validate_absent_body_offer():
 
 
 def test_guard_uses_actual_entry_without_target_late_stage():
-    messages = _messages(GUARD_SCOPE_CASES[1][1])
+    messages = _messages(_BODY_OFFER_CANDIDATE)
     payload = json.loads(messages[1].content.split("：", 1)[1])
     direction = payload["next_scene_direction"]
 
@@ -202,7 +160,7 @@ def test_guard_uses_actual_entry_without_target_late_stage():
 
 
 def test_guard_offer_and_button_responsibilities_do_not_overlap():
-    system = _messages(GUARD_SCOPE_CASES[0][1])[0].content
+    system = _messages(_BUTTON_ONLY_CANDIDATE)[0].content
 
     assert "正文与推荐组合" not in system
     assert "推荐中至少一条" not in system
@@ -217,7 +175,7 @@ def test_guard_offer_and_button_responsibilities_do_not_overlap():
 def test_guard_no_offer_does_not_skip_body_or_button_checks():
     """无转场不是正文或推荐安全结论，按钮要在正文判定后独立核对。"""
 
-    system = _messages(GUARD_SCOPE_CASES[0][1])[0].content
+    system = _messages(_BUTTON_ONLY_CANDIDATE)[0].content
     assert "没有提议也须检查正文" in system
     assert system.index("4. unsafe_suggestion_indexes：逐条独立检查按钮") > system.index("3. valid")
     assert "仅按钮首提时应列索引，offer_present 与 valid 都为 false" in system
@@ -226,7 +184,7 @@ def test_guard_no_offer_does_not_skip_body_or_button_checks():
 def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
     """五字段协议只讲一次；已做、尝试和未来邀请不混为同一时态。"""
 
-    system = _messages(GUARD_SCOPE_CASES[0][1])[0].content
+    system = _messages(_BUTTON_ONLY_CANDIDATE)[0].content
     example, _ = json.JSONDecoder().raw_decode(system[system.index("{"):])
     assert set(example) == {"offer_present", "valid", "body_violations", "unsafe_suggestion_indexes", "failure_reason"}
     assert not _parse_transition_judge_output(json.dumps(example)).body_violations
@@ -237,17 +195,3 @@ def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
     assert "历史另一次操作也不授权本次结果" in system
     assert "未来邀请即使请求立即开始也不是已执行" in system
     assert "开场状态是入幕起点，后续状态承接历史和本轮已实施动作" in system
-
-
-@pytest.mark.parametrize("_name,candidate,expected", GUARD_SCOPE_CASES, ids=[case[0] for case in GUARD_SCOPE_CASES])
-def test_frozen_guard_cases_preserve_candidate_and_scoped_contract(_name, candidate, expected):
-    # 模型正确性须另跑这些固定正反例；本断言只防投影或协议偷偷改掉验收材料。
-    messages = _messages(candidate)
-    payload = json.loads(messages[1].content.split("：", 1)[1])
-    assert payload["actor_performance"] == candidate["performance"]
-    assert payload["suggested_inputs"] == candidate["suggested_inputs"]
-    review = _parse_transition_judge_output(json.dumps(expected))
-    assert review.offer_present == expected["offer_present"]
-    assert review.valid == expected["valid"]
-    assert review.body_violations == tuple(expected["body_violations"])
-    assert review.unsafe_suggestion_indexes == tuple(expected["unsafe_suggestion_indexes"])

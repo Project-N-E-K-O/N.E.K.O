@@ -550,28 +550,6 @@ class NumericV2SessionStore:
                 "",
             )
 
-    async def set_story_session_id(
-        self,
-        story_id: str,
-        character_id: str,
-        session_id: str,
-    ) -> None:
-        normalized_story_id = str(story_id or "").strip()
-        normalized_character_id = str(character_id or "").strip()
-        normalized_session_id = str(session_id or "").strip()
-        if (
-            not normalized_story_id
-            or not normalized_character_id
-            or not normalized_session_id
-        ):
-            raise NumericV2StoreError("numeric_story_session_index_invalid")
-        async with _lock(self._story_session_index_path):
-            stories = self._read_story_session_index()
-            stories.setdefault(normalized_story_id, {})[
-                normalized_character_id
-            ] = normalized_session_id
-            self._write_story_session_index(stories)
-
     async def restore_story_session(
         self,
         story_id: str,
@@ -762,33 +740,6 @@ class NumericV2SessionStore:
                 return None
             self._validate_lifecycle_chain(stored)
             return stored
-
-    async def update_catgirl_binding(
-        self,
-        session_id: str,
-        catgirl_binding: Mapping[str, Any],
-    ) -> NumericV2StoredSession:
-        """只迁移角色卡身份投影，不改变剧情、revision 或 Ledger。"""  # noqa: DOCSTRING_CJK
-
-        path = self._path(session_id)
-        async with _lock(path):
-            if not path.is_file():
-                raise NumericV2SessionNotFoundError("numeric_session_not_found")
-            current = self._read(path)
-            self._validate_chain(current)
-            migrated = NumericV2StoredSession(
-                replace(
-                    current.session,
-                    catgirl_binding={
-                        str(key): str(value)
-                        for key, value in catgirl_binding.items()
-                    },
-                ),
-                current.ledger_events,
-            )
-            self._validate_chain(migrated)
-            self._write(path, migrated)
-            return migrated
 
     async def commit(
         self,
@@ -1140,6 +1091,12 @@ class NumericV2SessionStore:
                 if event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             replayed_session = replayed.session
+            # 邀请撤下边界参与后续接受判定，必须与同回合历史一致；旧记录缺省无边界。
+            for value in (event, performance):
+                if not isinstance(value.get("transition_offer_invalidated", False), bool):
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            if event.get("transition_offer_invalidated", False) != performance.get("transition_offer_invalidated", False):
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             if "transition_offered" in event:
                 # 新 Ledger 的提议状态来自同 revision 的 Actor 正文；重放时只复用已提交值。
                 committed_transition_offered = event.get("transition_offered")
@@ -1225,7 +1182,9 @@ class NumericV2SessionStore:
                         or not all(isinstance(segment, Mapping) for segment in segments)
                         or [segment.get("phase") for segment in segments]
                         != ["source_response", "transition_bridge", "target_opening"]
-                        or set(segments[0]) != {"phase", "performance"}
+                        # 来源旁白是版本 3 的可选字段；旧记录无此字段仍可原样恢复。
+                        or set(segments[0]) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"})
+                        or ("scene_narration" in segments[0] and not valid_scene_narration(segments[0]))
                         or set(segments[1]) != {"phase", "scene_narration"}
                         or set(segments[2]) != {"phase", "scene_narration", "performance"}
                         or not valid_mixed_performance_policy(

@@ -311,6 +311,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=theater_workshop"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
@@ -395,6 +396,9 @@ jobs:
       # back to the heuristic counter. Use -s (non-empty) so a zero-byte
       # file from an interrupted download fails the build, matching
       # prepare_embedding_model.py's own non-empty contract.
+      - name: Smoke test frozen theater workshop SDK
+        run: .venv/bin/python scripts/check_theater_workshop_release.py --binary-dir dist/Xiao8
+
       - name: Verify bundled offline assets
         shell: bash
         run: |

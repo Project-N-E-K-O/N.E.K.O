@@ -105,8 +105,8 @@ def test_selector_shows_story_summary_roles_and_new_session_actions(mock_page: P
     expect(mock_page.locator("#theater-detail-player")).to_contain_text("回乡整理旧屋")
     expect(mock_page.locator("#theater-detail-catgirl")).to_contain_text("小葵")
     expect(mock_page.locator("#theater-start-btn")).to_be_enabled()
-    expect(mock_page.locator("#theater-token-budget")).to_be_enabled()
-    expect(mock_page.locator("#theater-token-budget")).to_have_value("balanced")
+    # 预算已固定，选择页不再提供档位控件。
+    expect(mock_page.locator("#theater-token-budget")).to_have_count(0)
     expect(mock_page.locator("#theater-start-btn")).to_have_text("开始")
     expect(mock_page.locator("#theater-start-btn")).to_have_attribute("data-i18n", "theater.start")
     expect(mock_page.locator("#theater-continue-btn")).to_be_disabled()
@@ -359,8 +359,8 @@ def test_active_story_only_enables_continue(mock_page: Page, running_server: str
     expect(mock_page.locator("#theater-end-btn")).to_have_text("结束演绎")
     expect(mock_page.locator("#theater-session-hint")).to_contain_text("点击“继续”")
     expect(mock_page.locator("#theater-restart-btn")).to_have_count(0)
-    expect(mock_page.locator("#theater-token-budget")).to_have_value("quality")
-    expect(mock_page.locator("#theater-token-budget")).to_be_disabled()
+    # 旧 Session 的兼容字段不能重新显示预算选择器。
+    expect(mock_page.locator("#theater-token-budget")).to_have_count(0)
 
 
 @pytest.mark.frontend
@@ -455,8 +455,7 @@ def test_user_exit_story_can_continue_same_session(mock_page: Page, running_serv
     expect(mock_page.locator("#theater-continue-btn")).to_be_enabled()
     expect(mock_page.locator("#theater-session-badge")).to_have_text("已退出")
     expect(mock_page.locator("#theater-session-hint")).to_contain_text("继续原进度")
-    expect(mock_page.locator("#theater-token-budget")).to_have_value("economy")
-    expect(mock_page.locator("#theater-token-budget")).to_be_enabled()
+    expect(mock_page.locator("#theater-token-budget")).to_have_count(0)
     with mock_page.expect_request("**/api/theater-numeric/session/resume") as request_info:
         mock_page.locator("#theater-continue-btn").click()
     assert json.loads(request_info.value.post_data or "{}") == {
@@ -487,7 +486,7 @@ def test_ended_story_start_replaces_session_after_confirmation(mock_page: Page, 
     expect(mock_page.locator("#theater-start-btn")).to_be_enabled()
     expect(mock_page.locator("#theater-start-btn")).to_have_text("重新开始")
     expect(mock_page.locator("#theater-continue-btn")).to_be_disabled()
-    mock_page.locator("#theater-token-budget").select_option("economy")
+    expect(mock_page.locator("#theater-token-budget")).to_have_count(0)
     mock_page.locator("#theater-start-btn").click()
 
     expect(mock_page.locator("#theater-modal")).to_be_visible()
@@ -507,7 +506,7 @@ def test_ended_story_start_replaces_session_after_confirmation(mock_page: Page, 
     assert start_payload["story_id"] == STORY["story_id"]
     assert start_payload["character_id"] == CHARACTER_ID
     assert start_payload["replace_existing"] is True
-    assert start_payload["actor_budget_profile"] == "economy"
+    assert "actor_budget_profile" not in start_payload
     assert start_payload["session_id"] != "ended-session"
 
 
@@ -673,21 +672,6 @@ def test_selector_drops_restart_confirmation_after_story_switch(
     mock_page.locator("#theater-modal-cancel").click()
     expect(mock_page.locator("#theater-modal")).to_be_hidden()
     assert len(skip_calls) == 1
-
-
-@pytest.mark.frontend
-def test_selector_header_keeps_title_horizontal_on_narrow_viewport(mock_page: Page, running_server: str):
-    """窄窗口保留横向标题和可见窗口控制，不把标题挤成竖排。"""  # noqa: DOCSTRING_CJK
-
-    mock_page.set_viewport_size({"width": 375, "height": 720})
-    _install_selector_routes(mock_page)
-    mock_page.goto(f"{running_server}/theater", wait_until="domcontentloaded")
-
-    title_box = mock_page.locator(".theater-title-copy h2").bounding_box()
-    controls_box = mock_page.locator(".theater-window-controls").bounding_box()
-    assert title_box is not None and controls_box is not None
-    assert title_box["width"] > title_box["height"]
-    assert controls_box["x"] + controls_box["width"] <= 375
 
 
 @pytest.mark.frontend

@@ -274,7 +274,9 @@ class NumericV2Compiler:
         collector.obj(story.get("characters"), "characters")
         self._validate_binding(collector, story.get("catgirl_binding"))
         metric_ranges = self._validate_metrics(collector, story.get("metric_schema"), story.get("initial_state"))
-        nodes, route_targets = self._validate_nodes(collector, story.get("nodes"), metric_ranges)
+        intro = story.get("intro")
+        cast_names = intro if isinstance(intro, Mapping) else {}
+        nodes, route_targets = self._validate_nodes(collector, story.get("nodes"), metric_ranges, cast_names=cast_names)
         ending_ids = self._validate_endings(collector, story.get("endings"))
         self._validate_graph(
             collector,
@@ -369,6 +371,18 @@ class NumericV2Compiler:
         intro = c.obj(value, "intro")
         for field in ("background", "player_identity", "catgirl_identity"):
             c.require_text(intro.get(field), f"intro.{field}")
+        # 真实昵称可以含逗号或超过旧首段长度；新工坊声明成对姓名，避免运行时猜截点。
+        if "player_name" in intro or "catgirl_name" in intro:
+            for role in ("player", "catgirl"):
+                name = intro.get(f"{role}_name")
+                identity = intro.get(f"{role}_identity")
+                c.require_text(name, f"intro.{role}_name")
+                if _text(name) and _text(identity) and not identity.startswith(name + "，"):
+                    c.add("intro_identity_name_mismatch", f"intro.{role}_identity",
+                          "剧情身份必须以对应的完整姓名和中文逗号开头。")
+            if _text(intro.get("player_name")) and intro.get("player_name") == intro.get("catgirl_name"):
+                c.add("intro_identity_names_conflict", "intro", "玩家与猫娘的作者姓名不能相同。")
+            return
         for field in ("player_identity", "catgirl_identity"):
             identity = intro.get(field)
             if _text(identity) and not _identity_source_name(identity):
@@ -489,7 +503,9 @@ class NumericV2Compiler:
             c.add("metric_bands_not_contiguous", f"{path}.bands", "bands 必须完整覆盖 metric 范围。")
 
     @staticmethod
-    def _validate_story_beat(c: _Collector, value: Any, path: str) -> None:
+    def _validate_story_beat(
+        c: _Collector, value: Any, path: str, *, cast_names: Mapping[str, Any] | None = None,
+    ) -> None:
         beat = c.obj(value, path)
         summary = c.require_text(beat.get("summary"), f"{path}.summary")
         # opening_scene 是显式可见开场；缺失时仅使用当前摘要首句作为作者输入。
@@ -546,16 +562,23 @@ class NumericV2Compiler:
                 c,
                 beat.get("character_state"),
                 f"{path}.character_state",
+                cast_names=cast_names,
             )
         if "acting_contract" in beat:
             NumericV2Compiler._validate_acting_contract(c, beat.get("acting_contract"), f"{path}.acting_contract")
 
     @staticmethod
-    def _validate_character_state(c: _Collector, value: Any, path: str) -> None:
+    def _validate_character_state(
+        c: _Collector, value: Any, path: str, *, cast_names: Mapping[str, Any] | None = None,
+    ) -> None:
         """校验作者写定的三方入幕状态；它只约束演绎，不进入 Session 数值。"""  # noqa: DOCSTRING_CJK
 
         state = c.obj(value, path)
         for field, subject in _CHARACTER_STATE_SUBJECTS.items():
+            # 旧包保留固定主体前缀；新包用 intro 中已验证的姓名明确状态归属。
+            name = (cast_names or {}).get(field.replace("_state", "_name"))
+            if field != "environment_state" and _text(name):
+                subject = name
             text = c.require_text(state.get(field), f"{path}.{field}")
             if text and not text.startswith(subject):
                 c.add(
@@ -835,7 +858,10 @@ class NumericV2Compiler:
                 )
 
     @staticmethod
-    def _validate_nodes(c: _Collector, value: Any, metric_ranges: Mapping[str, tuple[int | None, int | None]]) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
+    def _validate_nodes(
+        c: _Collector, value: Any, metric_ranges: Mapping[str, tuple[int | None, int | None]],
+        *, cast_names: Mapping[str, Any] | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
         nodes: dict[str, dict[str, Any]] = {}
         route_targets: dict[str, list[str]] = {}
         route_ids: set[str] = set()
@@ -872,7 +898,9 @@ class NumericV2Compiler:
                             f"{path}.recommended_turns",
                             f"建议收束回合数必须不小于 min_turns，且不能超过 {MAX_RECOMMENDED_TURNS}。",
                         )
-            NumericV2Compiler._validate_story_beat(c, node.get("story_beat"), f"{path}.story_beat")
+            NumericV2Compiler._validate_story_beat(
+                c, node.get("story_beat"), f"{path}.story_beat", cast_names=cast_names,
+            )
             if any(field in node for field in ("choices", "available_interaction_ids", "edges")):
                 c.add("legacy_node_field_forbidden", path, "Numeric v2 节点不能包含旧 Choice、interaction 或 Edge 字段。")
             routes = c.array(node.get("route_gates"), f"{path}.route_gates")

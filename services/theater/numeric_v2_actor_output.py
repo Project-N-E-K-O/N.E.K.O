@@ -159,10 +159,10 @@ def _parse_transition_performance(
     )
 
 
-def _parse_scene_narration(value: Any) -> str:
-    """场景旁白必须是非空字符串，空桥段只允许在去重完成后形成。"""  # noqa: DOCSTRING_CJK
+def _parse_scene_narration(value: Any, *, allow_empty: bool = False) -> str:
+    """只有运行合同明确许可的桥段可为空；开场和其他旁白仍须非空。"""  # noqa: DOCSTRING_CJK
 
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or (not allow_empty and not value.strip()):
         raise NumericV2ActorOutputError("numeric_v2_actor_scene_narration_invalid")
     return _strip_inline_markdown(value.strip())
 
@@ -311,6 +311,7 @@ def _parse_output(
     opening_required: bool = False,
     transition_required: bool = False,
     deterministic_transition: bool = False,
+    bridge_required: bool = True,
     target_opening: str = "",
     dialogue_policy: str = "required",
     source_dialogue_policy: str = "required",
@@ -383,11 +384,13 @@ def _parse_output(
         # Runtime 仍确定段位和顺序；旁白按真实历史生成，缺字段不能退回会复演的作者原文。
         expected_fields = {"source_performance", "target_performance",
                            "bridge_scene_narration", "target_scene_narration"}
-        tolerated_fields = {*expected_fields, "suggested_inputs"}
-        if set(payload) not in {frozenset(expected_fields), frozenset(tolerated_fields)}:
+        tolerated_fields = {*expected_fields, "suggested_inputs", "source_scene_narration"}
+        if not expected_fields.issubset(payload) or set(payload) - tolerated_fields:
             raise NumericV2ActorOutputError("numeric_v2_actor_transition_required")
         result = {
-            "bridge_scene_narration": _parse_scene_narration(payload.get("bridge_scene_narration")),
+            "bridge_scene_narration": _parse_scene_narration(
+                payload.get("bridge_scene_narration"), allow_empty=not bridge_required,
+            ),
             "target_scene_narration": _parse_scene_narration(payload.get("target_scene_narration")),
             "source_performance": _parse_transition_performance(
                 payload.get("source_performance"),
@@ -398,6 +401,11 @@ def _parse_output(
                 dialogue_policy=target_dialogue_policy,
             ),
         }
+        # 来源旁白与普通 scene_update 一样可省略；保留 NPC 原话，不转成猫娘对白。
+        if "source_scene_narration" in payload:
+            narration = _parse_scene_update(payload["source_scene_narration"])
+            if narration:
+                result["source_scene_narration"] = narration
         result["suggested_inputs"] = _parse_actor_suggestions(
             payload.get("suggested_inputs"),
             diagnostics=suggestion_diagnostics,
@@ -420,7 +428,7 @@ def _parse_output(
             if not isinstance(raw_segment.get("phase"), str) or not raw_segment["phase"].strip():
                 raise NumericV2ActorOutputError("numeric_v2_actor_transition_segments_invalid")
             if index == 0:
-                if set(raw_segment) != {"phase", "performance"}:
+                if set(raw_segment) not in ({"phase", "performance"}, {"phase", "performance", "scene_narration"}):
                     raise NumericV2ActorOutputError("numeric_v2_actor_transition_segments_invalid")
                 segments.append({
                     "phase": expected_phases[index],
@@ -429,6 +437,10 @@ def _parse_output(
                         dialogue_policy=source_dialogue_policy,
                     ),
                 })
+                if "scene_narration" in raw_segment:
+                    narration = _parse_scene_update(raw_segment["scene_narration"])
+                    if narration:
+                        segments[-1]["scene_narration"] = narration
                 continue
             if index == 1:
                 if set(raw_segment) != {"phase", "scene_narration"}:
