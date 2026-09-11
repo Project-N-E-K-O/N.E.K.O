@@ -464,6 +464,8 @@
         committedSnapshot = snapshot;
     }
     function readingDelay(text) { return Math.min(5000, Math.max(1100, Array.from(String(text || '')).length * 55)); }
+    // 语音优先等播放完成事件；事件丢失时按完整对白保守估时，不能沿用读字的 5 秒上限。
+    function speechTimeout(text) { return 5000 + Array.from(String(text || '')).length * 300; }
     function wait(ms, token) {
         return new Promise(function (resolve) {
             window.setTimeout(function () { resolve(token === state.queueToken); }, ms);
@@ -472,8 +474,10 @@
     function waitForSpeech(speechId, timeoutMs, token) {
         return new Promise(function (resolve) {
             var done = false;
+            var timer;
             function finish() {
                 if (done) return; done = true;
+                window.clearTimeout(timer);
                 window.removeEventListener('neko-assistant-speech-end', onEnd);
                 window.removeEventListener('neko-assistant-speech-unavailable', onEnd);
                 window.removeEventListener('neko-assistant-speech-cancel', onEnd);
@@ -486,7 +490,7 @@
             window.addEventListener('neko-assistant-speech-end', onEnd);
             window.addEventListener('neko-assistant-speech-unavailable', onEnd);
             window.addEventListener('neko-assistant-speech-cancel', onEnd);
-            window.setTimeout(finish, timeoutMs);
+            timer = window.setTimeout(finish, timeoutMs);
         });
     }
     async function typeBlock(historyId, block, token) {
@@ -522,7 +526,7 @@
                 // TTS 是表现层旁路；请求失败时按阅读时长继续，不能中断正文播放或锁住输入。
                 result = { ok: false };
             }
-            if (result.ok && result.speech_id && (result.audio_queued || result.audio_sent)) alive = await waitForSpeech(result.speech_id, Math.max(5000, readingDelay(dialogueText) * 3), token);
+            if (result.ok && result.speech_id && (result.audio_queued || result.audio_sent)) alive = await waitForSpeech(result.speech_id, speechTimeout(dialogueText), token);
             else alive = await wait(readingDelay(dialogueText), token);
         }
         return alive && token === state.queueToken;

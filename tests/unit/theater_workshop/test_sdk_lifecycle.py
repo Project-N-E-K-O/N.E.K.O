@@ -585,7 +585,7 @@ def test_release_smoke_and_build_entries_cover_sdk(tmp_path):
     assert {"resume", "reopen", "maintenance", "load_engine"}.issubset(result["checks"])
     repo = Path(__file__).resolve().parents[3]
     for filename, count in (("build-desktop.yml", 2), ("build-desktop-linux.yml", 1)):
-        workflow = (repo / ".github/workflows" / filename).read_text()
+        workflow = (repo / ".github/workflows" / filename).read_text(encoding="utf-8")
         assert workflow.count("--include-package=theater_workshop") == count
         assert "scripts/check_theater_workshop_release.py --binary-dir dist/Xiao8" in workflow
 

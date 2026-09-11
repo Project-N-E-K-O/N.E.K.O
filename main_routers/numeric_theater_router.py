@@ -497,7 +497,10 @@ async def preview_numeric_story_delete(story_id: str):
     normalized_story_id = str(story_id or "").strip()
     try:
         registry = await _registry(config_manager)
-        await asyncio.to_thread(registry.load_engine, normalized_story_id)
+        # 预览和删除使用相同的安全路径检查，损坏或旧合同剧本也能进入删除确认。
+        package_path = registry.package_path(normalized_story_id)
+        if not await asyncio.to_thread(package_path.is_file):
+            raise NumericV2PackageNotFoundError("numeric_story_not_found")
         sessions = await asyncio.to_thread(
             list_numeric_v2_sessions,
             _numeric_root(config_manager),
@@ -702,7 +705,7 @@ async def _start_numeric_session(request: Request):
                         archive_store.delete_session_receipts,
                         existing.session.session_id,
                     )
-                except (NumericV2ArchiveError, OSError):
+                except (NumericV2ArchiveError, OSError, NumericV2StoreRevisionConflictError, MaintenanceModeError):
                     # 新 Session 和恢复槽位已经提交；旧回执清理失败只能延后维护，不能把成功重开报成失败。
                     logger.warning(
                         "Numeric v2 重新开始后清理旧回执失败: %s",

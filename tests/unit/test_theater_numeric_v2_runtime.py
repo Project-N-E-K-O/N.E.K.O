@@ -734,6 +734,30 @@ async def test_numeric_v2_session_delete_rejects_unreadable_story_index(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("corrupt_bytes", [b"{broken-json", b"\xff", b"{}"])
+async def test_numeric_v2_session_delete_preserves_unidentifiable_data(tmp_path, corrupt_bytes):
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
+    stored = await runtime.start_session(
+        session_id="delete_corrupt_session",
+        catgirl_binding=_binding(),
+        opening_performance=_opening(),
+    )
+    session_path = runtime.store._path(stored.session.session_id)
+    index_path = tmp_path / "numeric_v2" / "story_sessions.json"
+    original_index = index_path.read_bytes()
+    session_path.write_bytes(corrupt_bytes)
+
+    # 日常列表可以跳过坏文件；删除前的严格扫描不能把未知归属当作没有数据。
+    assert numeric_v2_store.list_numeric_v2_sessions(tmp_path) == []
+    with pytest.raises(numeric_v2_store.NumericV2StoreError, match="numeric_session_read_failed"):
+        await numeric_v2_store.delete_numeric_v2_sessions(
+            tmp_path, character_id=_binding()["character_id"],
+        )
+    assert session_path.read_bytes() == corrupt_bytes
+    assert index_path.read_bytes() == original_index
+
+
+@pytest.mark.asyncio
 async def test_numeric_v2_session_delete_rejects_transient_session_read_failure(
     tmp_path,
     monkeypatch,

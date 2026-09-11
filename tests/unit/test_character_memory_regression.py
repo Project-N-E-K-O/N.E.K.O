@@ -1682,6 +1682,21 @@ async def test_character_management_and_recent_save_regression():
             assert switch_back_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == initial_name
 
+            from services.theater.numeric_v2_store import NumericV2StoreError
+
+            original_session = numeric_session_path.read_bytes()
+            original_characters = cm.load_characters()
+            original_recent = recent_path.read_bytes()
+            for corrupt_bytes in (b"{broken-json", b"\xff"):
+                numeric_session_path.write_bytes(corrupt_bytes)
+                with pytest.raises(NumericV2StoreError, match="numeric_session_read_failed"):
+                    await characters_router_module.delete_catgirl("测试角色")
+                assert cm.load_characters() == original_characters
+                assert numeric_session_path.read_bytes() == corrupt_bytes
+                assert numeric_public_archive_path.is_file()
+                assert recent_path.read_bytes() == original_recent
+            numeric_session_path.write_bytes(original_session)
+
             with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
                 delete_result = await characters_router_module.delete_catgirl("测试角色")
             assert delete_result["success"] is True

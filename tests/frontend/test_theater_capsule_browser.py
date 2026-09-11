@@ -996,6 +996,19 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
     end_messages: list[dict] = []
     end_fails = {"value": False}
 
+    # 本例从正常聊天开始；完成首次引导，避免教程或人格选择遮挡剧场交互。
+    mock_page.route("**/api/seven-day-tutorial/state", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps({
+            "success": True, "initialized": True, "revision": 1,
+            "state": {"completedRounds": list(range(1, 8))},
+        }),
+    ))
+    mock_page.route("**/api/characters/persona-onboarding-state", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps({
+            "success": True, "state": {"status": "completed"},
+        }),
+    ))
+
     def fulfill(route: Route, payload: dict) -> None:
         route.fulfill(status=200, content_type="application/json", body=json.dumps(payload, ensure_ascii=False))
 
@@ -1529,7 +1542,10 @@ def test_valid_replacement_launch_retires_previous_end_receipt(mock_page: Page, 
         elif path.endswith("/session/session-b"):
             payload = _snapshot(revision=0, story_id="story-b", session_id="session-b")
         elif path.endswith("/session/missing"):
-            payload = {"ok": False, "reason": "numeric_session_not_found"}
+            route.fulfill(status=404, content_type="application/json", body=json.dumps(
+                {"ok": False, "reason": "numeric_session_not_found"},
+            ))
+            return
         else:
             route.continue_()
             return
@@ -1540,9 +1556,10 @@ def test_valid_replacement_launch_retires_previous_end_receipt(mock_page: Page, 
     mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
     mock_page.wait_for_function("() => window.nekoTheaterRuntime?.getState().phase === 'ended'")
     assert mock_page.evaluate("window.nekoTheaterRuntime.getState().pendingEnd.end_receipt_id") == "old-receipt"
-    with mock_page.expect_response("**/session/missing?*"):
+    with mock_page.expect_response("**/session/missing?*") as missing_response:
         mock_page.evaluate("""() => window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
             launch_id:'missing-launch', story_id:'missing', session_id:'missing', revision:0}, location.origin)""")
+    assert missing_response.value.status == 404
     assert mock_page.evaluate("window.nekoTheaterRuntime.getState().pendingEnd.end_receipt_id") == "old-receipt"
     mock_page.evaluate("""() => window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
         launch_id:'new-launch', launch_action:'continue', story_id:'story-b', session_id:'session-b', revision:0}, location.origin)""")
@@ -1554,3 +1571,46 @@ def test_valid_replacement_launch_retires_previous_end_receipt(mock_page: Page, 
         window.postMessage({schema:'neko.theater.interpage.v1',action:'theater:selector-ready'},location.origin);
     }""")
     assert mock_page.evaluate("window.__staleReceipts") == []
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("completion", ["end", "unavailable", "cancel", "timeout"])
+def test_long_dialogue_waits_for_speech_completion(mock_page: Page, running_server: str, completion):
+    snapshot = _snapshot(revision=0)
+    snapshot["session"]["opening_performance"]["performance"] = "我还有一段很长的话要告诉你。" * 12
+
+    def handler(route: Route):
+        path = route.request.url.split("?", 1)[0]
+        if path.endswith("/session/capsule-browser-session"):
+            payload = snapshot
+        elif path.endswith("/session/speak-block"):
+            payload = {"ok": True, "speech_id": "long-speech", "audio_queued": True}
+        else:
+            route.continue_()
+            return
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+    mock_page.route("**/api/theater-numeric/**", handler)
+    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime && window.reactChatWindowHost")
+    mock_page.clock.install()
+    with mock_page.expect_response("**/session/speak-block"):
+        mock_page.evaluate("""() => window.postMessage({
+            schema:'neko.theater.interpage.v1', action:'theater:launch-request',
+            launch_id:'long-speech-launch', launch_action:'start',
+            story_id:'capsule-browser-story', session_id:'capsule-browser-session', revision:0
+        }, location.origin)""")
+    mock_page.clock.run_for(16000)
+    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().phase") == "performing"
+    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().suggestedInputs") == []
+    mock_page.evaluate("""() => window.dispatchEvent(new CustomEvent(
+        'neko-assistant-speech-end', {detail:{turnId:'unrelated-speech'}}))""")
+    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().phase") == "performing"
+    if completion == "timeout":
+        # 完成事件丢失时仍有有限兜底，不永久锁住玩家输入。
+        mock_page.clock.run_for(100000)
+    else:
+        mock_page.evaluate("""kind => window.dispatchEvent(new CustomEvent(
+            'neko-assistant-speech-' + kind, {detail:{turnId:'long-speech'}}))""", completion)
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().suggestedInputs") == snapshot["suggested_inputs"]

@@ -1698,7 +1698,7 @@ def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
     assert submitted.status_code == 200
     if remaining_violation:
         assert session_path.read_bytes() != before_bytes
-        saved = json.loads(session_path.read_text())["session"]["performance_history"][-1]
+        saved = json.loads(session_path.read_text(encoding="utf-8"))["session"]["performance_history"][-1]
         assert saved["performance"] == submitted.json()["performance"]["performance"]
         assert saved["transition_offered"] is (remaining_violation == "invalid_offer")
     else:
@@ -3155,7 +3155,7 @@ def test_forget_transaction_recovers_after_interruption_and_blocks_archival(tmp_
         active = client.get("/api/theater-numeric/session/active", params={"story_id": scope["story_id"]})
         assert active.status_code == 200
         assert active.json()["archive_status"] == "skipped"
-        session_data = json.loads((tmp_path / "theater/numeric_v2/sessions/forget_retry.json").read_text())
+        session_data = json.loads((tmp_path / "theater/numeric_v2/sessions/forget_retry.json").read_text(encoding="utf-8"))
         assert session_data["session"]["forgotten_through_revision"] == 0
     if failure == "watermark":
         assert len(remote_calls) == 1
@@ -3335,6 +3335,11 @@ def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_ses
             "load_engine",
             unexpected_load,
         )
+        damaged_preview = client.get(
+            "/api/theater-numeric/packages/numeric_v2_contract/delete-preview"
+        )
+        assert damaged_preview.status_code == 200
+        assert damaged_preview.json() == preview.json()
         deleted = client.delete(
             "/api/theater-numeric/packages/numeric_v2_contract"
         )
@@ -3880,9 +3885,15 @@ def test_numeric_v2_restart_keeps_ended_session_when_new_opening_fails(tmp_path,
         assert not (sessions / "restart_target.json").exists()
 
 
+@pytest.mark.parametrize("cleanup_error", [
+    OSError("cleanup failed"),
+    numeric_theater_router.NumericV2StoreRevisionConflictError("numeric_storage_root_changed"),
+    MaintenanceModeError("applying_snapshot", operation="delete", target="theater/receipts"),
+])
 def test_numeric_v2_restart_stays_successful_when_old_receipt_cleanup_fails(
     tmp_path,
     monkeypatch,
+    cleanup_error,
 ):
     """新 Session 提交后的旧回执清理失败不能反转成功结果。"""  # noqa: DOCSTRING_CJK
 
@@ -3903,7 +3914,7 @@ def test_numeric_v2_restart_stays_successful_when_old_receipt_cleanup_fails(
         ).status_code == 200
 
         def fail_cleanup(_self, _session_id):
-            raise OSError("cleanup failed")
+            raise cleanup_error
 
         monkeypatch.setattr(
             NumericV2ArchiveStore,
@@ -5389,7 +5400,7 @@ def test_numeric_v2_review_fallback_replay_and_next_turn_keep_same_history(tmp_p
     with client:
         assert client.post("/api/theater-numeric/session/start", json={
             "story_id": body["story_id"], "session_id": body["session_id"]}).status_code == 200
-        initial = json.loads(path.read_text())
+        initial = json.loads(path.read_text(encoding="utf-8"))
         submitted = client.post("/api/theater-numeric/session/input", json=body)
         assert submitted.status_code == 200
         assert submitted.json()["performance"]["performance"] == last_reply

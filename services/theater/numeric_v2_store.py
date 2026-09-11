@@ -216,13 +216,20 @@ def _read_numeric_v2_session_summary(
         if raise_on_io_error:
             raise
         return None
-    except (UnicodeError, json.JSONDecodeError):
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        # 删除前无法确认归属就必须中止；启动审计会按既有坏档隔离流程处理此错误。
+        if raise_on_io_error:
+            raise NumericV2StoreError("numeric_session_read_failed") from exc
         return None
     if not isinstance(payload, dict) or payload.get("schema") != STORE_SCHEMA:
+        if raise_on_io_error:
+            raise NumericV2StoreError("numeric_session_read_failed")
         return None
     raw_session = payload.get("session")
     binding = raw_session.get("catgirl_binding") if isinstance(raw_session, dict) else None
     if not isinstance(raw_session, dict) or not isinstance(binding, dict):
+        if raise_on_io_error:
+            raise NumericV2StoreError("numeric_session_read_failed")
         return None
     return {
         "session_id": str(raw_session.get("session_id") or path.stem),

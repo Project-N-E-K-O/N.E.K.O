@@ -377,6 +377,10 @@ class NumericV2ProjectStore:
             return self._view(self._read_path(self._path(project_id)))
 
     def update(self, project_id: str, *, base_revision: int, changes: Mapping[str, Any]) -> dict[str, Any]:
+        return self._update(project_id, base_revision=base_revision, changes=changes)
+
+    def _update(self, project_id: str, *, base_revision: int, changes: Mapping[str, Any],
+                preserve_imported_story: bool = False) -> dict[str, Any]:
         with self.transaction():
             project = self._read_path(self._path(project_id))
             if project["revision"] != base_revision:
@@ -425,7 +429,7 @@ class NumericV2ProjectStore:
                 if next_story is not None:
                     if "title" in changes:
                         next_story.setdefault("meta", {})["title"] = project["title"]
-                    if "setup" in changes and isinstance(project.get("story"), dict):
+                    if "setup" in changes and not preserve_imported_story:
                         metric_schema, initial_metrics = metrics_to_package(project["setup"]["metrics"])
                         next_story["metric_schema"] = metric_schema
                         next_story.setdefault("initial_state", {})["metrics"] = initial_metrics
@@ -807,9 +811,11 @@ class NumericV2ProjectStore:
             })
         setup = deepcopy(project["setup"])
         setup["metrics"] = setup_metrics
-        return self.update(
+        # 导入的 setup 只是旧包的编辑投影，不是作者要求改写正文；保留编译过的原包及 hash。
+        return self._update(
             project["project_id"],
             base_revision=project["revision"],
+            preserve_imported_story=True,
             changes={
                 "title": story.get("meta", {}).get("title", "未命名剧本"),
                 "stage": "story",

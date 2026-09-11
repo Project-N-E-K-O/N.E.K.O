@@ -102,9 +102,9 @@ async def test_restore_rejects_invalidation_boundary_missing_from_ledger(tmp_pat
     current = await _commit(runtime, current, "去便利店吧？", offer=True)
     current = await _commit(runtime, current, "我说错了。", invalidate=True)
     path = tmp_path/'numeric_v2/sessions/tampered_reset.json'
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     data['ledger_events'][-1].pop('transition_offer_invalidated')
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(NumericV2StoreError, match='numeric_ledger_replay_mismatch'):
         await runtime.restore_session('tampered_reset')
 

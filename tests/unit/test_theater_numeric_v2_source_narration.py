@@ -123,9 +123,9 @@ async def test_invalid_source_narration_cannot_be_committed_or_cold_restored(tmp
     assert await runtime.restore_session('invalid_source') == current
     await runtime.commit_turn(outcome, assembled)
     path = runtime.store._path('invalid_source')
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     payload['session']['performance_history'][-1]['segments'][0]['scene_narration'] = invalid
-    path.write_text(json.dumps(payload, ensure_ascii=False))
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(ValueError, match='numeric_transition_performance_invalid'):
         await NumericV2Runtime(runtime.engine, tmp_path).restore_session('invalid_source')
 
