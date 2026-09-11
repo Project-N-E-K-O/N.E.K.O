@@ -228,7 +228,7 @@
       if (!base || hostDisposed) return null;
       if (base.model && ['live2d', 'vrm'].includes(base.model.type)) return base;
       if (!metadataHost) metadataHost = createExtendedHost();
-      const configured = await metadataHost.getCharacter(base.name);
+      const configured = await metadataHost.getCharacter(base.name, requestOptions);
       if (hostDisposed || requestOptions?.signal?.aborted) return null;
       return configured ? { ...base, ...configured } : base;
     }
@@ -331,6 +331,13 @@
         const retiring = extendedHost;
         extendedHost = null;
         extendedController = null;
+        // Once the extended renderer is released its old model is unavailable,
+        // including while a replacement is loading or after that load fails.
+        if (retiring && ['mmd', 'pngtuber'].includes(state.model?.type)) {
+          state.model = null;
+          state.layout = null;
+          markAiAvatar('none', '', false);
+        }
         return retiring?.dispose();
       }
       const onExtendedAbort = () => observeAsyncDisposal(releaseExtended(), 'extended');

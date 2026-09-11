@@ -1413,6 +1413,16 @@ async function main() {
       assert(avatar.getState().speaking, `${kind}: resume lost playback`);
       emit(false); await flush();
       assert(!avatar.getState().speaking, `${kind}: stop retained playback`);
+      // The old extended renderer is destroyed before the new path is checked.
+      // A rejected replacement must not leave its descriptor marked ready.
+      const failedReplacement = await rejection(avatar.setModel({ type: kind, path: '/not-configured-model' }));
+      assert(failedReplacement, `${kind}: untrusted replacement unexpectedly loaded`);
+      assert(!avatar.getState().ready && avatar.getState().model === null,
+        `${kind}: destroyed model remained ready after failed replacement`);
+      assert(windowMock.__SoccerAiAvatar.type === 'none' && !windowMock.__SoccerAiAvatar.ready,
+        `${kind}: global avatar status retained the destroyed renderer`);
+      await avatar.setModel(descriptor.model);
+      assert(avatar.getState().ready, `${kind}: failed replacement prevented recovery`);
       const savedCharacter = characters[name];
       try {
         characters[name] = characters[kind === 'mmd' ? 'PNG Neko' : 'MMD Neko'];
@@ -1449,6 +1459,48 @@ async function main() {
       `${kind}: disposed host loaded a late renderer`);
     assert(cancelledSoccer.pendingCount === 0 && activeTimeouts.size === 0 && frames.size === 0,
       `${kind}: cancelled mount retained requests or frames`);
+
+    // Cancellation must cross soccer's metadata adapter into the real shared
+    // provider, not merely discard its eventual descriptor in the outer SDK.
+    let metadataSignal;
+    let metadataStarted;
+    let releaseMetadata;
+    const metadataReady = new Promise(resolve => { metadataStarted = resolve; });
+    const metadataGate = new Promise(resolve => { releaseMetadata = resolve; });
+    const metadataAbort = new AbortController();
+    const metadataSoccer = windowMock.createSoccerAvatarHost({
+      characterSource: { getCharacter: async () => ({ name, model: descriptor.model }) },
+      fetchImpl: async (url, options) => {
+        if (url === '/api/characters') {
+          metadataSignal = options.signal;
+          metadataStarted();
+          let onAbort;
+          try {
+            await Promise.race([metadataGate, new Promise((_, reject) => {
+              onAbort = () => reject(new Error('metadata_aborted'));
+              options.signal.addEventListener('abort', onAbort, { once: true });
+              if (options.signal.aborted) onAbort();
+            })]);
+          } finally { options.signal.removeEventListener('abort', onAbort); }
+        }
+        return fetchImpl(url, options);
+      },
+    });
+    const metadataResult = rejection(metadataSoccer.getCharacter(name,
+      { signal: metadataAbort.signal, timeoutMs: 1234 }));
+    try {
+      await metadataReady;
+      metadataAbort.abort();
+      await new Promise(resolve => setImmediate(resolve));
+      assert(metadataSignal.aborted, `${kind}: soccer metadata cancellation did not reach fetch`);
+      assert(await withTimeout(metadataResult, 'metadata query did not cancel'),
+        `${kind}: cancelled metadata lookup returned success`);
+      assert(activeTimeouts.size === 0, `${kind}: metadata cancellation retained a timer`);
+    } finally {
+      releaseMetadata();
+      await metadataSoccer.dispose();
+      await metadataResult;
+    }
   }
 
   await verifyConfiguredLive2DIdleReplay();
