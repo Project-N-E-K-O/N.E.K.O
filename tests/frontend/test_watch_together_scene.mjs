@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {run} from '../../static/game/games/watch-together/scene.mjs';
 
-async function fixture(confirm, afterDownload=false, usage=null) {
+async function fixture(confirm, afterDownload=false, usage=null, discover=null) {
   const elements = new Map();
   globalThis.document = {createElement(){return {};},getElementById(id) {
     if (!elements.has(id)) elements.set(id,{value:'',textContent:'',disabled:false,replaceChildren(){},append(){}});
@@ -24,7 +24,7 @@ async function fixture(confirm, afterDownload=false, usage=null) {
       if(action==='history')return {analyses:usage?[{job:'selected',version:'v',status:'ready'}]:[],watches};
       if(action==='watch'){watches=[{job:'selected',progress:payload.position || 0,last_watched:'now'}];return {id:'watch-1'};}
       if(action==='load')return {id:'selected',version:'v',bvid:'BV1GJ411x7h7',title:'Cats',usage,events:[]};
-      if(action==='discover')return {video:null};
+      if(action==='discover')return discover ? discover() : {video:null};
       if(action==='prepare') {
         if(afterDownload) {
           if(payload.confirmation_job){game.disposed=true;return {ok:true};}
@@ -87,3 +87,20 @@ await new Promise(resolve=>setTimeout(resolve,0));
 assert.match(watching.elements.get('watches').textContent,/selected.*122s/);
 watching.handlers['runtime-inactive']();
 console.log('watch-together scene: persisted watch start and completion refresh without reload');
+let finishOldDiscovery, discoveryCount=0;
+const retrying=await fixture(false,false,{total_tokens:1},()=>{
+  discoveryCount++;
+  return discoveryCount===1 ? new Promise(resolve=>{finishOldDiscovery=resolve;}) : {video:null};
+});
+const prefetch=retrying.elements.get('prefetch-enabled');
+prefetch.checked=true;
+await retrying.elements.get('play').onclick();
+assert.equal(discoveryCount,1);
+prefetch.checked=false;prefetch.onchange();
+prefetch.checked=true;prefetch.onchange();
+assert.equal(discoveryCount,1,'invalidated work still owns queue');
+finishOldDiscovery({video:null});
+await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(discoveryCount,2,'queue release retries current selection exactly once');
+retrying.handlers['runtime-inactive']();
+console.log('watch-together scene: queue release retries current playback without duplicate prefetch');
