@@ -170,10 +170,10 @@ declare namespace NekoMiniGame {
   }
 
   interface RuntimeConfiguration {
-    payload?: () => unknown;
+    payload?: () => Record<string, unknown>;
     heartbeat?: false | { intervalMs?: number; timeoutMs?: number };
     outputs?: false | { intervalMs?: number; timeoutMs?: number; limit?: number };
-    pageExit?: false | true | { payload?: (context: unknown) => unknown };
+    pageExit?: false | true | { payload?: (context: unknown) => Record<string, unknown> };
   }
 
   interface Runtime {
@@ -181,8 +181,8 @@ declare namespace NekoMiniGame {
     readonly session: RuntimeSession;
     configure(config?: RuntimeConfiguration): Readonly<RuntimeConfiguration>;
     reset(options?: { newSession?: boolean }): RuntimeSession;
-    start(payload?: unknown, options?: RequestOptions): Promise<Response>;
-    end(payload?: unknown, options?: RequestOptions & { useBeacon?: boolean }): Promise<Response>;
+    start(payload?: Record<string, unknown>, options?: RequestOptions): Promise<Response>;
+    end(payload?: Record<string, unknown>, options?: RequestOptions & { useBeacon?: boolean }): Promise<Response>;
     pulse(force?: boolean): Promise<unknown>;
     pollOutputs(): Promise<unknown>;
     startMonitoring(options?: { heartbeat?: boolean; outputs?: boolean }): void;

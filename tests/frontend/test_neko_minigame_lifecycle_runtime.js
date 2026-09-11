@@ -348,6 +348,7 @@ async function main() {
   // that never left the browser) and wedge start() on `busy` after four tries.
   const rejectedPayloadEnvironment = createEnvironment();
   const rejectedPayloadStarts = [];
+  const rejectedPayloadPolls = [];
   const rejectedPayloadTransport = {
     ...transport,
     logger: logger(),
@@ -358,8 +359,8 @@ async function main() {
       rejectedPayloadStarts.push(payload);
       return { ok: true, state: { game_route_active: true, lanlan_name: 'Yui' }, payload };
     },
-    async heartbeat() { return { ok: true, active: true }; },
-    async drain() { return { ok: true, outputs: [] }; },
+    async heartbeat(payload) { rejectedPayloadPolls.push(payload); return { ok: true, active: true }; },
+    async drain(payload) { rejectedPayloadPolls.push(payload); return { ok: true, outputs: [] }; },
     async end() { return { ok: true }; },
     dispose() {},
   };
@@ -373,6 +374,14 @@ async function main() {
     documentImpl: rejectedPayloadEnvironment.documentImpl,
   });
   rejectedPayloadGame.runtime.configure({ heartbeat: false, outputs: false, pageExit: false });
+  for (const payload of ['{"game_started":true}', [], null, 42, true, new Date()]) {
+    let error;
+    try { await rejectedPayloadGame.runtime.start(payload); } catch (caught) { error = caught; }
+    assert(error?.code === 'invalid_request' && rejectedPayloadStarts.length === 0,
+      'non-object lifecycle payload was silently dropped or reached transport');
+    assert(rejectedPayloadGame.runtime.state === 'idle',
+      'invalid payload changed lifecycle state before dispatch');
+  }
   for (let attempt = 0; attempt < 6; attempt += 1) {
     let rejectedError = null;
     try { await rejectedPayloadGame.runtime.start({ replay: 'x'.repeat(300 * 1024) }); }
@@ -387,6 +396,16 @@ async function main() {
   const acceptedStart = await rejectedPayloadGame.runtime.start({ replay: 'x'.repeat(200 * 1024) });
   assert(acceptedStart.ok && rejectedPayloadStarts.length === 1,
     'a runtime payload within the 256 KiB budget was rejected');
+  rejectedPayloadGame.runtime.configure({ payload: () => '{"started":true}', pageExit: false });
+  await rejectedPayloadGame.runtime.pulse(true);
+  await rejectedPayloadGame.runtime.pollOutputs();
+  assert(rejectedPayloadPolls.length === 0,
+    'invalid configured lifecycle payload reached heartbeat or drain');
+  let invalidEndError;
+  try { await rejectedPayloadGame.runtime.end('{"reason":"explicit-exit"}'); }
+  catch (error) { invalidEndError = error; }
+  assert(invalidEndError?.code === 'invalid_request' && rejectedPayloadGame.runtime.state === 'running',
+    'invalid end payload stopped an active route instead of rejecting before side effects');
   await rejectedPayloadGame.runtime.end({ reason: 'bounded-payload' });
   rejectedPayloadGame.dispose();
 

@@ -2329,6 +2329,9 @@
     }
 
     function requireBoundedRuntimeLifecyclePayload(payload, operation) {
+      if (!plainObject(payload)) {
+        fail('invalid_request', 'The runtime lifecycle payload must be an object', { operation });
+      }
       // Every other SDK egress path is bounded; the runtime lifecycle payload
       // was not, in the one dimension that costs anything. Same 256 KiB the
       // trusted host now enforces, so the two cannot disagree about an honest
@@ -2346,7 +2349,8 @@
     function runtimePayload() {
       if (!runtimeConfig || typeof runtimeConfig.payload !== 'function') return {};
       const payload = runtimeConfig.payload();
-      return payload == null ? {} : payload;
+      requireBoundedRuntimeLifecyclePayload(payload, 'runtime.payload');
+      return payload;
     }
 
     function runtimeRouteInstanceEntropy() {
@@ -2403,6 +2407,7 @@
     }
 
     function runtimeRoutePayload(payload, routeInstanceId = runtimeRouteInstanceId) {
+      requireBoundedRuntimeLifecyclePayload(payload, 'runtime.route');
       const candidateIds = runtimeRouteInstanceIds.length
         ? Array.from(runtimeRouteInstanceIds)
         : (routeInstanceId ? [routeInstanceId] : []);
@@ -2736,7 +2741,11 @@
           payload = runtimeConfig.pageExit.payload
             ? runtimeConfig.pageExit.payload(exitContext)
             : runtimePayload();
+          requireBoundedRuntimeLifecyclePayload(payload, 'runtime.page-exit');
         } catch (error) {
+          // Still release the owned generation on unload, without forwarding
+          // malformed application data or claiming that it was accepted.
+          payload = {};
           void publishRuntimeEvent('runtime-error', {
             operation: 'page-exit',
             reason: 'payload_failed',
@@ -3503,6 +3512,7 @@
       },
       async end(payload = {}, requestOptions = {}) {
         requireCapability('runtime', 'runtime.end');
+        requireBoundedRuntimeLifecyclePayload(payload, 'runtime.end');
         let endRequestOptions = requestOptions;
         if (runtimePhase === 'starting' && runtimeStartSettlement) {
           if (runtimeEndWaitingForStart) {
