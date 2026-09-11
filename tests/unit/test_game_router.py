@@ -3474,7 +3474,7 @@ async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
             kwargs["structured_output_attempt"],
             kwargs["structured_output_isolation_id"],
         ))
-        raise ValueError("bad json")
+        raise gr_pregame.StructuredOutputContentError("invalid_json")
 
     _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
     _gr_patch_all(monkeypatch, "_run_soccer_pregame_context_ai", fake_ai)
@@ -3493,6 +3493,34 @@ async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
     assert context["initialDifficulty"] == "lv2"
     assert [attempt for attempt, _ in attempts] == [1, 2]
     assert attempts[0][1] != attempts[1][1]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_pregame_context_provider_value_error_is_not_retried(monkeypatch):
+    _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan", "master_name": "Player", "lanlan_prompt": "",
+        "model": "fake", "base_url": "http://fake", "api_type": "local", "api_key": "key",
+    })
+
+    async def fake_fetch(_lanlan_name, **_kwargs):
+        return "", ""
+
+    attempts = []
+
+    async def fake_ai(**kwargs):
+        attempts.append(kwargs["structured_output_attempt"])
+        raise ValueError("invalid provider configuration")
+
+    _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
+    _gr_patch_all(monkeypatch, "_run_soccer_pregame_context_ai", fake_ai)
+    context, source, error = await gr_pregame._build_soccer_pregame_context(
+        game_type="soccer", session_id="provider_failure", lanlan_name="Lan",
+        neko_initiated=False, neko_invite_text="",
+    )
+    assert attempts == [1]
+    assert (source, error) == ("fallback", "ai_failed")
+    assert context["gameStance"] == "neutral_play"
 
 
 @pytest.mark.unit

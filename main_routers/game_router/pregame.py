@@ -613,24 +613,17 @@ async def _build_soccer_pregame_context(
     )
 
     async def attempt_factory(attempt: int, isolation_id: str) -> dict:
-        try:
-            return await _run_soccer_pregame_context_ai(
-                lanlan_name=lanlan_name,
-                master_name=str(char_info.get("master_name") or "玩家"),
-                lanlan_prompt=str(char_info.get("lanlan_prompt") or ""),
-                recent_history=recent_history,
-                neko_initiated=neko_initiated,
-                neko_invite_text=neko_invite_text,
-                prompt_locale=effective_prompt_locale,
-                structured_output_attempt=attempt,
-                structured_output_isolation_id=isolation_id,
-            )
-        except StructuredOutputContentError:
-            raise
-        except ValueError as exc:
-            # Preserve the old classification for test/provider adapters that
-            # report malformed content as a plain ValueError.
-            raise StructuredOutputContentError("invalid_json") from exc
+        return await _run_soccer_pregame_context_ai(
+            lanlan_name=lanlan_name,
+            master_name=str(char_info.get("master_name") or "玩家"),
+            lanlan_prompt=str(char_info.get("lanlan_prompt") or ""),
+            recent_history=recent_history,
+            neko_initiated=neko_initiated,
+            neko_invite_text=neko_invite_text,
+            prompt_locale=effective_prompt_locale,
+            structured_output_attempt=attempt,
+            structured_output_isolation_id=isolation_id,
+        )
 
     def validator(raw_context: Any) -> tuple[dict, list[dict[str, Any]]]:
         validation_issues: list[dict[str, Any]] = []
