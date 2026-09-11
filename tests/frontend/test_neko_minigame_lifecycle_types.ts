@@ -10,6 +10,15 @@ runtime.end(end);
 runtime.start();
 runtime.end();
 runtime.configure({ payload: () => start, pageExit: { payload: () => end } });
+// Structural typing cannot distinguish these prototypes. These compile, but the
+// runtime suite verifies rejection before dispatch across every lifecycle path.
+class StartPayloadInstance implements StartPayload { game_started = true; }
+const sameShape: StartPayload = new StartPayloadInstance();
+for (const nonPlain of [[], new Date(), new Map(), () => ({}), sameShape]) {
+  runtime.start(nonPlain);
+  runtime.end(nonPlain);
+  runtime.configure({ payload: () => nonPlain, pageExit: { payload: () => nonPlain } });
+}
 // @ts-expect-error Serialized JSON is not an object payload.
 runtime.start('{"game_started":true}');
 // @ts-expect-error Null is not an object payload.

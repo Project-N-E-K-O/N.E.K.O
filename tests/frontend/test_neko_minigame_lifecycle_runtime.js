@@ -409,10 +409,16 @@ async function main() {
   await rejectedPayloadGame.runtime.end({ reason: 'bounded-payload' });
   rejectedPayloadGame.dispose();
 
+  // Non-plain values can satisfy TypeScript's structural object constraint, but
+  // must be rejected at runtime on every lifecycle path.
+  class StartPayloadInstance { game_started = true; }
+  const nonPlainPayloads = [[], new Date(), new Map(), () => ({}), new StartPayloadInstance()];
   // Measure and dispatch the same materialized object, not two observations
   // of caller-owned getters or a misleading non-enumerable toJSON projection.
   for (const operation of ['start', 'end', 'heartbeat', 'drain', 'page-exit']) {
-    for (const oversized of [true, false]) {
+    for (const scenario of ['oversized', 'snapshot', ...nonPlainPayloads]) {
+      const oversized = scenario === 'oversized';
+      const invalid = scenario !== 'snapshot';
       const env = createEnvironment();
       const sent = [];
       const payloadErrors = [];
@@ -433,13 +439,13 @@ async function main() {
         if (operation !== 'start') await probe.runtime.start();
         sent.length = 0;
         let reads = 0;
-        const caller = Object.defineProperties({}, {
+        const caller = typeof scenario === 'string' ? Object.defineProperties({}, {
           toJSON: { value: () => ({}) },
           replay: { enumerable: true, get() {
             reads += 1;
             return { text: oversized || reads > 1 ? 'x'.repeat(300 * 1024) : 'bounded' };
           } },
-        });
+        }) : scenario;
         probe.events.on('runtime-error', (event) => payloadErrors.push(event));
         let provideCaller = false;
         probe.runtime.configure({
@@ -461,15 +467,15 @@ async function main() {
           else if (operation === 'drain') await probe.runtime.pollOutputs();
           else env.windowImpl.dispatch('pagehide');
         } catch (caught) { error = caught; }
-        if (oversized) {
+        if (invalid) {
           if (operation === 'page-exit') {
             assert(sent.length === 1 && sent[0].replay === undefined && sent[0].sdk_route_instance_id,
               'invalid page-exit payload must still clean up only the owned route');
           } else {
-            assert(sent.length === 0, `${operation}: oversized materialized payload reached transport`);
+            assert(sent.length === 0, `${operation}: invalid payload reached transport`);
           }
           if (operation === 'start' || operation === 'end') {
-            assert(error?.code === 'invalid_request', `${operation}: oversized payload was not rejected`);
+            assert(error?.code === 'invalid_request', `${operation}: invalid payload was not rejected`);
             assert(probe.runtime.state === (operation === 'start' ? 'idle' : 'running'),
               `${operation}: invalid payload changed route state`);
           } else assert(payloadErrors.length === 1, `${operation}: payload rejection was not reported`);

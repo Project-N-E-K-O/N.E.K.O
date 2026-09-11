@@ -170,10 +170,14 @@ declare namespace NekoMiniGame {
   }
 
   interface RuntimeConfiguration {
-    /** Plain JSON object; its shape and bounds are validated at runtime. */
+    /**
+     * Return a bounded plain JSON object. The object type only excludes primitives;
+     * arrays, functions, Date/Map objects and class instances are rejected at runtime.
+     */
     payload?: () => object;
     heartbeat?: false | { intervalMs?: number; timeoutMs?: number };
     outputs?: false | { intervalMs?: number; timeoutMs?: number; limit?: number };
+    /** The page-exit payload follows the same static/runtime contract as payload. */
     pageExit?: false | true | { payload?: (context: unknown) => object };
   }
 
@@ -182,9 +186,13 @@ declare namespace NekoMiniGame {
     readonly session: RuntimeSession;
     configure(config?: RuntimeConfiguration): Readonly<RuntimeConfiguration>;
     reset(options?: { newSession?: boolean }): RuntimeSession;
-    /** Accepts object interfaces; runtime requires a bounded plain JSON object. */
+    /**
+     * Accepts object interfaces without index signatures. Static checking only
+     * excludes primitives; runtime requires a bounded plain JSON object and rejects
+     * arrays, functions, Date/Map objects and class instances with invalid_request.
+     */
     start(payload?: object, options?: RequestOptions): Promise<Response>;
-    /** Accepts object interfaces; runtime requires a bounded plain JSON object. */
+    /** Uses the same static/runtime payload contract as start. */
     end(payload?: object, options?: RequestOptions & { useBeacon?: boolean }): Promise<Response>;
     pulse(force?: boolean): Promise<unknown>;
     pollOutputs(): Promise<unknown>;
