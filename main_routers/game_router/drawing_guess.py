@@ -3826,6 +3826,24 @@ async def _generate_text_context_guess(
     return None
 
 
+def _drawing_vision_scope(session: dict[str, Any]):
+    """A request-scoped fence; never retain a round or image beyond the call."""
+    scope_keys = ("session_id", "round_id", "client_round_token", "phase",
+                  "lanlan_name", "_sdk_route_instance_id")
+    identity = tuple(session.get(key) for key in scope_keys)
+    key = _session_key(str(session.get("lanlan_name") or ""), str(session.get("session_id") or ""))
+    registered = _drawing_guess_sessions.get(key) is session
+
+    def is_current():
+        return (
+            identity == tuple(session.get(key) for key in scope_keys)
+            and (not registered or _drawing_guess_sessions.get(key) is session)
+            and _sdk_bound_drawing_guess_session_is_current(session)
+        )
+
+    return is_current
+
+
 async def _generate_vision_guess(
     *,
     session: dict[str, Any],
@@ -3833,7 +3851,9 @@ async def _generate_vision_guess(
     lanlan_name: str,
     image_data_url: str,
     user_hint: str,
+    is_current=None,
 ) -> dict[str, Any] | None:
+    current = is_current if is_current is not None else _drawing_vision_scope(session)
     data_url = await _prepare_vision_image_data_url(image_data_url)
     if not data_url:
         logger.info(
@@ -3843,25 +3863,11 @@ async def _generate_vision_guess(
         )
         return None
     try:
-        from utils.config_manager import get_config_manager
-
-        api_config = await get_config_manager().aget_model_api_config("vision")
-        model = str(api_config.get("model") or "")
-        base_url = str(api_config.get("base_url") or "")
-        if not model.strip():
-            logger.info(
-                "drawing_guess vision guess skipped: lanlan=%s session=%s reason=no_vision_model",
-                lanlan_name,
-                session.get("session_id") or "",
-            )
-            return None
-
         from . import _get_character_info
 
         char_info = _get_character_info(lanlan_name)
 
-        from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
-        from utils.token_tracker import set_call_type
+        from utils.game_vision import analyze_game_vision
 
         raw_messages = _build_vision_guess_messages(
             session=session,
@@ -3873,26 +3879,15 @@ async def _generate_vision_guess(
             user_hint=user_hint,
             character_profile_prompt=str(char_info.get("character_profile_prompt") or ""),
         )
-        messages = [
-            SystemMessage(content=str(raw_messages[0]["content"])),
-            HumanMessage(content=raw_messages[1]["content"]),
-        ]
-        set_call_type("drawing_guess_vision")
-        llm = await create_chat_llm_async(
-            model=model,
-            base_url=base_url or None,
-            api_key=str(api_config.get("api_key") or "") or None,
-            max_retries=0,
+        raw = await analyze_game_vision(
+            system_prompt=str(raw_messages[0]["content"]),
+            text=raw_messages[1]["content"][1]["text"],
+            attachments=[{"type": "image", "image_data_url": data_url}],
             max_completion_tokens=420,
             timeout=VISION_GUESS_TIMEOUT_SECONDS,
-            provider_type=str(api_config.get("provider_type") or "") or None,
+            is_current=current,
         )
-        async with llm:
-            result = await asyncio.wait_for(
-                llm.ainvoke(messages),  # noqa: LLM_INPUT_BUDGET  # bounded vision prompt: one canvas data URL, fixed candidate bank, truncated hints/chat.
-                timeout=VISION_GUESS_TIMEOUT_SECONDS + 3.0,
-            )
-        parsed = _parse_vision_guess_payload(getattr(result, "content", ""), locale)
+        parsed = _parse_vision_guess_payload(raw, locale)
         if not parsed:
             logger.info(
                 "drawing_guess vision guess rejected: lanlan=%s session=%s reason=model_payload_unparseable",
@@ -3926,6 +3921,10 @@ async def _generate_vision_guess(
             "message": line,
             "source": "vision_model",
         }
+    except ValueError as exc:
+        if str(exc) == "route_inactive":
+            raise asyncio.CancelledError from exc
+        logger.info("drawing_guess shared vision unavailable: lanlan=%s", lanlan_name)
     except asyncio.TimeoutError:
         logger.info("drawing_guess vision guess timed out: lanlan=%s", lanlan_name)
     except Exception as exc:
@@ -4010,6 +4009,7 @@ async def _review_ai_drawing(
     lanlan_name: str,
     image_data_url: str,
 ) -> dict[str, Any]:
+    current = _drawing_vision_scope(session)
     data_url = await _prepare_vision_image_data_url(image_data_url)
     if not data_url:
         return {
@@ -4018,45 +4018,22 @@ async def _review_ai_drawing(
             "reason": "invalid_image",
             "source": "unavailable",
         }
-    model = ""
-    provider_type = ""
     try:
-        from utils.config_manager import get_config_manager
-
-        api_config = await get_config_manager().aget_model_api_config("vision") or {}
-        model = str(api_config.get("model") or "")
-        provider_type = str(api_config.get("provider_type") or "")
-        if not model.strip():
-            return {
-                "available": False,
-                "accepted": False,
-                "reason": "no_vision_model",
-                "source": "unavailable",
-            }
-
-        from utils.llm_client import create_chat_llm_async
-        from utils.token_tracker import set_call_type
+        from utils.game_vision import analyze_game_vision
 
         messages = _build_ai_drawing_review_messages(
             session=session,
             locale=locale,
             data_url=data_url,
         )
-        set_call_type("drawing_guess_drawing_review")
-        llm = await create_chat_llm_async(
-            model=model,
-            base_url=str(api_config.get("base_url") or "") or None,
-            api_key=str(api_config.get("api_key") or "") or None,
-            max_retries=0,
+        raw = await analyze_game_vision(
+            system_prompt=messages[0].content,
+            text=messages[1].content[1]["text"],
+            attachments=[{"type": "image", "image_data_url": data_url}],
             max_completion_tokens=DRAWING_REVIEW_MAX_COMPLETION_TOKENS,
             timeout=DRAWING_REVIEW_TIMEOUT_SECONDS,
-            provider_type=provider_type or None,
+            is_current=current,
         )
-        async with llm:
-            result = await asyncio.wait_for(
-                llm.ainvoke(messages),  # noqa: LLM_INPUT_BUDGET  # one compressed drawing plus a fixed, bounded word bank.
-                timeout=DRAWING_REVIEW_TIMEOUT_SECONDS + 3.0,
-            )
         answer_id = str(session.get("ai_word_id") or "")
         answer = _WORD_BY_ID.get(answer_id)
         if answer is None:
@@ -4067,7 +4044,7 @@ async def _review_ai_drawing(
                 "source": "unavailable",
             }
         parsed = _parse_ai_drawing_review_payload(
-            getattr(result, "content", ""),
+            raw,
             locale=locale,
             answer=answer,
         )
@@ -4079,6 +4056,12 @@ async def _review_ai_drawing(
                 "source": "unavailable",
             }
         return parsed
+    except ValueError as exc:
+        if str(exc) == "route_inactive":
+            raise asyncio.CancelledError from exc
+        reason = {"vision_unavailable": "no_vision_model", "timeout": "timeout",
+                  "invalid_image": "invalid_image"}.get(str(exc), "model_unavailable")
+        return {"available": False, "accepted": False, "reason": reason, "source": "unavailable"}
     except asyncio.TimeoutError:
         return {
             "available": False,
@@ -5344,6 +5327,7 @@ async def _run_drawing_guess_vision_turn(
             "ai_guess_attempts": min(attempts, MAX_AI_GUESS_ATTEMPTS),
         }
 
+    vision_is_current = _drawing_vision_scope(session)
     model_guess = proposed_guess
     if model_guess is None:
         try:
@@ -5354,6 +5338,7 @@ async def _run_drawing_guess_vision_turn(
                     lanlan_name=lanlan_name,
                     image_data_url=image_data_url,
                     user_hint=user_hint,
+                    is_current=vision_is_current,
                 )
                 if model_guess is None:
                     model_guess = await _generate_text_context_guess(

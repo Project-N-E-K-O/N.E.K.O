@@ -3977,7 +3977,7 @@ async def test_vision_endpoint_uses_image_url_guess(monkeypatch):
             }
 
     async def fake_prepare_image(_value):
-        return "data:image/jpeg;base64,YWJj"
+        return _png_data_url(8, 8)
 
     calls = []
 
@@ -4000,12 +4000,11 @@ async def test_vision_endpoint_uses_image_url_guess(monkeypatch):
 
     monkeypatch.setattr(dgr, "_prepare_vision_image_data_url", fake_prepare_image)
 
-    import utils.config_manager as config_manager
-    import utils.llm_client as llm_client
+    from utils import game_vision as vision_service
     from main_routers import game_router
 
-    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _FakeConfigManager())
-    monkeypatch.setattr(llm_client, "create_chat_llm_async", fake_create_chat_llm_async)
+    monkeypatch.setattr(vision_service, "get_config_manager", lambda: _FakeConfigManager())
+    monkeypatch.setattr(vision_service, "create_chat_llm_async", fake_create_chat_llm_async)
     monkeypatch.setattr(game_router, "_get_character_info", lambda lanlan_name: {
         "lanlan_name": lanlan_name,
         "master_name": "player",
@@ -4031,9 +4030,12 @@ async def test_vision_endpoint_uses_image_url_guess(monkeypatch):
     assert "streaming" not in calls[0]["kwargs"]
     assert calls[1]["mode"] == "invoke"
     vision_messages = calls[1]["messages"]
-    assert vision_messages[1].content[0]["type"] == "image_url"
-    assert vision_messages[1].content[0]["image_url"]["url"] == "data:image/jpeg;base64,YWJj"
-    assert vision_messages[1].content[1]["type"] == "text"
+    assert vision_messages[1].content[1]["type"] == "image_url"
+    assert vision_messages[1].content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert vision_messages[1].content[0]["type"] == "text"
+    assert calls[0]["kwargs"]["timeout"] == 300
+    assert calls[0]["kwargs"]["max_completion_tokens"] == 420
+    assert calls[0]["kwargs"]["max_retries"] == 0
 
 
 @pytest.mark.unit
@@ -4050,7 +4052,7 @@ async def test_ai_drawing_review_uses_blind_vision_candidates_and_accepts_match(
             }
 
     async def fake_prepare_image(_value):
-        return "data:image/jpeg;base64,YWJj"
+        return _png_data_url(8, 8)
 
     calls = []
 
@@ -4077,11 +4079,10 @@ async def test_ai_drawing_review_uses_blind_vision_candidates_and_accepts_match(
 
     monkeypatch.setattr(dgr, "_prepare_vision_image_data_url", fake_prepare_image)
 
-    import utils.config_manager as config_manager
-    import utils.llm_client as llm_client
+    from utils import game_vision as vision_service
 
-    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _FakeConfigManager())
-    monkeypatch.setattr(llm_client, "create_chat_llm_async", fake_create_chat_llm_async)
+    monkeypatch.setattr(vision_service, "get_config_manager", lambda: _FakeConfigManager())
+    monkeypatch.setattr(vision_service, "create_chat_llm_async", fake_create_chat_llm_async)
 
     result = await dgr._review_ai_drawing(
         session={
@@ -4106,8 +4107,11 @@ async def test_ai_drawing_review_uses_blind_vision_candidates_and_accepts_match(
     assert calls[0]["kwargs"]["provider_type"] == "openai"
     messages = calls[1]["messages"]
     assert messages[0].content.startswith(VISION_WATERMARK)
-    assert messages[1].content[0]["image_url"]["url"] == "data:image/jpeg;base64,YWJj"
-    review_payload = json.loads(messages[1].content[1]["text"])
+    assert messages[1].content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert calls[0]["kwargs"]["timeout"] == 24
+    assert calls[0]["kwargs"]["max_completion_tokens"] == 260
+    assert calls[0]["kwargs"]["max_retries"] == 0
+    review_payload = json.loads(messages[1].content[0]["text"])
     assert review_payload["task"] == "identify_the_single_canvas_drawing_for_quality_review"
     assert len(review_payload["candidates"]) == dgr.VISION_GUESS_MAX_CANDIDATES
     assert "answer_id" not in review_payload
@@ -4150,7 +4154,7 @@ async def test_vision_endpoint_falls_back_when_payload_unparseable(monkeypatch):
             }
 
     async def fake_prepare_image(_value):
-        return "data:image/jpeg;base64,YWJj"
+        return _png_data_url(8, 8)
 
     class _FakeVisionLLM:
         async def __aenter__(self):
@@ -4167,12 +4171,11 @@ async def test_vision_endpoint_falls_back_when_payload_unparseable(monkeypatch):
 
     monkeypatch.setattr(dgr, "_prepare_vision_image_data_url", fake_prepare_image)
 
-    import utils.config_manager as config_manager
-    import utils.llm_client as llm_client
+    from utils import game_vision as vision_service
     from main_routers import game_router
 
-    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _FakeConfigManager())
-    monkeypatch.setattr(llm_client, "create_chat_llm_async", fake_create_chat_llm_async)
+    monkeypatch.setattr(vision_service, "get_config_manager", lambda: _FakeConfigManager())
+    monkeypatch.setattr(vision_service, "create_chat_llm_async", fake_create_chat_llm_async)
     monkeypatch.setattr(game_router, "_get_character_info", lambda lanlan_name: {
         "lanlan_name": lanlan_name,
         "master_name": "player",
