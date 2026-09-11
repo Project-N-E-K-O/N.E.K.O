@@ -431,8 +431,8 @@ async function main() {
         data = panelState(old.envelope, saveSucceeded, persistedModel);
       } else if (body.entry_id === 'test_generation') {
         data = {
-          result_url: '/plugin/image_generator/ui/generated/' + 'a'.repeat(32) + '.png',
-          preview_url: '/plugin/image_generator/ui/generated/thumb_' + 'a'.repeat(32) + '.png',
+          result_url: 'http://127.0.0.1:48916/plugin/image_generator/ui/generated/' + 'a'.repeat(32) + '.png',
+          preview_url: 'http://127.0.0.1:48916/plugin/image_generator/ui/generated/thumb_' + 'a'.repeat(32) + '.png',
         };
       } else if (body.entry_id === 'clear_api_key') {
         data = { api_key_configured: false };
@@ -508,6 +508,12 @@ async function main() {
   check(elements.get('maxDownloadMiB').value === '0.001', 'minimum MiB precision lost');
   check(elements.get('cacheMaxMiB').value === '0.003', 'cache MiB precision lost');
   elements.get('model').value = 'edited-model-before-save';
+  elements.get('cacheMaxMiB').value = '0.0001';
+  const callsBeforeInvalidSave = entryCalls.length;
+  elements.get('settingsForm').dispatchEvent(new FakeEvent('submit'));
+  check(elements.get('apiKey').value === SECRET, 'local validation discarded the entered key');
+  check(entryCalls.length === callsBeforeInvalidSave, 'invalid settings reached the backend');
+  elements.get('cacheMaxMiB').value = '0.003';
   elements.get('settingsForm').dispatchEvent(new FakeEvent('submit'));
 
   if (scenario === 'retry_success') {
@@ -573,6 +579,8 @@ async function main() {
     );
     check(elements.get('model').value === 'unsaved-after-save', 'test discarded unsaved form edits');
     check(elements.get('testPreview').children[0].src.includes('/thumb_'), 'test card loaded original');
+    check(new URL(elements.get('testPreview').children[0].src).origin === location.origin, 'preview did not rebase to panel origin');
+    check(new URL(elements.get('testResultLink').dataset.url).origin === location.origin, 'original did not rebase to panel origin');
     check(!elements.get('testResultLink').dataset.url.includes('/thumb_'), 'lightbox lost original');
     const beforeClear = entryCalls.filter((entry) => entry === 'get_panel_state').length;
     elements.get('clearKeyButton').dispatchEvent(new FakeEvent('click'));

@@ -2720,7 +2720,7 @@ def test_static_panel_is_self_contained_accessible_and_calls_real_entries() -> N
     assert not re.search(r"\bname\s*=", api_key_input.group(0))
     assert "clear_api_key: false" in html
     assert "img-src 'self'" in html
-    assert "parsed.origin !== location.origin" in html
+    assert "new URL(parsed.pathname, location.origin).href" in html
     assert r"/^[0-9a-f]{32}\.(?:png|jpg|webp)$/" in html
     # The valid default style is the empty string (omit the provider field).
     # Marking this select as required makes the browser reject the default form,
@@ -4036,3 +4036,65 @@ async def test_finalize_geometry_runs_outside_event_loop(monkeypatch, tmp_path):
     monkeypatch.setattr(image_generator_module, "_image_geometry", geometry)
     assert (await plugin.generate_image(prompt="cat")).is_ok()
     assert observed and all(identity != main_thread for identity in observed)
+
+
+@pytest.mark.asyncio
+async def test_rejected_candidate_key_does_not_poison_running_settings():
+    plugin, _, store = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    payload = await encrypted_save_payload(plugin, api_key="gpt-image-1", model="gpt-image-1")
+    assert (await plugin.save_settings(**payload)).is_err()
+    assert "gpt-image-1" not in plugin._known_secrets_snapshot()
+    settings, key = await plugin._generation_config_snapshot()
+    assert settings["model"] == "gpt-image-1"
+    assert key == SECRET
+    assert store.data["api_key"] == SECRET
+
+
+def test_locked_temp_is_only_byte_overhead_not_generation(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    original = assets / ("a" * 32 + ".png")
+    original.write_bytes(PNG_BYTES)
+    temporary = assets / ("." + "b" * 32 + ".png." + "c" * 32 + ".tmp")
+    temporary.write_bytes(b"x" * 2048)
+    recent = original.stat().st_mtime + 10
+    os.utime(temporary, (recent, recent))
+    unlink = plugin._unlink_cached_file
+    def locked_temp(name):
+        if name == temporary.name:
+            raise PermissionError("locked")
+        return unlink(name)
+    monkeypatch.setattr(plugin, "_unlink_cached_file", locked_temp)
+    stats = plugin._prune_cache_sync({**DEFAULT_SETTINGS, "cache_max_count": 1, "cache_max_bytes": 1024})
+    assert original.read_bytes() == PNG_BYTES
+    assert stats == {"count": 1, "total_bytes": len(PNG_BYTES) + 2048}
+    assert stats["total_bytes"] > 1024
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_key", ["settings", "recent_generations", "api_key"])
+async def test_failed_limit_save_restores_evicted_images(tmp_path, failed_key):
+    plugin, _, store = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    assets = prepare_asset_cache(plugin, tmp_path)
+    for name in ("a", "b"):
+        (assets / (name * 32 + ".png")).write_bytes(PNG_BYTES)
+        (assets / ("thumb_" + name * 32 + ".png")).write_bytes(PNG_BYTES)
+    before = {path.name: path.read_bytes() for path in assets.iterdir()}
+    store.fail_set_keys.add(failed_key)
+    payload = await encrypted_save_payload(plugin, cache_max_count=1)
+    assert (await plugin.save_settings(**payload)).is_err()
+    assert {path.name: path.read_bytes() for path in assets.iterdir()} == before
+
+
+@pytest.mark.asyncio
+async def test_failed_reset_restores_evicted_images(tmp_path):
+    plugin, _, store = make_plugin()
+    plugin._manifest_settings["cache_max_count"] = 1
+    assets = prepare_asset_cache(plugin, tmp_path)
+    for name in ("a", "b"):
+        (assets / (name * 32 + ".png")).write_bytes(PNG_BYTES)
+    before = {path.name: path.read_bytes() for path in assets.iterdir()}
+    store.fail_delete_keys.add("settings")
+    assert (await plugin.reset_settings()).is_err()
+    assert {path.name: path.read_bytes() for path in assets.iterdir()} == before
+    assert plugin._settings_snapshot()["cache_max_count"] == DEFAULT_SETTINGS["cache_max_count"]

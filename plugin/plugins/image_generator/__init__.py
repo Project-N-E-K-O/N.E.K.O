@@ -19,11 +19,14 @@ import json
 import math
 import os
 import re
+import shutil
+import tempfile
 import threading
 import time
 import zlib
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -2498,8 +2501,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     self._unlink_cached_file(path.name)
                 except OSError:
                     pass
-                else:
-                    continue
+                continue
             try:
                 stat = path.stat()
             except OSError:
@@ -2568,12 +2570,12 @@ class ImageGeneratorPlugin(NekoPluginBase):
         seen_groups: set[str] = set()
         for path in self._cache_files():
             name = path.name
-            if _GENERATED_TEMP_FILE_PATTERN.fullmatch(name):
-                continue
             key = name.removeprefix("thumb_").rsplit(".", 1)[0]
             try:
                 total_bytes += path.stat().st_size
             except OSError:
+                continue
+            if _GENERATED_TEMP_FILE_PATTERN.fullmatch(name):
                 continue
             if key not in seen_groups:
                 seen_groups.add(key)
@@ -4084,11 +4086,74 @@ class ImageGeneratorPlugin(NekoPluginBase):
         }
         return Ok(_redact_structure(payload, secrets))
 
+    def _backup_cache_sync(self, directory: Path) -> None:
+        for path in self._cache_files():
+            if _GENERATED_TEMP_FILE_PATTERN.fullmatch(path.name):
+                continue
+            before = path.lstat()
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+            with os.fdopen(descriptor, "rb") as source:
+                opened = os.fstat(source.fileno())
+                if (path.is_symlink() or not self._asset_dir_is_safe()
+                        or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+                    raise OSError("cache changed during backup")
+                with (directory / path.name).open("xb") as target:
+                    shutil.copyfileobj(source, target)
+
+    def _restore_cache_sync(self, directory: Path) -> None:
+        for path in directory.iterdir():
+            if self._asset_dir is None or not self._asset_dir_is_safe():
+                raise OSError("cache unavailable during rollback")
+            target = self._asset_dir / path.name
+            if not target.exists():
+                _atomic_write_bytes(
+                    self._writable_ui_dir, self._writable_ui_identity,
+                    f".{uuid4().hex}.png.{uuid4().hex}.tmp", path.name, path.read_bytes(),
+                )
+
+    @asynccontextmanager
+    async def _cache_limit_guard(self, settings: Mapping[str, Any]):
+        # Keep a private rollback copy until Store and runtime state agree.
+        # Hold the cache lock across the transaction so concurrent pruning
+        # cannot remove assets that were not included in this snapshot.
+        state = {"committed": False, "ready": True}
+        current = self._settings_snapshot()
+        if not any(settings[key] < current[key] for key in ("cache_max_count", "cache_max_bytes")):
+            yield state
+            return
+        await self._acquire_lock(self._cache_lock)
+        backup = None
+        prepared = False
+        try:
+            try:
+                backup = Path(tempfile.mkdtemp(prefix="neko-image-cache-rollback-"))
+                await self._drain_on_cancel(asyncio.to_thread(self._backup_cache_sync, backup))
+                prepared = True
+            except Exception as exc:
+                state["ready"] = False
+                self.logger.warning("Cache backup failed: failure_class={}", type(exc).__name__)
+            yield state
+        finally:
+            try:
+                if prepared and not state["committed"]:
+                    try:
+                        await self._drain_on_cancel(asyncio.to_thread(self._restore_cache_sync, backup))
+                    except Exception:
+                        self._settings_available = False
+                        self.logger.error("Cache rollback failed; recovery files retained at {}", backup)
+                        raise
+                if backup is not None:
+                    try:
+                        await self._drain_on_cancel(asyncio.to_thread(shutil.rmtree, backup))
+                    except OSError:
+                        self.logger.warning("Cache backup cleanup failed; recovery files retained at {}", backup)
+            finally:
+                self._cache_lock.release()
+
     async def _prepare_cache_limits(self, settings: Mapping[str, Any]) -> bool:
         current = self._settings_snapshot()
         if not any(settings[key] < current[key] for key in ("cache_max_count", "cache_max_bytes")):
             return True
-        await self._acquire_lock(self._cache_lock)
         try:
             stats = await self._drain_on_cancel(asyncio.to_thread(self._prune_cache_sync, settings))
             return (stats["count"] <= settings["cache_max_count"]
@@ -4096,8 +4161,6 @@ class ImageGeneratorPlugin(NekoPluginBase):
         except Exception as exc:
             self.logger.warning("Cache limit enforcement failed: failure_class={}", type(exc).__name__)
             return False
-        finally:
-            self._cache_lock.release()
 
     async def _sanitize_history_before_secret_change(
         self,
@@ -4188,10 +4251,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 )
             old_key = raw_old_key if isinstance(raw_old_key, str) else ""
             candidate_new_key = raw_new_key.strip()
-            self._remember_secrets(
-                old_key,
-                candidate_new_key if len(candidate_new_key) >= 8 else "",
-            )
+            self._remember_secrets(old_key)
             secrets = self._known_secrets_snapshot(
                 old_key,
                 candidate_new_key,
@@ -4234,177 +4294,180 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     and (not self._settings_available or _origin_tuple(validated["api_base_url"])
                          != _origin_tuple(old_runtime_settings["api_base_url"]))):
                 return Err(SdkError("切换服务地址时请提供新 API 密钥或明确清除原密钥"))
-            if not await self._prepare_cache_limits(validated):
-                return Err(SdkError("无法执行新的缓存限额，请关闭占用图片的程序后重试"))
-            await self._acquire_lock(self._history_lock)
-            try:
-                # Snapshot the stored history BEFORE any mutation so a
-                # mid-transaction Store failure can roll it back: the
-                # sanitize below rewrites and truncates with the *proposed*
-                # limit, and restore_previous_configuration() only covers
-                # settings and the credential.
-                history_snapshot_ok, old_history = await self._store_get_checked(
-                    _HISTORY_STORE_KEY,
-                    None,
-                )
-                if not history_snapshot_ok:
-                    return Err(
-                        SdkError("无法在保存前安全读取生成历史（StoreError）")
-                    )
-                async def restore_history() -> bool:
-                    if old_history is None:
-                        restored, _ = await self._store_delete(_HISTORY_STORE_KEY)
-                        return restored
-                    return await self._store_set(_HISTORY_STORE_KEY, old_history)
-
-                async def restore_previous_configuration() -> tuple[bool, bool]:
-                    history_restored = await restore_history()
-                    key_removed, _ = await self._store_delete(_API_KEY_STORE_KEY)
-                    if not key_removed:
-                        return False, False
-                    if old_settings is None:
-                        settings_restored, _ = await self._store_delete(
-                            _SETTINGS_STORE_KEY
-                        )
-                    else:
-                        settings_restored = await self._store_set(
-                            _SETTINGS_STORE_KEY,
-                            old_settings,
-                        )
-                    if not settings_restored:
-                        return False, False
-                    # Roll the history back alongside settings and the
-                    # credential: the sanitize above already persisted a
-                    # rewritten, possibly truncated history using the proposed
-                    # limit, so without this the save reports failure while
-                    # older generation records are permanently lost.
-                    if not history_restored:
-                        self.logger.warning("ImageGenerator history rollback failed: failure_class=StoreError")
-                    # The rollback credential may become durable in a worker
-                    # thread just as this task is cancelled. Publish the old
-                    # runtime settings before awaiting that write so the old
-                    # key can never be observed with the new endpoint.
-                    with self._state_lock:
-                        self._settings = old_runtime_settings
-                        self._configuration_warning = old_configuration_warning
-                    if old_key:
-                        key_restored = await self._store_set(
-                            _API_KEY_STORE_KEY,
-                            old_key,
-                        )
-                    else:
-                        key_restored = True
-                    return settings_restored and history_restored, key_restored
-
-                async def commit_configuration():
-                    nonlocal key_changed
-                    history_safe = await self._sanitize_history_before_secret_change(
-                        secrets=secrets,
-                        history_limit=int(validated["history_limit"]),
-                    )
-                    if not history_safe:
-                        await restore_history()
-                        return Err(
-                            SdkError("无法在更新密钥前安全清理历史记录（StoreError）")
-                        )
-
-                    # Fail closed across process loss: remove the authoritative key
-                    # before changing settings, then restore/write it only after the
-                    # settings commit. Every crash-visible intermediate state has no
-                    # usable credential instead of a key paired with the wrong URL.
-                    key_staged, key_existed = await self._store_delete(
-                        _API_KEY_STORE_KEY
-                    )
-                    if not key_staged:
-                        await restore_history()
-                        return Err(
-                            SdkError(
-                                "无法在保存前安全暂存 API 密钥（StoreError），"
-                                "请稍后重试"
-                            )
-                        )
-
-                    if not await self._store_set(_SETTINGS_STORE_KEY, validated):
-                        settings_restored, key_restored = (
-                            await restore_previous_configuration()
-                        )
-                        if not settings_restored or not key_restored:
-                            self.logger.warning(
-                                "ImageGenerator settings rollback incomplete: "
-                                "failure_class=StoreError"
-                            )
-                        return Err(SdkError("保存设置失败（StoreError），请稍后重试"))
-
-                    # Publish the matching settings before the credential write.
-                    # PluginStore uses a worker thread, so task cancellation can
-                    # arrive after a durable key commit. At every await boundary,
-                    # runtime settings must therefore already match any new key
-                    # that may have reached the Store.
-                    with self._state_lock:
-                        self._settings = validated
-                        self._configuration_warning = (
-                            None
-                            if self._asset_dir is not None
-                            else "生成图片缓存不可用；管理面板可能可读，但生成已降级"
-                        )
-
-                    if effective_api_key and not await self._store_set(
-                        _API_KEY_STORE_KEY,
-                        effective_api_key,
-                    ):
-                        settings_restored, key_restored = (
-                            await restore_previous_configuration()
-                        )
-                        if not settings_restored or not key_restored:
-                            self.logger.warning(
-                                "ImageGenerator settings rollback incomplete: "
-                                "failure_class=StoreError"
-                            )
-                        return Err(SdkError("保存 API 密钥失败（StoreError）"))
-
-                    key_changed = (
-                        key_existed
-                        if clear_api_key
-                        else effective_api_key != validated_old_key
-                    )
-
-                async def guarded_commit():
-                    try:
-                        return await commit_configuration()
-                    except BaseException as exc:
-                        # Propagate on the owner task, including process-loss
-                        # signals, rather than terminating the event loop here.
-                        return exc
-
-                worker = asyncio.create_task(guarded_commit())
+            async with self._cache_limit_guard(validated) as cache_transaction:
+                if not cache_transaction["ready"] or not await self._prepare_cache_limits(validated):
+                    return Err(SdkError("无法执行新的缓存限额，请关闭占用图片的程序后重试"))
+                await self._acquire_lock(self._history_lock)
                 try:
-                    outcome = await asyncio.shield(worker)
-                    if isinstance(outcome, BaseException):
-                        raise outcome
-                except asyncio.CancelledError:
-                    # Store operations use worker threads. First drain the
-                    # transaction, then roll back while both locks remain held.
-                    while not worker.done():
+                    # Snapshot the stored history BEFORE any mutation so a
+                    # mid-transaction Store failure can roll it back: the
+                    # sanitize below rewrites and truncates with the *proposed*
+                    # limit, and restore_previous_configuration() only covers
+                    # settings and the credential.
+                    history_snapshot_ok, old_history = await self._store_get_checked(
+                        _HISTORY_STORE_KEY,
+                        None,
+                    )
+                    if not history_snapshot_ok:
+                        return Err(
+                            SdkError("无法在保存前安全读取生成历史（StoreError）")
+                        )
+                    async def restore_history() -> bool:
+                        if old_history is None:
+                            restored, _ = await self._store_delete(_HISTORY_STORE_KEY)
+                            return restored
+                        return await self._store_set(_HISTORY_STORE_KEY, old_history)
+
+                    async def restore_previous_configuration() -> tuple[bool, bool]:
+                        history_restored = await restore_history()
+                        key_removed, _ = await self._store_delete(_API_KEY_STORE_KEY)
+                        if not key_removed:
+                            return False, False
+                        if old_settings is None:
+                            settings_restored, _ = await self._store_delete(
+                                _SETTINGS_STORE_KEY
+                            )
+                        else:
+                            settings_restored = await self._store_set(
+                                _SETTINGS_STORE_KEY,
+                                old_settings,
+                            )
+                        if not settings_restored:
+                            return False, False
+                        # Roll the history back alongside settings and the
+                        # credential: the sanitize above already persisted a
+                        # rewritten, possibly truncated history using the proposed
+                        # limit, so without this the save reports failure while
+                        # older generation records are permanently lost.
+                        if not history_restored:
+                            self.logger.warning("ImageGenerator history rollback failed: failure_class=StoreError")
+                        # The rollback credential may become durable in a worker
+                        # thread just as this task is cancelled. Publish the old
+                        # runtime settings before awaiting that write so the old
+                        # key can never be observed with the new endpoint.
+                        with self._state_lock:
+                            self._settings = old_runtime_settings
+                            self._configuration_warning = old_configuration_warning
+                        if old_key:
+                            key_restored = await self._store_set(
+                                _API_KEY_STORE_KEY,
+                                old_key,
+                            )
+                        else:
+                            key_restored = True
+                        return settings_restored and history_restored, key_restored
+
+                    async def commit_configuration():
+                        nonlocal key_changed
+                        history_safe = await self._sanitize_history_before_secret_change(
+                            secrets=secrets,
+                            history_limit=int(validated["history_limit"]),
+                        )
+                        if not history_safe:
+                            await restore_history()
+                            return Err(
+                                SdkError("无法在更新密钥前安全清理历史记录（StoreError）")
+                            )
+
+                        # Fail closed across process loss: remove the authoritative key
+                        # before changing settings, then restore/write it only after the
+                        # settings commit. Every crash-visible intermediate state has no
+                        # usable credential instead of a key paired with the wrong URL.
+                        key_staged, key_existed = await self._store_delete(
+                            _API_KEY_STORE_KEY
+                        )
+                        if not key_staged:
+                            await restore_history()
+                            return Err(
+                                SdkError(
+                                    "无法在保存前安全暂存 API 密钥（StoreError），"
+                                    "请稍后重试"
+                                )
+                            )
+
+                        if not await self._store_set(_SETTINGS_STORE_KEY, validated):
+                            settings_restored, key_restored = (
+                                await restore_previous_configuration()
+                            )
+                            if not settings_restored or not key_restored:
+                                self.logger.warning(
+                                    "ImageGenerator settings rollback incomplete: "
+                                    "failure_class=StoreError"
+                                )
+                            return Err(SdkError("保存设置失败（StoreError），请稍后重试"))
+
+                        # Publish the matching settings before the credential write.
+                        # PluginStore uses a worker thread, so task cancellation can
+                        # arrive after a durable key commit. At every await boundary,
+                        # runtime settings must therefore already match any new key
+                        # that may have reached the Store.
+                        with self._state_lock:
+                            self._settings = validated
+                            self._configuration_warning = (
+                                None
+                                if self._asset_dir is not None
+                                else "生成图片缓存不可用；管理面板可能可读，但生成已降级"
+                            )
+
+                        if effective_api_key and not await self._store_set(
+                            _API_KEY_STORE_KEY,
+                            effective_api_key,
+                        ):
+                            settings_restored, key_restored = (
+                                await restore_previous_configuration()
+                            )
+                            if not settings_restored or not key_restored:
+                                self.logger.warning(
+                                    "ImageGenerator settings rollback incomplete: "
+                                    "failure_class=StoreError"
+                                )
+                            return Err(SdkError("保存 API 密钥失败（StoreError）"))
+
+                        key_changed = (
+                            key_existed
+                            if clear_api_key
+                            else effective_api_key != validated_old_key
+                        )
+
+                    async def guarded_commit():
                         try:
-                            await asyncio.shield(worker)
-                        except asyncio.CancelledError:
-                            continue
-                    if not worker.cancelled():
-                        worker.exception()
-                    rollback = asyncio.create_task(restore_previous_configuration())
-                    while not rollback.done():
-                        try:
-                            await asyncio.shield(rollback)
-                        except asyncio.CancelledError:
-                            continue
-                    if rollback.cancelled() or not all(rollback.result()):
-                        self._settings_available = False
-                    raise
-                if isinstance(outcome, Err):
-                    return outcome
-                self._settings_available = True
-            finally:
-                self._history_lock.release()
+                            return await commit_configuration()
+                        except BaseException as exc:
+                            # Propagate on the owner task, including process-loss
+                            # signals, rather than terminating the event loop here.
+                            return exc
+
+                    worker = asyncio.create_task(guarded_commit())
+                    try:
+                        outcome = await asyncio.shield(worker)
+                        if isinstance(outcome, BaseException):
+                            raise outcome
+                    except asyncio.CancelledError:
+                        # Store operations use worker threads. First drain the
+                        # transaction, then roll back while both locks remain held.
+                        while not worker.done():
+                            try:
+                                await asyncio.shield(worker)
+                            except asyncio.CancelledError:
+                                continue
+                        if not worker.cancelled():
+                            worker.exception()
+                        rollback = asyncio.create_task(restore_previous_configuration())
+                        while not rollback.done():
+                            try:
+                                await asyncio.shield(rollback)
+                            except asyncio.CancelledError:
+                                continue
+                        if rollback.cancelled() or not all(rollback.result()):
+                            self._settings_available = False
+                        raise
+                    if isinstance(outcome, Err):
+                        return outcome
+                    self._remember_secrets(effective_api_key)
+                    self._settings_available = True
+                    cache_transaction["committed"] = True
+                finally:
+                    self._history_lock.release()
 
         key_configured = bool(effective_api_key)
         self.logger.info(
@@ -4465,43 +4528,45 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         "请检查 plugin.toml"
                     )
                 )
-            if not await self._prepare_cache_limits(target_settings):
-                return Err(SdkError("无法执行默认缓存限额，请关闭占用图片的程序后重试"))
-            async def commit_reset():
-                await self._acquire_lock(self._history_lock)
-                try:
-                    read_ok, old_history = await self._store_get_checked(
-                        _HISTORY_STORE_KEY, None
-                    )
-                    if not read_ok:
-                        return False
-                    history_safe = await self._sanitize_history_before_secret_change(
-                        secrets=secrets,
-                        history_limit=int(target_settings["history_limit"]),
-                    )
-                    if not history_safe:
-                        return False
-                    deleted_ok, _existed = await self._store_delete(_SETTINGS_STORE_KEY)
-                    if not deleted_ok:
-                        if old_history is None:
-                            await self._store_delete(_HISTORY_STORE_KEY)
-                        else:
-                            await self._store_set(_HISTORY_STORE_KEY, old_history)
-                        return False
-                    with self._state_lock:
-                        self._settings = target_settings
-                        self._settings_available = True
-                        self._configuration_warning = (
-                            None
-                            if self._asset_dir is not None
-                            else "生成图片缓存不可用；管理面板可能可读，但生成已降级"
+            async with self._cache_limit_guard(target_settings) as cache_transaction:
+                if not cache_transaction["ready"] or not await self._prepare_cache_limits(target_settings):
+                    return Err(SdkError("无法执行默认缓存限额，请关闭占用图片的程序后重试"))
+                async def commit_reset():
+                    await self._acquire_lock(self._history_lock)
+                    try:
+                        read_ok, old_history = await self._store_get_checked(
+                            _HISTORY_STORE_KEY, None
                         )
-                    return True
-                finally:
-                    self._history_lock.release()
+                        if not read_ok:
+                            return False
+                        history_safe = await self._sanitize_history_before_secret_change(
+                            secrets=secrets,
+                            history_limit=int(target_settings["history_limit"]),
+                        )
+                        if not history_safe:
+                            return False
+                        deleted_ok, _existed = await self._store_delete(_SETTINGS_STORE_KEY)
+                        if not deleted_ok:
+                            if old_history is None:
+                                await self._store_delete(_HISTORY_STORE_KEY)
+                            else:
+                                await self._store_set(_HISTORY_STORE_KEY, old_history)
+                            return False
+                        with self._state_lock:
+                            self._settings = target_settings
+                            self._settings_available = True
+                            self._configuration_warning = (
+                                None
+                                if self._asset_dir is not None
+                                else "生成图片缓存不可用；管理面板可能可读，但生成已降级"
+                            )
+                        cache_transaction["committed"] = True
+                        return True
+                    finally:
+                        self._history_lock.release()
 
-            if not await self._drain_on_cancel(commit_reset()):
-                return Err(SdkError("恢复默认设置失败（StoreError）"))
+                if not await self._drain_on_cancel(commit_reset()):
+                    return Err(SdkError("恢复默认设置失败（StoreError）"))
             try:
                 key_configured = bool(_validate_api_key(api_key)) if api_key else False
             except SdkError:

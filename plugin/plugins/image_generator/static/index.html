@@ -2024,7 +2024,7 @@
         if (!raw || raw.length > 4096) return '';
         try {
           const parsed = new URL(raw, location.href);
-          if (parsed.origin !== location.origin
+          if (!['http:', 'https:'].includes(parsed.protocol)
             || parsed.username
             || parsed.password
             || parsed.search
@@ -2037,7 +2037,7 @@
             && !(thumbnail && /^thumb_[0-9a-f]{32}\.png$/.test(filename))) {
             return '';
           }
-          return parsed.href;
+          return new URL(parsed.pathname, location.origin).href;
         } catch (_) {
           return '';
         }
@@ -2475,7 +2475,6 @@
         let args;
         let pendingCredential = elements.apiKey.value;
         let savePayload = null;
-        elements.apiKey.value = '';
         try {
           syncSelects();
           args = collectSettings();
@@ -2483,6 +2482,7 @@
           showToast(errorMessage(error), 'error');
           return;
         }
+        elements.apiKey.value = '';
 
         setBusy(true);
         try {
