@@ -94,13 +94,13 @@ def test_proactive_presets_route_xhh_through_news():
         assert PROACTIVE_PRESETS[mode]["proactiveNewsChatEnabled"] is True
 
 
-def test_infer_mode_keeps_legacy_preset_when_community_flag_is_missing():
+def test_infer_mode_reports_custom_when_community_flag_is_missing():
     from main_routers.proactive_router import PROACTIVE_PRESETS, _infer_mode
 
     settings = dict(PROACTIVE_PRESETS["normal"])
     settings.pop("proactiveCommunityChatEnabled")
 
-    assert _infer_mode(settings) == "normal"
+    assert _infer_mode(settings) == "custom"
 
 
 def test_build_xhh_request_keys_matches_openxhh_vector():
@@ -264,6 +264,16 @@ def test_normalize_neko_community_feed_bounds_title_and_author():
     assert posts[0]["author"] == author[: trending_content.NEKO_COMMUNITY_AUTHOR_MAX_CHARS]
 
 
+def test_normalize_neko_community_feed_bounds_body():
+    content = "c" * (trending_content.NEKO_COMMUNITY_CONTENT_MAX_CHARS + 1)
+
+    posts = normalize_neko_community_feed(
+        {"items": [{"id": "body-card", "title": "正文卡牌", "summary": content}]}
+    )
+
+    assert posts[0]["content"] == content[: trending_content.NEKO_COMMUNITY_CONTENT_MAX_CHARS]
+
+
 def test_normalize_neko_community_feed_bounds_tags():
     tags = [
         f"tag-{index}-" + "x" * trending_content.NEKO_COMMUNITY_TAG_MAX_CHARS
@@ -279,6 +289,8 @@ def test_normalize_neko_community_feed_bounds_tags():
         len(tag) <= trending_content.NEKO_COMMUNITY_TAG_MAX_CHARS
         for tag in posts[0]["tags"]
     )
+
+
 def test_normalize_neko_community_feed_bounds_published_at():
     published_at = "p" * (
         trending_content.NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS + 1
@@ -302,6 +314,15 @@ def test_normalize_neko_community_feed_keeps_numeric_card_id_for_deduplication()
     )
 
     assert posts[0]["id"] == "42"
+
+
+def test_normalize_neko_community_feed_skips_blank_identifier_for_post_id():
+    posts = normalize_neko_community_feed(
+        {"items": [{"id": "  ", "post_id": "fallback-id", "title": "后备 ID 卡牌"}]}
+    )
+
+    assert posts[0]["id"] == "fallback-id"
+    assert posts[0]["dedupe_key"] == "fallback-id"
 
 
 def test_normalize_neko_community_feed_resolves_relative_card_permalink():
@@ -578,16 +599,14 @@ async def test_neko_community_access_token_falls_back_to_legacy_auth(tmp_path, m
     monkeypatch.setattr(
         trending_content, "_neko_community_legacy_auth_path", lambda: legacy_auth
     )
-    monkeypatch.setattr(
-        trending_content, "social_base_url", lambda: "https://community.example.test"
-    )
-
     assert await trending_content._neko_community_access_token(
-        "https://community.example.test/api/feed"
+        f"{trending_content.DEFAULT_SOCIAL_BASE_URL}/api/feed"
     ) == "legacy-auth-token"
     assert await trending_content._neko_community_access_token(
-        "https://other.example.test/api/feed"
+        "https://self-hosted.example.test/api/feed"
     ) == ""
+
+
 @pytest.mark.asyncio
 async def test_fetch_neko_community_feed_uses_isolated_oauth_client():
     class CommunityResponse(_FakeResponse):

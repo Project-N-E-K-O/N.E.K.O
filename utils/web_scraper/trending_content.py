@@ -24,7 +24,7 @@ from pathlib import Path
 import httpx
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
-from utils.social_base import social_base_url
+from utils.social_base import DEFAULT_SOCIAL_BASE_URL, social_base_url
 import random
 import re
 import time
@@ -64,6 +64,7 @@ NEKO_COMMUNITY_AUTHOR_MAX_CHARS = 120
 NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS = 80
 NEKO_COMMUNITY_TAG_MAX_COUNT = 8
 NEKO_COMMUNITY_TAG_MAX_CHARS = 80
+NEKO_COMMUNITY_CONTENT_MAX_CHARS = 500
 
 
 def _neko_community_urls() -> tuple[str, str]:
@@ -160,7 +161,9 @@ def _load_neko_community_access_token(feed_api: str) -> str:
     legacy_access_token = str(
         legacy_auth.get("access_token") if isinstance(legacy_auth, dict) else ""
     ).strip()
-    if legacy_access_token and _same_community_origin(social_base_url(), feed_api):
+    # Pre-Electron credentials contain no origin metadata. They are safe to reuse
+    # only for the historical production community, never a configured instance.
+    if legacy_access_token and _same_community_origin(DEFAULT_SOCIAL_BASE_URL, feed_api):
         return legacy_access_token
     return ""
 
@@ -1929,6 +1932,7 @@ def normalize_neko_community_feed(
             content = _community_text(raw.get(field))
             if content:
                 break
+        content = content[:NEKO_COMMUNITY_CONTENT_MAX_CHARS]
         published_at = ""
         for field in ("created_at", "createdAt"):
             value = raw.get(field)
@@ -1955,9 +1959,11 @@ def normalize_neko_community_feed(
             )[:NEKO_COMMUNITY_TAG_MAX_COUNT]
         ]
         url = _community_card_url(raw)
-        item_id = _community_identifier(
-            raw.get("id") or raw.get("post_id") or raw.get("uuid")
-        )
+        item_id = ""
+        for identifier in (raw.get("id"), raw.get("post_id"), raw.get("uuid")):
+            item_id = _community_identifier(identifier)
+            if item_id:
+                break
         dedupe_key = item_id or f"{url}|{title.casefold()}"
         title = title[:NEKO_COMMUNITY_TITLE_MAX_CHARS]
         if dedupe_key in seen:
