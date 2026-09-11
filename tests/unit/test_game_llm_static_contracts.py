@@ -683,10 +683,11 @@ def test_soccer_settings_panel_remains_available_before_kickoff():
         1,
     )[0]
     assert "!startScreenDifficultyOverridden" in pregame_block
-    reset_block = script.split("function _resetGameFieldForStartScreen()", 1)[1].split(
-        "async function _fetchJsonWithTimeout",
-        1,
-    )[0]
+    reset_start = script.find("function _resetGameFieldForStartScreen()")
+    assert reset_start != -1, "start-screen reset function is missing"
+    reset_end = script.find("function _resetGameRouteRuntime(", reset_start)
+    assert reset_end > reset_start, "route reset boundary after start-screen reset is missing"
+    reset_block = script[reset_start:reset_end]
     assert "startScreenDifficultyOverridden = false" in reset_block
 
 
