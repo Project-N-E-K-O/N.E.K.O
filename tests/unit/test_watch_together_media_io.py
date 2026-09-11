@@ -33,19 +33,29 @@ async def test_cdn_failure_retries_backup(tmp_path, key):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg integration prerequisite')
-async def test_cancel_reaps_media_process_before_return(monkeypatch):
+@pytest.mark.parametrize('repeat_during_spawn', [False, True])
+async def test_cancel_reaps_media_process_before_return(monkeypatch, repeat_during_spawn):
     created = asyncio.Event()
+    release_spawn = asyncio.Event()
     processes = []
     original = asyncio.create_subprocess_exec
     async def spawn(*args, **kwargs):
         process = await original(*args, **kwargs)
         processes.append(process)
         created.set()
+        if repeat_during_spawn:
+            await release_spawn.wait()
         return process
     monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
     task = asyncio.create_task(engine.run_media_async('ffmpeg', '-re', '-f', 'lavfi', '-i', 'sine=frequency=440', '-f', 'null', '-'))
     await asyncio.wait_for(created.wait(), 10)
     task.cancel()
+    if repeat_during_spawn:
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done(), 'caller must wait for process creation and reaping'
+        release_spawn.set()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 10)
     assert processes[0].returncode is not None

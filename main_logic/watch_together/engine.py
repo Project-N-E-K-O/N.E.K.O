@@ -69,16 +69,28 @@ async def run_media_async(*args):
             raise RuntimeError("Media processing failed: " + stderr.decode("utf-8", "replace")[-350:])
         return stdout
     finally:
-        # Also reap a process whose creation completed during cancellation.
-        if process is None:
-            process = await spawn
-        if process.returncode is None:
+        async def reap():
+            # Creation may still be completing when the caller is cancelled.
+            child = process if process is not None else await spawn
+            if child.returncode is None:
+                try:
+                    child.kill()
+                except ProcessLookupError:
+                    # The process exited between checking returncode and kill().
+                    pass
+                await child.communicate()
+
+        cleanup = asyncio.create_task(reap())
+        cancelled = False
+        while not cleanup.done():
             try:
-                process.kill()
-            except ProcessLookupError:
-                # The process exited between checking returncode and kill().
-                pass
-            await process.communicate()
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                # Repeated cancellation must not interrupt spawn or reaping.
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError()
 
 
 async def duration_async(path):
