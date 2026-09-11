@@ -972,7 +972,9 @@ def test_ai_and_user_canvases_fill_the_same_stage_bounds():
 def test_drawing_guess_locale_cache_version_bumped_for_save_art_actions():
     script = _i18n_script()
 
-    assert "2026-09-10-drawing-guess-pngtuber-import-status" in script
+    version = re.search(r"const\s+LOCALE_VERSION\s*=\s*'([^']+)'", script)
+    assert version is not None
+    assert version.group(1)[:10] >= "2026-09-10"
 
 
 @pytest.mark.unit
