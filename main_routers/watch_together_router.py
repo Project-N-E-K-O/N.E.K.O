@@ -11,17 +11,22 @@ from main_logic.watch_together.library import application_library
 router = APIRouter(prefix="/api/watch-together", tags=["watch-together"])
 
 
+def _library_call(method, *args):
+    return getattr(application_library(), method)(*args)
+
+
 @router.get("/history")
 async def history():
-    library = application_library()
-    return {"analyses": await asyncio.to_thread(library.history),
-            "watches": await asyncio.to_thread(library.watches)}
+    def read():
+        library = application_library()
+        return {"analyses": library.history(), "watches": library.watches()}
+    return await asyncio.to_thread(read)
 
 
 @router.get("/jobs/{job}/{version}")
 async def timeline(job: str, version: str):
     try:
-        return await asyncio.to_thread(application_library().timeline, job, version)
+        return await asyncio.to_thread(_library_call, "timeline", job, version)
     except (KeyError, ValueError, OSError):
         raise HTTPException(404, "Timeline unavailable")
 
@@ -29,7 +34,7 @@ async def timeline(job: str, version: str):
 @router.get("/media/{job}/{version}/{filename:path}")
 async def media(job: str, version: str, filename: str):
     try:
-        path = await asyncio.to_thread(application_library().resource, job, version, filename)
+        path = await asyncio.to_thread(_library_call, "resource", job, version, filename)
     except KeyError:
         raise HTTPException(404)
     # Resource names come from the immutable manifest, never a filesystem join.
@@ -55,10 +60,9 @@ async def watch(request: Request):
             or str(state.get("session_id")) != str(data.get("session_id"))
             or _sdk_route_instance_error(state, data)):
         raise HTTPException(409, "Scene session is no longer active")
-    library = application_library()
     try:
         if data.get("action") == "start":
-            identifier = await asyncio.to_thread(library.start_watch, data["job"], data["version"], data["lanlan_name"])
+            identifier = await asyncio.to_thread(_library_call, "start_watch", data["job"], data["version"], data["lanlan_name"])
             state["watch_together_id"] = identifier
             return {"id": identifier}
         identifier = data["id"]
@@ -73,7 +77,7 @@ async def watch(request: Request):
         if event.get("type") not in {"progress", "play", "pause", "seek", "rate", "ended", "audio-started", "audio-ended", "exit"}:
             raise ValueError()
         safe = {"type": event["type"], "cue": str(event.get("cue", ""))[:80]}
-        await asyncio.to_thread(library.record_watch, identifier, position, safe)
+        await asyncio.to_thread(_library_call, "record_watch", identifier, position, safe)
         return {"ok": True}
     except (KeyError, ValueError, TypeError):
         raise HTTPException(400, "Invalid viewing record")

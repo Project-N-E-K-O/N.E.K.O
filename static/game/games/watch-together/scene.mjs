@@ -14,12 +14,12 @@ export async function run(game, character) {
     $('discover-button').disabled=preparing || nextQueue.busy;
   };
   const nextQueue=createNextVideoQueue(game,state=>{
+    if(state.history)renderHistory(state.history.analyses);
     if(state.status) {
       const key={idle:'nextIdle',searching:'nextSearching',preparing:'nextPreparing',ready:'nextReady',empty:'noCandidates',error:'nextFailed'}[state.status];
       $('next-status').textContent=[t(key),state.title,state.stage?t(state.stage):'',state.progress!=null?`${state.progress}%`:''].filter(Boolean).join(' · ');
       if(state.status==='idle')nextRow=null;
       if(state.row)nextRow=state.row;
-      if(state.history)renderHistory(state.history.analyses);
       $('next-video').disabled=!nextRow;
     }
     updatePrepareButtons();

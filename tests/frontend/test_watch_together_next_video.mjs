@@ -32,3 +32,21 @@ const closing=queue.start({topic:'closing'});queue.dispose();
 finishDiscovery({video:{url:'obsolete'}});await closing;
 assert.equal(calls.length,1,'exit avoids starting background model work');
 console.log('next-video queue: single slot, exclusions, no player interruption, invalidation and disposal passed');
+
+const invalidatedUpdates=[];
+let completePreparation;
+const pendingGame={media:{async request(action){
+  if(action==='discover')return {video:{title:'Next',url:'video'}};
+  if(action==='prepare')return {id:'next'};
+  if(action==='preparation')return new Promise(resolve=>{completePreparation=resolve;});
+  if(action==='history')return {analyses:[row]};
+}}};
+const invalidatedQueue=createNextVideoQueue(pendingGame,state=>invalidatedUpdates.push(state));
+const pendingWork=invalidatedQueue.start({topic:'cats'});
+await new Promise(resolve=>setTimeout(resolve,0));
+invalidatedQueue.clear();
+completePreparation({status:'ready'});
+await pendingWork;
+assert.deepEqual(invalidatedUpdates.find(s=>s.history)?.history.analyses,[row]);
+assert.equal(invalidatedUpdates.some(s=>s.row || s.status==='ready'),false,'stale result updates history only');
+console.log('next-video queue: invalidated preparation refreshes history without changing next selection');

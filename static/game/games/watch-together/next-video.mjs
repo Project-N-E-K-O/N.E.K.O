@@ -26,6 +26,7 @@ export function createNextVideoQueue(game, changed, delay = () => new Promise(re
           publish(token,{status:'preparing',title,stage:state.stage_key,progress:state.progress,busy:true});
           if(state.status==='ready') {
             const history=await game.media.request('history');
+            if(!disposed && !game.disposed && token!==generation)changed({history});
             const row=history.analyses.find(item=>item.job===job.id && item.status==='ready');
             if(row){publish(token,{status:'ready',title,row,history,busy:true});return;}
           }
