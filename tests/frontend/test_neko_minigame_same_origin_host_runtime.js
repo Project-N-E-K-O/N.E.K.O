@@ -379,7 +379,7 @@ async function main() {
     fetchImpl,
     windowImpl: windowMock,
     navigatorImpl: windowMock.navigator,
-    // New integrations use the registered factory; legacy injection is tested separately.
+    // Avatar providers are created through the trusted registration factory.
     trustedAvatarHost: { mount() { forgedAvatarMounts += 1; } },
   });
   const aliasedAvatarHandshake = aliasedAvatarHost.connectGame({

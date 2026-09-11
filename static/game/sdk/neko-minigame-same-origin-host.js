@@ -436,7 +436,6 @@
       this._window = options.windowImpl || window;
       this._console = this._window.console || console;
       this._grantedCapabilities = new Set();
-      this._avatarHost = options.avatarHost || null;
       this._avatarCleanup = [];
       this._avatarFactoryController = null;
       this._avatarQueries = new Set();
@@ -581,14 +580,9 @@
     _initializeAvatar(factory) {
       if (this._avatarInitialized || this._disposed) return;
       this._avatarInitialized = true;
-      // Transitional compatibility only; new integrations must register a factory.
-      // Explicit legacy injection wins: existing trusted same-origin adapters
-      // transfer disposal ownership to this host. Never create a second provider.
-      let provider = this._avatarHost;
-      const legacy = Boolean(provider);
-      this._avatarHost = null;
+      let provider = null;
       try {
-        if (!provider && typeof factory === 'function') {
+        if (typeof factory === 'function') {
           this._avatarFactoryController = new (this._window.AbortController || AbortController)();
           provider = factory(Object.freeze({
             windowImpl: this._window,
@@ -623,7 +617,7 @@
           provider = null;
           throw this._hostError('invalid_request', 'Avatar factory must return synchronously');
         }
-        if (provider && (typeof provider.mount !== 'function' || (!legacy && typeof provider.dispose !== 'function'))) {
+        if (provider && (typeof provider.mount !== 'function' || typeof provider.dispose !== 'function')) {
           this._disposeAvatarResource(provider);
           provider = null;
           throw this._hostError('invalid_request', 'Avatar provider must support mount and dispose');
@@ -1454,27 +1448,6 @@
         ))) throw this._hostError('invalid_response', 'Invalid character list');
         return Object.freeze([...new Set(names.map(name => name.trim()))]);
       });
-    }
-
-    /** @deprecated Existing adapters only. New games must use game.avatar discovery. */
-    async getCharacter(lanlanName = '') {
-      this._requireGrantedCapability('avatar-renderer', 'character');
-      const url = new URL(this._gameEndpoint('character'), this._window.location.origin);
-      if (lanlanName && lanlanName !== this.source) {
-        url.searchParams.set('lanlan_name', lanlanName);
-      }
-      const response = await this._request(url.toString(), {}, {
-        operation: 'character',
-        timeoutMs: 10000,
-      });
-      if (response.ok) {
-        try {
-          const payload = await response.clone().json();
-          const resolvedName = String(payload?.lanlan_name || '').trim();
-          if (resolvedName) this._session.lanlanName = resolvedName;
-        } catch (_) { /* character metadata remains available to the caller */ }
-      }
-      return response;
     }
 
     getQuickLines(payload, options = {}) {
