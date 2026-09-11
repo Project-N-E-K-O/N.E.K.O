@@ -557,6 +557,7 @@ class MMDCore {
             // 存储模型引用
             this.manager.currentModel = mmd;
             this.manager.currentModel.url = modelUrl;
+            this.manager.currentModel.configName = MMDCore.getConfigName(modelUrl);
             this.manager.scene.add(mmd.mesh);
 
             // 材质后处理：修正纹理颜色空间 + 强制材质更新
@@ -872,6 +873,23 @@ class MMDCore {
 
     // ═══════════════════ 模型信息 ═══════════════════
 
+    // 与后端模型列表的 Path.stem 一致；内部模型名仍仅用于展示元信息。
+    static getConfigName(modelUrl) {
+        if (typeof modelUrl !== 'string' || !modelUrl) return '';
+        try {
+            const filename = new URL(modelUrl, window.location.href).pathname.split('/').pop();
+            // Backend URLs can contain literal percent signs. Decode valid runs once,
+            // without rejecting the entire filename or double-decoding escaped names.
+            return filename.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+                try { return decodeURIComponent(encoded); }
+                catch (_) { return encoded; }
+            }).replace(/\.(pmx|pmd)$/i, '');
+        } catch (error) {
+            console.warn('[MMD Core] 无法从模型路径获取配置名称:', error);
+            return '';
+        }
+    }
+
     _buildModelInfo(mmd) {
         const mesh = mmd.mesh;
         const pmx = mmd.pmx;
@@ -879,6 +897,7 @@ class MMDCore {
 
         return {
             name: pmx?.header?.modelName || '未知模型',
+            configName: MMDCore.getConfigName(mmd.url),
             comment: pmx?.header?.comment || '',
             vertexCount: geometry?.attributes?.position?.count || 0,
             triangleCount: geometry?.index ? geometry.index.count / 3 : 0,
@@ -896,6 +915,8 @@ class MMDCore {
     // ═══════════════════ 模型清理 ═══════════════════
 
     _clearModel() {
+        // 模型卸载即取消其配置请求、旧表情计时和缓存；不改动画 Morph 写入规则。
+        this.manager.expression?.resetMoodMap();
         // 清理纹理修复兜底定时器（必须在早退之前，防止 currentModel 被外部提前置空时 timer 泄漏）
         if (this._fixMissingTexturesTimer) {
             clearTimeout(this._fixMissingTexturesTimer);

@@ -18,75 +18,112 @@
   <canvas id="ai-l2d-canvas"></canvas>
 </div>
 <canvas id="debug"></canvas>
-<div id="ai-speech-bubble" role="status" aria-live="polite"></div>
+<div id="ai-speech-bubble" class="soccer-speech-bubble" role="status" aria-live="polite"></div>
+<div id="player-speech-bubble" class="soccer-speech-bubble soccer-player-speech-bubble" role="status" aria-live="polite"></div>
 <div id="hint">
   <div data-i18n="soccer.hint.controls" data-i18n-params='{"distance":"90px"}'>鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位</div>
   <div data-i18n="soccer.hint.aiMood">1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档</div>
 </div>
-<!-- Debug 控件区：开发用；基础控件也走 i18n，避免非中文 locale 混杂硬编码。 -->
-<div id="controls">
-  <label><input type="checkbox" id="boundary-toggle"> <span data-i18n="soccer.debugControls.bounds">启用边界（出界规则）</span></label>
-  <label><input type="checkbox" id="voice-output-toggle" checked> <span data-i18n="soccer.debugControls.voiceOutput">播放 LLM 台词（项目语音）</span></label>
-  <div id="game-audio-controls" aria-label="Game audio volume">
-    <label>
-      <span>BGM</span>
-      <input id="game-bgm-volume" type="range" min="0" max="100" step="1">
-      <output id="game-bgm-volume-value" for="game-bgm-volume">45%</output>
-    </label>
-    <label>
-      <span>SFX</span>
-      <input id="game-sfx-volume" type="range" min="0" max="100" step="1">
-      <output id="game-sfx-volume-value" for="game-sfx-volume">75%</output>
-    </label>
-  </div>
-  <div id="voice-controls" aria-hidden="true">
-    <button id="voice-mic-button" type="button" data-i18n="soccer.debugControls.voiceButton">调试语音</button>
-    <input id="voice-text-input" type="text" data-i18n-placeholder="soccer.debugControls.voicePlaceholder" placeholder="调试：输入最终转写后回车">
-    <button id="voice-send-button" type="button" data-i18n="soccer.debugControls.send">发送</button>
-    <div id="voice-status" data-i18n="soccer.debugControls.voiceStatusHidden">调试 STT：隐藏</div>
-  </div>
-  <div id="mood-debug-panel" aria-hidden="true">
-    <div class="mood-debug-title">
-      <span>心情调试</span>
-      <div class="mood-debug-actions">
-        <button type="button" data-debug-action="collapse">收起</button>
-        <button type="button" data-debug-action="hide">隐藏</button>
+<!-- 设置面板在开局遮罩之上保持可用；test=true 时才补充调试分组。 -->
+<div id="controls" hidden role="region" aria-labelledby="settings-panel-title">
+  <div id="settings-panel-title" data-i18n="soccer.settings.title">游戏设置</div>
+  <section class="settings-group" aria-labelledby="settings-game-title">
+    <div id="settings-game-title" class="settings-group-title" data-i18n="soccer.settings.game">游戏</div>
+    <div id="settings-voice-control-slot">
+      <div id="game-voice-chat-control">
+        <button id="game-voice-chat-button" type="button" aria-pressed="false" disabled
+                data-icon-off="/static/icons/mic_icon_off.png?v={{ static_asset_version }}"
+                data-icon-on="/static/icons/mic_icon_on.png?v={{ static_asset_version }}"
+                aria-describedby="game-voice-chat-status"
+                aria-label="开启语音对话" title="开启语音对话">
+          <img id="game-voice-chat-icon" src="/static/icons/mic_icon_off.png?v={{ static_asset_version }}" alt="" aria-hidden="true">
+        </button>
+        <div id="game-voice-chat-copy">
+          <span id="game-voice-chat-label" data-i18n="soccer.voiceChat.label">语音对话</span>
+          <span id="game-voice-chat-status" role="status" aria-live="polite" data-i18n="soccer.voiceChat.connecting">正在连接主语音入口…</span>
+        </div>
       </div>
     </div>
-    <div class="mood-debug-body">
-      <div class="mood-debug-row" aria-label="心情">
-        <button type="button" data-debug-mood="calm">平静</button>
-        <button type="button" data-debug-mood="happy">开心</button>
-        <button type="button" data-debug-mood="angry">生气</button>
-        <button type="button" data-debug-mood="relaxed">放松</button>
-        <button type="button" data-debug-mood="sad">悲伤</button>
-        <button type="button" data-debug-mood="surprised">惊讶</button>
+    <label id="surrender-reminder-control" class="settings-checkbox-row">
+      <input type="checkbox" id="surrender-reminder-toggle" checked>
+      <span data-i18n="soccer.surrenderReminder.label">认输提醒</span>
+    </label>
+    <label class="settings-checkbox-row"><input type="checkbox" id="boundary-toggle"> <span data-i18n="soccer.debugControls.bounds">启用边界（出界规则）</span></label>
+    <label class="settings-checkbox-row"><input type="checkbox" id="voice-output-toggle" checked> <span data-i18n="soccer.debugControls.voiceOutput">播放 LLM 台词（项目语音）</span></label>
+  </section>
+  <section class="settings-group" aria-labelledby="settings-audio-title">
+    <div id="settings-audio-title" class="settings-group-title" data-i18n="soccer.settings.audio">音量</div>
+    <div id="game-audio-controls" aria-label="Game audio volume">
+      <div class="game-audio-control-row">
+        <button id="game-bgm-mute" class="game-audio-channel-toggle" type="button" aria-controls="game-bgm-volume" aria-pressed="false">BGM</button>
+        <input id="game-bgm-volume" type="range" min="0" max="100" step="1" aria-labelledby="game-bgm-mute">
+        <output id="game-bgm-volume-value" for="game-bgm-volume">45%</output>
       </div>
-      <div class="mood-debug-row" aria-label="难度">
-        <button type="button" data-debug-difficulty="max">最高</button>
-        <button type="button" data-debug-difficulty="lv2">二档</button>
-        <button type="button" data-debug-difficulty="lv3">三档</button>
-        <button type="button" data-debug-difficulty="lv4">四档</button>
+      <div class="game-audio-control-row">
+        <button id="game-sfx-mute" class="game-audio-channel-toggle" type="button" aria-controls="game-sfx-volume" aria-pressed="false">SFX</button>
+        <input id="game-sfx-volume" type="range" min="0" max="100" step="1" aria-labelledby="game-sfx-mute">
+        <output id="game-sfx-volume-value" for="game-sfx-volume">75%</output>
       </div>
-      <div class="mood-debug-row" aria-label="控制">
-        <button type="button" data-debug-action="rotation-toggle">随机心情：关</button>
-        <button type="button" data-debug-action="clear-startle">清空受惊冷却</button>
+      <div class="game-audio-control-row">
+        <button id="game-voice-mute" class="game-audio-channel-toggle" type="button"
+                aria-controls="game-voice-volume" aria-pressed="false"
+                data-i18n-title="soccer.debugControls.voiceVolumeHint"
+                title="点击可静音或恢复。无法调整正在播放的语音音量。">VOICE</button>
+        <input id="game-voice-volume" type="range" min="0" max="100" step="1" value="50" aria-labelledby="game-voice-mute">
+        <output id="game-voice-volume-value" for="game-voice-volume">50%</output>
       </div>
-      <pre id="mood-debug-readout">心情调试已隐藏</pre>
     </div>
-  </div>
+  </section>
+  <section id="settings-debug-group" class="settings-group" aria-labelledby="settings-debug-title">
+    <div id="settings-debug-title" class="settings-group-title" data-i18n="soccer.settings.debug">调试</div>
+    <div id="voice-controls" aria-hidden="true">
+      <button id="voice-mic-button" type="button" data-i18n="soccer.debugControls.voiceButton">调试语音</button>
+      <input id="voice-text-input" type="text" data-i18n-placeholder="soccer.debugControls.voicePlaceholder" placeholder="调试：输入最终转写后回车">
+      <button id="voice-send-button" type="button" data-i18n="soccer.debugControls.send">发送</button>
+      <div id="voice-status" data-i18n="soccer.debugControls.voiceStatusHidden">调试 STT：隐藏</div>
+    </div>
+    <div id="mood-debug-panel" aria-hidden="true">
+      <div class="mood-debug-title">
+        <span>心情调试</span>
+        <div class="mood-debug-actions">
+          <button type="button" data-debug-action="collapse">收起</button>
+          <button type="button" data-debug-action="hide">隐藏</button>
+        </div>
+      </div>
+      <div class="mood-debug-body">
+        <div class="mood-debug-row" aria-label="心情">
+          <button type="button" data-debug-mood="calm">平静</button>
+          <button type="button" data-debug-mood="happy">开心</button>
+          <button type="button" data-debug-mood="angry">生气</button>
+          <button type="button" data-debug-mood="relaxed">放松</button>
+          <button type="button" data-debug-mood="sad">悲伤</button>
+          <button type="button" data-debug-mood="surprised">惊讶</button>
+        </div>
+        <div class="mood-debug-row" aria-label="难度">
+          <button type="button" data-debug-difficulty="max">最高</button>
+          <button type="button" data-debug-difficulty="lv2">二档</button>
+          <button type="button" data-debug-difficulty="lv3">三档</button>
+          <button type="button" data-debug-difficulty="lv4">四档</button>
+        </div>
+        <div class="mood-debug-row" aria-label="控制">
+          <button type="button" data-debug-action="rotation-toggle">随机心情：关</button>
+          <button type="button" data-debug-action="clear-startle">清空受惊冷却</button>
+        </div>
+        <pre id="mood-debug-readout">心情调试已隐藏</pre>
+      </div>
+    </div>
+  </section>
 </div>
 <!-- ``data-i18n`` 走 i18n-i18next.js 的 ``updatePageTexts()`` 自动替换路径，
      init / localechange 时刷新 textContent；codex P1 review 指出 IIFE 内
      ``typeof window.t === 'function'`` 一次性 gate 在 i18n 异步 init 之前
      会 skip，导致非 zh locale 卡在 HTML 兜底。统一走 ``data-i18n`` 后框架
      接管两类时序。 -->
-<div id="game-top-controls" hidden>
-  <label id="surrender-reminder-control">
-    <input type="checkbox" id="surrender-reminder-toggle" checked>
-    <span data-i18n="soccer.surrenderReminder.label">认输提醒</span>
-  </label>
-  <button id="exit-to-start-button" type="button" data-i18n="soccer.exitGame.button">退出游戏</button>
+<div id="game-top-controls">
+  <div id="top-voice-control-slot"></div>
+  <button id="soccer-settings-button" type="button" aria-controls="controls" aria-expanded="false"
+          data-i18n="soccer.settings.button">设置</button>
+  <button id="exit-to-start-button" type="button" hidden data-i18n="soccer.exitGame.button">退出游戏</button>
 </div>
 <div id="exit-prompt-overlay" hidden>
   <div id="exit-prompt-dialog" role="dialog" aria-modal="true">
@@ -174,6 +211,16 @@
 }
 </script>
 
+<script src="/static/game/sdk/neko-minigame-sdk.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/sdk/neko-minigame-audio-host.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/sdk/neko-minigame-avatar-host.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/games/soccer/soccer-avatar-host.js?v={{ static_asset_version }}"></script>
+<script id="neko-minigame-host-launch" type="application/json">
+{"registrations":{"soccer":{"mode":"registered","gameId":"soccer","publisherId":"project-n-e-k-o","version":"1.0.0","allowedCapabilities":["runtime","logging","audio","speech-output","dialogue","quick-lines","voice-input","avatar-renderer","storage","memory","context-read"]}}}
+</script>
+<script src="/static/game/games/soccer/soccer-neko-host-registration.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/sdk/neko-minigame-same-origin-bootstrap.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/games/soccer/soccer-neko-adapter.js?v={{ static_asset_version }}"></script>
 <script src="/static/game/games/soccer/soccer-demo.js?v={{ static_asset_version }}"></script>
 
 <!-- VRM init（监听 three-ready，再并行加载 vrm-*.js） -->

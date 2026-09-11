@@ -195,6 +195,9 @@
                     case 'icebreaker_append_chat_message':
                     case 'icebreaker_set_choice_prompt':
                     case 'icebreaker_clear_choice_prompt':
+                    case 'icebreaker_clear_choice_prompt_source':
+                    case 'icebreaker_reset_session_state':
+                    case 'icebreaker_galgame_handoff':
                     case 'icebreaker_choice_selected':
                     case 'icebreaker_free_text_submitted': {
                         I.handleIcebreakerBridgeData(event.data);

@@ -971,8 +971,12 @@ def test_ai_and_user_canvases_fill_the_same_stage_bounds():
 @pytest.mark.unit
 def test_drawing_guess_locale_cache_version_bumped_for_save_art_actions():
     script = _i18n_script()
-
-    assert "2026-09-10-drawing-guess-pngtuber-import-status" in script
+    match = re.search(r"const\s+LOCALE_VERSION\s*=\s*'([^']+)'", script)
+    assert match, "locale requests must use an explicit cache version"
+    drawing_version = "2026-09-10-drawing-guess-pngtuber-import-status"
+    # Other features may advance the shared version. Its retirement and key
+    # signature are checked by the central locale cache contract, not this page.
+    assert match.group(1) == drawing_version or match.group(1)[:10] > drawing_version[:10]
 
 
 @pytest.mark.unit

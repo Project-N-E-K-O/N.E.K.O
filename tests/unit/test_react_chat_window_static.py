@@ -1629,6 +1629,108 @@ def test_galgame_history_excludes_new_user_icebreaker_messages():
     assert "invalidatePendingGalgameRequest();" in append_block
 
 
+def test_completed_icebreaker_handoff_seeds_galgame_once():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    react_host_runtime = read_js_parts(
+        APP_REACT_CHAT_WINDOW_PATH.directory,
+        encoding="utf-8",
+        contract_view=False,
+    )
+
+    history_source = "function isNewUserIcebreakerChatMessage(message)" + react_host_runtime.split(
+        "function isNewUserIcebreakerChatMessage(message)",
+        1,
+    )[1].split("function pickAcceptLanguage", 1)[0]
+    history_block = history_source.split("function getRecentGalgameMessageHistory()", 1)[1]
+    assert "icebreakerHandoffMessageId" in history_block
+    assert "String(m.id || '') === icebreakerHandoffMessageId" in history_block
+    assert "m.role === 'assistant'" in history_block
+
+    handoff_listener = react_host.split(
+        "window.addEventListener('neko:icebreaker-galgame-handoff'",
+        1,
+    )[1].split("function isNewUserIcebreakerTurnEndEvent", 1)[0]
+    assert "clearIcebreakerChoicePrompt(String(detail.sessionId));" in handoff_listener
+    assert "waitForAssistantBubblesFlushed(4000)" in handoff_listener
+    assert "rememberIcebreakerGalgameHandoff(messageId)" in handoff_listener
+    assert "pendingIcebreakerGalgameHandoffMessageId !== messageId" in handoff_listener
+    assert "fetchPendingIcebreakerGalgameHandoffOrLatest()" in handoff_listener
+    append_block = react_host.split("function appendMessage(message)", 1)[1].split(
+        "function updateMessage",
+        1,
+    )[0]
+    assert "!isYuiGuideChatMessage(normalized)" in append_block
+    assert "clearedIcebreakerHandoff" in append_block
+    assert "|| clearedIcebreakerHandoff" in append_block
+    clear_source_block = react_host.split("function clearChoicePromptBySource(source, reason)", 1)[1].split(
+        "function clearIcebreakerChoicePrompt",
+        1,
+    )[0]
+    assert "hasPendingHandoff" in clear_source_block
+    assert "state.pendingIcebreakerGalgameHandoffMessageId = '';" in clear_source_block
+
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is required to verify the completed icebreaker handoff history")
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const context = {{}};
+vm.createContext(context);
+vm.runInContext(`
+var I = {{ GALGAME_HISTORY_LIMIT: 6, state: {{ messages: [] }} }};
+function isYuiGuideChatMessage() {{ return false; }}
+${{{json.dumps(history_source)}}}
+`, context);
+
+const handoff = {{
+    id: 'icebreaker-assistant-final',
+    role: 'assistant',
+    blocks: [{{ type: 'text', text: 'final handoff' }}],
+    icebreaker: {{ source: 'new_user_icebreaker', handoff: true }}
+}};
+const ordinaryBefore = {{
+    id: 'ordinary-before',
+    role: 'assistant',
+    blocks: [{{ type: 'text', text: 'old ordinary history' }}]
+}};
+const icebreakerBefore = {{
+    id: 'icebreaker-user-before',
+    role: 'user',
+    blocks: [{{ type: 'text', text: 'old scripted history' }}]
+}};
+const ordinaryAfter = {{
+    id: 'ordinary-after',
+    role: 'user',
+    blocks: [{{ type: 'text', text: 'newer turn' }}]
+}};
+context.I.state.messages = [ordinaryBefore, icebreakerBefore, handoff];
+assert.equal(JSON.stringify(vm.runInContext('getRecentGalgameMessageHistory()', context)), '[]');
+assert.equal(
+    JSON.stringify(vm.runInContext("getRecentGalgameMessageHistory({{ icebreakerHandoffMessageId: 'wrong' }})", context)),
+    '[]'
+);
+assert.equal(
+    JSON.stringify(vm.runInContext("getRecentGalgameMessageHistory({{ icebreakerHandoffMessageId: 'icebreaker-assistant-final' }})", context)),
+    '[{{"role":"assistant","text":"final handoff"}}]'
+);
+context.I.state.messages.push(ordinaryAfter);
+assert.equal(
+    JSON.stringify(vm.runInContext("getRecentGalgameMessageHistory({{ icebreakerHandoffMessageId: 'icebreaker-assistant-final' }})", context)),
+    '[]'
+);
+"""
+    result = run_node_script(
+        node_path,
+        script,
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_galgame_turn_end_listener_ignores_new_user_icebreaker():
     react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
@@ -1724,7 +1826,9 @@ def test_icebreaker_reset_clears_prompt_by_source_without_session_match():
         1,
     )[0]
     assert "if (normalizedSource !== 'new_user_icebreaker') return false;" in reset_block
-    assert "state.choicePrompt.source !== normalizedSource" in reset_block
+    assert "state.choicePrompt.source === normalizedSource" in reset_block
+    assert "hasPendingHandoff" in reset_block
+    assert "state.pendingIcebreakerGalgameHandoffMessageId = '';" in reset_block
     assert "clearChoicePromptBySource:', normalizedSource, reason || ''" in reset_block
     assert "state.choicePrompt = null;" in reset_block
     assert "invalidatePendingGalgameRequest();" in reset_block

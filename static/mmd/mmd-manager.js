@@ -147,8 +147,8 @@ class MMDManager {
             }
 
             // 加载表情映射
-            if (this.expression && modelInfo.name) {
-                await this.expression.loadMoodMap(modelInfo.name);
+            if (this.expression && modelInfo.configName) {
+                await this.expression.loadMoodMap(modelInfo.configName);
             }
 
             // 再次检查（loadMoodMap 是异步的）
@@ -209,8 +209,8 @@ class MMDManager {
                         this.cursorFollow.refresh();
                     }
 
-                    if (this.expression && modelInfo.name) {
-                        await this.expression.loadMoodMap(modelInfo.name);
+                    if (this.expression && modelInfo.configName) {
+                        await this.expression.loadMoodMap(modelInfo.configName);
                     }
 
                     if (this._isDisposed || this._activeLoadToken !== loadToken) {
