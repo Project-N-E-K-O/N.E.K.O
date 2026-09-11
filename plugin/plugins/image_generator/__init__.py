@@ -363,6 +363,8 @@ def _redact_text(
 
 
 def _validate_api_key(value: Any) -> str:
+    if isinstance(value, str) and (not value.isascii() or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)):
+        raise SdkError("API 密钥必须使用可打印的 ASCII 字符")
     if isinstance(value, str) and (
         len(value) > _API_KEY_MAX_CHARS
         or len(value.encode("utf-8")) > _API_KEY_MAX_BYTES
@@ -393,7 +395,7 @@ def _value_contains_secret(
         return any(secret in value for secret in candidates)
     if isinstance(value, Mapping):
         return any(
-            _value_contains_secret(key, candidates)
+            (key not in DEFAULT_SETTINGS and _value_contains_secret(key, candidates))
             or _value_contains_secret(item, candidates)
             for key, item in value.items()
         )
@@ -417,7 +419,7 @@ def _redact_structure(
         return _redact_text(value, secrets, max_chars=_URL_MAX_CHARS)
     if isinstance(value, Mapping):
         return {
-            _redact_text(key, secrets, max_chars=128): _redact_structure(
+            key: _redact_structure(
                 item,
                 secrets,
             )
@@ -1081,20 +1083,20 @@ def _verified_image_format(data: bytes) -> str:
             "暂不支持动画图片",
             "AnimatedImageUnsupported",
         )
-    if image_format == "WEBP":
+    if image_format in {"WEBP", "JPEG"}:
         if _PIL_Image is None:
             raise _GenerationFailure(
-                "当前宿主缺少 WebP 解码器，请使用 PNG 或 JPEG 输出",
+                "当前宿主缺少图片解码器，请使用 PNG 输出",
                 "UnsupportedImageFormat",
             )
         try:
             with _PIL_Image.open(io.BytesIO(data)) as decoded:
                 decoded.load()
-                if decoded.format != "WEBP" or decoded.size != (width, height):
-                    raise ValueError("WebP geometry mismatch")
+                if decoded.format != image_format or decoded.size != (width, height):
+                    raise ValueError("image geometry mismatch")
         except Exception as exc:
             raise _GenerationFailure(
-                "图片服务返回了无法解码的 WebP 图片", "InvalidImageData"
+                "图片服务返回了无法解码的图片", "InvalidImageData"
             ) from exc
     return image_format
 
@@ -2150,8 +2152,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 raise SdkError(
                     "检测到设置字段包含 API 密钥；请在管理面板重新保存安全设置"
                 )
-            if settings.get("output_format") == "webp" and _PIL_Image is None:
-                raise SdkError("当前宿主缺少 WebP 解码器，请使用 PNG 或 JPEG 输出")
+            if settings.get("output_format") in {"webp", "jpeg"} and _PIL_Image is None:
+                raise SdkError("当前宿主缺少 JPEG/WebP 解码器，请使用 PNG 输出")
             return settings, api_key
 
     def _settings_snapshot(self) -> dict[str, Any]:
@@ -2169,7 +2171,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         failure_class: str | None = None,
     ) -> None:
         with self._state_lock:
-            if status == "running":
+            if status == "running" or self._active_generations > 1:
                 self._api_state = "generating"
             elif status == "success":
                 self._api_state = "ok"
@@ -3306,6 +3308,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         *,
         api_key: str = "",
         checked: bool = False,
+        project: bool = True,
     ) -> list[dict[str, Any]]:
         success, raw = await self._store_get_checked(_HISTORY_STORE_KEY, [])
         if checked and not success:
@@ -3317,7 +3320,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         for item in raw:
             normalized = _safe_history_record(item, secrets)
             if normalized is not None:
-                history.append(self._project_history_record(normalized))
+                history.append(self._project_history_record(normalized) if project else normalized)
         return history
 
     async def _record_history(
@@ -3335,7 +3338,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         await self._acquire_lock(self._history_lock)
         try:
             try:
-                history = await self._load_history(api_key=api_key, checked=True)
+                history = await self._load_history(api_key=api_key, checked=True, project=False)
             except SdkError:
                 return
             secrets = self._known_secrets_snapshot(api_key)
@@ -3600,7 +3603,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 task = self._inflight[dedup_key]
 
                 def discard(completed: asyncio.Task) -> None:
-                    self._active_generations -= 1
+                    self._release_generation()
                     if self._inflight.get(candidate_key) is completed:
                         self._inflight.pop(candidate_key, None)
                     if not completed.cancelled():
@@ -3624,7 +3627,15 @@ class ImageGeneratorPlugin(NekoPluginBase):
             return await self._execute_generation(**kwargs)
         finally:
             if not reserved:
-                self._active_generations -= 1
+                self._release_generation()
+
+    def _release_generation(self) -> None:
+        self._active_generations -= 1
+        if self._active_generations == 0 and self._api_state == "generating":
+            with self._state_lock:
+                failed = self._last_request.get("status") == "error"
+                self._api_state = "error" if failed else "ok"
+            self.report_status({"status": "error" if failed else "running"})
 
     def _cache_limits_decrease(self, settings: Mapping[str, Any]) -> bool:
         current = self._settings_snapshot()
@@ -3724,7 +3735,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     status="error",
                     failure_class=exc.failure_class,
                 )
-                self.report_status(
+                self._report_generation_completion(
                     {
                         "status": "error",
                         "failure_class": exc.failure_class,
@@ -3751,7 +3762,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                     status="error",
                     failure_class=failure_class,
                 )
-                self.report_status({"status": "error", "failure_class": failure_class})
+                self._report_generation_completion({"status": "error", "failure_class": failure_class})
                 await self._record_history(
                     prompt=cleaned_prompt,
                     model=str(settings["model"]),
@@ -3783,8 +3794,11 @@ class ImageGeneratorPlugin(NekoPluginBase):
             return await _run_generation()
         except asyncio.CancelledError:
             self._set_request_state(action=action, status="error", failure_class="CancelledError")
-            self.report_status({"status": "error", "failure_class": "CancelledError"})
+            self._report_generation_completion({"status": "error", "failure_class": "CancelledError"})
             raise
+
+    def _report_generation_completion(self, payload: dict[str, Any]) -> None:
+        self.report_status({"status": "generating"} if self._active_generations > 1 else payload)
 
     async def _finalize_success(
         self,
@@ -3841,6 +3855,8 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 "revised_prompt": revised_prompt,
             }
 
+        if thumb_url:
+            result_fields["preview_url"] = thumb_url
         await self._record_history(
             prompt=cleaned_prompt,
             model=str(settings["model"]),
@@ -3850,7 +3866,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             history_limit=int(settings["history_limit"]),
         )
         self._set_request_state(action=action, status="success")
-        self.report_status({"status": "running"})
+        self._report_generation_completion({"status": "running"})
         self.logger.info(
             "ImageGenerator request succeeded: action={} bytes={} "
             "chat_push_attempted={}",
@@ -4030,7 +4046,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
         for item in raw_history:
             record = _safe_history_record(item, secrets)
             if record is not None:
-                sanitized.append(self._project_history_record(record))
+                sanitized.append(record)
         return await self._store_set(
             _HISTORY_STORE_KEY,
             sanitized[:history_limit],

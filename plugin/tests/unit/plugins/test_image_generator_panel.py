@@ -431,7 +431,10 @@ async function main() {
           ? panelState(old.envelope, true, 'persisted-model-after-refresh')
           : panelState(old.envelope, false, 'initial-model');
       } else if (body.entry_id === 'test_generation') {
-        data = { result_url: '/plugin/image_generator/ui/generated/' + 'a'.repeat(32) + '.png' };
+        data = {
+          result_url: '/plugin/image_generator/ui/generated/' + 'a'.repeat(32) + '.png',
+          preview_url: '/plugin/image_generator/ui/generated/thumb_' + 'a'.repeat(32) + '.png',
+        };
       } else if (body.entry_id === 'get_secret_envelope') {
         const issued = fresh[envelopeCallCount];
         check(issued, 'the panel requested more than two fresh envelopes');
@@ -564,6 +567,8 @@ async function main() {
       'test generation state refresh',
     );
     check(elements.get('model').value === 'unsaved-after-save', 'test discarded unsaved form edits');
+    check(elements.get('testPreview').children[0].src.includes('/thumb_'), 'test card loaded original');
+    check(!elements.get('testResultLink').dataset.url.includes('/thumb_'), 'lightbox lost original');
     check(
       elements.get('credentialValue').textContent.includes('已配置'),
       `credential status is not configured: ${elements.get('credentialValue').textContent}`,

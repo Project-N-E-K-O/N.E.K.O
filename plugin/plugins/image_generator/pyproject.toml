@@ -5,8 +5,8 @@ description = "Secure OpenAI-compatible image generation for N.E.K.O."
 requires-python = "==3.11.*"
 # The host supplies pycryptodomex for the secret envelope; the Steam frozen
 # runtime strips cryptography/Pillow down to extension stubs, so this plugin
-# uses pycryptodomex and pure-Python container validation for PNG/JPEG.
-# WebP additionally requires the host's optional complete Pillow decoder.
+# uses pycryptodomex and pure-Python scanline validation for PNG.
+# JPEG/WebP require the host's optional complete Pillow decoder.
 dependencies = [
     "N.E.K.O>=0.8.3",
 ]

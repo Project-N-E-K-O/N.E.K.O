@@ -2595,7 +2595,8 @@
             valueFrom(result, 'prompt_excerpt', t('test.result_fallback', '提供商已返回生成结果。'))),
         ).slice(0, 700);
         if (url) {
-          const image = createImage(url, t('history.image_alt', '生成图片缩略图'));
+          const preview = safeGeneratedAssetUrl(valueFrom(result, 'preview_url', ''), { thumbnail: true }) || url;
+          const image = createImage(preview, t('history.image_alt', '生成图片缩略图'));
           image.addEventListener('error', () => image.remove(), { once: true });
           elements.testPreview.replaceChildren(image);
           elements.testResultLink.dataset.url = url;

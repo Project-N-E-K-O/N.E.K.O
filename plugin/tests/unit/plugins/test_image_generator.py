@@ -1880,7 +1880,7 @@ async def test_generate_pushes_small_markdown_without_inline_image_data(
 
     assert result.is_ok()
     # Local submission is not a delivery acknowledgement; retain the link.
-    assert set(result.value) == {
+    assert set(result.value).difference({"preview_url"}) == {
         "message",
         "display_instruction",
         "revised_prompt",
@@ -3807,3 +3807,85 @@ def test_history_projects_existing_thumbnail(monkeypatch, tmp_path):
     assert projected["preview_url"] == plugin._asset_url(thumb.name)
     thumb.unlink()
     assert "preview_url" not in plugin._project_history_record({"result_url": original})
+
+
+@pytest.mark.parametrize("key", ["密钥字符测试八个字", "😀" * 8, "abcde\x00fgh"])
+def test_api_key_must_be_http_header_encodable(key):
+    with pytest.raises(SdkError):
+        image_generator_module._validate_api_key(key)
+
+
+@pytest.mark.asyncio
+async def test_credential_matching_fixed_field_name_remains_usable():
+    plugin, _, _ = make_plugin()
+    payload = await encrypted_save_payload(plugin, api_key="provider")
+    result = await plugin.save_settings(**payload)
+    assert result.is_ok()
+    assert "provider" in result.value["settings"]
+    settings, key = await plugin._generation_config_snapshot()
+    assert key == "provider"
+    assert settings["provider"] == DEFAULT_SETTINGS["provider"]
+
+
+@pytest.mark.asyncio
+async def test_history_sanitization_preserves_temporarily_unavailable_links(tmp_path):
+    plugin, _, store = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    filename = "a" * 32 + ".png"
+    (assets / filename).write_bytes(PNG_BYTES)
+    url = plugin._asset_url(filename)
+    await plugin._record_history(prompt="cat", model="model", status="succeeded", result_url=url, api_key="")
+    plugin._asset_dir = None
+    assert await plugin._sanitize_history_before_secret_change(secrets=(), history_limit=20)
+    assert store.data["recent_generations"][0]["result_url"] == url
+    await plugin._record_history(prompt="dog", model="model", status="failed", result_url="", api_key="")
+    assert store.data["recent_generations"][1]["result_url"] == url
+    plugin._asset_dir = assets
+    assert (await plugin._load_history())[1]["result_url"] == url
+
+
+def test_concurrent_completion_preserves_generating_status(monkeypatch):
+    plugin, _, _ = make_plugin()
+    reports = []
+    monkeypatch.setattr(plugin, "report_status", reports.append)
+    plugin._active_generations = 2
+    plugin._set_request_state(action="generate_image", status="success")
+    plugin._report_generation_completion({"status": "running"})
+    assert plugin._api_state == "generating"
+    assert reports[-1] == {"status": "generating"}
+    plugin._active_generations = 1
+    plugin._set_request_state(action="generate_image", status="success")
+    plugin._report_generation_completion({"status": "running"})
+    assert plugin._api_state == "ok"
+    assert reports[-1] == {"status": "running"}
+
+
+def test_jpeg_decode_is_required_after_marker_validation():
+    output = io.BytesIO()
+    Image.new("RGB", (8, 6)).save(output, format="JPEG")
+    data = output.getvalue()
+    while b"\xff\xc4" in data:
+        offset = data.index(b"\xff\xc4")
+        end = offset + 2 + int.from_bytes(data[offset + 2:offset + 4], "big")
+        data = data[:offset] + data[end:]
+    offset = data.index(b"\xff\xda")
+    end = offset + 2 + int.from_bytes(data[offset + 2:offset + 4], "big")
+    # Reference a non-default undefined Huffman table; libjpeg can supply
+    # standard tables 0/1 implicitly but must reject undefined table 3.
+    data = data[:offset + 6] + b"\x33" + data[offset + 7:]
+    data = data[:end] + b"\x01\xff\xd9"
+    with pytest.raises(image_generator_module._GenerationFailure):
+        image_generator_module._verified_image_format(data)
+
+
+def test_final_reservation_release_clears_aggregate_state(monkeypatch):
+    plugin, _, _ = make_plugin()
+    reports = []
+    monkeypatch.setattr(plugin, "report_status", reports.append)
+    plugin._active_generations = 2
+    plugin._set_request_state(action="generate_image", status="success")
+    plugin._release_generation()
+    assert plugin._api_state == "generating"
+    plugin._release_generation()
+    assert plugin._api_state == "ok"
+    assert reports[-1] == {"status": "running"}
