@@ -2279,6 +2279,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
             root_stat = resolved_static.stat()
             root_identity = (int(root_stat.st_dev), int(root_stat.st_ino))
             _ensure_generated_asset_dir(resolved_static, root_identity)
+            self._probe_cache_write(resolved_static, root_identity)
             asset_dir = resolved_static / _GENERATED_SUBDIR
             self._writable_ui_dir = resolved_static
             self._asset_dir = asset_dir
@@ -2346,6 +2347,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 root_identity,
             )
             asset_dir = writable_ui / _GENERATED_SUBDIR
+            self._probe_cache_write(writable_ui, root_identity)
             self._writable_ui_dir = writable_ui
             self._asset_dir = asset_dir
             self._writable_ui_identity = root_identity
@@ -2401,6 +2403,13 @@ class ImageGeneratorPlugin(NekoPluginBase):
                 with self._state_lock:
                     if self._configuration_warning == "生成图片缓存不可用；管理面板可能可读，但生成已降级":
                         self._configuration_warning = None
+                dependencies_available = all(value is not None for value in (_CD_RSA, _CD_PKCS1_OAEP, _CD_SHA256, _CD_AES))
+                self.report_status({
+                    "status": "running" if self._settings_available and dependencies_available else "degraded",
+                    "asset_cache_available": True,
+                    "ui_registered": True,
+                    "configuration_warning": self._configuration_warning,
+                })
 
     def _frozen_static_ui_overrides_ignored(self) -> bool:
         """Disable directory fallback unless the host serves the probe."""
@@ -2485,6 +2494,56 @@ class ImageGeneratorPlugin(NekoPluginBase):
             expected_identity,
             filename,
         )
+
+    @staticmethod
+    def _probe_cache_write(root: Path, identity: tuple[int, int]) -> None:
+        filename = f"{uuid4().hex}.png"
+        try:
+            _atomic_write_bytes(root, identity, f".{filename}.{uuid4().hex}.tmp", filename, b"probe")
+        finally:
+            _unlink_asset_file(root, identity, filename)
+
+    @staticmethod
+    def _verify_cache_removable(path: Path) -> None:
+        if path.is_symlink():
+            raise OSError("unsafe cache entry")
+        if os.name != "nt":
+            if not os.access(path.parent, os.W_OK | os.X_OK):
+                raise PermissionError("cache entries cannot be removed")
+            return
+        import ctypes
+        from ctypes import wintypes
+        if getattr(path.stat(), "st_file_attributes", 0) & 1:
+            raise PermissionError("cached image is read-only")
+        create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+        create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                               wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        create_file.restype = wintypes.HANDLE
+        # DELETE access detects sharing/ACL failures without deleting paid data.
+        handle = create_file(str(path), 0x10000, 0x7, None, 3, 0x00200000, None)
+        if handle is None or handle == ctypes.c_void_p(-1).value:
+            raise PermissionError(ctypes.get_last_error(), "cached image cannot be evicted")
+        _close_windows_handle(int(handle))
+
+    def _verify_generation_capacity(self, settings: Mapping[str, Any]) -> None:
+        files = self._cache_files(strict=True)
+        groups: dict[str, list[Path]] = {}
+        total = 0
+        for path in files:
+            total += path.stat().st_size
+            if not _GENERATED_TEMP_FILE_PATTERN.fullmatch(path.name):
+                key = path.name.removeprefix("thumb_").rsplit(".", 1)[0]
+                groups.setdefault(key, []).append(path)
+        count = len(groups)
+        for group in sorted(groups.values(), key=lambda paths: max(path.stat().st_mtime for path in paths)):
+            if count + 1 <= settings["cache_max_count"] and total + settings["max_download_bytes"] <= settings["cache_max_bytes"]:
+                return
+            for path in group:
+                self._verify_cache_removable(path)
+            total -= sum(path.stat().st_size for path in group)
+            count -= 1
+        if count + 1 > settings["cache_max_count"] or total + settings["max_download_bytes"] > settings["cache_max_bytes"]:
+            raise OSError("insufficient evictable cache capacity")
 
     def _cache_files(self, *, strict: bool = False) -> list[Path]:
         asset_dir = self._asset_dir
@@ -3829,7 +3888,9 @@ class ImageGeneratorPlugin(NekoPluginBase):
         await self._acquire_lock(self._cache_lock)
         try:
             def capacity_preflight():
+                self._probe_cache_write(self._writable_ui_dir, self._writable_ui_identity)
                 stats = self._prune_cache_sync(settings)
+                self._verify_generation_capacity(settings)
                 temp_bytes = sum(path.stat().st_size for path in self._cache_files(strict=True)
                                  if _GENERATED_TEMP_FILE_PATTERN.fullmatch(path.name))
                 return stats, temp_bytes
@@ -4648,18 +4709,45 @@ class ImageGeneratorPlugin(NekoPluginBase):
                         )
                         if not read_ok:
                             return False
+                        def backup_history():
+                            descriptor, filename = tempfile.mkstemp(prefix="neko-image-history-recovery-", suffix=".json")
+                            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                                json.dump(old_history, stream, ensure_ascii=False)
+                                stream.flush()
+                                os.fsync(stream.fileno())
+                            return Path(filename)
+                        try:
+                            recovery = await asyncio.to_thread(backup_history)
+                        except OSError:
+                            return False
+
+                        async def discard_recovery():
+                            try:
+                                await asyncio.to_thread(recovery.unlink)
+                            except OSError:
+                                self.logger.warning("History backup cleanup failed; recovery file retained at {}", recovery)
+
+                        async def restore_reset_history():
+                            if old_history is None:
+                                restored, _ = await self._store_delete(_HISTORY_STORE_KEY)
+                            else:
+                                restored = await self._store_set(_HISTORY_STORE_KEY, old_history)
+                            if restored:
+                                await discard_recovery()
+                            else:
+                                self._settings_available = False
+                                self.logger.error("History rollback failed; original history retained at {}", recovery)
+                                self.report_status({"status": "degraded", "failure_class": "HistoryRollbackError"})
                         history_safe = await self._sanitize_history_before_secret_change(
                             secrets=secrets,
                             history_limit=int(target_settings["history_limit"]),
                         )
                         if not history_safe:
+                            await restore_reset_history()
                             return False
                         deleted_ok, _existed = await self._store_delete(_SETTINGS_STORE_KEY)
                         if not deleted_ok:
-                            if old_history is None:
-                                await self._store_delete(_HISTORY_STORE_KEY)
-                            else:
-                                await self._store_set(_HISTORY_STORE_KEY, old_history)
+                            await restore_reset_history()
                             return False
                         with self._state_lock:
                             self._settings = target_settings
@@ -4670,6 +4758,7 @@ class ImageGeneratorPlugin(NekoPluginBase):
                                 else "生成图片缓存不可用；管理面板可能可读，但生成已降级"
                             )
                         cache_transaction["committed"] = True
+                        await discard_recovery()
                         return True
                     finally:
                         self._history_lock.release()

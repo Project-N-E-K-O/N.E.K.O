@@ -4240,7 +4240,7 @@ async def test_locked_temp_blocks_paid_generation(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_readonly_install_defers_probe_until_first_panel_request(monkeypatch, tmp_path):
-    plugin, _, _ = make_plugin()
+    plugin, ctx, _ = make_plugin()
     monkeypatch.setattr(plugin, "data_path", lambda *parts: tmp_path.joinpath(*parts))
     ensure = image_generator_module._ensure_generated_asset_dir
     def readonly_install(root, identity):
@@ -4261,3 +4261,80 @@ async def test_readonly_install_defers_probe_until_first_panel_request(monkeypat
     state = await plugin.get_panel_state()
     assert state.is_ok() and state.value["asset_cache_available"]
     assert probes == [True] and not plugin._static_override_pending
+    assert ctx.status_updates[-1]["status"] == "running"
+    assert ctx.status_updates[-1]["asset_cache_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_full_locked_cache_blocks_billing(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin(store=FakeStore(data={"api_key": SECRET}))
+    assets = prepare_asset_cache(plugin, tmp_path)
+    original = assets / ("a" * 32 + ".png")
+    original.write_bytes(PNG_BYTES)
+    plugin._settings["cache_max_count"] = 1
+    checked = []
+    def locked(path):
+        checked.append(path)
+        raise PermissionError("locked original")
+    monkeypatch.setattr(plugin, "_verify_cache_removable", locked)
+    async def paid(**kwargs):
+        pytest.fail("paid request reached with locked full cache")
+    monkeypatch.setattr(plugin, "_request_generation", paid)
+    assert (await plugin.test_generation(prompt="cat")).is_err()
+    assert checked == [original] and original.read_bytes() == PNG_BYTES
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows delete sharing integration")
+async def test_windows_open_original_blocks_eviction_probe(tmp_path):
+    plugin, _, _ = make_plugin()
+    assets = prepare_asset_cache(plugin, tmp_path)
+    original = assets / ("a" * 32 + ".png")
+    original.write_bytes(PNG_BYTES)
+    with original.open("rb"):
+        with pytest.raises(PermissionError):
+            plugin._verify_cache_removable(original)
+    plugin._verify_cache_removable(original)
+
+
+@pytest.mark.asyncio
+async def test_reset_history_rollback_failure_keeps_recovery(monkeypatch, tmp_path):
+    plugin, ctx, store = make_plugin()
+    for index in range(3):
+        await plugin._record_history(prompt=str(index), model="m", status="failed", result_url="", api_key="")
+    original = copy.deepcopy(store.data["recent_generations"])
+    plugin._manifest_settings["history_limit"] = 1
+    store.fail_delete_keys.add("settings")
+    store_set = store.set
+    writes = 0
+    async def fail_restore(key, value):
+        nonlocal writes
+        if key == "recent_generations":
+            writes += 1
+            if writes == 2:
+                return Err(SdkError("store unavailable"))
+        return await store_set(key, value)
+    monkeypatch.setattr(store, "set", fail_restore)
+    mkstemp = image_generator_module.tempfile.mkstemp
+    monkeypatch.setattr(image_generator_module.tempfile, "mkstemp", lambda **kwargs: mkstemp(dir=tmp_path, **kwargs))
+    assert (await plugin.reset_settings()).is_err()
+    recovery = list(tmp_path.glob("neko-image-history-recovery-*.json"))
+    assert len(recovery) == 1
+    assert json.loads(recovery[0].read_text(encoding="utf-8")) == original
+    assert not plugin._settings_available
+    assert ctx.status_updates[-1]["failure_class"] == "HistoryRollbackError"
+
+
+def test_readonly_existing_cache_uses_writable_fallback(monkeypatch, tmp_path):
+    plugin, _, _ = make_plugin()
+    monkeypatch.setattr(plugin, "data_path", lambda *parts: tmp_path.joinpath(*parts))
+    writer = image_generator_module._atomic_write_bytes
+    def readonly_primary(root, *args, **kwargs):
+        if root == plugin._source_static_dir:
+            raise PermissionError("existing generated directory is read-only")
+        return writer(root, *args, **kwargs)
+    monkeypatch.setattr(image_generator_module, "_atomic_write_bytes", readonly_primary)
+    monkeypatch.setattr(plugin, "_frozen_static_ui_overrides_ignored", lambda: False)
+    assert plugin._register_writable_static_ui()
+    assert plugin._asset_dir == tmp_path / "static_ui" / "generated"
+    assert not list(plugin._asset_dir.iterdir())
