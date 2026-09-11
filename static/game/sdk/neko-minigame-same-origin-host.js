@@ -506,7 +506,11 @@
             fetchImpl: this._fetchImpl,
             signal: this._avatarFactoryController.signal,
             onCleanup: (cleanup) => {
-              if (typeof cleanup !== 'function' || this._avatarCleanup.length >= 16) {
+              if (typeof cleanup !== 'function') {
+                throw this._hostError('invalid_request', 'Avatar cleanup must be a function');
+              }
+              if (this._avatarCleanup.length >= 16) {
+                try { Promise.resolve(cleanup()).catch(() => {}); } catch (_) { /* release overflow allocation */ }
                 throw this._hostError('invalid_request', 'Avatar factory cleanup limit reached');
               }
               if (this._disposed || this._avatarFactoryController.signal.aborted) {
@@ -548,7 +552,7 @@
     }
 
     _releaseAvatar() {
-      this._avatarFactoryController?.abort();
+      try { this._avatarFactoryController?.abort(); } catch (_) { /* still release owned resources */ }
       const provider = HOST_AVATAR_PROVIDERS.get(this);
       HOST_AVATAR_PROVIDERS.delete(this);
       this._disposeAvatarResource(provider);

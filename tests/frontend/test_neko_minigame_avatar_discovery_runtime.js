@@ -132,6 +132,13 @@ async function factories() {
   late.resolve({ dispose() { lateDisposed++; } });
   await tick();
   assert.equal(lateDisposed, 1, 'accidentally async factory result leaked');
+  let boundedCleanup = 0;
+  const overflow = await environment(({ onCleanup }) => {
+    for (let i = 0; i < 17; i++) onCleanup(() => { boundedCleanup++; });
+  });
+  const overflowGame = await overflow.game(overflow.host(), false);
+  assert.equal(boundedCleanup, 17, 'cleanup overflow leaked a partial allocation');
+  overflowGame.dispose();
 }
 
 async function queries() {
